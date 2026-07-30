@@ -62,10 +62,14 @@ type Decision struct {
 	// of values already derived in the eligibility pass — recording them
 	// changes no routing behavior.
 	//
-	// The corpus buckets on these RAW scalars, never on Reason: ReasonHighD
-	// folds into ReasonBelowThreshold on the not-routed shadow header, so the
-	// Reason string alone hides the high-D class. NAnchors / Fanout /
-	// CumulativeD / OuterRange / Step carry the unfolded signal.
+	// The corpus buckets on these RAW scalars, never on Reason. Reason is
+	// recorded verbatim and does distinguish the classes from each other —
+	// below-threshold, high-D, and the structural refusals are separate
+	// tokens — but it says nothing about WHERE a plan sat relative to the
+	// threshold that refused it, which is the quantity a counterfactual
+	// re-fit needs. NAnchors / Fanout / CumulativeD / OuterRange / Step carry
+	// that. (What does fold is the ROUTE token: every non-route reason
+	// collapses to "A".)
 	NAnchors    int           // N = OuterRange/Step + 1 (outermost spine)
 	Fanout      int64         // F = max(Range/Step or Lookback/Step) over windows
 	CumulativeD time.Duration // D = Σ spine lookback (Range / Lookback)
@@ -120,6 +124,13 @@ const (
 	// cannot pay for replicating it.
 	ReasonScalarHeavy = "scalar-heavy"
 
+	// ReasonRoutingDisabled: Cfg.Mode is "single" — the operator switched
+	// routing off deployment-wide, so the plan was classified but no cost
+	// threshold was ever consulted. Distinct from ReasonBelowThreshold, which
+	// asserts a threshold WAS evaluated and the plan fell under it: a corpus
+	// row is evidence about where the threshold sits only in the latter case.
+	ReasonRoutingDisabled = "routing-disabled"
+
 	// ReasonInstantJoin: an instant-mode (StepAligned==false) VectorJoin. The
 	// VectorJoin node kind is registered slice-invariant, but the instant shape
 	// synthesizes its join-side timestamp with now64(9) in the emitted SQL — a
@@ -128,6 +139,29 @@ const (
 	// join, which step-aligns on the real per-anchor timestamp, routes B.
 	ReasonInstantJoin = "instant-join"
 )
+
+// Reasons is the complete Reason vocabulary above, in declaration order.
+//
+// It exists because the vocabulary is MIRRORED outside this package — every
+// Decision reaches the calibration corpus, and internal/routerrules re-declares
+// the token set as the closed domain of the decision_reason column so a rule may
+// filter on it. That mirror is a hand-maintained wire contract (routerrules
+// deliberately imports neither the solver nor optcorpus), so it needs one
+// enumerable source to be pinned against; adding a Reason* const without adding
+// it here is what the lockstep test in that package catches.
+var Reasons = []string{
+	ReasonRouted,
+	ReasonBelowThreshold,
+	ReasonNotSliceable,
+	ReasonInstant,
+	ReasonHighD,
+	ReasonNow64,
+	ReasonGridMismatch,
+	ReasonIncommensurate,
+	ReasonScalarHeavy,
+	ReasonRoutingDisabled,
+	ReasonInstantJoin,
+}
 
 // Slice is one shard of the anchor-grid decomposition. Bounds are
 // anchor-grid-aligned; Plan is a re-anchored view of the optimized plan that

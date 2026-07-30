@@ -42,9 +42,9 @@ import (
 // behavior. The features are present for BOTH route A (not-routed,
 // below-threshold) and route B (routed) decisions, because the overlap
 // analysis compares the cost distributions of the two routes at equal
-// (N, F, D). Buckets are keyed on the RAW scalars, never on Reason: the
-// not-routed shadow header folds the high-D class into below-threshold, so the
-// reason string alone hides it.
+// (N, F, D). Buckets are keyed on the RAW scalars, never on Reason: the reason
+// names WHICH gate refused a plan, not where that plan sat relative to it, and
+// a counterfactual re-fit needs the latter.
 type RouteFeatures struct {
 	// Route is "A" (single CH query) or "B" (time-slice sharded). It is the
 	// route the classifier actually chose for this dispatch.

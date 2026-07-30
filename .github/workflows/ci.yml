@@ -374,6 +374,15 @@ jobs:
       - name: brew-smoke self-test (cask-freshness guard)
         run: node --test .github/scripts/brew-smoke.test.mjs
 
+      # The subprocess helper every script above runs its commands through.
+      # capture() names the spawnSync options it forwards rather than spreading
+      # `opts`, so an unsupported key used to vanish without a word — and a
+      # vanished `shell: true` turns the command string into an argv[0] that
+      # never resolves, which the caller reads as a legitimate non-zero answer.
+      # The tests pin that unknown options now throw.
+      - name: Assert the shared subprocess helper honours its option contract
+        run: node --test .github/scripts/gh.test.mjs
+
       # goreleaser deprecation gate. `goreleaser check` reports a deprecated
       # config section as an advisory line and still exits 0, and release.yml is
       # the only other place goreleaser runs — so a deprecation first becomes

@@ -3,6 +3,7 @@ package optcorpus
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 		"`cumulative_d` UInt32",
 		"`outer_range` UInt32",
 		"`step` UInt32",
-		"`route` Enum8('A' = 0, 'B' = 1)",
+		"`route` Enum8('A' = 0, 'B' = 1, '' = 2)",
 		"`k_shards` UInt8",
 		"`decision_reason` LowCardinality(String)",
 		"`read_rows` UInt64",
@@ -52,21 +53,21 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 }
 
 // fakeExecer records every statement executed and the batch rows appended, and
-// answers the deployed-column read with deployedExitType (defaulting to the
-// type this binary writes, so construction succeeds unless a test says
-// otherwise).
+// answers each deployed-column read from deployedType — keyed by column name,
+// defaulting to the type this binary writes, so construction succeeds unless a
+// test says otherwise.
 // failStatement / failErr make ONE statement fail while the rest succeed, which
 // is how a least-privilege deployment presents (a CH user may hold CREATE but
 // not ALTER); execErr fails every statement.
 type fakeExecer struct {
-	execSQL          []string
-	execErr          error
-	failStatement    string
-	failErr          error
-	batchErr         error
-	batch            *fakeBatch
-	deployedExitType string
-	queryErr         error
+	execSQL       []string
+	execErr       error
+	failStatement string
+	failErr       error
+	batchErr      error
+	batch         *fakeBatch
+	deployedType  map[string]string
+	queryErr      error
 }
 
 func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
@@ -77,15 +78,31 @@ func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
 	return f.execErr
 }
 
-func (f *fakeExecer) Query(_ context.Context, _ string, _ ...any) (driver.Rows, error) {
+// Query answers the deployed-column read for whichever column the verify asked
+// about. The column name is the query's last bound argument (see
+// corpusColumnTypeQuery), so the fake serves a per-column answer rather than one
+// type for every column — which is what lets a test narrow exit_status while
+// leaving route wide, and vice versa.
+func (f *fakeExecer) Query(_ context.Context, _ string, args ...any) (driver.Rows, error) {
 	if f.queryErr != nil {
 		return nil, f.queryErr
 	}
-	deployed := f.deployedExitType
-	if deployed == "" {
-		deployed = chsql.RenderDDL(exitStatusEnumType())
+	if len(args) == 0 {
+		return nil, errors.New("fakeExecer: column-type query bound no arguments")
 	}
-	return &fakeRows{value: deployed}, nil
+	col, ok := args[len(args)-1].(string)
+	if !ok {
+		return nil, errors.New("fakeExecer: column-type query's last argument is not a column name")
+	}
+	if deployed, ok := f.deployedType[col]; ok {
+		return &fakeRows{value: deployed}, nil
+	}
+	for _, c := range reconciledEnumColumns {
+		if c.name == col {
+			return &fakeRows{value: chsql.RenderDDL(c.enumType())}, nil
+		}
+	}
+	return nil, errors.New("fakeExecer: " + col + " is not a reconciled enum column")
 }
 
 // executed reports whether any recorded statement contains want.
@@ -173,8 +190,13 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 	if !fe.executed("CREATE TABLE IF NOT EXISTS cerberus_router_corpus") {
 		t.Fatalf("construction did not run the corpus DDL; got %q", fe.execSQL)
 	}
-	if !fe.executed("MODIFY COLUMN IF EXISTS `exit_status`") {
-		t.Fatalf("construction did not reconcile the exit_status column; got %q", fe.execSQL)
+	// Every reconciled column is widened, not just the first: a column left out
+	// of the loop keeps whatever narrow type a pre-existing deployment declared,
+	// and the member this binary added is rejected on every batch forever.
+	for _, col := range reconciledEnumColumns {
+		if !fe.executed(alterMarker(col.name)) {
+			t.Fatalf("construction did not reconcile the %s column; got %q", col.name, fe.execSQL)
+		}
 	}
 
 	row := Row{
@@ -220,10 +242,32 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 }
 
 // TestRouteEnumValue / TestExitEnumValue pin the string→Enum8 mappings.
+//
+// The unclassified cases are the load-bearing ones. An unclassified row must NOT
+// land on 'A': the rule engine reads `route = 'A'` as "the solver classified this
+// query and the cost thresholds declined to shard it", and every LogQL / TraceQL
+// row is unclassified, so folding them into 'A' enrols both non-PromQL heads in
+// every route-A population and disagrees with the JSONL sink, which writes the
+// token verbatim.
 func TestRouteEnumValue(t *testing.T) {
 	t.Parallel()
-	if routeEnumValue("B") != 1 || routeEnumValue("A") != 0 || routeEnumValue("") != 0 {
-		t.Error("route enum mapping wrong")
+	if routeEnumValue("A") != 0 || routeEnumValue("B") != 1 {
+		t.Error("classified route enum mapping wrong")
+	}
+	if got := routeEnumValue(RouteUnclassified); got != routeUnclassifiedValue {
+		t.Errorf("routeEnumValue(unclassified) = %d, want %d", got, routeUnclassifiedValue)
+	}
+	// A token outside the member set is an unrecognised classifier read-out, not
+	// evidence the query took route A.
+	if got := routeEnumValue("Z"); got != routeUnclassifiedValue {
+		t.Errorf("routeEnumValue(unknown token) = %d, want %d (unclassified)", got, routeUnclassifiedValue)
+	}
+	// The mapping must agree with the column type for EVERY member, so a member
+	// added to routeEnumMembers without a mapping cannot slip through.
+	for _, m := range routeEnumMembers() {
+		if got := routeEnumValue(m.Name); got != m.Value {
+			t.Errorf("routeEnumValue(%q) = %d, but the column declares it as %d", m.Name, got, m.Value)
+		}
 	}
 }
 
@@ -271,29 +315,69 @@ func TestEnum8Members_ParsesDeployedType(t *testing.T) {
 	}
 }
 
+// narrowExitStatusType / narrowRouteType are deployed column types that predate a
+// member this binary emits: exit_status without the two ClickHouse-side outcome
+// classes, and route without the unclassified member. They are what a corpus
+// table created by an older binary actually looks like.
+const (
+	narrowExitStatusType = "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
+		"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)"
+	narrowRouteType = "Enum8('A' = 0, 'B' = 1)"
+)
+
 // TestNewCHTableSink_RejectsNarrowDeployedColumn pins that construction FAILS
-// when the deployed exit_status column cannot hold a member this binary emits,
-// naming it. Without this the sink would return healthy and every batch
-// carrying that member would be rejected on every reconcile interval.
+// when a deployed enum column cannot hold a member this binary emits, naming it.
+// Without this the sink would return healthy and every batch carrying that
+// member would be rejected on every reconcile interval.
+//
+// Both reconciled columns are covered, because the verify loop is only as good
+// as its narrowest link: a route column still declared Enum8('A','B') rejects
+// every unclassified row — which is every LogQL and TraceQL query — so a sink
+// that reports healthy over one would silently drop the majority of the corpus.
 func TestNewCHTableSink_RejectsNarrowDeployedColumn(t *testing.T) {
 	t.Parallel()
 
-	fe := &fakeExecer{deployedExitType: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
-		"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)"}
-	_, err := NewCHTableSink(context.Background(), fe)
-	if err == nil {
-		t.Fatal("NewCHTableSink over a narrow exit_status column: want an error, got nil")
-	}
-	for _, member := range []string{ExitAborted.String(), ExitError.String()} {
-		if !strings.Contains(err.Error(), member) {
-			t.Errorf("error %q does not name the missing member %q", err, member)
-		}
+	for _, tc := range []struct {
+		column   string
+		deployed string
+		missing  []string
+	}{
+		{
+			column:   exitStatusColumn,
+			deployed: narrowExitStatusType,
+			missing:  []string{ExitAborted.String(), ExitError.String()},
+		},
+		{
+			column:   routeColumn,
+			deployed: narrowRouteType,
+			missing:  []string{RouteUnclassified},
+		},
+	} {
+		t.Run(tc.column, func(t *testing.T) {
+			t.Parallel()
+
+			fe := &fakeExecer{deployedType: map[string]string{tc.column: tc.deployed}}
+			_, err := NewCHTableSink(context.Background(), fe)
+			if err == nil {
+				t.Fatalf("NewCHTableSink over a narrow %s column: want an error, got nil", tc.column)
+			}
+			if !strings.Contains(err.Error(), tc.column) {
+				t.Errorf("error %q does not name the narrow column %q", err, tc.column)
+			}
+			for _, member := range tc.missing {
+				if !strings.Contains(err.Error(), strconv.Quote(member)) {
+					t.Errorf("error %q does not name the missing member %q", err, member)
+				}
+			}
+		})
 	}
 }
 
-// alterExitStatusMarker is the fragment that identifies the exit_status
-// widening among the statements construction runs.
-const alterExitStatusMarker = "MODIFY COLUMN IF EXISTS `exit_status`"
+// alterMarker is the fragment that identifies one column's widening among the
+// statements construction runs.
+func alterMarker(column string) string {
+	return "MODIFY COLUMN IF EXISTS `" + column + "`"
+}
 
 // TestNewCHTableSink_WideningIsBestEffort pins that a REFUSED widening does not
 // by itself disable the sink.
@@ -307,19 +391,25 @@ const alterExitStatusMarker = "MODIFY COLUMN IF EXISTS `exit_status`"
 func TestNewCHTableSink_WideningIsBestEffort(t *testing.T) {
 	t.Parallel()
 
-	fe := &fakeExecer{
-		failStatement: alterExitStatusMarker,
-		failErr:       errors.New("not enough privileges"),
-	}
-	sink, err := NewCHTableSink(context.Background(), fe)
-	if err != nil {
-		t.Fatalf("NewCHTableSink over an already-wide column with no ALTER grant: %v", err)
-	}
-	if sink == nil {
-		t.Fatal("NewCHTableSink returned no sink and no error")
-	}
-	if !fe.executed(alterExitStatusMarker) {
-		t.Errorf("construction never attempted the widening; got %q", fe.execSQL)
+	for _, col := range reconciledEnumColumns {
+		t.Run(col.name, func(t *testing.T) {
+			t.Parallel()
+
+			fe := &fakeExecer{
+				failStatement: alterMarker(col.name),
+				failErr:       errors.New("not enough privileges"),
+			}
+			sink, err := NewCHTableSink(context.Background(), fe)
+			if err != nil {
+				t.Fatalf("NewCHTableSink over an already-wide %s with no ALTER grant: %v", col.name, err)
+			}
+			if sink == nil {
+				t.Fatal("NewCHTableSink returned no sink and no error")
+			}
+			if !fe.executed(alterMarker(col.name)) {
+				t.Errorf("construction never attempted the widening; got %q", fe.execSQL)
+			}
+		})
 	}
 }
 
@@ -332,9 +422,8 @@ func TestNewCHTableSink_NarrowColumnReportsWideningFailure(t *testing.T) {
 
 	const grantErr = "not enough privileges"
 	fe := &fakeExecer{
-		deployedExitType: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
-			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5)",
-		failStatement: alterExitStatusMarker,
+		deployedType:  map[string]string{exitStatusColumn: narrowExitStatusType},
+		failStatement: alterMarker(exitStatusColumn),
 		failErr:       errors.New(grantErr),
 	}
 	_, err := NewCHTableSink(context.Background(), fe)
@@ -386,8 +475,10 @@ func TestNewCHTableSink_RejectsRenumberedDeployedColumn(t *testing.T) {
 	t.Parallel()
 
 	// Same members as exitStatusEnumType, with aborted/error transposed.
-	fe := &fakeExecer{deployedExitType: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
-		"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, 'error' = 6, 'aborted' = 7)"}
+	fe := &fakeExecer{deployedType: map[string]string{
+		exitStatusColumn: "Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
+			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, 'error' = 6, 'aborted' = 7)",
+	}}
 	_, err := NewCHTableSink(context.Background(), fe)
 	if err == nil {
 		t.Fatal("NewCHTableSink over a renumbered exit_status column: want an error, got nil")
@@ -424,7 +515,7 @@ func TestEnum8Members_ParsesValues(t *testing.T) {
 // contract — not the deployed names.
 //
 // If a clickhouse-go bump ever made the int path resolve through the name
-// mapping instead, verifyExitStatusColumn's value comparison would be
+// mapping instead, verifyEnumColumn's value comparison would be
 // over-strict rather than load-bearing, and this test is what says so.
 func TestEnum8AppendKeysOnTheInteger(t *testing.T) {
 	t.Parallel()

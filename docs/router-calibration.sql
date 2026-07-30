@@ -4,10 +4,20 @@
 -- CERBERUS_CH_OPT_CORPUS_ENABLED=1 with SINK_MODE=chtable) joins every routing
 -- DECISION the pure classifier made (internal/solver Planner.Plan) to the
 -- OBSERVED ClickHouse cost it actually paid (read_rows / read_bytes /
--- query_duration_ms / memory_usage / exit_status). route = 'A' is a single CH
--- query (not routed / below-threshold); route = 'B' is a time-slice sharded
--- query (routed). N/F/D are the RAW classifier scalars (n_anchors / fanout /
--- cumulative_d) recorded for BOTH routes.
+-- query_duration_ms / memory_usage / exit_status). route values (the full set
+-- internal/optcorpus can write):
+--   'A' — a single CH query: the classifier looked at the plan and declined to
+--         shard it, for whichever decision_reason it recorded.
+--   'B' — a sharded query (decision_reason 'routed').
+--   ''  — unclassified: the classifier never ran on this query at all. Every
+--         LogQL and TraceQL row lands here, since the solver only classifies
+--         PromQL. decision_reason is empty too, which is what distinguishes
+--         these from an 'A' refusal.
+-- N/F/D are the RAW classifier scalars (n_anchors / fanout / cumulative_d),
+-- recorded for both classified routes and left zero for the unclassified ones.
+-- The misroute queries below therefore say `route = 'A'` rather than
+-- `route != 'B'`: a rate over rows the classifier never saw is not a misroute
+-- rate.
 --
 -- exit_status values (the full set internal/optcorpus can write):
 --   * CH-side (derived from system.query_log):

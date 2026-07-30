@@ -19,7 +19,9 @@
 #   ../upstream/promql/cmd/promql-compliance-tester ...
 #   docker compose down -v
 
-name: cerberus-compatibility
+# Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,
+# so two checkouts don't share one stack. See scripts/compose-project-suffix.sh.
+name: cerberus-compatibility${COMPOSE_PROJECT_SUFFIX:-}
 
 services:
   clickhouse:
@@ -78,7 +80,7 @@ services:
       retries: 30
 
   cerberus:
-    image: cerberus:compatibility
+    image: cerberus:compatibility${COMPOSE_PROJECT_SUFFIX:-}
     build:
       context: ../..
       dockerfile: Dockerfile.local

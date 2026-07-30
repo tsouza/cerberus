@@ -87,12 +87,28 @@ the plan stays on route A. Under `auto`, an eligible plan routes only when
 `F ≥ MinFanout`, `N×F ≥ MinAnchorPairs`, and `K ≥ 2`. Under `sharded` the cost
 thresholds drop to the floor, so every eligible plan routes at `K_min = 2`
 (ineligible plans always stay on A — the force knob never breaks anything).
-Under `single` the Planner classifies but never routes.
+Under `single` the Planner classifies but never routes, and records
+`routing-disabled` — not `below-threshold`, which would claim a threshold was
+consulted when none was.
 
 Every classification — routed or not — produces a `Decision` carrying the
-reason (`routed`, `below-threshold`, `not-sliceable`, `instant`, `high-D`,
-`now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`) for the shadow
-header.
+reason (`routed`, `below-threshold`, `not-sliceable`, `instant`, `instant-join`,
+`high-D`, `now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`,
+`routing-disabled`) for the shadow header, alongside the plan's cost grid
+(`N`, `F`, `D`, `OuterRange`, `Step`).
+
+The grid is populated on **every** Decision, including the refusals. The signal
+walk that derives it makes no routing decision and mutates nothing, so it runs
+before the gates rather than after them. This is what makes the calibration
+corpus replayable: a refusal recorded with a zero grid says "we declined"
+without saying what we declined, which is indistinguishable from a plan that
+genuinely had no geometry. It also makes one silent failure mode legible — a
+range query whose grid carrier the classifier fails to find looks instant, and
+now records a non-zero `N`/`F`/`OuterRange` next to a zero `Step`, which a
+genuine instant query cannot have. Both halves of that signature matter:
+`reason=instant` is also recorded for a range request carrying an unpinned or
+instant-shaped window, and that one has a real grid — it is the zero `Step`
+beside a populated grid that identifies a missed carrier.
 
 ## Slicing geometry
 
@@ -551,8 +567,9 @@ To answer it the engine closes the loop the optimization corpus
   alongside `Strategy` / `K` / `Reason`, populated for **both** routed and
   not-routed decisions. The overlap analysis compares route-A and route-B cost
   at equal `(N, F, D)`, so route A must record its grid too. Buckets key on the
-  raw scalars, never on `Reason` — the not-routed shadow header folds the
-  high-`D` class into `below-threshold`, so the reason string alone hides it.
+  raw scalars, never on `Reason` — the reason names WHICH gate refused a plan,
+  not where that plan sat relative to it, and a counterfactual re-fit needs the
+  latter.
 - **Join to observed cost.** At the dispatch seam the engine hands the corpus
   reconciler the decision read-out next to the CH `query_id`. The reconciler
   joins `query_id` → `system.query_log` (the cost columns plus a derived

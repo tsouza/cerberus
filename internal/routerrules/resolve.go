@@ -139,6 +139,12 @@ func (r *ParamResolver) resolveCorpus(ctx context.Context, spec ParamSpec, env E
 		NumScope:    spec.NumeratorScope,
 		DenScope:    spec.DenominatorScope,
 		PartitionBy: spec.PartitionBy,
+		// A geometry column exists only on a row the solver classified; the
+		// zeroes an unclassified row carries are absence, not measurement.
+		// Derived from the column so a geometry param cannot be authored
+		// without the filter — see geometryColumns for what folding them in
+		// does to a percentile.
+		ClassifiedOnly: isGeometryColumn(spec.Column),
 	}
 	switch spec.Kind {
 	case ParamCorpusPercentile:

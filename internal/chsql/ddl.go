@@ -261,10 +261,13 @@ func TypeLowCardinality(inner Frag) Frag {
 	return Call("LowCardinality", inner)
 }
 
-// EnumPair is one (name → value) entry of an Enum8 column type.
+// EnumPair is one (name → value) entry of an Enum8 column type. Value is int8
+// because that IS an Enum8 member's domain — the narrow type means a caller that
+// also writes the column (clickhouse-go appends an Enum8 as an int8) can hand the
+// same value to both without a conversion the compiler cannot prove is lossless.
 type EnumPair struct {
 	Name  string
-	Value int64
+	Value int8
 }
 
 // TypeEnum8 renders an Enum8('a'=0,'b'=1,...) column type. Each name is
@@ -280,7 +283,7 @@ func TypeEnum8(pairs ...EnumPair) Frag {
 			}
 			InlineLit(p.Name)(b)
 			ddlToken(" = ")(b)
-			InlineLit(p.Value)(b)
+			InlineLit(int64(p.Value))(b)
 		}
 		ddlToken(")")(b)
 	}

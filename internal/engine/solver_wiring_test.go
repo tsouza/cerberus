@@ -17,7 +17,8 @@ import (
 // outermost RangeWindow carries it pinned so the solver's GridOf reads back
 // exactly (meta.Start/End/Step) and the Planner sees a grid-matched,
 // slice-invariant, eligible plan — which Mode=single classifies WITHOUT
-// routing (Reason=below-threshold).
+// routing (Reason=routing-disabled: the mode refuses before any threshold is
+// consulted, so the reason names the mode, not the plan's shape).
 var (
 	gridStart = time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
 	gridStep  = 15 * time.Second
@@ -193,8 +194,9 @@ func TestSolver_SingleMode_ShadowHeaderReportsClassification(t *testing.T) {
 	if !ok {
 		t.Fatalf("shadow header %s missing; headers=%v", engine.HeaderRouteDecision, res.Headers)
 	}
-	// Mode=single classifies an eligible plan as route-a / below-threshold.
-	const want = "route-a;reason=" + solver.ReasonBelowThreshold
+	// Mode=single classifies an eligible plan as route-a / routing-disabled:
+	// no threshold was consulted, so the header must not claim one refused it.
+	const want = "route-a;reason=" + solver.ReasonRoutingDisabled
 	if got != want {
 		t.Errorf("shadow header: got %q, want %q", got, want)
 	}

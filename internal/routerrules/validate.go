@@ -178,7 +178,7 @@ func validateScope(owner string, scope Scope, add func(string, ...any)) {
 			continue
 		}
 		if !isEnumColumn(col) {
-			add("%q scope filters non-enum column %q (only route/exit_status/language may be scoped)", owner, col)
+			add("%q scope filters non-enum column %q (only closed-domain columns may be scoped)", owner, col)
 			continue
 		}
 		if !validEnumValue(col, val) {
