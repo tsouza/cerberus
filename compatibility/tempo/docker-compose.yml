@@ -25,7 +25,9 @@
 #   docker compose run --rm tempo-compat-driver
 #   docker compose down -v
 
-name: cerberus-tempo-compatibility
+# Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,
+# so two checkouts don't share one stack. See scripts/compose-project-suffix.sh.
+name: cerberus-tempo-compatibility${COMPOSE_PROJECT_SUFFIX:-}
 
 services:
   clickhouse:
@@ -93,7 +95,7 @@ services:
     # "container running" and "OTLP gRPC listener accepting Export".
 
   cerberus-tempo:
-    image: cerberus:tempo-compatibility
+    image: cerberus:tempo-compatibility${COMPOSE_PROJECT_SUFFIX:-}
     build:
       context: ../..
       dockerfile: Dockerfile.local
@@ -140,7 +142,7 @@ services:
     # driver can `import "github.com/tsouza/cerberus/internal/schema/ddl"`
     # and the OTLP gRPC client types via cerberus's go.mod. Mirrors
     # how Dockerfile.local builds the cerberus binary.
-    image: cerberus-tempo-compat-driver:pr4
+    image: cerberus-tempo-compat-driver:pr4${COMPOSE_PROJECT_SUFFIX:-}
     build:
       context: ../..
       dockerfile: compatibility/tempo/driver/Dockerfile

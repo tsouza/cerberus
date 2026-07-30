@@ -25,7 +25,9 @@
 #   go run ./compatibility/loki/cmd/seed/
 #   docker compose down -v
 
-name: cerberus-loki-compatibility
+# Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,
+# so two checkouts don't share one stack. See scripts/compose-project-suffix.sh.
+name: cerberus-loki-compatibility${COMPOSE_PROJECT_SUFFIX:-}
 
 services:
   clickhouse:
@@ -71,7 +73,7 @@ services:
     # tight interval/retries combo would only flap.
 
   cerberus:
-    image: cerberus:loki-compatibility
+    image: cerberus:loki-compatibility${COMPOSE_PROJECT_SUFFIX:-}
     build:
       context: ../..
       dockerfile: Dockerfile.local

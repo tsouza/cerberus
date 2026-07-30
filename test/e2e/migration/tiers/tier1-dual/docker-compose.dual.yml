@@ -41,7 +41,13 @@
 #   just migration-tier1-run
 #   just migration-tier1-down
 
-name: cerberus-migration-tier1
+# Project name, and — because Tier 2 merges behind this file without a `name:`
+# of its own — the merged Tier-2 project's name too. The suffix is empty in a
+# primary checkout and in CI, so the stack is `cerberus-migration-tier1` there;
+# a linked worktree gets `cerberus-migration-tier1-<hash>`, which is what stops
+# one agent's `down -v --remove-orphans` from destroying another's tier stack.
+# See scripts/compose-project-suffix.sh.
+name: cerberus-migration-tier1${COMPOSE_PROJECT_SUFFIX:-}
 
 services:
   clickhouse:
@@ -174,7 +180,7 @@ services:
     # missing image therefore aborts `up` loudly instead of silently rebuilding.
     # The `build:` stanza stays so `docker compose build` still works for humans.
     # test/regression/migration_tier1_test.go pins all of it.
-    image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}
+    image: ${CERBERUS_IMAGE:-cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}}
     pull_policy: never
     build:
       context: ../../../../..
