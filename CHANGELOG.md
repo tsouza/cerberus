@@ -6,6 +6,8 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.14.0] — 2026-07-30
 
+A minor rather than a patch because of the PromQL label-shaping hoist (#1388): OTel attribute shaping now happens after the native rate grid instead of before it, which changes the emitted SQL shape for every `rate()`-family query over shaped labels. Answers are unchanged — the rewrite is only sound for `-State`/`-Merge` aggregates, and the naive form of it returns wrong results — but the plan a query produces is not what v1.13.x produced, so it does not belong in a patch release.
+
 ### Fixed
 
 - **ci:** pre-release audit fixes for v1.14.0 (#1391)
@@ -26,6 +28,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 ### Documentation
 
 - cask-only brew instructions and a README humans can skim (#1386)
+- **migration:** install the cask, not the formula (#1383)
 
 ## [v1.13.2] — 2026-07-29
 
