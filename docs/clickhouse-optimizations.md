@@ -125,6 +125,7 @@ table.
 | `ts_grid_resets`         | 25.9       | experimental | yes        |
 | `ts_grid_deriv`          | 25.9       | experimental | yes        |
 | `ts_grid_predict_linear` | 25.9       | experimental | yes        |
+| `ts_grid_recollapse`     | 25.9       | experimental | yes        |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they
@@ -137,17 +138,18 @@ the feature was reached via `auto` or by explicit listing. `columnar_result_deco
 is the lone `autoSelect: no` opt-in feature whose perf-tradeoff framing is
 described as "opt-in" in the effect prose.
 
-| id                       | experimental setting                                 | effect                                                                                                                                                                                                                                                                                               |
-| ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                                                                                                                           |
-| `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                                                                                                                             |
-| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.9 (experimental maturity).                                                                                                                                |
-| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.9.                                                                                                                   |
-| `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Opt-in only (never auto).                                                                                                          |
-| `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.                                                                                                   |
-| `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.                                                                                               |
-| `ts_grid_deriv`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `deriv(<gauge>[<range>])` query_range shapes onto the native `timeSeriesDerivToGrid` aggregate (per-window least-squares slope), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                          |
-| `ts_grid_predict_linear` | `allow_experimental_time_series_aggregate_functions` | opts eligible `predict_linear(<gauge>[<range>], t)` query_range shapes (whole-second literal `t`) onto the native `timeSeriesPredictLinearToGrid` aggregate (per-window slope\*t + intercept forecast), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9. |
+| id                       | experimental setting                                 | effect                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                                                                                                                                                                        |
+| `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                                                                                                                                                                          |
+| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.9 (experimental maturity).                                                                                                                                                                             |
+| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                |
+| `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Opt-in only (never auto).                                                                                                                                                       |
+| `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                |
+| `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                            |
+| `ts_grid_deriv`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `deriv(<gauge>[<range>])` query_range shapes onto the native `timeSeriesDerivToGrid` aggregate (per-window least-squares slope), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                       |
+| `ts_grid_predict_linear` | `allow_experimental_time_series_aggregate_functions` | opts eligible `predict_linear(<gauge>[<range>], t)` query_range shapes (whole-second literal `t`) onto the native `timeSeriesPredictLinearToGrid` aggregate (per-window slope\*t + intercept forecast), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                              |
+| `ts_grid_recollapse`     | `allow_experimental_time_series_aggregate_functions` | defers the OTel -> Prometheus label-shaping tower PAST an eligible `ts_grid_range` rate grid, splitting it into `timeSeriesRateToGridState` over the raw keys and `timeSeriesRateToGridMerge` over the shaped ones, so the reshape runs once per raw series instead of once per raw row. Narrows `ts_grid_range`. Auto-enabled on server >= 25.9. |
 
 Notes:
 
@@ -192,7 +194,10 @@ Notes:
   a capable server (no legacy alias). Its floor is **25.9**, NOT the 25.6 of
   rate/resample: `timeSeriesChangesToGrid`/`timeSeriesResetsToGrid` shipped a
   full quarter later (ClickHouse 25.9). A 25.6 floor would mis-advertise
-  support on 25.6-25.8 servers and 502 with `UNKNOWN_AGGREGATE_FUNCTION`, so
+  support on 25.6-25.8 servers and 502 with ClickHouse error code 46,
+  `Function with name timeSeriesChangesToGrid does not exist` — an absent
+  `timeSeries*ToGrid` member is reported as an unknown FUNCTION, not as
+  `UNKNOWN_AGGREGATE_FUNCTION` (verified against 25.7 and 25.8 servers) — so
   `auto` only picks it once the server is `>= 25.9`. It shares the family's
   experimental setting, co-stamped on exactly the queries that emit the native
   changes node.
@@ -222,6 +227,60 @@ Notes:
   substrate, where the version gate keeps both on the fan-out; the always-on
   SQL-shape goldens (`native_deriv_range_step.txtar`,
   `native_predict_linear_range_step.txtar`) pin the native emit unconditionally.
+- **`ts_grid_recollapse`** is a **narrowing of `ts_grid_range`**, not an
+  independent path: it changes how an already-native rate grid is shaped, so
+  with `ts_grid_range` off there is nothing for it to defer and cerberus never
+  consults it. On an OTel schema the Attributes map a PromQL series is keyed by
+  is not stored — it is COMPUTED, by a `mapSort`/`mapConcat`/`mapUpdate` tower
+  that sanitises attribute keys, overlays resource attributes, and folds
+  `ServiceName` in. Two-level emit evaluates that tower once per raw SAMPLE ROW,
+  beneath the aggregate; this feature evaluates it once per raw SERIES, above the
+  aggregate, by splitting the grid into three levels: `…ToGridState` grouped on
+  the RAW columns the tower reads, `…ToGridMerge` grouped on the shaped key the
+  tower computes, and an outer level that renames the shaped key to its output
+  name and ARRAY JOINs the grid against its timestamp axis. On a reference
+  deployment's heaviest APM range query — 35,094 raw series over a 300s window —
+  this is **-28.5% CPU time (1.40x)**: 310.3 CPU-seconds down to 221.9. Wall
+  time on the same paired runs moved 28.0s to 19.8s, but wall and CPU diverge
+  with concurrency and shard count, so the resource saving is the claim rather
+  than the latency.
+  The `-State`/`-Merge` pair is load-bearing rather than incidental. Key
+  sanitisation is **non-injective**: those 35,094 raw series shape onto 33,557
+  output series, and the colliding groups are frequently time-disjoint with a
+  splice gap smaller than the range window, so grid anchors near a splice have
+  windows straddling both halves. Prometheus `rate()` is defined over the POOLED
+  sample set at each anchor, which is what merging partial states computes;
+  combining two FINISHED grids arithmetically is a different number, wrong at
+  481 of 93,757 points on that query and NULL where one half holds fewer than
+  two samples. No other member of the family is eligible today, so the rest pass
+  an empty re-collapse and emit the byte-identical two-level shape.
+  The **25.9** floor is INHERITED from `ts_grid_range` rather than
+  independently derived: with `ts_grid_range` off there is no native node to
+  defer anything past, so that feature's floor is the effective one and nothing
+  about the re-collapse raises it. Merge exactness is not the binding
+  constraint. The exactness probe compares one pooled pass against a merge of
+  two per-group partial states, over samples split into two time-disjoint
+  halves whose splice gap is smaller than the range window, so the grid anchors
+  near the splice straddle both halves:
+
+  ```sql
+  -- pooled
+  SELECT timeSeriesRateToGrid(start, end, 60, 300)(ts, val) FROM src
+  -- merged
+  SELECT timeSeriesRateToGridMerge(start, end, 60, 300)(st) FROM (
+    SELECT timeSeriesRateToGridState(start, end, 60, 300)(ts, val) AS st
+    FROM src GROUP BY raw)
+  ```
+
+  Executed against 25.8.28.1, 25.9.7.56, 26.1.12.23, 26.2.19.43, 26.3.17.56,
+  26.4.5.143 and 26.5.6.64 (no 26.0 image is pullable, so that version is
+  bracketed by its neighbours) in each of three data regimes — time-disjoint,
+  interleaved, and counter-reset-straddling — the merged grid equals the pooled
+  grid in all 21 cells. The reset-straddling regime yields a grid that DIFFERS
+  from the other two, which is what shows the reset correction is applied
+  through the merge rather than skipped. The floor is therefore the same one
+  every other family member pins, so one probed capability verdict still
+  governs the whole set.
 
 ## Runtime version probe
 

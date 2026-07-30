@@ -123,6 +123,31 @@ const (
 	// and same experimental gate as FeatureTSGridDeriv (the two are siblings
 	// from PR #84328).
 	FeatureTSGridPredictLinear = "ts_grid_predict_linear"
+
+	// FeatureTSGridRecollapse defers the OTel -> Prometheus label-shaping tower
+	// (the mapSort/mapConcat/mapUpdate reshape of the Attributes map) PAST an
+	// eligible native rate grid aggregate, so it evaluates once per raw series
+	// instead of once per raw sample row. The aggregate runs on the RAW keys
+	// under the -State combinator and a second grouping level re-collapses the
+	// partial states onto the shaped keys with -Merge (label shaping is
+	// non-injective, so several raw series can land on one output series and
+	// their samples must be POOLED, not combined arithmetically).
+	//
+	// It is a pure narrowing of FeatureTSGridRange: with ts_grid_range off
+	// there is no native node to defer anything past, so cmd/cerberus only
+	// consults this feature inside the ts_grid_range branch. The registry
+	// cannot express that dependency directly, so the two carry the same 25.9
+	// floor and the same experimental gate and are therefore resolved
+	// identically by a single probed capability verdict.
+	//
+	// The 25.9 floor is therefore INHERITED, not independently derived: it is
+	// whatever ts_grid_range pins, and nothing about the re-collapse itself
+	// raises it. Merge exactness is not the binding constraint — merged partial
+	// states are bit-identical to a single pooled pass at every server version
+	// the aggregate is reachable on, across time-disjoint, interleaved, and
+	// counter-reset-straddling series regimes (see docs/clickhouse-optimizations.md
+	// for the probe shape and the versions it was executed against).
+	FeatureTSGridRecollapse = "ts_grid_recollapse"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -267,12 +292,20 @@ var registry = []Feature{
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "opt eligible predict_linear(<gauge>[<range>], t) shapes (whole-second literal t) onto native timeSeriesPredictLinearToGrid (experimental maturity, auto-enabled on server >= 25.9)",
 	},
+	{
+		ID:                         FeatureTSGridRecollapse,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "defer the label-shaping tower past an eligible native rate grid via the -State/-Merge combinator pair, so it runs once per raw series instead of once per row (narrows ts_grid_range; experimental maturity, auto-enabled on server >= 25.9)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
-// ts_grid_predict_linear). The copy keeps the
+// ts_grid_predict_linear, ts_grid_recollapse). The copy keeps the
 // canonical entries immutable from the caller's side. Exposed so tests can
 // enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {

@@ -367,6 +367,40 @@ flagged in the IR — by design, not by default):
   pins that the bound is rendered **per operand**, since each side of a
   vector-vector join is an independent scan.
 
+#### Deferred label shaping on the native grid
+
+`RangeWindowNative` renders in two levels by default: an aggregate level
+that groups per series and computes `timeSeries<Fn>ToGrid`, and an outer
+level that ARRAY JOINs the grid against its parallel timestamp axis. The
+series key it groups on is the shaped Attributes map — on an OTel schema
+that map is not a stored column but a `mapSort`/`mapConcat`/`mapUpdate`
+tower over `Attributes`, `ResourceAttributes`, and `ServiceName`, so the
+default shape evaluates the tower once per raw sample row.
+
+A node carrying a non-empty `Recollapse` list renders in **three**
+levels instead, moving that tower to once per raw series. The innermost
+level groups on the RAW columns the tower reads and aggregates under the
+`-State` combinator; the middle level computes each deferred expression
+into a synthetic `shaped_key_<i>` column, groups on it, and folds the
+partial states with `-Merge`; the outer level renames each
+`shaped_key_<i>` to the output name it replaces and ARRAY JOINs as
+before. The row shape reaching a wrapping `Aggregate` is identical
+either way, so nothing downstream branches on which shape was emitted.
+
+The combinator pair — rather than arithmetic over two finished grids —
+is what makes the rewrite value-preserving. Label shaping is
+many-to-one, so several raw series can carry one output identity, and
+their samples must be POOLED before the window function runs; merging
+partial states pools samples, whereas combining finished grids computes
+a different number and yields NULL wherever one contributor holds too
+few samples in the window. `Recollapse` is consequently only populated
+for range functions whose `-State`/`-Merge` pair is proven exact under
+merged states; every other node passes an empty list and emits the
+two-level shape byte for byte. Lowering owns the eligibility decision
+(`hoistShaping` in `internal/promql`), the emitter owns the rendering,
+and `docs/clickhouse-optimizations.md` covers the `ts_grid_recollapse`
+capability gate.
+
 #### Eval-grid carriers
 
 Several IR nodes materialise an evaluation grid — the

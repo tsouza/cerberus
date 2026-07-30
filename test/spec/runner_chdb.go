@@ -709,8 +709,9 @@ func openChDB(t *testing.T) *sql.DB {
 	// (ClickHouse PR #80590 renamed the gate before the v25.6 release; the
 	// old `..._ts_to_grid_aggregate_function` survives only as an alias —
 	// see chclient.SettingExperimentalTSGridAggregate). A chDB build older
-	// than the family's introduction would reject the SET — current
-	// substrate is 25.8 (probed), well past the v25.6 floor.
+	// than the family's introduction would reject the SET — the linked
+	// libchdb answers `SELECT version()` with 26.5.1.1, well past the
+	// v25.6 floor.
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid aggregate: %v", err)
 	}

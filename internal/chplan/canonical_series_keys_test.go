@@ -2,6 +2,7 @@ package chplan_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -128,6 +129,95 @@ func TestCanonicalizeSeriesIdentityKeys_IgnoresNonMapKey(t *testing.T) {
 
 	if !out.Equal(in) {
 		t.Fatalf("a scalar key is not a Map and must not be rewritten; got %#v", out)
+	}
+}
+
+// nativeRate builds the native-ToGrid node the PromQL head lowers a range-mode
+// `rate(...)` to, with the deferred label shaping supplied by the caller.
+func nativeRate(recollapse []chplan.Projection) *chplan.RangeWindowNative {
+	return &chplan.RangeWindowNative{
+		Input:           gaugeScan(),
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            time.Minute,
+		Start:           time.Unix(1000, 0).UTC(),
+		End:             time.Unix(4600, 0).UTC(),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Recollapse:      recollapse,
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone pins that the
+// repair does NOT fire on a RangeWindowNative whose label shaping is deferred
+// past the aggregate. Its GroupBy holds the RAW attribute Map on purpose — that
+// is the raw per-series key the inner state level groups on — but the node's
+// OUTPUT identity is the shaping tower above the merge, which is already
+// mapSort-rooted. Splicing a repair beneath the node would shape twice, at the
+// wrong level, and re-split the series the merge just pooled.
+func TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone(t *testing.T) {
+	in := nativeRate([]chplan.Projection{{
+		Expr:  chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}),
+		Alias: "Attributes",
+	}})
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	if out != chplan.Node(in) {
+		t.Fatalf("a node whose deferred shaping already canonicalises needs no repair; got %#v", out)
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_RepairsTwoLevelNativeRate is the
+// non-vacuity guard for the test above: the SAME node without the deferred
+// shaping keys series identity on the raw Map directly, so the repair must
+// fire. Without this, an arm that simply never matched RangeWindowNative would
+// pass the no-op assertion.
+func TestCanonicalizeSeriesIdentityKeys_RepairsTwoLevelNativeRate(t *testing.T) {
+	in := nativeRate(nil)
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	reps := projectReplacements(t, out)
+	if len(reps) != 1 || reps[0].Alias != "Attributes" {
+		t.Fatalf("want the Attributes column canonicalised beneath the two-level node; got %#v", reps)
+	}
+}
+
+// TestCanonicalizeSeriesIdentityKeys_RepairsPassThroughMapKeyOfDeferredShaping
+// pins the other half of a deferred-shaping node's identity. A GroupBy key NO
+// shaping expression reads is a PASS-THROUGH series key: it is grouped raw at
+// the state level, re-grouped on the same raw frag at the merge level, and
+// emitted verbatim — so when it is an attribute Map it still needs the repair.
+// Reporting only the shaped keys leaves it comparing Maps positionally, which
+// splits one logical series into two groups, each carrying a partial rate.
+//
+// Splicing the repair BENEATH the node is what makes that sound: it is a
+// `* REPLACE` on the node's input, so the state level groups on the sorted Map
+// and the shaping tower above the merge is untouched.
+func TestCanonicalizeSeriesIdentityKeys_RepairsPassThroughMapKeyOfDeferredShaping(t *testing.T) {
+	in := nativeRate([]chplan.Projection{{
+		Expr:  chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "ResourceAttributes"}),
+		Alias: "Attributes",
+	}})
+	// The shaping reads ResourceAttributes only, so the merge re-pools that key
+	// and Attributes passes through as part of the output series identity.
+	in.GroupBy = []chplan.Expr{
+		&chplan.ColumnRef{Name: "Attributes"},
+		&chplan.ColumnRef{Name: "ResourceAttributes"},
+	}
+
+	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
+
+	reps := projectReplacements(t, out)
+	if len(reps) != 1 || reps[0].Alias != "Attributes" {
+		t.Fatalf("want exactly the pass-through Attributes column canonicalised beneath the node — "+
+			"the shaping input ResourceAttributes must NOT be repaired, the merge re-pools it; got %#v", reps)
+	}
+	call, ok := reps[0].Expr.(*chplan.FuncCall)
+	if !ok || call.Name != chplan.CanonicalMapFunc {
+		t.Fatalf("replacement expr = %#v, want a %s call", reps[0].Expr, chplan.CanonicalMapFunc)
 	}
 }
 

@@ -34,6 +34,13 @@ func allNodeKinds() []chplan.Node {
 			Input: leaf, Func: "rate", Range: 5 * time.Minute, Step: time.Minute,
 			Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			TimestampColumn: "TimeUnix", ValueColumn: "Value", GroupBy: []chplan.Expr{expr},
+			// Populated so the clone contract is exercised on the
+			// deferred-shaping shape too — a nil slice clones correctly by
+			// accident, so a two-level fixture asserts nothing about it.
+			Recollapse: []chplan.Projection{{
+				Expr:  &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{expr}},
+				Alias: "Attributes",
+			}},
 		},
 		&chplan.RangeLWR{Input: leaf, Lookback: 5 * time.Minute, ValueCol: "Value"},
 		&chplan.RangeBucketFanout{
@@ -148,11 +155,31 @@ func TestCloneNodeDeepCopyIsolation(t *testing.T) {
 		GroupBy:    []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		Scalars:    []float64{0.5},
 	}
-	snapshot := chplan.CloneNode(orig) // independent reference copy for comparison
+	// The reference values are read off orig BEFORE the clone is mutated. A
+	// second CloneNode call would compare the function under test against
+	// itself: drop the per-slice copies and `c := *v` hands orig, the
+	// reference AND the clone one shared backing array, so every mutation
+	// below lands in all three and the comparison still holds.
+	wantFunc, wantRange, wantStart := orig.Func, orig.Range, orig.Start
+	wantGroupBy, wantScalar := orig.GroupBy[0], orig.Scalars[0]
+	wantPredicate := orig.Input.(*chplan.Filter).Predicate
 
 	clone, ok := chplan.CloneNode(orig).(*chplan.RangeWindow)
 	if !ok {
 		t.Fatal("clone is not *RangeWindow")
+	}
+
+	// Aliasing is the failure the value checks below can only observe
+	// indirectly, so assert it head-on: a shared backing array or a shared
+	// child pointer is already the bug, mutation or not.
+	if &clone.GroupBy[0] == &orig.GroupBy[0] {
+		t.Fatal("GroupBy backing array aliased between clone and original")
+	}
+	if &clone.Scalars[0] == &orig.Scalars[0] {
+		t.Fatal("Scalars backing array aliased between clone and original")
+	}
+	if clone.Input == orig.Input {
+		t.Fatal("Input child aliased between clone and original")
 	}
 
 	// Mutate scalar fields, slice elements, and a nested expr on the clone.
@@ -163,8 +190,62 @@ func TestCloneNodeDeepCopyIsolation(t *testing.T) {
 	clone.Scalars[0] = -1
 	clone.Input.(*chplan.Filter).Predicate = &chplan.LitBool{V: false}
 
-	if !orig.Equal(snapshot) {
-		t.Fatal("mutating the clone changed the original tree — deep copy leaked")
+	if orig.Func != wantFunc || orig.Range != wantRange || !orig.Start.Equal(wantStart) {
+		t.Fatal("mutating the clone's scalar fields changed the original — deep copy leaked")
+	}
+	if orig.GroupBy[0] != wantGroupBy {
+		t.Fatal("mutating the clone's GroupBy element changed the original — deep copy leaked")
+	}
+	if orig.Scalars[0] != wantScalar {
+		t.Fatal("mutating the clone's Scalars element changed the original — deep copy leaked")
+	}
+	if orig.Input.(*chplan.Filter).Predicate != wantPredicate {
+		t.Fatal("mutating the clone's nested Filter predicate changed the original — deep copy leaked")
+	}
+}
+
+// TestCloneNodeRecollapseIsolation pins the deep copy of
+// RangeWindowNative.Recollapse. A `c := *v` shallow copy hands the clone the
+// SAME backing array, so an optimizer rule that retargets a deferred shaping
+// expression on its clone silently rewrites the plan it was cloned from — the
+// shaping tower is the node's output series identity, so the corruption
+// presents as a wrong label set rather than as an error.
+func TestCloneNodeRecollapseIsolation(t *testing.T) {
+	t.Parallel()
+
+	orig := &chplan.RangeWindowNative{
+		Input:           &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            time.Minute,
+		Start:           time.Unix(1000, 0).UTC(),
+		End:             time.Unix(4600, 0).UTC(),
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Recollapse: []chplan.Projection{{
+			Expr:  &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
+			Alias: "Attributes",
+		}},
+	}
+	// Reference values read off orig before mutating — see the same note in
+	// TestCloneNodeDeepCopyIsolation: a CloneNode-derived snapshot shares the
+	// mutated backing array with orig whenever the copy is missing, so it can
+	// never witness the leak.
+	wantAlias, wantExpr := orig.Recollapse[0].Alias, orig.Recollapse[0].Expr
+
+	clone, ok := chplan.CloneNode(orig).(*chplan.RangeWindowNative)
+	if !ok {
+		t.Fatal("clone is not *RangeWindowNative")
+	}
+	if &clone.Recollapse[0] == &orig.Recollapse[0] {
+		t.Fatal("Recollapse backing array aliased between clone and original")
+	}
+	clone.Recollapse[0].Alias = "MUTATED"
+	clone.Recollapse[0].Expr = &chplan.ColumnRef{Name: "MUTATED"}
+
+	if orig.Recollapse[0].Alias != wantAlias || orig.Recollapse[0].Expr != wantExpr {
+		t.Fatal("mutating the clone's Recollapse changed the original tree — deep copy leaked")
 	}
 }
 
