@@ -381,8 +381,12 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 	// internal/chsql/tableshape.go). Resolving against the first member is
 	// correct for shape lookup; the PREWHERE/WHERE split CH then translates
 	// uniformly to every arm of the merge() fanout.
+	//
+	// validateScanShape above admits exactly two states — Table set with no
+	// UnionTables, or UnionTables set with no Table — so an empty Table is
+	// already proof that UnionTables is non-empty; no second guard.
 	shapeKey := scan.Table
-	if shapeKey == "" && len(scan.UnionTables) > 0 {
+	if shapeKey == "" {
 		shapeKey = scan.UnionTables[0]
 	}
 	shape := tableShapeFor(shapeKey)
