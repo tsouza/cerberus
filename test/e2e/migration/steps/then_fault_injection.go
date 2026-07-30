@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
 )
 
@@ -508,17 +508,11 @@ func (w *World) captureLatencyReport(r faultLatencyReport) error {
 }
 
 // dockerCompose runs `docker compose -f faultComposeFile <args...>` rooted at
-// the repository root, returning combined output on failure so a scenario
-// failure names the real docker error rather than just a non-zero exit.
+// the repository root. lib.Compose is the harness's single docker seam: it
+// inherits this process's environment, so the invocation resolves the same
+// per-checkout compose project the stack was brought up under.
 func dockerCompose(root string, args ...string) error {
-	full := append([]string{"compose", "-f", faultComposeFile}, args...)
-	cmd := exec.Command("docker", full...) //nolint:gosec // harness-authored fixed compose file + fixed subcommand
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("migration harness: docker %v: %w: %s", full, err, string(out))
-	}
-	return nil
+	return lib.Compose(root, faultComposeFile, args...)
 }
 
 // whenPauseClickHouse fault-injects by pausing (not killing) the ClickHouse

@@ -138,17 +138,32 @@ rather than `chdb_substrate`: the migration lane models the deployment surface
 an operator runs, not the SQL-parity substrate the chDB suites run on
 (asserted by `.github/scripts/clickhouse-version-sync.mjs`).
 
+The stack is named per checkout. Docker Compose scopes containers, networks and
+volumes by project name, so two checkouts that resolve the same name are one
+stack to the daemon: `up` adopts the other's containers and `down -v
+--remove-orphans` destroys them, silently and with a green exit code. Every
+compose file in the tree therefore spells its project name
+`<stable-base>${COMPOSE_PROJECT_SUFFIX:-}`, and `scripts/compose-project-suffix.sh`
+derives that variable from the checkout's own path — empty in a primary checkout
+(and so in CI, where the project name is exactly its stable base), a short path
+hash in a linked worktree. The Justfile exports it to every recipe, `.envrc`
+exports it to an interactive shell, and each compatibility harness script
+derives it too, so a stack is isolated however it is launched rather than by
+each launcher remembering a flag. `test/regression/compose_project_isolation_test.go`
+pins the shape, including the absence of any `container_name`, which would
+escape project scoping and collide however the project is named.
+
 ### 3.0. Which cerberus the lane proves
 
 Every tier job resolves its cerberus through one module,
 `.github/scripts/migration-artifact.mjs`, before any scenario runs. Two workflow
 inputs travel together and decide the answer:
 
-| `cerberus_image` | `expect_version`   | What the lane proves                                                                                                                   |
-| ---------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| unset            | unset              | **This tree.** The CLI is `go build`-ed from source; the compose stacks run `cerberus:migration-tier1`, built from `Dockerfile.local`. |
-| a tag            | that tag's version | **That artifact.** The image is pulled, the CLI is `docker cp`-ed out of it, and the compose stacks run the same image.                |
-| one of the two   | —                  | An error.                                                                                                                              |
+| `cerberus_image` | `expect_version`   | What the lane proves                                                                                                                                                 |
+| ---------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| unset            | unset              | **This tree.** The CLI is `go build`-ed from source; the compose stacks run `cerberus:migration-tier1` (plus this checkout's suffix), built from `Dockerfile.local`. |
+| a tag            | that tag's version | **That artifact.** The image is pulled, the CLI is `docker cp`-ed out of it, and the compose stacks run the same image.                                              |
+| one of the two   | —                  | An error.                                                                                                                                                            |
 
 A half pair is rejected rather than defaulted, because the failure it produces
 is invisible: the job would build from source while its name, its logs, and the
@@ -179,7 +194,8 @@ onto one version. `CERBERUS_EXPECT_VERSION` is therefore exported only on the
 artifact path; on the source path each half falls back to its own stamp.
 
 The stacks are pinned so nothing can quietly rebuild over the artifact under
-test. `docker-compose.dual.yml` declares `image: ${CERBERUS_IMAGE:-cerberus:migration-tier1}`
+test. `docker-compose.dual.yml` declares
+`image: ${CERBERUS_IMAGE:-cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}}`
 with `pull_policy: never`, and the `up` recipes carry no `--build`: the image is
 put into the daemon exactly once, by `just migration-cerberus-image` (which
 builds the local tag from `Dockerfile.local` or pulls anything else), before
@@ -289,6 +305,15 @@ place alert-firing parity (`for:` / `keep_firing_for` hold-down, staleness
 resolve edges, the recording-rule write-back loop) can be proven, because
 result-diffing does not model it. The ruler is real infrastructure, not the
 `cerberus migrate` tool.
+
+Tier 2 is an overlay, merged behind Tier 1's compose file rather than launched
+on its own, and it declares no project name of its own. That is what puts the
+ruler and its Alertmanager sink on the same network as the cerberus and
+ClickHouse services they talk to, and it is also what carries Tier 1's
+per-checkout suffix onto the merged project, so both tiers land in one isolated
+stack. Compose resolves the project from the last `name:` among the merged
+files, so a `name:` added here — even the identical string — would rename the
+merged project and would have to re-derive the suffix to stay in step.
 
 ## 4. The 26 migration user-stories
 
