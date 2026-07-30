@@ -74,15 +74,28 @@ func lateMatShapeFor(table string) (lateMatShape, bool) {
 var lateMatShapes = func() map[string]lateMatShape {
 	out := map[string]lateMatShape{}
 	l := schema.DefaultOTelLogs()
-	if l.HasUniqueRowKey() && len(l.WideColumns) > 0 {
-		out[l.LogsTable] = lateMatShape{wide: l.WideColumns, rowKey: l.RowKey}
-	}
+	registerLateMatShape(out, l.LogsTable, l.HasUniqueRowKey(), l.WideColumns, l.RowKey)
 	tr := schema.DefaultOTelTraces()
-	if tr.HasUniqueRowKey() && len(tr.WideColumns) > 0 {
-		out[tr.SpansTable] = lateMatShape{wide: tr.WideColumns, rowKey: tr.RowKey}
-	}
+	registerLateMatShape(out, tr.SpansTable, tr.HasUniqueRowKey(), tr.WideColumns, tr.RowKey)
 	return out
 }()
+
+// registerLateMatShape records table as a late-materialisation candidate, but
+// only when the schema supplies BOTH halves of the coupled pair the rewrite
+// needs. A table with no unique row key cannot be joined back without
+// multiplying rows, and a table with no wide column has nothing to defer, so
+// either gap disqualifies it outright rather than degrading the rewrite.
+//
+// It takes the two metadata bits rather than a schema struct because the logs
+// and traces schemas are unrelated types that happen to carry the same pair;
+// splitting the decision out this way also puts it under direct test with
+// each half missing, which the package-level seeding above cannot express.
+func registerLateMatShape(out map[string]lateMatShape, table string, hasRowKey bool, wide, rowKey []string) {
+	if !hasRowKey || len(wide) == 0 {
+		return
+	}
+	out[table] = lateMatShape{wide: wide, rowKey: rowKey}
+}
 
 // lateMatMatch carries the matched plan fragments + the table metadata
 // needed by the emitter. Filter is optional (nil when the trigger

@@ -170,15 +170,14 @@ func orderedConjuncts(conjuncts []chplan.Expr, shape TableShape) []chplan.Expr {
 	type ranked struct {
 		expr chplan.Expr
 		rank int
-		idx  int
 	}
 	var prefix []ranked
 	var skip []chplan.Expr
 	var rest []chplan.Expr
-	for i, c := range conjuncts {
+	for _, c := range conjuncts {
 		cols := collectColumnRefs(c)
 		if r := sortRankFor(cols, shape); r >= 0 {
-			prefix = append(prefix, ranked{expr: c, rank: r, idx: i})
+			prefix = append(prefix, ranked{expr: c, rank: r})
 			continue
 		}
 		hitsSkip := false
@@ -194,11 +193,14 @@ func orderedConjuncts(conjuncts []chplan.Expr, shape TableShape) []chplan.Expr {
 		}
 		rest = append(rest, c)
 	}
-	// Stable insertion sort by rank; ties broken by input order.
+	// Insertion sort by rank. The strict `>` is what makes it stable, and
+	// stability is what preserves input order within a rank — an equal-rank
+	// pair never swaps, so the earlier conjunct stays earlier. No explicit
+	// index tie-break is needed (nor would one ever fire: prefix[j] is always
+	// the element being inserted, so its input index is the largest in play).
 	for i := 1; i < len(prefix); i++ {
 		for j := i; j > 0; j-- {
-			if prefix[j-1].rank > prefix[j].rank ||
-				(prefix[j-1].rank == prefix[j].rank && prefix[j-1].idx > prefix[j].idx) {
+			if prefix[j-1].rank > prefix[j].rank {
 				prefix[j-1], prefix[j] = prefix[j], prefix[j-1]
 				continue
 			}
