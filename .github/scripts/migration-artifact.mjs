@@ -32,8 +32,6 @@
 //                                  from this tree.
 //   CERBERUS_EXPECT_VERSION_INPUT  version that image's binary must report;
 //                                  travels with CERBERUS_IMAGE_INPUT.
-//   BUILD_DIR                      where the resolved binary lands
-//                                  (default `build`).
 //   COMPOSE_PROJECT_SUFFIX         per-checkout suffix the local image tag
 //                                  carries, so the tag named here is the one
 //                                  the compose stack runs. Empty in a primary
@@ -80,7 +78,13 @@ export const LOCAL_IMAGE_TAG = expandComposeSuffix('cerberus:migration-tier1${CO
 // the same one the compose healthcheck execs.
 export const IMAGE_BINARY_PATH = '/usr/local/bin/cerberus';
 
-// BINARY_NAME is the filename the resolved binary lands under inside BUILD_DIR.
+// BUILD_DIR is the repo-relative directory the resolved binary lands in, and
+// BINARY_NAME the filename it lands under. Both are constants rather than env
+// knobs on purpose: the joined path is handed to capture() as the command to
+// execute, so an env-supplied component would let whoever sets the environment
+// choose which program this module runs and then stamps as "the cerberus under
+// test". No workflow ever set the knob this replaced.
+const BUILD_DIR = 'build';
 const BINARY_NAME = 'cerberus';
 
 // EXECUTABLE_MODE is what an extracted binary is chmod'ed to. `docker cp`
@@ -222,7 +226,7 @@ function main() {
     process.exit(1);
   }
 
-  const buildDir = path.resolve(process.env.BUILD_DIR || 'build');
+  const buildDir = path.resolve(BUILD_DIR);
   mkdirSync(buildDir, { recursive: true });
   const binary = path.join(buildDir, BINARY_NAME);
 
