@@ -645,6 +645,15 @@ jobs:
           node --test .github/scripts/compose-smoke-matrix.test.mjs
           node --test .github/scripts/dashboard-matrix.test.mjs
 
+      # The subprocess helper every script above runs its commands through.
+      # capture() names the spawnSync options it forwards rather than spreading
+      # `opts`, so an unsupported key used to vanish without a word — and a
+      # vanished `shell: true` turns the command string into an argv[0] that
+      # never resolves, which the caller reads as a legitimate non-zero answer.
+      # The tests pin that unknown options now throw.
+      - name: Assert the shared subprocess helper honours its option contract
+        run: node --test .github/scripts/gh.test.mjs
+
       # The compose lane's scope gate, same discipline one level up: it decides
       # whether an ordinary PR boots the stack at all, and a wrong `false` is
       # invisible — a clean short-circuit and a real one look identical from the

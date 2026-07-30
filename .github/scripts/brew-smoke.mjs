@@ -359,10 +359,11 @@ export function formulaShadowProblems(shadowPaths) {
   if (found.length === 0) return [];
   return [
     `${TAP_REPO} still serves ${found.join(', ')} alongside ${TAP_CASK_PATH}. Homebrew resolves the ` +
-      `bare \`brew install ${CASK_REF}\` — the command README.md and docs/operations.md give operators — ` +
-      `to the FORMULA when a tap holds both, so every install would get the formula's version and ignore ` +
-      `the cask this release just pushed. Delete ${TAP_FORMULA_PATH} from ${TAP_REPO}. (Existing formula ` +
-      `installs are moved across by ${TAP_MIGRATIONS_PATH}, asserted separately.)`,
+      `bare \`brew install ${CASK_REF}\` to the FORMULA when a tap holds both, so anyone typing it — ` +
+      `off an older doc, a blog post, or muscle memory from before the cask — gets the formula's ` +
+      `version and ignores the cask this release just pushed. Delete ${TAP_FORMULA_PATH} from ` +
+      `${TAP_REPO}. (Existing formula installs are moved across by ${TAP_MIGRATIONS_PATH}, asserted ` +
+      `separately.)`,
   ];
 }
 

@@ -1,5 +1,5 @@
 // Unit tests for compose-smoke-scope.mjs — run by `node --test` in ci.yml's
-// `check` job.
+// `forbid-skip` job.
 //
 // The decisions pinned here are the ones whose failure mode is silence. A gate
 // that wrongly says "in scope" costs 25 minutes of runner time and is obvious.
@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { HARNESS_PATHS, SCOPE_PATHS, decide, stalePaths } from './compose-smoke-scope.mjs';
+import { HARNESS_PATHS, NON_BOOTING_EVENTS, SCOPE_PATHS, decide, stalePaths } from './compose-smoke-scope.mjs';
 
 const pr = { eventName: 'pull_request', headRef: 'fix/whatever' };
 
@@ -18,7 +18,7 @@ test('every declared scope path exists in the tree', () => {
   // The lists are plain strings: a rename turns an entry into one that matches
   // no diff, and the lane silently stops gating on the surface that entry was
   // added to guard. The driver checks this too — pinned here so it fails in the
-  // fast `check` job rather than only when e2e.yml next runs.
+  // fast `forbid-skip` job rather than only when e2e.yml next runs.
   assert.deepEqual(stalePaths([...HARNESS_PATHS, ...SCOPE_PATHS]), []);
 });
 
@@ -81,11 +81,10 @@ test('an empty diff short-circuits', () => {
   assert.equal(inScope, false);
 });
 
-test('push, schedule, dispatch and release PRs always run the full lane', () => {
+test('push, schedule and release PRs always run the full lane', () => {
   const events = [
     { eventName: 'push', headRef: '' },
     { eventName: 'schedule', headRef: '' },
-    { eventName: 'workflow_dispatch', headRef: '' },
     { eventName: 'pull_request', headRef: 'release/1.13.x' },
   ];
   for (const ev of events) {
@@ -94,6 +93,28 @@ test('push, schedule, dispatch and release PRs always run the full lane', () => 
     // regardless of what the commit happened to touch.
     const { inScope } = decide({ ...ev, changed: ['docs/engine.md'] });
     assert.equal(inScope, true, `${ev.eventName} ${ev.headRef} should run the full lane`);
+  }
+});
+
+test('workflow_dispatch does not boot the stack, whatever the diff says', () => {
+  // The guard this module replaced listed push / schedule / release-PR and left
+  // workflow_dispatch out, so dispatching e2e.yml never booted compose. That
+  // exclusion is deliberate — the workflow's only dispatch input regenerates the
+  // k3d crawl inventory — and it is easy to lose by accident, because
+  // runsFullLane() answers `true` for every non-PR event. Pinned in both
+  // directions: even a diff that WOULD put a PR in scope must not boot here.
+  for (const changed of [['docs/engine.md'], ['internal/chsql/emit_node.go'], null]) {
+    const { inScope } = decide({ eventName: 'workflow_dispatch', headRef: '', changed });
+    assert.equal(inScope, false, `workflow_dispatch with changed=${JSON.stringify(changed)} must short-circuit`);
+  }
+});
+
+test('the non-booting event list is explicit, never an allow-list', () => {
+  // The inverse — listing the events that DO boot — would make an event nobody
+  // anticipated skip the lane silently, which reports as a clean green.
+  assert.deepEqual(NON_BOOTING_EVENTS, ['workflow_dispatch']);
+  for (const ev of ['push', 'schedule', 'pull_request']) {
+    assert.ok(!NON_BOOTING_EVENTS.includes(ev), `${ev} must still reach the scope decision`);
   }
 });
 
