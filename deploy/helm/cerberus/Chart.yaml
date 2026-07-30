@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.12.3
+version: 0.12.4
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.12.3"
+appVersion: "1.12.4"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,27 +45,17 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.12.3
+      image: ghcr.io/tsouza/cerberus:v1.12.4
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: fixed
-      description: "tempo: stop zero-fill buckets turning quantiles into NaN (#1374)"
+      description: "ci: backport the applicable v1.14.0 audit fixes (#1391)"
     - kind: fixed
-      description: "ci: analyse cold in the lint lane so a cache cannot decide the gate (#1363)"
+      description: "compose: give every stack a per-checkout project name (#1390)"
     - kind: fixed
-      description: "ci: publish compat-scores from a scratch worktree, not the checkout (#1361)"
+      description: "routerrules: stop geometry gates firing on every unclassified failure (#1389)"
     - kind: fixed
-      description: "chsql: name the canonical key-order function once, not twice (#1365)"
+      description: "solver: distinguish routing-disabled from below-threshold (#1385)"
     - kind: fixed
-      description: "chsql: canonicalise raw attribute-Map series keys at the emit chokepoint (#1362)"
-    - kind: fixed
-      description: "ci: run the Tier-0 explain goldens on pull requests (#1364)"
-    - kind: fixed
-      description: "loki: canonicalise Map key order on metadata series-identity keys (#1360)"
-    - kind: fixed
-      description: "logql: canonicalise Map key order on stream-identity keys (#1358)"
-    - kind: fixed
-      description: "chsql: dedupe TraceQL structural unions on span identity (#1357)"
-    - kind: fixed
-      description: "promql: canonicalise Map key order on the non-join and histogram paths (#1356)"
+      description: "solver: record the real cost grid on every routing refusal (#1384)"
