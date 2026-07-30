@@ -1,17 +1,27 @@
 name: mutation
 
 # Mutation testing runs on push-to-main + nightly + manual dispatch, and on
-# pull_request as a parity lane for the publish-on-merge release flow. The
-# `mutate` matrix is SKIPPED entirely on an ordinary (non-release) PR — zero
-# gremlins jobs queued — and runs the real gremlins kill-zone only on push /
-# schedule / dispatch and on a `release/*` PR (so a release PR's green status
-# includes mutation). The single `mutation` aggregator job is the required
-# status check: it treats a skipped matrix as a green pass-through, so an
-# ordinary PR still REPORTS the required context green without spinning up ~11
-# matrix legs. On ordinary PRs the lane stays the informational push/nightly
-# tool it always was (test-quality regressions, not prod-blocking bugs); the
-# job-level skip keeps the high matrix cost — and the runner-capacity drain of
-# queuing legs just to no-op — off non-release PRs.
+# pull_request as a real gate for the publish-on-merge release flow.
+#
+# On an ordinary PR the `mutate` matrix runs the legs whose SCOPE the PR
+# changed, and only those: a PR editing internal/chplan runs phase1, a PR
+# editing only docs runs no leg at all. The selection is computed by
+# .github/scripts/mutation-matrix.mjs from the PR's own diff against its merge
+# base; the phase table it selects from lives in mutation-phases.mjs. Push /
+# schedule / dispatch and `release/*` PRs sweep the FULL matrix, so no leg's
+# efficacy floor depends on some PR happening to touch its package.
+#
+# Previously the matrix was skipped WHOLESALE on any non-release PR and the
+# required `mutation` aggregator reported that skip as green. That is a hollow
+# green — a required check passing on work it never did — and it let a PR drop
+# internal/chplan below its 95% floor, merge green, and surface the regression
+# on the release PR, where it blocked the release instead of the change that
+# caused it. Scoping keeps the wall-clock win that motivated the skip (most PRs
+# still queue one leg or none) without the blind spot.
+#
+# The single `mutation` aggregator job remains the required status check. It
+# passes through green ONLY when the selector proved no phase scope changed,
+# and fails if the selector itself failed — an unknown selection is never a pass.
 
 on:
   pull_request:
@@ -25,299 +35,72 @@ permissions:
   contents: read
 
 jobs:
+  # select — decide WHICH phases this event runs, and emit them as the `mutate`
+  # strategy.matrix.
+  #
+  # The phase table itself lives in .github/scripts/mutation-phases.mjs, not
+  # inline here, because the selector has to REASON about it (match each leg's
+  # scope + scope-relative exclude_files against the PR diff, and assert the
+  # exclude patterns stay inside Go's RE2 dialect) — and a workflow `include:`
+  # block is data the workflow cannot read back. Same single-source-of-truth
+  # shape as compose-smoke-setup / .github/scripts/compose-smoke-matrix.mjs.
+  #
+  # Cheap by construction: node + a `git diff`, no toolchain, no gremlins. A
+  # docs-only PR pays a few seconds here and queues zero mutation legs.
+  select:
+    name: mutation-select
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+      # `has_phases` is read by the aggregator to tell "nothing in scope
+      # changed" (a legitimate green) apart from "the matrix did not run" (not).
+      has_phases: ${{ steps.emit.outputs.has_phases }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The selector diffs the PR head against its MERGE BASE, which a
+          # shallow clone cannot resolve. A failed diff is not read as "nothing
+          # changed" — mutation-matrix.mjs falls back to the full matrix — but
+          # that fallback is a safety net, not the intended path.
+          fetch-depth: 0
+
+      # BASE_SHA/HEAD_SHA are empty off pull_request; the selector already runs
+      # the full matrix for those events and never consults them.
+      - id: emit
+        name: select the phases this event runs
+        run: node .github/scripts/mutation-matrix.mjs
+        env:
+          MODE: emit
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   mutate:
     # Per-phase mutation kill-zone. gremlins v0.6.0 has no per-package
     # threshold, so each phase runs as its own matrix entry scoped to a
     # single package with its own --threshold-efficacy bar. The bar in
     # `.gremlins.yaml` (currently 95) is the floor for the unscoped
-    # whole-repo `just mutate` invocation only — the matrix below
-    # mirrors it per phase. All matrix entries stay informational on
-    # push-to-main + nightly + dispatch; promotion to a required PR
-    # gate happens after every phase stays green for a week at 95%.
-    #
-    # All phases sit at 95% efficacy: the nightly runs have been
-    # clearing every phase for an extended period, so the floor is
-    # unified. Never lower a bar without a follow-up PR that
-    # re-establishes the headroom + a clear test-quality rationale.
+    # whole-repo `just mutate` invocation only — the phase table in
+    # .github/scripts/mutation-phases.mjs mirrors it per phase, and carries
+    # the per-leg rationale (the logql/traceql OOM splits, the equivalent-mutant
+    # analysis behind each bar) that used to live in this block.
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
+    needs: select
+    # Skipped only when the selector proved NOTHING in any phase scope changed.
+    # The aggregator re-checks `has_phases`, so a skip here can never be mistaken
+    # for a pass over work that should have run.
+    if: ${{ needs.select.outputs.has_phases == 'true' }}
     runs-on: ubuntu-latest
-    # 90 (not 60): phase4-traceql runs workers=1 (see its matrix note) to stay
-    # under the runner memory ceiling, which serialises its ~109 timeout mutants
-    # and pushes its wall-clock toward an hour on a 2-core runner. The faster
+    # 90 (not 60): the parser legs run workers=1 (see mutation-phases.mjs) to
+    # stay under the runner memory ceiling, which serialises their ~109 timeout
+    # mutants and pushes wall-clock toward an hour on a 2-core runner. The faster
     # phases finish well inside this; it only bounds a genuinely-hung leg.
     timeout-minutes: 90
-    # Heavy mutation work runs on push / schedule / dispatch, and on a release
-    # PR (head branch release/*). On an ordinary (non-release) pull_request the
-    # ENTIRE matrix is SKIPPED — zero gremlins jobs queued — so the high matrix
-    # cost never lands on routine PRs. The `mutation` aggregator below treats a
-    # skipped matrix as a green pass-through so the required check still reports.
-    # Previously the matrix queued ~11 no-op legs per non-release PR (RUN_HEAVY
-    # short-circuit); skipping the job at the source keeps runner capacity free.
-    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - phase: phase1
-            scope: ./internal/chplan
-            efficacy: 95
-            workers: 0
-          - phase: phase2
-            scope: ./internal/chsql
-            efficacy: 95
-            workers: 0
-          - phase: phase3-optimizer
-            scope: ./internal/optimizer
-            efficacy: 95
-            workers: 0
-          - phase: phase4-promql
-            scope: ./internal/promql
-            efficacy: 95
-            workers: 0
-          # phase4-logql historically OOM-killed the ubuntu-latest
-          # runner (~7 GB RAM) at the 3-minute mark. Rounds 1-3
-          # tried gremlins' default `runtime.NumCPU()` workers and
-          # the runner died ~3 min in. Round 4 capped workers at 2,
-          # round 5 dropped to workers=1, and round 6's job log
-          # (77180086677, 2026-05-21T13:13:26Z) confirmed
-          # `--workers "1"` engaged, every emitted mutant was KILLED
-          # (no LIVED), gremlins.json never written, and the runner
-          # received a shutdown signal at the same ~3m37s mark. The
-          # bottleneck is therefore NOT parallel `go test` fan-out
-          # but cumulative runner RSS growth from gremlins'
-          # long-lived process state + each mutant's full
-          # `go test ./internal/logql` cycle dragging the heavy
-          # LogQL parser dep graph (loki + prometheus + dskit +
-          # memberlist) through the linker. Workers=1 alone cannot
-          # land below the ceiling because the wall-clock budget
-          # before OOM admits ~80 of ~300+ mutants in the package.
-          #
-          # Round 7 split phase4-logql into three sibling matrix
-          # entries (lower / aggregation / other), each scoped to
-          # `./internal/logql` but with `--exclude-files` regexes
-          # carving the source set into roughly equal slices.
-          # `phase4-logql-lower` landed green. `aggregation` ran
-          # cleanly to completion in ~1m32s (Killed: 106, Lived: 7
-          # — efficacy gap, not runner budget) so it does not need
-          # further splitting; the 7 LIVED mutants are tracked as
-          # test-quality follow-up and the mutation lane stays
-          # informational per CLAUDE.md until each sub-phase has
-          # held green for a week. `other` still OOM-killed the
-          # runner at ~3 min after processing binary.go +
-          # detected_level.go + dotted_labels.go (partial), never
-          # reaching literal.go / label_fns.go / top_level_columns.go.
-          #
-          # Round 8 split `other` into two sibling entries
-          # `other-a` (binary + detected_level + dotted_labels) +
-          # `other-b` (literal + label_fns + top_level_columns).
-          # `other-b` landed green but `other-a` still OOM-killed
-          # the runner at ~4 min (job 77205717481, shutdown signal
-          # at 15:19:38Z after starting 15:15:44Z). The kill log
-          # showed every emitted mutant KILLED (0 LIVED) right up
-          # to dotted_labels.go:203 — same wall-clock-budget
-          # signature as the earlier rounds. binary.go +
-          # detected_level.go finished cleanly inside ~2.5 min;
-          # dotted_labels.go alone was responsible for pushing the
-          # job past the ceiling because it carries the bulk of
-          # the package's mutable surface (the OTel dotted-label
-          # walker has the most branchy code in logql/).
-          #
-          # Round 9 peeled dotted_labels.go off into its own slice
-          # `other-c` (mutating just that single ~7 KB file with
-          # `--workers 1`). Round 10's job 77211633492 confirmed
-          # the slice still SIGTERM'd at ~3 min after admitting
-          # ~40 mutants of the file (every emitted mutant KILLED,
-          # 0 LIVED) — the runner-budget ceiling sits below even
-          # a single-file slice of this surface. The bottleneck
-          # is cumulative gremlins-driver RSS plus each mutant's
-          # full `go test ./internal/logql` cycle re-linking the
-          # loki + prometheus + dskit + memberlist parser dep
-          # graph; there's nothing left to slice. dotted_labels.go
-          # is now excluded from gremlins runs entirely via
-          # `.gremlins.yaml` excluded-files (see the rationale
-          # block there), and the `phase4-logql-other-c` matrix
-          # entry is dropped. The file is still covered by
-          # Layer-2 TXTAR fixtures + the standalone unit tests in
-          # `dotted_labels_test.go`. Re-introduce the phase when
-          # gremlins gains an incremental-test-binary mode or the
-          # lane moves to a larger runner class.
-          #
-          # phase4-logql-aggregation was historically relaxed to 93
-          # (94.83%, 18 LIVED) citing equivalent mutants. The KILLABLE
-          # survivors are now pinned by range_aggregation_mutation_test.go
-          # + vector_aggregation_mutation_test.go (10 killed: absent-window
-          # Interval+Offset arithmetic, the absent synth-label conjunction,
-          # the post-filter error-mark return gate, the topk/quantile
-          # outer-by threading + ungrouped-partition guards — each verified
-          # by hand-applying the mutation). The remaining survivors are
-          # GENUINELY EQUIVALENT and can't be killed:
-          #   - `make([]Expr, 0, len(Groups)*2 (+1))` slice-CAPACITY hints
-          #     (range_aggregation.go, vector_aggregation.go, duration.go)
-          #     — a cap literal changes only allocator behaviour, not
-          #     output (CLAUDE.md: capacity hints out of scope).
-          #   - empty-group CONDITIONALS_BOUNDARY guards (`len(...) > 0` vs
-          #     `>= 0`) whose only distinguishing input (`by ()`) threads a
-          #     len-0 label slice the lowering collapses to nil — a
-          #     byte-identical no-op.
-          # With the killable set covered the bar is RAISED BACK TO 95; the
-          # equivalents sit comfortably under it (~97.7%).
-          # Round 13 (2026-07-25, this incident): all four phase4-logql-*
-          # legs below started dying with the same "runner received a
-          # shutdown signal" OOM signature ~20-25 min into every push-to-main
-          # run, 100% reproducible, starting exactly at the commit that
-          # moved internal/logql/dotted_labels.go's implementation AND its
-          # large table-driven test suite into internal/logql/lsyntax
-          # (dotted_labels_test.go went from package logql to package
-          # lsyntax). `scope: ./internal/logql` recurses into every
-          # subdirectory (gremlins walks the whole scope tree), so
-          # internal/logql/lsyntax/*.go was ALREADY being swept into these
-          # four legs — none of the exclude_files regexes below ever
-          # covered lsyntax's own files (ast.go, lexer.go, parser.go, …),
-          # only dotted_labels.go itself (matched by filename regardless of
-          # directory). Once dotted_labels_test.go relocated into package
-          # lsyntax, every covered mutant found anywhere in lsyntax now
-          # forces `go test .../internal/logql/lsyntax` to link and run
-          # that heavier test binary, on every one of the four legs, and
-          # cumulative runner RSS crossed the ubuntu-latest ceiling before
-          # the run finished — the same root cause documented for
-          # dotted_labels.go itself in rounds 4-10 above, just reached via
-          # a different file. Fix: exclude the whole lsyntax subtree
-          # (scope-relative '^lsyntax/', mirroring the phase4-traceql-lower
-          # '^ast/' precedent below) from all four legs, and give lsyntax
-          # its own dedicated phase4-logql-parser / phase4-logql-lsyntax
-          # legs (see below phase4-traceql-parser/-ast) so the package
-          # keeps its mutation coverage instead of losing it.
-          - phase: phase4-logql-lower
-            scope: ./internal/logql
-            efficacy: 95
-            workers: 1
-            # Mutate only lower.go (~50 KB, the package's largest
-            # source file). Excludes every other logql source plus the
-            # lsyntax subtree (own dedicated legs below).
-            exclude_files: '^lsyntax/|(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\.go$'
-          - phase: phase4-logql-aggregation
-            scope: ./internal/logql
-            efficacy: 95
-            workers: 1
-            # Mutate range_aggregation.go + vector_aggregation.go +
-            # lang.go (~54 KB total). Excludes everything else.
-            # Bar at 93 (not 95) — see round-10 rationale above.
-            exclude_files: '^lsyntax/|(binary|detected_level|dotted_labels|literal|label_fns|top_level_columns|lower)\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\.go$'
-          - phase: phase4-logql-other-a
-            scope: ./internal/logql
-            efficacy: 95
-            workers: 1
-            # Mutate binary.go + detected_level.go + dotted_labels.go
-            # (~21 KB total). Round 8's `other-a` OOM-killed the runner
-            # inside dotted_labels.go, which is why later rounds carved
-            # it out. That was the runaway-mutant class — now bounded by
-            # --timeout-max — so the file is mutated here again rather
-            # than left uncovered.
-            exclude_files: '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|literal|label_fns|top_level_columns)\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\.go$'
-          - phase: phase4-logql-other-b
-            scope: ./internal/logql
-            efficacy: 95
-            workers: 1
-            # The catch-all leg: literal.go + label_fns.go +
-            # top_level_columns.go, plus every file no other leg claims
-            # (doc.go, duration.go, ip.go, jsonpath.go, numbytes.go,
-            # pattern_filter.go, variants.go, logpattern/). Those
-            # stragglers used to fall through all four ./internal/logql
-            # legs' regexes, so they were mutated four times over; they
-            # are now excluded from the other three and land here.
-            # A file newly added to internal/logql needs no edit — it is
-            # picked up here automatically, which is why this leg keeps
-            # no positive file list to fall out of sync.
-            exclude_files: '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\.go$'
-          - phase: phase4-logql-parser
-            scope: ./internal/logql/lsyntax
-            efficacy: 95
-            workers: 1
-            # Mutate parser.go only (~27 KB, the recursive-descent
-            # LogQL parser — the densest control-flow surface in the
-            # package, same shape as phase4-traceql-parser below).
-            # dotted_labels.go belongs to the phase4-logql-lsyntax leg.
-            exclude_files: '^(ast|binop|dotted_labels|errors|labelfilter|lexer|ops|string)\.go$'
-          - phase: phase4-logql-lsyntax
-            scope: ./internal/logql/lsyntax
-            efficacy: 95
-            workers: 1
-            # Mutate the rest of the lsyntax package (AST node defs,
-            # lexer, label-filter matching, operators, dotted-label
-            # normalisation); parser.go runs in its own leg above.
-            exclude_files: '^parser\.go$'
-          # phase4-traceql historically OOM-killed the ubuntu-latest runner
-          # (~7 GB RAM) after ~3 minutes. The original monolithic phase
-          # contained ~109 timeout-inducing mutants in the recursive-descent
-          # parser plus tens of thousands more in lower.go. Even with
-          # workers=1 to serialize test cycles, cumulative gremlins-driver RSS
-          # plus each mutant's full `go test` re-link of the in-house TraceQL
-          # parser + lowering dep graph pushes past the ceiling. Round 11's
-          # first split OOM-killed `-other` (it kept most of the ast package)
-          # and the `-parser`/`-lower` legs errored before running: their
-          # exclude regexes used negative lookahead `(?!…)`, which Go's RE2
-          # engine rejects. Round 12 splits by PACKAGE into four legs, each an
-          # RE2-safe alternation of the files to exclude (no lookahead):
-          #
-          # - parser: ast/parser.go only — the recursive-descent parser, where
-          #   the ~109 timeout-inducing loop-control/conditional mutants live.
-          # - ast:    the rest of the internal/traceql/ast package (lexer + the
-          #   AST node defs).
-          # - lower:  lower.go only (the ~84 KB lowering file).
-          # - other:  the remaining top-level files (aggregate, metrics_compare,
-          #   metrics_pipeline, group_coalesce, search_limit, select).
-          #
-          # Efficacy is preserved: gremlins runs the mutated file's own package
-          # tests per mutant, so scoping the ast legs to ./internal/traceql/ast
-          # still runs parser_test.go / *_mutation_test.go. If a leg still
-          # OOM-kills, split it further or exclude the file in .gremlins.yaml
-          # (per the dotted_labels.go precedent); it stays covered by Layer-2
-          # TXTAR fixtures + unit tests. Promotion to required after all hold
-          # green for a week.
-          - phase: phase4-traceql-parser
-            scope: ./internal/traceql/ast
-            efficacy: 95
-            workers: 1
-            # Mutate ast/parser.go only; exclude the rest of the ast package.
-            # exclude-files matches SCOPE-RELATIVE paths (here, relative to
-            # ./internal/traceql/ast), so entries are bare filenames.
-            exclude_files: '^(assert|attribute|doc|enum|expr|lexer|metrics|parse|pipeline|rewrite|static)\.go$'
-          - phase: phase4-traceql-ast
-            scope: ./internal/traceql/ast
-            efficacy: 95
-            workers: 1
-            # Mutate the rest of the ast package (lexer + node defs); parser.go
-            # runs in its own leg above.
-            exclude_files: '^parser\.go$'
-          - phase: phase4-traceql-lower
-            scope: ./internal/traceql
-            efficacy: 95
-            workers: 1
-            # Mutate lower.go only. scope ./internal/traceql recurses into ast/,
-            # so exclude the whole ast subtree (scope-relative '^ast/') plus the
-            # other top-level files.
-            exclude_files: '^ast/|^(aggregate|doc|group_coalesce|metrics_compare|metrics_pipeline|search_limit|select)\.go$'
-          - phase: phase4-traceql-other
-            scope: ./internal/traceql
-            efficacy: 95
-            workers: 1
-            # Mutate the remaining top-level files; exclude lower.go + the ast
-            # subtree (scope-relative, ast/ pulled in by recursion).
-            exclude_files: '^ast/|^lower\.go$'
-          - phase: phase5-qlcommon
-            scope: ./internal/qlcommon
-            efficacy: 95
-            workers: 0
-          # phase6-spansscan covers the shared spans-scan partition-pruning
-          # matcher (internal/spansscan) — the predicate functions behind the
-          # universal emit-chokepoint guard and the perf/fanout corpus lint.
-          # It is a tiny stdlib-only leaf package, so the run is fast; the bar
-          # matches every other phase. Stays informational until it holds green
-          # for a week, per the rollout note above.
-          - phase: phase6-spansscan
-            scope: ./internal/spansscan
-            efficacy: 95
-            workers: 0
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -391,37 +174,51 @@ jobs:
           retention-days: 14
 
   # Single rolled-up required-check context (mirrors compose-smoke). The matrix
-  # above exposes ONE .result to dependents: `success` only if EVERY phase
-  # succeeded, `failure`/`cancelled` if any did, `skipped` when the whole job is
-  # skipped at the source (non-release PR). On a non-release PR the matrix is
-  # SKIPPED, so this passes the required check through green WITHOUT queuing any
-  # gremlins legs; on a release/* PR or a push it reflects the real efficacy
-  # gate. `if: always()` guarantees the context always REPORTS (never resolves
-  # to "Expected" / never-reports, which would deadlock branch protection). Add
-  # `mutation` (not the per-phase `gremlins …` names) as the required check.
+  # above exposes ONE .result to dependents: `success` only if EVERY selected
+  # phase succeeded, `failure`/`cancelled` if any did, `skipped` when nothing in
+  # any phase scope changed. `if: always()` guarantees the context always REPORTS
+  # (never resolves to "Expected" / never-reports, which would deadlock branch
+  # protection). Add `mutation` (not the per-phase `gremlins …` names) as the
+  # required check.
+  #
+  # The gate is a decision table over TWO facts, not one, and that is the point:
+  # a skipped matrix is green ONLY when `select` succeeded AND reported that it
+  # chose no phases. A skip for any other reason — the selector crashed, the
+  # matrix was dropped — is a failure. Reading `mutate.result == skipped` alone
+  # is what made this check hollow before.
   mutation:
     name: mutation
-    needs: [mutate]
+    needs: [select, mutate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: gate on every mutation phase
         run: |
+          echo "select = ${{ needs.select.result }} (has_phases = '${{ needs.select.outputs.has_phases }}')"
           echo "mutate = ${{ needs.mutate.result }}"
-          # Non-release PR → the `mutate` matrix is skipped at the job-level `if`.
-          # The required check must report green without work, mirroring the
-          # compose-smoke aggregator's docs-only skip pass-through.
+
+          # An unknown selection is never a pass: without it there is no claim
+          # about what was or wasn't checked.
+          if [ "${{ needs.select.result }}" != "success" ]; then
+            echo "::error::mutation-select did not succeed (${{ needs.select.result }}) — the set of phases this change needs is unknown, so this check cannot report green."
+            exit 1
+          fi
+
           if [ "${{ needs.mutate.result }}" = "skipped" ]; then
-            echo "mutation matrix skipped on non-release PR — required check passes through."
+            if [ "${{ needs.select.outputs.has_phases }}" = "true" ]; then
+              echo "::error::mutation-select chose phases to run but the matrix was skipped — the required check would otherwise pass over work that never ran."
+              exit 1
+            fi
+            echo "no changed path falls in any mutation phase scope — nothing for this lane to check."
             exit 0
           fi
-          # Heavy case (push / schedule / dispatch / release-PR): strict
-          # != 'success' catches failure AND cancelled (a contains-failure check
-          # would miss a cancelled phase). fail-fast:false keeps a real efficacy
-          # failure a clean `failure`, not an ambiguous `cancelled`.
+
+          # Strict != 'success' catches failure AND cancelled (a contains-failure
+          # check would miss a cancelled phase). fail-fast:false keeps a real
+          # efficacy failure a clean `failure`, not an ambiguous `cancelled`.
           if [ "${{ needs.mutate.result }}" != "success" ]; then
             echo "::error::one or more mutation phases failed/cancelled (rolled-up: ${{ needs.mutate.result }})."
             exit 1
           fi
-          echo "all mutation phases green."
+          echo "all selected mutation phases green."

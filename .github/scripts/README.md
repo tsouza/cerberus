@@ -28,6 +28,14 @@ universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
 (unassigned / double-assigned / phantom / stale-exclude / bad-shard-name).
 One implementation means a new rule guards BOTH lanes at once.
 
+`lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
+lane guards?" — `runsFullLane()` (which events must never take a scoped
+subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
+when it cannot be computed, which callers must read as "run everything" rather
+than as "nothing changed"), and segment-wise `underPrefix` / `matchesAny`.
+It exists so the two dangerous parts — the always-full event set and the
+uncomputable-diff fallback — cannot drift between the lanes that use it.
+
 ## Modules
 
 - **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
@@ -180,6 +188,38 @@ One implementation means a new rule guards BOTH lanes at once.
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
+- **`mutation-phases.mjs`** — data, imported by `mutation-matrix.mjs`. The single
+  source of truth for the `mutation` lane's phase partition: each entry is one
+  gremlins run (`scope` package, optional scope-relative `exclude_files` RE2
+  alternation, `workers` cap, `--threshold-efficacy` bar), rendered straight into
+  `mutation.yml`'s `strategy.matrix`. It carries the per-leg rationale — the
+  logql/traceql OOM splits, the equivalent-mutant analysis behind each bar — that
+  used to live in the workflow. Also exports `HARNESS_PATHS`: the paths that
+  change the lane itself and therefore force the FULL matrix.
+  - Env: none (pure data module).
+- **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
+  phases run and emits them as the `mutate` `strategy.matrix`. On push /
+  schedule / dispatch and on a `release/*` PR it selects every phase; on an
+  ordinary PR it selects only the legs whose scope the diff touches, applying
+  each leg's `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
+  A changed path that lies inside a phase scope while claiming no leg is a
+  coverage gap and fails the job rather than being dropped. `verify` mode asserts
+  the table alone (every scope an existing directory, every pattern legal under
+  Go's RE2 — no lookaround, no backreferences); `emit` re-runs verify first, so
+  it cannot ship a matrix built from a table that would have failed. `dump`
+  validates and then writes the table to stdout as JSON and nothing else —
+  that is the stream `test/regression/mutation_leg_partition_test.go` parses to
+  assert every mutable file under a mutated package is claimed by exactly one
+  leg, an invariant no single leg's regex can express.
+  - Env: `MODE` (`emit` | `verify` | `dump`, also argv\[2]; default `verify`),
+    `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
+  - Outputs: `matrix` (`{include:[…]}`), `has_phases` (`true` | `false` — the
+    aggregator reads it to tell "nothing in scope changed" apart from "the matrix
+    did not run").
+  - Exit: `0` clean / matrix emitted; `1` on a table violation, a coverage gap,
+    or a bad `MODE`.
+  - Tests: `node --test .github/scripts/mutation-matrix.test.mjs` (run by the
+    `forbid-skip` job).
 - **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
   The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
   to main (not on a raw pushed tag — that trigger is retired). On the resulting
