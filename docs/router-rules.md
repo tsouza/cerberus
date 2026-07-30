@@ -66,7 +66,15 @@ deployment's own data.
    because a cost watermark learned over failed queries describes the failure
    rather than the query; over a geometry column it must not, because there is
    no outcome bias to remove and the scope only shrinks the population, up to
-   emptying it outright.
+   emptying it outright. A geometry percentile is instead restricted along the
+   other axis — to the rows the solver classified — because the router classifies
+   PromQL only, so on the other two heads the geometry columns are absent rather
+   than small and fitting a percentile over their zeroes yields a threshold of
+   zero that a `>=` leaf then matches unconditionally. The restriction is derived
+   from the column (`isGeometryColumn`), not declared per-param, so it cannot be
+   forgotten on the next geometry param; where it leaves a language with no rows
+   that language's partition key is simply absent, which skips the rule for that
+   language rather than firing it on everything.
 3. **A CI guard test**
    ([`catalog/router_rules_test.go`](../internal/routerrules/catalog/router_rules_test.go))
    walks the YAML tree of **every** embedded catalog file (the base plus each
@@ -204,10 +212,17 @@ operator sees concrete values (`… at/above 4.2 GiB`) even though the file said
 
 ## The shipped rule set
 
-The catalog ships twelve generic detectors (`catalogVersion: 2`). The first
-seven (`since: 1`) pair an observed cost with the recorded route; the next five
-(`since: 2`) generalize beyond the route-A/route-B framing and attribute each
-finding by the **solver decision reason** (see below).
+The catalog ships twelve generic detectors at `catalogVersion: 4`, grouped by the
+`since` counter each rule carries. The first seven (`since: 1`) pair an observed
+cost with the recorded route; the next five (`since: 2`) generalize beyond the
+route-A/route-B framing and attribute each finding by the **solver decision
+reason** (see below).
+
+`catalogVersion` runs ahead of the highest `since` because it also counts revisions
+that change which rows an existing rule sees without adding a rule — widening the
+recorded population (version 3) or narrowing a param's population (version 4).
+Those bumps carry no new detector, and that is exactly what they are for: they tell
+an operator their findings shifted for a reason other than their own corpus moving.
 
 ### catalogVersion 1 — observed-cost / recorded-route pairs
 
@@ -385,7 +400,21 @@ values) calibrated to a realistic query mix: a PromQL-dominant, range-heavy
 healthy majority on route A, plus an injected failure surface a healthy
 deployment lacks — OOM / timeout / sample-budget / breaker / rejected clusters, a
 route-B failing cluster with non-zero `k_shards`, a route-B overshard-regret
-class, a high-fanout route-A class, and a high-geometry sub-population. It proves
+class, a high-fanout route-A class, and a high-geometry sub-population.
+
+Every fixture is constrained to states the production solver can actually reach,
+and `test/regression/router_corpus_seed_test.go` pins that: a `decision_reason` is
+a `solver.Reasons` member or absent, `route == "B"` and the `routed` reason are the
+same event, and only a PromQL row carries a route, a reason, or geometry at all —
+the router classifies nothing else, so on every other head those columns are
+absent rather than small. That last invariant is the load-bearing one. A fixture
+that fakes geometry onto a LogQL row makes a `cumulative_d >= p(cumulative_d)`
+leaf look selective, while on real data that language's whole geometry population
+is zero, the fitted percentile is zero, and the leaf matches every failing row it
+has. The fixtures also carry both populations — classified and unclassified — so
+neither the route-scoped rules nor the two non-PromQL heads go untested.
+
+It proves
 the catalog is **effective**, not just well-formed: default-lane tests assert that
 every rule fires on its planted pathology with the expected class set and support,
 that the hard-failure rules stay quiet on the healthy majority (a real

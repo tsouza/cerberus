@@ -11,6 +11,21 @@ import "sort"
 // below must be updated in lockstep.
 const CorpusTableName = "cerberus_router_corpus"
 
+// routeColumn is the corpus column holding the routing classifier read-out, and
+// routeUnclassified is the token it carries when no classification ran. Both are
+// re-declared here verbatim from internal/optcorpus under the same deliberate
+// no-import contract as CorpusTableName above; route_contract_test.go pins that
+// the two declarations agree (a test file may import optcorpus, production code
+// in this package may not).
+//
+// routeUnclassified is what makes "was this row classified?" expressible at all:
+// it is the one corpus value that says the solver never ran on this query, and
+// every geometry column on such a row is a zero that means absence.
+const (
+	routeColumn       = "route"
+	routeUnclassified = ""
+)
+
 // ColumnKind classifies each corpus column so the validator can tell which
 // columns may legitimately carry an enum literal in a rule condition (the
 // closed-domain columns) versus which may only be compared against a resolved
@@ -54,9 +69,13 @@ type corpusColumn struct {
 }
 
 // corpusColumns is the canonical column contract of cerberus_router_corpus,
-// column-for-column aligned with the MergeTree DDL in internal/optcorpus
-// (corpusCreateTableSQL) and the Row JSON tags in internal/optcorpus
-// (optcorpus.Row). Keep these in lockstep with that DDL.
+// column-for-column aligned (name AND position) with the MergeTree DDL in
+// internal/optcorpus; route_contract_test.go pins the two against
+// optcorpus.CorpusColumns so a drift fails there rather than at query time.
+//
+// It is NOT aligned with optcorpus.Row: Row is the JSONL wire form and carries
+// opts + profile_events, which the table does not store, while the table carries
+// event_time, which the sink stamps per batch rather than reading off a Row.
 var corpusColumns = []corpusColumn{
 	{name: "event_time", kind: ColumnTime},
 	{name: "shape_id", kind: ColumnGroup},
@@ -119,6 +138,40 @@ var runtimeCostColumns = func() map[string]struct{} {
 	return m
 }()
 
+// geometryColumns is the complement of runtimeCostColumns within the numeric
+// columns: the ones the solver derives from the query SHAPE before dispatch.
+//
+// They exist only on a row the solver CLASSIFIED. A row that carried no routing
+// classification — the Solver is off, or the head is one Solver.Classify does not
+// classify, which is every LogQL and TraceQL query — has no shape geometry to
+// record, so every geometry column on it is the zero value. Those zeroes are
+// absence, not measurement, and an aggregate that folds them in reports a
+// statistic about a population that was never measured. A percentile is the worst
+// case: on a deployment where a whole language is unclassified, its geometry
+// column is identically 0, so the fitted percentile IS 0 and every `>= param`
+// gate over it matches every row of that language — a fire-on-everything floor
+// dressed as a learned watermark.
+//
+// resolveCorpus therefore restricts a geometry-column population to classified
+// rows, derived from the column rather than declared per param, so a new geometry
+// param cannot be authored without it (see AggSpec.ClassifiedOnly).
+var geometryColumns = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(corpusColumns))
+	for _, c := range corpusColumns {
+		if c.kind == ColumnNumeric && !c.runtimeCost {
+			m[c.name] = struct{}{}
+		}
+	}
+	return m
+}()
+
+// isGeometryColumn reports whether name is a solver-derived shape column, and so
+// is only meaningful on a classified row.
+func isGeometryColumn(name string) bool {
+	_, ok := geometryColumns[name]
+	return ok
+}
+
 // enumDomains is the closed set of category tokens a rule may name per enum
 // column. A condition that compares an enum column against a token outside its
 // domain fails validation, catching typos like route='C' or exit_status='killed'.
@@ -136,6 +189,13 @@ var runtimeCostColumns = func() map[string]struct{} {
 // because Solver.Classify only classifies PromQL) is deliberately NOT a member:
 // a rule must select its population by `language`, never by the absence of a
 // classification.
+//
+// route carries the same asymmetry, and for the same reason. The corpus column
+// has a THIRD member — the unclassified token an unrouted row is stored under
+// (optcorpus.RouteUnclassified) — which is deliberately absent from the domain
+// here. So `route: A` means "classified, and the cost thresholds declined to
+// shard it", and an unclassified row matches neither A nor B. A rule that wants
+// the unrouted population selects it by `language`.
 var enumDomains = map[string]map[string]struct{}{
 	"route":       setOf("A", "B"),
 	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected", "aborted", "error"),
