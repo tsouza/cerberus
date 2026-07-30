@@ -619,7 +619,7 @@ One implementation means a new rule guards BOTH lanes at once.
   no-run. Coverage assertion is collect-all-violations: unassigned (the
   forbidden gap), double-assigned, phantom/stale, and bad-shard-name are each
   reported, then `exit 1`. `compose-smoke-matrix.test.mjs` is the `node --test`
-  guard (run on the cheap `gate` lane) that pins the invariant + proves the
+  guard (run on the cheap `forbid-skip` job) that pins the invariant + proves the
   detectors fire. Two extra responsibilities: (1) it carries the per-shard
   `timeoutMinutes` ceiling on each emitted entry — the crawl shard gets a hard
   30-min cap (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the concurrency
@@ -765,7 +765,7 @@ One implementation means a new rule guards BOTH lanes at once.
   no-run. Coverage assertion is collect-all-violations (unassigned,
   double-assigned, phantom/stale, bad-shard-name, and the "exactly one shard
   runs Go e2e" invariant), then `exit 1`. `dashboard-matrix.test.mjs` is the
-  `node --test` guard (run on the cheap `gate` lane) pinning the invariant +
+  `node --test` guard (run on the cheap `forbid-skip` job) pinning the invariant +
   proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
   deliberately small. Each emitted entry also carries a per-shard
   `timeoutMinutes`: the crawl shard gets a hard 30-min cap
