@@ -22,8 +22,9 @@
 //
 // So the gate is neither "always" nor "never": a PR that touches the surface
 // this stack can see boots it, and every other PR short-circuits exactly as
-// before. Push, schedule, dispatch and `release/*` PRs are untouched — they
-// always ran the full lane and still do.
+// before. Push, schedule and `release/*` PRs are untouched — they always ran
+// the full lane and still do. `workflow_dispatch` never did, and still does
+// not: see NON_BOOTING_EVENTS.
 //
 // Two modes (env MODE, or argv[2]; default `verify`):
 //   - verify : assert every declared path still exists in the tree. A scope
@@ -112,6 +113,28 @@ export function stalePaths(paths) {
   });
 }
 
+// Events whose answer comes from the event alone, in the "don't boot"
+// direction. e2e.yml's only `workflow_dispatch` input regenerates the k3d
+// Grafana crawl inventory — a dashboard-lane artefact that no compose shard can
+// observe — so booting ClickHouse, a collector, a seeder and Grafana for it is
+// pure wall time. The guard this module replaced excluded dispatch for exactly
+// that reason; the exclusion is restated here rather than inherited.
+//
+// It lives HERE, not in the shared runsFullLane(), for two reasons. The other
+// consumer of that helper is the mutation sweep, which genuinely does want a
+// manual dispatch to sweep the whole matrix. And runsFullLane() fails OPEN by
+// design — anything that is not a pull request runs everything — so turning it
+// into an allow-list would make an event nobody anticipated silently skip the
+// lane, which is precisely the hollow green this module exists to prevent.
+// Not booting is therefore always a named, per-lane decision.
+export const NON_BOOTING_EVENTS = ['workflow_dispatch'];
+
+// Whether the changed-path diff matters at all, or the event settles it. Used
+// by the driver to skip computing a diff it would only discard.
+function settledByEvent({ eventName, headRef }) {
+  return NON_BOOTING_EVENTS.includes(eventName) || runsFullLane({ eventName, headRef });
+}
+
 // decide — should this event boot the compose stack, and why?
 //
 // The `null` changed-set (no merge base, shallow clone, a git failure) resolves
@@ -119,6 +142,9 @@ export function stalePaths(paths) {
 // cost of guessing wrong in that direction is a release-blocking bug that
 // reached main unexamined.
 export function decide({ eventName, headRef, changed }) {
+  if (NON_BOOTING_EVENTS.includes(eventName)) {
+    return { inScope: false, reason: `event "${eventName}" exercises no compose-visible surface` };
+  }
   if (runsFullLane({ eventName, headRef })) {
     return { inScope: true, reason: `event "${eventName}" always runs the full lane` };
   }
@@ -167,7 +193,7 @@ function main() {
 
   const eventName = (process.env.EVENT_NAME || '').trim();
   const headRef = (process.env.HEAD_REF || '').trim();
-  const changed = runsFullLane({ eventName, headRef })
+  const changed = settledByEvent({ eventName, headRef })
     ? null
     : changedPaths({ baseSha: process.env.BASE_SHA, headSha: process.env.HEAD_SHA });
 

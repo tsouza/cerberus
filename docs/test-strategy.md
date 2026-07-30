@@ -70,7 +70,7 @@ that changes something the stack can see differently — `internal/chsql`
 short-circuits in seconds. `.github/scripts/compose-smoke-scope.mjs`
 owns the decision and the two path lists, computes them from the PR's
 own diff against its merge base, falls back to booting the stack when
-that diff cannot be computed, and is unit-tested in the `check` job. Every other job below is
+that diff cannot be computed, and is unit-tested in the `forbid-skip` job. Every other job below is
 informational — it runs (push-to-main, nightly, or dispatch) and reports,
 but a red result does not block a merge. Informational does **not** mean
 tolerated: a red informational lane is a real failure to fix, it is just
@@ -570,14 +570,13 @@ PR, and any PR touching the lane's own harness all sweep the FULL
 matrix, so no phase's floor is ever load-bearing on some PR happening
 to touch its package. `.github/scripts/mutation-matrix.mjs` computes
 that selection from the PR's own diff against its merge base and is
-unit-tested in the `check` job; when the diff cannot be computed it
-falls back to the full matrix rather than to an empty one.
+unit-tested in the `forbid-skip` job; when the diff cannot be computed
+it falls back to the full matrix rather than to an empty one.
 
 The phase inventory is not restated here. `mutation-phases.mjs` is the
-one place that carries it, and a table duplicated into prose drifts
-silently — this section previously named a `phase4-traceql` leg that
-had already been split in four, and a 93% floor that had already been
-raised back to 95%. Read the module.
+one place that carries it: leg names and per-leg efficacy floors change
+with the packages they cover, and a table duplicated into prose drifts
+out of step without anything going red. Read the module.
 
 `internal/logql` is split into four sibling matrix entries (each scoped
 to `./internal/logql` but with disjoint `--exclude-files` regexes) to
