@@ -4,6 +4,26 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.13.3] — 2026-07-30
+
+### Fixed
+
+- **ci:** pre-release audit fixes for v1.14.0 (#1391)
+- **compose:** give every stack a per-checkout project name (#1390)
+- **routerrules:** stop geometry gates firing on every unclassified failure (#1389)
+- **solver:** distinguish routing-disabled from below-threshold (#1385)
+- **solver:** record the real cost grid on every routing refusal (#1384)
+- **brew:** migrate existing formula installs to the cask (#1380)
+
+### CI
+
+- **mutation:** run the legs a PR's scope changed instead of skipping all (#1378)
+
+### Documentation
+
+- **migration:** install the cask, not the formula (#1383)
+- cask-only brew instructions and a README humans can skim (#1386)
+
 ## [v1.13.2] — 2026-07-29
 
 ### Fixed
