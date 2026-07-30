@@ -92,8 +92,21 @@ test('a docs-only PR runs no phase at all', () => {
 
 test('a change under one scope selects exactly that scope’s leg', () => {
   assert.deepEqual(names(select(['internal/chplan/plan.go'])), ['phase1']);
-  assert.deepEqual(names(select(['internal/chsql/emit_node.go'])), ['phase2']);
   assert.deepEqual(names(select(['internal/spansscan/match.go'])), ['phase6-spansscan']);
+});
+
+test('the chsql legs partition the package by exclude_files, one leg per file', () => {
+  assert.deepEqual(names(select(['internal/chsql/metrics_compare.go'])), ['phase2-compare']);
+  assert.deepEqual(names(select(['internal/chsql/emit_node.go'])), ['phase2-builder']);
+  // `emit.go` and `emit_node.go` differ only by suffix, and `range_window.go` is
+  // a prefix of three siblings split across all three legs — the `$` anchor on
+  // every alternation is what keeps those from colliding.
+  assert.deepEqual(names(select(['internal/chsql/emit.go'])), ['phase2-compare']);
+  assert.deepEqual(names(select(['internal/chsql/range_window_native.go'])), ['phase2-compare']);
+  assert.deepEqual(names(select(['internal/chsql/range_window_resample.go'])), ['phase2-builder']);
+  // The catch-all leg owns range_window.go and everything no sibling names.
+  assert.deepEqual(names(select(['internal/chsql/range_window.go'])), ['phase2-other']);
+  assert.deepEqual(names(select(['internal/chsql/tableshape.go'])), ['phase2-other']);
 });
 
 test('the logql legs partition the package by exclude_files, one leg per file', () => {

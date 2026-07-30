@@ -30,7 +30,64 @@ const SERIAL_WORKERS = 1;
 
 export const PHASES = [
   { phase: 'phase1', scope: './internal/chplan', efficacy: EFFICACY, workers: DEFAULT_WORKERS },
-  { phase: 'phase2', scope: './internal/chsql', efficacy: EFFICACY, workers: DEFAULT_WORKERS },
+
+  // ---------------------------------------------------------------------------
+  // phase2 — three sibling legs over ./internal/chsql.
+  //
+  // Unsharded, phase2 was the mutation lane's sole critical path: 936 executed
+  // mutants at ~2.4s each put it at 38 minutes while the next-slowest leg
+  // (phase4-promql) finished in 13. Every other leg idled for 25 minutes waiting
+  // on it, so the lane's wall time was phase2's wall time and nothing else.
+  //
+  // Unlike the phase4-logql split, this one is NOT a memory-ceiling workaround —
+  // chsql's test binary links no heavy parser graph and the leg never OOM'd. It
+  // is a pure wall-clock split, so the legs keep gremlins' default fan-out.
+  //
+  // The partition is by MEASURED executed-mutant count (KILLED + LIVED per file,
+  // read off a full phase2 report), greedily balanced to ~313/310/313 — roughly
+  // 12.5 minutes each. It is deliberately not thematic: range_window.go alone
+  // carries 186 mutants, so any split that kept "the range-window emitters"
+  // together would rebuild the critical path it exists to remove.
+  //
+  // Rebalance by re-measuring, never by moving a file to keep a shard above the
+  // bar. Shard boundaries chosen to hide a weak file are the same evasion as
+  // relaxing `efficacy` — both leave the tests that failed to kill a mutant
+  // exactly as weak, and only change which number reports it.
+  {
+    phase: 'phase2-compare',
+    scope: './internal/chsql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // metrics_compare + prewhere + exemplars + structural_join + late_mat +
+    // range_window_native + range_bucket_fanout + emit + vector_set_op + set_op.
+    exclude_files:
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|histogram_over_time|histogram_quantile|histogram_quantile_native|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_resample|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+  },
+  {
+    phase: 'phase2-builder',
+    scope: './internal/chsql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // builder + emit_node + histogram_over_time + vector_join + range_lwr +
+    // histogram_quantile_native + range_window_resample + query_exemplars.
+    exclude_files:
+      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_native|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+  },
+  {
+    phase: 'phase2-other',
+    scope: './internal/chsql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // catch-all leg: range_window + nested_set_annotate + scan_resource_bound +
+    // ddl + range_window_fused + metrics_second_stage + nary_vector_set_op +
+    // tableshape, plus every file no other leg claims. A file newly added to
+    // internal/chsql needs no edit here — it is picked up automatically, which
+    // is why this leg keeps no positive file list to fall out of sync. The two
+    // legs above DO enumerate it, so a new file is briefly mutated three times
+    // over; TestMutationLegsPartitionEveryScopedFile fails on exactly that.
+    exclude_files:
+      '^(builder|emit|emit_node|exemplars|histogram_over_time|histogram_quantile_native|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_native|range_window_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
+  },
   {
     phase: 'phase3-optimizer',
     scope: './internal/optimizer',
