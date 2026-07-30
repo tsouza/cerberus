@@ -36,6 +36,20 @@ type Result struct {
 // exit is reported in Result.ExitCode with a nil error; only a failure to start
 // or to wait on the process (a missing binary, a permission error) is an error.
 func Run(spec RunSpec) (Result, error) {
+	// Docker is the one binary this seam must never launch. Compose resolves
+	// which project — and so which checkout's containers — an invocation
+	// addresses from COMPOSE_PROJECT_SUFFIX in the inherited environment, and
+	// spec.Env replaces that environment wholesale, so a docker child started
+	// here would address the unsuffixed project and pause or tear down whichever
+	// checkout owns it. Compose is the seam that inherits instead.
+	if filepath.Base(spec.Bin) == DockerBin {
+		return Result{}, fmt.Errorf(
+			"migration harness: run %s: RunSpec.Env replaces the environment and drops the "+
+				"COMPOSE_PROJECT_SUFFIX docker resolves this checkout's compose project from; call Compose",
+			spec.Bin,
+		)
+	}
+
 	cmd := exec.Command(spec.Bin, spec.Args...) //nolint:gosec // the binary and args are harness-authored, not user input
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env

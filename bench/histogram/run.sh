@@ -11,13 +11,19 @@
 # query battery and writes RESULTS.md.
 #
 # All host ports live in the 52xxx range and the compose project is
-# `histbench-ab5`, so this stack is fully isolated from any other bench stack
-# that may already be running on the machine.
+# `histbench-ab5`, so this stack is isolated from any other bench stack that may
+# already be running on the machine — and, via COMPOSE_PROJECT_SUFFIX, from a
+# copy of ITSELF running out of another checkout of this repository.
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Populate the per-checkout compose project suffix docker-compose.yml's `name:`
+# interpolates. Already set when this script runs under `just`; derived here so
+# running it directly isolates too. See scripts/compose-project-suffix.sh.
+COMPOSE_PROJECT_SUFFIX="$(../../scripts/compose-project-suffix.sh)"
+export COMPOSE_PROJECT_SUFFIX
+
 PROFILE="${1:-smoke}"
-PROJECT=histbench-ab5
 
 # Host ports — must match docker-compose.yml.
 CH_NATIVE_PORT=52000
@@ -26,9 +32,14 @@ PROM_PORT=52090
 MIMIR_PORT=52009
 
 if [[ "$PROFILE" == "down" ]]; then
-  docker compose -p "$PROJECT" down -v
+  docker compose down -v
   exit 0
 fi
+
+# The container name compose gave a service. Asked rather than reconstructed:
+# the compose file names no `container_name`, so the name is
+# `<project>-<service>-<n>` and the project carries the per-checkout suffix.
+ctr_name() { docker compose ps --format '{{.Name}}' "$1"; }
 
 case "$PROFILE" in
   smoke) ROUTES=5   INSTANCES=2 BOUNDS=11 STEPS=240  INTERVAL=15 ITERS=30 ;;
@@ -37,11 +48,11 @@ case "$PROFILE" in
 esac
 
 echo "==> [1/5] building + starting core stack (clickhouse, cerberus, prometheus)"
-docker compose -p "$PROJECT" up -d --build --wait clickhouse cerberus prometheus
+docker compose up -d --build --wait clickhouse cerberus prometheus
 
 echo "==> [2/5] starting mimir (best-effort)"
 MIMIR_OK=1
-docker compose -p "$PROJECT" up -d mimir || MIMIR_OK=0
+docker compose up -d mimir || MIMIR_OK=0
 if [[ "$MIMIR_OK" == "1" ]]; then
   MIMIR_OK=0
   for i in $(seq 1 40); do
@@ -77,8 +88,8 @@ go run ./cmd/bench -profile "$PROFILE" -iters "$ITERS" \
   -cerberus-url "http://localhost:${CERBERUS_PORT}" \
   -prom-url "http://localhost:${PROM_PORT}" \
   -mimir-url "$MIMIR_QURL" \
-  -cerberus-ctr "${PROJECT}-cerberus" \
-  -prom-ctr "${PROJECT}-prometheus" \
-  -mimir-ctr "${PROJECT}-mimir"
+  -cerberus-ctr "$(ctr_name cerberus)" \
+  -prom-ctr "$(ctr_name prometheus)" \
+  -mimir-ctr "$(ctr_name mimir)"
 
 echo "==> done. See $(pwd)/RESULTS.md"

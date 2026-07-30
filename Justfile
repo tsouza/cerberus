@@ -11,6 +11,28 @@ MARKDOWNLINT_VERSION := "v0.18.1"
 ACTIONLINT_VERSION := "v1.7.12"
 MODULE := "github.com/tsouza/cerberus"
 
+# Per-checkout compose project suffix, exported into every recipe so no compose
+# call site has to remember it: each docker-compose file spells its project name
+# `<stable-base>${COMPOSE_PROJECT_SUFFIX:-}`, and a compose invocation from a
+# recipe, from a harness script a recipe runs, or from a Go test a recipe runs
+# all inherit the same value. Every image tag this tree builds into the local
+# daemon carries it too, because a tag is namespaced by the daemon rather than
+# by the project. Empty in a primary checkout and in CI — project, container,
+# network, volume and image names are then exactly what they are without this
+# mechanism — and a short path-derived hash in a linked worktree, so each agent's
+# stack is a distinct set of objects rather than a shared one. Host ports stay
+# fixed, so two worktrees still cannot run the same stack at once; that now fails
+# on a port bind instead of silently adopting the other checkout's containers.
+# See scripts/compose-project-suffix.sh.
+#
+# `just` evaluates this before running ANY recipe, so the derivation has to hold
+# for a checkout with no git in sight (it prints nothing, and the bare project
+# names apply) and for an invocation whose working directory is anywhere at all
+# (hence the justfile-relative path). What it does not paper over is a checkout
+# missing the script: that fails loudly, naming the absolute path, rather than
+# defaulting to a suffix that would silently share stacks between worktrees.
+export COMPOSE_PROJECT_SUFFIX := shell('exec "$1"', justfile_directory() / "scripts/compose-project-suffix.sh")
+
 # Default: list recipes.
 default:
     @just --list
@@ -1322,8 +1344,16 @@ compat-all: compat-promql compat-logql compat-traceql
 # Held equal to the `${CERBERUS_IMAGE:-…}` default in
 # tiers/tier1-dual/docker-compose.dual.yml by
 # test/regression/migration_tier1_test.go, so the recipe below and the compose
-# file cannot disagree about which tag "locally built" means.
-MIGRATION_LOCAL_IMAGE := "cerberus:migration-tier1"
+# file cannot disagree about which tag "locally built" means. All three spell
+# the suffix interpolation and expand it in their own runtime — the recipe's
+# shell here, compose's interpolation there — so the tag stays one string.
+#
+# The suffix matters more here than anywhere else in the tree: this lane's `up`
+# recipes carry no `--build` and the service declares `pull_policy: never`, so
+# the tag is resolved a whole pull-retry loop after it is written. A tag shared
+# with a second checkout would let that checkout's build land in between, and
+# the lane would report on a binary from another tree.
+MIGRATION_LOCAL_IMAGE := "cerberus:migration-tier1${COMPOSE_PROJECT_SUFFIX:-}"
 
 # Put the cerberus image the migration stacks run into the local Docker daemon —
 # the SINGLE acquisition point, shared by CI and local dev.
@@ -1338,7 +1368,7 @@ MIGRATION_LOCAL_IMAGE := "cerberus:migration-tier1"
 # itself: `pull_policy: never` and no `--build` on the up recipes are what keep
 # a release run from recompiling the source tree over the released image.
 migration-cerberus-image:
-    @local_tag='{{MIGRATION_LOCAL_IMAGE}}'; \
+    @local_tag="{{MIGRATION_LOCAL_IMAGE}}"; \
     img="${CERBERUS_IMAGE:-$local_tag}"; \
     if [ "$img" = "$local_tag" ]; then \
         echo "==> migration cerberus image: build $img from Dockerfile.local"; \

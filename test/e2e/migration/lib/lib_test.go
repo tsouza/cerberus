@@ -110,6 +110,25 @@ func TestRunReportsAMissingBinary(t *testing.T) {
 	}
 }
 
+// TestRunRefusesDocker asserts the seam that REPLACES the environment refuses
+// the one binary whose correctness depends on inheriting it: docker resolves
+// which compose project — and so which checkout's containers — an invocation
+// addresses from COMPOSE_PROJECT_SUFFIX, so a docker child started through Run
+// would pause or tear down whichever checkout owns the unsuffixed project.
+func TestRunRefusesDocker(t *testing.T) {
+	t.Parallel()
+
+	for _, bin := range []string{DockerBin, filepath.Join("/usr/bin", DockerBin)} {
+		res, err := Run(RunSpec{Bin: bin, Args: []string{"compose", "version"}, Env: OfflineEnv()})
+		if err == nil {
+			t.Fatalf("Run(%q) returned exit %d and no error; it must refuse docker", bin, res.ExitCode)
+		}
+		if !strings.Contains(err.Error(), "Compose") {
+			t.Fatalf("Run(%q) refusal %q does not name Compose as the seam to use instead", bin, err)
+		}
+	}
+}
+
 // TestOfflineEnvBlackholesTheNetworkAndLetsACaseWin asserts the offline
 // environment closes every proxy bypass and that a case's own CERBERUS_*
 // setting overrides the harness default.

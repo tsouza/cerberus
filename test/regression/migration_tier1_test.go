@@ -359,9 +359,10 @@ func TestMigrationTier1SchemaAuthority(t *testing.T) {
 	t.Parallel()
 
 	cf := readCompose(t, tier1ComposePath)
-	if cf.Name != tier1ComposeProject {
-		t.Fatalf("compose project name = %q, want %q (the Justfile recipes and any leftover-container "+
-			"cleanup key on it)", cf.Name, tier1ComposeProject)
+	// The declared name carries the per-checkout suffix; the base underneath it
+	// is what the Justfile recipes and any leftover-container cleanup key on.
+	if base := composeProjectBase(t, tier1ComposePath, cf.Name); base != tier1ComposeProject {
+		t.Fatalf("compose project base = %q, want %q", base, tier1ComposeProject)
 	}
 	if _, ok := cf.Services[tier1CerberusService]; !ok {
 		t.Fatalf("%s has no %q service", tier1ComposePath, tier1CerberusService)
@@ -1340,7 +1341,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", migrationArtifactScript, err)
 	}
-	if want := "export const LOCAL_IMAGE_TAG = '" + localTag + "'"; !strings.Contains(string(resolver), want) {
+	if want := "LOCAL_IMAGE_TAG = expandComposeSuffix('" + localTag + "')"; !strings.Contains(string(resolver), want) {
 		t.Fatalf("%s does not declare %s, so the resolver would export a CERBERUS_IMAGE the compose "+
 			"stack does not recognise", migrationArtifactScript, want)
 	}
