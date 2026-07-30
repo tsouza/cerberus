@@ -41,6 +41,15 @@ type AggSpec struct {
 	NumScope    Scope    // count_ratio numerator
 	DenScope    Scope    // count_ratio denominator
 	PartitionBy []string
+	// ClassifiedOnly restricts the population to rows the solver classified.
+	// It is DERIVED from Column by resolveCorpus (a geometry column only exists
+	// on a classified row — see geometryColumns), never authored in the catalog,
+	// so a new geometry param cannot be added without it.
+	//
+	// It is not expressible as a Scope: Scope is enum EQUALITY, and "classified"
+	// is the complement of one member rather than a member. Both backends apply
+	// it as `route != <unclassified>` on top of Scope.
+	ClassifiedOnly bool
 }
 
 // GroupResult is one grouped row of a rule evaluation: the group-key values (in

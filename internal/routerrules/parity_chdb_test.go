@@ -8,11 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
+
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/optcorpus"
 )
 
 // TestCrossBackendParity seeds one fixture as a chdb table AND as JSONL, runs
@@ -292,50 +296,92 @@ func seedParityTable(t *testing.T, db *sql.DB) {
 }
 
 // seedParityTableFrom creates the corpus table in chdb and loads the named JSONL
-// fixture. The column types mirror the optcorpus MergeTree DDL so the CH source's
-// queries behave as they would against the real table.
+// fixture, so the CH source's queries run against the production table shape.
 func seedParityTableFrom(t *testing.T, db *sql.DB, fixture string) {
 	t.Helper()
 	seedParityTableFromRows(t, db, readSeedRows(t, fixture))
 }
 
 // seedParityTableFromRows creates the corpus table in chdb and loads the given
-// decoded rows. The column types mirror the optcorpus MergeTree DDL so the CH
-// source's queries behave as they would against the real table.
+// decoded rows.
+//
+// The shape is taken from optcorpus.CorpusColumns rather than restated here: this
+// seeder used to hand-write the DDL, and its route column had silently drifted to
+// Enum8('A'=0,'B'=1) — no unclassified member — so the parity lane could not even
+// represent an unclassified row, let alone catch it being folded into 'A'.
+//
+// Two deliberate departures from the production DDL, both about substrate rather
+// than shape: no TTL (fixture event_time values are small epoch offsets a
+// retention clause would treat as long expired, so a background TTL merge could
+// empty the table mid-test) and ORDER BY (shape_id, event_time), which is the
+// access pattern the parity queries actually scan.
 func seedParityTableFromRows(t *testing.T, db *sql.DB, rows []jsonlRow) {
 	t.Helper()
-	ddl := "CREATE OR REPLACE TABLE " + CorpusTableName + ` (
-		event_time DateTime,
-		shape_id LowCardinality(String),
-		language LowCardinality(String),
-		normalized_query_hash UInt64,
-		n_anchors UInt32, fanout UInt32, cumulative_d UInt32,
-		outer_range UInt32, step UInt32,
-		route Enum8('A'=0,'B'=1),
-		k_shards UInt8,
-		decision_reason LowCardinality(String),
-		read_rows UInt64, read_bytes UInt64,
-		query_duration_ms UInt64, memory_usage UInt64,
-		exit_status Enum8('ok'=0,'oom'=1,'timeout'=2,'sample_budget'=3,'breaker'=4,'rejected'=5)
-	) ENGINE = MergeTree ORDER BY (shape_id, event_time)`
+
+	cols := optcorpus.CorpusColumns()
+	if _, err := db.Exec("DROP TABLE IF EXISTS " + CorpusTableName); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	ddl := chsql.CreateTable(CorpusTableName).
+		Columns(cols...).
+		Engine(chsql.EngineMergeTree()).
+		OrderBy("shape_id", "event_time").
+		SQL()
 	if _, err := db.Exec(ddl); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 
-	var vals []string
+	vals := make([]string, 0, len(rows))
 	for _, r := range rows {
-		vals = append(vals, fmt.Sprintf(
-			"(toDateTime(%d),'%s','%s',%d,%d,%d,%d,%d,%d,'%s',%d,'%s',%d,%d,%d,%d,'%s')",
-			int64(r.EventTime), r.ShapeID, r.Language, r.NormalizedQueryHash,
-			int(r.NAnchors), int(r.Fanout), int(r.CumulativeD), int(r.OuterRange), int(r.Step),
-			r.Route, int(r.KShards), r.DecisionReason,
-			int(r.ReadRows), int(r.ReadBytes), int(r.QueryDurationMS), int(r.MemoryUsage), r.ExitStatus,
-		))
+		vals = append(vals, parityRowTuple(t, cols, r))
 	}
 	stmt := "INSERT INTO " + CorpusTableName + " VALUES " + strings.Join(vals, ",")
 	if _, err := db.Exec(stmt); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
+}
+
+// parityRowTuple renders one VALUES tuple in the table's own column order. The
+// per-column literals are looked up by name, so adding a column to the corpus
+// table fails here loudly instead of shifting every later value one position left.
+func parityRowTuple(t *testing.T, cols []chsql.ColumnDef, r jsonlRow) string {
+	t.Helper()
+
+	byName := map[string]string{
+		"event_time":            fmt.Sprintf("toDateTime(%d)", int64(r.EventTime)),
+		"shape_id":              chLiteral(r.ShapeID),
+		"language":              chLiteral(r.Language),
+		"normalized_query_hash": strconv.FormatUint(r.NormalizedQueryHash, 10),
+		"n_anchors":             strconv.Itoa(int(r.NAnchors)),
+		"fanout":                strconv.Itoa(int(r.Fanout)),
+		"cumulative_d":          strconv.Itoa(int(r.CumulativeD)),
+		"outer_range":           strconv.Itoa(int(r.OuterRange)),
+		"step":                  strconv.Itoa(int(r.Step)),
+		"route":                 chLiteral(r.Route),
+		"k_shards":              strconv.Itoa(int(r.KShards)),
+		"decision_reason":       chLiteral(r.DecisionReason),
+		"read_rows":             strconv.Itoa(int(r.ReadRows)),
+		"read_bytes":            strconv.Itoa(int(r.ReadBytes)),
+		"query_duration_ms":     strconv.Itoa(int(r.QueryDurationMS)),
+		"memory_usage":          strconv.Itoa(int(r.MemoryUsage)),
+		"exit_status":           chLiteral(r.ExitStatus),
+	}
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		v, ok := byName[c.Name]
+		if !ok {
+			t.Fatalf("corpus column %q has no parity fixture value — add one to parityRowTuple", c.Name)
+		}
+		out = append(out, v)
+	}
+	return "(" + strings.Join(out, ",") + ")"
+}
+
+// chLiteral single-quotes a fixture string for a VALUES tuple. The empty string
+// is a real value here — it is the unclassified route and the absent decision
+// reason — so it must render as ” rather than being elided.
+func chLiteral(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
 }
 
 // readSeedRows decodes the JSONL fixture into jsonlRow values for re-insertion

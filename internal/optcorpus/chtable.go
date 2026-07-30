@@ -67,33 +67,95 @@ type CHTableSink struct {
 // column-wise via Append — no value SQL is concatenated.
 const corpusInsertStmt = "INSERT INTO " + CorpusTableName
 
-// exitStatusColumn is the corpus column holding the terminal outcome. It is
-// the one column whose type the running binary can outgrow, so it is named
-// once and shared by the DDL, the reconciling ALTER, and the verify read.
-const exitStatusColumn = "exit_status"
+// exitStatusColumn and routeColumn are the corpus Enum8 columns whose member
+// set the running binary can outgrow. Each is named once and shared by the DDL,
+// the reconciling ALTER, and the verify read (see reconciledEnumColumns).
+const (
+	exitStatusColumn = "exit_status"
+	routeColumn      = "route"
+)
 
-// exitStatusEnumType renders the exit_status Enum8 from the exitStatuses list,
-// so the column type, the string→value mapping (exitEnumValue), and the
+// RouteUnclassified is the route token a Row carries when no routing
+// classification ran — the Solver is off, or the head is one Solver.Classify
+// does not classify (every non-PromQL query). It is a MEMBER of the route
+// Enum8, not an absence.
+//
+// It is exported because internal/routerrules re-declares it verbatim (that
+// package deliberately imports neither optcorpus nor chclient), and a
+// re-declaration nobody can compare against is a comment, not a contract:
+// routerrules' route_contract_test.go pins the two in lockstep.
+//
+// Storing it as a member is the whole point: the rule engine reads `route` to
+// select the ROUTABLE population (`route = 'A'` is "classified and declined on
+// cost"), and folding an unclassified row into 'A' makes it indistinguishable
+// from a genuine route-A classification. Every LogQL / TraceQL row is
+// unclassified, so that fold silently enrols the two non-PromQL heads in every
+// route-A population — and it disagrees with the JSONL sink, which writes the
+// token verbatim, so the same corpus yielded different findings per backend.
+//
+// The token is the empty string rather than a word so the two sinks are
+// byte-identical: JSONL already writes Row.Route verbatim and historical rows
+// already carry "".
+const RouteUnclassified = ""
+
+// routeUnclassifiedValue is the Enum8 value RouteUnclassified stores as. 'A' and
+// 'B' keep the values they have always been stored under — widening a deployed
+// column must not remap existing rows — so the new member takes the next one.
+const routeUnclassifiedValue = 2
+
+// routeEnumMembers is the route column's member set: the single source of truth
+// behind both the column type and routeEnumValue.
+func routeEnumMembers() []chsql.EnumPair {
+	return []chsql.EnumPair{
+		{Name: "A", Value: 0},
+		{Name: "B", Value: 1},
+		{Name: RouteUnclassified, Value: routeUnclassifiedValue},
+	}
+}
+
+// exitStatusEnumMembers renders the exit_status member set from the exitStatuses
+// list, so the column type, the string→value mapping (exitEnumValue), and the
 // ExitStatus iota are one source of truth rather than three that must agree.
-func exitStatusEnumType() chsql.Frag {
+func exitStatusEnumMembers() []chsql.EnumPair {
 	pairs := make([]chsql.EnumPair, 0, len(exitStatuses))
 	for _, s := range exitStatuses {
-		pairs = append(pairs, chsql.EnumPair{Name: s.String(), Value: int64(s)})
+		pairs = append(pairs, chsql.EnumPair{Name: s.String(), Value: int8(s)})
 	}
-	return chsql.TypeEnum8(pairs...)
+	return pairs
+}
+
+func exitStatusEnumType() chsql.Frag { return chsql.TypeEnum8(exitStatusEnumMembers()...) }
+
+func routeEnumType() chsql.Frag { return chsql.TypeEnum8(routeEnumMembers()...) }
+
+// reconciledEnumColumn is a corpus Enum8 column whose member set this binary can
+// outgrow, so the sink widens it and then verifies the deployed type against the
+// server at construction. Adding a member to either column is a schema change on
+// every already-deployed corpus table, and this list is what makes that change
+// land there rather than only on fresh deployments.
+type reconciledEnumColumn struct {
+	name    string
+	members func() []chsql.EnumPair
+}
+
+func (c reconciledEnumColumn) enumType() chsql.Frag { return chsql.TypeEnum8(c.members()...) }
+
+var reconciledEnumColumns = []reconciledEnumColumn{
+	{name: exitStatusColumn, members: exitStatusEnumMembers},
+	{name: routeColumn, members: routeEnumMembers},
 }
 
 // NewCHTableSink builds a CH-table sink over conn and reconciles the corpus
 // table with the schema this binary writes, in three steps:
 //
 //	CREATE TABLE IF NOT EXISTS — makes the table on a fresh deployment.
-//	ALTER TABLE MODIFY COLUMN  — widens exit_status on a table that predates an
-//	                             exit-status member this binary can emit.
-//	                             CREATE IF NOT EXISTS alone cannot do this: it
-//	                             is a no-op against an existing table however
-//	                             its columns are declared.
-//	verify                     — reads the deployed exit_status type back and
-//	                             fails construction if a member is missing.
+//	ALTER TABLE MODIFY COLUMN  — widens each reconciledEnumColumns entry on a
+//	                             table that predates a member this binary can
+//	                             emit. CREATE IF NOT EXISTS alone cannot do
+//	                             this: it is a no-op against an existing table
+//	                             however its columns are declared.
+//	verify                     — reads each deployed type back and fails
+//	                             construction if a member is missing.
 //
 // Only the CREATE and the verify can fail construction. The widening is
 // BEST-EFFORT by design: a deployment whose CH user holds INSERT and CREATE but
@@ -119,87 +181,93 @@ func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error)
 	if err := conn.Exec(ctx, corpusCreateTableSQL()); err != nil {
 		return nil, fmt.Errorf("optcorpus: create %s: %w", CorpusTableName, err)
 	}
-	widenErr := conn.Exec(ctx, corpusAlterExitStatusSQL())
-	if err := verifyExitStatusColumn(ctx, conn, widenErr); err != nil {
-		return nil, err
+	for _, col := range reconciledEnumColumns {
+		widenErr := conn.Exec(ctx, corpusAlterEnumColumnSQL(col))
+		if err := verifyEnumColumn(ctx, conn, col, widenErr); err != nil {
+			return nil, err
+		}
 	}
 	return &CHTableSink{conn: conn, table: CorpusTableName}, nil
 }
 
-// corpusAlterExitStatusSQL renders the statement that retypes the deployed
-// exit_status column to the member set this binary writes. Widening an Enum8
-// is metadata-only on ClickHouse — no part is rewritten, no mutation is
-// scheduled — so it is safe to issue on every start, and IF EXISTS makes it a
-// no-op on a table the CREATE above just made with the wide type.
-func corpusAlterExitStatusSQL() string {
-	return chsql.AlterTableModifyColumn("", CorpusTableName, exitStatusColumn, exitStatusEnumType()).SQL()
+// corpusAlterEnumColumnSQL renders the statement that retypes the deployed
+// column to the member set this binary writes. Widening an Enum8 is
+// metadata-only on ClickHouse — no part is rewritten, no mutation is scheduled —
+// so it is safe to issue on every start, and IF EXISTS makes it a no-op on a
+// table the CREATE above just made with the wide type.
+func corpusAlterEnumColumnSQL(col reconciledEnumColumn) string {
+	return chsql.AlterTableModifyColumn("", CorpusTableName, col.name, col.enumType()).SQL()
 }
 
-// verifyExitStatusColumn reads the DEPLOYED exit_status column type back from
-// system.columns and fails if it cannot hold every member this binary emits,
-// naming the missing ones. Reading the server's own answer — rather than
-// trusting that the ALTER did what it was asked — is the only check that
-// distinguishes a widened column from one the server left alone.
+// verifyEnumColumn reads the DEPLOYED column type back from system.columns and
+// fails if it cannot hold every member this binary emits, naming the missing
+// ones. Reading the server's own answer — rather than trusting that the ALTER did
+// what it was asked — is the only check that distinguishes a widened column from
+// one the server left alone.
 //
 // widenErr is whatever the best-effort widening returned. It is carried here
 // rather than acted on at the callsite because it only becomes evidence when
 // the column turns out to be too narrow: then, and only then, the failed ALTER
 // is the reason and belongs in the message an operator reads.
-func verifyExitStatusColumn(ctx context.Context, conn CHConn, widenErr error) error {
-	sql, args := corpusExitStatusTypeQuery()
+func verifyEnumColumn(ctx context.Context, conn CHConn, col reconciledEnumColumn, widenErr error) error {
+	sql, args := corpusColumnTypeQuery(col.name)
 	rows, err := conn.Query(ctx, sql, args...)
 	if err != nil {
-		return fmt.Errorf("optcorpus: read deployed %s type: %w", exitStatusColumn, err)
+		return fmt.Errorf("optcorpus: read deployed %s type: %w", col.name, err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("optcorpus: read deployed %s type: %w", exitStatusColumn, err)
+			return fmt.Errorf("optcorpus: read deployed %s type: %w", col.name, err)
 		}
-		return fmt.Errorf("optcorpus: %s.%s absent after reconciliation", CorpusTableName, exitStatusColumn)
+		return fmt.Errorf("optcorpus: %s.%s absent after reconciliation", CorpusTableName, col.name)
 	}
 	var deployed string
 	if err := rows.Scan(&deployed); err != nil {
-		return fmt.Errorf("optcorpus: scan deployed %s type: %w", exitStatusColumn, err)
+		return fmt.Errorf("optcorpus: scan deployed %s type: %w", col.name, err)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("optcorpus: read deployed %s type: %w", exitStatusColumn, err)
+		return fmt.Errorf("optcorpus: read deployed %s type: %w", col.name, err)
 	}
 
 	have := enum8Members(deployed)
 	var problems []string
-	for _, s := range exitStatuses {
-		got, ok := have[s.String()]
+	for _, m := range col.members() {
+		got, ok := have[m.Name]
 		switch {
 		case !ok:
-			problems = append(problems, fmt.Sprintf("%s absent", s.String()))
-		case got != int64(s):
-			problems = append(problems, fmt.Sprintf("%s deployed as %d, this binary writes %d", s.String(), got, int64(s)))
+			problems = append(problems, fmt.Sprintf("%q absent", m.Name))
+		// The deployed side is parsed out of a server-supplied type string, so it
+		// is read as int64 and compared against the widened member value: a
+		// deployed value outside the Enum8 domain must read as a mismatch, not
+		// wrap into one that agrees.
+		case got != int64(m.Value):
+			problems = append(problems, fmt.Sprintf("%q deployed as %d, this binary writes %d", m.Name, got, m.Value))
 		}
 	}
 	if len(problems) > 0 {
 		if widenErr != nil {
 			return fmt.Errorf("optcorpus: deployed %s.%s type %q cannot hold what this binary writes (%s); widening it failed: %w",
-				CorpusTableName, exitStatusColumn, deployed, strings.Join(problems, "; "), widenErr)
+				CorpusTableName, col.name, deployed, strings.Join(problems, "; "), widenErr)
 		}
 		return fmt.Errorf("optcorpus: deployed %s.%s type %q cannot hold what this binary writes (%s)",
-			CorpusTableName, exitStatusColumn, deployed, strings.Join(problems, "; "))
+			CorpusTableName, col.name, deployed, strings.Join(problems, "; "))
 	}
 	return nil
 }
 
-// corpusExitStatusTypeQuery selects the deployed exit_status column type from
+// corpusColumnTypeQuery selects the deployed type of one corpus column from
 // system.columns for the corpus table in the connection's own database — the
 // same unqualified table the DDL above creates.
-func corpusExitStatusTypeQuery() (string, []any) {
+func corpusColumnTypeQuery(column string) (string, []any) {
 	return chsql.NewQuery().
 		From(chsql.Qual("system", "columns")).
 		Select(chsql.BareIdent("type")).
 		Where(
 			chsql.Eq(chsql.BareIdent("database"), chsql.Call("currentDatabase")),
 			chsql.Eq(chsql.BareIdent("table"), chsql.Lit(CorpusTableName)),
-			chsql.Eq(chsql.BareIdent("name"), chsql.Lit(exitStatusColumn)),
+			chsql.Eq(chsql.BareIdent("name"), chsql.Lit(column)),
 		).
 		Build()
 }
@@ -296,54 +364,74 @@ func parseEnum8Value(rs []rune) (int64, int, bool) {
 //	  event_time DateTime, shape_id LowCardinality(String),
 //	  language LowCardinality(String), normalized_query_hash UInt64,
 //	  n_anchors UInt32, fanout UInt32, cumulative_d UInt32,
-//	  outer_range UInt32, step UInt32, route Enum8('A'=0,'B'=1),
+//	  outer_range UInt32, step UInt32, route <routeEnumType()>,
 //	  k_shards UInt8, decision_reason LowCardinality(String),
 //	  read_rows UInt64, read_bytes UInt64, query_duration_ms UInt64,
 //	  memory_usage UInt64, exit_status <exitStatusEnumType()>
 //	) ENGINE = MergeTree ORDER BY (shape_id, n_anchors, fanout)
 //	  TTL toDateTime(event_time) + toIntervalDay(30)
 func corpusCreateTableSQL() string {
-	lcString := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
-	routeEnum := chsql.TypeEnum8(
-		chsql.EnumPair{Name: "A", Value: 0},
-		chsql.EnumPair{Name: "B", Value: 1},
-	)
-	exitEnum := exitStatusEnumType()
 	return chsql.CreateTable(CorpusTableName).
 		IfNotExists().
-		Columns(
-			chsql.ColumnDef{Name: "event_time", Type: chsql.TypeRaw("DateTime")},
-			chsql.ColumnDef{Name: "shape_id", Type: chsql.TypeLowCardinality(chsql.TypeRaw("String"))},
-			chsql.ColumnDef{Name: "language", Type: lcString},
-			chsql.ColumnDef{Name: "normalized_query_hash", Type: chsql.TypeRaw("UInt64")},
-			chsql.ColumnDef{Name: "n_anchors", Type: chsql.TypeRaw("UInt32")},
-			chsql.ColumnDef{Name: "fanout", Type: chsql.TypeRaw("UInt32")},
-			chsql.ColumnDef{Name: "cumulative_d", Type: chsql.TypeRaw("UInt32")},
-			chsql.ColumnDef{Name: "outer_range", Type: chsql.TypeRaw("UInt32")},
-			chsql.ColumnDef{Name: "step", Type: chsql.TypeRaw("UInt32")},
-			chsql.ColumnDef{Name: "route", Type: routeEnum},
-			chsql.ColumnDef{Name: "k_shards", Type: chsql.TypeRaw("UInt8")},
-			chsql.ColumnDef{Name: "decision_reason", Type: chsql.TypeLowCardinality(chsql.TypeRaw("String"))},
-			chsql.ColumnDef{Name: "read_rows", Type: chsql.TypeRaw("UInt64")},
-			chsql.ColumnDef{Name: "read_bytes", Type: chsql.TypeRaw("UInt64")},
-			chsql.ColumnDef{Name: "query_duration_ms", Type: chsql.TypeRaw("UInt64")},
-			chsql.ColumnDef{Name: "memory_usage", Type: chsql.TypeRaw("UInt64")},
-			chsql.ColumnDef{Name: exitStatusColumn, Type: exitEnum},
-		).
+		Columns(CorpusColumns()...).
 		Engine(chsql.EngineMergeTree()).
 		OrderBy("shape_id", "n_anchors", "fanout").
 		TTL(chsql.TableTTL("event_time", corpusRetention)).
 		SQL()
 }
 
-// routeEnumValue maps the Row.Route string to the Enum8 value the column
-// stores. An empty / unknown route defaults to 'A' (0) — a row with no routing
-// classification is, by construction, a route-A query.
-func routeEnumValue(route string) int8 {
-	if route == "B" {
-		return 1
+// CorpusColumns returns the corpus table's column list in WIRE ORDER — the single
+// source of truth behind the CREATE TABLE DDL, the columnar INSERT batch's Append
+// order (see Write), and every test substrate that stands the table up itself.
+//
+// The list is deliberately NOT derivable from Row: Row is the JSONL wire form and
+// the two shapes differ on purpose. Row carries opts + profile_events, which the
+// table does not store, and the table carries event_time, which the sink stamps
+// per batch rather than reading off a Row.
+//
+// It is exported for the same reason RouteUnclassified is: the corpus is read by
+// internal/routerrules and stood up on a chDB substrate by that package's parity
+// lane, neither of which may import this package from production code. Both used
+// to restate the shape — and the route column's Enum8 member list had already
+// drifted between the restatements, which is precisely the bug that made an
+// unclassified row read back as route 'A'. One list, three consumers, no copies.
+func CorpusColumns() []chsql.ColumnDef {
+	lcString := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
+	uint32Type := chsql.TypeRaw("UInt32")
+	uint64Type := chsql.TypeRaw("UInt64")
+	return []chsql.ColumnDef{
+		{Name: "event_time", Type: chsql.TypeRaw("DateTime")},
+		{Name: "shape_id", Type: lcString},
+		{Name: "language", Type: lcString},
+		{Name: "normalized_query_hash", Type: uint64Type},
+		{Name: "n_anchors", Type: uint32Type},
+		{Name: "fanout", Type: uint32Type},
+		{Name: "cumulative_d", Type: uint32Type},
+		{Name: "outer_range", Type: uint32Type},
+		{Name: "step", Type: uint32Type},
+		{Name: routeColumn, Type: routeEnumType()},
+		{Name: "k_shards", Type: chsql.TypeRaw("UInt8")},
+		{Name: "decision_reason", Type: lcString},
+		{Name: "read_rows", Type: uint64Type},
+		{Name: "read_bytes", Type: uint64Type},
+		{Name: "query_duration_ms", Type: uint64Type},
+		{Name: "memory_usage", Type: uint64Type},
+		{Name: exitStatusColumn, Type: exitStatusEnumType()},
 	}
-	return 0
+}
+
+// routeEnumValue maps the Row.Route token to the Enum8 value the column stores,
+// over the same routeEnumMembers list the column type is rendered from — so a
+// token and its stored value cannot disagree. A token outside the member set is
+// stored as RouteUnclassified: an unrecognised classifier read-out is not
+// evidence that the query took route A.
+func routeEnumValue(route string) int8 {
+	for _, m := range routeEnumMembers() {
+		if m.Name == route {
+			return m.Value
+		}
+	}
+	return routeUnclassifiedValue
 }
 
 // exitEnumValue maps the Row.ExitStatus token to the Enum8 value the column
