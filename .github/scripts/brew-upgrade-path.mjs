@@ -247,8 +247,8 @@ function main() {
   // cask, and Homebrew creates the directory on the first one. A runner image
   // that has never installed a cask would otherwise steer this job onto the
   // print-only branch and red it for a reason that is not a defect.
-  const caskroom = `${brewOrFail(['--prefix'], '`brew --prefix`').stdout.trim()}/Caskroom`;
-  mkdirSync(caskroom, { recursive: true });
+  const brewPrefix = brewOrFail(['--prefix'], '`brew --prefix`').stdout.trim();
+  mkdirSync(`${brewPrefix}/Caskroom`, { recursive: true });
 
   notice(`brew-upgrade-path: reconstructed a formula install at ${legacyRev}; expecting ${expectedVersion} after update.`);
 
@@ -275,7 +275,23 @@ function main() {
   // because capture() does not forward a `shell` option.
   const which = capture('sh', ['-c', 'command -v cerberus']);
   const resolved = which.status === 0 ? which.stdout.trim() : '';
-  const versionRes = resolved ? capture(resolved, ['--version']) : { status: 1, stdout: '', stderr: '' };
+
+  // WHERE it resolved is an assertion, not a log line. This job's claim is that
+  // the cask is what a migrated machine now runs, and a `cerberus` sitting
+  // anywhere else on PATH would satisfy the version match below while the link
+  // the migration exists to create was never made — green for the wrong reason.
+  if (resolved !== '' && !resolved.startsWith(`${brewPrefix}/`)) {
+    fail(
+      `\`cerberus\` resolves to ${resolved}, which is outside the Homebrew prefix ${brewPrefix}. ` +
+        `Whatever that binary is, it is not the cask this job installed, so the version it reports ` +
+        `says nothing about whether the migration linked.`,
+    );
+  }
+
+  // Probed under its bare name so PATH does the resolving — both what an
+  // operator actually types, and what keeps a path this module derived at
+  // runtime from becoming the program it executes.
+  const versionRes = resolved ? capture('cerberus', ['--version']) : { status: 1, stdout: '', stderr: '' };
   const reported = versionRes.status === 0 ? versionRes.stdout.trim() : '<not on PATH>';
 
   const problems = upgradeOutcomeProblems({
