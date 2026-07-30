@@ -4,6 +4,20 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.12.4] — 2026-07-30
+
+### Fixed
+
+- **ci:** backport the applicable v1.14.0 audit fixes (#1391)
+- **compose:** give every stack a per-checkout project name (#1390)
+- **routerrules:** stop geometry gates firing on every unclassified failure (#1389)
+- **solver:** distinguish routing-disabled from below-threshold (#1385)
+- **solver:** record the real cost grid on every routing refusal (#1384)
+
+### CI
+
+- **mutation:** close the hollow green on the 1.12.x line
+
 ## [v1.12.3] — 2026-07-29
 
 ### Fixed
