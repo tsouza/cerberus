@@ -864,7 +864,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   half pair never yields a plan in either direction.
   - Env: `CERBERUS_IMAGE_INPUT` / `CERBERUS_EXPECT_VERSION_INPUT` (the two
     workflow inputs; both empty = build from source, both set = test that
-    image, exactly one set = error), `BUILD_DIR` (default `build`),
+    image, exactly one set = error),
     `GITHUB_ENV` (the runner file `CERBERUS_BIN` / `CERBERUS_IMAGE` /
     `CERBERUS_EXPECT_VERSION` are appended to), `COMPOSE_PROJECT_SUFFIX` (the
     per-checkout suffix the local image tag carries, so the tag this module
