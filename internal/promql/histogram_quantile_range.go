@@ -614,6 +614,7 @@ func buildHistogramBucketFanout(
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	aggFuncs []chplan.AggFunc,
+	minSamplesPerSeries int,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
