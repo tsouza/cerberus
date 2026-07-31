@@ -420,24 +420,28 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 	}
 
 	// Set operations (`&&` / `||`) lower to a chplan.SetOperation; the
-	// emitter renders an INNER JOIN (intersect) or an identity-deduped
-	// UNION ALL (union) keyed on the arms' shared row identity —
-	// (TraceID, SpanID) for span-level arms, TraceID alone once an arm
-	// has been folded to trace granularity (see spansetArmExposesSpanID).
+	// emitter renders an identity-deduped UNION ALL of the two arms —
+	// for `&&` gated on the trace appearing in both arms, for `||`
+	// ungated (see chsql.emitSetOperation for why `&&` is a span union
+	// and not a span intersection). The dedup key is (TraceID, SpanID)
+	// for span-level arms and TraceID alone once an arm has been folded
+	// to trace granularity (see spansetArmExposesSpanID).
 	if setOp, ok := mapSetOp(op.Op); ok {
 		spanLevel := spansetArmExposesSpanID(left, s.SpanIDColumn) &&
 			spansetArmExposesSpanID(right, s.SpanIDColumn)
-		if setOp == chplan.SetUnion && spanLevel {
-			// A CH UNION matches arm columns positionally and
-			// errors (CH code 258) when the counts differ. Structural
-			// arms expose the narrow span envelope (3 keys + the
-			// structuralExtraProjectionColumns list) while plain
-			// filter arms expose `SELECT *`; mixing them — the exact
-			// shape of Grafana Traces Drilldown's structure-tab query
+		if spanLevel {
+			// A CH UNION matches arm columns positionally and errors
+			// (CH code 258) when the counts differ. Structural arms
+			// expose the narrow span envelope (3 keys + the
+			// structuralExtraProjectionColumns list) while plain filter
+			// arms expose `SELECT *`; mixing them — the exact shape of
+			// Grafana Traces Drilldown's structure-tab query
 			// `({...} &>> {...}) || ({...})` — needs the wide arm
-			// projected down to the same ordered column list. The
-			// narrow envelope is span-keyed, so this alignment only
-			// applies while both arms still carry span identity.
+			// projected down to the same ordered column list. Both ops
+			// emit a UNION, so both need the alignment. The narrow
+			// envelope is span-keyed, so alignment only applies while
+			// both arms still carry span identity; a trace-level-folded
+			// arm has no SpanId column to align to.
 			left, right = alignUnionArms(left, right, s)
 		}
 		spanIDColumn := s.SpanIDColumn

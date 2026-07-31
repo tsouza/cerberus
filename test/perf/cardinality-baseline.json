@@ -3230,6 +3230,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_classic_agg_plateau",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_classic_bare_at_pin_stale",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -3300,6 +3310,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_classic_plateau_overflow",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_classic_range_step",
     "fan_factor": 10,
     "scan_rows": 1,
@@ -3321,6 +3341,16 @@
   },
   {
     "fixture": "promql/histogram_quantile_classic_single_bucket",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_classic_zero_count_plateau",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
@@ -7602,8 +7632,8 @@
   {
     "fixture": "traceql/set_intersect_simple",
     "fan_factor": 1,
-    "scan_rows": 3,
-    "peak_intermediate": 3,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -7791,13 +7821,13 @@
   },
   {
     "fixture": "traceql/structural_descendant_of_intersect",
-    "fan_factor": 0,
-    "scan_rows": 0,
-    "peak_intermediate": 0,
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": true,
-    "max_recursion_depth": 0
+    "max_recursion_depth": 1
   },
   {
     "fixture": "traceql/structural_not_ancestor",

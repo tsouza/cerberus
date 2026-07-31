@@ -20,6 +20,15 @@ package chplan
 //     over the classic-histogram table; for `sum by(...)` aggregation,
 //     a chplan.Aggregate that element-wise-sums the arrays via
 //     `sumForEach` and groups by GroupBy).
+//   - BucketCountsColumn is PER-BUCKET and non-negative, never an
+//     already-cumulative ladder: the emitter cumulates it itself with
+//     arrayCumSum, which over non-negative elements is monotone
+//     non-decreasing by construction. That invariant is what makes
+//     Prometheus's ensureMonotonicAndIgnoreSmallDeltas repair unreachable
+//     on this node. Any future Input that supplies a pre-cumulated or
+//     independently-derived per-`le` ladder must apply that repair before
+//     this node sees the array (see the note in
+//     chsql.histogramQuantileValueFrag).
 //   - Phi is a scalar literal; PhiExpr is the computed-phi sibling
 //     (typically a ScalarSubquery built from `scalar(<vector>)`) and
 //     takes precedence over Phi at emit time. The emitter adds a

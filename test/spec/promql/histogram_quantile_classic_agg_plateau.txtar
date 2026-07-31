@@ -1,0 +1,63 @@
+# The aggregating sibling of histogram_quantile_classic_zero_count_plateau:
+# the ONLY classic path that combines counts across rows, hence the only
+# place a future edit could introduce a negative bucket count and break the
+# arrayCumSum monotonicity invariant.
+#
+# Two rows in the 5m window, same `job`, bucket counts [1, 0, 0, 1] and
+# [1, 0, 0, 2] over identical bounds [0.1, 0.5, 1.0]. sumForEach sums them
+# element-wise to [2, 0, 0, 3] — the same ladder cum [2, 2, 2, 5] the bare
+# fixture pins — so the answer is again 0.1. That pins two things at once:
+# element-wise summation preserves the plateau (and non-negativity), and
+# the quantile is scale-invariant, so the deliberately unscaled `rate`
+# collapse to sumForEach does not move the result.
+
+-- query.promql --
+histogram_quantile(0.4, sum by(job)(rate(http_server_request_duration_bucket[5m])))
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2025-12-31 23:59:30', 9), [1, 0, 0, 1], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 0, 0, 2], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 0.1]
+]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "job"
+[3] string = "job"
+[4] string = "http_server_request_duration"
+[5] string = "http.server.request.duration"
+[6] string = "http.server.request/duration"
+[7] string = "http.server.request_duration"
+[8] string = "http.server/request/duration"
+[9] string = "http.server/request_duration"
+[10] string = "http.server_request.duration"
+[11] string = "http.server_request_duration"
+[12] string = "http/server/request/duration"
+[13] string = "http/server/request_duration"
+[14] string = "http/server_request_duration"
+[15] string = "http_server.request.duration"
+[16] string = "http_server.request_duration"
+[17] string = "http_server_request.duration"
+[18] string = "2026-01-01 00:00:01.000000000"
+[19] int64 = 9
+[20] string = "2026-01-01 00:00:01.000000000"
+[21] int64 = 9
+[22] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.4 groupBy=[Attributes AS Attributes]
+    Project [map("job", gkey_0) AS Attributes, BucketCounts AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      Aggregate groupBy=[Attributes["job"] AS gkey_0] funcs=[sumForEach(BucketCounts) AS BucketCounts, any(ExplicitBounds) AS ExplicitBounds]
+        Filter predicate=(((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.4 < 0, -inf, if(0.4 > 1, inf, if(arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = length(arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))), `ExplicitBounds`[length(`ExplicitBounds`)], (if(arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1]) + (`ExplicitBounds`[arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, `ExplicitBounds`[arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) * ((0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])) / (arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`)))] - if(arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) = 1, 0.0, arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[arrayFirstIndex(c -> c >= (0.4 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - 1])))))))) AS `Value` FROM (SELECT map(?, `gkey_0`) AS `Attributes`, `BucketCounts` AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `Attributes`[?] AS `gkey_0`, sumForEach(`BucketCounts`) AS `BucketCounts`, any(`ExplicitBounds`) AS `ExplicitBounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `gkey_0`)))
