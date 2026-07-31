@@ -21,7 +21,7 @@
 // accident of the current numbers — a diff against a reference backend
 // is a bug to fix at the source, so there is no shape in this file that
 // can record a divergence as acceptable. The floors are prometheus
-// 737/737, loki 116/116, tempo 48/48; doc-counts.mjs asserts those
+// 737/737, loki 116/116, tempo 49/49; doc-counts.mjs asserts those
 // three numbers against compatibility/parity-baseline.json, so a corpus
 // change cannot leave this comment behind.
 //
