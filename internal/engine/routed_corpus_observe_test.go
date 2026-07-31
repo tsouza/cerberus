@@ -41,6 +41,7 @@ type routedCorpusObserver struct {
 	routedRoutes   []string
 	routedReasons  []string
 	routedKShards  []uint8
+	outcomes       [][2]string
 }
 
 func (o *routedCorpusObserver) ObserveQuery(
@@ -97,7 +98,11 @@ func (o *routedCorpusObserver) assertRoutedRowIdentity(
 	}
 }
 
-func (o *routedCorpusObserver) ObserveOutcome(string, string) {}
+func (o *routedCorpusObserver) ObserveOutcome(queryID, statusToken string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.outcomes = append(o.outcomes, [2]string{queryID, statusToken})
+}
 
 func (o *routedCorpusObserver) ObserveRejection(
 	string, []string, string, string, bool, string, uint32, uint32, uint32, uint32, uint32, uint8, string,
@@ -303,6 +308,55 @@ func TestExecuteRoutedCursor_ObservesTheFanOut(t *testing.T) {
 		t.Errorf("observed parallelism %d >= %d shards; the fixture exists because P below K is the routine shape",
 			obs.routedParallel[0], len(ids))
 	}
+}
+
+// TestExecuteRoutedCursor_DrainOutcomeUsesLogicalRouteBRecord pins the cursor
+// drain seam: a route-B CursorResult exposes one of its shard ids, and that id
+// addresses the one logical record ObserveRoutedQuery already created.
+func TestExecuteRoutedCursor_DrainOutcomeUsesLogicalRouteBRecord(t *testing.T) {
+	t.Parallel()
+
+	cq := &idCapturingCursorClient{rows: 1}
+	obs := &routedCorpusObserver{}
+	eng := newRoutedCorpusEngine(t, cq, obs)
+	plan := memoWiringEligiblePlan()
+	d := routedDecision(t, eng, plan)
+
+	cr, err := eng.executeRoutedCursor(routedCorpusTraceCtx(), routedCorpusLang{}, Meta{IsMetric: true}, plan, d)
+	if err != nil {
+		t.Fatalf("executeRoutedCursor: %v", err)
+	}
+	defer func() { _ = cr.Cursor.Close() }()
+
+	_, routed := obs.snapshot()
+	if len(routed) != 1 {
+		t.Fatalf("routed observations = %d; want 1", len(routed))
+	}
+	if cr.QueryID == "" {
+		t.Fatal("routed cursor QueryID is empty; drain outcomes cannot reach the logical route-B record")
+	}
+	if !containsID(routed[0], cr.QueryID) {
+		t.Fatalf("routed cursor QueryID %q is not one of the logical record's shard ids %v", cr.QueryID, routed[0])
+	}
+
+	eng.ObserveDrainOutcome(cr.QueryID, solver.LangPromQL, chclient.ErrTooManySamples)
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if len(obs.outcomes) != 1 {
+		t.Fatalf("drain outcomes = %d; want 1", len(obs.outcomes))
+	}
+	if got := obs.outcomes[0]; got != [2]string{cr.QueryID, optcorpusExitSampleBudget} {
+		t.Errorf("drain outcome = %v; want [%q %q]", got, cr.QueryID, optcorpusExitSampleBudget)
+	}
+}
+
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestExecuteRouted_ObservesTheFanOut pins the same contract on the eager
