@@ -230,9 +230,11 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 			},
 		},
 	}
-	outer := []chplan.Projection{
-		{Expr: &chplan.LitString{V: suffixedName}, Alias: s.MetricNameColumn},
+	metricNameExpr := chplan.Expr(&chplan.LitString{V: suffixedName})
+	if suffixedName == "" {
+		metricNameExpr = syntheticMetricNameExpr(s, bucketSuffix)
 	}
+	outer := []chplan.Projection{{Expr: metricNameExpr, Alias: s.MetricNameColumn}}
 	// The synthesised `le` key rides on Attributes in both modes: it is the
 	// only place a bucket bound exists as a label, and the post-fan-out
 	// `le=<bound>` matcher filter reads it back out of the map.

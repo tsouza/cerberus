@@ -338,6 +338,9 @@ func lowerHistogramSelectorInput(
 
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
+	if metricName == "" && hasUnpinnedMetricNameMatcher(v.LabelMatchers) && s.HistogramTable != "" {
+		return lowerRegexHistogramSelector(v, s, ctx)
+	}
 	// Resolve the candidate physical tables for this matcher.
 	//
 	// `TablesFor` admits the OTel-emitter reality that cerberus's
