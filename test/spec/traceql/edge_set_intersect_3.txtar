@@ -6,7 +6,7 @@
 [2] int64 = 1000000000
 [3] string = "Error"
 -- sql --
-SELECT L.* FROM (SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`
+WITH _setand_l_2 AS (WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`), _setand_r_2 AS (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?)) SELECT * FROM ((SELECT * FROM _setand_l_2) UNION ALL (SELECT * FROM _setand_r_2)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_2) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_2) LIMIT 1 BY `TraceId`, `SpanId`
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
