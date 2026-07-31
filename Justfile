@@ -365,7 +365,8 @@ update-cardinality-baseline:
 # Component D) from the current PromQL corpus. Parses every `-- query.promql --`
 # fixture under test/spec/promql/**, lowers it on the fixed eval grid
 # (end=2026-01-01T00:00:00Z, range=1h, step=15s), optimizes it, and records the
-# solver Planner's routing decision {routed, K, reason} under Mode=auto into
+# solver Planner's routing decision {routed, K, reason} plus the classifier's
+# cost grid {n_anchors, fanout, cumulative_d, outer_range} under Mode=auto into
 # test/perf/solver-decision-baseline.json (deterministic, sorted by query).
 # Pure Go — NO chDB — so it runs in the standard `check`/`just test` lane.
 # Run this — and REVIEW THE DIFF — whenever the ratchet test reports drift or a
