@@ -3180,6 +3180,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_classic_agg_plateau",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_classic_bare_at_pin_stale",
     "fan_factor": 1,
     "scan_rows": 1,
@@ -3250,6 +3260,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_classic_plateau_overflow",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_classic_range_step",
     "fan_factor": 10,
     "scan_rows": 1,
@@ -3271,6 +3291,16 @@
   },
   {
     "fixture": "promql/histogram_quantile_classic_single_bucket",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_classic_zero_count_plateau",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,

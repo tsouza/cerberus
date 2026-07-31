@@ -912,6 +912,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_classic_agg_plateau",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_classic_bare_at_pin_stale",
     "routed": false,
     "k": 0,
@@ -954,6 +960,12 @@
     "reason": "not-sliceable"
   },
   {
+    "query": "histogram_quantile_classic_plateau_overflow",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
     "query": "histogram_quantile_classic_range_step",
     "routed": false,
     "k": 0,
@@ -967,6 +979,12 @@
   },
   {
     "query": "histogram_quantile_classic_single_bucket",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable"
+  },
+  {
+    "query": "histogram_quantile_classic_zero_count_plateau",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable"
