@@ -53,15 +53,25 @@ func TestApplySpillSettings_Unconditional(t *testing.T) {
 	}
 }
 
-// TestSpillThresholdBytes_BelowMemCap pins the no-cap fallback below the
-// per-query max_memory_usage cerberus configures by default, so a deployment
-// whose Client reports no cap still spills before that default aborts the
-// query. A future bump of either constant that inverts the ordering surfaces
-// loudly here.
-func TestSpillThresholdBytes_BelowMemCap(t *testing.T) {
+// TestSpillThresholdBytes_MatchesDefaultCapThreshold pins the no-cap fallback to
+// the threshold a DEFAULT-capped deployment gets, which is the only thing that
+// makes the absolute constant a derived value rather than a free-floating one: a
+// Client that reports no cap spills exactly where a default-capped one does.
+// Bumping config.defaultCHQueryMaxMemory or spillCapDenominator without
+// re-deriving spillThresholdBytes desynchronises the two regimes and fails here
+// (a mere `spillThresholdBytes < defaultMaxMemoryUsage` ordering check would
+// stay green through such a bump while the fallback silently drifted to a
+// fraction of the default-cap threshold).
+func TestSpillThresholdBytes_MatchesDefaultCapThreshold(t *testing.T) {
 	t.Parallel()
 
 	const defaultMaxMemoryUsage = gib // mirrors config.defaultCHQueryMaxMemory
+	if want := defaultMaxMemoryUsage / spillCapDenominator; spillThresholdBytes != want {
+		t.Errorf("no-cap spill threshold %d; want %d (default max_memory_usage %d / %d)",
+			spillThresholdBytes, want, defaultMaxMemoryUsage, spillCapDenominator)
+	}
+	// The derivation only means anything if it also keeps the fallback below the
+	// cap it mirrors — the spill must fire before MEMORY_LIMIT_EXCEEDED.
 	if spillThresholdBytes >= defaultMaxMemoryUsage {
 		t.Errorf("spill threshold %d >= default max_memory_usage %d; spill must trigger before the cap",
 			spillThresholdBytes, defaultMaxMemoryUsage)
@@ -122,21 +132,25 @@ func TestSpillThreshold_CapRelative(t *testing.T) {
 // constant above 1 GiB) fails here rather than silently under-spilling.
 //
 // The sweep spans five orders of magnitude around the deployed range, plus an
-// odd cap where integer division truncates. Its floor is sweepFloorCap: below a
-// couple of bytes cap/2 truncates to 0, and 0 is ClickHouse's encoding for
-// "spill disabled" rather than a threshold, so the invariant is only meaningful
-// for caps a deployment could plausibly configure.
+// odd cap where integer division truncates, plus minValidCap — the smallest cap
+// for which a positive threshold strictly below it exists at all. Anchoring the
+// sweep at that arithmetic boundary rather than at the deployed range is what
+// makes the invariant a proven domain instead of a floor picked to sit above
+// wherever it stops holding.
 func TestSpillThreshold_StrictlyBelowEveryCap(t *testing.T) {
 	t.Parallel()
 
 	const (
 		// An offset that makes a cap non-power-of-two so cap/2 truncates.
-		oddCapOffset  int64 = 12345
-		sweepFloorCap       = mib
+		oddCapOffset int64 = 12345
+		// A cap of one byte leaves no room for a positive threshold under it,
+		// so spillCapDenominator bytes is where the invariant starts holding —
+		// far below any cap a deployment configures, which is the point.
+		minValidCap = spillCapDenominator
 	)
 
 	caps := []int64{
-		sweepFloorCap, 3 * mib,
+		minValidCap, mib, 3 * mib,
 		64 * mib, 128 * mib, 256 * mib, 512 * mib,
 		gib, 2 * gib, 3 * gib, 4 * gib, 6 * gib, 8 * gib,
 		16 * gib, 32 * gib, 64 * gib, 128 * gib,

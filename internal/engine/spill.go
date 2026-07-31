@@ -23,11 +23,14 @@ const (
 // `sum by(user_id)`, LogQL `by(request_id)`, …) or a large sort otherwise
 // builds an unbounded in-memory state and aborts the query with
 // MEMORY_LIMIT_EXCEEDED (code 241) at whatever server-side limit it eventually
-// hits. With no cap to size against there is no principled fraction to take, so
-// the threshold is an absolute one: 512 MiB sits below the 1 GiB cap cerberus
-// configures by default, trading a slower disk-backed merge for a query that
-// COMPLETES instead of 422-ing.
-const spillThresholdBytes int64 = 512 << 20 // 536870912 bytes
+// hits. With no cap there is nothing to take a fraction of, so the fallback is
+// the threshold a DEFAULT-capped deployment gets: config's 1 GiB default
+// max_memory_usage divided by spillCapDenominator. An uncapped deployment
+// therefore spills exactly where a default-capped one does, trading a slower
+// disk-backed merge for a query that COMPLETES instead of 422-ing.
+// TestSpillThresholdBytes_MatchesDefaultCapThreshold pins that relationship, so
+// raising the config default without re-deriving this value fails loudly.
+const spillThresholdBytes int64 = 512 << 20 // 536870912 bytes — (1 GiB default cap) / 2
 
 // spillCapDenominator divides the live per-query memory cap to derive the
 // cap-relative spill threshold: the spill must begin at a fraction of the cap
@@ -42,11 +45,14 @@ const spillCapDenominator int64 = 2
 //
 // A configured cap is the only honest scale for the threshold, so the threshold
 // is derived from it and from nothing else: half the cap, per ClickHouse's own
-// guidance for max_bytes_before_external_group_by. That is safe at EVERY cap by
-// construction — cap/spillCapDenominator is strictly below the cap for every
-// positive cap — so the operation always reaches the spill threshold before it
-// reaches MEMORY_LIMIT_EXCEEDED, whether the operator raises
-// CERBERUS_CH_QUERY_MAX_MEMORY to many GiB or lowers it below 512 MiB. Sizing
+// guidance for max_bytes_before_external_group_by. That is safe by construction
+// at every cap a query can actually run under: for a cap of at least
+// spillCapDenominator bytes the quotient is positive AND strictly below the cap,
+// so the operation always reaches the spill threshold before it reaches
+// MEMORY_LIMIT_EXCEEDED, whether the operator raises
+// CERBERUS_CH_QUERY_MAX_MEMORY to many GiB or lowers it below 512 MiB. (A
+// single-byte cap admits no threshold at all — no positive byte count sits below
+// one byte — and no query runs under such a cap either way.) Sizing
 // against the cap is also what keeps the threshold HONEST in the other
 // direction: a threshold far below the cap spills state the query had the
 // budget to hold in RAM, paying a disk-backed merge (and the read amplification
@@ -67,8 +73,8 @@ func spillThreshold(maxMemory int64) int64 {
 // applySpillSettings stamps the external-group-by AND external-sort spill
 // thresholds on ctx for EVERY data-plane query.
 //
-// It is UNCONDITIONAL (it replaces the old MetricsCompare-only applyCompareSpill)
-// because the OOM-prone GROUP BY / sort is not unique to compare(): any head can
+// It is UNCONDITIONAL rather than scoped to one plan shape because the OOM-prone
+// GROUP BY / sort is not unique to TraceQL compare(): any head can
 // lower a high-cardinality aggregation (`sum by(user_id)`, LogQL `by(...)`,
 // TraceQL structural DISTINCT / nested-set window passes) or a large sort
 // (`topk`, `ORDER BY`) that would otherwise abort at the cap. Both settings are
