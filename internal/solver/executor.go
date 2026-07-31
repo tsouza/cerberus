@@ -25,6 +25,18 @@ type ExecInfo struct {
 	// ShardArgs is the positional-arg list per shard, parallel to SQLs.
 	ShardArgs [][]any
 
+	// ShardQueryIDs is the ClickHouse query_id each shard is dispatched with,
+	// parallel to SQLs. The ids are minted HERE, before any shard context
+	// exists, because they are the join key the router corpus records for the
+	// whole fan-out at the dispatch seam — a routed query is otherwise
+	// unobservable (route B's cost never reaches the corpus, and "no route-B
+	// rows" reads as "route B never fires"). Minting per shard rather than
+	// reusing one id is mandatory: ClickHouse rejects a second concurrent query
+	// carrying a live query_id with code 216. An entry is "" when the request
+	// carries no trace (the driver then self-generates the id and the fan-out is
+	// simply not recorded), matching chclient's own no-trace contract.
+	ShardQueryIDs []string
+
 	// Parallelism is the effective P after the admission clamp — equal to
 	// Cfg.Parallel when the top-up granted everything, lower (down to 1)
 	// when it degraded. Reported so capacity dashboards can see the clamp.
@@ -121,8 +133,9 @@ func (x *Executor) Execute(
 		return nil, nil, fmt.Errorf("%w: nil emitter", ErrSolverEmit)
 	}
 	info := &ExecInfo{
-		SQLs:      make([]string, k),
-		ShardArgs: make([][]any, k),
+		SQLs:          make([]string, k),
+		ShardArgs:     make([][]any, k),
+		ShardQueryIDs: make([]string, k),
 	}
 	for i := range d.Slices {
 		sql, args, err := x.Emitter.Emit(ctx, d.Slices[i].Plan)
@@ -134,6 +147,10 @@ func (x *Executor) Execute(
 		}
 		info.SQLs[i] = sql
 		info.ShardArgs[i] = args
+		// One query_id per shard, fixed here so the caller can record the whole
+		// fan-out at the dispatch seam and runShard stamps the same id onto the
+		// query ClickHouse actually runs.
+		info.ShardQueryIDs[i] = chclient.MintQueryID(ctx)
 	}
 
 	// 2. TWO-STAGE WEIGHTED ADMISSION (degrade-don't-reject). The handler
@@ -328,9 +345,10 @@ func (sc *shardCursor) launchShards(
 			shardIdx := i
 			sql := info.SQLs[shardIdx]
 			args := info.ShardArgs[shardIdx]
+			queryID := info.ShardQueryIDs[shardIdx]
 			out := sc.chans[shardIdx]
 			sc.g.Go(func() error {
-				return sc.runShard(sc.gctx, langName, shardIdx, sql, args, budget, perShardMemoryBytes, out)
+				return sc.runShard(sc.gctx, langName, shardIdx, sql, args, queryID, budget, perShardMemoryBytes, out)
 			})
 		}
 	}()
@@ -361,6 +379,7 @@ func (sc *shardCursor) runShard(
 	idx int,
 	sql string,
 	args []any,
+	queryID string,
 	budget *chclient.SampleBudget,
 	perShardMemoryBytes int64,
 	out chan<- chclient.Sample,
@@ -371,6 +390,12 @@ func (sc *shardCursor) runShard(
 
 	// Per-shard progress recorder (one per ctx key).
 	pctx := chclient.WithProgressFor(gctx, langName)
+	// This shard's own ClickHouse query_id, pre-minted by Execute. Stamping it
+	// here — rather than letting chclient mint one lazily — is what makes the
+	// fan-out joinable: the id recorded for the request at the dispatch seam is
+	// byte-identical to the one system.query_log records for this shard. Every
+	// shard carries its OWN id (a shared one is CH error 216).
+	pctx = chclient.WithQueryID(pctx, queryID)
 	// Carry the shared per-request sample budget so the max-samples 422
 	// parity stays per-REQUEST across all shards.
 	if budget != nil {
