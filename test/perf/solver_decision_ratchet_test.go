@@ -27,7 +27,26 @@
 // Each query is parsed (reference Prometheus parser) → lowered
 // (`promql.LowerAtRange` at the fixed grid) → optimized (`optimizer.Default`)
 // → classified (`solver.Planner.Plan` under Mode=auto, the DefaultConfig
-// thresholds). The recorded decision is {routed, K, reason}.
+// thresholds). The recorded decision is {routed, K, reason} PLUS the
+// classifier's cost grid {n_anchors, fanout, cumulative_d, outer_range}.
+//
+// # Why the cost grid is part of the pin
+//
+// The route bit, K and the reason are the classifier's OUTPUT; the cost grid is
+// its INPUT — the features the signal walk extracted from the plan. Pinning
+// only the output leaves the extractor unratcheted over the corpus, and the
+// extractor's failure mode is silent by construction: a carrier kind the walk
+// stops measuring contributes an all-zero feature vector, which refuses the plan
+// for the SAME reason with the SAME K as measuring it properly would. Every
+// natively-lowered rate, every histogram bucket fan-out, every
+// `absent_over_time` in the corpus is refused either way, so an output-only
+// baseline is byte-identical whether those plans are measured or invisible.
+//
+// The cost grid is also what the calibration corpus records per query
+// (optcorpus's n_anchors / fanout / cumulative_d / outer_range columns), so
+// these rows are the offline replay of exactly the numbers a routing threshold
+// is fitted against. A drift here is a drift in every threshold's evidence base
+// even when no query changed route.
 //
 // # The ratchet semantics (bidirectional, no escape hatch)
 //
@@ -133,6 +152,22 @@ type decisionEntry struct {
 
 	// Reason is the shadow-header vocabulary value (one of solver.Reason*).
 	Reason string `json:"reason"`
+
+	// NAnchors / Fanout / CumulativeD / OuterRange are the classifier's cost
+	// grid — the features the signal walk extracted from the plan, and the
+	// same four scalars the calibration corpus stores per query. They are
+	// pinned because they are the only place an extraction regression is
+	// visible: a plan the walk cannot measure is refused with the same
+	// reason and the same K as one it measures, so the decision half of this
+	// row cannot tell the two apart.
+	//
+	// The two durations are recorded in Go's canonical duration form
+	// ("5m0s", "1h0m0s", "0s") rather than as raw nanoseconds so a moved row
+	// is readable in the diff without conversion.
+	NAnchors    int    `json:"n_anchors"`
+	Fanout      int64  `json:"fanout"`
+	CumulativeD string `json:"cumulative_d"`
+	OuterRange  string `json:"outer_range"`
 }
 
 // classifyCorpus parses, lowers, optimizes, and classifies every PromQL
@@ -201,7 +236,16 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 		plan = optimizer.Default().Run(context.Background(), plan)
 
 		d, routed := planner.Plan(plan, meta)
-		out[id] = decisionEntry{Query: id, Routed: routed, K: d.K, Reason: d.Reason}
+		out[id] = decisionEntry{
+			Query:       id,
+			Routed:      routed,
+			K:           d.K,
+			Reason:      d.Reason,
+			NAnchors:    d.NAnchors,
+			Fanout:      d.Fanout,
+			CumulativeD: d.CumulativeD.String(),
+			OuterRange:  d.OuterRange.String(),
+		}
 	}
 	if len(out) == 0 {
 		t.Fatalf("classified zero queries from %d fixtures — corpus seam broke", len(matches))
@@ -270,14 +314,14 @@ func TestSolverDecisionRatchet(t *testing.T) {
 			continue
 		}
 		t.Errorf("%s: routing decision drifted [%s]\n"+
-			"      baseline: routed=%v K=%d reason=%q\n"+
-			"      current:  routed=%v K=%d reason=%q\n"+
+			"      baseline: routed=%v K=%d reason=%q N=%d F=%d D=%s outer=%s\n"+
+			"      current:  routed=%v K=%d reason=%q N=%d F=%d D=%s outer=%s\n"+
 			"      A drift is NEVER auto-accepted: run `just update-solver-decision-baseline` to "+
 			"regenerate, review the diff, and (if this row is a REGRESSION) justify it in the PR "+
 			"with a real reason — a correctness fix that disqualifies the query, not a threshold tweak.",
 			id, classifyDrift(base, cur),
-			base.Routed, base.K, base.Reason,
-			cur.Routed, cur.K, cur.Reason)
+			base.Routed, base.K, base.Reason, base.NAnchors, base.Fanout, base.CumulativeD, base.OuterRange,
+			cur.Routed, cur.K, cur.Reason, cur.NAnchors, cur.Fanout, cur.CumulativeD, cur.OuterRange)
 	}
 }
 
@@ -288,6 +332,13 @@ func TestSolverDecisionRatchet(t *testing.T) {
 // either way — but it makes the direction of every moved row machine-visible
 // in the failure output so a reviewer can demand a justification for the
 // regressions specifically.
+//
+// COST-GRID is the label for a row whose route, K and reason all held while the
+// extracted features moved. It is not ranked as advancement or regression
+// because it is neither: the routing outcome is identical and what changed is
+// what the signal walk SAW. That is the direction an extraction regression
+// arrives from, so the label names it explicitly rather than letting it land in
+// the generic bucket.
 func classifyDrift(base, cur decisionEntry) string {
 	adv, reg := false, false
 
@@ -320,6 +371,12 @@ func classifyDrift(base, cur decisionEntry) string {
 			// as a drift the reviewer must read, not silently ranked.
 			return "REASON-CHANGE"
 		}
+	}
+
+	// classifyDrift is only called on a row that moved, so route, K and reason
+	// all holding means the extracted cost grid is what moved.
+	if !adv && !reg && base.Reason == cur.Reason {
+		return "COST-GRID"
 	}
 
 	switch {
