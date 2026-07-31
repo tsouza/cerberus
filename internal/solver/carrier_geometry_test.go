@@ -429,6 +429,227 @@ func TestCarrierGeometry_NativeIsMeasuredButNeverSliceable(t *testing.T) {
 	}
 }
 
+// geomOuterSpineRange is the per-anchor range of the routable outer window the
+// placement fixtures below build around. It is distinct from every per-kind
+// lookback above so an assertion on the cumulative D can tell the outer spine's
+// contribution apart from the placed carrier's — i.e. prove the walk reached the
+// carrier in that position rather than stopping at the wrapper.
+const geomOuterSpineRange = 90 * time.Second
+
+// geomRoutableSpine is a pinned matrix RangeWindow over inner, on the canonical
+// grid. On its own (inner = leafScan) it is the routable shape: re-anchorable,
+// both bounds pinned, sitting exactly on the predicted grid — so it contributes
+// NO refusal of its own, and whatever refuses a plan built from it is a property
+// of what was placed around it.
+func geomRoutableSpine(inner chplan.Node) *chplan.RangeWindow {
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Func:            "sum_over_time",
+		Range:           geomOuterSpineRange,
+		Step:            gridStep,
+		OuterRange:      gridEnd.Sub(gridStart),
+		Start:           gridStart,
+		End:             gridEnd,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+}
+
+// carrierPlacement is one position a carrier can occupy in a plan that is
+// otherwise routable. The seven-kind table above only ever builds the carrier as
+// the plan's ROOT and sole carrier; these are the positions where the fail-close
+// is load-bearing rather than incidental.
+type carrierPlacement struct {
+	name string
+	// wrap builds a plan in which carrier sits at this placement, beside or
+	// beneath a spine that would route on its own.
+	wrap func(carrier chplan.Node) chplan.Node
+}
+
+func carrierPlacements() []carrierPlacement {
+	return []carrierPlacement{
+		{
+			// Depth 1: the subquery shape `<agg>_over_time(<inner>[1h:15s])`,
+			// whose inner spine walkNode reaches one level down. This is the
+			// placement the depth-0 table cannot reach — and the one where a
+			// depth-scoped fail-close would let a non-re-anchorable carrier
+			// through while every shard re-evaluated it over the ORIGINAL grid.
+			name: "nested-under-routable-window",
+			wrap: func(carrier chplan.Node) chplan.Node {
+				return geomRoutableSpine(carrier)
+			},
+		},
+		{
+			// Beside, not below: a step-aligned vector-vector join whose left
+			// arm alone would route. The carrier is then neither the plan's
+			// root nor its only carrier, so the outer grid is supplied by the
+			// routable arm and the refusal cannot be resting on the carrier
+			// being the sole source of the cost grid.
+			name: "beside-routable-spine",
+			wrap: func(carrier chplan.Node) chplan.Node {
+				return &chplan.VectorJoin{
+					Left:             geomRoutableSpine(leafScan()),
+					Right:            carrier,
+					Op:               chplan.OpDiv,
+					Match:            chplan.VectorMatch{Labels: []string{"job"}, On: true},
+					StepAligned:      true, // range mode: not the now64 instant shape
+					MetricNameColumn: "MetricName",
+					AttributesColumn: "Attributes",
+					TimestampColumn:  "TimeUnix",
+					ValueColumn:      "Value",
+				}
+			},
+		},
+	}
+}
+
+// nonReanchorableCases is the subset of the table whose carriers ReanchorRange
+// clones VERBATIM — the rows whose refusal is a correctness requirement rather
+// than a cost judgement.
+func nonReanchorableCases(t *testing.T) []carrierCase {
+	t.Helper()
+
+	var out []carrierCase
+	for _, tc := range carrierCases() {
+		if !tc.reanchorable {
+			out = append(out, tc)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no non-re-anchorable rows in carrierCases; the fail-close this file pins has no " +
+			"subject left and every assertion below is vacuous")
+	}
+	return out
+}
+
+// TestCarrierGeometry_NonReanchorableCarrierRefusedAtEveryPlacement is the
+// placement half of the correctness proof.
+//
+// The seven-kind table puts every carrier at depth 0 as the plan's sole carrier,
+// where the refusal is over-determined: the carrier is also the only thing
+// supplying the outer grid. These fixtures put the same carriers where they are
+// NOT the plan's grid source — one level down a routable spine, and beside one —
+// so the fail-close is exercised in the positions where it is the only barrier.
+//
+// The hazard is concrete: chplan.ReanchorRange has no arm for these kinds, so
+// slicer.ReanchorRange CloneNode's them verbatim and every shard would evaluate
+// the carrier over the ORIGINAL full grid. The merged result is then the
+// carrier's full-window answer repeated K times rather than partitioned.
+// Narrowing recordGridCarrier's fail-close to `depth == 0` passes the whole
+// seven-row table and fails here.
+func TestCarrierGeometry_NonReanchorableCarrierRefusedAtEveryPlacement(t *testing.T) {
+	t.Parallel()
+
+	cases := nonReanchorableCases(t)
+	for _, pl := range carrierPlacements() {
+		for _, tc := range cases {
+			t.Run(pl.name+"/"+tc.kind, func(t *testing.T) {
+				t.Parallel()
+
+				plan := pl.wrap(tc.plan())
+
+				// The wrapper pins the canonical grid, so the request the
+				// planner sees is the same one the table uses.
+				start, end, step := GridOf(plan)
+				if step != gridStep || !start.Equal(gridStart) || !end.Equal(gridEnd) {
+					t.Fatalf("fixture grid drifted: GridOf = (%s, %s, %s), want (%s, %s, %s)",
+						start, end, step, gridStart, gridEnd, gridStep)
+				}
+				meta := RequestMeta{Lang: LangPromQL, Start: start, End: end, Step: step}
+
+				d, routed := (&Planner{Cfg: autoCfg()}).Plan(plan, meta)
+				if routed {
+					t.Errorf("plan routed B (K=%d) with a %s at %s — ReanchorRange clones that "+
+						"carrier verbatim, so every shard would evaluate it over the original "+
+						"full grid", d.K, tc.kind, pl.name)
+				}
+				if d.Reason != ReasonNotSliceable {
+					t.Errorf("reason = %q, want %q", d.Reason, ReasonNotSliceable)
+				}
+
+				// Eligible bypasses the cost thresholds, so it is the stricter
+				// seam: a fail-close that only holds because the plan was too
+				// cheap to bother slicing is not a fail-close.
+				if ed, eligible := (&Planner{Cfg: autoCfg()}).Eligible(plan, meta); eligible {
+					t.Errorf("Eligible routed a %s at %s (K=%d)", tc.kind, pl.name, ed.K)
+				}
+
+				// Non-vacuity: the carrier really was walked in this position.
+				// Both placements contribute the routable spine's own range on
+				// top of the carrier's per-anchor lookback.
+				if wantD := geomOuterSpineRange + tc.wantD; d.CumulativeD != wantD {
+					t.Errorf("CumulativeD = %s, want %s — the %s at %s was never measured, so the "+
+						"refusal above proves nothing about that placement",
+						d.CumulativeD, wantD, tc.kind, pl.name)
+				}
+			})
+		}
+	}
+}
+
+// TestCarrierGeometry_NestedRefusalRestsOnTheDepthFreeGate names the gate doing
+// the work in the test above, for the kinds where only ONE gate can be.
+//
+// Two independent gates refuse a non-re-anchorable carrier: (1) chplan's
+// slice-invariance registry, and (1b) recordGridCarrier's reanchorable
+// fail-close. For RangeWindowNative / RangeWindowResample / AbsentOverTime the
+// registry alone would refuse. But RangeBucketFanout and StepGrid ARE registered
+// slice-invariant — per-node they genuinely are — so for those kinds gate (1) is
+// silent and (1b) is the whole barrier. This test asserts that silence, so a
+// change that weakened (1b) cannot be excused by "the registry catches it".
+func TestCarrierGeometry_NestedRefusalRestsOnTheDepthFreeGate(t *testing.T) {
+	t.Parallel()
+
+	var soleBarrier []carrierCase
+	for _, tc := range nonReanchorableCases(t) {
+		if everyNodeSliceInvariant(tc.plan()) {
+			soleBarrier = append(soleBarrier, tc)
+		}
+	}
+	if len(soleBarrier) == 0 {
+		t.Fatal("no non-re-anchorable carrier is registered slice-invariant, so this pin has no " +
+			"subject; if the registry really lost them, the fixtures — not this assertion — are stale")
+	}
+
+	for _, tc := range soleBarrier {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+
+			plan := geomRoutableSpine(tc.plan())
+			if !everyNodeSliceInvariant(plan) {
+				t.Fatalf("the %s fixture is not slice-invariant end-to-end; gate (1) would refuse "+
+					"it and this test would no longer isolate the depth-free fail-close", tc.kind)
+			}
+
+			meta := RequestMeta{Lang: LangPromQL, Start: gridStart, End: gridEnd, Step: gridStep}
+			d, routed := (&Planner{Cfg: autoCfg()}).Plan(plan, meta)
+			if routed {
+				t.Fatalf("a nested %s routed B (K=%d) — with the registry silent, the only thing "+
+					"that can refuse it is the reanchorable fail-close in recordGridCarrier",
+					tc.kind, d.K)
+			}
+			if d.Reason != ReasonNotSliceable {
+				t.Errorf("reason = %q, want %q", d.Reason, ReasonNotSliceable)
+			}
+		})
+	}
+}
+
+// everyNodeSliceInvariant reports whether chplan's registry admits every node in
+// the plan — i.e. whether the solver's gate (1) stays silent on it.
+func everyNodeSliceInvariant(plan chplan.Node) bool {
+	ok := true
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		if !chplan.IsSliceInvariant(n) {
+			ok = false
+			return false
+		}
+		return true
+	})
+	return ok
+}
+
 // TestClassify_NoCarrierRecordsExtractionFailed pins the reason token that
 // keeps an unmeasured plan out of the calibration population.
 //
