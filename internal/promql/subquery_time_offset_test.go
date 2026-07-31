@@ -13,7 +13,7 @@ import (
 func TestLowerSubqueryOverBinary_ShiftsSyntheticGridForOffset(t *testing.T) {
 	t.Parallel()
 
-	const query = `(time() - 1)[5m:1m] offset 2m`
+	const query = `(vector(time()) - vector(1))[5m:1m] offset 2m`
 	start := time.Date(2026, time.January, 1, 0, 10, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
 	offset := 2 * time.Minute
