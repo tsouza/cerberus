@@ -201,9 +201,11 @@ on any diff vs reference Prometheus.
 additive `X-Cerberus-Route-Decision` header reporting the per-request
 classification regardless of mode: `routed` (took route B),
 `below-threshold`, `instant`, `instant-join`, `not-sliceable`, `high-D`,
-`now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`, or
+`now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`,
 `routing-disabled` (the reason recorded under `single`, where no threshold is
-consulted at all). The header is **omitted**
+consulted at all), or `extraction-failed` (no grid carrier was measurable, so
+the reported cost grid is zero for want of data rather than because the plan is
+cheap). The header is **omitted**
 for non-PromQL heads and when the solver is fully off (nil). It is purely
 diagnostic — observe it to see what the solver would do (under `single`) or
 did (under `auto`) without changing the wire body.

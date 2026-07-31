@@ -40,10 +40,17 @@ The signals, each gathered in the one pass:
    marker is proven.
 2. **Routable spine family.** Re-anchoring rewrites the grid carried by the
    `RangeWindow` matrix family and the `RangeLWR` bare-selector
-   last-with-respect-to family. A `RangeBucketFanout` or `StepGrid` spine
-   carries its own eval grid that re-anchoring clones verbatim, so a plan whose
-   spine bound-carrier is one of those fails closed to route A (every shard
-   would otherwise emit stale bounds).
+   last-with-respect-to family. Every other grid carrier —
+   `RangeWindowNative`, `RangeWindowResample`, `RangeBucketFanout`, `StepGrid`,
+   `AbsentOverTime` — carries its own eval grid that re-anchoring clones
+   verbatim, so a plan whose spine bound-carrier is one of those fails closed to
+   route A (every shard would otherwise emit stale bounds).
+
+   Measurement is separate from admissibility: the signal walk records the cost
+   grid of **every** carrier kind, routable or not, because the corpus needs to
+   know how expensive the refused plans were. Being seen never makes a carrier
+   sliceable — that is decided solely by the marker in signal 1 and by whether
+   re-anchoring knows the node's grid.
 3. **Pinned bounds.** Both `Start` and `End` must be pinned (non-zero) on the
    outermost windowed node — it anchors the whole grid. An inner subquery node
    may be unpinned (both bounds zero, the shape the re-anchor fills); a
@@ -94,8 +101,8 @@ consulted when none was.
 Every classification — routed or not — produces a `Decision` carrying the
 reason (`routed`, `below-threshold`, `not-sliceable`, `instant`, `instant-join`,
 `high-D`, `now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`,
-`routing-disabled`) for the shadow header, alongside the plan's cost grid
-(`N`, `F`, `D`, `OuterRange`, `Step`).
+`routing-disabled`, `extraction-failed`) for the shadow header, alongside the
+plan's cost grid (`N`, `F`, `D`, `OuterRange`, `Step`).
 
 The grid is populated on **every** Decision, including the refusals. The signal
 walk that derives it makes no routing decision and mutates nothing, so it runs
@@ -109,6 +116,14 @@ genuine instant query cannot have. Both halves of that signature matter:
 `reason=instant` is also recorded for a range request carrying an unpinned or
 instant-shaped window, and that one has a real grid — it is the zero `Step`
 beside a populated grid that identifies a missed carrier.
+
+The complementary case — a range request whose plan yields no carrier the walk
+can measure at all — carries its own token, `extraction-failed`. It is the one
+refusal whose cost grid is legitimately all zeros, and it says so in the row
+rather than presenting as a cheap plan. That distinction is load-bearing for
+calibration: a threshold fitted over the refused population must exclude rows
+that were never measured, and no aggregate over `N`/`F`/`D` can tell an
+unmeasured plan from a trivial one unless the reason does.
 
 ## Slicing geometry
 

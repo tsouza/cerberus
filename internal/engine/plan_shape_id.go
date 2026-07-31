@@ -15,8 +15,9 @@ const shapeIDPrefix = "cerb:"
 
 // planShapeID returns a COMPACT, literal-free identifier for plan's shape,
 // for stamping into ClickHouse log_comment. It captures the emit-root node
-// kind plus a few key structural modifiers (aggregate group-key arity,
-// presence of a range window / limit / join / union) and DELIBERATELY omits
+// kind plus a few key structural modifiers (aggregate group-key arity, which
+// grid-carrying range nodes are present, presence of a limit / join / union)
+// and DELIBERATELY omits
 // every literal: no metric names, no label values, no timestamps, no group-by
 // column names. Two queries with the same plan shape but different literals
 // hash to the same id, so operators can cluster system.query_log rows by
@@ -47,11 +48,15 @@ func shapeModifiers(plan chplan.Node) []string {
 		mods        []string
 		aggKeys     = -1
 		hasRange    bool
+		hasLWR      bool
 		hasLimit    bool
 		hasJoin     bool
 		hasUnion    bool
 		hasNative   bool
 		hasResample bool
+		hasFanout   bool
+		hasStepGrid bool
+		hasAbsentOT bool
 	)
 	chplan.Walk(plan, func(n chplan.Node) bool {
 		switch v := n.(type) {
@@ -66,6 +71,14 @@ func shapeModifiers(plan chplan.Node) []string {
 			hasNative = true
 		case *chplan.RangeWindowResample:
 			hasResample = true
+		case *chplan.RangeLWR:
+			hasLWR = true
+		case *chplan.RangeBucketFanout:
+			hasFanout = true
+		case *chplan.StepGrid:
+			hasStepGrid = true
+		case *chplan.AbsentOverTime:
+			hasAbsentOT = true
 		case *chplan.Limit:
 			hasLimit = true
 		case *chplan.Scan:
@@ -80,6 +93,11 @@ func shapeModifiers(plan chplan.Node) []string {
 	if aggKeys >= 0 {
 		mods = append(mods, "agg="+strconv.Itoa(aggKeys))
 	}
+	// The range-carrying modifiers below are the shape's per-anchor work. Every
+	// [chplan.GridCarrier] kind has its own token here: a carrier with no token
+	// is invisible to log_comment clustering, so an operator bucketing
+	// system.query_log sees a histogram fan-out and a bare projection under the
+	// SAME id — and the expensive shape hides inside the cheap bucket.
 	if hasRange {
 		mods = append(mods, "rw")
 	}
@@ -88,6 +106,18 @@ func shapeModifiers(plan chplan.Node) []string {
 	}
 	if hasResample {
 		mods = append(mods, "rwr")
+	}
+	if hasLWR {
+		mods = append(mods, "lwr")
+	}
+	if hasFanout {
+		mods = append(mods, "rbf")
+	}
+	if hasAbsentOT {
+		mods = append(mods, "aot")
+	}
+	if hasStepGrid {
+		mods = append(mods, "sg")
 	}
 	if hasJoin {
 		mods = append(mods, "join")
@@ -120,6 +150,14 @@ func nodeKind(n chplan.Node) string {
 		return "rwn"
 	case *chplan.RangeWindowResample:
 		return "rwr"
+	case *chplan.RangeLWR:
+		return "lwr"
+	case *chplan.RangeBucketFanout:
+		return "rbf"
+	case *chplan.AbsentOverTime:
+		return "aot"
+	case *chplan.StepGrid:
+		return "sg"
 	case *chplan.Limit:
 		return "limit"
 	case *chplan.OrderBy:
