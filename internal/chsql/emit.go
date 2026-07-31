@@ -191,21 +191,26 @@ type emitter struct {
 	// byte-identical (no window-bearing fixtures churn).
 	ctxSpansTable string
 
-	// structSeq is a monotonic counter handed out to the recursive
-	// structural-join emitter so each WITH RECURSIVE closure gets a
-	// unique CTE name (`_struct_closure_<n>`). Nested structural joins
+	// cteSeq is a monotonic counter handed out to every emitter that
+	// registers a named CTE, so each one gets a unique name: the
+	// recursive structural-join closure (`_struct_closure_<n>`) and the
+	// `&&` set-op arms (`_setand_{l,r}_<n>`). Nested structural joins
 	// (`A << B << C`) embed an inner closure inside the outer closure's
 	// recursive arm (via the #77 seed-trace-id pushdown subquery);
 	// without unique names CH binds the inner same-named CTE in the
 	// outer scope and rejects the outer as "not recursive" (error 49).
-	structSeq int
+	// Nested `&&` (`A && B && C`) has the same shape: the inner set-op
+	// renders as a subquery of the outer one, and CH would bind the
+	// inner arm CTE in the outer scope. One counter across both
+	// emitters keeps every name in a single statement distinct.
+	cteSeq int
 }
 
-// nextStructSeq returns the next unique structural-closure sequence
-// number, advancing the counter.
-func (e *emitter) nextStructSeq() int {
-	e.structSeq++
-	return e.structSeq
+// nextCTESeq returns the next unique CTE sequence number, advancing the
+// counter.
+func (e *emitter) nextCTESeq() int {
+	e.cteSeq++
+	return e.cteSeq
 }
 
 // emitNode writes a `SELECT ...` statement for n into e.b.

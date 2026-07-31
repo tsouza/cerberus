@@ -297,15 +297,10 @@ func TestEmitNode_Aggregate_PropagatesChildError(t *testing.T) {
 	}
 }
 
-// TestEmitNode_SetOperation_Intersect — TraceQL `A && B` lowers to
-// `SELECT L.* FROM (<A>) AS L INNER JOIN (<B>) AS R
-//
-//	ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId`.
-//
-// Both sides are emitted as subqueries; the ON predicate is composed
-// from the configured (TraceID, SpanID) column names. The chsql
-// package has no Go-level test for this shape (only the per-head
-// traceql lowering test), so this is the first emit-level pin.
+// TestEmitNode_SetOperation_Intersect pins TraceQL's `A && B` semantics:
+// both arms must match the same trace, but the result is the identity-deduped
+// span-level union of those arms. Tempo uses this shape for both `&&` and
+// `||`; `&&` differs only by the two trace-cohort predicates.
 func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 	t.Parallel()
 
@@ -320,14 +315,15 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// Verify the structural shape: SELECT L.*, INNER JOIN, ON predicate.
+	// Verify the structural shape: arm CTEs, UNION ALL, trace gate, and
+	// identity deduplication.
 	for _, frag := range []string{
-		"SELECT L.*",
-		"INNER JOIN",
-		"`L`.`TraceId` = `R`.`TraceId`",
-		"`L`.`SpanId` = `R`.`SpanId`",
-		"AS `L`",
-		"AS `R`",
+		"WITH _setand_l_1 AS",
+		"_setand_r_1 AS",
+		"UNION ALL",
+		"`TraceId` IN (SELECT `TraceId` FROM _setand_l_1)",
+		"`TraceId` IN (SELECT `TraceId` FROM _setand_r_1)",
+		"LIMIT 1 BY `TraceId`, `SpanId`",
 	} {
 		if !strings.Contains(sql, frag) {
 			t.Errorf("SetIntersect SQL missing fragment %q; got %q", frag, sql)

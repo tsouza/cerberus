@@ -10,7 +10,7 @@ and no Timestamp predicate was emitted at all.
 -- query.traceql --
 { resource.service.name = "a" } && { span.http.status_code = 500 }
 -- sql --
-SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`
+WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
 -- args --
 [0] int64 = 1782571392000000000
 [1] int64 = 1782573192000000000

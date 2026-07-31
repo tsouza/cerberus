@@ -594,7 +594,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// per-emit counter keeps every closure name distinct. The inner
 	// (L / R) subqueries are rendered above, so they already consumed
 	// their sequence numbers — this outer closure takes the next one.
-	cteName := "_struct_closure_" + strconv.Itoa(e.nextStructSeq())
+	cteName := "_struct_closure_" + strconv.Itoa(e.nextCTESeq())
 
 	// Anchor: SELECT DISTINCT TraceId, SpanId, ParentSpanId, 0 AS _depth
 	// FROM (<L>) AS _seed. DISTINCT on both CTE arms keeps the closure
@@ -707,7 +707,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// each R span and walks towards ancestors — matching the L
 		// subquery on the upward-walked SpanIds. We rebuild the
 		// closure with R as the seed and step direction inverted.
-		invCTEName := "_struct_closure_inv_" + strconv.Itoa(e.nextStructSeq())
+		invCTEName := "_struct_closure_inv_" + strconv.Itoa(e.nextCTESeq())
 		inverseClosure, err := e.buildStructuralInverseClosure(j, rightSub, table, invCTEName)
 		if err != nil {
 			return err
