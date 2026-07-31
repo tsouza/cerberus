@@ -586,7 +586,8 @@ To answer it the engine closes the loop the optimization corpus
   not where that plan sat relative to it, and a counterfactual re-fit needs the
   latter.
 - **Join to observed cost.** At the dispatch seam the engine hands the corpus
-  reconciler the decision read-out next to the CH `query_id`. The reconciler
+  reconciler the decision read-out next to the CH `query_id`s the dispatch will
+  run under — one on route A, K on a route-B fan-out. The reconciler
   joins `query_id` → `system.query_log` (the cost columns plus a derived
   `exit_status` of `ok` / `oom` / `timeout` / `aborted` / `error` from the row
   type + exception code) and writes one corpus row per dispatch. Terminal rows
@@ -606,6 +607,22 @@ To answer it the engine closes the loop the optimization corpus
   flag-gated, production-only, failure-open, and the observe call is a
   non-blocking channel send — the hot path is byte-unchanged when the corpus is
   off.
+- **One row per REQUEST, K statements or one.** The corpus row is the unit of
+  A/B comparison and carries no request identifier to group by after the fact,
+  so a route-B fan-out is folded into a single row rather than K: a row per
+  shard would put a fraction of route B beside a whole route-A query in every
+  comparison. All K shard ids index one ring record, and the reconciler holds
+  the group until every shard's `query_log` row is visible — a partially joined
+  fan-out is deferred to the next interval, never written under-counted. The
+  fold keeps a route-B row meaning what a route-A row means: `read_rows` /
+  `read_bytes` / `profile_events` are summed (total work done), `exit_status` is
+  the most severe shard status (an OOMed shard is an OOM for the request), and
+  the two schedule-dependent columns read the Executor's EFFECTIVE concurrency
+  P, which is routinely below K — `memory_usage` is the sum of the P largest
+  shard peaks (only P coexist) and `query_duration_ms` is the makespan bound
+  `max(slowest shard, total / P)`. Assuming a fully parallel fan-out instead
+  would understate route-B latency and overstate its memory by roughly K/P at
+  the default P.
 - **Cerberus-side terminal outcomes.** `system.query_log` only reflects what
   ClickHouse saw — it cannot show a request cerberus *itself* terminated. Three
   cerberus-side outcomes are captured in-process and take precedence over (or

@@ -7,11 +7,17 @@ import (
 	"testing"
 )
 
-// observeRouted calls ObserveRoutedQuery with the routing read-out a real
-// routed dispatch always carries (route B, reason "routed"), keeping the call
-// sites below readable.
+// observeRoutedAtP calls ObserveRoutedQuery with the routing read-out a real
+// routed dispatch always carries (route B, reason "routed") at an explicit
+// effective shard concurrency, keeping the call sites below readable.
+func observeRoutedAtP(r *Reconciler, shardIDs []string, parallelism int, shapeID string, kShards uint8) {
+	r.ObserveRoutedQuery(shardIDs, parallelism, shapeID, nil, "promql", true, "B", 240, 4, 900, 3600, 15, kShards, "routed")
+}
+
+// observeRouted is observeRoutedAtP for the fully parallel fan-out, where every
+// shard overlaps every other and the cost fold is the plain sum/max.
 func observeRouted(r *Reconciler, shardIDs []string, shapeID string, kShards uint8) {
-	r.ObserveRoutedQuery(shardIDs, shapeID, nil, "promql", true, "B", 240, 4, 900, 3600, 15, kShards, "routed")
+	observeRoutedAtP(r, shardIDs, len(shardIDs), shapeID, kShards)
 }
 
 // TestObserveRoutedQuery_FoldsShardRowsIntoOneRow pins the whole point of the
@@ -60,10 +66,10 @@ func TestObserveRoutedQuery_FoldsShardRowsIntoOneRow(t *testing.T) {
 		t.Errorf("read_bytes = %d; want 6000 (sum across shards)", got.ReadBytes)
 	}
 	if got.MemoryUsage != 60 {
-		t.Errorf("memory_usage = %d; want 60 (sum of the concurrent shards' peaks)", got.MemoryUsage)
+		t.Errorf("memory_usage = %d; want 60 (all three peaks coexist at P=3)", got.MemoryUsage)
 	}
 	if got.QueryDurationMS != 70 {
-		t.Errorf("query_duration_ms = %d; want 70 (max: the shards run concurrently)", got.QueryDurationMS)
+		t.Errorf("query_duration_ms = %d; want 70 (150ms of work on 3 workers cannot beat the slowest shard)", got.QueryDurationMS)
 	}
 	if got.NormalizedQueryHash != 99 {
 		t.Errorf("normalized_query_hash = %d; want 99", got.NormalizedQueryHash)
@@ -83,6 +89,73 @@ func TestObserveRoutedQuery_FoldsShardRowsIntoOneRow(t *testing.T) {
 	// the next interval cannot emit a second row for the same dispatch.
 	if n := len(r.snapshotIDs()); n != 0 {
 		t.Errorf("join index still holds %d ids after the routed row was written; want 0", n)
+	}
+}
+
+// TestObserveRoutedQuery_ClampedConcurrencyFoldsTheWholeFanOut pins the fold
+// against the shape the Executor actually runs: K shards at an effective
+// concurrency P that is routinely BELOW K (the configured P, further clamped by
+// the admission top-up and the shard gate, down to sequential). Only P peaks
+// coexist and only P durations overlap, so the wall-clock and memory columns
+// are not the plain max and sum.
+//
+// Drop Record.Parallelism and fold as if the fan-out were fully parallel and
+// this fails on both columns at once: the three shards below take 150ms of
+// ClickHouse time that one worker cannot compress below 150ms, but a plain max
+// reports 70 — a route-B latency understated by more than half against the
+// route-A row it is compared with — while a plain sum reports memory three
+// shards never held at the same time.
+func TestObserveRoutedQuery_ClampedConcurrencyFoldsTheWholeFanOut(t *testing.T) {
+	type want struct {
+		memory   uint64
+		duration uint64
+	}
+	// 150ms of work and peaks of 10/20/30 across three shards. P=1 serialises
+	// them (sum the durations, only the largest peak is ever held); P=2 runs two
+	// waves (75ms beats the 70ms slowest shard, and the two largest peaks
+	// coexist); P=3 is the fully parallel case.
+	cases := map[int]want{
+		1: {memory: 30, duration: 150},
+		2: {memory: 50, duration: 75},
+		3: {memory: 60, duration: 70},
+	}
+	for p, w := range cases {
+		t.Run("P="+strconv.Itoa(p), func(t *testing.T) {
+			src := newFakeSource()
+			sink := &memSink{}
+			r := New(src, sink, Options{RingCapacity: 8, ObserveBuffer: 16})
+
+			ids := []string{
+				"trace-p" + strconv.Itoa(p) + "-1",
+				"trace-p" + strconv.Itoa(p) + "-2",
+				"trace-p" + strconv.Itoa(p) + "-3",
+			}
+			src.seed(SourceRow{QueryID: ids[0], ReadRows: 100, MemoryUsage: 10, QueryDurationMS: 30})
+			src.seed(SourceRow{QueryID: ids[1], ReadRows: 200, MemoryUsage: 20, QueryDurationMS: 70})
+			src.seed(SourceRow{QueryID: ids[2], ReadRows: 300, MemoryUsage: 30, QueryDurationMS: 50})
+
+			observeRoutedAtP(r, ids, p, "cerb:rangewindow", uint8(len(ids)))
+			r.drainIngest()
+			r.reconcileOnce(context.Background())
+
+			rows := sink.snapshot()
+			if len(rows) != 1 {
+				t.Fatalf("routed dispatch wrote %d rows; want exactly 1", len(rows))
+			}
+			got := rows[0]
+			if got.MemoryUsage != w.memory {
+				t.Errorf("memory_usage = %d; want %d (the %d largest peaks, the most that coexist)", got.MemoryUsage, w.memory, p)
+			}
+			if got.QueryDurationMS != w.duration {
+				t.Errorf("query_duration_ms = %d; want %d (150ms of work on %d workers, no faster than the slowest shard)",
+					got.QueryDurationMS, w.duration, p)
+			}
+			// The work columns are concurrency-independent: the fan-out reads
+			// what it reads however it is scheduled.
+			if got.ReadRows != 600 {
+				t.Errorf("read_rows = %d; want 600 regardless of concurrency", got.ReadRows)
+			}
+		})
 	}
 }
 
