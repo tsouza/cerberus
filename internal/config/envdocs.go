@@ -304,7 +304,7 @@ var envDocs = []EnvDoc{
 	{envCHOptCorpusEnabled, "bool", "ClickHouse optimizations", "Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none)."},
 	{envCHOptCorpusInterval, "duration", "ClickHouse optimizations", "How often the reconciler joins recently-dispatched query_ids back to `system.query_log`. `0` is rejected when `CERBERUS_CH_OPT_CORPUS_ENABLED` is set (it would leave the reconciler enabled but inert); it is inert either way when the corpus is off."},
 	{envCHOptCorpusSinkPath, "string", "ClickHouse optimizations", "JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink."},
-	{envCHOptCorpusRing, "int", "ClickHouse optimizations", "Ring capacity for tracked query_ids; caps memory + the per-interval `IN(...)`."},
+	{envCHOptCorpusRing, "int", "ClickHouse optimizations", "Ring capacity for tracked queries; a routed query holds one query_id per shard in one slot, so memory + the per-interval `IN(...)` scale with ring x fan-out."},
 	{envCHOptCorpusSinkMode, "string", "ClickHouse optimizations", "Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis)."},
 
 	// --- Experimental flags ---
