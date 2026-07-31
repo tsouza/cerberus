@@ -24,10 +24,10 @@ func hasUnpinnedMetricNameMatcher(matchers []*labels.Matcher) bool {
 
 func splitRegexHistogramMatchers(matchers []*labels.Matcher) (names, scan, le []*labels.Matcher) {
 	for _, m := range matchers {
-		switch {
-		case m.Name == model.MetricNameLabel:
+		switch m.Name {
+		case model.MetricNameLabel:
 			names = append(names, m)
-		case m.Name == "le":
+		case "le":
 			le = append(le, m)
 		default:
 			scan = append(scan, m)
