@@ -1,7 +1,7 @@
 -- query.traceql --
 { resource.service.name = "a" } && { duration > 1s }
 -- sql --
-SELECT L.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS `L` INNER JOIN (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) AS `R` ON `L`.`TraceId` = `R`.`TraceId` AND `L`.`SpanId` = `R`.`SpanId`
+WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
 -- args --
 [0] string = "service.name"
 [1] string = "a"
@@ -21,8 +21,10 @@ INSERT INTO otel_traces (TraceId, SpanId, Duration, _svc) VALUES
     ('a0000000000000000000000000000002', '0000000000000010', 5000000000, 'a');
 -- expected_rows --
 [
+  ["a0000000000000000000000000000001", "0000000000000001", 500000000, "a"],
   ["a0000000000000000000000000000001", "0000000000000002", 2000000000, "a"],
-  ["a0000000000000000000000000000002", "0000000000000010", 5000000000, "a"]
+  ["a0000000000000000000000000000002", "0000000000000010", 5000000000, "a"],
+  ["a0000000000000000000000000000001", "0000000000000003", 3000000000, "b"]
 ]
 -- chplan --
 SetOperation op=&&

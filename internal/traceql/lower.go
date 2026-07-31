@@ -420,21 +420,21 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 	}
 
 	// Set operations (`&&` / `||`) lower to a chplan.SetOperation; the
-	// emitter renders an INNER JOIN (intersect) or an identity-deduped
-	// UNION ALL (union)
-	// keyed on (TraceID, SpanID).
+	// emitter renders an identity-deduped UNION ALL of the two arms,
+	// keyed on (TraceID, SpanID) — for `&&` gated on the trace appearing
+	// in both arms, for `||` ungated (see chsql.emitSetOperation for why
+	// `&&` is a span union and not a span intersection).
 	if setOp, ok := mapSetOp(op.Op); ok {
-		if setOp == chplan.SetUnion {
-			// A CH UNION matches arm columns positionally and
-			// errors (CH code 258) when the counts differ. Structural
-			// arms expose the narrow span envelope (3 keys + the
-			// structuralExtraProjectionColumns list) while plain
-			// filter arms expose `SELECT *`; mixing them — the exact
-			// shape of Grafana Traces Drilldown's structure-tab query
-			// `({...} &>> {...}) || ({...})` — needs the wide arm
-			// projected down to the same ordered column list.
-			left, right = alignUnionArms(left, right, s)
-		}
+		// A CH UNION matches arm columns positionally and errors (CH
+		// code 258) when the counts differ. Structural arms expose the
+		// narrow span envelope (3 keys + the
+		// structuralExtraProjectionColumns list) while plain filter
+		// arms expose `SELECT *`; mixing them — the exact shape of
+		// Grafana Traces Drilldown's structure-tab query
+		// `({...} &>> {...}) || ({...})` — needs the wide arm projected
+		// down to the same ordered column list. Both ops emit a UNION,
+		// so both need the alignment.
+		left, right = alignUnionArms(left, right, s)
 		return &chplan.SetOperation{
 			Left:          left,
 			Right:         right,
