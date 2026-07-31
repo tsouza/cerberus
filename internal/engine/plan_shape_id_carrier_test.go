@@ -128,6 +128,24 @@ func carrierTokenCases() []carrierTokenCase {
 // differs by kind — a fan-out over histogram buckets and a last-value lookback
 // cost nothing alike — and a shared token would merge exactly the populations
 // an operator is trying to separate.
+// hasModifierToken reports whether id carries token as a WHOLE modifier.
+//
+// A substring test does not discriminate: "rw" is a prefix of both "rwn" and
+// "rwr", so a shape id that stamped a plain RangeWindow token for a native or
+// resampled carrier would satisfy `strings.Contains(id, ";rw")` and the row
+// would pass while the id it asserts on is wrong. Splitting on the modifier
+// separator and comparing whole tokens is the only form that fails there.
+func hasModifierToken(id, token string) bool {
+	parts := strings.Split(id, ";")
+	// parts[0] is the "cerb:<root>" prefix, never a modifier.
+	for _, mod := range parts[1:] {
+		if mod == token {
+			return true
+		}
+	}
+	return false
+}
+
 func TestShapeModifiers_EveryGridCarrierGetsAToken(t *testing.T) {
 	t.Parallel()
 
@@ -140,7 +158,7 @@ func TestShapeModifiers_EveryGridCarrierGetsAToken(t *testing.T) {
 			plan := &chplan.Project{Input: tc.node(&chplan.Scan{Table: "otel_metrics_sum"})}
 
 			id := planShapeID(plan)
-			if !strings.Contains(id, ";"+tc.token) {
+			if !hasModifierToken(id, tc.token) {
 				t.Errorf("shape id %q for %s carries no %q modifier; the carrier is invisible to "+
 					"log_comment clustering", id, tc.kind, tc.token)
 			}
