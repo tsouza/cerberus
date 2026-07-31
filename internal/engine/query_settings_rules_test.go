@@ -229,11 +229,20 @@ func compareOverScan() *chplan.MetricsCompare {
 
 // TestApplyCompareMemoryBound_CompareStampsBoth — a compare() plan gets BOTH the
 // external-group-by spill threshold (sized at half the cap) and the read-thread
-// cap, so the previously-OOMing compare() stays under the per-query budget.
+// cap, so a compare() that would otherwise OOM stays under the per-query budget.
+//
+// The spill expectation is the LITERAL 1 GiB the prod validation ran at under
+// this 2 GiB cap, not a call to spillThreshold: computing the want from the
+// function under test would pass under any derivation, including one that stamps
+// a value the compare() bound was never validated with.
 func TestApplyCompareMemoryBound_CompareStampsBoth(t *testing.T) {
+	// validatedCompareSpillBytes is half of testQueryMemoryCap — the spill
+	// threshold the coupled compare() bound was validated against on prod.
+	const validatedCompareSpillBytes int64 = 1 << 30
+
 	ctx := applyCompareMemoryBound(context.Background(), compareOverScan(), testQueryMemoryCap)
 
-	if got, want := settingValue(ctx, settingMaxBytesBeforeExternalGroupBy), spillThreshold(testQueryMemoryCap); got != want {
+	if got, want := settingValue(ctx, settingMaxBytesBeforeExternalGroupBy), validatedCompareSpillBytes; got != want {
 		t.Errorf("max_bytes_before_external_group_by = %v; want %v (half the %d-byte cap)", got, want, testQueryMemoryCap)
 	}
 	if got, want := settingValue(ctx, settingMaxThreads), compareMaxThreads; got != want {

@@ -434,8 +434,8 @@ type memoryCapQuerier interface {
 
 // queryMemoryCap returns the engine Client's per-query memory cap in bytes, or
 // 0 when the Client doesn't expose one. A 0 cap means "no max_memory_usage
-// configured", which spillThreshold treats as "use the fixed spill
-// threshold" (never min against a non-positive value).
+// configured", which spillThreshold treats as "use the absolute no-cap spill
+// threshold" rather than taking a fraction of a non-positive value.
 func (e *Engine) queryMemoryCap() int64 {
 	if mc, ok := e.Client.(memoryCapQuerier); ok {
 		return mc.MaxQueryMemoryBytes()
