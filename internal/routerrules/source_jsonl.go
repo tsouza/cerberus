@@ -50,6 +50,8 @@ type jsonlRow struct {
 	QueryDurationMS     float64 `json:"query_duration_ms"`
 	MemoryUsage         float64 `json:"memory_usage"`
 	ExitStatus          string  `json:"exit_status"`
+	ShardsObserved      float64 `json:"shards_observed"`
+	Parallelism         float64 `json:"parallelism"`
 }
 
 func (r jsonlRow) toCorpusRow() corpusRow {
@@ -66,6 +68,8 @@ func (r jsonlRow) toCorpusRow() corpusRow {
 			"read_bytes":            r.ReadBytes,
 			"query_duration_ms":     r.QueryDurationMS,
 			"memory_usage":          r.MemoryUsage,
+			"shards_observed":       r.ShardsObserved,
+			"parallelism":           r.Parallelism,
 			"normalized_query_hash": float64(r.NormalizedQueryHash),
 		},
 		str: map[string]string{

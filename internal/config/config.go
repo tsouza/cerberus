@@ -314,11 +314,13 @@ type CHOptCorpusConfig struct {
 	// SinkPath is the JSONL sink path (CERBERUS_CH_OPT_CORPUS_SINK_PATH). Empty
 	// disables the file sink.
 	SinkPath string
-	// RingCapacity bounds the in-memory ring of recently-dispatched query_ids
-	// the reconciler tracks (CERBERUS_CH_OPT_CORPUS_RING, default 4096). It caps
-	// the reconciler's memory and the size of each per-interval IN(...) join; the
-	// ring drops the oldest id when full. A non-positive value falls back to the
-	// optcorpus default.
+	// RingCapacity bounds the in-memory ring of recently-dispatched QUERIES the
+	// reconciler tracks (CERBERUS_CH_OPT_CORPUS_RING, default 4096); the ring
+	// drops the oldest record when full. A routed (route-B) query occupies one
+	// slot and holds one query_id per shard, so the reconciler's memory and each
+	// per-interval IN(...) are bounded by this value times the largest fan-out
+	// the solver dispatches, not by this value alone. A non-positive value falls
+	// back to the optcorpus default.
 	RingCapacity int
 	// SinkMode selects the durable sink (CERBERUS_CH_OPT_CORPUS_SINK_MODE):
 	// "jsonl" (default) appends rows to the SinkPath file; "chtable" writes them

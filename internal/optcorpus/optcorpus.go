@@ -24,6 +24,7 @@ package optcorpus
 import (
 	"context"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -337,13 +338,29 @@ type Row struct {
 	// "" and the scalar columns are 0. The field shape stays column-for-column
 	// aligned with the cerberus_router_corpus MergeTree (see chtable.go) so the
 	// JSONL and CH-table sinks write the same Row.
-	NAnchors       uint32 `json:"n_anchors"`
-	Fanout         uint32 `json:"fanout"`
-	CumulativeD    uint32 `json:"cumulative_d"`
-	OuterRange     uint32 `json:"outer_range"`
-	Step           uint32 `json:"step"`
-	Route          string `json:"route"`
-	KShards        uint8  `json:"k_shards"`
+	NAnchors    uint32 `json:"n_anchors"`
+	Fanout      uint32 `json:"fanout"`
+	CumulativeD uint32 `json:"cumulative_d"`
+	OuterRange  uint32 `json:"outer_range"`
+	Step        uint32 `json:"step"`
+	Route       string `json:"route"`
+	KShards     uint8  `json:"k_shards"`
+	// ShardsObserved is how many of the dispatch's query_log rows were actually
+	// folded into this row: 1 on route A, and on route B the number of shards
+	// that reached query_log. A route-B row with ShardsObserved < KShards is a
+	// PARTIAL fan-out — its cost columns describe only the shards that landed —
+	// and the calibration must exclude it from any absolute route-B cost
+	// comparison. Recording it is what keeps a partial fan-out from being either
+	// silently under-counted or silently dropped: an errgroup with
+	// first-error-wins cancellation routinely leaves the later shards never
+	// dispatched, so "all K landed" is not the common case it looks like.
+	ShardsObserved uint8 `json:"shards_observed"`
+	// Parallelism is Record.Parallelism: the EFFECTIVE shard concurrency the
+	// Executor ran the fan-out at, 0 on route A. It is a dispatch property, not
+	// a fold artefact — MemoryUsage and QueryDurationMS already fold at it (see
+	// shardFold.finish) — and is stored so the calibration can read a route-B
+	// cost against the schedule that produced it rather than against K alone.
+	Parallelism    uint8  `json:"parallelism"`
 	DecisionReason string `json:"decision_reason"`
 	// ExitStatus is one of the tokens ExitStatusTokens() enumerates — the
 	// query_log-derived terminal classes the reconciler assigns plus the
@@ -400,8 +417,14 @@ type SourceRow struct {
 }
 
 // defaultRingCapacity is the fallback ring capacity when Options.RingCapacity
-// is non-positive. It bounds memory: at most this many recently-dispatched
-// query_ids are tracked, the oldest evicted as new ones arrive.
+// is non-positive. It bounds memory in RECORDS — at most this many
+// recently-dispatched queries are tracked, the oldest evicted as new ones
+// arrive — which is not the same as bounding query_ids: a routed record holds
+// one id per shard in a single slot, so the join index (and the per-interval
+// IN(...) built from it) is bounded by RingCapacity x the largest fan-out the
+// solver will dispatch, not by RingCapacity. At the solver's structural MaxK of
+// 8 that is a ceiling of 32k ids on an all-routed deployment; in practice route
+// B is a minority of dispatches, so the live index sits far below it.
 const defaultRingCapacity = 4096
 
 // defaultObserveBuffer is the fallback capacity of the non-blocking ingest
@@ -416,6 +439,8 @@ const defaultObserveBuffer = 8192
 type Options struct {
 	// RingCapacity bounds the in-memory ring of observed Records. When <= 0
 	// defaultRingCapacity is used. The ring drops the oldest record when full.
+	// It counts RECORDS, not query_ids — a routed record occupies one slot and
+	// holds one id per shard (see defaultRingCapacity).
 	RingCapacity int
 	// ObserveBuffer is the capacity of the non-blocking ingest channel between
 	// the data-plane dispatch seam (ObserveQuery) and the drain. When <= 0
@@ -484,6 +509,178 @@ type Reconciler struct {
 	// drop-under-burst contract as the ring (a rejection is a best-effort
 	// sample, never a system record).
 	pendingRejections []Record
+
+	// folds parks the running cost fold of a dispatch whose query_log rows have
+	// not all landed yet, keyed by the ring slot that identifies the dispatch. A
+	// routed fan-out lands shard by shard — and, when one shard fails, the
+	// errgroup cancels its siblings so the later ones NEVER dispatch and never
+	// produce a query_log row at all — so the fold has to survive across
+	// reconcile intervals instead of being recomputed from rows the source will
+	// not return twice. Each entry is retired one of three ways: completed (all
+	// K landed, written as a full row), expired (the record's remaining ids
+	// passed the TTL, written as a PARTIAL row), or displaced (the ring reused
+	// the slot, likewise written as a partial). It is bounded by the ring: at
+	// most one entry per slot.
+	folds map[int]*shardFold
+
+	// pendingPartials buffers partial-fan-out Rows harvested from expired or
+	// displaced folds, for the next reconcileOnce to write. It exists so the
+	// harvest sites (evictExpired, Observe) stay pure ring bookkeeping and never
+	// perform I/O under the ring mutex, mirroring pendingRejections.
+	pendingPartials []Row
+}
+
+// shardFold accumulates the query_log rows of ONE dispatch into the single
+// corpus Row it reconciles to, across however many intervals the shards take to
+// land. It is the route-B counterpart of "read one row, write one row": a
+// fan-out's K rows arrive piecemeal, and the shards that never arrive at all
+// must not cost us the ones that did.
+//
+// add is idempotent per query_id, which is load-bearing rather than defensive:
+// on a sink-write failure reconcileOnce deliberately does NOT forget the
+// reconciled ids, so the very same source rows are re-delivered next interval
+// and would otherwise be folded in twice.
+type shardFold struct {
+	rec  Record
+	row  Row
+	seen map[string]struct{}
+	// memPeaks is every landed shard's memory_usage, kept per shard rather than
+	// accumulated because the folded column is the sum of the P LARGEST peaks
+	// and P is only known at finish, where the landed count bounds it.
+	memPeaks []uint64
+	// slowestMS and totalMS are the two terms of the makespan bound the folded
+	// query_duration_ms resolves to at finish.
+	slowestMS uint64
+	totalMS   uint64
+	// chStatus is the most severe query_log-derived status seen so far (see
+	// exitSeverity). It is tracked separately from row.ExitStatus because the
+	// latter is only resolved at finish, where a cerberus-side outcome can
+	// override it.
+	chStatus ExitStatus
+	// hashSet marks that normalized_query_hash has been taken from the first
+	// row to land. The shards are K parameterisations of one emitted statement,
+	// so they normalise alike and the first one is representative.
+	hashSet bool
+}
+
+// newShardFold starts a fold for rec.
+func newShardFold(rec Record) *shardFold {
+	return &shardFold{
+		rec:      rec,
+		row:      Row{ShapeID: rec.ShapeID, Opts: rec.Opts, Language: rec.Language},
+		seen:     make(map[string]struct{}, len(rec.joinIDs())),
+		memPeaks: make([]uint64, 0, len(rec.joinIDs())),
+		chStatus: ExitOK,
+	}
+}
+
+// add folds one query_log row in, reporting false when that shard's id has
+// already been folded (a re-delivery, which must not double-count).
+//
+// The result is ONE row per logical query, never one per shard: the corpus
+// exists to compare what route A costs against what route B costs for the same
+// request, and it carries no request identifier to GROUP BY after the fact. A
+// row per shard would put a fraction of a route-B fan-out beside a whole
+// route-A query in every comparison the calibration draws.
+//
+// The cost columns are folded so a route-B row means the same thing a route-A
+// row means. Two of them are exact sums; the two schedule-dependent ones read
+// the Executor's EFFECTIVE concurrency P (Record.Parallelism), which is
+// routinely below K, so they are resolved at finish rather than accumulated
+// here:
+//
+//   - read_rows / read_bytes are SUMMED, and this is exact. They measure work
+//     done, and the whole point of the A/B comparison is whether the fan-out
+//     reads more or less in total than the single query would have. A max would
+//     report one shard's share and understate route B by roughly K.
+//   - memory_usage is the sum of the P LARGEST shard peaks, so every landed
+//     peak is retained here and folded at finish. At most P of the K shards are
+//     ever in flight together, so that sum — not the sum of all K — bounds the
+//     server-side memory the request holds at once, which is the quantity
+//     comparable to route A's single peak. It stays a bound rather than an
+//     exact reading (peaks within a wave need not coincide), which is the
+//     conservative side to err on for a column the calibration learns memory
+//     watermarks from.
+//   - query_duration_ms is the makespan bound max(slowest shard, total / P), so
+//     both terms are accumulated here and resolved at finish. K tasks on P
+//     workers cannot finish before either term, and the tighter of the two is
+//     the estimate. A plain MAX would read the ClickHouse-side latency of a
+//     K=8/P=3 fan-out as one shard's, understating route B by roughly K/P
+//     against a route-A row it is compared with. Engine wall-clock was rejected
+//     for the opposite reason: route A's duration comes from query_log, and
+//     mixing instruments would make the two routes' latency columns
+//     incomparable.
+//   - profile_events are summed per key, matching read_rows' "total work"
+//     reading of the same fan-out.
+//   - normalized_query_hash comes from the first row to land. The shards are K
+//     parameterisations of one emitted statement, so they normalise alike, and
+//     the column identifies the query SHAPE rather than any one dispatch.
+//   - exit_status is the most severe shard status (see exitSeverity), because a
+//     fan-out that OOMed one shard is an OOM for the request even though its
+//     siblings finished.
+func (f *shardFold) add(sr SourceRow) bool {
+	if _, dup := f.seen[sr.QueryID]; dup {
+		return false
+	}
+	f.seen[sr.QueryID] = struct{}{}
+	if !f.hashSet {
+		f.row.NormalizedQueryHash = sr.NormalizedQueryHash
+		f.chStatus = sr.ExitStatus
+		f.hashSet = true
+	} else if exitSeverityOf(sr.ExitStatus) > exitSeverityOf(f.chStatus) {
+		f.chStatus = sr.ExitStatus
+	}
+	f.row.ReadRows += sr.ReadRows
+	f.row.ReadBytes += sr.ReadBytes
+	f.memPeaks = append(f.memPeaks, sr.MemoryUsage)
+	f.totalMS += sr.QueryDurationMS
+	if sr.QueryDurationMS > f.slowestMS {
+		f.slowestMS = sr.QueryDurationMS
+	}
+	for name, count := range sr.ProfileEvents {
+		if f.row.ProfileEvents == nil {
+			f.row.ProfileEvents = make(map[string]int64, len(sr.ProfileEvents))
+		}
+		f.row.ProfileEvents[name] += count
+	}
+	return true
+}
+
+// observed is how many distinct shards have been folded so far.
+func (f *shardFold) observed() int { return len(f.seen) }
+
+// complete reports whether every id the record joins on has landed.
+func (f *shardFold) complete() bool { return f.observed() >= len(f.rec.joinIDs()) }
+
+// finish resolves the fold into the corpus Row, applying the two
+// schedule-dependent folds at the concurrency the landed shards could have run
+// at. It is callable on an INCOMPLETE fold: the row then carries
+// shards_observed < k_shards, which is exactly how a partial fan-out is
+// published rather than dropped, and the concurrency is bounded by what landed
+// (see concurrencyOf) so the bounds stay honest about the rows they cover.
+func (f *shardFold) finish() Row {
+	row := f.row
+	p := concurrencyOf(f.rec, f.observed())
+	row.MemoryUsage = sumTopN(f.memPeaks, p)
+	row.QueryDurationMS = makespanMS(f.slowestMS, f.totalMS, p)
+	row.ExitStatus = exitStatusToken(f.chStatus, f.rec)
+	row.ShardsObserved = clampShardCount(f.observed())
+	row.Parallelism = clampShardCount(f.rec.Parallelism)
+	joinRouteFeatures(&row, f.rec)
+	return row
+}
+
+// clampShardCount narrows a shard tally to the uint8 the corpus columns store.
+// The solver's structural MaxK is far below the ceiling, so the clamp documents
+// the invariant rather than expecting to bind (gosec G115).
+func clampShardCount(n int) uint8 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxUint8 {
+		return math.MaxUint8
+	}
+	return uint8(n)
 }
 
 // New builds a Reconciler over src and sink with opts. It does not start any
@@ -513,6 +710,7 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 		ring:   make([]Record, capacity),
 		byID:   make(map[string]int, capacity),
 		seenAt: make(map[string]time.Time, capacity),
+		folds:  make(map[int]*shardFold),
 	}
 }
 
@@ -602,6 +800,13 @@ func (r *Reconciler) Observe(rec Record) {
 				delete(r.seenAt, id)
 			}
 		}
+		// Any shards that DID land for the displaced record are published as a
+		// partial row now. Slot reuse — not the TTL — is the common way a
+		// half-landed fan-out ends on a busy deployment: the ring wraps in
+		// however long RingCapacity dispatches take, which is far inside the
+		// >=1h TTL. Harvesting only on expiry would make this fix inert exactly
+		// where route B runs most.
+		r.harvestFold(slot)
 	} else {
 		r.count++
 	}
@@ -675,7 +880,7 @@ func (r *Reconciler) ObserveQuery(
 // ObserveRoutedQuery is ObserveQuery's route-B seam: one logical query that
 // ClickHouse ran as K statements, identified by shardQueryIDs. All K ids index
 // the SAME ring record, and the reconciler folds their K query_log rows into a
-// single corpus row (see rowFor) — the corpus's unit is the request, so
+// single corpus row (see shardFold) — the corpus's unit is the request, so
 // a routed query must weigh as one row against the route-A row it is compared
 // with. Same non-blocking, drop-under-burst contract as ObserveQuery; the ids
 // are copied because the caller owns the slice.
@@ -930,6 +1135,11 @@ func (r *Reconciler) forget(ids []string) {
 // number evicted (for a diagnostic). A non-positive TTL disables eviction. Like
 // forget, it drops only the byID/seenAt entries; the ring slot is reclaimed by
 // a future Observe. Safe for concurrent Observe.
+// Whatever shards a routed record DID land before expiring are published as a
+// partial row rather than discarded with the index entries — expiry is the only
+// garbage collector for a fan-out whose remaining shards were never dispatched
+// at all (the errgroup cancels the siblings of a failed shard), so dropping the
+// fold here would silently delete the whole record.
 func (r *Reconciler) evictExpired() int {
 	if r.ttl <= 0 {
 		return 0
@@ -938,14 +1148,54 @@ func (r *Reconciler) evictExpired() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	evicted := 0
+	expiredSlots := make(map[int]struct{})
 	for id, seen := range r.seenAt {
 		if seen.Before(cutoff) {
+			if slot, ok := r.byID[id]; ok {
+				expiredSlots[slot] = struct{}{}
+			}
 			delete(r.byID, id)
 			delete(r.seenAt, id)
 			evicted++
 		}
 	}
+	for slot := range expiredSlots {
+		if r.slotHasLiveID(slot) {
+			// Some of this record's shards are still inside the lookback
+			// window and can still land; keep the fold and wait for them.
+			continue
+		}
+		r.harvestFold(slot)
+	}
 	return evicted
+}
+
+// slotHasLiveID reports whether any join id still points at slot. Callers hold
+// the ring mutex.
+func (r *Reconciler) slotHasLiveID(slot int) bool {
+	for _, id := range r.ring[slot].joinIDs() {
+		if idx, ok := r.byID[id]; ok && idx == slot {
+			return true
+		}
+	}
+	return false
+}
+
+// harvestFold retires the fold parked at slot, buffering whatever it has
+// accumulated as a PARTIAL corpus row for the next reconcileOnce to write. A
+// slot with no parked fold, or one that landed nothing at all, harvests
+// nothing: a fan-out where not a single shard reached query_log carries no cost
+// to report. Callers hold the ring mutex.
+func (r *Reconciler) harvestFold(slot int) {
+	f, ok := r.folds[slot]
+	if !ok {
+		return
+	}
+	delete(r.folds, slot)
+	if f.observed() == 0 {
+		return
+	}
+	r.pendingPartials = append(r.pendingPartials, f.finish())
 }
 
 // Run drives the reconcile loop on the configured interval until ctx is
@@ -990,10 +1240,14 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 
 	// Drop ids older than the lookback window before snapshotting, so a
 	// never-finished query is not carried in the IN(...) forever (it can no
-	// longer match a row the source can still see).
+	// longer match a row the source can still see). This is also where a routed
+	// record whose remaining shards never ran gives up its partial fold, so the
+	// flush below has to come after it.
 	if n := r.evictExpired(); n > 0 {
 		r.logger.Debug("optcorpus: evicted stale unobserved query_ids", "evicted", n)
 	}
+	r.flushPartials()
+
 	ids := r.snapshotIDs()
 	if len(ids) == 0 {
 		return
@@ -1010,30 +1264,112 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	groups := groupByRecord(srcRows, r.recordFor)
 	rows := make([]Row, 0, len(groups))
 	reconciled := make([]string, 0, len(srcRows))
+	completed := make([]int, 0, len(groups))
 	for _, g := range groups {
-		joined := g.rec.joinIDs()
-		if len(g.rows) < len(joined) {
+		f := r.foldInto(g)
+		if !f.complete() {
 			// A routed dispatch whose remaining shards have not landed in
-			// query_log yet. Wait for them rather than writing a row whose cost
-			// columns count part of the fan-out: an under-counted route-B row is
-			// worse than a missing one, because the corpus exists to compare
-			// route B's cost against route A's. The ids stay in the join index
-			// and are retried next interval (and expire on the TTL if the
-			// missing shards never ran at all).
+			// query_log yet — or never will, because the errgroup cancelled
+			// them after a sibling failed. The shards that DID land stay in the
+			// parked fold, and their ids are forgotten so the next interval's
+			// IN(...) asks only for the ones still missing. The record is
+			// published as a partial row when its remaining ids expire or the
+			// ring reuses its slot; it is never dropped whole.
+			r.forget(landedIDs(g))
 			continue
 		}
-		rows = append(rows, rowFor(g))
-		reconciled = append(reconciled, joined...)
+		rows = append(rows, f.finish())
+		reconciled = append(reconciled, g.rec.joinIDs()...)
+		completed = append(completed, g.slot)
 	}
 	if len(rows) == 0 {
 		return
 	}
 	if err := r.sink.Write(rows); err != nil {
 		r.logger.Warn("optcorpus: sink write failed", "err", err, "rows", len(rows))
-		// Do NOT forget on write failure: retry the same ids next interval.
+		// Do NOT forget on write failure: retry the same ids next interval. The
+		// completed folds are deliberately left parked too, so the re-delivered
+		// source rows land back on the SAME accumulator (shardFold.add is
+		// idempotent per id) instead of restarting a fold whose earlier shards
+		// have already been forgotten and will never be re-read.
 		return
 	}
 	r.forget(reconciled)
+	r.dropFolds(completed)
+}
+
+// landedIDs is the query_ids of the source rows that joined into g this
+// interval — the shards whose cost is now inside the parked fold and which the
+// join index therefore no longer needs to ask query_log about.
+func landedIDs(g joinGroup) []string {
+	out := make([]string, 0, len(g.rows))
+	for _, sr := range g.rows {
+		out = append(out, sr.QueryID)
+	}
+	return out
+}
+
+// foldInto folds g's source rows into the accumulator parked at g's ring slot,
+// starting one if this is the dispatch's first interval, and returns it. A
+// route-A dispatch completes on its first (and only) row, so its fold is
+// created and retired within one reconcile and never occupies a slot across
+// intervals.
+func (r *Reconciler) foldInto(g joinGroup) *shardFold {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f, ok := r.folds[g.slot]
+	if !ok {
+		f = newShardFold(g.rec)
+		r.folds[g.slot] = f
+	}
+	for _, sr := range g.rows {
+		f.add(sr)
+	}
+	return f
+}
+
+// dropFolds retires the accumulators of dispatches whose row has been written.
+func (r *Reconciler) dropFolds(slots []int) {
+	if len(slots) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, slot := range slots {
+		delete(r.folds, slot)
+	}
+}
+
+// flushPartials writes the partial-fan-out Rows harvested from expired or
+// displaced folds. On a sink-write failure they are re-buffered for the next
+// interval, mirroring the rejection flush and the join path's "do not forget on
+// write failure" retry contract.
+func (r *Reconciler) flushPartials() {
+	pending := r.takePartials()
+	if len(pending) == 0 {
+		return
+	}
+	if err := r.sink.Write(pending); err != nil {
+		r.logger.Warn("optcorpus: partial fan-out write failed", "err", err, "rows", len(pending))
+		r.rebufferPartials(pending)
+	}
+}
+
+// takePartials removes and returns the buffered partial rows.
+func (r *Reconciler) takePartials() []Row {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending := r.pendingPartials
+	r.pendingPartials = nil
+	return pending
+}
+
+// rebufferPartials puts rows back at the FRONT of the pending buffer after a
+// failed write, preserving harvest order for the retry.
+func (r *Reconciler) rebufferPartials(rows []Row) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingPartials = append(rows, r.pendingPartials...)
 }
 
 // joinGroup is the set of query_log rows that reconcile into ONE corpus row:
@@ -1042,6 +1378,11 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 // K, one per shard, because ClickHouse ran that one logical query as K
 // statements.
 type joinGroup struct {
+	// slot is the ring slot the record lives in. It is the dispatch's identity
+	// across reconcile intervals — the key the parked shardFold is filed
+	// under — because a routed record is reachable through any of its K shard
+	// ids and none of them alone names the dispatch.
+	slot int
 	rec  Record
 	rows []SourceRow
 }
@@ -1071,7 +1412,7 @@ func groupByRecord(srcRows []SourceRow, lookup func(string) (Record, int, bool))
 		}
 		g, tracked := bySlot[slot]
 		if !tracked {
-			g = &joinGroup{rec: rec, rows: make([]SourceRow, 0, len(rec.joinIDs()))}
+			g = &joinGroup{slot: slot, rec: rec, rows: make([]SourceRow, 0, len(rec.joinIDs()))}
 			bySlot[slot] = g
 			order = append(order, slot)
 		}
@@ -1084,86 +1425,9 @@ func groupByRecord(srcRows []SourceRow, lookup func(string) (Record, int, bool))
 	return out
 }
 
-// rowFor folds one join group into the single corpus Row for its dispatch.
-//
-// ONE row per logical query, never one per shard: the corpus exists to compare
-// what route A costs against what route B costs for the same request, and it
-// carries no request identifier to GROUP BY after the fact. A row per shard
-// would put a fraction of a route-B fan-out beside a whole route-A query in
-// every comparison the calibration draws.
-//
-// The cost columns are therefore folded so a route-B row means the same thing a
-// route-A row means:
-//
-//   - read_rows / read_bytes are SUMMED. They measure work done, and the whole
-//     point of the A/B comparison is whether the fan-out reads more or less in
-//     total than the single query would have. A max would report one shard's
-//     share and understate route B by roughly K.
-//   - memory_usage is the sum of the P LARGEST shard peaks. At most P of the K
-//     shards are ever in flight together, so that sum — not the sum of all K —
-//     bounds the server-side memory the request holds at once, which is the
-//     quantity comparable to route A's single peak. It stays a bound rather
-//     than an exact reading (peaks within a wave need not coincide), which is
-//     the conservative side to err on for a column the calibration learns
-//     memory watermarks from.
-//   - query_duration_ms is the makespan bound max(slowest shard, total / P):
-//     K tasks on P workers cannot finish before either term, and the tighter of
-//     the two is the estimate. With a fully parallel fan-out it is the slowest
-//     shard; serialised down to P=1 it is the total. A plain MAX would read the
-//     ClickHouse-side latency of a K=8/P=3 fan-out as one shard's, understating
-//     route B by roughly K/P against a route-A row it is compared with. Engine
-//     wall-clock was rejected for the opposite reason: route A's duration comes
-//     from query_log, and mixing instruments would make the two routes' latency
-//     columns incomparable.
-//   - profile_events are summed per key, matching read_rows' "total work"
-//     reading of the same fan-out.
-//   - normalized_query_hash comes from the first joined row. The shards are K
-//     parameterisations of one emitted statement, so they normalise alike, and
-//     the column identifies the query SHAPE rather than any one dispatch.
-//   - exit_status is the most severe shard status (see exitSeverity), because a
-//     fan-out that OOMed one shard is an OOM for the request even though its
-//     siblings finished.
-func rowFor(g joinGroup) Row {
-	row := Row{
-		ShapeID:  g.rec.ShapeID,
-		Opts:     g.rec.Opts,
-		Language: g.rec.Language,
-	}
-	chStatus := ExitOK
-	memPeaks := make([]uint64, 0, len(g.rows))
-	var slowestMS, totalMS uint64
-	for i, sr := range g.rows {
-		if i == 0 {
-			row.NormalizedQueryHash = sr.NormalizedQueryHash
-			chStatus = sr.ExitStatus
-		} else if exitSeverityOf(sr.ExitStatus) > exitSeverityOf(chStatus) {
-			chStatus = sr.ExitStatus
-		}
-		row.ReadRows += sr.ReadRows
-		row.ReadBytes += sr.ReadBytes
-		memPeaks = append(memPeaks, sr.MemoryUsage)
-		totalMS += sr.QueryDurationMS
-		if sr.QueryDurationMS > slowestMS {
-			slowestMS = sr.QueryDurationMS
-		}
-		for name, count := range sr.ProfileEvents {
-			if row.ProfileEvents == nil {
-				row.ProfileEvents = make(map[string]int64, len(sr.ProfileEvents))
-			}
-			row.ProfileEvents[name] += count
-		}
-	}
-	p := concurrencyOf(g.rec, len(g.rows))
-	row.MemoryUsage = sumTopN(memPeaks, p)
-	row.QueryDurationMS = makespanMS(slowestMS, totalMS, p)
-	row.ExitStatus = exitStatusToken(chStatus, g.rec)
-	joinRouteFeatures(&row, g.rec)
-	return row
-}
-
-// concurrencyOf returns how many of a group's joined rows could have been in
+// concurrencyOf returns how many of a fold's landed rows could have been in
 // flight together. A record that carries the Executor's effective P uses it,
-// bounded by the number of rows actually joined (a group missing rows cannot
+// bounded by the number of rows actually folded (a fold missing rows cannot
 // have run more shards concurrently than it has). Anything else — a route-A
 // record, or a record predating a known P — folds as fully concurrent, which is
 // the identity for the single-row case and preserves the sum/max reading where
