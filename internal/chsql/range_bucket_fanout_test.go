@@ -43,7 +43,7 @@ func TestRangeBucketFanoutSuppressesShortSourceSeries(t *testing.T) {
 	if got := strings.Count(sql, "sumForEach(`BucketCounts`)"); got != 2 {
 		t.Errorf("sumForEach must collapse source series before the final aggregation, got %d occurrences:\n%s", got, sql)
 	}
-	if strings.Index(sql, "HAVING count() >= 2") > strings.LastIndex(sql, "sumForEach(`BucketCounts`)") {
+	if !strings.Contains(sql, "HAVING count() >= 2) GROUP BY anchor_ts") {
 		t.Errorf("the final aggregation must occur after the per-source HAVING filter:\n%s", sql)
 	}
 }

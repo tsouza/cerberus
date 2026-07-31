@@ -4435,7 +4435,7 @@
     "scan_rows": 1,
     "peak_intermediate": 1,
     "has_cross_join": false,
-    "has_array_join": false,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -4755,7 +4755,7 @@
     "scan_rows": 3,
     "peak_intermediate": 3,
     "has_cross_join": false,
-    "has_array_join": false,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -4765,7 +4765,7 @@
     "scan_rows": 1,
     "peak_intermediate": 1,
     "has_cross_join": false,
-    "has_array_join": false,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -7712,8 +7712,8 @@
   {
     "fixture": "traceql/spanset_pipeline_intersect",
     "fan_factor": 1,
-    "scan_rows": 2,
-    "peak_intermediate": 2,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
