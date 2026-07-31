@@ -17,51 +17,64 @@ const (
 	settingMaxBytesBeforeExternalSort    = "max_bytes_before_external_sort"
 )
 
-// spillThresholdBytes is the default byte threshold at which a GROUP BY / sort
-// begins spilling to disk. A high-cardinality aggregation (TraceQL `compare()`
-// arrayJoin, PromQL `sum by(user_id)`, LogQL `by(request_id)`, …) or a large
-// sort otherwise builds an unbounded in-memory state and aborts the query with
-// MEMORY_LIMIT_EXCEEDED (code 241) at the per-query cap. Spilling at 512 MiB
-// keeps the operation well under the 1 GiB default cap, trading a slower
+// spillThresholdBytes is the byte threshold at which a GROUP BY / sort begins
+// spilling to disk when NO per-query memory cap is configured. A
+// high-cardinality aggregation (TraceQL `compare()` arrayJoin, PromQL
+// `sum by(user_id)`, LogQL `by(request_id)`, …) or a large sort otherwise
+// builds an unbounded in-memory state and aborts the query with
+// MEMORY_LIMIT_EXCEEDED (code 241) at whatever server-side limit it eventually
+// hits. With no cap there is nothing to take a fraction of, so the fallback is
+// the threshold a DEFAULT-capped deployment gets: config's 1 GiB default
+// max_memory_usage divided by spillCapDenominator. An uncapped deployment
+// therefore spills exactly where a default-capped one does, trading a slower
 // disk-backed merge for a query that COMPLETES instead of 422-ing.
-const spillThresholdBytes int64 = 512 << 20 // 536870912 bytes
+// TestSpillThresholdBytes_MatchesDefaultCapThreshold pins that relationship, so
+// raising the config default without re-deriving this value fails loudly.
+const spillThresholdBytes int64 = 512 << 20 // 536870912 bytes — (1 GiB default cap) / 2
 
-// spillCapDenominator divides the live per-query memory cap to derive a
+// spillCapDenominator divides the live per-query memory cap to derive the
 // cap-relative spill threshold: the spill must begin at a fraction of the cap
 // so the disk-backed merge still has headroom under max_memory_usage.
 // ClickHouse's own guidance for max_bytes_before_external_group_by is ~50% of
-// max_memory_usage, hence 2 — half the cap.
+// max_memory_usage, hence 2 — half the cap. Any denominator >= 2 puts the
+// threshold strictly below the cap, which is the property the spill depends on.
 const spillCapDenominator int64 = 2
 
 // spillThreshold returns the byte threshold to stamp, given the live per-query
 // memory cap (max_memory_usage, in bytes; 0 = no cap configured).
 //
-// The fixed spillThresholdBytes (512 MiB) is only safe when the cap sits
-// comfortably above it. When an operator lowers CERBERUS_CH_QUERY_MAX_MEMORY to
-// at or below 512 MiB, a fixed 512 MiB threshold lands AT or ABOVE the cap, so
-// the operation never spills and OOMs before the threshold is reached — the
-// very bug this exists to prevent. So when a cap is set, take the smaller of
-// the fixed threshold and a cap-relative fraction (~50% of the cap), keeping
-// the spill strictly below the cap for every config.
+// A configured cap is the only honest scale for the threshold, so the threshold
+// is derived from it and from nothing else: half the cap, per ClickHouse's own
+// guidance for max_bytes_before_external_group_by. That is safe by construction
+// at every cap a query can actually run under: for a cap of at least
+// spillCapDenominator bytes the quotient is positive AND strictly below the cap,
+// so the operation always reaches the spill threshold before it reaches
+// MEMORY_LIMIT_EXCEEDED, whether the operator raises
+// CERBERUS_CH_QUERY_MAX_MEMORY to many GiB or lowers it below 512 MiB. (A
+// single-byte cap admits no threshold at all — no positive byte count sits below
+// one byte — and no query runs under such a cap either way.) Sizing
+// against the cap is also what keeps the threshold HONEST in the other
+// direction: a threshold far below the cap spills state the query had the
+// budget to hold in RAM, paying a disk-backed merge (and the read amplification
+// that comes with it) for no memory gain.
 //
-// When no cap is configured (cap <= 0) the threshold is the plain fixed value:
-// max_bytes_before_external_*=0 means the spill is DISABLED, so min'ing against
-// a non-positive cap would re-introduce the unbounded-RAM bug.
+// When no cap is configured (cap <= 0) there is no cap to take a fraction of,
+// so the threshold is the absolute spillThresholdBytes. It must not fall out of
+// the cap-relative arithmetic: max_bytes_before_external_*=0 means the spill is
+// DISABLED, which would re-introduce the unbounded-RAM abort this exists to
+// prevent.
 func spillThreshold(maxMemory int64) int64 {
 	if maxMemory <= 0 {
 		return spillThresholdBytes
 	}
-	if capRelative := maxMemory / spillCapDenominator; capRelative < spillThresholdBytes {
-		return capRelative
-	}
-	return spillThresholdBytes
+	return maxMemory / spillCapDenominator
 }
 
 // applySpillSettings stamps the external-group-by AND external-sort spill
 // thresholds on ctx for EVERY data-plane query.
 //
-// It is UNCONDITIONAL (it replaces the old MetricsCompare-only applyCompareSpill)
-// because the OOM-prone GROUP BY / sort is not unique to compare(): any head can
+// It is UNCONDITIONAL rather than scoped to one plan shape because the OOM-prone
+// GROUP BY / sort is not unique to TraceQL compare(): any head can
 // lower a high-cardinality aggregation (`sum by(user_id)`, LogQL `by(...)`,
 // TraceQL structural DISTINCT / nested-set window passes) or a large sort
 // (`topk`, `ORDER BY`) that would otherwise abort at the cap. Both settings are
