@@ -10,12 +10,16 @@ cerberus lowers each via the shared pipeline folder and intersects on
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
-    SpanAttributes Map(String, String)
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String),
+    Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('a1', 's1', map('region', 'us', 'tier', 'gold')),
-    ('a2', 's2', map('region', 'eu', 'tier', 'gold')),
-    ('a3', 's3', map('region', 'us', 'tier', 'silver'));
+    ('a1', 's1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), map('region', 'us', 'tier', 'gold'),    10000000),
+    ('a2', 's2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), map('region', 'eu', 'tier', 'gold'),    20000000),
+    ('a3', 's3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'backend'),  map('region', 'us', 'tier', 'silver'),  30000000);
 -- args --
 [0] int64 = 1
 [1] string = "region"
@@ -36,4 +40,8 @@ SetOperation op=&&
       Filter predicate=(SpanAttributes["tier"] = "gold")
         Scan(otel_traces)
 -- sql --
-WITH _setand_l_1 AS (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)), _setand_r_1 AS (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
+WITH _setand_l_1 AS (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)), _setand_r_1 AS (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`
+-- expected_rows --
+[
+  ["a1", 1, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z", 1704067200000000000, 1704067200010000000]
+]

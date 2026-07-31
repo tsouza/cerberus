@@ -10,13 +10,14 @@
 # only the windowed-count subquery differs.
 #
 # VERSION FLOOR 25.9 (NOT 25.6). timeSeriesChangesToGrid shipped in PR #86010
-# (ClickHouse 25.9), a full quarter after the rate/resample family — empirically
-# confirmed ABSENT on the 25.8 chDB substrate. The chdb-tagged dual-emit parity
-# test (range_window_changes_chdb_test.go) therefore feature-detects via
+# (ClickHouse 25.9), a full quarter after the rate/resample family. The pinned
+# chDB substrate (CHDB_VERSION in the Justfile) clears that floor, so this
+# fixture both pins the SQL shape unconditionally AND executes it — the
+# `-- expected_rows --` cell below is the numeric assertion. The native==fan-out
+# DIFFERENTIAL stays in the chdb-tagged dual-emit parity test
+# (range_window_changes_chdb_test.go), which feature-detects via
 # system.functions and FALLS BACK to fan-out-only validation on a sub-25.9
-# substrate: native==fan-out parity is VERSION-GATED, proven on a >= 25.9 server,
-# not auto-proven on the current substrate. This SQL-shape golden still pins the
-# emit unconditionally.
+# substrate rather than reporting a false green.
 #
 # changes() is a value-change COUNT over the window: each adjacent pair
 # (prev, curr) with curr != prev contributes 1. Native timeSeriesChangesToGrid
@@ -70,3 +71,28 @@ Project ["" AS MetricName, mapWithoutEmpty(map("host", gkey_0)) AS Attributes, b
           Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
 SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`, timeSeriesChangesToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) GROUP BY `gkey_0`, `bucket_ts`)
+-- expected_rows --
+[
+  ["", {"host": "a"}, "2026-01-01T00:00:00Z", 0],
+  ["", {"host": "a"}, "2026-01-01T00:00:30Z", 0],
+  ["", {"host": "a"}, "2026-01-01T00:01:00Z", 1],
+  ["", {"host": "a"}, "2026-01-01T00:01:30Z", 1],
+  ["", {"host": "a"}, "2026-01-01T00:02:00Z", 1],
+  ["", {"host": "a"}, "2026-01-01T00:02:30Z", 1],
+  ["", {"host": "a"}, "2026-01-01T00:03:00Z", 2],
+  ["", {"host": "a"}, "2026-01-01T00:03:30Z", 2],
+  ["", {"host": "a"}, "2026-01-01T00:04:00Z", 3],
+  ["", {"host": "a"}, "2026-01-01T00:04:30Z", 3],
+  ["", {"host": "a"}, "2026-01-01T00:05:00Z", 2],
+  ["", {"host": "b"}, "2026-01-01T00:00:00Z", 0],
+  ["", {"host": "b"}, "2026-01-01T00:00:30Z", 0],
+  ["", {"host": "b"}, "2026-01-01T00:01:00Z", 0],
+  ["", {"host": "b"}, "2026-01-01T00:01:30Z", 0],
+  ["", {"host": "b"}, "2026-01-01T00:02:00Z", 1],
+  ["", {"host": "b"}, "2026-01-01T00:02:30Z", 1],
+  ["", {"host": "b"}, "2026-01-01T00:03:00Z", 1],
+  ["", {"host": "b"}, "2026-01-01T00:03:30Z", 1],
+  ["", {"host": "b"}, "2026-01-01T00:04:00Z", 2],
+  ["", {"host": "b"}, "2026-01-01T00:04:30Z", 2],
+  ["", {"host": "b"}, "2026-01-01T00:05:00Z", 3]
+]

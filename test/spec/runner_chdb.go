@@ -218,12 +218,17 @@ func orderByReferencesMapSubscript(orderBy string) bool {
 // panics with `could not cast to type: MAP`.
 //
 // The transform is conservative: it fires only when the outer
-// projection is exactly `*` and the inner subquery starts with
-// `SELECT ` (case-insensitive). Anything else passes through. The
-// inner subquery's projections are re-rendered as their aliases
-// (preferring explicit `AS <alias>` over the implicit form), which
-// lets the outer SELECT name the columns and the Map-wrap pass do
-// its work without touching the inner shape.
+// projection is exactly `*` or a single qualified star `<t>.*` (the
+// spanset-intersect shape `SELECT L.* FROM (<left>) AS L INNER JOIN
+// (<right>) AS R ON …`, whose columns come from the FIRST subquery —
+// the same one this function already borrows from), and the inner
+// subquery starts with `SELECT ` (case-insensitive). Anything else
+// passes through. The inner subquery's projections are re-rendered as
+// their aliases (preferring explicit `AS <alias>` over the implicit
+// form), re-qualified with the star's own table alias so the JOIN
+// shape stays unambiguous, which lets the outer SELECT name the
+// columns and the Map-wrap pass do its work without touching the inner
+// shape.
 func expandStarProjection(query string) string {
 	// A `WITH <cte> AS (...) SELECT …` head (the vector-set-op CSE CTE,
 	// or the structural-join WITH RECURSIVE closure) precedes the outer
@@ -233,11 +238,161 @@ func expandStarProjection(query string) string {
 	// the outer projection needs the toJSONString wrap.
 	withHead, body := stripWithHead(query)
 	if withHead != "" {
-		return withHead + expandStarProjection(body)
+		return withHead + expandStarProjectionWithCTEs(body, withHead)
 	}
+	return expandStarProjectionWithCTEs(query, "")
+}
+
+// expandStarProjectionWithCTEs is [expandStarProjection] with the
+// enclosing `WITH <cte> AS (...)` definitions available for name
+// discovery. The Tempo-compatible `&&` shape (chsql.intersectQuery)
+// emits `WITH l AS (...), r AS (...) SELECT * FROM ((SELECT * FROM l)
+// UNION ALL (SELECT * FROM r)) …`, so the outer star's columns are not
+// borrowable from the inner FROM directly — the inner is a parenthesised
+// UNION whose branches reference CTEs by bare identifier. Name discovery
+// therefore peels the union to its first branch and, when that branch is
+// `SELECT * FROM <cte-ident>`, resolves the identifier back to its CTE
+// body in `withHead`. Everything else is delegated unchanged.
+func expandStarProjectionWithCTEs(query, withHead string) string {
 	head, tail := splitOuterSelect(query)
-	if head == "" || strings.TrimSpace(head) != "*" {
+	if head == "" {
 		return query
+	}
+	star := strings.TrimSpace(head)
+	if star != "*" {
+		return expandQualifiedStar(query)
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
+	if !strings.HasPrefix(rest, "(") {
+		return expandQualifiedStar(query)
+	}
+	depth, end := 0, -1
+	for i := 0; i < len(rest) && end < 0; i++ {
+		switch rest[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+	}
+	if end < 0 {
+		return expandQualifiedStar(query)
+	}
+	inner := strings.TrimSpace(rest[1:end])
+	// Peel a parenthesised UNION down to its leading branch, then
+	// resolve a bare-CTE-reference branch (`SELECT * FROM <ident>`)
+	// against the WITH head so the column names come from the CTE body.
+	branch := peelUnionPrefix(inner)
+	names := cteBranchAliases(branch, withHead)
+	if len(names) == 0 {
+		return expandQualifiedStar(query)
+	}
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "`" + n + "`"
+	}
+	return "SELECT " + strings.Join(quoted, ", ") + tail
+}
+
+// cteBranchAliases returns the projected column aliases of a UNION
+// branch of the form `SELECT * FROM <cte-ident>` by looking the CTE up
+// in withHead and borrowing its body's projection aliases. Returns nil
+// for any shape it cannot canonically enumerate, so the caller falls
+// back to the conservative [expandStarProjection] path.
+func cteBranchAliases(branch, withHead string) []string {
+	bHead, bTail := splitOuterSelect(branch)
+	if strings.TrimSpace(bHead) != "*" {
+		return nil
+	}
+	ident := strings.TrimSpace(strings.TrimPrefix(bTail, " FROM "))
+	// The FROM target must be a single bare identifier (the CTE name),
+	// not a subquery or a further expression.
+	if ident == "" || strings.ContainsAny(ident, " ,()`*") {
+		return nil
+	}
+	body := cteBody(withHead, ident)
+	if body == "" {
+		return nil
+	}
+	// The CTE body is itself a `SELECT * FROM (SELECT <aliased projs>…)`
+	// shape with no further WITH head; reuse the CTE-unaware star
+	// expander for name discovery only.
+	expanded := expandQualifiedStar(body)
+	eHead, _ := splitOuterSelect(expanded)
+	if eHead == "" || strings.TrimSpace(eHead) == "*" {
+		return nil
+	}
+	var names []string
+	for _, p := range splitProjections(eHead) {
+		expr, alias := splitAlias(p)
+		if alias == "" {
+			alias = mapColAlias(strings.TrimSpace(expr))
+		}
+		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
+			return nil
+		}
+		names = append(names, alias)
+	}
+	return names
+}
+
+// cteBody returns the parenthesised body of the named CTE from a
+// `WITH a AS (...), b AS (...)` head, or "" if not found. The name match
+// is anchored on the `<name> AS (` token at depth 0 within the head.
+func cteBody(withHead, name string) string {
+	needle := name + " AS ("
+	idx := strings.Index(withHead, needle)
+	if idx < 0 {
+		return ""
+	}
+	open := idx + len(needle) - 1 // points at the '('
+	depth, end := 0, -1
+	for i := open; i < len(withHead) && end < 0; i++ {
+		switch withHead[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+	}
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(withHead[open+1 : end])
+}
+
+// expandQualifiedStar is the CTE-unaware star expander: it rewrites a
+// top-level `SELECT * FROM (SELECT <projs> …) …` (or the qualified
+// `SELECT L.* FROM (<left>) AS L …` JOIN shape) into an explicit alias
+// list borrowed from the inner subquery's projections, so
+// [rewriteMapProjections] can wrap Map columns. It is the fallback path
+// [expandStarProjectionWithCTEs] delegates to whenever the outer FROM is
+// a borrowable subquery rather than a CTE-referencing UNION.
+func expandQualifiedStar(query string) string {
+	head, tail := splitOuterSelect(query)
+	if head == "" {
+		return query
+	}
+	// `qual` is the star's table qualifier ("" for a bare `*`, "L" for
+	// the intersect shape's `L.*`); it is re-attached to every borrowed
+	// alias so the expanded projection stays unambiguous across the JOIN.
+	star := strings.TrimSpace(head)
+	qual := ""
+	if star != "*" {
+		base, ok := strings.CutSuffix(star, ".*")
+		// A qualifier must be a single bare identifier — anything with a
+		// space, comma, paren, backtick or further star is a projection
+		// list or an expression, not the star shape this pass expands.
+		if !ok || base == "" || strings.ContainsAny(base, " ,()`*") {
+			return query
+		}
+		qual = base + "."
 	}
 	// `tail` starts with " FROM "; the next non-space token should be
 	// `(` opening an inner subquery whose projection list we can
@@ -267,6 +422,12 @@ func expandStarProjection(query string) string {
 		return query
 	}
 	inner := strings.TrimSpace(rest[1:end])
+	// The inner subquery may itself project a star over a further
+	// subquery (the spanset shape nests `SELECT * FROM (<aggregate>)
+	// WHERE …` inside the JOIN arm). Expand it recursively for NAME
+	// DISCOVERY only — the rewritten inner is never spliced back, tail
+	// keeps the original subquery verbatim.
+	inner = expandStarProjection(inner)
 	innerHead, _ := splitOuterSelect(inner)
 	if innerHead == "" {
 		return query
@@ -286,7 +447,7 @@ func expandStarProjection(query string) string {
 		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
 			return query
 		}
-		aliases = append(aliases, "`"+alias+"`")
+		aliases = append(aliases, qual+"`"+alias+"`")
 	}
 	return "SELECT " + strings.Join(aliases, ", ") + tail
 }

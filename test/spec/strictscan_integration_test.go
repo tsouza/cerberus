@@ -81,10 +81,13 @@ import (
 // (seed + sql + expected_rows) fixtures.
 var strictScanHeads = []string{"promql", "logql", "traceql"}
 
-// strictScanCHImage pins the same ClickHouse server image the existing
-// chclient integration tests + schema-integration lane use, so the strict-scan
-// behaviour observed here matches the version those lanes exercise.
-const strictScanCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+// strictScanCHImage pins the ClickHouse server the strict-scan differential
+// boots. It must clear the highest chopt feature floor (currently 25.9, the
+// native timeSeries*ToGrid family) so every shape the emitter produces
+// actually EXECUTES here rather than being rejected before a row decodes and
+// silently dropping out of the differential's scope. Held equal to the
+// Justfile's CH_STRICT_SCAN_IMAGE pre-pull by TestStrictScanImageClearsChoptFloors.
+const strictScanCHImage = "clickhouse/clickhouse-server:26.5-alpine"
 
 // strictScanDB is the database the fixtures' unqualified table names resolve
 // against. The OTel exporter defaults to `otel`; cerberus's read path issues

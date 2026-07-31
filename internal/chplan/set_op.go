@@ -16,8 +16,13 @@ const (
 )
 
 // SetOperation models a TraceQL spanset set-op (`A && B`, `A || B`).
-// Both sides produce span rows from the same traces table; the result
-// is keyed on (TraceIDColumn, SpanIDColumn) for dedup / intersect.
+// Both sides produce rows from the same traces table; the result is keyed
+// on (TraceIDColumn, SpanIDColumn) for dedup / intersect.
+//
+// SpanIDColumn is empty when an arm has been folded to trace granularity
+// (a parenthesised sub-pipeline ending in an aggregate grouped on TraceID
+// exposes no per-span column), in which case the identity key degrades to
+// TraceIDColumn alone. TraceIDColumn is always set.
 type SetOperation struct {
 	Left, Right Node
 	Op          SetOp

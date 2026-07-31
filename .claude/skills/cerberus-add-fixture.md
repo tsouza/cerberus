@@ -49,6 +49,12 @@ Two positional arguments (prompt the user if missing):
    - For QL fixtures: paste the query into the `query.<area>` section.
    - For chsql/optimizer: add the corresponding entry to the `plans` / `inputs` map in the matching `_test.go` file.
    - Run `just update-golden` and review `git diff test/spec/` before committing.
+   - If the fixture carries a `-- seed --`, it MUST also carry an
+     `-- expected_rows --` section — add it with a placeholder `[]` and let
+     `just update-golden` fill the real cell. A seeded fixture without one is
+     inert (the chDB runner returns before executing it, and regeneration
+     cannot create the section), and `test/regression/inert_seeded_fixture_test.go`
+     fails the `check` gate on it.
 
 ## Tools
 

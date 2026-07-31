@@ -3,6 +3,7 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,21 @@ import (
 )
 
 // FindExecutableFixtures walks every *.txtar under specDir (recursively)
-// and returns the paths of fixtures that are executable round-trip
-// fixtures — those declaring `seed:` + `expected_rows:` + a non-empty
-// `sql:`. Non-executable fixtures (text-only goldens) are excluded:
-// without a seed there is nothing to profile.
+// and returns the paths of fixtures that DECLARED a round trip — those
+// carrying `seed:` + `expected_rows:`. Text-only goldens are excluded:
+// without a seed there is nothing to profile, and their absence is by
+// design rather than a fault.
+//
+// A fixture that declared a round trip but is NOT executable (empty
+// `sql:` cell — [spec.ErrRoundTripNotExecutable]) is deliberately
+// INCLUDED. Dropping it here is what let a fixture asking to be executed
+// vanish from the profiled corpus in silence, taking it out of the
+// cardinality ratchet's reach; keeping it means ProfileCorpus records the
+// failure in that fixture's Record.Err and the ratchet refuses to write a
+// baseline over it.
+//
+// Any other prepare/load failure is a malformed fixture and aborts the
+// walk — the nightly lane should see corpus corruption loudly.
 //
 // Paths are returned sorted for deterministic profiling order.
 func FindExecutableFixtures(specDir string) ([]string, error) {
@@ -33,12 +45,13 @@ func FindExecutableFixtures(specDir string) ([]string, error) {
 			return fmt.Errorf("load %s: %w", path, lerr)
 		}
 		prep, ok, perr := spec.PrepareRoundTrip(c)
-		if perr != nil {
-			// A malformed fixture is surfaced, not swallowed — the
-			// nightly lane should see corpus corruption loudly.
+		switch {
+		case errors.Is(perr, spec.ErrRoundTripNotExecutable):
+			// Declared but inert — carried through to ProfileCorpus so
+			// it lands in Record.Err instead of disappearing.
+		case perr != nil:
 			return fmt.Errorf("prepare %s: %w", path, perr)
-		}
-		if !ok || prep == nil {
+		case !ok || prep == nil:
 			return nil
 		}
 		out = append(out, path)
@@ -63,11 +76,13 @@ func FixtureID(specDir, path string) string {
 	return strings.TrimSuffix(filepath.ToSlash(rel), ".txtar")
 }
 
-// ProfileCorpus profiles every executable fixture under specDir and
+// ProfileCorpus profiles every round-trip fixture under specDir and
 // returns the records, sorted descending by fan factor. Each fixture is
 // loaded, prepared through the shared spec seam, and profiled against the
-// shared chDB session. A per-fixture seed/exec error is captured in the
-// fixture's Record.Err rather than aborting the whole corpus.
+// shared chDB session. A per-fixture prepare/seed/exec error is captured
+// in the fixture's Record.Err rather than aborting the whole corpus —
+// including the declared-but-inert case FindExecutableFixtures keeps in
+// the set precisely so it is reported instead of skipped.
 func ProfileCorpus(specDir string) ([]Record, error) {
 	paths, err := FindExecutableFixtures(specDir)
 	if err != nil {

@@ -82,14 +82,23 @@ const (
 // treat one span redelivered under a different OTLP attribute key order
 // as two rows; identity dedup never looks at the Map columns.
 //
+// Span identity degrades to TraceId alone when an arm has been folded to
+// trace granularity — a parenthesised sub-pipeline ending in an
+// aggregate, e.g. `({ … } | count() > 0) && ({ … } | count() > 0)`,
+// groups on TraceId and exposes no SpanId column. The lowerer leaves
+// SpanIDColumn empty for that case (see
+// internal/traceql.spansetArmExposesSpanID), and both the intersect
+// cohort union and the `||` union drop the SpanId term from their
+// `LIMIT 1 BY` key accordingly.
+//
 // Both shapes flow through QueryBuilder so the typed slot lifecycle
 // (FROM source, WHERE predicates, etc.) stays intact. UNION is a
 // SELECT-level binary operator, not a clause keyword inside a single
 // SELECT, so the UNION token sits between two pre-rendered QueryBuilder
 // Frags rather than abusing a clause slot.
 func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
-	if s.TraceIDColumn == "" || s.SpanIDColumn == "" {
-		return fmt.Errorf("%w: SetOperation column names unset", ErrUnsupported)
+	if s.TraceIDColumn == "" {
+		return fmt.Errorf("%w: SetOperation trace-id column unset", ErrUnsupported)
 	}
 
 	leftFrag, err := e.subqueryFrag(s.Left)
@@ -106,11 +115,19 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		e.emitSelect(intersectQuery(s, leftFrag, rightFrag, e.nextCTESeq()))
 		return nil
 	case chplan.SetUnion:
+		// SELECT * FROM (<left> UNION ALL <right>)
+		//   LIMIT 1 BY (TraceId[, SpanId])
+		// — dedup on span identity, not the full (wide) row. The SpanId
+		// term drops when an arm folded to trace granularity (see godoc).
+		by := []Frag{Col(s.TraceIDColumn)}
+		if s.SpanIDColumn != "" {
+			by = append(by, Col(s.SpanIDColumn))
+		}
 		sb := NewQuery().
 			Select(verbatim("*")).
 			From(Paren(UnionAll(leftFrag, rightFrag))).
 			Limit(unionDedupLimitPerIdentity).
-			LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+			LimitBy(by...)
 		e.emitSelect(sb)
 		return nil
 	}
@@ -140,6 +157,13 @@ func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag, seq int) *
 		)
 	}
 
+	// Span identity for the dedup key degrades to TraceId alone when an
+	// arm folded to trace granularity and exposes no SpanId column.
+	by := []Frag{Col(s.TraceIDColumn)}
+	if s.SpanIDColumn != "" {
+		by = append(by, Col(s.SpanIDColumn))
+	}
+
 	return NewQuery().
 		With(leftCTE, leftFrag).
 		With(rightCTE, rightFrag).
@@ -147,5 +171,5 @@ func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag, seq int) *
 		From(Paren(UnionAll(armRows(leftCTE), armRows(rightCTE)))).
 		Where(armTraceCohort(leftCTE), armTraceCohort(rightCTE)).
 		Limit(unionDedupLimitPerIdentity).
-		LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+		LimitBy(by...)
 }
