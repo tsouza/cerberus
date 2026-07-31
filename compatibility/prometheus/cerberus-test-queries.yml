@@ -14,12 +14,17 @@
 # / `:10001` / `:10002`; every series carries `job=demo`. See
 # `cmd/seed/main.go::fixtureInserts` for the canonical label sets.
 #
-# Some metric families referenced by individual queries are NOT yet in
-# the seed (e.g. `demo_api_request_duration_seconds_bucket`,
-# `demo_batch_last_success_timestamp_seconds`, `demo_intermittent_metric`).
-# When both ref Prom and cerberus return empty results for a missing-metric
-# query, the tester records that as PASS (zero diff) — acceptable noise
-# for the compatibility baseline.
+# Every metric family this corpus references is seeded, on BOTH backends: the
+# seeder writes it to ClickHouse and remote-writes the same samples into the
+# reference Prometheus. That is an enforced invariant, not a convention —
+# test/regression/compat_promql_seed_corpus_test.go fails if any query names a
+# family the seeder cannot produce, so a query can never again compare empty
+# against empty and record a PASS it never earned.
+#
+# The one exemption is explicit and closed: a query may reference a name
+# prefixed `nonexistent` precisely because the family must NOT exist. The gate
+# asserts that prefix in both directions — such a name is never seeded, and an
+# unseeded name must carry it.
 #
 # Pointer-to-upstream: re-sync this file by re-copying the upstream and
 # re-applying the edit above. Track in a follow-up issue so this

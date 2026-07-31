@@ -36,6 +36,9 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
 	"github.com/prometheus/prometheus/prompb"
+
+	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // remoteWriteFixture reads every series the CH fixture just wrote and
@@ -63,6 +66,22 @@ func remoteWriteFixture(ctx context.Context, conn driver.Conn, promURL string, l
 			return fmt.Errorf("post %s: %w", src.metricName, err)
 		}
 	}
+	for _, src := range histogramFixtureSources {
+		logger.Info("remote_write histogram to prom", "base", src.base, "table", src.table)
+		batch, err := readHistogramFixtureSeries(ctx, conn, src)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", src.base, err)
+		}
+		// Same reasoning as the Value-shaped loop above: an empty batch
+		// means the reference Prometheus never sees the family, so every
+		// query over it compares empty against empty.
+		if len(batch) == 0 {
+			return fmt.Errorf("read %s: fixture produced no rows", src.base)
+		}
+		if err := postRemoteWrite(ctx, promURL, batch); err != nil {
+			return fmt.Errorf("post %s: %w", src.base, err)
+		}
+	}
 	return nil
 }
 
@@ -74,8 +93,11 @@ type fixtureSource struct {
 	table      string
 }
 
-// fixtureSources mirrors fixtureInserts above — keep them in lock-step so
-// every CH-side INSERT has a corresponding Prom remote_write.
+// fixtureSources and histogramFixtureSources together mirror
+// fixtureInserts in main.go — keep them in lock-step so every CH-side
+// INSERT has a corresponding Prom remote_write. The lock-step is enforced,
+// not merely documented: test/regression/compat_promql_seed_corpus_test.go
+// fails when the two lists diverge.
 var fixtureSources = []fixtureSource{
 	{"demo_cpu_usage_seconds_total", "otel_metrics_sum"},
 	{"demo_memory_usage_bytes", "otel_metrics_gauge"},
@@ -84,7 +106,87 @@ var fixtureSources = []fixtureSource{
 	{"demo_disk_usage_bytes", "otel_metrics_gauge"},
 	{"demo_disk_total_bytes", "otel_metrics_gauge"},
 	{"demo_num_cpus", "otel_metrics_gauge"},
+	{"demo_batch_last_success_timestamp_seconds", "otel_metrics_gauge"},
+	{"demo_intermittent_metric", "otel_metrics_gauge"},
 	{"up", "otel_metrics_gauge"},
+}
+
+// histogramFixtureSource mirrors a classic-histogram fixture. `base` is
+// the BARE MetricName the row is stored under; the Prom wire surface is
+// the synthetic names promql.HistogramSyntheticNames derives from it. The
+// bare name is deliberately NOT mirrored: cerberus's lowering never serves
+// it, so remote-writing it would manufacture a diff the fixture invented.
+type histogramFixtureSource struct {
+	base  string
+	table string
+}
+
+var histogramFixtureSources = []histogramFixtureSource{
+	{"demo_api_request_duration_seconds", "otel_metrics_histogram"},
+}
+
+// histogramFixtureSelect computes the `le` labels and the cumulative
+// counts IN CLICKHOUSE, using the same expressions cerberus's classic
+// bucket fan-out emits (internal/promql/histogram_bucket.go):
+//
+//	le  = if(i > length(ExplicitBounds), '+Inf', toString(ExplicitBounds[i]))
+//	cum = arraySum(arraySlice(BucketCounts, 1, i))
+//
+// Re-deriving them in Go would put a second float-to-label formatter in
+// the harness, and a `"0.5"` vs `"0.50"` disagreement between the two
+// would hard-diff every bucket series for a reason the fixture invented.
+// Computing them once, server-side, makes the two sides equal by
+// construction.
+const histogramFixtureSelect = `SELECT
+        Attributes,
+        toUnixTimestamp64Milli(TimeUnix) AS ts_ms,
+        arrayMap(i -> if(i > length(ExplicitBounds), '+Inf', toString(ExplicitBounds[i])),
+                 arrayEnumerate(BucketCounts)) AS le_labels,
+        arrayMap(i -> toFloat64(arraySum(arraySlice(BucketCounts, 1, i))),
+                 arrayEnumerate(BucketCounts)) AS cum_counts,
+        toFloat64(Count) AS count_value,
+        Sum AS sum_value
+    FROM %s
+    WHERE MetricName = ?
+    ORDER BY Attributes, TimeUnix`
+
+// leLabel is the Prom-convention bucket-boundary label. It is the one
+// label the mirror synthesises rather than reading out of Attributes,
+// because in the OTel-CH layout the boundary lives in an array column.
+const leLabel = "le"
+
+// promSeriesSet accumulates samples into prompb time series keyed by
+// (metric name, label set), preserving first-seen order so the wire batch
+// is deterministic. The name is part of the key because the histogram
+// mirror emits three families off ONE CH row — `_bucket`, `_count`,
+// `_sum` — and the count/sum arms share an attribute set: keying on labels
+// alone would fold them into a single series.
+type promSeriesSet struct {
+	bySeries map[string]*prompb.TimeSeries
+	order    []string
+}
+
+func newPromSeriesSet() *promSeriesSet {
+	return &promSeriesSet{bySeries: map[string]*prompb.TimeSeries{}}
+}
+
+func (p *promSeriesSet) add(metricName string, labels map[string]string, tsMS int64, value float64) {
+	key := metricName + "\x00" + canonicaliseLabels(labels)
+	ts, ok := p.bySeries[key]
+	if !ok {
+		ts = &prompb.TimeSeries{Labels: buildPromLabels(metricName, labels)}
+		p.bySeries[key] = ts
+		p.order = append(p.order, key)
+	}
+	ts.Samples = append(ts.Samples, prompb.Sample{Value: value, Timestamp: tsMS})
+}
+
+func (p *promSeriesSet) series() []prompb.TimeSeries {
+	out := make([]prompb.TimeSeries, 0, len(p.order))
+	for _, key := range p.order {
+		out = append(out, *p.bySeries[key])
+	}
+	return out
 }
 
 // readFixtureSeries reads every (Attributes, TimeUnix, Value) row for one
@@ -102,7 +204,7 @@ func readFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource)
 	}
 	defer func() { _ = rows.Close() }()
 
-	bySeries := map[string]*prompb.TimeSeries{}
+	acc := newPromSeriesSet()
 	for rows.Next() {
 		var attrs map[string]string
 		var tsMS int64
@@ -110,23 +212,104 @@ func readFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource)
 		if err := rows.Scan(&attrs, &tsMS, &val); err != nil {
 			return nil, err
 		}
-		key := canonicaliseLabels(attrs)
-		ts, ok := bySeries[key]
-		if !ok {
-			ts = &prompb.TimeSeries{Labels: buildPromLabels(src.metricName, attrs)}
-			bySeries[key] = ts
-		}
-		ts.Samples = append(ts.Samples, prompb.Sample{Value: val, Timestamp: tsMS})
+		acc.add(src.metricName, attrs, tsMS, val)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	return acc.series(), nil
+}
 
-	out := make([]prompb.TimeSeries, 0, len(bySeries))
-	for _, ts := range bySeries {
-		out = append(out, *ts)
+// histogramWireNames resolves the three Prom-wire family names one
+// classic-histogram row surfaces as. The names come from the production
+// enumeration (promql.HistogramSyntheticNames) and are classified with the
+// production router (schema.Metrics.HistogramCompanionColumn) rather than
+// from a hardcoded suffix list, so a lowering change that adds a fourth
+// companion fails loudly here instead of silently under-mirroring.
+func histogramWireNames(base string, m schema.Metrics) (bucketName, countName, sumName string, err error) {
+	for _, name := range promql.HistogramSyntheticNames(base, m) {
+		bare, col, isCompanion := m.HistogramCompanionColumn(name)
+		switch {
+		case !isCompanion:
+			if bucketName != "" {
+				return "", "", "", fmt.Errorf(
+					"histogram %q yields two array-fanned names (%q and %q); "+
+						"teach the mirror which column each one projects", base, bucketName, name,
+				)
+			}
+			bucketName = name
+		case bare != base:
+			return "", "", "", fmt.Errorf(
+				"histogram companion %q resolves to base %q, not %q", name, bare, base,
+			)
+		case col == m.CountColumn:
+			countName = name
+		case col == m.SumColumn:
+			sumName = name
+		default:
+			return "", "", "", fmt.Errorf(
+				"histogram companion %q maps to unknown column %q", name, col,
+			)
+		}
 	}
-	return out, nil
+	if bucketName == "" || countName == "" || sumName == "" {
+		return "", "", "", fmt.Errorf(
+			"histogram %q enumerated an incomplete wire surface (bucket=%q count=%q sum=%q)",
+			base, bucketName, countName, sumName,
+		)
+	}
+	return bucketName, countName, sumName, nil
+}
+
+// readHistogramFixtureSeries mirrors one classic-histogram family. Each CH
+// row becomes one sample on each of the `_count` and `_sum` series plus one
+// sample on every `_bucket` series the row's boundary array names.
+func readHistogramFixtureSeries(
+	ctx context.Context, conn driver.Conn, src histogramFixtureSource,
+) ([]prompb.TimeSeries, error) {
+	m := schema.DefaultOTelMetrics()
+	bucketName, countName, sumName, err := histogramWireNames(src.base, m)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := conn.Query(ctx, fmt.Sprintf(histogramFixtureSelect, src.table), src.base)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	acc := newPromSeriesSet()
+	for rows.Next() {
+		var attrs map[string]string
+		var tsMS int64
+		var leLabels []string
+		var cumCounts []float64
+		var countValue, sumValue float64
+		if err := rows.Scan(&attrs, &tsMS, &leLabels, &cumCounts, &countValue, &sumValue); err != nil {
+			return nil, err
+		}
+		if len(leLabels) != len(cumCounts) {
+			return nil, fmt.Errorf(
+				"histogram %q row at %d ms: %d bucket labels vs %d cumulative counts",
+				src.base, tsMS, len(leLabels), len(cumCounts),
+			)
+		}
+		for i, le := range leLabels {
+			bucketLabels := make(map[string]string, len(attrs)+1)
+			for k, v := range attrs {
+				bucketLabels[k] = v
+			}
+			bucketLabels[leLabel] = le
+			acc.add(bucketName, bucketLabels, tsMS, cumCounts[i])
+		}
+		acc.add(countName, attrs, tsMS, countValue)
+		acc.add(sumName, attrs, tsMS, sumValue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return acc.series(), nil
 }
 
 // buildPromLabels turns the OTel-shape (ResourceAttributes is the
