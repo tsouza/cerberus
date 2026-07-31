@@ -1523,7 +1523,11 @@
     "query": "histogram_quantile_classic_agg_plateau",
     "routed": false,
     "k": 0,
-    "reason": "not-sliceable"
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
   },
   {
     "query": "histogram_quantile_classic_bare_at_pin_stale",
@@ -1599,7 +1603,11 @@
     "query": "histogram_quantile_classic_plateau_overflow",
     "routed": false,
     "k": 0,
-    "reason": "not-sliceable"
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
   },
   {
     "query": "histogram_quantile_classic_range_step",
@@ -1635,7 +1643,11 @@
     "query": "histogram_quantile_classic_zero_count_plateau",
     "routed": false,
     "k": 0,
-    "reason": "not-sliceable"
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
   },
   {
     "query": "histogram_quantile_le_not_in_by",
