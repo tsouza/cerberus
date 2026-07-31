@@ -67,6 +67,8 @@ import (
 
 const histogramAnchorCol = "anchor_ts"
 
+const rateMinimumSamples = 2
+
 // histogramWindow is the per-anchor sample window a histogram fan-out
 // reads: `(anchor - offset - lookback, anchor - offset]`. lookback is the
 // staleness horizon (instantLookback for the bare / value-fn paths, the
@@ -209,7 +211,7 @@ func lowerHistogramQuantileClassicBareRange(
 	return buildHistogramRangeTree(
 		scan, pred, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
-		classicBucketLatestAggs(s), phi, s, ctx,
+		classicBucketLatestAggs(s), 0, phi, s, ctx,
 	)
 }
 
@@ -247,7 +249,7 @@ func lowerHistogramQuantileClassicAggRange(
 	return buildHistogramRangeTree(
 		scan, pred, windowFor(vs, shape.windowRange),
 		groupBy, groupByAliases, attrsRebuild,
-		bucketAggs, phi, s, ctx,
+		bucketAggs, rateMinimumSamples, phi, s, ctx,
 	)
 }
 
@@ -277,13 +279,14 @@ func buildHistogramRangeTree(
 	userAliases []string,
 	attrsRebuild chplan.Expr,
 	bucketAggs []chplan.AggFunc,
+	minSamplesPerSeries int,
 	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, bucketAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, bucketAggs, minSamplesPerSeries, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
@@ -451,7 +454,7 @@ func buildHistogramNativeRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, expHistAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, expHistAggs, 0, s, ctx)
 
 	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
 	// fields (already aliased to their schema-canonical names by the
@@ -528,7 +531,7 @@ func buildHistogramNativeRangeTreeMerge(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, mergeAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, mergeAggs, 0, s, ctx)
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
@@ -621,6 +624,10 @@ func buildHistogramBucketFanout(
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
 	}
+	var seriesKey chplan.Expr
+	if minSamplesPerSeries != 0 {
+		seriesKey = canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)
+	}
 
 	return &chplan.RangeBucketFanout{
 		Input:    rawSide,
@@ -634,10 +641,12 @@ func buildHistogramBucketFanout(
 		// Canonicalising here rather than at each caller keeps the one
 		// path that reaches this node from splitting into a canonical
 		// and a non-canonical variant.
-		GroupBy:        canonicalGroupKeyExprs(userGroupBy, s),
-		GroupByAliases: userAliases,
-		AggFuncs:       aggFuncs,
-		AnchorAlias:    histogramAnchorCol,
-		TimestampCol:   s.TimestampColumn,
+		GroupBy:             canonicalGroupKeyExprs(userGroupBy, s),
+		GroupByAliases:      userAliases,
+		AggFuncs:            aggFuncs,
+		AnchorAlias:         histogramAnchorCol,
+		TimestampCol:        s.TimestampColumn,
+		MinSamplesPerSeries: minSamplesPerSeries,
+		SeriesKey:           seriesKey,
 	}
 }
