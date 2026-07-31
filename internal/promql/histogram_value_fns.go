@@ -233,7 +233,7 @@ func lowerHistogramValueFnRange(
 		scan, pred, windowFor(vs, instantLookback),
 		[]chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		[]string{s.AttributesColumn},
-		histogramValueLatestAggs(s), s, ctx,
+		histogramValueLatestAggs(s), 0, s, ctx,
 	)
 
 	return &chplan.Project{

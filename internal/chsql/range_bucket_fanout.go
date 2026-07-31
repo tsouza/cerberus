@@ -6,6 +6,8 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+const rangeBucketSourceSeriesAlias = "_source_series"
+
 // emitRangeBucketFanout renders a chplan.RangeBucketFanout — the
 // single-pass, bounded sample-side fan-out that supersedes the StepGrid
 // CROSS JOIN + per-anchor lookback Filter + per-(series, anchor)
@@ -86,6 +88,22 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 			}
 		}
 	}
+	if r.MinSamplesPerSeries < 0 {
+		return fmt.Errorf("%w: RangeBucketFanout.MinSamplesPerSeries must not be negative", ErrUnsupported)
+	}
+	if r.MinSamplesPerSeries > 0 {
+		if r.SeriesKey == nil {
+			return fmt.Errorf("%w: RangeBucketFanout requires SeriesKey when MinSamplesPerSeries is set", ErrUnsupported)
+		}
+		if err := (&Builder{}).Expr(r.SeriesKey); err != nil {
+			return err
+		}
+		for _, af := range r.AggFuncs {
+			if len(af.Args) != 1 || len(af.Params) != 0 {
+				return fmt.Errorf("%w: RangeBucketFanout sample suppression requires single-argument aggregates", ErrUnsupported)
+			}
+		}
+	}
 
 	stepNS := r.Step.Nanoseconds()
 	lookbackNS := r.Lookback.Nanoseconds()
@@ -133,12 +151,35 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
-	// AggFuncs. The user group keys are projected first (under their
+	// AggFuncs. When a rate needs source-series sample suppression, first
+	// collapse each source series and filter it by sample count. Only then
+	// aggregate the surviving source series into the user grouping.
+	// The user group keys are projected first (under their
 	// aliases) then the anchor, matching the column order the replaced
 	// Aggregate node emitted (anchor_ts came first there, but the
 	// downstream reshape Project references every column by name, not
 	// position, so the surface order is observationally identical).
-	collapse := NewQuery().From(fanout.Frag())
+	collapse := e.rangeBucketCollapse(r, fanout.Frag())
+
+	e.emitSelect(collapse)
+	return nil
+}
+
+func (e *emitter) rangeBucketCollapse(r *chplan.RangeBucketFanout, fanout Frag) *QueryBuilder {
+	if r.MinSamplesPerSeries == 0 {
+		return rangeBucketAggregate(r, fanout)
+	}
+
+	perSeries := rangeBucketAggregate(r, fanout)
+	perSeries.SelectAs(func(b *Builder) { _ = b.Expr(r.SeriesKey) }, rangeBucketSourceSeriesAlias)
+	perSeries.GroupBy(func(b *Builder) { _ = b.Expr(r.SeriesKey) })
+	perSeries.Having(Gte(Call("count"), InlineLit(int64(r.MinSamplesPerSeries))))
+
+	return rangeBucketAggregateFromSeries(r, perSeries.Frag())
+}
+
+func rangeBucketAggregate(r *chplan.RangeBucketFanout, input Frag) *QueryBuilder {
+	collapse := NewQuery().From(input)
 	collapse.Select(As(verbatim(r.AnchorAlias), r.AnchorAlias))
 	for i, g := range r.GroupBy {
 		expr := g
@@ -153,14 +194,38 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		collapse.Select(aggFuncFrag(af))
 	}
 
-	// GROUP BY (anchor_ts, <user keys>). The anchor is referenced verbatim
-	// because it is the fanout SELECT's output column, not a base-table
-	// column; the user keys go through [groupKeyFrags].
 	groupFrags := make([]Frag, 0, len(r.GroupBy)+1)
 	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
 	groupFrags = append(groupFrags, groupKeyFrags(r.GroupBy, r.GroupByAliases)...)
 	collapse.GroupBy(groupFrags...)
+	return collapse
+}
 
-	e.emitSelect(collapse)
-	return nil
+func rangeBucketAggregateFromSeries(r *chplan.RangeBucketFanout, input Frag) *QueryBuilder {
+	collapse := NewQuery().From(input)
+	collapse.Select(As(verbatim(r.AnchorAlias), r.AnchorAlias))
+	for i := range r.GroupBy {
+		alias := ""
+		if i < len(r.GroupByAliases) {
+			alias = r.GroupByAliases[i]
+		}
+		collapse.Select(As(Col(alias), alias))
+	}
+	for _, af := range r.AggFuncs {
+		agg := af
+		agg.Args = []chplan.Expr{&chplan.ColumnRef{Name: af.Alias}}
+		collapse.Select(aggFuncFrag(agg))
+	}
+
+	groupFrags := make([]Frag, 0, len(r.GroupBy)+1)
+	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
+	for i := range r.GroupBy {
+		alias := ""
+		if i < len(r.GroupByAliases) {
+			alias = r.GroupByAliases[i]
+		}
+		groupFrags = append(groupFrags, Col(alias))
+	}
+	collapse.GroupBy(groupFrags...)
+	return collapse
 }

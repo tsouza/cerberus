@@ -282,6 +282,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Offset != 0 {
 			fmt.Fprintf(b, " offset=%s", v.Offset)
 		}
+		if v.MinSamplesPerSeries != 0 {
+			fmt.Fprintf(b, " minSamplesPerSeries=%d seriesKey=%s", v.MinSamplesPerSeries, printExpr(v.SeriesKey))
+		}
 		fmt.Fprintf(b, " groupBy=[%s] funcs=[%s]", strings.Join(gb, ", "), strings.Join(aggs, ", "))
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))

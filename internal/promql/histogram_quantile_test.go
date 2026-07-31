@@ -519,6 +519,45 @@ func TestLower_HistogramQuantile_NativeBareRange(t *testing.T) {
 	}
 }
 
+// TestLower_HistogramQuantileClassicRateRangeRequiresTwoSamplesPerSource
+// pins the rate rule before sum by(le) merges classic histogram series. A
+// single sample in each of two source series must not become a valid rate
+// merely because the output aggregation sees two rows.
+func TestLower_HistogramQuantileClassicRateRangeRequiresTwoSamplesPerSource(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+
+	expr, err := p.ParseExpr(`histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration_bucket[5m])))`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
+	if err != nil {
+		t.Fatalf("LowerAtRange: %v", err)
+	}
+
+	var fanout *chplan.RangeBucketFanout
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		if v, ok := n.(*chplan.RangeBucketFanout); ok {
+			fanout = v
+		}
+		return true
+	})
+	if fanout == nil {
+		t.Fatal("expected RangeBucketFanout")
+	}
+	if fanout.MinSamplesPerSeries != 2 {
+		t.Errorf("MinSamplesPerSeries = %d, want 2", fanout.MinSamplesPerSeries)
+	}
+	if got := canonicalMapKeyColName(t, fanout.SeriesKey); got != s.AttributesColumn {
+		t.Errorf("SeriesKey = %q, want mapSort(%q)", got, s.AttributesColumn)
+	}
+}
+
 // TestLower_HistogramQuantile_NativeBareRange_InstantStillNow64 pins
 // the negative complement: instant-mode lowering (step == 0) keeps the
 // pre-existing `now64(9)` shape so existing fixtures stay byte-stable.
