@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/solver"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // routedCorpusLang is a minimal Lang: the routed paths only read Name(), and
@@ -72,13 +73,21 @@ func (o *routedCorpusObserver) ObserveRoutedQuery(
 // row is filed under (a wrong one silos the row into a population no PromQL
 // calibration reads), the real K, and the executor's effective parallelism
 // (which the observer folds the wall-clock and memory columns at).
-func (o *routedCorpusObserver) assertRoutedRowIdentity(t *testing.T, i int, wantK uint8, wantParallel int) {
+//
+// wantLang is a parameter rather than a fixed solver.LangPromQL because a seam
+// that ignored its language argument and stamped every row with the PromQL head
+// would satisfy a hard-coded expectation. The seam that takes the language as a
+// free argument is exercised with a different head below, so the assertion
+// distinguishes "forwards what it was given" from "always says promql".
+func (o *routedCorpusObserver) assertRoutedRowIdentity(
+	t *testing.T, i int, wantLang string, wantK uint8, wantParallel int,
+) {
 	t.Helper()
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.routedLangs[i] != solver.LangPromQL {
+	if o.routedLangs[i] != wantLang {
 		t.Errorf("language = %q; want %q — the row must be filed under the head that ran it",
-			o.routedLangs[i], solver.LangPromQL)
+			o.routedLangs[i], wantLang)
 	}
 	if o.routedKShards[i] != wantK {
 		t.Errorf("k_shards = %d; want %d (the decision's real K)", o.routedKShards[i], wantK)
@@ -174,6 +183,15 @@ func wantParallelism(eng *Engine, d *solver.Decision) int {
 	return p
 }
 
+// fixtureShardCount is the K the eligible fixture plan slices into under
+// ModeSharded. Every K-shaped assertion below compares the observed column
+// against the decision's own len(Slices), which is the right question to ask of
+// the seam but says nothing about the fixture: were the planner to start
+// slicing this plan into a single shard, the whole route-B observation family
+// would still pass while testing no fan-out at all. Pinning the number here
+// turns that degeneration into a failure at the one place it originates.
+const fixtureShardCount = 8
+
 // routedDecision classifies the eligible fixture plan into the routed decision
 // the engine's own route-B paths take.
 func routedDecision(t *testing.T, eng *Engine, plan chplan.Node) *solver.Decision {
@@ -184,6 +202,10 @@ func routedDecision(t *testing.T, eng *Engine, plan chplan.Node) *solver.Decisio
 	}
 	if d.Reason != solver.ReasonRouted {
 		t.Fatalf("routed decision reason = %q, want %q", d.Reason, solver.ReasonRouted)
+	}
+	if len(d.Slices) != fixtureShardCount {
+		t.Fatalf("fixture sliced into K=%d; want K=%d — a route-B fan-out test needs a real fan-out",
+			len(d.Slices), fixtureShardCount)
 	}
 	return d
 }
@@ -263,7 +285,7 @@ func TestExecuteRoutedCursor_ObservesTheFanOut(t *testing.T) {
 	if obs.routedReasons[0] != solver.ReasonRouted {
 		t.Errorf("decision_reason = %q; want %q", obs.routedReasons[0], solver.ReasonRouted)
 	}
-	obs.assertRoutedRowIdentity(t, 0, clampU8(int64(len(d.Slices))), wantParallelism(eng, d))
+	obs.assertRoutedRowIdentity(t, 0, solver.LangPromQL, clampU8(int64(len(d.Slices))), wantParallelism(eng, d))
 	if obs.routedShapes[0] != planShapeID(plan) {
 		t.Errorf("shape_id = %q; want the WHOLE plan's %q, so route-A and route-B rows join",
 			obs.routedShapes[0], planShapeID(plan))
@@ -315,7 +337,7 @@ func TestExecuteRouted_ObservesTheFanOut(t *testing.T) {
 	if len(routed[0]) != len(d.Slices) {
 		t.Errorf("observed %d shard ids; want %d", len(routed[0]), len(d.Slices))
 	}
-	obs.assertRoutedRowIdentity(t, 0, clampU8(int64(len(d.Slices))), wantParallelism(eng, d))
+	obs.assertRoutedRowIdentity(t, 0, solver.LangPromQL, clampU8(int64(len(d.Slices))), wantParallelism(eng, d))
 }
 
 // TestBuildRoutedCursorResult_ObservesOnce pins the third route-B family: the
@@ -338,7 +360,12 @@ func TestBuildRoutedCursorResult_ObservesOnce(t *testing.T) {
 	}
 	defer func() { _ = cursor.Close() }()
 
-	cr := eng.buildRoutedCursorResult(Meta{IsMetric: true}, plan, solver.LangPromQL, d, cursor, info, "memo-hit")
+	// The language reaches this seam as a plain argument, so it is the one place
+	// that can prove the column carries what the caller passed rather than a
+	// stamped-in head name. Feed it a head the rest of this file never produces:
+	// the two engine-driven tests above can only ever be promql (classify reads
+	// the fixture Lang's own Name()), so a hard-coded "promql" would satisfy them.
+	cr := eng.buildRoutedCursorResult(Meta{IsMetric: true}, plan, telemetry.QLLogQL, d, cursor, info, "memo-hit")
 	if cr.Cursor == nil {
 		t.Fatal("buildRoutedCursorResult returned no cursor")
 	}
@@ -359,7 +386,7 @@ func TestBuildRoutedCursorResult_ObservesOnce(t *testing.T) {
 	// This site holds the ExecInfo the Executor actually produced, so it pins
 	// parallelism against the executor's own read-out rather than a recomputed
 	// expectation — the row must carry what the fan-out really ran at.
-	obs.assertRoutedRowIdentity(t, 0, clampU8(int64(len(d.Slices))), info.Parallelism)
+	obs.assertRoutedRowIdentity(t, 0, telemetry.QLLogQL, clampU8(int64(len(d.Slices))), info.Parallelism)
 	if info.Parallelism < 1 {
 		t.Fatalf("ExecInfo.Parallelism = %d; the fixture must exercise a real concurrency read-out", info.Parallelism)
 	}
