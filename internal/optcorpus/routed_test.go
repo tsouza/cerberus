@@ -460,12 +460,12 @@ func TestObserveRoutedQuery_PartialFanOutIsPublishedOnTTLExpiry(t *testing.T) {
 		ExitStatus: ExitOK,
 	})
 	src.seed(SourceRow{
-		QueryID:  ids[1],
+		QueryID: ids[1], NormalizedQueryHash: 77,
 		ReadRows: 200, ReadBytes: 2_000, MemoryUsage: 20, QueryDurationMS: 90,
 		ExitStatus: ExitOOM, // the shard that killed the fan-out
 	})
 	src.seed(SourceRow{
-		QueryID:  ids[2],
+		QueryID: ids[2], NormalizedQueryHash: 77,
 		ReadRows: 300, ReadBytes: 3_000, MemoryUsage: 30, QueryDurationMS: 60,
 		ExitStatus: ExitAborted, // cancelled by its sibling's failure
 	})
@@ -734,8 +734,11 @@ func TestObserveRoutedQuery_SinkFailureDoesNotDoubleCountRefoldedShards(t *testi
 	if len(rows) != 1 {
 		t.Fatalf("wrote %d rows on the retry; want 1", len(rows))
 	}
-	if rows[0].ReadRows != 600 || rows[0].MemoryUsage != 60 {
-		t.Errorf("retried row = (read_rows=%d memory_usage=%d); want (600, 60) — the re-read shards must not fold in twice",
+	// memory_usage is the sum of the P=2 largest peaks of (10, 20, 30) = 50.
+	// A refold appends every peak a second time, so P=2 then selects 30+30 = 60
+	// — the double-count this test exists to catch moves the column.
+	if rows[0].ReadRows != 600 || rows[0].MemoryUsage != 50 {
+		t.Errorf("retried row = (read_rows=%d memory_usage=%d); want (600, 50) — the re-read shards must not fold in twice",
 			rows[0].ReadRows, rows[0].MemoryUsage)
 	}
 	if rows[0].ShardsObserved != kShards {
