@@ -36,7 +36,9 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
     ('t1', 's2', 's1', 'b'),
     ('t1', 's3', 's2', 'c');
 -- expected_rows --
-[]
+[
+  ["t1", "s3", "s2", "", 0, 0, {"service.name": "c"}, {}, "", "", "", "", ""]
+]
 -- chplan --
 StructuralJoin op=>> maxDepth=128
   SetOperation op=&&
