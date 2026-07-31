@@ -41,6 +41,8 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 		"`exit_status` Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
 			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, " +
 			"'aborted' = 6, 'error' = 7)",
+		"`shards_observed` UInt8",
+		"`parallelism` UInt8",
 		"ENGINE = MergeTree",
 		"ORDER BY (`shape_id`, `n_anchors`, `fanout`)",
 		"TTL toDateTime(event_time) + toIntervalDay(30)",
@@ -53,12 +55,12 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 }
 
 // fakeExecer records every statement executed and the batch rows appended, and
-// answers each deployed-column read from deployedType — keyed by column name,
-// defaulting to the type this binary writes, so construction succeeds unless a
-// test says otherwise.
+// answers the deployed-schema read from deployedType / absentColumn — keyed by
+// column name, defaulting to the full column list with the types this binary
+// writes, so construction succeeds unless a test says otherwise.
 // failStatement / failErr make ONE statement fail while the rest succeed, which
 // is how a least-privilege deployment presents (a CH user may hold CREATE but
-// not ALTER); execErr fails every statement.
+// not ALTER); execErr fails every statement; queryErr fails the schema read.
 type fakeExecer struct {
 	execSQL       []string
 	execErr       error
@@ -67,6 +69,7 @@ type fakeExecer struct {
 	batchErr      error
 	batch         *fakeBatch
 	deployedType  map[string]string
+	absentColumn  map[string]bool
 	queryErr      error
 }
 
@@ -78,31 +81,40 @@ func (f *fakeExecer) Exec(_ context.Context, query string, _ ...any) error {
 	return f.execErr
 }
 
-// Query answers the deployed-column read for whichever column the verify asked
-// about. The column name is the query's last bound argument (see
-// corpusColumnTypeQuery), so the fake serves a per-column answer rather than one
-// type for every column — which is what lets a test narrow exit_status while
-// leaving route wide, and vice versa.
+// Query answers the deployed-schema read (see corpusSchemaQuery) with one
+// (name, type) row per corpus column. Each type defaults to what this binary
+// writes, so construction succeeds unless a test overrides one via deployedType
+// (which is what lets a test narrow exit_status while leaving route wide) or
+// removes one via absentColumn (the shape of a table an older binary created).
+//
+// The table name is the query's last bound argument; checking it keeps the fake
+// honest about WHICH table it is answering for.
 func (f *fakeExecer) Query(_ context.Context, _ string, args ...any) (driver.Rows, error) {
 	if f.queryErr != nil {
 		return nil, f.queryErr
 	}
 	if len(args) == 0 {
-		return nil, errors.New("fakeExecer: column-type query bound no arguments")
+		return nil, errors.New("fakeExecer: schema query bound no arguments")
 	}
-	col, ok := args[len(args)-1].(string)
+	table, ok := args[len(args)-1].(string)
 	if !ok {
-		return nil, errors.New("fakeExecer: column-type query's last argument is not a column name")
+		return nil, errors.New("fakeExecer: schema query's last argument is not a table name")
 	}
-	if deployed, ok := f.deployedType[col]; ok {
-		return &fakeRows{value: deployed}, nil
+	if table != CorpusTableName {
+		return nil, errors.New("fakeExecer: schema query asked about table " + table)
 	}
-	for _, c := range reconciledEnumColumns {
-		if c.name == col {
-			return &fakeRows{value: chsql.RenderDDL(c.enumType())}, nil
+	rows := &fakeRows{}
+	for _, c := range CorpusColumns() {
+		if f.absentColumn[c.Name] {
+			continue
 		}
+		deployed, ok := f.deployedType[c.Name]
+		if !ok {
+			deployed = chsql.RenderDDL(c.Type)
+		}
+		rows.rows = append(rows.rows, [2]string{c.Name, deployed})
 	}
-	return nil, errors.New("fakeExecer: " + col + " is not a reconciled enum column")
+	return rows, nil
 }
 
 // executed reports whether any recorded statement contains want.
@@ -115,38 +127,44 @@ func (f *fakeExecer) executed(want string) bool {
 	return false
 }
 
-// fakeRows is a single-row, single-String-column driver.Rows: exactly the shape
-// the deployed-column read consumes.
+// fakeRows is a (name, type) String-pair driver.Rows: exactly the shape the
+// deployed-schema read consumes.
 type fakeRows struct {
-	value string
-	done  bool
+	rows [][2]string
+	next int
 }
 
 func (r *fakeRows) Next() bool {
-	if r.done {
+	if r.next >= len(r.rows) {
 		return false
 	}
-	r.done = true
+	r.next++
 	return true
 }
 
 func (r *fakeRows) Scan(dest ...any) error {
-	if len(dest) != 1 {
-		return errors.New("fakeRows: want exactly one scan destination")
+	if len(dest) != 2 {
+		return errors.New("fakeRows: want exactly two scan destinations")
 	}
-	p, ok := dest[0].(*string)
-	if !ok {
-		return errors.New("fakeRows: want a *string scan destination")
+	if r.next == 0 || r.next > len(r.rows) {
+		return errors.New("fakeRows: Scan called outside a row")
 	}
-	*p = r.value
+	row := r.rows[r.next-1]
+	for i, d := range dest {
+		p, ok := d.(*string)
+		if !ok {
+			return errors.New("fakeRows: want *string scan destinations")
+		}
+		*p = row[i]
+	}
 	return nil
 }
 
-func (r *fakeRows) HasData() bool                    { return !r.done }
+func (r *fakeRows) HasData() bool                    { return r.next < len(r.rows) }
 func (r *fakeRows) ScanStruct(any) error             { return nil }
 func (r *fakeRows) ColumnTypes() []driver.ColumnType { return nil }
 func (r *fakeRows) Totals(...any) error              { return nil }
-func (r *fakeRows) Columns() []string                { return []string{"type"} }
+func (r *fakeRows) Columns() []string                { return []string{"name", "type"} }
 func (r *fakeRows) Close() error                     { return nil }
 func (r *fakeRows) Err() error                       { return nil }
 
@@ -198,6 +216,15 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 			t.Fatalf("construction did not reconcile the %s column; got %q", col.name, fe.execSQL)
 		}
 	}
+	// EVERY column is also offered to the deployed table, not just the ones added
+	// most recently: CREATE IF NOT EXISTS is a no-op on an existing table, so a
+	// column omitted from this loop never reaches a deployment that predates it,
+	// and the positional batch then binds every later value to the wrong column.
+	for _, col := range CorpusColumns() {
+		if !fe.executed(addMarker(col.Name)) {
+			t.Fatalf("construction did not offer the %s column; got %q", col.Name, fe.execSQL)
+		}
+	}
 
 	row := Row{
 		ShapeID:        "cerb:agg",
@@ -213,6 +240,8 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 		ReadRows:       1000,
 		MemoryUsage:    2048,
 		ExitStatus:     "oom",
+		ShardsObserved: 3,
+		Parallelism:    3,
 	}
 	if err := sink.Write([]Row{row}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -224,21 +253,41 @@ func TestCHTableSink_CreatesTableAndWrites(t *testing.T) {
 		t.Fatalf("appended %d rows; want 1", len(fe.batch.rows))
 	}
 	got := fe.batch.rows[0]
-	// 17 columns in the corpus schema (event_time + 16 data columns).
-	if len(got) != 17 {
-		t.Fatalf("appended %d columns; want 17", len(got))
+	// Append is POSITIONAL against the deployed column order, so the batch must
+	// carry one value per corpus column, no more and no fewer.
+	if len(got) != len(CorpusColumns()) {
+		t.Fatalf("appended %d columns; want %d", len(got), len(CorpusColumns()))
 	}
-	// Spot-check the enum mappings and a couple of features in column order:
-	// index 2 = language, 9 = route enum, 16 = exit_status enum.
-	if got[2] != "promql" {
-		t.Errorf("col[2] language = %v, want promql", got[2])
+	// The values are checked BY COLUMN NAME rather than by a hardcoded index, so
+	// appending a column to CorpusColumns() cannot silently re-point an
+	// assertion at its neighbour.
+	wantValues := map[string]any{
+		"language":        "promql",
+		"route":           int8(1), // B
+		"k_shards":        uint8(8),
+		"exit_status":     int8(1), // oom
+		"shards_observed": uint8(3),
+		"parallelism":     uint8(3),
 	}
-	if got[9] != int8(1) {
-		t.Errorf("col[9] route enum = %v, want 1 (B)", got[9])
+	for name, want := range wantValues {
+		i := corpusColumnIndex(t, name)
+		if got[i] != want {
+			t.Errorf("col[%d] %s = %#v, want %#v", i, name, got[i], want)
+		}
 	}
-	if got[16] != int8(1) {
-		t.Errorf("col[16] exit_status enum = %v, want 1 (oom)", got[16])
+}
+
+// corpusColumnIndex resolves a corpus column's position in the batch's
+// positional Append order.
+func corpusColumnIndex(t *testing.T, name string) int {
+	t.Helper()
+	for i, c := range CorpusColumns() {
+		if c.Name == name {
+			return i
+		}
 	}
+	t.Fatalf("corpus column %q does not exist", name)
+	return -1
 }
 
 // TestRouteEnumValue / TestExitEnumValue pin the string→Enum8 mappings.
@@ -379,6 +428,12 @@ func alterMarker(column string) string {
 	return "MODIFY COLUMN IF EXISTS `" + column + "`"
 }
 
+// addMarker is the fragment that identifies one column's addition among the
+// statements construction runs.
+func addMarker(column string) string {
+	return "ADD COLUMN IF NOT EXISTS `" + column + "`"
+}
+
 // TestNewCHTableSink_WideningIsBestEffort pins that a REFUSED widening does not
 // by itself disable the sink.
 //
@@ -437,6 +492,89 @@ func TestNewCHTableSink_NarrowColumnReportsWideningFailure(t *testing.T) {
 		if !strings.Contains(err.Error(), member) {
 			t.Errorf("error %q does not name the missing member %q", err, member)
 		}
+	}
+}
+
+// TestNewCHTableSink_SchemaReadFailureIsFatal pins that an unreadable deployed
+// schema fails construction. The read is the whole reconciliation's evidence —
+// without it nothing is known about what the table carries, and proceeding would
+// mean writing batches into a schema the sink never checked.
+func TestNewCHTableSink_SchemaReadFailureIsFatal(t *testing.T) {
+	t.Parallel()
+
+	fe := &fakeExecer{queryErr: errors.New("system.columns unavailable")}
+	if _, err := NewCHTableSink(context.Background(), fe); err == nil {
+		t.Fatal("NewCHTableSink with an unreadable schema: want an error, got nil")
+	}
+}
+
+// TestNewCHTableSink_AddColumnIsBestEffort pins that a REFUSED column addition
+// does not by itself disable the sink, for the same reason a refused widening
+// does not: on a deployment whose CH user holds INSERT and CREATE but not ALTER,
+// the ADD is refused on every start while the table already carries the column.
+// The verify below — not the ALTER's exit status — is the authority.
+func TestNewCHTableSink_AddColumnIsBestEffort(t *testing.T) {
+	t.Parallel()
+
+	fe := &fakeExecer{
+		failStatement: addMarker(parallelismColumn),
+		failErr:       errors.New("not enough privileges"),
+	}
+	sink, err := NewCHTableSink(context.Background(), fe)
+	if err != nil {
+		t.Fatalf("NewCHTableSink over an already-complete table with no ALTER grant: %v", err)
+	}
+	if sink == nil {
+		t.Fatal("NewCHTableSink returned no sink and no error")
+	}
+	if !fe.executed(addMarker(parallelismColumn)) {
+		t.Errorf("construction never attempted the addition; got %q", fe.execSQL)
+	}
+}
+
+// TestNewCHTableSink_RejectsMissingColumn pins the other half: a table that
+// really is missing a column this binary writes fails construction, naming the
+// column and — when the ADD was refused — the refusal that left it missing.
+//
+// This is the shape a pre-existing deployment presents after the corpus gains a
+// column: CREATE IF NOT EXISTS is a no-op against the old table, so without the
+// ADD the column never arrives. Write appends POSITIONALLY, so the consequence
+// is not one absent field — it is every later value bound to the wrong column,
+// or a batch the table rejects, on every reconcile interval, forever.
+func TestNewCHTableSink_RejectsMissingColumn(t *testing.T) {
+	t.Parallel()
+
+	const grantErr = "not enough privileges"
+	fe := &fakeExecer{
+		absentColumn:  map[string]bool{shardsObservedColumn: true},
+		failStatement: addMarker(shardsObservedColumn),
+		failErr:       errors.New(grantErr),
+	}
+	_, err := NewCHTableSink(context.Background(), fe)
+	if err == nil {
+		t.Fatalf("NewCHTableSink over a table missing %s: want an error, got nil", shardsObservedColumn)
+	}
+	if !strings.Contains(err.Error(), shardsObservedColumn) {
+		t.Errorf("error %q does not name the missing column %q", err, shardsObservedColumn)
+	}
+	if !strings.Contains(err.Error(), grantErr) {
+		t.Errorf("error %q does not carry the addition failure %q", err, grantErr)
+	}
+}
+
+// TestNewCHTableSink_MissingColumnFailsWithoutAnAlterError pins that an absent
+// column fails construction even when every ALTER reported success — the server
+// is the authority on what the table carries, not the statements just run.
+func TestNewCHTableSink_MissingColumnFailsWithoutAnAlterError(t *testing.T) {
+	t.Parallel()
+
+	fe := &fakeExecer{absentColumn: map[string]bool{parallelismColumn: true}}
+	_, err := NewCHTableSink(context.Background(), fe)
+	if err == nil {
+		t.Fatalf("NewCHTableSink over a table missing %s: want an error, got nil", parallelismColumn)
+	}
+	if !strings.Contains(err.Error(), parallelismColumn) {
+		t.Errorf("error %q does not name the missing column %q", err, parallelismColumn)
 	}
 }
 

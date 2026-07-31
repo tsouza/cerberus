@@ -233,6 +233,50 @@ func TestAlterTableModifyColumn(t *testing.T) {
 	}
 }
 
+// TestAlterTableAddColumn pins the ADD COLUMN statement: the optional <db>.
+// qualifier, the idempotent IF NOT EXISTS guard, the quoted column name, the
+// caller's type fragment, and the optional ON CLUSTER clause. The guard is IF
+// NOT EXISTS (not MODIFY's IF EXISTS) because the statement exists precisely
+// for the case where the column is absent. It carries no positional args, so
+// RenderDDL accepts it.
+func TestAlterTableAddColumn(t *testing.T) {
+	u8 := TypeRaw("UInt8")
+	cases := []struct {
+		name string
+		stmt *AddColumnBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableAddColumn("", "cerberus_router_corpus", "parallelism", u8),
+			"ALTER TABLE cerberus_router_corpus ADD COLUMN IF NOT EXISTS `parallelism` UInt8",
+		},
+		{
+			"qualified_table",
+			AlterTableAddColumn("otel", "cerberus_router_corpus", "parallelism", u8),
+			"ALTER TABLE otel.cerberus_router_corpus ADD COLUMN IF NOT EXISTS `parallelism` UInt8",
+		},
+		{
+			"on_cluster",
+			AlterTableAddColumn("otel", "cerberus_router_corpus", "parallelism", u8).OnCluster("prod"),
+			"ALTER TABLE otel.cerberus_router_corpus ON CLUSTER `prod` " +
+				"ADD COLUMN IF NOT EXISTS `parallelism` UInt8",
+		},
+		{
+			"low_cardinality_type",
+			AlterTableAddColumn("", "cerberus_router_corpus", "note", TypeLowCardinality(TypeRaw("String"))),
+			"ALTER TABLE cerberus_router_corpus ADD COLUMN IF NOT EXISTS `note` LowCardinality(String)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestQueryBuilderHaving pins the HAVING clause render: it follows GROUP BY,
 // precedes ORDER BY, and AND-joins multiple conditions. HAVING (not WHERE) is
 // what lets the metric-name enumeration route to the aggregating projection.

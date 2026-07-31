@@ -94,6 +94,8 @@ var corpusColumns = []corpusColumn{
 	{name: "query_duration_ms", kind: ColumnNumeric, runtimeCost: true},
 	{name: "memory_usage", kind: ColumnNumeric, runtimeCost: true},
 	{name: "exit_status", kind: ColumnEnum},
+	{name: "shards_observed", kind: ColumnNumeric, runtimeCost: true},
+	{name: "parallelism", kind: ColumnNumeric},
 }
 
 // columnKinds indexes corpusColumns by name for O(1) validation lookups.
@@ -105,11 +107,13 @@ var columnKinds = func() map[string]ColumnKind {
 	return m
 }()
 
-// runtimeCostColumns indexes the columns ClickHouse measures during execution:
-// read_rows, read_bytes, query_duration_ms, memory_usage. Every other numeric
-// column (n_anchors, fanout, cumulative_d, outer_range, step, k_shards) is
-// GEOMETRY — the solver derives it from the query shape before dispatch — and
-// its value is the same whether the query then finished or died.
+// runtimeCostColumns indexes the columns whose value is only known once the
+// query has RUN: read_rows, read_bytes, query_duration_ms, memory_usage (what
+// ClickHouse measured) and shards_observed (how many of a route-B fan-out's
+// shards actually reached query_log). Every other numeric column (n_anchors,
+// fanout, cumulative_d, outer_range, step, k_shards, parallelism) is GEOMETRY —
+// fixed before dispatch — and its value is the same whether the query then
+// finished or died.
 //
 // The split decides how a percentile over the column must be scoped, which is
 // why it is enforced at catalog-validation time (see validateHealthScope):
@@ -118,10 +122,12 @@ var columnKinds = func() map[string]ColumnKind {
 //     cost here?" watermark, so it MUST be scoped to exit_status: ok. An
 //     abnormal termination truncates the counters at whatever ClickHouse had
 //     accumulated when it gave up — a timeout's duration is the deadline, an
-//     OOM's memory is the cap, a killed scan's read_rows is however far it got —
-//     so those rows describe the failure, not the query. Folding them in drags
-//     the watermark toward the pathologies the rules exist to detect, and the
-//     rules stop firing exactly where they are needed.
+//     OOM's memory is the cap, a killed scan's read_rows is however far it got,
+//     and a fan-out cancelled on its first failing shard leaves the rest never
+//     dispatched, so shards_observed falls short of k_shards — so those rows
+//     describe the failure, not the query. Folding them in drags the watermark
+//     toward the pathologies the rules exist to detect, and the rules stop
+//     firing exactly where they are needed.
 //
 //   - A percentile over a geometry column MUST NOT be scoped that way. There is
 //     no outcome bias to remove, so the scope only shrinks the sample; on a
@@ -139,7 +145,9 @@ var runtimeCostColumns = func() map[string]struct{} {
 }()
 
 // geometryColumns is the complement of runtimeCostColumns within the numeric
-// columns: the ones the solver derives from the query SHAPE before dispatch.
+// columns: the ones fixed BEFORE dispatch — derived by the solver from the query
+// SHAPE (n_anchors, fanout, cumulative_d, outer_range, step, k_shards) or fixed
+// by the executor's admission decision over that shape (parallelism).
 //
 // They exist only on a row the solver CLASSIFIED. A row that carried no routing
 // classification — the Solver is off, or the head is one Solver.Classify does not

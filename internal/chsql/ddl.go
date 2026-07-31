@@ -533,3 +533,75 @@ func (a *ModifyColumnBuilder) frag() Frag {
 func (a *ModifyColumnBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
+
+// --- ALTER TABLE ... ADD COLUMN surface ---
+//
+// AddColumnBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] ADD COLUMN IF NOT EXISTS <col>
+// <type>`, the statement that brings a deployed table up to a column the
+// running binary writes but the table was created without. It is the sibling
+// MODIFY COLUMN cannot stand in for: MODIFY IF EXISTS is a no-op on an absent
+// column, and `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table
+// however its columns are declared, so without this statement a new column
+// reaches only fresh deployments.
+//
+// Adding a column to a MergeTree is metadata-only on ClickHouse — existing
+// parts materialise the type's default on read, no mutation is scheduled — so
+// the statement is safe to run on every start, and IF NOT EXISTS makes it a
+// no-op once the column is there.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// AddColumnBuilder builds an ALTER TABLE ADD COLUMN statement.
+type AddColumnBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	column   string
+	cluster  string // "" => no ON CLUSTER clause
+	colType  Frag
+}
+
+// AlterTableAddColumn starts an ADD COLUMN builder appending <column> of
+// colType to [<database>.]<table>. An empty database emits no qualifier, so a
+// table the connection's own database owns is referenced bare.
+func AlterTableAddColumn(database, table, column string, colType Frag) *AddColumnBuilder {
+	return &AddColumnBuilder{database: database, table: table, column: column, colType: colType}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *AddColumnBuilder) OnCluster(name string) *AddColumnBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via ddlToken,
+// bare database/table identifiers via BareIdent, the quoted column via Col, the
+// optional ON CLUSTER clause via the typed constructor, and the column type via
+// the caller's type Frag — no raw token is written here.
+func (a *AddColumnBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" ADD COLUMN IF NOT EXISTS ")(b)
+		Col(a.column)(b)
+		ddlToken(" ")(b)
+		a.colType(b)
+	}
+}
+
+// SQL renders the ALTER TABLE ADD COLUMN statement to ClickHouse text via
+// RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (a *AddColumnBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
