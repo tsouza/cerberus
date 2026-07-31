@@ -365,6 +365,8 @@ func parityRowTuple(t *testing.T, cols []chsql.ColumnDef, r jsonlRow) string {
 		"query_duration_ms":     strconv.Itoa(int(r.QueryDurationMS)),
 		"memory_usage":          strconv.Itoa(int(r.MemoryUsage)),
 		"exit_status":           chLiteral(r.ExitStatus),
+		"shards_observed":       strconv.Itoa(int(r.ShardsObserved)),
+		"parallelism":           strconv.Itoa(int(r.Parallelism)),
 	}
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {

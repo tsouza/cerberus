@@ -28,9 +28,10 @@ func validRouterDecisionReasons() map[string]struct{} {
 }
 
 // corpusRow is the subset of the corpus schema these invariants constrain. The
-// six geometry columns are the solver's own pre-dispatch measurements; the
-// runtime-cost columns (read_rows, memory_usage, …) are measured by ClickHouse
-// for every query regardless of routing and are therefore unconstrained here.
+// geometry columns are fixed BEFORE dispatch — the solver's own measurements of
+// the query shape, plus the concurrency the executor admits over that shape; the
+// runtime-cost columns (read_rows, memory_usage, shards_observed, …) are what
+// actually happened once the query ran and are therefore unconstrained here.
 type corpusRow struct {
 	Language       string `json:"language"`
 	Route          string `json:"route"`
@@ -41,6 +42,7 @@ type corpusRow struct {
 	OuterRange     int64  `json:"outer_range"`
 	Step           int64  `json:"step"`
 	KShards        int64  `json:"k_shards"`
+	Parallelism    int64  `json:"parallelism"`
 }
 
 // classified reports whether the row carries any solver output at all.
@@ -48,9 +50,9 @@ func (r corpusRow) classified() bool {
 	return r.Route != "" || r.DecisionReason != "" || r.geometry() != 0
 }
 
-// geometry folds the six solver-derived columns so "all zero" is one check.
+// geometry folds the pre-dispatch columns so "all zero" is one check.
 func (r corpusRow) geometry() int64 {
-	return r.NAnchors | r.Fanout | r.CumulativeD | r.OuterRange | r.Step | r.KShards
+	return r.NAnchors | r.Fanout | r.CumulativeD | r.OuterRange | r.Step | r.KShards | r.Parallelism
 }
 
 // TestRouterCorpusFixturesAreProducible pins every routerrules corpus fixture to

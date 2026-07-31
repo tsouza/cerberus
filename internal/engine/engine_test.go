@@ -96,6 +96,7 @@ type recordingObserver struct {
 	// ROUTED dispatch, carrying that dispatch's K shard query_ids.
 	routedIDs      [][]string
 	routedParallel []int
+	routedLangs    []string
 	routedPresent  []bool
 	routedRoutes   []string
 	routedReasons  []string
@@ -137,7 +138,7 @@ func (o *recordingObserver) ObserveRoutedQuery(
 	parallelism int,
 	_ string,
 	_ []string,
-	_ string,
+	language string,
 	routePresent bool,
 	route string,
 	_, _, _, _, _ uint32,
@@ -146,6 +147,7 @@ func (o *recordingObserver) ObserveRoutedQuery(
 ) {
 	o.routedIDs = append(o.routedIDs, append([]string(nil), shardQueryIDs...))
 	o.routedParallel = append(o.routedParallel, parallelism)
+	o.routedLangs = append(o.routedLangs, language)
 	o.routedPresent = append(o.routedPresent, routePresent)
 	o.routedRoutes = append(o.routedRoutes, route)
 	o.routedReasons = append(o.routedReasons, decisionReason)

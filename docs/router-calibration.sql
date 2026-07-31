@@ -91,7 +91,21 @@ SELECT
     -- query finished, cerberus rejected the drain), breaker/rejected are zero-cost.
     countIf(exit_status = 'sample_budget')                                  AS sample_budget_rejects,
     countIf(exit_status = 'breaker')                                        AS breaker_rejects,
-    countIf(exit_status = 'rejected')                                       AS cap_rejects
+    countIf(exit_status = 'rejected')                                       AS cap_rejects,
+    -- Route-B fan-out shape. A route-B row folds K shard rows into ONE row, and
+    -- the cost columns are ALREADY comparable to a route-A row's: memory_usage
+    -- is the sum of the `parallelism` largest shard peaks (only that many
+    -- coexist) and query_duration_ms the makespan bound over the fan-out. Do
+    -- NOT renormalise them by k_shards or parallelism — the fold has done it.
+    -- The columns below are diagnostics on the fan-out's shape, not correction
+    -- factors; all three are 0 on route A. shards_observed < k_shards means the
+    -- fan-out was cancelled part-way (the first failing shard cancels the rest,
+    -- which then never reach query_log), so such a row's folded cost covers
+    -- only the shards named here.
+    round(avgIf(k_shards, route = 'B'), 1)                                  AS avg_k_shards,
+    round(avgIf(shards_observed, route = 'B'), 1)                           AS avg_shards_observed,
+    round(avgIf(parallelism, route = 'B'), 1)                               AS avg_parallelism,
+    countIf(route = 'B' AND shards_observed < k_shards)                     AS partial_fanouts
 FROM cerberus_router_corpus
 GROUP BY route
 ORDER BY route;
@@ -106,9 +120,19 @@ ORDER BY route;
 -- Both floors, and both sides of every comparison against them, read the
 -- clean-finish population: a truncated counter would place a query in the wrong
 -- cost territory purely because it died early.
+--
+-- The route-B side of both floors is a FOLD over the fan-out's shards, already
+-- taken at the executor's effective concurrency (see the fan-out columns in
+-- query 1), so both floors are read raw: renormalising by the wave count here
+-- would apply the same correction twice and push route B's territory off by
+-- roughly k_shards / parallelism in both directions at once.
 WITH
-    (SELECT quantile(0.50)(memory_usage) FROM cerberus_router_corpus WHERE route = 'B' AND exit_status = 'ok') AS b_mem_floor,
-    (SELECT quantile(0.50)(query_duration_ms) FROM cerberus_router_corpus WHERE route = 'B' AND exit_status = 'ok') AS b_dur_floor
+    (SELECT quantile(0.50)(memory_usage)
+       FROM cerberus_router_corpus
+      WHERE route = 'B' AND exit_status = 'ok')                              AS b_mem_floor,
+    (SELECT quantile(0.50)(query_duration_ms)
+       FROM cerberus_router_corpus
+      WHERE route = 'B' AND exit_status = 'ok')                              AS b_dur_floor
 SELECT
     countIf(route = 'A')                                                       AS route_a_total,
     countIf(route = 'A' AND exit_status = 'ok')                                AS route_a_ok,
@@ -119,8 +143,11 @@ SELECT
     round(100 * countIf(route = 'A' AND exit_status = 'ok' AND memory_usage >= b_mem_floor)
               / nullIf(countIf(route = 'A' AND exit_status = 'ok'), 0), 1)     AS pct_a_misrouted_by_mem,
     -- The inverse: route-B queries that were CHEAP (below route A's median),
-    -- i.e. sliced when slicing bought nothing (wasted shard machinery).
-    countIf(route = 'B' AND exit_status = 'ok' AND memory_usage <
+    -- i.e. sliced when slicing bought nothing (wasted shard machinery). Both
+    -- sides read the same quantity — the memory the request held at once — so
+    -- the route-B side needs no adjustment either.
+    countIf(route = 'B' AND exit_status = 'ok'
+            AND memory_usage <
         (SELECT quantile(0.50)(memory_usage) FROM cerberus_router_corpus WHERE route = 'A' AND exit_status = 'ok')) AS b_wasted_slicing
 FROM cerberus_router_corpus;
 
@@ -136,6 +163,10 @@ SELECT
     route,
     count()                                                                 AS queries,
     countIf(exit_status = 'ok')                                             AS ok_queries,
+    -- On the route = 'B' rows these two are the fold's bounds rather than direct
+    -- readings (query 1 says what each bounds), but they are already taken at
+    -- the executor's effective concurrency, so they compare across routes as
+    -- they stand.
     round(quantileIf(0.90)(query_duration_ms, exit_status = 'ok'))          AS p90_ms,
     round(quantileIf(0.90)(memory_usage, exit_status = 'ok') / 1e6, 1)      AS p90_mem_mb,
     -- ok_queries + failures + aborts = queries.

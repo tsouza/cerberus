@@ -79,6 +79,10 @@ type BenchRow struct {
 	QueryDurationMS     float64
 	MemoryUsage         float64
 	ExitStatus          string
+	// ShardsObserved and Parallelism are the route-B fan-out columns. They are
+	// 0 on a route-A row, matching what the reconciler writes.
+	ShardsObserved float64
+	Parallelism    float64
 }
 
 func (r BenchRow) toCorpusRow() corpusRow {
@@ -94,6 +98,8 @@ func (r BenchRow) toCorpusRow() corpusRow {
 			"read_bytes":            r.ReadBytes,
 			"query_duration_ms":     r.QueryDurationMS,
 			"memory_usage":          r.MemoryUsage,
+			"shards_observed":       r.ShardsObserved,
+			"parallelism":           r.Parallelism,
 			"normalized_query_hash": float64(r.NormalizedQueryHash),
 		},
 		str: map[string]string{
@@ -247,6 +253,13 @@ const (
 	regretDur    = 30.0
 	regretShards = 6.0
 
+	// benchRouteBParallelism is how many shards of a fan-out the executor lets
+	// run concurrently on a default deployment (the solver's Parallel default).
+	// It is the geometry a synthetic route-B row needs to look like a real one
+	// to the rules, and it is also how many shards a fan-out cancelled on its
+	// first failure ever dispatched.
+	benchRouteBParallelism = 3.0
+
 	// Route-B floor seed: route-B healthy rows establish the fan-out floor the
 	// shard rules gate on. Their fan-out is a single high constant (route B is
 	// where big, properly-sharded fan-outs land), so it defines the p95 floor AND
@@ -331,6 +344,9 @@ func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 		shape := lang + ":routeb_healthy"
 		hash := uint64(2000 + len(bc.Classes))
 		for i := 0; i < p.HealthyClassSize; i++ {
+			// A healthy fan-out reaches query_log on every shard, so
+			// shards_observed equals k_shards; only an abnormal exit truncates it.
+			k := jitter(rng, 4, 8)
 			bc.Rows = append(bc.Rows, BenchRow{
 				ShapeID:             shape,
 				Language:            lang,
@@ -338,7 +354,9 @@ func plantRouteBFloor(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 				Fanout:              routeBFloorFanout,
 				CumulativeD:         jitter(rng, healthyDBase, healthyDSpread),
 				Route:               "B",
-				KShards:             jitter(rng, 4, 8),
+				KShards:             k,
+				ShardsObserved:      k,
+				Parallelism:         benchRouteBParallelism,
 				DecisionReason:      "sliceable",
 				ReadRows:            jitter(rng, healthyReadBase, healthyReadSpread),
 				ReadBytes:           jitter(rng, 1_000_000, 40_000_000),
@@ -550,8 +568,12 @@ func pathologyFailureSpecs() []pathologySpec {
 				return BenchRow{
 					Route: "B", ExitStatus: "oom", DecisionReason: "not-sliceable",
 					KShards: jitter(rng, 8, 32), CumulativeD: sevDSevere,
-					MemoryUsage: pick(SevSevere, sevMemSevere, sevMemMarg),
-					NAnchors:    jitter(rng, 5, 20), Fanout: jitter(rng, 20, 40),
+					// The OOM cancels the fan-out, so only the resident wave ever
+					// reached ClickHouse: shards_observed falls short of k_shards.
+					ShardsObserved: benchRouteBParallelism,
+					Parallelism:    benchRouteBParallelism,
+					MemoryUsage:    pick(SevSevere, sevMemSevere, sevMemMarg),
+					NAnchors:       jitter(rng, 5, 20), Fanout: jitter(rng, 20, 40),
 				}
 			},
 		},
@@ -572,6 +594,7 @@ func pathologyTailSpecs() []pathologySpec {
 				return BenchRow{
 					Route: "B", ExitStatus: "ok", DecisionReason: "sliceable",
 					Fanout: regretFanout, QueryDurationMS: regretDur, KShards: regretShards,
+					ShardsObserved: regretShards, Parallelism: benchRouteBParallelism,
 					CumulativeD: jitter(rng, healthyDBase, healthyDSpread),
 					MemoryUsage: jitter(rng, healthyMemBase, healthyMemSpread),
 					ReadRows:    jitter(rng, healthyReadBase, healthyReadSpread),

@@ -611,18 +611,35 @@ To answer it the engine closes the loop the optimization corpus
   A/B comparison and carries no request identifier to group by after the fact,
   so a route-B fan-out is folded into a single row rather than K: a row per
   shard would put a fraction of route B beside a whole route-A query in every
-  comparison. All K shard ids index one ring record, and the reconciler holds
-  the group until every shard's `query_log` row is visible — a partially joined
-  fan-out is deferred to the next interval, never written under-counted. The
-  fold keeps a route-B row meaning what a route-A row means: `read_rows` /
-  `read_bytes` / `profile_events` are summed (total work done), `exit_status` is
-  the most severe shard status (an OOMed shard is an OOM for the request), and
-  the two schedule-dependent columns read the Executor's EFFECTIVE concurrency
-  P, which is routinely below K — `memory_usage` is the sum of the P largest
-  shard peaks (only P coexist) and `query_duration_ms` is the makespan bound
+  comparison. All K shard ids index one ring record, and the reconciler folds
+  each shard in as its `query_log` row becomes visible, deferring the write
+  until the group is complete — a partially joined fan-out is never written
+  under-counted while it can still complete. The fold keeps a route-B row
+  meaning what a route-A row means: `read_rows` / `read_bytes` /
+  `profile_events` are summed (total work done), `exit_status` is the most
+  severe shard status (an OOMed shard is an OOM for the request), and the two
+  schedule-dependent columns read the Executor's EFFECTIVE concurrency P, which
+  is routinely below K — `memory_usage` is the sum of the P largest shard peaks
+  (only P coexist) and `query_duration_ms` is the makespan bound
   `max(slowest shard, total / P)`. Assuming a fully parallel fan-out instead
   would understate route-B latency and overstate its memory by roughly K/P at
-  the default P.
+  the default P. The row stores that P as `parallelism`, so a calibration reads
+  a route-B cost against the schedule that produced it rather than against K
+  alone.
+- **Partial fan-outs are published, not dropped.** The shard errgroup is
+  first-error-wins: when a shard fails, its in-flight siblings are cancelled and
+  the later waves are never dispatched at all, so their query_log rows will
+  never exist. Waiting for all `K` would therefore wait forever and lose the
+  record — and the records lost that way are exactly route B's failures, the
+  population the watermarks are learnt from. The reconciler instead accumulates
+  each shard as it lands and publishes what it has when the dispatch can no
+  longer complete: either its remaining ids age out of the query_log lookback,
+  or the bounded ring reuses its slot (on a busy deployment the ring wraps long
+  before the lookback expires, so slot reuse is the common trigger). Such a row
+  carries `shards_observed` &lt; `k_shards`; its cost columns describe only the
+  shards named there, so every absolute route-B cost comparison must exclude it.
+  A fan-out where **no** shard reached query_log publishes nothing — a row with
+  no observed cost would be a fabricated data point.
 - **Cerberus-side terminal outcomes.** `system.query_log` only reflects what
   ClickHouse saw — it cannot show a request cerberus *itself* terminated. Three
   cerberus-side outcomes are captured in-process and take precedence over (or
@@ -656,18 +673,22 @@ To answer it the engine closes the loop the optimization corpus
   builder, 30-day TTL); the default `jsonl` mode appends the same rows to the
   sink-path file (load them into the same table shape for analysis). Sink
   construction reconciles the deployed table with the schema the running binary
-  writes — `CREATE TABLE IF NOT EXISTS`, then an `ALTER TABLE … MODIFY COLUMN`
-  that widens `exit_status` to the member set this binary can emit, then a read
-  of `system.columns` that fails construction if a member is still missing.
-  `CREATE … IF NOT EXISTS` alone cannot do this: it is a no-op against an
-  existing table however its columns are declared, so a binary that learnt a new
-  member would write a value the deployed column cannot hold and every batch
-  would be rejected on every reconcile interval. The widening is **best-effort**
-  — a CH user with `INSERT` + `CREATE` but no `ALTER` grant, or an
-  operator-owned table that needs `ON CLUSTER`, still gets a working sink
-  whenever the deployed column already holds every member. The `system.columns`
-  read is the authority: it is the server's own answer, so the sink is never
-  built over a column that cannot hold what the binary writes.
+  writes — `CREATE TABLE IF NOT EXISTS`, then an `ALTER TABLE … ADD COLUMN IF
+  NOT EXISTS` per corpus column, then an `ALTER TABLE … MODIFY COLUMN` that
+  widens `exit_status` to the member set this binary can emit, then one read of
+  `system.columns` that fails construction if a column is still missing or a
+  member still absent. `CREATE … IF NOT EXISTS` alone cannot do this: it is a
+  no-op against an existing table however its columns are declared, so a binary
+  that learnt a new member would write a value the deployed column cannot hold,
+  and a binary that learnt a new COLUMN is worse still — the batch appends
+  POSITIONALLY, so a missing column does not lose one field, it binds every
+  later value to the wrong column or invalidates the batch outright, on every
+  reconcile interval, forever. Both ALTERs are **best-effort** — a CH user with
+  `INSERT` + `CREATE` but no `ALTER` grant, or an operator-owned table that
+  needs `ON CLUSTER`, still gets a working sink whenever the deployed table
+  already matches. The `system.columns` read is the authority: it is the
+  server's own answer, so the sink is never built over a table that cannot hold
+  what the binary writes.
 - **A sink that cannot be built disables the reconciler**, logged at startup
   with the underlying error; it does not silently switch modes. There is no
   fallback from `chtable` to `jsonl` — an operator who asked for the CH table

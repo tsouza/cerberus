@@ -35,6 +35,7 @@ type routedCorpusObserver struct {
 	routedIDs      [][]string
 	routedParallel []int
 	routedShapes   []string
+	routedLangs    []string
 	routedPresent  []bool
 	routedRoutes   []string
 	routedReasons  []string
@@ -51,7 +52,7 @@ func (o *routedCorpusObserver) ObserveQuery(
 }
 
 func (o *routedCorpusObserver) ObserveRoutedQuery(
-	shardQueryIDs []string, parallelism int, shapeID string, _ []string, _ string,
+	shardQueryIDs []string, parallelism int, shapeID string, _ []string, language string,
 	routePresent bool, route string, _, _, _, _, _ uint32, kShards uint8, decisionReason string,
 ) {
 	o.mu.Lock()
@@ -59,10 +60,32 @@ func (o *routedCorpusObserver) ObserveRoutedQuery(
 	o.routedIDs = append(o.routedIDs, append([]string(nil), shardQueryIDs...))
 	o.routedParallel = append(o.routedParallel, parallelism)
 	o.routedShapes = append(o.routedShapes, shapeID)
+	o.routedLangs = append(o.routedLangs, language)
 	o.routedPresent = append(o.routedPresent, routePresent)
 	o.routedRoutes = append(o.routedRoutes, route)
 	o.routedReasons = append(o.routedReasons, decisionReason)
 	o.routedKShards = append(o.routedKShards, kShards)
+}
+
+// assertRoutedRowIdentity pins the columns every routed observation carries
+// regardless of which of the three route-B seams produced it: the language the
+// row is filed under (a wrong one silos the row into a population no PromQL
+// calibration reads), the real K, and the executor's effective parallelism
+// (which the observer folds the wall-clock and memory columns at).
+func (o *routedCorpusObserver) assertRoutedRowIdentity(t *testing.T, i int, wantK uint8, wantParallel int) {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.routedLangs[i] != solver.LangPromQL {
+		t.Errorf("language = %q; want %q — the row must be filed under the head that ran it",
+			o.routedLangs[i], solver.LangPromQL)
+	}
+	if o.routedKShards[i] != wantK {
+		t.Errorf("k_shards = %d; want %d (the decision's real K)", o.routedKShards[i], wantK)
+	}
+	if o.routedParallel[i] != wantParallel {
+		t.Errorf("parallelism = %d; want %d (the executor's effective P)", o.routedParallel[i], wantParallel)
+	}
 }
 
 func (o *routedCorpusObserver) ObserveOutcome(string, string) {}
@@ -138,6 +161,17 @@ func newRoutedCorpusEngine(t *testing.T, cursorClient solver.CursorQuerier, obs 
 		eng.QueryObserver = obs
 	}
 	return eng
+}
+
+// wantParallelism is the effective P the Executor reports for d under this
+// file's wiring (no admission top-up, no concurrency gate): the configured P,
+// clamped down to K because a fan-out cannot run more shards than it has.
+func wantParallelism(eng *Engine, d *solver.Decision) int {
+	p := eng.Solver.Executor.Cfg.Parallel
+	if len(d.Slices) < p {
+		p = len(d.Slices)
+	}
+	return p
 }
 
 // routedDecision classifies the eligible fixture plan into the routed decision
@@ -229,9 +263,7 @@ func TestExecuteRoutedCursor_ObservesTheFanOut(t *testing.T) {
 	if obs.routedReasons[0] != solver.ReasonRouted {
 		t.Errorf("decision_reason = %q; want %q", obs.routedReasons[0], solver.ReasonRouted)
 	}
-	if obs.routedKShards[0] == 0 {
-		t.Error("k_shards = 0 on a routed observation; want the decision's real K")
-	}
+	obs.assertRoutedRowIdentity(t, 0, clampU8(int64(len(d.Slices))), wantParallelism(eng, d))
 	if obs.routedShapes[0] != planShapeID(plan) {
 		t.Errorf("shape_id = %q; want the WHOLE plan's %q, so route-A and route-B rows join",
 			obs.routedShapes[0], planShapeID(plan))
@@ -283,6 +315,7 @@ func TestExecuteRouted_ObservesTheFanOut(t *testing.T) {
 	if len(routed[0]) != len(d.Slices) {
 		t.Errorf("observed %d shard ids; want %d", len(routed[0]), len(d.Slices))
 	}
+	obs.assertRoutedRowIdentity(t, 0, clampU8(int64(len(d.Slices))), wantParallelism(eng, d))
 }
 
 // TestBuildRoutedCursorResult_ObservesOnce pins the third route-B family: the
@@ -322,6 +355,13 @@ func TestBuildRoutedCursorResult_ObservesOnce(t *testing.T) {
 	// corpus invariant (test/regression/router_corpus_seed_test.go).
 	if obs.routedReasons[0] != solver.ReasonRouted {
 		t.Errorf("decision_reason = %q; want %q even on a memo-hit dispatch", obs.routedReasons[0], solver.ReasonRouted)
+	}
+	// This site holds the ExecInfo the Executor actually produced, so it pins
+	// parallelism against the executor's own read-out rather than a recomputed
+	// expectation — the row must carry what the fan-out really ran at.
+	obs.assertRoutedRowIdentity(t, 0, clampU8(int64(len(d.Slices))), info.Parallelism)
+	if info.Parallelism < 1 {
+		t.Fatalf("ExecInfo.Parallelism = %d; the fixture must exercise a real concurrency read-out", info.Parallelism)
 	}
 }
 

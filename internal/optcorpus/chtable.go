@@ -75,6 +75,16 @@ const (
 	routeColumn      = "route"
 )
 
+// shardsObservedColumn and parallelismColumn are the two route-B fan-out
+// columns: how much of the fan-out a row accounts for, and the effective shard
+// concurrency the cost columns were folded at. They are named once here and
+// shared by the DDL and the reconciliation, the same way the enum columns
+// above are.
+const (
+	shardsObservedColumn = "shards_observed"
+	parallelismColumn    = "parallelism"
+)
+
 // RouteUnclassified is the route token a Row carries when no routing
 // classification ran — the Solver is off, or the head is one Solver.Classify
 // does not classify (every non-PromQL query). It is a MEMBER of the route
@@ -146,32 +156,37 @@ var reconciledEnumColumns = []reconciledEnumColumn{
 }
 
 // NewCHTableSink builds a CH-table sink over conn and reconciles the corpus
-// table with the schema this binary writes, in three steps:
+// table with the schema this binary writes, in four steps:
 //
-//	CREATE TABLE IF NOT EXISTS — makes the table on a fresh deployment.
-//	ALTER TABLE MODIFY COLUMN  — widens each reconciledEnumColumns entry on a
-//	                             table that predates a member this binary can
-//	                             emit. CREATE IF NOT EXISTS alone cannot do
-//	                             this: it is a no-op against an existing table
-//	                             however its columns are declared.
-//	verify                     — reads each deployed type back and fails
-//	                             construction if a member is missing.
+//	CREATE TABLE IF NOT EXISTS   — makes the table on a fresh deployment.
+//	ALTER TABLE ADD COLUMN       — appends each CorpusColumns() entry a table
+//	                               created by an older binary was made without.
+//	ALTER TABLE MODIFY COLUMN    — widens each reconciledEnumColumns entry on a
+//	                               table that predates a member this binary can
+//	                               emit. CREATE IF NOT EXISTS alone cannot do
+//	                               either: it is a no-op against an existing
+//	                               table however its columns are declared.
+//	verify                       — reads the deployed schema back and fails
+//	                               construction if a column is absent or an
+//	                               enum member is missing.
 //
-// Only the CREATE and the verify can fail construction. The widening is
+// The ADD runs before the MODIFY so a column added here arrives with the wide
+// enum type and the widening finds nothing left to do.
+//
+// Only the CREATE and the verify can fail construction. Both ALTERs are
 // BEST-EFFORT by design: a deployment whose CH user holds INSERT and CREATE but
 // not ALTER, or whose corpus table is operator-owned and needs ON CLUSTER, is a
-// legitimate configuration, and on such a deployment the widening is a no-op in
-// every case that matters — the column is either already wide enough (nothing
-// to do) or it is not, which the verify catches on the server's own answer
-// rather than on whether the ALTER was permitted. That keeps the ALTER from
-// turning a working sink into a disabled one while leaving the guarantee
-// intact: the sink is never built over a column that cannot hold what this
-// binary writes.
+// legitimate configuration, and on such a deployment an ALTER is a no-op in
+// every case that matters — the schema either already matches (nothing to do)
+// or it does not, which the verify catches on the server's own answer rather
+// than on whether the ALTER was permitted. That keeps the ALTER from turning a
+// working sink into a disabled one while leaving the guarantee intact: the sink
+// is never built over a schema that cannot hold what this binary writes.
 //
-// Verifying against the server — rather than trusting the ALTER did what it
-// was asked — is what makes the reconciliation honest rather than hopeful: a
-// column narrower than the member set this binary writes would otherwise
-// surface much later as a batch the column rejects, on every reconcile
+// Verifying against the server — rather than trusting the ALTERs did what they
+// were asked — is what makes the reconciliation honest rather than hopeful: a
+// missing column, or one narrower than the member set this binary writes, would
+// otherwise surface much later as a batch the table rejects, on every reconcile
 // interval, forever. A construction failure disables the reconciler (see
 // buildCorpusSink); the data plane is untouched either way.
 func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error) {
@@ -181,13 +196,46 @@ func NewCHTableSink(ctx context.Context, conn CHTableConn) (*CHTableSink, error)
 	if err := conn.Exec(ctx, corpusCreateTableSQL()); err != nil {
 		return nil, fmt.Errorf("optcorpus: create %s: %w", CorpusTableName, err)
 	}
+	addErrs := map[string]error{}
+	for _, col := range CorpusColumns() {
+		if err := conn.Exec(ctx, corpusAddColumnSQL(col)); err != nil {
+			addErrs[col.Name] = err
+		}
+	}
+	widenErrs := map[string]error{}
 	for _, col := range reconciledEnumColumns {
-		widenErr := conn.Exec(ctx, corpusAlterEnumColumnSQL(col))
-		if err := verifyEnumColumn(ctx, conn, col, widenErr); err != nil {
+		if err := conn.Exec(ctx, corpusAlterEnumColumnSQL(col)); err != nil {
+			widenErrs[col.name] = err
+		}
+	}
+	deployed, err := readDeployedSchema(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyColumnsPresent(deployed, addErrs); err != nil {
+		return nil, err
+	}
+	for _, col := range reconciledEnumColumns {
+		if err := verifyEnumColumn(deployed[col.name], col, widenErrs[col.name]); err != nil {
 			return nil, err
 		}
 	}
 	return &CHTableSink{conn: conn, table: CorpusTableName}, nil
+}
+
+// corpusAddColumnSQL renders the statement that appends one corpus column to a
+// deployed table that predates it. Adding a column to a MergeTree is
+// metadata-only on ClickHouse — existing parts materialise the type's default
+// on read — so it is safe to issue on every start, and IF NOT EXISTS makes it a
+// no-op on a table the CREATE above just made with the full column list.
+//
+// The statement carries no AFTER clause, so ClickHouse appends the column at
+// the end. That is the whole reason CorpusColumns() grows only at its tail: the
+// columnar INSERT batch names no columns and Append is POSITIONAL, so the
+// deployed order and CorpusColumns() order must agree, and appending is the one
+// edit that keeps them agreeing on a fresh table and a migrated one alike.
+func corpusAddColumnSQL(col chsql.ColumnDef) string {
+	return chsql.AlterTableAddColumn("", CorpusTableName, col.Name, col.Type).SQL()
 }
 
 // corpusAlterEnumColumnSQL renders the statement that retypes the deployed
@@ -199,38 +247,77 @@ func corpusAlterEnumColumnSQL(col reconciledEnumColumn) string {
 	return chsql.AlterTableModifyColumn("", CorpusTableName, col.name, col.enumType()).SQL()
 }
 
-// verifyEnumColumn reads the DEPLOYED column type back from system.columns and
-// fails if it cannot hold every member this binary emits, naming the missing
-// ones. Reading the server's own answer — rather than trusting that the ALTER did
-// what it was asked — is the only check that distinguishes a widened column from
-// one the server left alone.
+// readDeployedSchema reads the corpus table's DEPLOYED column name→type map out
+// of system.columns in ONE round trip. Every reconciliation check below reads
+// this map rather than the statements it just ran, because the server's own
+// answer is the only thing that distinguishes a schema the ALTERs repaired from
+// one they were refused on.
+func readDeployedSchema(ctx context.Context, conn CHConn) (map[string]string, error) {
+	sql, args := corpusSchemaQuery()
+	rows, err := conn.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("optcorpus: read deployed %s schema: %w", CorpusTableName, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	deployed := map[string]string{}
+	for rows.Next() {
+		var name, chType string
+		if err := rows.Scan(&name, &chType); err != nil {
+			return nil, fmt.Errorf("optcorpus: scan deployed %s schema: %w", CorpusTableName, err)
+		}
+		deployed[name] = chType
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("optcorpus: read deployed %s schema: %w", CorpusTableName, err)
+	}
+	return deployed, nil
+}
+
+// verifyColumnsPresent fails when the deployed table is missing a column this
+// binary writes, naming every absent one. It is the ADD COLUMN half of the
+// reconciliation's guarantee: Write appends values POSITIONALLY into a batch
+// prepared from `INSERT INTO <table>`, so a single absent column does not
+// degrade one field — it makes the driver bind every subsequent value to the
+// wrong column or reject the batch outright, on every reconcile interval,
+// forever.
+//
+// addErrs carries whatever the best-effort ADDs returned, keyed by column. As
+// with the widening, a refusal is only evidence once the column turns out to be
+// absent: then it is the operator's actionable cause and belongs in the message.
+func verifyColumnsPresent(deployed map[string]string, addErrs map[string]error) error {
+	var missing []string
+	var causes []string
+	for _, col := range CorpusColumns() {
+		if _, ok := deployed[col.Name]; ok {
+			continue
+		}
+		missing = append(missing, col.Name)
+		if err := addErrs[col.Name]; err != nil {
+			causes = append(causes, fmt.Sprintf("%s: %v", col.Name, err))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if len(causes) > 0 {
+		return fmt.Errorf("optcorpus: %s is missing columns this binary writes (%s); adding them failed (%s)",
+			CorpusTableName, strings.Join(missing, ", "), strings.Join(causes, "; "))
+	}
+	return fmt.Errorf("optcorpus: %s is missing columns this binary writes (%s)",
+		CorpusTableName, strings.Join(missing, ", "))
+}
+
+// verifyEnumColumn fails when the DEPLOYED column type cannot hold every member
+// this binary emits, naming the missing ones. deployed is the type string read
+// back from system.columns — the server's own answer, which is the only check
+// that distinguishes a widened column from one the server left alone.
 //
 // widenErr is whatever the best-effort widening returned. It is carried here
 // rather than acted on at the callsite because it only becomes evidence when
 // the column turns out to be too narrow: then, and only then, the failed ALTER
 // is the reason and belongs in the message an operator reads.
-func verifyEnumColumn(ctx context.Context, conn CHConn, col reconciledEnumColumn, widenErr error) error {
-	sql, args := corpusColumnTypeQuery(col.name)
-	rows, err := conn.Query(ctx, sql, args...)
-	if err != nil {
-		return fmt.Errorf("optcorpus: read deployed %s type: %w", col.name, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("optcorpus: read deployed %s type: %w", col.name, err)
-		}
-		return fmt.Errorf("optcorpus: %s.%s absent after reconciliation", CorpusTableName, col.name)
-	}
-	var deployed string
-	if err := rows.Scan(&deployed); err != nil {
-		return fmt.Errorf("optcorpus: scan deployed %s type: %w", col.name, err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("optcorpus: read deployed %s type: %w", col.name, err)
-	}
-
+func verifyEnumColumn(deployed string, col reconciledEnumColumn, widenErr error) error {
 	have := enum8Members(deployed)
 	var problems []string
 	for _, m := range col.members() {
@@ -257,17 +344,18 @@ func verifyEnumColumn(ctx context.Context, conn CHConn, col reconciledEnumColumn
 	return nil
 }
 
-// corpusColumnTypeQuery selects the deployed type of one corpus column from
-// system.columns for the corpus table in the connection's own database — the
-// same unqualified table the DDL above creates.
-func corpusColumnTypeQuery(column string) (string, []any) {
+// corpusSchemaQuery selects the deployed (name, type) of every corpus column
+// from system.columns for the corpus table in the connection's own database —
+// the same unqualified table the DDL above creates. One statement for the whole
+// schema rather than one per column: the reconciliation checks presence AND
+// enum width, and both read the same answer.
+func corpusSchemaQuery() (string, []any) {
 	return chsql.NewQuery().
 		From(chsql.Qual("system", "columns")).
-		Select(chsql.BareIdent("type")).
+		Select(chsql.BareIdent("name"), chsql.BareIdent("type")).
 		Where(
 			chsql.Eq(chsql.BareIdent("database"), chsql.Call("currentDatabase")),
 			chsql.Eq(chsql.BareIdent("table"), chsql.Lit(CorpusTableName)),
-			chsql.Eq(chsql.BareIdent("name"), chsql.Lit(column)),
 		).
 		Build()
 }
@@ -367,7 +455,8 @@ func parseEnum8Value(rs []rune) (int64, int, bool) {
 //	  outer_range UInt32, step UInt32, route <routeEnumType()>,
 //	  k_shards UInt8, decision_reason LowCardinality(String),
 //	  read_rows UInt64, read_bytes UInt64, query_duration_ms UInt64,
-//	  memory_usage UInt64, exit_status <exitStatusEnumType()>
+//	  memory_usage UInt64, exit_status <exitStatusEnumType()>,
+//	  shards_observed UInt8, parallelism UInt8
 //	) ENGINE = MergeTree ORDER BY (shape_id, n_anchors, fanout)
 //	  TTL toDateTime(event_time) + toIntervalDay(30)
 func corpusCreateTableSQL() string {
@@ -395,10 +484,16 @@ func corpusCreateTableSQL() string {
 // to restate the shape — and the route column's Enum8 member list had already
 // drifted between the restatements, which is precisely the bug that made an
 // unclassified row read back as route 'A'. One list, three consumers, no copies.
+//
+// The list grows only at its TAIL. `ALTER TABLE ... ADD COLUMN` without an AFTER
+// clause appends, and the INSERT batch binds POSITIONALLY, so appending is what
+// keeps a table migrated by corpusAddColumnSQL in the same order as one the
+// CREATE just made.
 func CorpusColumns() []chsql.ColumnDef {
 	lcString := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
 	uint32Type := chsql.TypeRaw("UInt32")
 	uint64Type := chsql.TypeRaw("UInt64")
+	uint8Type := chsql.TypeRaw("UInt8")
 	return []chsql.ColumnDef{
 		{Name: "event_time", Type: chsql.TypeRaw("DateTime")},
 		{Name: "shape_id", Type: lcString},
@@ -410,13 +505,15 @@ func CorpusColumns() []chsql.ColumnDef {
 		{Name: "outer_range", Type: uint32Type},
 		{Name: "step", Type: uint32Type},
 		{Name: routeColumn, Type: routeEnumType()},
-		{Name: "k_shards", Type: chsql.TypeRaw("UInt8")},
+		{Name: "k_shards", Type: uint8Type},
 		{Name: "decision_reason", Type: lcString},
 		{Name: "read_rows", Type: uint64Type},
 		{Name: "read_bytes", Type: uint64Type},
 		{Name: "query_duration_ms", Type: uint64Type},
 		{Name: "memory_usage", Type: uint64Type},
 		{Name: exitStatusColumn, Type: exitStatusEnumType()},
+		{Name: shardsObservedColumn, Type: uint8Type},
+		{Name: parallelismColumn, Type: uint8Type},
 	}
 }
 
@@ -481,6 +578,8 @@ func (s *CHTableSink) Write(rows []Row) error {
 			r.QueryDurationMS,
 			r.MemoryUsage,
 			exitEnumValue(r.ExitStatus),
+			r.ShardsObserved,
+			r.Parallelism,
 		); err != nil {
 			_ = batch.Abort()
 			return fmt.Errorf("optcorpus: append corpus row: %w", err)
