@@ -248,8 +248,15 @@ func parseTerminalRejectionStatus(token string) (ExitStatus, bool) {
 type Record struct {
 	// QueryID is the ClickHouse query_id (the per-dispatch
 	// "<traceID>-<spanID>-<counter>" id; the cerberus trace id is its prefix),
-	// the unique join key into system.query_log.
+	// the unique join key into system.query_log. It is empty on a routed
+	// (route-B) record, which joins through ShardQueryIDs instead.
 	QueryID string
+	// ShardQueryIDs are the K per-shard query_ids of a ROUTED dispatch: one
+	// logical query that ClickHouse ran as K statements. All K join to the same
+	// record and fold into ONE corpus row, because the corpus compares route A
+	// against route B per REQUEST — a row per shard would measure a fraction of
+	// route B against a whole route-A query. Empty on route A.
+	ShardQueryIDs []string
 	// ShapeID is the literal-free cerb:<root>[;mod...] plan shape id from
 	// engine.planShapeID.
 	ShapeID string
@@ -281,6 +288,22 @@ type Record struct {
 	// straight to the sink with zero cost rather than carrying them in the
 	// query_log IN(...) join.
 	DecisionOnly bool
+}
+
+// joinIDs returns every system.query_log query_id this record joins on: the K
+// shard ids of a routed dispatch, or the single dispatch id of a route-A one
+// (empty when the record has no join key at all — a pre-dispatch rejection).
+// The ring, the IN(...) snapshot, and the reconcile join all read the id set
+// through here, so route A and route B differ only in how many ids one record
+// carries, never in how the ring or the join treats them.
+func (rec Record) joinIDs() []string {
+	if len(rec.ShardQueryIDs) > 0 {
+		return rec.ShardQueryIDs
+	}
+	if rec.QueryID == "" {
+		return nil
+	}
+	return []string{rec.QueryID}
 }
 
 // Row is the durable corpus tuple written to the sink. The field shape is
@@ -499,7 +522,10 @@ func New(src QueryLogSource, sink Sink, opts Options) *Reconciler {
 //     from the join index here so the query_log reconcile cannot double-write it.
 //   - outcome-update (HasOutcome with no ShapeID): merges a cerberus-side
 //     terminal outcome onto an already-ringed dispatch record by query_id.
-//   - dispatch (the default): the normal at-dispatch metadata record.
+//   - dispatch (the default): the normal at-dispatch metadata record. A ROUTED
+//     dispatch occupies ONE slot and indexes all K of its shard query_ids at
+//     that slot, so every shard's query_log row joins back to the same record
+//     and folds into one corpus row.
 func (r *Reconciler) Observe(rec Record) {
 	if rec.DecisionOnly {
 		// A terminal rejection recorded at the engine site: no usable CH cost,
@@ -519,7 +545,8 @@ func (r *Reconciler) Observe(rec Record) {
 		r.mu.Unlock()
 		return
 	}
-	if rec.QueryID == "" {
+	ids := rec.joinIDs()
+	if len(ids) == 0 {
 		return
 	}
 	r.mu.Lock()
@@ -544,32 +571,47 @@ func (r *Reconciler) Observe(rec Record) {
 	// observation time so a re-observed id is not TTL-evicted prematurely.
 	// Preserve any cerberus-side outcome already merged onto the slot so an
 	// out-of-order outcome-update is not lost on a late dispatch re-observe.
-	if idx, ok := r.byID[rec.QueryID]; ok {
+	// The first id identifies the record: every id of one dispatch is written
+	// to the same slot in the same call, so they are never split across slots.
+	if idx, ok := r.byID[ids[0]]; ok {
 		if r.ring[idx].HasOutcome && !rec.HasOutcome {
 			rec.Outcome = r.ring[idx].Outcome
 			rec.HasOutcome = true
 		}
-		r.ring[idx] = rec
-		r.seenAt[rec.QueryID] = r.now()
+		r.index(idx, rec, ids)
 		return
 	}
 
 	slot := r.head
 	if r.count == r.cap {
 		// Full: the slot we are about to overwrite holds the oldest record;
-		// drop its index so the join no longer points at the reused slot.
-		evicted := r.ring[slot]
-		if r.byID[evicted.QueryID] == slot {
-			delete(r.byID, evicted.QueryID)
-			delete(r.seenAt, evicted.QueryID)
+		// drop ALL of its ids from the index so the join no longer points at
+		// the reused slot (a routed record contributes K of them).
+		for _, id := range r.ring[slot].joinIDs() {
+			if idx, ok := r.byID[id]; ok && idx == slot {
+				delete(r.byID, id)
+				delete(r.seenAt, id)
+			}
 		}
 	} else {
 		r.count++
 	}
-	r.ring[slot] = rec
-	r.byID[rec.QueryID] = slot
-	r.seenAt[rec.QueryID] = r.now()
+	r.index(slot, rec, ids)
 	r.head = (r.head + 1) % r.cap
+}
+
+// index writes rec into slot and points every one of its join ids at that slot,
+// stamping the shared observation time. A routed record's K shard ids all land
+// on the same slot, which is what makes their K query_log rows fold back into
+// one corpus row — and what makes them expire together under the TTL. Callers
+// hold the ring mutex.
+func (r *Reconciler) index(slot int, rec Record, ids []string) {
+	r.ring[slot] = rec
+	now := r.now()
+	for _, id := range ids {
+		r.byID[id] = slot
+		r.seenAt[id] = now
+	}
 }
 
 // ObserveQuery is the data-plane dispatch seam (engine.QueryObserver). It does
@@ -619,6 +661,52 @@ func (r *Reconciler) ObserveQuery(
 		},
 	}
 	r.enqueue(rec)
+}
+
+// ObserveRoutedQuery is ObserveQuery's route-B seam: one logical query that
+// ClickHouse ran as K statements, identified by shardQueryIDs. All K ids index
+// the SAME ring record, and the reconciler folds their K query_log rows into a
+// single corpus row (see rowFor) — the corpus's unit is the request, so
+// a routed query must weigh as one row against the route-A row it is compared
+// with. Same non-blocking, drop-under-burst contract as ObserveQuery; the ids
+// are copied because the caller owns the slice.
+func (r *Reconciler) ObserveRoutedQuery(
+	shardQueryIDs []string,
+	shapeID string,
+	opts []string,
+	language string,
+	routePresent bool,
+	route string,
+	nAnchors, fanout, cumulativeD, outerRange, step uint32,
+	kShards uint8,
+	decisionReason string,
+) {
+	ids := make([]string, 0, len(shardQueryIDs))
+	for _, id := range shardQueryIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	r.enqueue(Record{
+		ShardQueryIDs: ids,
+		ShapeID:       shapeID,
+		Opts:          opts,
+		Language:      language,
+		Route: RouteFeatures{
+			Present:        routePresent,
+			Route:          route,
+			NAnchors:       nAnchors,
+			Fanout:         fanout,
+			CumulativeD:    cumulativeD,
+			OuterRange:     outerRange,
+			Step:           step,
+			KShards:        kShards,
+			DecisionReason: decisionReason,
+		},
+	})
 }
 
 // ObserveOutcome is the data-plane seam for a CERBERUS-side terminal outcome on
@@ -784,16 +872,19 @@ func (r *Reconciler) snapshotIDs() []string {
 	return ids
 }
 
-// recordFor returns the observed Record for query_id, or ok=false. Safe for
-// concurrent Observe.
-func (r *Reconciler) recordFor(id string) (Record, bool) {
+// recordFor returns the observed Record for query_id plus the ring slot it
+// lives in, or ok=false. The slot is the record's identity for the join: a
+// routed record is reachable through any of its K shard ids, so source rows are
+// grouped by slot rather than by the id that found them. Safe for concurrent
+// Observe.
+func (r *Reconciler) recordFor(id string) (Record, int, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	idx, ok := r.byID[id]
 	if !ok {
-		return Record{}, false
+		return Record{}, 0, false
 	}
-	return r.ring[idx], true
+	return r.ring[idx], idx, true
 }
 
 // forget drops the supplied ids from the join index after they have been
@@ -902,37 +993,23 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		return
 	}
 
-	rows := make([]Row, 0, len(srcRows))
+	groups := groupByRecord(srcRows, r.recordFor)
+	rows := make([]Row, 0, len(groups))
 	reconciled := make([]string, 0, len(srcRows))
-	for _, sr := range srcRows {
-		rec, ok := r.recordFor(sr.QueryID)
-		if !ok {
-			// Evicted between snapshot and read, or a stray id — skip.
+	for _, g := range groups {
+		joined := g.rec.joinIDs()
+		if len(g.rows) < len(joined) {
+			// A routed dispatch whose remaining shards have not landed in
+			// query_log yet. Wait for them rather than writing a row whose cost
+			// columns count part of the fan-out: an under-counted route-B row is
+			// worse than a missing one, because the corpus exists to compare
+			// route B's cost against route A's. The ids stay in the join index
+			// and are retried next interval (and expire on the TTL if the
+			// missing shards never ran at all).
 			continue
 		}
-		row := Row{
-			ShapeID:             rec.ShapeID,
-			Opts:                rec.Opts,
-			Language:            rec.Language,
-			NormalizedQueryHash: sr.NormalizedQueryHash,
-			ReadRows:            sr.ReadRows,
-			ReadBytes:           sr.ReadBytes,
-			QueryDurationMS:     sr.QueryDurationMS,
-			MemoryUsage:         sr.MemoryUsage,
-			ProfileEvents:       sr.ProfileEvents,
-			// exit_status is the observed-cost discriminator the go/no-go
-			// analysis reads (oom / timeout = the cost route B avoids).
-			// Precedence: a CERBERUS-side outcome (e.g. the sample-budget 422
-			// that fired after a clean CH finish) is authoritative over the
-			// query_log-derived status — the query_log shows 'ok' with real
-			// cost, but cerberus actually rejected the client. The COST columns
-			// are kept (the richest signal: "CH cost = X, but cerberus
-			// rejected"); only the exit status is overridden.
-			ExitStatus: exitStatusToken(sr.ExitStatus, rec),
-		}
-		joinRouteFeatures(&row, rec)
-		rows = append(rows, row)
-		reconciled = append(reconciled, sr.QueryID)
+		rows = append(rows, rowFor(g))
+		reconciled = append(reconciled, joined...)
 	}
 	if len(rows) == 0 {
 		return
@@ -943,6 +1020,152 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		return
 	}
 	r.forget(reconciled)
+}
+
+// joinGroup is the set of query_log rows that reconcile into ONE corpus row:
+// the observed Record plus every source row that joined back to it. A route-A
+// dispatch contributes exactly one row; a routed (route-B) dispatch contributes
+// K, one per shard, because ClickHouse ran that one logical query as K
+// statements.
+type joinGroup struct {
+	rec  Record
+	rows []SourceRow
+}
+
+// groupByRecord folds source rows onto the Records they join back to, keyed by
+// the ring slot the lookup returns. The slot — not the query_id — is the group
+// key because a routed Record is reachable through any of its K shard ids, and
+// keying on the id that found it would shatter one fan-out into K groups.
+//
+// Rows whose id no longer resolves (evicted between the snapshot and the read)
+// are dropped, and a re-delivered id is counted once, so a group's row count is
+// a truthful "how many shards have landed" tally rather than a delivery count.
+// First-seen order is preserved so the sink's row order stays a function of the
+// source's.
+func groupByRecord(srcRows []SourceRow, lookup func(string) (Record, int, bool)) []joinGroup {
+	order := make([]int, 0, len(srcRows))
+	bySlot := make(map[int]*joinGroup, len(srcRows))
+	seen := make(map[string]struct{}, len(srcRows))
+	for _, sr := range srcRows {
+		if _, dup := seen[sr.QueryID]; dup {
+			continue
+		}
+		seen[sr.QueryID] = struct{}{}
+		rec, slot, ok := lookup(sr.QueryID)
+		if !ok {
+			continue
+		}
+		g, tracked := bySlot[slot]
+		if !tracked {
+			g = &joinGroup{rec: rec, rows: make([]SourceRow, 0, len(rec.joinIDs()))}
+			bySlot[slot] = g
+			order = append(order, slot)
+		}
+		g.rows = append(g.rows, sr)
+	}
+	out := make([]joinGroup, 0, len(order))
+	for _, slot := range order {
+		out = append(out, *bySlot[slot])
+	}
+	return out
+}
+
+// rowFor folds one join group into the single corpus Row for its dispatch.
+//
+// ONE row per logical query, never one per shard: the corpus exists to compare
+// what route A costs against what route B costs for the same request, and it
+// carries no request identifier to GROUP BY after the fact. A row per shard
+// would put a fraction of a route-B fan-out beside a whole route-A query in
+// every comparison the calibration draws.
+//
+// The cost columns are therefore folded so a route-B row means the same thing a
+// route-A row means:
+//
+//   - read_rows / read_bytes are SUMMED. They measure work done, and the whole
+//     point of the A/B comparison is whether the fan-out reads more or less in
+//     total than the single query would have. A max would report one shard's
+//     share and understate route B by roughly K.
+//   - memory_usage is SUMMED. Shards run concurrently, so the server-side
+//     memory a routed request holds at once is the sum of the shards' peaks —
+//     that (not any single shard's peak) is the quantity comparable to route
+//     A's single peak, and it is the conservative side to err on for a column
+//     the calibration learns memory watermarks from.
+//   - query_duration_ms is the MAX. Shards run concurrently, so the slowest one
+//     is the request's ClickHouse-side latency; summing would yield a
+//     CPU-time-like number that corresponds to nothing route A reports. Engine
+//     wall-clock was rejected for the same reason in reverse: route A's
+//     duration comes from query_log, and mixing instruments would make the two
+//     routes' latency columns incomparable.
+//   - profile_events are summed per key, matching read_rows' "total work"
+//     reading of the same fan-out.
+//   - normalized_query_hash comes from the first joined row. The shards are K
+//     parameterisations of one emitted statement, so they normalise alike, and
+//     the column identifies the query SHAPE rather than any one dispatch.
+//   - exit_status is the most severe shard status (see exitSeverity), because a
+//     fan-out that OOMed one shard is an OOM for the request even though its
+//     siblings finished.
+func rowFor(g joinGroup) Row {
+	row := Row{
+		ShapeID:  g.rec.ShapeID,
+		Opts:     g.rec.Opts,
+		Language: g.rec.Language,
+	}
+	chStatus := ExitOK
+	for i, sr := range g.rows {
+		if i == 0 {
+			row.NormalizedQueryHash = sr.NormalizedQueryHash
+			chStatus = sr.ExitStatus
+		} else if exitSeverityOf(sr.ExitStatus) > exitSeverityOf(chStatus) {
+			chStatus = sr.ExitStatus
+		}
+		row.ReadRows += sr.ReadRows
+		row.ReadBytes += sr.ReadBytes
+		row.MemoryUsage += sr.MemoryUsage
+		if sr.QueryDurationMS > row.QueryDurationMS {
+			row.QueryDurationMS = sr.QueryDurationMS
+		}
+		for name, count := range sr.ProfileEvents {
+			if row.ProfileEvents == nil {
+				row.ProfileEvents = make(map[string]int64, len(sr.ProfileEvents))
+			}
+			row.ProfileEvents[name] += count
+		}
+	}
+	row.ExitStatus = exitStatusToken(chStatus, g.rec)
+	joinRouteFeatures(&row, g.rec)
+	return row
+}
+
+// exitSeverity ranks the terminal classes from least to most diagnostic, so a
+// multi-shard fan-out can be folded to the one status that describes the
+// request. ExitAborted sits barely above ExitOK because the shard group is an
+// errgroup with first-error-wins cancellation: when one shard fails, its
+// siblings are cancelled and land as aborted, so an abort is usually the
+// CONSEQUENCE of another shard's real terminal cause and must never mask it.
+// The resource verdicts rank highest: they are what the calibration learns its
+// watermarks from, and losing one to a sibling's plain error would silently
+// shrink that population.
+var exitSeverity = []ExitStatus{
+	ExitOK,
+	ExitAborted,
+	ExitSampleBudget,
+	ExitRejected,
+	ExitBreaker,
+	ExitError,
+	ExitTimeout,
+	ExitOOM,
+}
+
+// exitSeverityOf returns e's rank in exitSeverity. A status missing from the
+// ranking outranks every listed one: an unranked member is a bug, and losing an
+// unrecognised terminal class into an "ok" fold would hide it.
+func exitSeverityOf(e ExitStatus) int {
+	for rank, s := range exitSeverity {
+		if s == e {
+			return rank
+		}
+	}
+	return len(exitSeverity)
 }
 
 // exitStatusToken resolves the exit_status token for a joined row, giving a

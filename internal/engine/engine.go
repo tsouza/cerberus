@@ -215,6 +215,48 @@ func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string,
 	)
 }
 
+// observeRoutedQuery is observeQuery's route-B counterpart: it records the
+// routed dispatch as ONE corpus observation carrying the K per-shard query_ids
+// the Executor minted, so a routed query lands in the corpus with its real
+// route ("B"), k_shards and decision reason. Without it the corpus can only
+// ever see route A — every routed path returns before reaching the route-A
+// dispatch seam — and an empty route-B population reads as "route B never
+// fires" when it really means "route B is unobservable".
+//
+// ONE observation per routed QUERY, not per shard: the corpus row is the unit
+// of A/B comparison and carries no request identifier to group shards by after
+// the fact, so a per-shard row would compare a fraction of route B against a
+// whole route-A query. The observer folds the K query_log rows into that one
+// row.
+//
+// The shape-id is the WHOLE plan's — the same plan route A would have run — so
+// an A row and a B row for the same query shape share a shape_id and join
+// directly in the calibration analysis.
+//
+// Like observeQuery it is a no-op without a registered observer and cannot fail
+// the query: the seam returns nothing, is non-blocking, and drops under burst.
+// A shard whose id is empty (the request carries no trace) has no join key and
+// is left out; with none left there is nothing to record.
+func (e *Engine) observeRoutedQuery(info *solver.ExecInfo, plan chplan.Node, language string, decision *solver.Decision) {
+	if e.QueryObserver == nil || info == nil {
+		return
+	}
+	ids := make([]string, 0, len(info.ShardQueryIDs))
+	for _, id := range info.ShardQueryIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	e.QueryObserver.ObserveRoutedQuery(
+		ids, planShapeID(plan), e.Settings.enabledOpts(), language,
+		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
+	)
+}
+
 // outcomeTokenForErr classifies a dispatch error into the corpus exit-status
 // token for the CERBERUS-side terminal outcome it represents, or "" when the
 // error is not a resource rejection the corpus records in-process (CH-side
@@ -324,6 +366,14 @@ func (e *Engine) observeDispatchedRejection(queryID, language string, plan chpla
 // the whole seconds the corpus stores its grid columns in.
 const routeSecond = int64(time.Second)
 
+// corpusRouteA / corpusRouteB are the two values of the corpus row's `route`
+// column: A is the single-query dispatch, B the sharded fan-out. The mining
+// rules and the pinned corpus invariants key on these exact tokens.
+const (
+	corpusRouteA = "A"
+	corpusRouteB = "B"
+)
+
 // routeFeatures unpacks a solver Decision into the primitive routing-feature
 // scalars the QueryObserver seam takes. A nil decision (no classification ran)
 // returns present=false with zero scalars so the corpus leaves the routing
@@ -336,9 +386,9 @@ func routeFeatures(d *solver.Decision) (present bool, route string, nAnchors, fa
 	if d == nil {
 		return false, "", 0, 0, 0, 0, 0, 0, ""
 	}
-	route = "A"
+	route = corpusRouteA
 	if d.Strategy != "" {
-		route = "B"
+		route = corpusRouteB
 	}
 	return true,
 		route,
@@ -518,6 +568,31 @@ type Engine struct {
 type QueryObserver interface {
 	ObserveQuery(
 		queryID, shapeID string,
+		opts []string,
+		language string,
+		routePresent bool,
+		route string,
+		nAnchors, fanout, cumulativeD, outerRange, step uint32,
+		kShards uint8,
+		decisionReason string,
+	)
+
+	// ObserveRoutedQuery is ObserveQuery's route-B sibling: it records ONE
+	// dispatched query that fanned out into K physical ClickHouse queries, one
+	// per shard, identified by shardQueryIDs (the join keys into
+	// system.query_log). The observer folds the K query_log rows into a SINGLE
+	// corpus row, because the corpus exists to compare route A against route B
+	// per REQUEST — a row per shard would compare one shard against a whole
+	// route-A query and make B look K times cheaper than it is.
+	//
+	// It is a distinct method rather than a widened ObserveQuery so route A's
+	// seam — the overwhelmingly hot one — stays byte-identical. The remaining
+	// parameters carry the same meaning as ObserveQuery's; route is "B" and
+	// kShards is K on every call that reaches here. It must be non-blocking and
+	// cheap.
+	ObserveRoutedQuery(
+		shardQueryIDs []string,
+		shapeID string,
 		opts []string,
 		language string,
 		routePresent bool,
@@ -895,6 +970,11 @@ func (e *Engine) executeRouted(
 		execT.Done(ctx)
 		return Result{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
+	// Record the fan-out at its dispatch seam, symmetrically with route A's
+	// execContext: the shards are running, so the corpus row is registered
+	// before the drain rather than after (a drain that never finishes would
+	// otherwise lose the observation entirely).
+	e.observeRoutedQuery(info, plan, lang.Name(), decision)
 	defer func() { _ = cursor.Close() }()
 
 	var samples []chclient.Sample
@@ -1077,7 +1157,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// never run (Major-2's symmetric fallback).
 	budget := chclient.SampleBudgetFromContext(ctx)
 	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), plan, decision, budget); ok {
-		result := e.buildRoutedCursorResult(meta, plan, usedDecision, cur, info, "memo-hit")
+		result := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "memo-hit")
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
 			// The verdict already existed before this dispatch (that is
 			// what made it a memo-hit); a clean drain needed no
@@ -1112,7 +1192,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		// route-A error is what surfaces, unchanged.
 		execCtx := chclient.WithProgressFor(ctx, lang.Name())
 		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(execCtx, lang.Name(), plan, decision, budget, err); retried {
-			retryResult := e.buildRoutedCursorResult(meta, plan, usedDecision, cur, info, "retry")
+			retryResult := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "retry")
 			retryResult.ObserveDrainOutcome = observeFn
 			return retryResult, nil
 		}
@@ -1135,7 +1215,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 			if !retried {
 				return CursorResult{}, false
 			}
-			retryResult := e.buildRoutedCursorResult(meta, plan, usedDecision, cur, info, "retry")
+			retryResult := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "retry")
 			retryResult.ObserveDrainOutcome = observeFn
 			return retryResult, true
 		}
@@ -1215,22 +1295,33 @@ func (e *Engine) dispatchRouteACursor(
 }
 
 // buildRoutedCursorResult composes the CursorResult for a cursor obtained
-// via the Solver's Executor — shared by executeRoutedCursor's ordinary
-// threshold-triggered route and the failure-driven route memo's memo-hit /
-// retry dispatch sites, so header and strategy construction cannot drift
-// between the three. via is a short label folded into the shadow header's
-// decision-reason position ("memo-hit" / "retry") distinguishing a memo-
-// driven route from an ordinary threshold-triggered one; it never appears
-// on the ordinary executeRoutedCursor path, which passes its own decision's
-// real Reason (ReasonRouted) instead by calling routeDecisionValue directly.
+// via the Solver's Executor — shared by the failure-driven route memo's
+// memo-hit and its two retry dispatch sites, so header and strategy
+// construction cannot drift between the three. via is a short label folded
+// into the shadow header's decision-reason position ("memo-hit" / "retry")
+// distinguishing a memo-driven route from an ordinary threshold-triggered one;
+// it never appears on the ordinary executeRoutedCursor path, which builds its
+// own headers from its decision's real Reason (ReasonRouted) via
+// routeDecisionValue.
+//
+// It is also the single corpus dispatch seam for those three route-B sites, so
+// none of them can be added or moved without the routed observation coming
+// along — and, because executeRoutedCursor observes for itself and never calls
+// here, no routed dispatch is ever recorded twice. The corpus records the
+// DECISION's own Reason (ReasonRouted: the memo re-derives its decision through
+// the Planner), never via — decision_reason carries the classifier's vocabulary
+// and "route B iff reason=routed" is a pinned corpus invariant, so via stays a
+// response-header detail.
 func (e *Engine) buildRoutedCursorResult(
 	meta Meta,
 	plan chplan.Node,
+	language string,
 	decision *solver.Decision,
 	cursor chclient.Cursor,
 	info *solver.ExecInfo,
 	via string,
 ) CursorResult {
+	e.observeRoutedQuery(info, plan, language, decision)
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)
 	sql, args := routedSQLArgs(info)
@@ -1319,6 +1410,9 @@ func (e *Engine) executeRoutedCursor(
 	if err != nil {
 		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
+	// Dispatch seam for the streaming route-B path (the caller owns the drain,
+	// so there is no later engine-side site to record from).
+	e.observeRoutedQuery(info, plan, lang.Name(), decision)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)

@@ -119,7 +119,7 @@ func TestObserve_ReplaceInPlace_NoGrowth(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("ring size = %d; want 1 (replace in place)", len(ids))
 	}
-	rec, ok := r.recordFor("q0")
+	rec, _, ok := r.recordFor("q0")
 	if !ok || rec.ShapeID != "cerb:b" {
 		t.Errorf("replace-in-place lost the latest record: %+v ok=%v", rec, ok)
 	}
@@ -151,7 +151,7 @@ func TestDrainIngest_MovesSeamRecordsIntoRing(t *testing.T) {
 	if len(ids) != 2 {
 		t.Fatalf("after drain ring size = %d; want 2", len(ids))
 	}
-	rec, ok := r.recordFor("qa")
+	rec, _, ok := r.recordFor("qa")
 	if !ok || rec.ShapeID != "cerb:a" || rec.Language != "logql" {
 		t.Errorf("drain dropped seam metadata: %+v ok=%v", rec, ok)
 	}

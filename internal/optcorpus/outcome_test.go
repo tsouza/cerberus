@@ -104,7 +104,7 @@ func TestObserveOutcome_MergePreservesDispatchMetadata(t *testing.T) {
 	r.ObserveOutcome("qid-m", ExitTokenSampleBudget)
 	r.drainIngest()
 
-	rec, ok := r.recordFor("qid-m")
+	rec, _, ok := r.recordFor("qid-m")
 	if !ok {
 		t.Fatal("dispatch record lost after outcome merge")
 	}
@@ -139,7 +139,7 @@ func TestObserveOutcome_IgnoresNonCerberusSideToken(t *testing.T) {
 	r.ObserveOutcome("qid-x", "oom") // CH-side token — must be ignored
 	r.ObserveOutcome("", ExitTokenSampleBudget)
 	r.drainIngest()
-	rec, ok := r.recordFor("qid-x")
+	rec, _, ok := r.recordFor("qid-x")
 	if !ok || rec.HasOutcome {
 		t.Errorf("non-cerberus-side / empty-id outcome should not stamp: %+v ok=%v", rec, ok)
 	}
