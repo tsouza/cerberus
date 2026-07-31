@@ -227,7 +227,8 @@ func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string,
 // of A/B comparison and carries no request identifier to group shards by after
 // the fact, so a per-shard row would compare a fraction of route B against a
 // whole route-A query. The observer folds the K query_log rows into that one
-// row.
+// row, and needs the Executor's EFFECTIVE concurrency to do it — the wall-clock
+// and memory columns depend on how many of the K shards actually overlapped.
 //
 // The shape-id is the WHOLE plan's — the same plan route A would have run — so
 // an A row and a B row for the same query shape share a shape_id and join
@@ -252,7 +253,7 @@ func (e *Engine) observeRoutedQuery(info *solver.ExecInfo, plan chplan.Node, lan
 	}
 	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
 	e.QueryObserver.ObserveRoutedQuery(
-		ids, planShapeID(plan), e.Settings.enabledOpts(), language,
+		ids, info.Parallelism, planShapeID(plan), e.Settings.enabledOpts(), language,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
 	)
 }
@@ -585,6 +586,14 @@ type QueryObserver interface {
 	// per REQUEST — a row per shard would compare one shard against a whole
 	// route-A query and make B look K times cheaper than it is.
 	//
+	// parallelism is the EFFECTIVE shard concurrency the Executor ran the
+	// fan-out at, which is routinely below K (the configured P, further clamped
+	// by the admission top-up and the shard gate). The observer needs it to fold
+	// the wall-clock and memory columns: at concurrency P the K shards' peaks do
+	// not all coexist and their durations do not all overlap, so a fold that
+	// assumed full parallelism would understate route B's latency and overstate
+	// its memory by roughly K/P.
+	//
 	// It is a distinct method rather than a widened ObserveQuery so route A's
 	// seam — the overwhelmingly hot one — stays byte-identical. The remaining
 	// parameters carry the same meaning as ObserveQuery's; route is "B" and
@@ -592,6 +601,7 @@ type QueryObserver interface {
 	// cheap.
 	ObserveRoutedQuery(
 		shardQueryIDs []string,
+		parallelism int,
 		shapeID string,
 		opts []string,
 		language string,

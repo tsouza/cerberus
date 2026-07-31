@@ -22,13 +22,11 @@ name: strict-scan
 # through the exact production cursor scan, so a type mismatch fails here exactly
 # as it would in prod. See test/spec/strictscan_integration_test.go.
 #
-# INFORMATIONAL, not a required PR gate (yet): it pulls a ClickHouse image and
-# starts a container, so it sits in the heavier / slower-to-warm category
-# alongside e2e, dashboard, and schema-integration. It runs on PRs for
-# author-time visibility, on push-to-main + nightly to catch drift. Promote to a
-# required status check once it has a green track record (the same playbook the
-# compatibility + schema-integration gates used) — promotion needs a
-# branch-protection edit by the maintainer.
+# A REQUIRED status check on main. It pulls a ClickHouse image and starts a
+# container, so it is one of the slower lanes, but it is the only gate that
+# observes the strict production scan — nothing else in the required set can
+# catch the emit-type class described above. It runs on PRs (blocking),
+# push-to-main, and nightly to catch drift.
 
 on:
   push:
