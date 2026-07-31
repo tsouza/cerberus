@@ -35,7 +35,7 @@ CREATE TABLE otel_metrics_sum (
   ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE NOT match(`MetricName`, ?) WHERE NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?) AND (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM ((SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE NOT match(`MetricName`, ?) WHERE NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?) AND (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) WHERE (NOT match(`MetricName`, ?) AND NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Sum`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?))) WHERE (NOT match(`MetricName`, ?) AND NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_bucket') AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[le_idx])))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram` WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)))) WHERE (NOT match(`MetricName`, ?) AND NOT match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
 -- args --
 [0] string = "service.name"
 [1] string = "service_name"
@@ -53,15 +53,80 @@ SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `
 [13] string = ""
 [14] string = ""
 [15] string = "api"
-[16] string = "2026-01-01 00:00:01.000000000"
-[17] int64 = 9
-[18] string = "2026-01-01 00:00:01.000000000"
-[19] int64 = 9
-[20] int64 = 300000000000
+[16] string = "service.name"
+[17] string = "service_name"
+[18] string = "service.name"
+[19] string = "service_name"
+[20] string = ""
+[21] string = "service_name"
+[22] string = "job"
+[23] string = ""
+[24] string = "job"
+[25] string = ""
+[26] string = ""
+[27] string = "api"
+[28] string = ".*container_cpu_usage.*"
+[29] string = "[^a-zA-Z0-9_:]"
+[30] string = "_"
+[31] string = ".*container_cpu_usage.*"
+[32] string = "service.name"
+[33] string = "service_name"
+[34] string = "service.name"
+[35] string = "service_name"
+[36] string = ""
+[37] string = "service_name"
+[38] string = "job"
+[39] string = ""
+[40] string = "job"
+[41] string = ""
+[42] string = ""
+[43] string = "api"
+[44] string = ".*container_cpu_usage.*"
+[45] string = "[^a-zA-Z0-9_:]"
+[46] string = "_"
+[47] string = ".*container_cpu_usage.*"
+[48] string = "le"
+[49] string = "+Inf"
+[50] int64 = 1
+[51] string = "service.name"
+[52] string = "service_name"
+[53] string = "service.name"
+[54] string = "service_name"
+[55] string = ""
+[56] string = "service_name"
+[57] string = "job"
+[58] string = ""
+[59] string = "job"
+[60] string = ""
+[61] string = ""
+[62] string = "api"
+[63] string = ".*container_cpu_usage.*"
+[64] string = "[^a-zA-Z0-9_:]"
+[65] string = "_"
+[66] string = ".*container_cpu_usage.*"
+[67] string = "2026-01-01 00:00:01.000000000"
+[68] int64 = 9
+[69] string = "2026-01-01 00:00:01.000000000"
+[70] int64 = 9
+[71] int64 = 300000000000
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
     Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
-      Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-        Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api") AND ((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*")))
-          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+      UnionAll arms=4
+        Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api") AND ((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*")))
+            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+        Filter predicate=((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*"))
+          Project [concat(MetricName, "_count") AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Count) AS Value]
+            Filter predicate=(coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api")
+              Scan(otel_metrics_histogram)
+        Filter predicate=((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*"))
+          Project [concat(MetricName, "_sum") AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(Sum) AS Value]
+            Filter predicate=(coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api")
+              Scan(otel_metrics_histogram)
+        Filter predicate=((MetricName !~ ".*container_cpu_usage.*") AND (replaceRegexpAll(MetricName, "[^a-zA-Z0-9_:]", "_") !~ ".*container_cpu_usage.*"))
+          Project [concat(MetricName, "_bucket") AS MetricName, mapConcat(Attributes, map("le", if((le_idx > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[le_idx])))) AS Attributes, TimeUnix AS TimeUnix, toFloat64(arraySum(arraySlice(BucketCounts, 1, le_idx))) AS Value]
+            Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, arrayJoin(arrayEnumerate(BucketCounts)) AS le_idx]
+              Filter predicate=(coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") = "api")
+                Scan(otel_metrics_histogram)
