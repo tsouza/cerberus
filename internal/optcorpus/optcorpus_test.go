@@ -83,6 +83,14 @@ func (m *memSink) Close() error {
 	return nil
 }
 
+// setErr arms or clears the sink's failure, so a test can refuse one write and
+// then accept the retry.
+func (m *memSink) setErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.err = err
+}
+
 func (m *memSink) snapshot() []Row {
 	m.mu.Lock()
 	defer m.mu.Unlock()

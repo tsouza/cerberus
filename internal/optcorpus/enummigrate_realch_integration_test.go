@@ -15,10 +15,18 @@
 // corpus that no unit test sees, because a fake batch accepts any int8 and a
 // freshly-created table always carries the newest members.
 //
+// A binary that learns a new COLUMN hits the same wall from the other side:
+// the deployed table simply does not have it, and because clickhouse-go's
+// Append is positional against the deployed column list, the batch is not
+// missing one field — every value after the gap is bound to the wrong column,
+// or the batch is rejected outright.
+//
 // Only a real server distinguishes "the column already has this member" from
-// "the ALTER widened it". This lane creates the narrow table BY HAND, then
-// asserts sink construction widens it and a row carrying a new member lands
-// and reads back under its own name.
+// "the ALTER widened it", or "the table already had this column" from "the
+// ALTER added it". This lane creates the narrow, short table BY HAND, then
+// asserts sink construction widens and extends it, and that a row carrying a
+// new enum member and values in the added columns lands and reads back under
+// its own name.
 //
 // Gated by the `integration` build tag (Docker required); run by
 // `just router-corpus-integration`.
@@ -90,24 +98,36 @@ func TestCorpusEnumMigrationRealClickHouse(t *testing.T) {
 	for _, col := range reconciledEnumColumns {
 		assertDeployedEnumHoldsMembers(ctx, t, conn, col)
 	}
+	// The legacy DDL above also predates the route-B fan-out columns, so the same
+	// construction had to ADD them. That half decides whether the positional
+	// batch below lands at all: clickhouse-go appends by position against the
+	// deployed column list, so a column the ALTER never added does not degrade
+	// one field, it invalidates every batch.
+	assertDeployedColumnsPresent(ctx, t, conn)
 
-	// One row carrying the new member of BOTH columns: the unclassified route a
-	// pre-widening table could not represent, and the exit status a pre-widening
-	// table could not represent.
+	// One row carrying the new member of BOTH enum columns — the unclassified
+	// route and the exit status a pre-widening table could not represent — plus
+	// non-zero values in the two added columns, so the row exercises both halves
+	// of the reconciliation at once.
+	const wantShardsObserved, wantParallelism = 5, 3
 	if err := sink.Write([]Row{{
-		ShapeID:    "cerb:vector_selector",
-		Language:   "logql",
-		Route:      RouteUnclassified,
-		ExitStatus: ExitAborted.String(),
+		ShapeID:        "cerb:vector_selector",
+		Language:       "logql",
+		Route:          RouteUnclassified,
+		ExitStatus:     ExitAborted.String(),
+		KShards:        8,
+		ShardsObserved: wantShardsObserved,
+		Parallelism:    wantParallelism,
 	}}); err != nil {
 		t.Fatalf("write a row carrying route %q and exit status %q: %v", RouteUnclassified, ExitAborted, err)
 	}
 
 	var landedRoute, landedExit string
+	var landedShards, landedParallelism uint8
 	if err := conn.QueryRow(
 		ctx,
-		"SELECT toString(route), toString(exit_status) FROM "+CorpusTableName,
-	).Scan(&landedRoute, &landedExit); err != nil {
+		"SELECT toString(route), toString(exit_status), shards_observed, parallelism FROM "+CorpusTableName,
+	).Scan(&landedRoute, &landedExit, &landedShards, &landedParallelism); err != nil {
 		t.Fatalf("read the written row back: %v", err)
 	}
 	if landedRoute != RouteUnclassified {
@@ -116,6 +136,49 @@ func TestCorpusEnumMigrationRealClickHouse(t *testing.T) {
 	}
 	if landedExit != ExitAborted.String() {
 		t.Errorf("exit_status read back as %q; want %q", landedExit, ExitAborted)
+	}
+	// Reading the ADDED columns back by name is what proves the positional
+	// append bound each value to the column it was meant for: a batch that
+	// silently shifted by one would still succeed, and only the values give it
+	// away.
+	if landedShards != wantShardsObserved {
+		t.Errorf("shards_observed read back as %d; want %d", landedShards, wantShardsObserved)
+	}
+	if landedParallelism != wantParallelism {
+		t.Errorf("parallelism read back as %d; want %d", landedParallelism, wantParallelism)
+	}
+}
+
+// assertDeployedColumnsPresent reads the table's column list off the server and
+// checks it carries every column this binary writes.
+func assertDeployedColumnsPresent(ctx context.Context, t *testing.T, conn driver.Conn) {
+	t.Helper()
+
+	rows, err := conn.Query(
+		ctx,
+		"SELECT name FROM system.columns WHERE database = currentDatabase() AND table = ?",
+		CorpusTableName,
+	)
+	if err != nil {
+		t.Fatalf("read the deployed column list: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	deployed := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan the deployed column list: %v", err)
+		}
+		deployed[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the deployed column list: %v", err)
+	}
+	for _, c := range CorpusColumns() {
+		if !deployed[c.Name] {
+			t.Errorf("deployed table does not carry column %q", c.Name)
+		}
 	}
 }
 
