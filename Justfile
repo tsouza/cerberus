@@ -212,7 +212,7 @@ chclient-integration:
 # `integration` build tag. See test/spec/strictscan_integration_test.go and
 # .github/workflows/strict-scan.yml.
 strict-scan-test:
-    @just _pull-retry {{CH_TEST_IMAGE}}
+    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
 
 # Run the router-corpus real-CH integration tests: the offline corpus WRITE
@@ -630,6 +630,15 @@ E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.202
 # the test sources.
 CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.8-alpine"
 CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
+
+# CH_STRICT_SCAN_IMAGE is the server the strict-scan differential boots. Unlike
+# the other integration lanes (which pin 25.8 to reproduce a specific
+# strict-scan divergence), this lane must EXECUTE every shape the emitter can
+# produce — including the native timeSeries*ToGrid family whose chopt floor is
+# 25.9. A pin below that floor does not go red; the server rejects the query
+# before a row decodes and the shape silently drops out of scope. Kept at or
+# above the highest chopt MinVersion by TestStrictScanImageClearsChoptFloors.
+CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"
 
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to
