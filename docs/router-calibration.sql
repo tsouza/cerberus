@@ -11,8 +11,12 @@
 --   'B' — a sharded query (decision_reason 'routed').
 --   ''  — unclassified: the classifier never ran on this query at all. Every
 --         LogQL and TraceQL row lands here, since the solver only classifies
---         PromQL. decision_reason is empty too, which is what distinguishes
---         these from an 'A' refusal.
+--         PromQL. Those rows carry decision_reason 'non-promql', which names the
+--         absence explicitly rather than leaving it to be inferred; a PromQL row
+--         with the Solver switched off also lands here, with an EMPTY reason.
+--         Either way route is '', which is what distinguishes an unclassified
+--         row from an 'A' refusal — select the unclassified population by
+--         `route = ''` or by `language`, never by a non-empty decision_reason.
 -- N/F/D are the RAW classifier scalars (n_anchors / fanout / cumulative_d),
 -- recorded for both classified routes and left zero for the unclassified ones.
 -- The misroute queries below therefore say `route = 'A'` rather than

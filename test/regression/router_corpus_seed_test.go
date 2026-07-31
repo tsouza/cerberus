@@ -15,9 +15,13 @@ import (
 // Path is relative to this test package directory.
 const routerCorpusDir = "../../internal/routerrules/testdata"
 
-// validRouterDecisionReasons is the closed set of decision_reason tokens the
-// production emits. It is derived from the solver vocabulary plus the explicit
-// corpus-only non-PromQL reason rather than re-listed here.
+// validRouterDecisionReasons is the closed set of decision_reason tokens
+// production can emit: the solver's own Reason* vocabulary plus the corpus-only
+// non-PromQL token the engine stamps on an unclassified head. Both halves are
+// derived from the production consts rather than re-listed here — a hand-copied
+// list only catches a RENAME (as a compile break) and silently misses an
+// ADDITION, which is how this set drifted a Reason behind the solver once
+// already.
 func validRouterDecisionReasons() map[string]struct{} {
 	m := make(map[string]struct{}, len(solver.Reasons)+1)
 	for _, r := range solver.Reasons {
@@ -45,8 +49,12 @@ type corpusRow struct {
 	Parallelism    int64  `json:"parallelism"`
 }
 
-// classified reports whether the row carries any solver output at all. The
-// corpus-only non-PromQL reason identifies an unclassified row explicitly.
+// classified reports whether the row carries any solver OUTPUT at all.
+//
+// The non-PromQL reason is explicitly not such output: it is the corpus's way of
+// saying "no solver ran here", so counting it as a classification would invert
+// its meaning and make every LogQL / TraceQL row fail the PromQL-only invariant
+// below. It is the one decision_reason value that leaves a row unclassified.
 func (r corpusRow) classified() bool {
 	return r.Route != "" ||
 		(r.DecisionReason != "" && r.DecisionReason != engine.CorpusReasonNonPromQL) ||
@@ -68,13 +76,22 @@ func (r corpusRow) geometry() int64 {
 // Three invariants, each derived from production code rather than restated:
 //
 //  1. decision_reason is a solver.Reasons member, the corpus-only non-PromQL
-//     reason, or absent on historical rows.
+//     reason, or absent.
+//
 //  2. Only solver.LangPromQL rows carry a classification. solver.Classify is
-//     PromQL-gated, so for any other head route is empty, geometry is zero, and
-//     the corpus records the non-PromQL reason. A fixture that fakes geometry on
-//     a logql row lets a `cumulative_d >= p(cumulative_d)` gate look selective
-//     when, on real data, that language's whole population is 0 and the gate
-//     matches every failing row it has.
+//     PromQL-gated, so for any other head route is empty and every geometry
+//     column is the zero value. A fixture that fakes geometry on a logql row
+//     lets a `cumulative_d >= p(cumulative_d)` gate look selective when, on real
+//     data, that language's whole population is 0 and the gate matches every
+//     failing row it has.
+//
+//     The non-PromQL reason is ADMITTED here, not required: production now
+//     stamps it on every such row, but these fixtures predate that and carry an
+//     absent reason instead. Both are unclassified, and the classification
+//     boundary is what this invariant guards — so the reason is excluded from
+//     `classified()` rather than mandated, which keeps the fixtures honest about
+//     their own vintage instead of asserting a shape they do not have.
+//
 //  3. route == "B" iff decision_reason == solver.ReasonRouted. Strategy is set
 //     exactly on a route and a routed decision reports ReasonRouted, so a
 //     route-B row cannot carry a refusal reason and a refused row cannot claim
@@ -142,7 +159,7 @@ func checkCorpusFixture(t *testing.T, path string, valid map[string]struct{}) (c
 
 		if r.DecisionReason != "" {
 			if _, ok := valid[r.DecisionReason]; !ok {
-				t.Errorf("%s line %d has decision_reason %q, which is not a production solver Reason* const", path, n, r.DecisionReason)
+				t.Errorf("%s line %d has decision_reason %q, which is no token production can emit", path, n, r.DecisionReason)
 			}
 		}
 
