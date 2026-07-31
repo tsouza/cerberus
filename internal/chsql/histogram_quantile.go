@@ -100,6 +100,30 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// to Array(Float64) once at the entry so every sum / cumsum derives
 	// Float64 and the interpolation arithmetic stays in a single numeric
 	// domain. CSE folds the cast across the many references.
+	//
+	// Monotonicity invariant — why there is no counterpart to Prometheus's
+	// ensureMonotonicAndIgnoreSmallDeltas here. Prometheus repairs its
+	// ladder before interpolating because its input is already CUMULATIVE:
+	// one independently-computed float per `le`, so a later `le` can carry
+	// a smaller count than an earlier one. Cerberus's input is the opposite
+	// shape — BucketCountsColumn is a PER-BUCKET, non-negative array
+	// (Array(UInt64) in the OTel-CH schema, element-wise summed by
+	// sumForEach when the lowering aggregates) — and the ladder is built
+	// HERE by arrayCumSum. IEEE-754 addition is correctly rounded and
+	// monotone, so cum[i+1] = fl(cum[i] + x[i]) >= cum[i] for every
+	// x[i] >= 0: the ladder is non-decreasing by construction and
+	// upstream's `curr < prev` branch has no reachable work to do. A
+	// zero-count bucket yields a flat run — precisely the shape the
+	// upstream repair outputs (pinned by the
+	// histogram_quantile_classic_*_plateau fixtures).
+	//
+	// A future path that hands this node an ALREADY-cumulative or
+	// independently-derived per-`le` ladder (routing
+	// `histogram_quantile(phi, max by(le)(...))` through here, say, or a
+	// bucket fan-out pipeline) breaks that precondition and must apply
+	// Prometheus's repair envelope first — and must then read `target`
+	// below off the REPAIRED last cumulative entry, or target and ladder
+	// disagree exactly when the repair fires.
 	bcFloat := Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	lengthBC := Call("length", Col(bc))
 	lengthEB := Call("length", Col(eb))
