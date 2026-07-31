@@ -32,12 +32,13 @@ type routedCorpusObserver struct {
 
 	routeAIDs []string
 
-	routedIDs     [][]string
-	routedShapes  []string
-	routedPresent []bool
-	routedRoutes  []string
-	routedReasons []string
-	routedKShards []uint8
+	routedIDs      [][]string
+	routedParallel []int
+	routedShapes   []string
+	routedPresent  []bool
+	routedRoutes   []string
+	routedReasons  []string
+	routedKShards  []uint8
 }
 
 func (o *routedCorpusObserver) ObserveQuery(
@@ -50,12 +51,13 @@ func (o *routedCorpusObserver) ObserveQuery(
 }
 
 func (o *routedCorpusObserver) ObserveRoutedQuery(
-	shardQueryIDs []string, shapeID string, _ []string, _ string,
+	shardQueryIDs []string, parallelism int, shapeID string, _ []string, _ string,
 	routePresent bool, route string, _, _, _, _, _ uint32, kShards uint8, decisionReason string,
 ) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.routedIDs = append(o.routedIDs, append([]string(nil), shardQueryIDs...))
+	o.routedParallel = append(o.routedParallel, parallelism)
 	o.routedShapes = append(o.routedShapes, shapeID)
 	o.routedPresent = append(o.routedPresent, routePresent)
 	o.routedRoutes = append(o.routedRoutes, route)
@@ -233,6 +235,19 @@ func TestExecuteRoutedCursor_ObservesTheFanOut(t *testing.T) {
 	if obs.routedShapes[0] != planShapeID(plan) {
 		t.Errorf("shape_id = %q; want the WHOLE plan's %q, so route-A and route-B rows join",
 			obs.routedShapes[0], planShapeID(plan))
+	}
+
+	// The observer folds the K shards' wall-clock and memory into one row, which
+	// it can only do knowing how many of them overlapped. Hand it 0 (or K) and
+	// the fold reads a K=8/P=3 fan-out as if all eight shards ran at once:
+	// route-B latency understated and memory overstated by roughly K/P.
+	wantP := solver.DefaultConfig().Parallel
+	if got := obs.routedParallel[0]; got != wantP {
+		t.Errorf("observed parallelism = %d; want the Executor's effective P (%d)", got, wantP)
+	}
+	if obs.routedParallel[0] >= len(ids) {
+		t.Errorf("observed parallelism %d >= %d shards; the fixture exists because P below K is the routine shape",
+			obs.routedParallel[0], len(ids))
 	}
 }
 

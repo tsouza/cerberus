@@ -24,6 +24,7 @@ package optcorpus
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -257,6 +258,14 @@ type Record struct {
 	// against route B per REQUEST — a row per shard would measure a fraction of
 	// route B against a whole route-A query. Empty on route A.
 	ShardQueryIDs []string
+	// Parallelism is the EFFECTIVE shard concurrency the Executor ran the
+	// fan-out at (its P after the admission and gate clamps), which is routinely
+	// below len(ShardQueryIDs). rowFor needs it to fold the wall-clock and
+	// memory columns: only P of the K shards are ever in flight together, so
+	// their peaks do not all coexist and their durations do not all overlap.
+	// Zero on route A and on any record that carries a single id, where the fold
+	// is the identity either way.
+	Parallelism int
 	// ShapeID is the literal-free cerb:<root>[;mod...] plan shape id from
 	// engine.planShapeID.
 	ShapeID string
@@ -670,8 +679,12 @@ func (r *Reconciler) ObserveQuery(
 // a routed query must weigh as one row against the route-A row it is compared
 // with. Same non-blocking, drop-under-burst contract as ObserveQuery; the ids
 // are copied because the caller owns the slice.
+//
+// parallelism is the Executor's EFFECTIVE shard concurrency, which the fold
+// needs because it is routinely below K — see Record.Parallelism.
 func (r *Reconciler) ObserveRoutedQuery(
 	shardQueryIDs []string,
+	parallelism int,
 	shapeID string,
 	opts []string,
 	language string,
@@ -692,6 +705,7 @@ func (r *Reconciler) ObserveRoutedQuery(
 	}
 	r.enqueue(Record{
 		ShardQueryIDs: ids,
+		Parallelism:   parallelism,
 		ShapeID:       shapeID,
 		Opts:          opts,
 		Language:      language,
@@ -1085,17 +1099,22 @@ func groupByRecord(srcRows []SourceRow, lookup func(string) (Record, int, bool))
 //     point of the A/B comparison is whether the fan-out reads more or less in
 //     total than the single query would have. A max would report one shard's
 //     share and understate route B by roughly K.
-//   - memory_usage is SUMMED. Shards run concurrently, so the server-side
-//     memory a routed request holds at once is the sum of the shards' peaks —
-//     that (not any single shard's peak) is the quantity comparable to route
-//     A's single peak, and it is the conservative side to err on for a column
-//     the calibration learns memory watermarks from.
-//   - query_duration_ms is the MAX. Shards run concurrently, so the slowest one
-//     is the request's ClickHouse-side latency; summing would yield a
-//     CPU-time-like number that corresponds to nothing route A reports. Engine
-//     wall-clock was rejected for the same reason in reverse: route A's
-//     duration comes from query_log, and mixing instruments would make the two
-//     routes' latency columns incomparable.
+//   - memory_usage is the sum of the P LARGEST shard peaks. At most P of the K
+//     shards are ever in flight together, so that sum — not the sum of all K —
+//     bounds the server-side memory the request holds at once, which is the
+//     quantity comparable to route A's single peak. It stays a bound rather
+//     than an exact reading (peaks within a wave need not coincide), which is
+//     the conservative side to err on for a column the calibration learns
+//     memory watermarks from.
+//   - query_duration_ms is the makespan bound max(slowest shard, total / P):
+//     K tasks on P workers cannot finish before either term, and the tighter of
+//     the two is the estimate. With a fully parallel fan-out it is the slowest
+//     shard; serialised down to P=1 it is the total. A plain MAX would read the
+//     ClickHouse-side latency of a K=8/P=3 fan-out as one shard's, understating
+//     route B by roughly K/P against a route-A row it is compared with. Engine
+//     wall-clock was rejected for the opposite reason: route A's duration comes
+//     from query_log, and mixing instruments would make the two routes' latency
+//     columns incomparable.
 //   - profile_events are summed per key, matching read_rows' "total work"
 //     reading of the same fan-out.
 //   - normalized_query_hash comes from the first joined row. The shards are K
@@ -1111,6 +1130,8 @@ func rowFor(g joinGroup) Row {
 		Language: g.rec.Language,
 	}
 	chStatus := ExitOK
+	memPeaks := make([]uint64, 0, len(g.rows))
+	var slowestMS, totalMS uint64
 	for i, sr := range g.rows {
 		if i == 0 {
 			row.NormalizedQueryHash = sr.NormalizedQueryHash
@@ -1120,9 +1141,10 @@ func rowFor(g joinGroup) Row {
 		}
 		row.ReadRows += sr.ReadRows
 		row.ReadBytes += sr.ReadBytes
-		row.MemoryUsage += sr.MemoryUsage
-		if sr.QueryDurationMS > row.QueryDurationMS {
-			row.QueryDurationMS = sr.QueryDurationMS
+		memPeaks = append(memPeaks, sr.MemoryUsage)
+		totalMS += sr.QueryDurationMS
+		if sr.QueryDurationMS > slowestMS {
+			slowestMS = sr.QueryDurationMS
 		}
 		for name, count := range sr.ProfileEvents {
 			if row.ProfileEvents == nil {
@@ -1131,9 +1153,63 @@ func rowFor(g joinGroup) Row {
 			row.ProfileEvents[name] += count
 		}
 	}
+	p := concurrencyOf(g.rec, len(g.rows))
+	row.MemoryUsage = sumTopN(memPeaks, p)
+	row.QueryDurationMS = makespanMS(slowestMS, totalMS, p)
 	row.ExitStatus = exitStatusToken(chStatus, g.rec)
 	joinRouteFeatures(&row, g.rec)
 	return row
+}
+
+// concurrencyOf returns how many of a group's joined rows could have been in
+// flight together. A record that carries the Executor's effective P uses it,
+// bounded by the number of rows actually joined (a group missing rows cannot
+// have run more shards concurrently than it has). Anything else — a route-A
+// record, or a record predating a known P — folds as fully concurrent, which is
+// the identity for the single-row case and preserves the sum/max reading where
+// there is nothing better to say.
+func concurrencyOf(rec Record, rows int) int {
+	if rec.Parallelism > 0 && rec.Parallelism < rows {
+		return rec.Parallelism
+	}
+	return rows
+}
+
+// sumTopN sums the n largest values, the bound on what n concurrent shards hold
+// at once. It sorts a copy: the caller's slice order is the join order, which
+// other columns still read.
+func sumTopN(vals []uint64, n int) uint64 {
+	if n >= len(vals) {
+		var all uint64
+		for _, v := range vals {
+			all += v
+		}
+		return all
+	}
+	desc := slices.Clone(vals)
+	slices.Sort(desc)
+	var top uint64
+	for _, v := range desc[len(desc)-n:] {
+		top += v
+	}
+	return top
+}
+
+// makespanMS is the lower bound on how long p workers need to finish tasks
+// whose slowest takes slowest and whose durations total total: neither term can
+// be beaten, so the larger is the estimate. Division rounds up because a
+// truncated millisecond would report a makespan the work provably cannot fit
+// into. p is never below 1 for a non-empty group (concurrencyOf floors it at
+// the row count), so the division is safe.
+func makespanMS(slowest, total uint64, p int) uint64 {
+	if p < 1 {
+		return slowest
+	}
+	perWorker := (total + uint64(p) - 1) / uint64(p)
+	if perWorker > slowest {
+		return perWorker
+	}
+	return slowest
 }
 
 // exitSeverity ranks the terminal classes from least to most diagnostic, so a
