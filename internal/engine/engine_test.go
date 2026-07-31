@@ -91,6 +91,15 @@ type recordingObserver struct {
 	lastStep     uint32
 	lastKShards  uint8
 
+	// routed* capture the route-B seam (ObserveRoutedQuery), which is separate
+	// from ObserveQuery precisely so a test can tell the two apart: one entry per
+	// ROUTED dispatch, carrying that dispatch's K shard query_ids.
+	routedIDs     [][]string
+	routedPresent []bool
+	routedRoutes  []string
+	routedReasons []string
+	routedKShards []uint8
+
 	// outcomes captures (queryID, token) pairs from ObserveOutcome; rejections
 	// captures (language, token) pairs from ObserveRejection; dispatchedRej
 	// captures (queryID, language, token) triples from ObserveDispatchedRejection
@@ -120,6 +129,24 @@ func (o *recordingObserver) ObserveQuery(
 	o.lastOuterRng = outerRange
 	o.lastStep = step
 	o.lastKShards = kShards
+}
+
+func (o *recordingObserver) ObserveRoutedQuery(
+	shardQueryIDs []string,
+	_ string,
+	_ []string,
+	_ string,
+	routePresent bool,
+	route string,
+	_, _, _, _, _ uint32,
+	kShards uint8,
+	decisionReason string,
+) {
+	o.routedIDs = append(o.routedIDs, append([]string(nil), shardQueryIDs...))
+	o.routedPresent = append(o.routedPresent, routePresent)
+	o.routedRoutes = append(o.routedRoutes, route)
+	o.routedReasons = append(o.routedReasons, decisionReason)
+	o.routedKShards = append(o.routedKShards, kShards)
 }
 
 func (o *recordingObserver) ObserveOutcome(queryID, statusToken string) {

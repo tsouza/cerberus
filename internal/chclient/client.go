@@ -938,13 +938,34 @@ func ensureQueryID(ctx context.Context) (string, context.Context) {
 	if id, ok := ctx.Value(queryIDKey).(string); ok {
 		return id, ctx
 	}
+	id := mintQueryID(ctx)
+	return id, withQueryID(ctx, id)
+}
+
+// mintQueryID derives a NEW per-dispatch query_id from ctx's trace WITHOUT
+// reading or writing the ctx cache. It is the single place the id's shape is
+// built, shared by every seam that needs one (ensureQueryID, freshQueryID, and
+// the exported MintQueryID the routed fan-out pre-mints its per-shard ids
+// with), so the "<traceID>-<spanID>-<counter>" form and the no-trace ""
+// contract cannot drift between them.
+func mintQueryID(ctx context.Context) string {
 	sc := trace.SpanContextFromContext(ctx)
 	if !sc.HasTraceID() {
-		return "", ctx
+		return ""
 	}
-	id := sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
+	return sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
 		strconv.FormatUint(queryIDCounter.Add(1), 10)
-	return id, context.WithValue(ctx, queryIDKey, id)
+}
+
+// withQueryID caches id as ctx's per-dispatch query_id, so queryContext stamps
+// exactly that value on the ClickHouse query and queryIDFromContext reads it
+// back. An empty id returns ctx unchanged (the no-trace case: the driver
+// self-generates an id and nothing is cached).
+func withQueryID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, queryIDKey, id)
 }
 
 // queryIDFromContext returns the per-dispatch ClickHouse query_id stamped on
@@ -971,13 +992,8 @@ func queryIDFromContext(ctx context.Context) string {
 // is "" (the driver self-generates one) and ctx is returned unchanged, matching
 // ensureQueryID's no-trace contract.
 func freshQueryID(ctx context.Context) (string, context.Context) {
-	sc := trace.SpanContextFromContext(ctx)
-	if !sc.HasTraceID() {
-		return "", ctx
-	}
-	id := sc.TraceID().String() + "-" + sc.SpanID().String() + "-" +
-		strconv.FormatUint(queryIDCounter.Add(1), 10)
-	return id, context.WithValue(ctx, queryIDKey, id)
+	id := mintQueryID(ctx)
+	return id, withQueryID(ctx, id)
 }
 
 // EnsureQueryID is the exported single-source-of-truth seam for the
@@ -1010,6 +1026,30 @@ func EnsureQueryID(ctx context.Context) (string, context.Context) {
 // observational and never an error path.
 func QueryIDFromContext(ctx context.Context) string {
 	return queryIDFromContext(ctx)
+}
+
+// MintQueryID returns a NEW per-dispatch ClickHouse query_id derived from ctx's
+// trace, without caching it on ctx. It is the seam for a caller that must fix
+// SEVERAL ids up front for several physical CH queries — the solver's routed
+// fan-out, which pre-mints one id per shard before any shard context exists so
+// the corpus can record the whole fan-out at the dispatch seam. EnsureQueryID
+// cannot serve that case: it caches ONE id on the parent context, and every
+// shard context descends from that parent, so all K shards would inherit the
+// same query_id — which ClickHouse rejects with code 216.
+//
+// Pair it with WithQueryID on each per-shard context. When no valid trace is
+// present the id is "" (the driver self-generates one), matching EnsureQueryID.
+func MintQueryID(ctx context.Context) string {
+	return mintQueryID(ctx)
+}
+
+// WithQueryID fixes id as ctx's per-dispatch ClickHouse query_id, so the query
+// dispatched on the returned context is stamped with exactly that value and
+// QueryIDFromContext reads it back. It is the stamping half of the MintQueryID
+// seam (the routed fan-out mints K ids, then stamps one onto each shard's own
+// context). An empty id returns ctx unchanged.
+func WithQueryID(ctx context.Context, id string) context.Context {
+	return withQueryID(ctx, id)
 }
 
 // Conn returns the underlying clickhouse-go/v2 driver connection. It is
