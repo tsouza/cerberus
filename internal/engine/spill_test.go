@@ -7,32 +7,39 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
+const (
+	mib int64 = 1 << 20
+	gib int64 = 1 << 30
+)
+
 // TestApplySpillSettings_StampsBothThresholds — every data-plane query gets
 // BOTH the external-group-by and external-sort spill thresholds stamped at the
-// spill threshold, so a heavy GROUP BY or sort spills instead of OOMing.
+// cap-relative spill threshold, so a heavy GROUP BY or sort spills instead of
+// OOMing. Reverting the cap-relative derivation stamps 512 MiB here instead of
+// half the 2 GiB cap and this fails.
 func TestApplySpillSettings_StampsBothThresholds(t *testing.T) {
 	t.Parallel()
 
-	// High cap (2 GiB) leaves the fixed 512 MiB threshold the smaller of the
-	// two, so it is stamped verbatim.
-	const highCap int64 = 2 << 30
-	ctx := applySpillSettings(context.Background(), highCap)
+	const (
+		cap2GiB   = 2 * gib
+		wantStamp = gib // half the cap
+	)
+	ctx := applySpillSettings(context.Background(), cap2GiB)
 	settings := chclient.QuerySettingsFromContext(ctx)
 	for _, key := range []string{settingMaxBytesBeforeExternalGroupBy, settingMaxBytesBeforeExternalSort} {
 		got, ok := settings[key]
 		if !ok {
 			t.Fatalf("settings %v missing %s", settings, key)
 		}
-		if got != spillThresholdBytes {
-			t.Errorf("%s = %v (%T); want %d", key, got, got, spillThresholdBytes)
+		if got != wantStamp {
+			t.Errorf("%s = %v (%T); want %d (half the %d-byte cap)", key, got, got, wantStamp, cap2GiB)
 		}
 	}
 }
 
-// TestApplySpillSettings_Unconditional — unlike the old MetricsCompare-only
-// scope, the spill settings ride EVERY query (any head can lower a high-card
-// GROUP BY / large sort), not just compare. Even a bare cap with no plan stamps
-// both settings.
+// TestApplySpillSettings_Unconditional — the spill settings ride EVERY query
+// (any head can lower a high-card GROUP BY / large sort), not just compare.
+// Even a bare cap with no plan stamps both settings.
 func TestApplySpillSettings_Unconditional(t *testing.T) {
 	t.Parallel()
 
@@ -46,37 +53,53 @@ func TestApplySpillSettings_Unconditional(t *testing.T) {
 	}
 }
 
-// TestSpillThresholdBytes_BelowMemCap pins the spill threshold below the default
-// per-query max_memory_usage cap so the spill triggers before the memory cap
-// aborts the query. A future bump of either constant that inverts the ordering
-// surfaces loudly here.
-func TestSpillThresholdBytes_BelowMemCap(t *testing.T) {
+// TestSpillThresholdBytes_MatchesDefaultCapThreshold pins the no-cap fallback to
+// the threshold a DEFAULT-capped deployment gets, which is the only thing that
+// makes the absolute constant a derived value rather than a free-floating one: a
+// Client that reports no cap spills exactly where a default-capped one does.
+// Bumping config.defaultCHQueryMaxMemory or spillCapDenominator without
+// re-deriving spillThresholdBytes desynchronises the two regimes and fails here
+// (a mere `spillThresholdBytes < defaultMaxMemoryUsage` ordering check would
+// stay green through such a bump while the fallback silently drifted to a
+// fraction of the default-cap threshold).
+func TestSpillThresholdBytes_MatchesDefaultCapThreshold(t *testing.T) {
 	t.Parallel()
 
-	const defaultMaxMemoryUsage int64 = 1 << 30 // mirrors config.defaultCHQueryMaxMemory
+	const defaultMaxMemoryUsage = gib // mirrors config.defaultCHQueryMaxMemory
+	if want := defaultMaxMemoryUsage / spillCapDenominator; spillThresholdBytes != want {
+		t.Errorf("no-cap spill threshold %d; want %d (default max_memory_usage %d / %d)",
+			spillThresholdBytes, want, defaultMaxMemoryUsage, spillCapDenominator)
+	}
+	// The derivation only means anything if it also keeps the fallback below the
+	// cap it mirrors — the spill must fire before MEMORY_LIMIT_EXCEEDED.
 	if spillThresholdBytes >= defaultMaxMemoryUsage {
 		t.Errorf("spill threshold %d >= default max_memory_usage %d; spill must trigger before the cap",
 			spillThresholdBytes, defaultMaxMemoryUsage)
 	}
 }
 
-// TestSpillThreshold_CapRelative pins spillThreshold across the cap regimes. The
-// load-bearing case is the lowered cap (256 MiB, at/below the fixed 512 MiB
-// threshold): the effective threshold MUST drop to a cap-relative fraction
-// (128 MiB with denominator 2) so the spill still triggers strictly below the
-// cap. Without the cap-relative clamp the stamped value would be the fixed
-// 512 MiB — at or above the cap — and the operation would OOM instead of
-// spilling. This case kills the mutant that reverts spillThreshold to a
-// constant return of spillThresholdBytes.
+// TestSpillThreshold_CapRelative pins spillThreshold across the cap regimes.
+//
+// The load-bearing case is the LARGE cap: a 6 GiB cap must yield half the cap
+// (3 GiB), not the 512 MiB no-cap constant. Reverting to a min() against
+// spillThresholdBytes stamps 536870912 there and this test fails. Over-spilling
+// is not a free safety margin — it forces a disk-backed merge on aggregations
+// the cap had ample room for.
+//
+// The lowered cap (256 MiB -> 128 MiB) pins the other end: the threshold still
+// lands strictly below a cap smaller than the no-cap constant, so the spill
+// fires before MEMORY_LIMIT_EXCEEDED. That is the safety property, and
+// cap/spillCapDenominator satisfies it on its own.
 func TestSpillThreshold_CapRelative(t *testing.T) {
 	t.Parallel()
 
 	const (
-		mib           int64 = 1 << 20
-		loweredCap          = 256 * mib // the lowered-cap regime
-		loweredExpect       = 128 * mib // 256 MiB / spillCapDenominator
-		highCap             = 2 << 30   // 2 GiB — comfortably above the fixed threshold
-		atFixedCap          = 1 << 30   // 1 GiB — cap/2 == fixed 512 MiB, so fixed wins (strict <)
+		largeCap      = 6 * gib
+		largeExpect   = 3 * gib   // 3221225472 — half of 6 GiB
+		loweredCap    = 256 * mib // cap smaller than the no-cap constant
+		loweredExpect = 128 * mib // 256 MiB / spillCapDenominator
+		boundaryCap   = gib       // cap/2 == spillThresholdBytes exactly
+		boundaryWant  = 512 * mib
 	)
 
 	cases := []struct {
@@ -84,11 +107,11 @@ func TestSpillThreshold_CapRelative(t *testing.T) {
 		maxMemory int64
 		want      int64
 	}{
-		{"lowered cap below fixed threshold spills cap-relative", loweredCap, loweredExpect},
-		{"high cap keeps fixed threshold", highCap, spillThresholdBytes},
-		{"cap/2 equals fixed threshold keeps fixed", atFixedCap, spillThresholdBytes},
-		{"no cap configured keeps fixed threshold", 0, spillThresholdBytes},
-		{"negative cap keeps fixed threshold (spill never disabled)", -1, spillThresholdBytes},
+		{"large cap spills at half the cap, not the no-cap constant", largeCap, largeExpect},
+		{"lowered cap spills at half the cap", loweredCap, loweredExpect},
+		{"cap where half coincides with the no-cap constant", boundaryCap, boundaryWant},
+		{"no cap configured uses the absolute fallback", 0, spillThresholdBytes},
+		{"negative cap uses the absolute fallback (spill never disabled)", -1, spillThresholdBytes},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,29 +119,68 @@ func TestSpillThreshold_CapRelative(t *testing.T) {
 			if got := spillThreshold(tc.maxMemory); got != tc.want {
 				t.Errorf("spillThreshold(%d) = %d; want %d", tc.maxMemory, got, tc.want)
 			}
-			// Whenever a positive cap is configured the threshold must sit
-			// strictly below it, or the spill can't fire before the OOM.
-			if tc.maxMemory > 0 {
-				if got := spillThreshold(tc.maxMemory); got >= tc.maxMemory {
-					t.Errorf("spillThreshold(%d) = %d; must be strictly < cap", tc.maxMemory, got)
-				}
-			}
 		})
 	}
 }
 
+// TestSpillThreshold_StrictlyBelowEveryCap asserts the invariant the whole
+// function exists for, as a property over a range of caps rather than at the
+// enumerated points: for EVERY positive cap the stamped threshold sits strictly
+// below the cap, so the operation always reaches the spill before it reaches
+// MEMORY_LIMIT_EXCEEDED. It also pins the threshold at exactly half the cap, so
+// any re-introduction of a fixed ceiling (which would flatten the sweep to a
+// constant above 1 GiB) fails here rather than silently under-spilling.
+//
+// The sweep spans five orders of magnitude around the deployed range, plus an
+// odd cap where integer division truncates, plus minValidCap — the smallest cap
+// for which a positive threshold strictly below it exists at all. Anchoring the
+// sweep at that arithmetic boundary rather than at the deployed range is what
+// makes the invariant a proven domain instead of a floor picked to sit above
+// wherever it stops holding.
+func TestSpillThreshold_StrictlyBelowEveryCap(t *testing.T) {
+	t.Parallel()
+
+	const (
+		// An offset that makes a cap non-power-of-two so cap/2 truncates.
+		oddCapOffset int64 = 12345
+		// A cap of one byte leaves no room for a positive threshold under it,
+		// so spillCapDenominator bytes is where the invariant starts holding —
+		// far below any cap a deployment configures, which is the point.
+		minValidCap = spillCapDenominator
+	)
+
+	caps := []int64{
+		minValidCap, mib, 3 * mib,
+		64 * mib, 128 * mib, 256 * mib, 512 * mib,
+		gib, 2 * gib, 3 * gib, 4 * gib, 6 * gib, 8 * gib,
+		16 * gib, 32 * gib, 64 * gib, 128 * gib,
+		6*gib + oddCapOffset,
+	}
+	for _, maxMemory := range caps {
+		got := spillThreshold(maxMemory)
+		if got >= maxMemory {
+			t.Errorf("spillThreshold(%d) = %d; must be strictly < the cap or the spill never fires", maxMemory, got)
+		}
+		if got <= 0 {
+			t.Errorf("spillThreshold(%d) = %d; 0 disables the spill outright", maxMemory, got)
+		}
+		if want := maxMemory / spillCapDenominator; got != want {
+			t.Errorf("spillThreshold(%d) = %d; want %d (cap/%d)", maxMemory, got, want, spillCapDenominator)
+		}
+	}
+}
+
 // TestApplySpillSettings_LoweredCapStampsBelowCap drives the full stamp path
-// with a runtime cap LOWERED below the fixed 512 MiB threshold (256 MiB) and
+// with a runtime cap LOWERED below the no-cap 512 MiB constant (256 MiB) and
 // asserts BOTH effective stamped thresholds are the cap-relative 128 MiB —
-// strictly below the cap. A regression to a fixed 512 MiB stamp would surface
-// here as a value at/above the cap.
+// strictly below the cap. A regression to a fixed 512 MiB stamp surfaces here
+// as a value at/above the cap.
 func TestApplySpillSettings_LoweredCapStampsBelowCap(t *testing.T) {
 	t.Parallel()
 
 	const (
-		mib       int64 = 1 << 20
-		capBytes        = 256 * mib
-		wantStamp       = 128 * mib
+		capBytes  = 256 * mib
+		wantStamp = 128 * mib
 	)
 	settings := chclient.QuerySettingsFromContext(applySpillSettings(context.Background(), capBytes))
 	for _, key := range []string{settingMaxBytesBeforeExternalGroupBy, settingMaxBytesBeforeExternalSort} {
