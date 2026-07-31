@@ -82,15 +82,15 @@ type fixtureSource struct {
 // fixtureSources mirrors fixtureInserts above — keep them in lock-step so
 // every CH-side INSERT has a corresponding Prom remote_write.
 var fixtureSources = []fixtureSource{
-	{"demo_resource_latency_seconds", "otel_metrics_histogram", true},
-	{"demo_cpu_usage_seconds_total", "otel_metrics_sum"},
-	{"demo_memory_usage_bytes", "otel_metrics_gauge"},
-	{"demo_sparse_memory_bytes", "otel_metrics_gauge"},
-	{"demo_http_requests_total", "otel_metrics_sum"},
-	{"demo_disk_usage_bytes", "otel_metrics_gauge"},
-	{"demo_disk_total_bytes", "otel_metrics_gauge"},
-	{"demo_num_cpus", "otel_metrics_gauge"},
-	{"up", "otel_metrics_gauge"},
+	{metricName: "demo_resource_latency_seconds", table: "otel_metrics_histogram", histogram: true},
+	{metricName: "demo_cpu_usage_seconds_total", table: "otel_metrics_sum"},
+	{metricName: "demo_memory_usage_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_sparse_memory_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_http_requests_total", table: "otel_metrics_sum"},
+	{metricName: "demo_disk_usage_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_disk_total_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_num_cpus", table: "otel_metrics_gauge"},
+	{metricName: "up", table: "otel_metrics_gauge"},
 }
 
 // readHistogramFixtureSeries expands OTel's per-row bucket arrays into the
