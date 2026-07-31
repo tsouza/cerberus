@@ -166,6 +166,63 @@ func TestShapeModifiers_EveryGridCarrierGetsAToken(t *testing.T) {
 	}
 }
 
+// TestNodeKind_EveryGridCarrierIsItsOwnRootKind pins the ROOT half of the
+// vocabulary, which the modifier table above cannot reach: every fixture there
+// wraps its carrier in a Project on purpose, so nodeKind only ever sees a
+// Project and its per-carrier arms are never invoked.
+//
+// A carrier is the plan ROOT in real lowerings — absent_over_time(...) roots on
+// AbsentOverTime, a negative-offset selector on RangeLWR — and a missing arm
+// there degrades the id to the generic `cerb:node` fallback, so every distinct
+// carrier-rooted shape reports the same root token and an operator bucketing
+// system.query_log loses the one field that says WHAT ran.
+//
+// The root token is deliberately the same string as the modifier token for a
+// given kind: one shape vocabulary, read the same way whether the carrier sits
+// at the root or below it. So the expectation is built from the table's token,
+// and a dropped nodeKind arm shows up as `node` != the token.
+func TestNodeKind_EveryGridCarrierIsItsOwnRootKind(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range carrierTokenCases() {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+
+			// UNWRAPPED: the carrier itself is the emit root, which is the only
+			// position from which planShapeID consults nodeKind.
+			carrier := tc.node(&chplan.Scan{Table: "otel_metrics_sum"})
+
+			if got := nodeKind(carrier); got != tc.token {
+				t.Errorf("nodeKind(%s) = %q, want %q — a carrier-rooted plan stamps the generic "+
+					"fallback and every such shape collapses to one log_comment bucket",
+					tc.kind, got, tc.token)
+			}
+
+			// End-to-end through the only caller: root token, then the same
+			// token again as a modifier (chplan.Walk visits the root too).
+			want := shapeIDPrefix + tc.token + ";" + tc.token
+			if got := planShapeID(carrier); got != want {
+				t.Errorf("planShapeID(%s) = %q, want %q", tc.kind, got, want)
+			}
+		})
+	}
+}
+
+// TestNodeKind_UnrecognisedNodeFallsBackToNode pins the fallback the test above
+// discriminates against. Without it, "nodeKind returned the token" could be
+// satisfied by a default arm that happened to return the right string, and the
+// per-kind assertions would prove nothing about the arms.
+func TestNodeKind_UnrecognisedNodeFallsBackToNode(t *testing.T) {
+	t.Parallel()
+
+	// StructuralJoin has no nodeKind arm: it is a join, reported through the
+	// `join` modifier rather than as a root kind.
+	if got := nodeKind(&chplan.StructuralJoin{}); got != "node" {
+		t.Errorf("nodeKind fallback = %q, want %q — the per-kind arms are only meaningful if the "+
+			"default arm is distinguishable from them", got, "node")
+	}
+}
+
 // TestShapeModifiers_DistinguishesFanoutFromBareProject is the concrete
 // collision the missing tokens caused: a plan that demonstrably contains a
 // range fan-out, a union and a join must not hash to the id of a plain
