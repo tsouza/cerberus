@@ -685,7 +685,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	if agg == nil {
 		// `histogram_quantile(phi, rate(metric[5m]))` — group by series
 		// identity so each series gets its own bucket-rate vector.
-		return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+		return []chplan.Expr{histogramIdentityExpr(s)},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
 	}
@@ -697,15 +697,15 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 		// Attributes map directly (CH rejects mapFilter with an empty
 		// IN list as a syntax error).
 		if len(agg.Grouping) == 0 {
-			return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+			return []chplan.Expr{histogramIdentityExpr(s)},
 				[]string{"gkey_0"},
 				&chplan.ColumnRef{Name: "gkey_0"}
 		}
 		return []chplan.Expr{
-				canonicalGroupKeyExpr(&chplan.MapWithoutKeys{
-					Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+				&chplan.MapWithoutKeys{
+					Map:  histogramIdentityExpr(s),
 					Keys: append([]string(nil), agg.Grouping...),
-				}, s),
+				},
 			},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
@@ -724,7 +724,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	mapArgs := make([]chplan.Expr, 0, len(labels)*2)
 	for i, label := range labels {
 		alias := fmt.Sprintf("gkey_%d", i)
-		groupBy[i] = attributeLookup(s.AttributesColumn, label)
+		groupBy[i] = attributeLookupExpr(histogramIdentityExpr(s), label)
 		aliases[i] = alias
 		mapArgs = append(
 			mapArgs,

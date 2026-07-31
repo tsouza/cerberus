@@ -93,6 +93,22 @@ const resourceAttrHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
+const resourceAttrExpHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName String,
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
+
 // resourceAttrSeed seeds three sum rows for `http_requests_total`:
 //   - prod/pod-a: namespace+pod ONLY in ResourceAttributes, route in Attributes
 //   - prod/pod-b: same namespace, different pod (proves /series fans pods)
@@ -115,6 +131,57 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, ResourceAttributes, TimeUn
     ('http_requests_total', map('route', '/api'),                       map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-b'),                       toDateTime64('%[1]s', 9), 7.0),
     ('http_requests_total', map('route', '/admin'),                     map('k8s.namespace.name', 'staging', 'k8s.pod.name', 'pod-c'),                    toDateTime64('%[1]s', 9), 3.0);`,
 		ts)
+}
+
+// histogramResourceAttrSeed adds classic and native histogram rows whose
+// namespace exists only in ResourceAttributes. The two prod rows have
+// distinct pod labels so grouping by namespace proves identity is projected
+// before the histogram aggregate, rather than merely copied after filtering.
+func histogramResourceAttrSeed(t *testing.T) string {
+	t.Helper()
+	ts := time.Now().UTC().Format("2006-01-02 15:04:05.000")
+	return resourceAttrGaugeDDL + resourceAttrSumDDL + resourceAttrHistogramDDL + resourceAttrExpHistogramDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_histogram (MetricName, Attributes, ResourceAttributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds) VALUES
+    ('resource_latency_seconds', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-a'), toDateTime64('%[1]s', 9), 6, 3.0, [2, 4], [1.0]),
+    ('resource_latency_seconds', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-b'), toDateTime64('%[1]s', 9), 6, 3.0, [2, 4], [1.0]),
+    ('resource_latency_seconds', map('route', '/admin'), map('k8s.namespace.name', 'staging', 'k8s.pod.name', 'pod-c'), toDateTime64('%[1]s', 9), 6, 3.0, [2, 4], [1.0]);
+INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, ResourceAttributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES
+    ('resource_latency_exp_hist', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-a'), toDateTime64('%[1]s', 9), 6, 3.0, 0, 0, 0, [6], 0, []);`, ts)
+}
+
+// TestResourceAttrs_HistogramQuery_ChDB verifies the histogram-only lowering
+// path projects resource labels into both filtered and grouped result series.
+func TestResourceAttrs_HistogramQuery_ChDB(t *testing.T) {
+	srv, _ := newChDBServer(t, histogramResourceAttrSeed(t))
+	now := time.Now().Add(time.Minute).Unix()
+
+	bare := decodeVectorQuery(t, srv.URL,
+		`histogram_quantile(0.5, resource_latency_seconds_bucket{k8s_namespace_name="prod"})`, now)
+	if len(bare) != 2 {
+		t.Fatalf("filtered classic histogram: got %d series, want 2: %v", len(bare), bare)
+	}
+	for _, sample := range bare {
+		if sample.Metric["k8s_namespace_name"] != "prod" {
+			t.Errorf("filtered classic histogram lost resource label: %v", sample.Metric)
+		}
+		if sample.Metric["k8s_pod_name"] == "" {
+			t.Errorf("filtered classic histogram lost pod identity: %v", sample.Metric)
+		}
+	}
+
+	grouped := decodeVectorQuery(t, srv.URL,
+		`histogram_quantile(0.5, sum by (k8s_namespace_name, le) (rate(resource_latency_seconds_bucket{k8s_namespace_name="prod"}[5m])))`, now)
+	if len(grouped) != 1 {
+		t.Fatalf("grouped classic histogram: got %d series, want 1: %v", len(grouped), grouped)
+	}
+	if got := grouped[0].Metric; len(got) != 1 || got["k8s_namespace_name"] != "prod" {
+		t.Errorf("grouped classic histogram labels: got %v, want {k8s_namespace_name:prod}", got)
+	}
+
+	native := decodeVectorQuery(t, srv.URL, `histogram_count(resource_latency_exp_hist{k8s_namespace_name="prod"})`, now)
+	if len(native) != 1 || native[0].Metric["k8s_namespace_name"] != "prod" || native[0].Metric["k8s_pod_name"] != "pod-a" {
+		t.Errorf("filtered native histogram labels: got %v", native)
+	}
 }
 
 // TestResourceAttrs_Labels_ChDB pins /api/v1/labels: the sanitized

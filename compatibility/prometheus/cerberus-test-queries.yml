@@ -291,6 +291,7 @@ test_cases:
   - query: 'vector(time())'
   - query: 'histogram_quantile({{.quantile}}, rate(demo_api_request_duration_seconds_bucket[1m]))'
     variant_args: ['quantile']
+  - query: 'histogram_quantile(0.5, sum by (k8s_namespace_name, le) (rate(demo_resource_latency_seconds_bucket[1m])))'
   - query: 'histogram_quantile(0.9, nonexistent_metric)'
   - # Missing "le" label.
     query: 'histogram_quantile(0.9, demo_memory_usage_bytes)'

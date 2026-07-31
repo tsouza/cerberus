@@ -157,9 +157,6 @@ func readHistogramFixtureSeries(ctx context.Context, conn driver.Conn, src fixtu
 	return out, nil
 }
 
-// readFixtureSeries reads every (Attributes, TimeUnix, Value) row for one
-// metric, grouped into prompb timeseries by label-set. Output is a slice
-// of prompb.TimeSeries ready to be wire-encoded.
 func readFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource) ([]prompb.TimeSeries, error) {
 	q := fmt.Sprintf(
 		"SELECT Attributes, toUnixTimestamp64Milli(TimeUnix) AS ts_ms, Value "+
