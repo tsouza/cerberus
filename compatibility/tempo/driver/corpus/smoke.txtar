@@ -291,6 +291,25 @@ search
 checkout
 
 -- name --
+spansets_and_unions_distinct_spans
+# Tempo evaluates `&&` per trace: both operands must be nonempty, then
+# their span sets are unioned. Roots match the left arm and child zero
+# matches the right arm, so an identity INNER JOIN would incorrectly
+# return an empty spanset while this complete-set comparison requires both.
+-- query --
+{ name =~ "GET /api/checkout/.*" } && { span.child.index = "0" }
+-- endpoint --
+search
+-- spss --
+20
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+checkout
+
+-- name --
 spansets_payments_spss_capped
 # 3-5 matched spans per trace against spss=1 — the cap truncates on
 # both sides, so the differ checks matched totals + kept-span counts
