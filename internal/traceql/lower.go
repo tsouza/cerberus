@@ -421,10 +421,13 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 
 	// Set operations (`&&` / `||`) lower to a chplan.SetOperation; the
 	// emitter renders an INNER JOIN (intersect) or an identity-deduped
-	// UNION ALL (union)
-	// keyed on (TraceID, SpanID).
+	// UNION ALL (union) keyed on the arms' shared row identity —
+	// (TraceID, SpanID) for span-level arms, TraceID alone once an arm
+	// has been folded to trace granularity (see spansetArmExposesSpanID).
 	if setOp, ok := mapSetOp(op.Op); ok {
-		if setOp == chplan.SetUnion {
+		spanLevel := spansetArmExposesSpanID(left, s.SpanIDColumn) &&
+			spansetArmExposesSpanID(right, s.SpanIDColumn)
+		if setOp == chplan.SetUnion && spanLevel {
 			// A CH UNION matches arm columns positionally and
 			// errors (CH code 258) when the counts differ. Structural
 			// arms expose the narrow span envelope (3 keys + the
@@ -432,15 +435,21 @@ func lowerSpansetOperation(op *traceql.SpansetOperation, s schema.Traces) (chpla
 			// filter arms expose `SELECT *`; mixing them — the exact
 			// shape of Grafana Traces Drilldown's structure-tab query
 			// `({...} &>> {...}) || ({...})` — needs the wide arm
-			// projected down to the same ordered column list.
+			// projected down to the same ordered column list. The
+			// narrow envelope is span-keyed, so this alignment only
+			// applies while both arms still carry span identity.
 			left, right = alignUnionArms(left, right, s)
+		}
+		spanIDColumn := s.SpanIDColumn
+		if !spanLevel {
+			spanIDColumn = ""
 		}
 		return &chplan.SetOperation{
 			Left:          left,
 			Right:         right,
 			Op:            setOp,
 			TraceIDColumn: s.TraceIDColumn,
-			SpanIDColumn:  s.SpanIDColumn,
+			SpanIDColumn:  spanIDColumn,
 		}, nil
 	}
 
@@ -591,6 +600,68 @@ func isNarrowSpanArm(n chplan.Node) bool {
 		return isNarrowSpanArm(v.Left)
 	}
 	return false
+}
+
+// spansetArmExposesSpanID reports whether a lowered `&&` / `||` arm still
+// carries per-span identity. A parenthesised sub-pipeline that ends in a
+// trace-level aggregate — `({ … } | count() > 0)` — collapses every span of
+// a trace into one row grouped on TraceId, so the arm has no SpanId column
+// for the set-op to key on. Emitting the span-level key against such an arm
+// is what ClickHouse rejected with
+// `Identifier 'L.SpanId' cannot be resolved from subquery with name L`.
+//
+// The walk descends through the shape-neutral wrappers (Filter, Limit,
+// OrderBy, …) by following a single child and answers at the first node that
+// fixes the output column set. A node this function does not recognise
+// answers true, which keeps the (TraceId, SpanId) key every non-aggregated
+// arm has always used.
+func spansetArmExposesSpanID(n chplan.Node, spanIDColumn string) bool {
+	switch v := n.(type) {
+	case *chplan.Aggregate:
+		for _, alias := range v.GroupByAliases {
+			if alias == spanIDColumn {
+				return true
+			}
+		}
+		for _, f := range v.AggFuncs {
+			if f.Alias == spanIDColumn {
+				return true
+			}
+		}
+		return false
+	case *chplan.Project:
+		// An empty Projections slice is the `SELECT *` pass-through.
+		if len(v.Projections) == 0 {
+			return spansetArmExposesSpanID(v.Input, spanIDColumn)
+		}
+		for _, p := range v.Projections {
+			if projectionOutputName(p) == spanIDColumn {
+				return true
+			}
+		}
+		return false
+	case *chplan.SetOperation:
+		// A nested set-op mirrors its left arm (intersect projects L.*,
+		// union keeps both arms column-aligned).
+		return spansetArmExposesSpanID(v.Left, spanIDColumn)
+	}
+	if children := n.Children(); len(children) == 1 {
+		return spansetArmExposesSpanID(children[0], spanIDColumn)
+	}
+	return true
+}
+
+// projectionOutputName is the column name a Projection emits: its explicit
+// alias, or — for a bare column reference with no alias — the column's own
+// name. Anything else contributes no addressable name.
+func projectionOutputName(p chplan.Projection) string {
+	if p.Alias != "" {
+		return p.Alias
+	}
+	if col, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return col.Name
+	}
+	return ""
 }
 
 // narrowSpanProjection wraps n in a Project that emits the narrow

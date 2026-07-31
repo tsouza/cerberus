@@ -4,6 +4,13 @@
 # dotted-stored `container.cpu.usage` row must be excluded by the
 # underscored negative regex (via the NOT match(<normalised>, re) arm);
 # only the unrelated `up` series survives.
+#
+# A bare `{...}` selector has no metric-name suffix to narrow the table set,
+# so the scan is `merge('^(otel_metrics_gauge|otel_metrics_sum)$')` — BOTH
+# tables. The seed therefore creates otel_metrics_sum EMPTY: without it the
+# fixture reads whatever rows an EARLIER fixture in the shared chDB session
+# happened to leave there, which is a corpus-order dependency, not a round
+# trip (it read native_resets_range_step's http_requests_total rows).
 
 -- query.promql --
 {job="api", __name__!~".*container_cpu_usage.*"}
@@ -17,6 +24,12 @@ CREATE TABLE otel_metrics_gauge (
 INSERT INTO otel_metrics_gauge VALUES
     ('container.cpu.usage', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0.42),
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 -- expected_rows --
 [
   ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1]

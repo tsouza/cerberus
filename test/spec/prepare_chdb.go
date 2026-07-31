@@ -27,7 +27,31 @@
 // — there is exactly one rewrite pipeline, consumed two ways.
 package spec
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
+
+// ErrRoundTripNotExecutable reports a fixture that DECLARED a round trip
+// (non-empty `seed:` + an `expected_rows:` section) but carries an empty
+// `sql:` cell, so there is nothing to execute.
+//
+// It exists to split the two cases [PrepareRoundTrip] used to collapse
+// into a single silent `(nil, false, nil)`:
+//
+//   - "not a round trip by design" — a text-only golden with no seed.
+//     Still `(nil, false, nil)`: skipping it is correct, not a fault.
+//   - "declared a round trip but is not executable" — THIS error. The
+//     fixture asked to be executed and cannot be, which is a corpus
+//     fault; swallowing it drops the fixture out of every corpus-walking
+//     consumer without a word (it is how a brand-new fixture whose
+//     goldens have not been generated yet silently escapes the perf
+//     ratchets).
+//
+// Callers that legitimately do not care can `errors.Is` it away; the
+// perf profiler deliberately does not — see
+// test/perf/profile.FindExecutableFixtures.
+var ErrRoundTripNotExecutable = errors.New("round trip declared (seed + expected_rows) but `sql:` section is empty")
 
 // PreparedRoundTrip is the seed + rewritten SQL + bound args for an
 // executable round-trip fixture, produced by [PrepareRoundTrip]. It
@@ -60,18 +84,29 @@ type PreparedRoundTrip struct {
 
 // PrepareRoundTrip loads the round-trip sections off c and runs the
 // shared SQL-rewrite pipeline, returning the prepared seed + query +
-// args. It returns (nil, false) when the fixture has not opted into
-// round-trip execution (no `seed:` + `expected_rows:`) or carries an
-// empty `sql:` section — the same gate RunRoundTrip applies before it
-// touches chDB. An error is returned only when the fixture's sections
-// are malformed (bad `expected_rows:` JSON or `args:` lines).
+// args.
+//
+// The three-valued result separates "nothing to do" from "something is
+// wrong", which is the whole point of the signature:
+//
+//   - (nil, false, nil)  — the fixture never opted into round-trip
+//     execution (no `seed:` + `expected_rows:`). A text-only golden.
+//     Skipping it is correct.
+//   - (nil, false, err)  — the fixture is faulty: malformed sections
+//     (bad `expected_rows:` JSON or `args:` lines), or it DECLARED a
+//     round trip while carrying an empty `sql:` cell, which yields
+//     [ErrRoundTripNotExecutable].
+//   - (prep, true, nil)  — executable.
 func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	rt, err := LoadRoundTrip(c)
 	if err != nil {
 		return nil, false, err
 	}
-	if !rt.IsRoundTrip() || strings.TrimSpace(rt.SQL) == "" {
+	if !rt.IsRoundTrip() {
 		return nil, false, nil
+	}
+	if strings.TrimSpace(rt.SQL) == "" {
+		return nil, false, ErrRoundTripNotExecutable
 	}
 
 	// Mirror RunRoundTrip's rewrite ordering exactly: substituteNow64

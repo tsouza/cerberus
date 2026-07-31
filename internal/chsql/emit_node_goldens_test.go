@@ -381,11 +381,11 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	}
 }
 
-// TestEmitNode_SetOperation_MissingColumns — the SetOperation emitter
-// validates that TraceIDColumn / SpanIDColumn are non-empty. Without
-// them the JOIN predicate would reference empty identifiers and
-// produce a CH syntax error at runtime.
-func TestEmitNode_SetOperation_MissingColumns(t *testing.T) {
+// TestEmitNode_SetOperation_MissingTraceID — TraceIDColumn is the one
+// identity column the SetOperation emitter cannot do without. Unset, the
+// JOIN predicate (or LIMIT BY key) would reference an empty identifier
+// and produce a CH syntax error at runtime.
+func TestEmitNode_SetOperation_MissingTraceID(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -409,18 +409,8 @@ func TestEmitNode_SetOperation_MissingColumns(t *testing.T) {
 				SpanIDColumn: "SpanId",
 			},
 		},
-		{
-			"span id unset",
-			&chplan.SetOperation{
-				Left:          &chplan.Scan{Table: "otel_traces"},
-				Right:         &chplan.Scan{Table: "otel_traces"},
-				Op:            chplan.SetIntersect,
-				TraceIDColumn: "TraceId",
-			},
-		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, _, err := chsql.Emit(context.Background(), tc.plan)
@@ -429,6 +419,57 @@ func TestEmitNode_SetOperation_MissingColumns(t *testing.T) {
 			}
 			if !errors.Is(err, chsql.ErrUnsupported) {
 				t.Errorf("err = %v; want wrapped ErrUnsupported", err)
+			}
+		})
+	}
+}
+
+// TestEmitNode_SetOperation_TraceGranularity — SpanIDColumn unset is
+// LEGAL, not an error: a parenthesised sub-pipeline ending in an
+// aggregate grouped on TraceID (`({…} | count() > 0) && ({…})`) exposes
+// no per-span column, so the identity key degrades to TraceID alone. The
+// lowerer signals that by leaving SpanIDColumn empty; emitting
+// `L.SpanId = R.SpanId` against such an arm is what ClickHouse rejected
+// with "Identifier 'L.SpanId' cannot be resolved from subquery".
+func TestEmitNode_SetOperation_TraceGranularity(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		op      chplan.SetOp
+		want    string
+		notWant string
+	}{
+		{
+			name:    "intersect joins on trace id alone",
+			op:      chplan.SetIntersect,
+			want:    "ON `L`.`TraceId` = `R`.`TraceId`",
+			notWant: "SpanId",
+		},
+		{
+			name:    "union dedups on trace id alone",
+			op:      chplan.SetUnion,
+			want:    "LIMIT 1 BY `TraceId`",
+			notWant: "SpanId",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sql, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+				Left:          &chplan.Scan{Table: "otel_traces"},
+				Right:         &chplan.Scan{Table: "otel_traces"},
+				Op:            tc.op,
+				TraceIDColumn: "TraceId",
+			})
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if !strings.Contains(sql, tc.want) {
+				t.Errorf("SQL missing %q:\n%s", tc.want, sql)
+			}
+			if strings.Contains(sql, tc.notWant) {
+				t.Errorf("SQL references %q despite SpanIDColumn being unset:\n%s", tc.notWant, sql)
 			}
 		})
 	}

@@ -318,26 +318,36 @@ coverage:
 # recipe fails fast without it rather than leaving stale expected_rows
 # behind (the PR #758 failure mode).
 #
-# It first runs the two perf-assessment ratchet baselines as PRIOR
-# dependencies so a SINGLE `just update-golden` records every fixture-derived
-# artefact in one shot: the solver routing-DECISION baseline, the cardinality
-# fan-factor baseline, and the text/expected_rows goldens (this body). This
-# closes the recurring miss where a new TXTAR fixture regenerated its goldens
-# but left `cardinality-baseline.json` unrecorded, turning the non-required
-# `perf-guards` TestCardinalityRatchet red on main after merge (hit by #1096
-# native_resample_offset and #1098 increase_left_edge_scan_bound).
+# It wraps the two perf-assessment ratchet baselines around the golden
+# rewrite so a SINGLE `just update-golden` records every fixture-derived
+# artefact in one shot: the solver routing-DECISION baseline, the text /
+# expected_rows goldens (this body), and the cardinality fan-factor baseline.
+# This closes the recurring miss where a new TXTAR fixture regenerated its
+# goldens but left `cardinality-baseline.json` unrecorded, turning the
+# non-required `perf-guards` TestCardinalityRatchet red on main after merge
+# (hit by #1096 native_resample_offset and #1098 increase_left_edge_scan_bound).
 #
-# Why PRIOR deps, not subsequent (`&&`): the body's default-tag
-# `GOLDEN_UPDATE=1 go test ./...` lane runs TestSolverDecisionRatchet in
-# ASSERT mode, which fails on a brand-new fixture not yet in the routing
-# baseline — aborting before any subsequent dependency could record it.
-# Recording both baselines FIRST means the body's asserting lanes pass for
-# the new fixture. The baselines re-derive from each fixture's input query
-# (not the regenerated `-- sql --` / `-- expected_rows --` cells), so running
-# them before the golden rewrite is order-safe; all three are no-ops on a
-# corpus already in sync (zero diff).
+# The two baselines sit on OPPOSITE sides of the body, and the asymmetry is
+# real — they do NOT share an ordering constraint:
+#
+#   - update-solver-decision-baseline is a PRIOR dep. The body's default-tag
+#     `GOLDEN_UPDATE=1 go test ./...` lane runs TestSolverDecisionRatchet in
+#     ASSERT mode, which fails on a brand-new fixture not yet in the routing
+#     baseline — aborting before any subsequent dependency could record it.
+#     It re-derives from each fixture's `-- query.promql --` cell alone (pure
+#     Go, no chDB, never reads `-- sql --`), so running it first is safe.
+#   - update-cardinality-baseline is a POST dep (`&&`). It PROFILES each
+#     fixture by EXECUTING its `-- sql --` cell under chDB, so on a brand-new
+#     fixture whose `-- sql --` is still empty it would profile nothing and
+#     silently record a corpus missing that fixture. It must therefore run
+#     AFTER the body has written the SQL. Nothing in the body asserts the
+#     cardinality ratchet — TestCardinalityRatchet is chdb-tagged and lives in
+#     ./test/perf/, while the body's chdb lane is scoped to ./test/spec/... —
+#     so deferring it cannot deadlock.
+#
+# All three are no-ops on a corpus already in sync (zero diff).
 # Review `git diff test/spec/ test/perf/*-baseline.json` before committing.
-update-golden: update-solver-decision-baseline update-cardinality-baseline
+update-golden: update-solver-decision-baseline && update-cardinality-baseline
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; without it the chdb-tagged -- expected_rows -- sections (and the cardinality baseline) cannot regenerate and go stale" >&2; exit 1; }
     GOLDEN_UPDATE=1 go test ./...
     GOLDEN_UPDATE=1 go test -tags chdb -count=1 ./test/spec/...

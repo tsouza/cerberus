@@ -218,12 +218,17 @@ func orderByReferencesMapSubscript(orderBy string) bool {
 // panics with `could not cast to type: MAP`.
 //
 // The transform is conservative: it fires only when the outer
-// projection is exactly `*` and the inner subquery starts with
-// `SELECT ` (case-insensitive). Anything else passes through. The
-// inner subquery's projections are re-rendered as their aliases
-// (preferring explicit `AS <alias>` over the implicit form), which
-// lets the outer SELECT name the columns and the Map-wrap pass do
-// its work without touching the inner shape.
+// projection is exactly `*` or a single qualified star `<t>.*` (the
+// spanset-intersect shape `SELECT L.* FROM (<left>) AS L INNER JOIN
+// (<right>) AS R ON …`, whose columns come from the FIRST subquery —
+// the same one this function already borrows from), and the inner
+// subquery starts with `SELECT ` (case-insensitive). Anything else
+// passes through. The inner subquery's projections are re-rendered as
+// their aliases (preferring explicit `AS <alias>` over the implicit
+// form), re-qualified with the star's own table alias so the JOIN
+// shape stays unambiguous, which lets the outer SELECT name the
+// columns and the Map-wrap pass do its work without touching the inner
+// shape.
 func expandStarProjection(query string) string {
 	// A `WITH <cte> AS (...) SELECT …` head (the vector-set-op CSE CTE,
 	// or the structural-join WITH RECURSIVE closure) precedes the outer
@@ -236,8 +241,23 @@ func expandStarProjection(query string) string {
 		return withHead + expandStarProjection(body)
 	}
 	head, tail := splitOuterSelect(query)
-	if head == "" || strings.TrimSpace(head) != "*" {
+	if head == "" {
 		return query
+	}
+	// `qual` is the star's table qualifier ("" for a bare `*`, "L" for
+	// the intersect shape's `L.*`); it is re-attached to every borrowed
+	// alias so the expanded projection stays unambiguous across the JOIN.
+	star := strings.TrimSpace(head)
+	qual := ""
+	if star != "*" {
+		base, ok := strings.CutSuffix(star, ".*")
+		// A qualifier must be a single bare identifier — anything with a
+		// space, comma, paren, backtick or further star is a projection
+		// list or an expression, not the star shape this pass expands.
+		if !ok || base == "" || strings.ContainsAny(base, " ,()`*") {
+			return query
+		}
+		qual = base + "."
 	}
 	// `tail` starts with " FROM "; the next non-space token should be
 	// `(` opening an inner subquery whose projection list we can
@@ -267,6 +287,12 @@ func expandStarProjection(query string) string {
 		return query
 	}
 	inner := strings.TrimSpace(rest[1:end])
+	// The inner subquery may itself project a star over a further
+	// subquery (the spanset shape nests `SELECT * FROM (<aggregate>)
+	// WHERE …` inside the JOIN arm). Expand it recursively for NAME
+	// DISCOVERY only — the rewritten inner is never spliced back, tail
+	// keeps the original subquery verbatim.
+	inner = expandStarProjection(inner)
 	innerHead, _ := splitOuterSelect(inner)
 	if innerHead == "" {
 		return query
@@ -286,7 +312,7 @@ func expandStarProjection(query string) string {
 		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
 			return query
 		}
-		aliases = append(aliases, "`"+alias+"`")
+		aliases = append(aliases, qual+"`"+alias+"`")
 	}
 	return "SELECT " + strings.Join(aliases, ", ") + tail
 }

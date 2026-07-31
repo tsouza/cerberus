@@ -16,10 +16,18 @@ const unionDedupLimitPerIdentity = 1
 
 // emitSetOperation renders a TraceQL spanset set-op (`A && B`, `A || B`).
 //
-//   - SetIntersect (`&&`): INNER JOIN of the two subqueries on
-//     (TraceID, SpanID); the result projects the left side's columns
+//   - SetIntersect (`&&`): INNER JOIN of the two subqueries on the
+//     identity key; the result projects the left side's columns
 //     (TraceQL convention: the row identity comes from the left
 //     spanset).
+//
+// The identity key is (TraceID, SpanID) whenever both arms carry span
+// identity, and TraceID alone when an arm has been folded to trace
+// granularity — a parenthesised sub-pipeline ending in an aggregate, e.g.
+// `({ … } | count() > 0) && ({ … } | count() > 0)`, groups on TraceID and
+// exposes no SpanID column. The lowerer decides which applies and leaves
+// SpanIDColumn empty for the trace-level case (see
+// internal/traceql.spansetArmExposesSpanID).
 //   - SetUnion     (`||`): `SELECT * FROM (<left> UNION ALL <right>)
 //     LIMIT 1 BY (TraceID, SpanID)` — dedup on SPAN IDENTITY, not the
 //     full row tuple. Both arms read the same spans table, so a span
@@ -42,8 +50,8 @@ const unionDedupLimitPerIdentity = 1
 // SELECT, so the UNION token sits between two pre-rendered QueryBuilder
 // Frags rather than abusing a clause slot.
 func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
-	if s.TraceIDColumn == "" || s.SpanIDColumn == "" {
-		return fmt.Errorf("%w: SetOperation column names unset", ErrUnsupported)
+	if s.TraceIDColumn == "" {
+		return fmt.Errorf("%w: SetOperation trace-id column unset", ErrUnsupported)
 	}
 
 	leftFrag, err := e.subqueryFrag(s.Left)
@@ -58,13 +66,11 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 	switch s.Op {
 	case chplan.SetIntersect:
 		// SELECT L.* FROM (<left>) AS L INNER JOIN (<right>) AS R
-		//   ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId
-		traceID := s.TraceIDColumn
-		spanID := s.SpanIDColumn
-		on := And(
-			Eq(Qual("L", traceID), Qual("R", traceID)),
-			Eq(Qual("L", spanID), Qual("R", spanID)),
-		)
+		//   ON L.TraceId = R.TraceId [AND L.SpanId = R.SpanId]
+		on := Eq(Qual("L", s.TraceIDColumn), Qual("R", s.TraceIDColumn))
+		if s.SpanIDColumn != "" {
+			on = And(on, Eq(Qual("L", s.SpanIDColumn), Qual("R", s.SpanIDColumn)))
+		}
 		sb := NewQuery().
 			Select(verbatim("L.*")).
 			From(As(leftFrag, "L")).
@@ -73,14 +79,18 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		return nil
 	case chplan.SetUnion:
 		// SELECT * FROM (<left> UNION ALL <right>)
-		//   LIMIT 1 BY (TraceId, SpanId)
+		//   LIMIT 1 BY (TraceId[, SpanId])
 		// — dedup on span identity, not the full (wide) row. See the
 		// godoc above for why this replaced the full-row UNION DISTINCT.
+		by := []Frag{Col(s.TraceIDColumn)}
+		if s.SpanIDColumn != "" {
+			by = append(by, Col(s.SpanIDColumn))
+		}
 		sb := NewQuery().
 			Select(verbatim("*")).
 			From(Paren(UnionAll(leftFrag, rightFrag))).
 			Limit(unionDedupLimitPerIdentity).
-			LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+			LimitBy(by...)
 		e.emitSelect(sb)
 		return nil
 	}

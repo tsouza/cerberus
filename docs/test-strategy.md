@@ -217,6 +217,27 @@ set to `expected_rows`. `just update-golden` regenerates this layer too
 (it requires libchdb.so; see `just chdb-install`). Use `just spec-chdb`
 to verify locally without rewriting.
 
+Both sections are load-bearing: a fixture with a `-- seed --` but no
+`-- expected_rows --` is **inert** — the runner returns before it touches
+chDB, and the `GOLDEN_UPDATE=1` rewrite sits downstream of that return, so
+regeneration cannot create the missing section either. Such a fixture
+contributes a `-- sql --` shape golden while looking like round-trip
+coverage. `test/regression/inert_seeded_fixture_test.go` (untagged, so it
+runs in the required `check` gate) enumerates the corpus and fails on that
+shape. A fixture whose query genuinely needs a ClickHouse feature above
+the pinned chDB floor declares it in the fixture itself:
+
+```text
+-- above_chdb_floor --
+feature: <ClickHouse function + minimum version>
+validated: <the lane that proves it instead>
+```
+
+Both keys are required and the gate rejects a marker on a fixture that
+does round-trip, so the marker cannot decay into a blanket exemption. No
+fixture currently needs it — the pinned chDB substrate clears every floor
+the corpus exercises.
+
 ### Layer 6d — Function-surface parity ledger
 
 Layers 6a-c prove that an *accepted* query returns the right rows. Layer
