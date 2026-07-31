@@ -51,6 +51,41 @@ func TestLowerCompareInnerRootScoped(t *testing.T) {
 	}
 }
 
+// TestLowerCompareNonRootLookupWindow threads the existing trace_id_ts
+// readiness gate into compare(). A non-root selection cannot use the request
+// window for root enrichment: a matching child can be in-window while its root
+// is arbitrarily older. The lookup instead supplies a per-trace timestamp
+// envelope that contains both spans, allowing a physical bound without losing
+// Tempo's rootName/rootServiceName values.
+func TestLowerCompareNonRootLookupWindow(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelTraces()
+	s.TraceIDTsEnabled = true
+	expr, err := tempo.Parse(`{ span.http.status_code = 500 } | compare({ status = error })`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, err := traceql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	mc := findMetricsCompare(plan)
+	if mc == nil {
+		t.Fatal("no MetricsCompare in plan")
+	}
+	if mc.InnerRootScoped {
+		t.Fatal("non-root selection must not be marked root-scoped")
+	}
+	if mc.RootLookupTraceIDTsTable != s.TraceIDTsTable ||
+		mc.RootLookupTraceIDTsStartColumn != s.TraceIDTsStartColumn ||
+		mc.RootLookupTraceIDTsEndColumn != s.TraceIDTsEndColumn {
+		t.Errorf("trace_id_ts lookup = (%q, %q, %q), want (%q, %q, %q)",
+			mc.RootLookupTraceIDTsTable, mc.RootLookupTraceIDTsStartColumn, mc.RootLookupTraceIDTsEndColumn,
+			s.TraceIDTsTable, s.TraceIDTsStartColumn, s.TraceIDTsEndColumn)
+	}
+}
+
 func findMetricsCompare(n chplan.Node) *chplan.MetricsCompare {
 	var found *chplan.MetricsCompare
 	chplan.Walk(n, func(x chplan.Node) bool {

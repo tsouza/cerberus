@@ -69,6 +69,9 @@ func TestMetricsCompare_Equal_Negative_Fields(t *testing.T) {
 			m.RootLookup = &chplan.Scan{Table: "different_root_lookup"}
 		}},
 		{"traceIDColumn", func(m *chplan.MetricsCompare) { m.TraceIDColumn = "Other" }},
+		{"rootLookupTraceIDTsTable", func(m *chplan.MetricsCompare) { m.RootLookupTraceIDTsTable = "other" }},
+		{"rootLookupTraceIDTsStartColumn", func(m *chplan.MetricsCompare) { m.RootLookupTraceIDTsStartColumn = "OtherStart" }},
+		{"rootLookupTraceIDTsEndColumn", func(m *chplan.MetricsCompare) { m.RootLookupTraceIDTsEndColumn = "OtherEnd" }},
 		{"rootNameAlias", func(m *chplan.MetricsCompare) { m.RootNameAlias = "x" }},
 		{"rootServiceAlias", func(m *chplan.MetricsCompare) { m.RootServiceAlias = "x" }},
 		{"selAlias", func(m *chplan.MetricsCompare) { m.SelAlias = "x" }},

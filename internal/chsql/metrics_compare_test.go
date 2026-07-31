@@ -251,6 +251,65 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 	}
 }
 
+// TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound proves the
+// non-root strategy retains Tempo's root enrichment without pretending the
+// request window contains the root. The trace_id_ts min/max envelope is built
+// from exactly the seeded cohort, then conjoined on the physical root scan.
+func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
+	t.Parallel()
+
+	m := compareNodeWithRoot()
+	m.RootLookupTraceIDTsTable = "otel_traces_trace_id_ts"
+	m.RootLookupTraceIDTsStartColumn = "Start"
+	m.RootLookupTraceIDTsEndColumn = "End"
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Range:           time.Minute,
+		Step:            time.Minute,
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
+	if onIdx < 0 {
+		t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
+	}
+	rLeg := sql[:onIdx]
+	start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
+	// The trace_id_ts scalar bounds each contain the same cohort seed. The
+	// final occurrence is the root scan's exact membership predicate, after
+	// both bounds have been established.
+	seed := strings.LastIndex(rLeg, "`TraceId` IN (SELECT `TraceId`")
+	if start < 0 || seed < 0 || seed <= start {
+		t.Fatalf("expected root scan filter then TraceId seed:\n%s", rLeg)
+	}
+	prefix := rLeg[start:seed]
+	for _, want := range []string{
+		"`Timestamp` >= (SELECT min(`Start`) FROM `otel_traces_trace_id_ts`",
+		"`Timestamp` <= addSeconds((SELECT max(`End`) FROM `otel_traces_trace_id_ts`",
+	} {
+		if !strings.Contains(prefix, want) {
+			t.Errorf("non-root root scan must carry %q before its exact seed:\n%s", want, prefix)
+		}
+	}
+	firstNestedSeed := strings.Index(prefix, "`TraceId` IN (SELECT `TraceId`")
+	if firstNestedSeed < 0 {
+		t.Fatalf("expected the trace_id_ts scalar bound to use the cohort seed:\n%s", prefix)
+	}
+	// The nested seed is request-windowed, as it must be. Only the root scan's
+	// direct predicate is forbidden from using that window; before the scalar's
+	// first seed it must be the lookup-derived min(Start) bound.
+	directPrefix := prefix[:firstNestedSeed]
+	if strings.Contains(directPrefix, "fromUnixTimestamp64Nano") {
+		t.Errorf("non-root root scan must not use the request window directly:\n%s", directPrefix)
+	}
+}
+
 // TestEmitMetricsCompare_BareShape — bare emission groups by
 // (cohort, attr, val) with a deterministic ORDER BY and the Float64
 // count reducer.

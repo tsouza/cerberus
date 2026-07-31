@@ -333,6 +333,95 @@ func TestCompareWindowPrune_JoinLegs(t *testing.T) {
 	}
 }
 
+// TestCompareNonRootRootLookupTraceIDTsEnvelope exercises the case a request
+// window cannot represent: a child matches compare() on May 12 while its root
+// was recorded on May 1. Tempo still attaches that root's name and service to
+// every selected child. The trace_id_ts envelope must therefore retain the
+// May-1 root while pruning unrelated retention partitions before that trace.
+func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
+	const nonRootEnvelopePartCount = 4
+
+	db, err := sql.Open("chdb", "")
+	if err != nil {
+		t.Fatalf("open chdb: %v", err)
+	}
+	defer db.Close()
+
+	const spans = "compare_nonroot_spans"
+	const lookup = "compare_nonroot_trace_id_ts"
+	const window = "Timestamp >= toDateTime64('2026-05-12 10:00:00', 9) AND Timestamp <= toDateTime64('2026-05-12 11:00:00', 9)"
+	const seed = "SELECT TraceId FROM compare_nonroot_spans WHERE " + window + " AND SpanName = 'matching-child'"
+	for _, stmt := range []string{
+		`CREATE TABLE compare_nonroot_spans (
+            Timestamp DateTime64(9), TraceId String, ParentSpanId String,
+            ServiceName String, SpanName String
+        ) ENGINE = MergeTree() PARTITION BY toDate(Timestamp)
+        ORDER BY (ServiceName, SpanName, toDateTime(Timestamp))`,
+		`CREATE TABLE compare_nonroot_trace_id_ts (
+            TraceId String, Start DateTime, End DateTime
+        ) ENGINE = MergeTree() PARTITION BY toDate(Start) ORDER BY (TraceId, Start)`,
+		`INSERT INTO compare_nonroot_spans VALUES
+            ('2022-01-01 00:00:00', 'noise-a', '', 'noise', 'root'),
+            ('2023-01-01 00:00:00', 'noise-b', '', 'noise', 'root'),
+            ('2024-01-01 00:00:00', 'noise-c', '', 'noise', 'root'),
+            ('2026-05-01 08:00:00', 'selected', '', 'checkout', 'checkout-root'),
+            ('2026-05-12 10:30:00', 'selected', 'root', 'checkout', 'matching-child')`,
+		`INSERT INTO compare_nonroot_trace_id_ts VALUES
+            ('noise-a', '2022-01-01 00:00:00', '2022-01-01 00:00:00'),
+            ('noise-b', '2023-01-01 00:00:00', '2023-01-01 00:00:00'),
+            ('noise-c', '2024-01-01 00:00:00', '2024-01-01 00:00:00'),
+            ('selected', '2026-05-01 08:00:00', '2026-05-12 10:30:00')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup exec failed:\n%s\nerr: %v", stmt, err)
+		}
+	}
+	if _, err := db.Exec("OPTIMIZE TABLE " + spans + " FINAL"); err != nil {
+		t.Fatalf("optimize spans: %v", err)
+	}
+
+	before := `SELECT TraceId, any(SpanName), any(ServiceName) FROM ` + spans +
+		` WHERE ParentSpanId = '' AND TraceId IN (` + seed + `) GROUP BY TraceId ORDER BY TraceId`
+	after := `SELECT TraceId, any(SpanName), any(ServiceName) FROM ` + spans +
+		` WHERE ParentSpanId = '' AND Timestamp >= (SELECT min(Start) FROM ` + lookup + ` WHERE TraceId IN (` + seed + `))` +
+		` AND Timestamp <= addSeconds((SELECT max(End) FROM ` + lookup + ` WHERE TraceId IN (` + seed + `)), 1)` +
+		` AND TraceId IN (` + seed + `) GROUP BY TraceId ORDER BY TraceId`
+
+	rows := func(query string) []string {
+		t.Helper()
+		rs, qerr := db.Query(query)
+		if qerr != nil {
+			t.Fatalf("query: %v\n%s", qerr, query)
+		}
+		defer rs.Close()
+		var got []string
+		for rs.Next() {
+			var traceID, name, service string
+			if scanErr := rs.Scan(&traceID, &name, &service); scanErr != nil {
+				t.Fatalf("scan root lookup: %v", scanErr)
+			}
+			got = append(got, traceID+"|"+name+"|"+service)
+		}
+		return got
+	}
+	beforeRows, afterRows := rows(before), rows(after)
+	if len(beforeRows) != 1 || beforeRows[0] != "selected|checkout-root|checkout" {
+		t.Fatalf("unbounded root lookup = %v, want Tempo root enrichment for selected child", beforeRows)
+	}
+	if len(afterRows) != len(beforeRows) || afterRows[0] != beforeRows[0] {
+		t.Fatalf("Tempo parity violation: unbounded=%v trace_id_ts envelope=%v", beforeRows, afterRows)
+	}
+
+	beforeParts, beforeTotal := cmpScanPartPrune(t, db, before)
+	afterParts, afterTotal := cmpScanPartPrune(t, db, after)
+	if beforeTotal < nonRootEnvelopePartCount || afterTotal != beforeTotal {
+		t.Fatalf("root lookup EXPLAIN parts before=%d/%d after=%d/%d, want a shared multi-part corpus", beforeParts, beforeTotal, afterParts, afterTotal)
+	}
+	if afterParts >= beforeParts {
+		t.Fatalf("trace_id_ts envelope did not partition-prune the non-root root scan: before=%d/%d after=%d/%d", beforeParts, beforeTotal, afterParts, afterTotal)
+	}
+}
+
 // tsPartsFraction parses an EXPLAIN `Parts: N/M` line into (N, M).
 func tsPartsFraction(s string) (selected, total int) {
 	s = stripPrefix(trimSpace(s), "Parts: ")
