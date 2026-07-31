@@ -1095,16 +1095,24 @@ func newWithConn(conn driver.Conn) *Client {
 	return c
 }
 
-// Close stops the background breaker-recovery goroutine (joining it so the
-// shutdown is goleak-clean) and then releases all pooled connections. The two
-// steps are ordered: the recovery loop pings through c.conn, so the conn must
-// stay open until the loop has provably exited.
+// Close stops the background breaker-recovery goroutine (cancelling its ctx
+// and then joining it, so the shutdown is both PROMPT and goleak-clean) and
+// then releases all pooled connections. The two steps are ordered: the
+// recovery loop pings through c.conn, so the conn must stay open until the
+// loop has provably exited.
+//
+// "Prompt" is load-bearing. recovery.stop cancels the loop's root ctx BEFORE
+// joining, and every synthetic recovery ping runs under a child of that ctx,
+// so a shutdown that lands mid-probe aborts the in-flight ping instead of
+// blocking the join for the remainder of recoveryPingTimeout (a full CH dial
+// timeout). See breaker_recovery.go.
 //
 // It is idempotent and view-safe. c.recovery is non-nil only on the root
-// Client New started the loop on; its stop() is sync.Once-guarded, so a
-// double Close — or a Close on a shared-pointer ForHead view — stops the
-// single loop exactly once and joins without panicking. A nil c.recovery (the
-// test-only newWithConn seam, or a bare struct literal) has no loop to stop.
+// Client New started the loop on; its stop() cancels an already-cancelled ctx
+// and receives from an already-closed done channel, so a double Close — or a
+// Close on a shared-pointer ForHead view — stops the single loop exactly once
+// and joins without panicking. A nil c.recovery (the test-only newWithConn
+// seam, or a bare struct literal) has no loop to stop.
 func (c *Client) Close() error {
 	if c.recovery != nil {
 		c.recovery.stop()
