@@ -100,11 +100,18 @@ func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindo
 func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics) chplan.Node {
 	return &chplan.Aggregate{
 		Input:              input,
-		GroupBy:            []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
 		AggFuncs:           aggs,
 		DropEmptyOnNoGroup: true,
 	}
+}
+
+// histogramIdentityExpr is the Prometheus-visible identity for histogram
+// rows. Histogram lowerings group directly over their scans, bypassing the
+// selector projection that ordinarily merges ResourceAttributes into labels.
+func histogramIdentityExpr(s schema.Metrics) chplan.Expr {
+	return selectorAttributesSource(nil, s)
 }
 
 // classicBucketLatestAggs renders the newest-sample aggregates for a
@@ -203,7 +210,7 @@ func lowerHistogramQuantileClassicBareRange(
 	// filter find rows.
 	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 	return buildHistogramRangeTree(
@@ -366,7 +373,7 @@ func lowerHistogramQuantileNativeBareRange(
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 

@@ -185,6 +185,29 @@ type namedStmt struct {
 // the OTel resource layer and is unrelated to the Prom-side wire labels
 // the tester matches on.
 var fixtureInserts = []namedStmt{
+	// demo_resource_latency_seconds is a classic histogram whose namespace
+	// lives only in ResourceAttributes. The compatibility query groups its
+	// bucket rate by the Prom-sanitized resource label.
+	{
+		name: "demo_resource_latency_seconds",
+		sql: `INSERT INTO otel_metrics_histogram
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Count, Sum, BucketCounts,
+             ExplicitBounds)
+        SELECT
+            map('k8s.namespace.name', 'prod'),
+            'demo_resource_latency_seconds',
+            'Resource label histogram',
+            'seconds',
+            map('route', '/api'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toUInt64(3 * (step + 1)),
+            toFloat64(3 * (step + 1)),
+            arrayMap(x -> toUInt64(step + 1), range(3)),
+            [0.1, 0.5]
+        FROM numbers({steps:UInt64}) AS step`,
+	},
 	// demo_cpu_usage_seconds_total: 3 instances × 3 modes = 9 series, counters.
 	//
 	// CROSS JOIN the instance + mode dimensions against the step axis so every
