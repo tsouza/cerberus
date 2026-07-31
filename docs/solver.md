@@ -70,9 +70,9 @@ The signals, each gathered in the one pass:
 6. **Grid commensurability for nested spines.** Inner anchors are generated
    backward from each node's `End` with no epoch alignment, so slicing shifts
    the inner grid unless the slice quantum is a multiple of every inner
-   resolution. A nested spine routes A unless some quantum `m` in
-   `[MinAnchorsPerSlice, N/2]` satisfies `m·Step ≡ 0 (mod lcm(inner
-   resolutions))`.
+   resolution. A nested spine routes A unless the selected shard geometry's
+    emitted quantum `m = ceil(N/K)` satisfies `m·Step ≡ 0 (mod lcm(inner
+    resolutions))`.
 7. **Scalar replication cost.** A `ScalarSubquery` whose interior carries its
    own windowed spine is too expensive to replicate `K×`, so it routes A: the
    slice benefit cannot pay for `K` copies of an expensive scalar. A purely

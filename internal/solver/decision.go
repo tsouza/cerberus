@@ -114,9 +114,8 @@ const (
 	// @-pinned anchor).
 	ReasonGridMismatch = "grid-mismatch"
 
-	// ReasonIncommensurate: no slice quantum m in
-	// [MinAnchorsPerSlice, N/2] satisfies m*Step = 0 (mod lcm of inner
-	// resolutions) for a nested spine.
+	// ReasonIncommensurate: the slice quantum emitted from the selected K does
+	// not satisfy m*Step = 0 (mod lcm of inner resolutions) for a nested spine.
 	ReasonIncommensurate = "incommensurate"
 
 	// ReasonScalarHeavy: a ScalarSubquery whose interior scan-span x fan-out

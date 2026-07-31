@@ -573,40 +573,70 @@ func TestPlan_ScalarHeavyRejected(t *testing.T) {
 	}
 }
 
-// TestPlan_IncommensurateNestedSpine: a nested spine whose inner resolution
-// leaves no valid slice quantum window → incommensurate.
+// TestPlan_IncommensurateNestedSpine pins that the selected slice quantum,
+// rather than merely some theoretical quantum, preserves every nested grid.
 func TestPlan_IncommensurateNestedSpine(t *testing.T) {
 	t.Parallel()
-	// Outer grid N small enough that N/2 < MinAnchorsPerSlice, so there is
-	// no room for a valid quantum window once a nested spine exists.
 	step := time.Minute
 	start := gridStart
-	end := start.Add(20 * time.Minute) // N = 21
-	inner := &chplan.RangeWindow{
-		Input:           leafScan(),
-		Func:            "rate",
-		Range:           time.Minute,
-		Step:            7 * time.Second, // co-prime inner resolution
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
+	end := start.Add(64 * time.Minute) // N = 65, K = 4, m = ceil(65/4) = 17.
+	inner := &chplan.RangeLWR{
+		Input:        leafScan(),
+		Step:         7 * time.Second, // requires a multiple-of-7 quantum.
+		Lookback:     time.Minute,
+		TimestampCol: "TimeUnix",
+		ValueCol:     "Value",
 	}
 	outer := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            "max_over_time",
 		Range:           5 * time.Minute,
 		Step:            step,
-		OuterRange:      20 * time.Minute,
+		OuterRange:      64 * time.Minute,
 		Start:           start,
 		End:             end,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     "Value",
 	}
-	p := &Planner{Cfg: autoCfg()}
+	cfg := DefaultConfig()
+	cfg.Mode = ModeSharded
+	p := &Planner{Cfg: cfg}
 	d, routed := p.Plan(outer, RequestMeta{Lang: "promql", Start: start, End: end, Step: step})
 	if routed {
 		t.Fatal("incommensurate nested spine must not route")
 	}
 	if d.Reason != ReasonIncommensurate {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonIncommensurate)
+	}
+}
+
+func TestPlan_CommensurateNestedRangeLWRRoutes(t *testing.T) {
+	t.Parallel()
+	step := time.Minute
+	start := gridStart
+	end := start.Add(63 * time.Minute) // N = 64, K = 4, m = ceil(64/4) = 16.
+	inner := &chplan.RangeLWR{
+		Input:        leafScan(),
+		Step:         40 * time.Second, // requires an even quantum.
+		Lookback:     time.Minute,
+		TimestampCol: "TimeUnix",
+		ValueCol:     "Value",
+	}
+	outer := &chplan.RangeWindow{
+		Input:           inner,
+		Func:            "max_over_time",
+		Range:           5 * time.Minute,
+		Step:            step,
+		OuterRange:      63 * time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "anchor_ts",
+		ValueColumn:     "Value",
+	}
+	cfg := DefaultConfig()
+	cfg.Mode = ModeSharded
+	d, routed := (&Planner{Cfg: cfg}).Plan(outer, RequestMeta{Lang: "promql", Start: start, End: end, Step: step})
+	if !routed {
+		t.Fatalf("commensurate nested RangeLWR must route; got reason=%q", d.Reason)
 	}
 }
