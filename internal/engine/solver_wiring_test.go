@@ -216,10 +216,12 @@ func TestSolver_NonPromQLHead_NoShadowHeader(t *testing.T) {
 
 	q := &fakeQuerier{rows: []chclient.Sample{{MetricName: "up", Timestamp: time.Unix(1, 0), Value: 1}}}
 	rec := &recordingCursorClient{}
+	obs := &recordingObserver{}
 	eng := &engine.Engine{
-		Optimizer: optimizer.Default(),
-		Client:    q,
-		Solver:    singleModeSolver(t, rec),
+		Optimizer:     optimizer.Default(),
+		Client:        q,
+		Solver:        singleModeSolver(t, rec),
+		QueryObserver: obs,
 	}
 
 	lang := matrixLang()
@@ -234,6 +236,11 @@ func TestSolver_NonPromQLHead_NoShadowHeader(t *testing.T) {
 	}
 	if rec.opens != 0 {
 		t.Errorf("Executor invoked for non-PromQL head: opens=%d", rec.opens)
+	}
+	if len(obs.routePresent) != 1 || obs.routePresent[0] || obs.routes[0] != "" ||
+		obs.decisionRsns[0] != engine.CorpusReasonNonPromQL {
+		t.Errorf("corpus routing read-out = (present=%v route=%q reason=%q); want (false, %q, %q)",
+			obs.routePresent, obs.routes, obs.decisionRsns, "", engine.CorpusReasonNonPromQL)
 	}
 }
 

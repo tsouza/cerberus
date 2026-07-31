@@ -111,7 +111,8 @@ func TestReconcileOnce_JoinsRouteFeatures(t *testing.T) {
 
 // TestReconcileOnce_RouteAbsent_ZeroColumns pins that a dispatch with no
 // routing classification (Solver off / unclassified head) leaves the routing
-// columns empty rather than recording a fictitious route-A row.
+// columns empty rather than recording a fictitious route-A row. An
+// unclassified head may still carry a corpus-only decision reason.
 func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 	t.Parallel()
 
@@ -119,7 +120,10 @@ func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 	sink := &memSink{}
 	r := New(src, sink, Options{RingCapacity: 8})
 
-	r.Observe(Record{QueryID: "qid-noroute", ShapeID: "cerb:scan", Language: "logql"})
+	r.Observe(Record{
+		QueryID: "qid-noroute", ShapeID: "cerb:scan", Language: "logql",
+		Route: RouteFeatures{DecisionReason: "non-promql"},
+	})
 	src.seed(SourceRow{QueryID: "qid-noroute", ReadRows: 1, ExitStatus: ExitOK})
 
 	r.reconcileOnce(context.Background())
@@ -129,7 +133,7 @@ func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 		t.Fatalf("sink rows = %d; want 1", len(rows))
 	}
 	got := rows[0]
-	if got.Route != "" || got.KShards != 0 || got.DecisionReason != "" ||
+	if got.Route != "" || got.KShards != 0 || got.DecisionReason != "non-promql" ||
 		got.NAnchors != 0 || got.Fanout != 0 {
 		t.Errorf("absent route should leave columns zero: %+v", got)
 	}

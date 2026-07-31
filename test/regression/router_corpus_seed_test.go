@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
@@ -15,15 +16,14 @@ import (
 const routerCorpusDir = "../../internal/routerrules/testdata"
 
 // validRouterDecisionReasons is the closed set of decision_reason tokens the
-// production solver actually emits. It is derived from solver.Reasons rather
-// than re-listed here: a hand-copied list only catches a RENAME (as a compile
-// break) and silently misses an ADDITION, which is how this set drifted a
-// Reason behind the solver once already.
+// production emits. It is derived from the solver vocabulary plus the explicit
+// corpus-only non-PromQL reason rather than re-listed here.
 func validRouterDecisionReasons() map[string]struct{} {
-	m := make(map[string]struct{}, len(solver.Reasons))
+	m := make(map[string]struct{}, len(solver.Reasons)+1)
 	for _, r := range solver.Reasons {
 		m[r] = struct{}{}
 	}
+	m[engine.CorpusReasonNonPromQL] = struct{}{}
 	return m
 }
 
@@ -45,9 +45,12 @@ type corpusRow struct {
 	Parallelism    int64  `json:"parallelism"`
 }
 
-// classified reports whether the row carries any solver output at all.
+// classified reports whether the row carries any solver output at all. The
+// corpus-only non-PromQL reason identifies an unclassified row explicitly.
 func (r corpusRow) classified() bool {
-	return r.Route != "" || r.DecisionReason != "" || r.geometry() != 0
+	return r.Route != "" ||
+		(r.DecisionReason != "" && r.DecisionReason != engine.CorpusReasonNonPromQL) ||
+		r.geometry() != 0
 }
 
 // geometry folds the pre-dispatch columns so "all zero" is one check.
@@ -64,10 +67,11 @@ func (r corpusRow) geometry() int64 {
 //
 // Three invariants, each derived from production code rather than restated:
 //
-//  1. decision_reason is a solver.Reasons member or absent.
+//  1. decision_reason is a solver.Reasons member, the corpus-only non-PromQL
+//     reason, or absent on historical rows.
 //  2. Only solver.LangPromQL rows carry a classification. solver.Classify is
-//     PromQL-gated, so for any other head route/decision_reason are empty and
-//     every geometry column is the zero value. A fixture that fakes geometry on
+//     PromQL-gated, so for any other head route is empty, geometry is zero, and
+//     the corpus records the non-PromQL reason. A fixture that fakes geometry on
 //     a logql row lets a `cumulative_d >= p(cumulative_d)` gate look selective
 //     when, on real data, that language's whole population is 0 and the gate
 //     matches every failing row it has.
