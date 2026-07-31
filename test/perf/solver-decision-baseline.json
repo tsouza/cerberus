@@ -1467,7 +1467,7 @@
     "query": "matrix_selector_top_level",
     "routed": false,
     "k": 0,
-    "reason": "below-threshold"
+    "reason": "extraction-failed"
   },
   {
     "query": "metadata_label_names_leaf_projection",

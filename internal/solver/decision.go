@@ -138,6 +138,17 @@ const (
 	// now64 scanner. Fails closed to route A; only the StepAligned (range-mode)
 	// join, which step-aligns on the real per-anchor timestamp, routes B.
 	ReasonInstantJoin = "instant-join"
+
+	// ReasonExtractionFailed: the plan walk found no [chplan.GridCarrier] it
+	// could measure, so the Decision's cost grid is all zeros because NOTHING
+	// WAS MEASURED — not because the plan is cheap. Every other refusal
+	// asserts "the features were extracted and they lost"; without this token
+	// that claim is unfalsifiable, since an unmeasured plan and a genuinely
+	// zero-cost one produce the identical corpus row. It also covers a carrier
+	// kind added to chplan ahead of this package's geometry table: such a plan
+	// fails closed to route A and says so, instead of routing on invented
+	// numbers.
+	ReasonExtractionFailed = "extraction-failed"
 )
 
 // Reasons is the complete Reason vocabulary above, in declaration order.
@@ -161,6 +172,7 @@ var Reasons = []string{
 	ReasonScalarHeavy,
 	ReasonRoutingDisabled,
 	ReasonInstantJoin,
+	ReasonExtractionFailed,
 }
 
 // Slice is one shard of the anchor-grid decomposition. Bounds are

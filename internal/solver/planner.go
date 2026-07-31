@@ -197,17 +197,37 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 		return sig, notRouted(ReasonInstant).withGrid(sig, meta), 0, false
 	}
 
+	// (0) Extraction: the request declares a real grid (meta.Step > 0 by the
+	// guard above), so the plan must own at least one carrier the walk could
+	// measure. When it does not, the cost grid stamped below is all zeros
+	// because NOTHING WAS MEASURED — and every other refusal token would then
+	// be a claim about numbers that were never read. Recording that separately
+	// is the whole point: an unmeasured population averaged in with the
+	// genuinely-cheap one silently drags every calibration threshold toward
+	// zero. A carrier kind chplan grew ahead of carrierGeometryOf lands here
+	// too — its cost is unknown, not zero.
+	//
+	// Route-neutral by construction: both this and the gates below refuse, so
+	// the gate changes the recorded REASON and never the route.
+	if !sig.sawGridCarrier {
+		return sig, notRouted(ReasonExtractionFailed).withGrid(sig, meta), 0, false
+	}
+
 	// (1) Slice-invariance: any unmarked node anywhere → route A.
 	if !sig.allSliceInvariant {
 		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
 	// (1b) Routable-spine restriction: the routable spine families are the
-	// *RangeWindow matrix family and the *RangeLWR bare-selector
-	// last-with-respect-to family — ReanchorRange re-grids both. A
-	// RangeBucketFanout / StepGrid spine bound-carrier is still left at
-	// zero/stale bounds (ReanchorRange CloneNode's their grid verbatim), so
-	// those fail closed to route A. Widening to those families extends
-	// ReanchorRange + adds coverage.
+	// RangeWindow matrix family and the RangeLWR bare-selector
+	// last-with-respect-to family — ReanchorRange re-grids both. Every other
+	// [chplan.GridCarrier] kind (RangeWindowNative, RangeWindowResample,
+	// RangeBucketFanout, StepGrid, AbsentOverTime) has its grid CloneNode'd
+	// verbatim, so each shard would emit the original full-grid bounds; they
+	// fail closed to route A. Note the asymmetry this gate exists to preserve:
+	// the extractor MEASURES all seven kinds so the corpus can see what a
+	// refused plan costs, while only the two re-anchored families may be
+	// SLICED. Admitting a kind here means teaching ReanchorRange its grid
+	// first, not widening carrierGeometryOf.
 	if sig.sawNonRangeWindowSpine {
 		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
@@ -292,9 +312,10 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 // notRouted builds a non-route Decision carrying only the reason. Callers
 // chain .withGrid(sig, meta) to attach the cost-grid readout. Every refusal in
 // this package is raised after classify has run, so none of them reaches the
-// corpus with an all-zero grid — a refused row is still a calibration
-// datapoint, and a zero grid would be indistinguishable from a genuinely
-// trivial query.
+// corpus with an unexplained all-zero grid — a refused row is still a
+// calibration datapoint, and a zero grid would otherwise be indistinguishable
+// from a genuinely trivial query. The one refusal whose grid IS legitimately
+// all zeros carries ReasonExtractionFailed, which says so in the row itself.
 func notRouted(reason string) *Decision {
 	return &Decision{Reason: reason}
 }
@@ -335,21 +356,33 @@ type signals struct {
 	// TimestampColumn, does not set this flag and remains routable.
 	sawInstantVectorJoin bool
 
-	// sawNonRangeWindowSpine records a routed-spine grid bound-carrier whose
-	// grid ReanchorRange does NOT re-anchor — a RangeBucketFanout or StepGrid,
-	// which ReanchorRange CloneNode's verbatim (every shard would emit
-	// stale bounds). The routable set is the *RangeWindow matrix family
-	// plus the *RangeLWR bare-selector family: both are
-	// re-gridded by ReanchorRange and zeroed/re-filled by unpinSpine, so
-	// neither sets this flag. RangeBucketFanout / StepGrid fail closed to
-	// route A until ReanchorRange learns their grids.
+	// sawNonRangeWindowSpine records a grid bound-carrier whose grid
+	// ReanchorRange does NOT re-anchor — every [chplan.GridCarrier] kind
+	// outside the routable set, which ReanchorRange CloneNode's verbatim (so
+	// every shard would emit stale bounds). The routable set is the
+	// RangeWindow matrix family plus the RangeLWR bare-selector family: both
+	// are re-gridded by ReanchorRange and zeroed/re-filled by unpinSpine, so
+	// neither sets this flag. RangeWindowNative / RangeWindowResample /
+	// RangeBucketFanout / StepGrid / AbsentOverTime fail closed to route A
+	// until ReanchorRange learns their grids — see carrierGeometry.reanchorable,
+	// which is the single place that decision is recorded.
 	sawNonRangeWindowSpine bool
+
+	// sawGridCarrier records that the walk found at least one
+	// [chplan.GridCarrier] whose geometry carrierGeometryOf could derive. When
+	// it stays false the cost grid on the resulting Decision is all zeros
+	// because NOTHING WAS MEASURED, not because the plan is trivial — the
+	// distinction ReasonExtractionFailed exists to make. Without it the corpus
+	// cannot tell "looked at the plan and declined" from "extracted nothing",
+	// and a carrier kind added to chplan ahead of carrierGeometryOf would
+	// silently deflate every threshold calibrated off those rows.
+	sawGridCarrier bool
 
 	// Cost grid, derived from the OUTERMOST windowed node (the spine root).
 	outerN      int           // N = OuterRange/Step + 1
 	outerRange  time.Duration // OuterRange of the outermost spine
 	maxFanout   int64         // F over every windowed node
-	cumulativeD time.Duration // D = Σ Range down matrix spines + leaf RangeLWR.Lookback
+	cumulativeD time.Duration // D = Σ per-anchor lookback over every grid carrier
 
 	// innerResolutions records every inner-spine Step for the lcm
 	// commensurability check.
@@ -385,7 +418,8 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 
 	switch v := n.(type) {
 	case *chplan.RangeWindow:
-		p.recordRangeWindow(v, predStart, predEnd, depth, sig)
+		p.recordGridCarrier(v, depth, sig)
+		p.checkRangeWindowGrid(v, predStart, predEnd, depth, sig)
 		// Walk this node's exprs for now64 / scalar-heavy.
 		for _, e := range v.GroupBy {
 			p.walkExpr(e, sig)
@@ -403,8 +437,47 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		return
 
 	case *chplan.RangeLWR:
-		p.recordRangeLWR(v, predStart, predEnd, depth, sig)
+		p.recordGridCarrier(v, depth, sig)
+		p.checkRangeLWRGrid(v, predStart, predEnd, depth, sig)
 		p.walkNode(v.Input, predStart, predEnd, depth+1, sig)
+		return
+
+	case *chplan.RangeWindowNative:
+		// The ClickHouse-native `timeSeriesRateToGrid` lowering of
+		// rate(m[Range]). It owns a full eval grid, so it is the ONLY carrier
+		// in a natively-lowered plan and the sole source of that plan's
+		// n_anchors / outer_range / cumulative_d. Its bounds are pinned by
+		// construction (range mode only), so no bound-pinning gate applies;
+		// recordGridCarrier's reanchorable check is what keeps it on route A.
+		p.recordGridCarrier(v, depth, sig)
+		for _, e := range v.GroupBy {
+			p.walkExpr(e, sig)
+		}
+		for _, pr := range v.Recollapse {
+			p.walkExpr(pr.Expr, sig)
+		}
+		// Each anchor reduces the samples in its own `Range` window, so the
+		// inner spine reaches back that far — the same widening the RangeWindow
+		// arm above applies.
+		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, depth+1, sig)
+		return
+
+	case *chplan.RangeWindowResample:
+		// The native staleness-resample lowering of a bare selector at each
+		// anchor. Same story as RangeWindowNative, with Lookback (the staleness
+		// horizon) as the per-anchor window depth. Its inner spine is walked at
+		// the unwidened bounds, mirroring the RangeLWR arm it is the native
+		// sibling of.
+		p.recordGridCarrier(v, depth, sig)
+		p.walkNode(v.Input, predStart, predEnd, depth+1, sig)
+		return
+
+	case *chplan.AbsentOverTime:
+		// absent_over_time's own grid. It carries no group-key or agg-arg
+		// exprs (only SynthLabels, which are literal label pairs), so the
+		// default child recursion below the record call is the whole sweep.
+		p.recordGridCarrier(v, depth, sig)
+		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, depth+1, sig)
 		return
 
 	case *chplan.Aggregate:
@@ -434,10 +507,9 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// args that the spine recursion never sweeps. Cover the same now64
 		// gap. It also carries its own eval grid (Start/End/Step) that
 		// ReanchorRange clones VERBATIM (never re-anchors), so every shard
-		// would emit stale bounds — fail closed to route A.
-		if v.Step > 0 {
-			sig.sawNonRangeWindowSpine = true
-		}
+		// would emit stale bounds — recordGridCarrier fails it closed to
+		// route A while still measuring the grid it does carry.
+		p.recordGridCarrier(v, depth, sig)
 		for _, e := range v.GroupBy {
 			p.walkExpr(e, sig)
 		}
@@ -456,11 +528,10 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// StepGrid carries an eval grid (Start/End/Step) that ReanchorRange
 		// clones VERBATIM — the grid-prediction guard cannot see it and the
 		// slicer would leave every shard on the original full-grid bounds.
-		// A StepGrid spine carrier is not in the routable set, so it
-		// fails closed to route A.
-		if v.Step > 0 {
-			sig.sawNonRangeWindowSpine = true
-		}
+		// A StepGrid spine carrier is not in the routable set, so it fails
+		// closed to route A. It is a leaf (no Children), and it reads no
+		// samples, so it contributes an anchor count and no lookback.
+		p.recordGridCarrier(v, depth, sig)
 		return
 
 	case *chplan.Filter:
@@ -496,22 +567,179 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		return
 	}
 
-	// Default: not a spine node. Recurse into every child with the same
-	// predicted bounds, and walk any exprs the node carries via the
-	// generic node walk + a defensive expr sweep of nested ScalarSubqueries.
+	// Default: no dedicated arm above. Extraction is keyed on the
+	// [chplan.GridCarrier] INTERFACE, not on the arms of the switch, so a
+	// carrier kind that grows a grid before this walk grows an arm for it is
+	// still measured (and, if carrierGeometryOf does not know it, still fails
+	// closed) instead of contributing a silent all-zero feature vector. The
+	// arms above exist for the per-kind expr sweeps and recursion shapes;
+	// each returns, so nothing is recorded twice.
+	if gc, ok := n.(chplan.GridCarrier); ok {
+		p.recordGridCarrier(gc, depth, sig)
+	}
+
+	// Recurse into every child with the same predicted bounds, and walk any
+	// exprs the node carries via the generic node walk + a defensive expr
+	// sweep of nested ScalarSubqueries.
 	for _, c := range n.Children() {
 		p.walkNode(c, predStart, predEnd, depth, sig)
 	}
 }
 
-// recordRangeWindow gathers signals for a matrix/instant RangeWindow.
-func (p *Planner) recordRangeWindow(v *chplan.RangeWindow, predStart, predEnd time.Time, depth int, sig *signals) {
-	// Instant-shape window: Step == 0 or OuterRange == 0 on a non-leaf
-	// spine. The outermost window must carry a real anchor grid.
-	if v.Step <= 0 || (depth == 0 && v.OuterRange <= 0) {
+// carrierGeometry is the measurement-only projection of one
+// [chplan.GridCarrier]: the two spans every cost-grid feature (and therefore
+// every calibration-corpus row) is derived from, plus the single correctness
+// bit that says whether the slicer may re-grid the carrier at all.
+//
+// It exists so extraction is keyed on the GridCarrier INTERFACE rather than
+// on a hand-maintained list of concrete node kinds. A carrier the extractor
+// cannot see contributes nothing, and a Decision whose features are all zero
+// is indistinguishable from a plan that genuinely has no grid — so a missed
+// kind silently mislabels its whole population in the corpus rather than
+// raising anything.
+type carrierGeometry struct {
+	// outerRange is the span of the carrier's OWN anchor grid: first anchor
+	// to last. With the carrier's Step it yields n_anchors.
+	outerRange time.Duration
+
+	// lookback is how far back a SINGLE anchor reads — the [range] of a
+	// range-vector carrier, the staleness horizon of a resample / LWR
+	// carrier, zero for a carrier that emits a bare anchor axis and reads no
+	// samples. It is what the corpus records as cumulative_d, and with Step
+	// it yields the fan-out.
+	lookback time.Duration
+
+	// reanchorable reports whether [chplan.ReanchorRange] re-grids this kind.
+	// This is a CORRECTNESS bit, not a measurement one: a carrier
+	// ReanchorRange clones verbatim hands every shard the original full-grid
+	// bounds, so a live grid on such a kind must fail the plan closed to
+	// route A. Exactly the RangeWindow and RangeLWR families are re-gridded.
+	reanchorable bool
+}
+
+// carrierGeometryOf derives the measurement geometry of one grid carrier,
+// enumerating every [chplan.GridCarrier] implementation.
+//
+// The second return is false only for a kind added on the chplan side that
+// this package has not learned yet. The caller turns that into a LOUD
+// extraction-failed row plus a fail-closed route A rather than a silent
+// all-zero feature vector — guessing a geometry would be worse than either.
+// chplan's completeness ratchet closes the carrier set and
+// TestCarrierGeometry_CoversEveryCarrier pins this enumeration against it, so
+// the branch is unreachable in a consistent tree.
+func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
+	switch v := gc.(type) {
+	case *chplan.RangeWindow:
+		// The fan-out matrix window. OuterRange is read explicitly rather
+		// than derived from End-Start because a subquery-inner window leaves
+		// both bounds zero for ReanchorRange to fill, and the span must stay
+		// measurable there.
+		return carrierGeometry{outerRange: v.OuterRange, lookback: v.Range, reanchorable: true}, true
+
+	case *chplan.RangeLWR:
+		// The bare-selector last-with-respect-to leaf: one sample per anchor,
+		// chosen inside the Lookback staleness horizon. Re-gridded by
+		// ReanchorRange and zeroed/re-filled by the slicer's unpinSpine, so
+		// the deriv / idelta / irate / instant-LWR / negative-offset families
+		// that lower to a bare RangeLWR spine are routable.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
+
+	case *chplan.RangeWindowNative:
+		// timeSeries<fn>ToGrid: the whole rate(m[Range]) collapses into one
+		// ClickHouse aggregate, so this node ALONE carries the grid of a
+		// natively-lowered plan — it is the sole source of that plan's
+		// n_anchors / outer_range / cumulative_d. ReanchorRange has no arm
+		// for it, so it stays route A.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Range, reanchorable: false}, true
+
+	case *chplan.RangeWindowResample:
+		// timeSeriesResampleToGridWithStaleness: the native sibling of
+		// RangeLWR, with the staleness horizon as its per-anchor depth.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: false}, true
+
+	case *chplan.RangeBucketFanout:
+		// The array-aggregate fan-out behind the histogram families. Its
+		// per-node shape is slice-invariant, but its grid is cloned verbatim,
+		// which is why measuring it must not be confused with routing it.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: false}, true
+
+	case *chplan.AbsentOverTime:
+		// absent_over_time's own grid; Range is the per-anchor window.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Range, reanchorable: false}, true
+
+	case *chplan.StepGrid:
+		// A bare anchor axis for the data-free shapes (time(), vector(scalar),
+		// the zero-arg date functions). It reads no samples at all, so its
+		// per-anchor lookback is genuinely zero rather than unknown: it
+		// contributes an anchor count and no cumulative_d.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), reanchorable: false}, true
+
+	default:
+		return carrierGeometry{}, false
+	}
+}
+
+// recordGridCarrier extracts the cost-grid features from one carrier of ANY
+// kind, and records the one correctness signal that is a property of the kind
+// itself (whether the slicer can re-anchor it).
+//
+// Measurement and slice-invariance are deliberately separate concerns here.
+// Every kind is MEASURED; only the re-anchorable kinds are ROUTABLE. A
+// non-re-anchorable carrier with a live grid therefore contributes its real
+// geometry to the corpus AND sets the fail-closed flag, so the row records
+// both what the plan costs and why it stayed on route A. Nothing in this
+// function can make a plan route that would not have routed before: a
+// non-re-anchorable carrier either has step <= 0 (and then never reaches the
+// hasWindow branch) or sets sawNonRangeWindowSpine, which gate (1b) reads
+// ahead of every threshold.
+func (p *Planner) recordGridCarrier(gc chplan.GridCarrier, depth int, sig *signals) {
+	geom, ok := carrierGeometryOf(gc)
+	if !ok {
+		// A carrier kind this package does not enumerate. Refuse to guess a
+		// geometry, and refuse to route a plan that cannot be measured. Leaving
+		// sawGridCarrier unset is what turns this into a ReasonExtractionFailed
+		// row rather than a refusal that claims numbers nobody derived.
+		sig.sawNonRangeWindowSpine = true
+		return
+	}
+	sig.sawGridCarrier = true
+
+	_, _, step := gc.EvalGrid()
+
+	// A live grid ReanchorRange would clone verbatim fails closed. A carrier
+	// with no grid of its own (step <= 0) is a broadcast instant subtree —
+	// sharing it verbatim across shards is exactly right, because its value
+	// does not depend on the shard's bounds.
+	if !geom.reanchorable && step > 0 {
+		sig.sawNonRangeWindowSpine = true
+	}
+
+	// The instant/degenerate-spine gate polices the ROUTABLE spine: an
+	// outermost routable carrier must own a real anchor grid. The
+	// non-routable kinds are already covered by the flag above.
+	if geom.reanchorable && (step <= 0 || (depth == 0 && geom.outerRange <= 0)) {
 		sig.sawInstantWindow = true
 	}
 
+	if step > 0 {
+		if fan := int64(geom.lookback / step); fan > sig.maxFanout {
+			sig.maxFanout = fan
+		}
+	}
+	sig.cumulativeD += geom.lookback
+
+	if depth == 0 && geom.outerRange > 0 && step > 0 {
+		sig.hasWindow = true
+		sig.outerRange = geom.outerRange
+		sig.outerN = int(geom.outerRange/step) + 1
+	}
+}
+
+// checkRangeWindowGrid runs the bound-pinning, grid-prediction and inner-
+// resolution gates that belong to the fan-out RangeWindow family specifically
+// — the ones that read the node's own Start/End against the bounds predicted
+// at this spine depth, which no cross-kind geometry can express.
+func (p *Planner) checkRangeWindowGrid(v *chplan.RangeWindow, predStart, predEnd time.Time, depth int, sig *signals) {
 	// (2) Both Start and End must be pinned (non-zero) — unless this is an
 	// unpinned subquery-inner shape that ReanchorRange fills. An unpinned
 	// inner node (Start && End zero) is the expected shape; a HALF-pinned
@@ -538,40 +766,20 @@ func (p *Planner) recordRangeWindow(v *chplan.RangeWindow, predStart, predEnd ti
 		}
 	}
 
-	// Cost signals.
-	if v.Step > 0 {
-		fan := int64(v.Range / v.Step)
-		if fan > sig.maxFanout {
-			sig.maxFanout = fan
-		}
-	}
-	sig.cumulativeD += v.Range
-
-	if depth == 0 && v.OuterRange > 0 && v.Step > 0 {
-		sig.hasWindow = true
-		sig.outerRange = v.OuterRange
-		sig.outerN = int(v.OuterRange/v.Step) + 1
-	} else if depth > 0 && v.Step > 0 {
-		// Inner spine resolution for the lcm commensurability check.
+	// (5) Inner spine resolution for the lcm commensurability check.
+	if depth > 0 && v.Step > 0 {
 		sig.innerResolutions = append(sig.innerResolutions, v.Step)
 		p.checkCommensurability(sig)
 	}
 }
 
-// recordRangeLWR gathers signals for a bare-selector last-with-respect-to
-// node — the leaf of the safe-set range family.
-func (p *Planner) recordRangeLWR(v *chplan.RangeLWR, predStart, predEnd time.Time, depth int, sig *signals) {
-	// The RangeLWR matrix family is in the routable set: a
-	// grid-carrying RangeLWR (Step > 0) is re-anchored by ReanchorRange
-	// (its Start/End re-gridded, the input spine widened by the offset-aware
-	// Offset+Lookback membership window) and zeroed/re-filled by the slicer's
-	// unpinSpine, so it does not set sawNonRangeWindowSpine. The deriv /
-	// idelta / irate / instant-LWR / negative-offset families that lower to a
-	// bare RangeLWR spine route B. RangeBucketFanout / StepGrid stay
-	// rejected — their grids are CloneNode'd verbatim by ReanchorRange.
-	if v.Step <= 0 || (depth == 0 && v.End.Sub(v.Start) <= 0) {
-		sig.sawInstantWindow = true
-	}
+// checkRangeLWRGrid runs the RangeLWR family's bound-pinning and
+// grid-prediction gates. It differs from the RangeWindow form in two ways
+// that are properties of the node, not of the check: RangeLWR has no separate
+// OuterRange field (its span IS End-Start), and it is a spine LEAF, so the
+// grid-prediction comparison is meaningful only at depth 0 where both bounds
+// are pinned.
+func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.Time, depth int, sig *signals) {
 	startZero := v.Start.IsZero()
 	endZero := v.End.IsZero()
 	if depth == 0 {
@@ -586,23 +794,6 @@ func (p *Planner) recordRangeLWR(v *chplan.RangeLWR, predStart, predEnd time.Tim
 		}
 	} else if startZero != endZero {
 		sig.sawUnpinnedBound = true
-	}
-
-	if v.Step > 0 {
-		fan := int64(v.Lookback / v.Step)
-		if fan > sig.maxFanout {
-			sig.maxFanout = fan
-		}
-	}
-	sig.cumulativeD += v.Lookback
-
-	if depth == 0 && v.Step > 0 {
-		outer := v.End.Sub(v.Start)
-		if outer > 0 {
-			sig.hasWindow = true
-			sig.outerRange = outer
-			sig.outerN = int(outer/v.Step) + 1
-		}
 	}
 }
 

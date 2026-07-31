@@ -213,6 +213,11 @@ var enumDomains = map[string]map[string]struct{}{
 		// Routing switched off deployment-wide: the plan was classified but no
 		// threshold was consulted, so the row says nothing about where one sits.
 		"routing-disabled",
+		// Nothing was measured: the walk found no grid carrier it could read,
+		// so this row's feature columns are zero for want of data rather than
+		// because the plan is cheap. A rule that reads the cost columns must
+		// exclude this population, not average it in.
+		"extraction-failed",
 	),
 }
 

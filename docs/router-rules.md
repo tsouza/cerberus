@@ -259,7 +259,7 @@ scalar) — context, never a gate, so no inline tolerance number is needed.
 `decision_reason` is the shadow-header value the solver records to explain each
 routing decision (`routed`, `below-threshold`, `not-sliceable`, `instant`,
 `instant-join`, `high-D`, `now64`, `grid-mismatch`, `incommensurate`,
-`scalar-heavy`, `routing-disabled`; see
+`scalar-heavy`, `routing-disabled`, `extraction-failed`; see
 [`internal/solver/decision.go`](../internal/solver/decision.go)). Its primary
 use is **grouping / attribution**: the failure rules group by it so the operator
 can see *which solver path* produced the failure and pick the right lever (shard
