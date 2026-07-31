@@ -710,11 +710,24 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 	case traceql.SpansetOperation:
 		return lowerSpansetOperation(&v, s)
 	case *traceql.Pipeline:
-		return lowerPipeline(*v, s)
+		return lowerSpansetOperand(*v, s)
 	case traceql.Pipeline:
-		return lowerPipeline(v, s)
+		return lowerSpansetOperand(v, s)
 	}
 	return nil, fmt.Errorf("traceql: spanset expression %T is unsupported", e)
+}
+
+// lowerSpansetOperand lowers a parenthesised sub-pipeline operand of a
+// spanset operation (`({…} | count() > 1) || ({…})`), then re-expresses
+// a trailing spanset aggregate as the spans it stands for — every
+// operator downstream of here combines spans, not per-trace rows. See
+// spanGranularOperand for the Tempo semantics that fixes.
+func lowerSpansetOperand(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
+	plan, err := lowerPipeline(p, s)
+	if err != nil {
+		return nil, err
+	}
+	return spanGranularOperand(plan, s), nil
 }
 
 // mapStructuralOp translates Tempo's structural Operator enum to the

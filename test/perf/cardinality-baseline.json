@@ -7640,6 +7640,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "traceql/set_union_mixed_granularity",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "traceql/set_union_simple",
     "fan_factor": 1,
     "scan_rows": 3,

@@ -265,7 +265,7 @@ export const PHASES = [
     workers: SERIAL_WORKERS,
     // lower.go only (~84 KB). scope ./internal/traceql recurses into ast/, so
     // exclude the whole ast subtree plus the other top-level files.
-    exclude_files: '^ast/|^(aggregate|doc|group_coalesce|metrics_compare|metrics_pipeline|search_limit|select)\\.go$',
+    exclude_files: '^ast/|^(aggregate|doc|group_coalesce|metrics_compare|metrics_pipeline|search_limit|select|spanset_operand)\\.go$',
   },
   {
     phase: 'phase4-traceql-other',
@@ -273,7 +273,8 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: SERIAL_WORKERS,
     // The remaining top-level files (aggregate, metrics_compare,
-    // metrics_pipeline, group_coalesce, search_limit, select).
+    // metrics_pipeline, group_coalesce, search_limit, select,
+    // spanset_operand).
     exclude_files: '^ast/|^lower\\.go$',
   },
 
