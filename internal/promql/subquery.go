@@ -179,15 +179,12 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	if err != nil {
 		return lowerCtx{}, false, err
 	}
-	pinned := sub.Timestamp != nil || sub.StartOrEnd != 0
-	rangeMode := ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
-
 	var windowEnd, windowStart time.Time
 	switch {
-	case pinned && !anchor.End.IsZero():
+	case subqueryPinned(sub) && !anchor.End.IsZero():
 		windowEnd = anchor.End
 		windowStart = anchor.End.Add(-sub.Range)
-	case rangeMode:
+	case ctx.rangeMode():
 		windowEnd = ctx.end
 		windowStart = ctx.start.Add(-sub.Range)
 	case !anchor.End.IsZero():
@@ -201,12 +198,13 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	// after the shift so anchors stay on phase 0 (reference snaps
 	// `interval * ((endTs - offsetMillis) / interval)`).
 	gridEnd := epochFloor(windowEnd.Add(-anchor.Offset), step)
-	gridStart := epochFloor(windowStart.Add(-anchor.Offset), step)
-	if !gridStart.After(windowStart.Add(-anchor.Offset)) {
-		// Left-open window: an anchor landing exactly on the lower bound
-		// is excluded (reference bumps startTimestamp by one interval).
-		gridStart = gridStart.Add(step)
-	}
+	// The window is left-OPEN, so the first anchor is the first grid
+	// point STRICTLY after the lower bound — and since epochFloor never
+	// overshoots, that is always floor + one step. Reference lands on the
+	// same instant from the other side: its truncating division leaves a
+	// pre-1970 bound above the floor, so it bumps only when the snapped
+	// value is not already past the bound.
+	gridStart := epochFloor(windowStart.Add(-anchor.Offset), step).Add(step)
 	if gridStart.After(gridEnd) {
 		// Sub-step window — reference clamps start to end and evaluates
 		// the single anchor at the snapped base.
@@ -522,8 +520,8 @@ func lowerOuterRangeFnOverSubquery(
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 
-	rangeMode := ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
-	pinned := sub.Timestamp != nil || sub.StartOrEnd != 0
+	rangeMode := ctx.rangeMode()
+	pinned := subqueryPinned(sub)
 
 	switch {
 	case rangeMode && pinned:
@@ -785,8 +783,14 @@ func lowerSubqueryOverAbsent(
 	if ctx.end.IsZero() {
 		return nil, fmt.Errorf("promql: subquery over absent() requires query eval-time context (use LowerAt)")
 	}
+	// Range mode fans one absence indicator per outer anchor, so the grid
+	// reaches back a full subquery range before the QUERY start — the
+	// leading anchors otherwise have no inner anchors to reduce. Instant
+	// eval has no query start and reaches back from the eval timestamp.
+	// (ctx.end is non-zero here by the guard above, so this is exactly
+	// ctx.rangeMode().)
 	gridStart := ctx.end.Add(-sub.Range)
-	if ctx.step > 0 && !ctx.start.IsZero() {
+	if ctx.rangeMode() {
 		gridStart = ctx.start.Add(-sub.Range)
 	}
 
@@ -838,6 +842,16 @@ func lowerSubqueryOverAbsent(
 		return nil, err
 	}
 	return matrixShape(inner), nil
+}
+
+// subqueryPinned reports whether an `@` modifier fixes the subquery's
+// evaluation instant (`@ <ts>`, `@ start()`, `@ end()`). A pinned
+// subquery evaluates its own window once, at that anchor, instead of
+// following the enclosing query's grid — so it overrides range mode
+// wherever the two disagree. `offset` alone does NOT pin: it shifts the
+// grid rather than replacing it.
+func subqueryPinned(sub *parser.SubqueryExpr) bool {
+	return sub.Timestamp != nil || sub.StartOrEnd != 0
 }
 
 // subqueryAnchor reads the subquery's `@` + `offset` modifiers into an
@@ -1486,6 +1500,19 @@ func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []strin
 // `lowerSubqueryOverCallSubquery`), then wrap with an Identity-mode
 // RangeWindow on the outer's step grid (same shape as
 // `lowerSubqueryOverVectorSelector`).
+// requirePositiveInnerRange rejects a nested subquery whose inner range
+// is not positive. Both nested shapes widen the inner range to
+// `sub.Range + innerSub.Range`, and a non-positive inner range would
+// make that widening silently swallow the inner window — the inner
+// matrix would span the outer range alone, so every outer anchor would
+// reduce over the same samples instead of its own lookback slice.
+func requirePositiveInnerRange(innerSub *parser.SubqueryExpr) error {
+	if innerSub.Range <= 0 {
+		return fmt.Errorf("promql: inner subquery range must be positive, got %s", innerSub.Range)
+	}
+	return nil
+}
+
 func lowerSubqueryOverSubquery(
 	sub *parser.SubqueryExpr,
 	innerSub *parser.SubqueryExpr,
@@ -1493,8 +1520,8 @@ func lowerSubqueryOverSubquery(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	if innerSub.Range <= 0 {
-		return nil, fmt.Errorf("promql: inner subquery range must be positive, got %s", innerSub.Range)
+	if err := requirePositiveInnerRange(innerSub); err != nil {
+		return nil, err
 	}
 
 	widened := *innerSub
@@ -1554,8 +1581,8 @@ func lowerSubqueryOverCallSubquery(
 	if _, ok := rangeVectorFn[call.Func.Name]; !ok {
 		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", call.Func.Name)
 	}
-	if innerSub.Range <= 0 {
-		return nil, fmt.Errorf("promql: inner subquery range must be positive, got %s", innerSub.Range)
+	if err := requirePositiveInnerRange(innerSub); err != nil {
+		return nil, err
 	}
 
 	// Widen the inner subquery to cover the outer range PLUS the inner
