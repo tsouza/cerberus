@@ -32,6 +32,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # `strict-scan` is a required context and must post on the projected trunk.
+  merge_group:
   workflow_dispatch:
   schedule:
     # nightly at 04:45 UTC (offset from the chdb 04:00 and schema 04:30 lanes)

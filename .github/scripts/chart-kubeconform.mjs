@@ -23,6 +23,7 @@ import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { error as ghError, notice as ghNotice } from './lib/gh.mjs'
+import { isRegistryRateLimit, rateLimitDiagnosis } from './lib/registry.mjs'
 
 const CHART_DIR = process.env.CHART_DIR || 'deploy/helm/cerberus'
 const KUBE_VERSION = process.env.KUBE_VERSION || '1.28.0'
@@ -74,6 +75,13 @@ export function classifyProbeFailure(err) {
   if (/manifest unknown|not found|no such manifest|MANIFEST_UNKNOWN|NAME_UNKNOWN|404/i.test(msg)) {
     return 'missing'
   }
+  // A quota refusal is its own state, not a flavour of 'unknown'. It verifies
+  // nothing, so it fails the check exactly as 'unknown' does — but it is the
+  // one no-verdict that re-probing cannot turn into a verdict, and each probe
+  // is itself a registry request charged to the exhausted counter. Read the
+  // 429 out of `docker manifest inspect`'s stderr with the same vocabulary the
+  // build/pull wrappers use, so one registry speaks one language to CI.
+  if (isRegistryRateLimit(msg)) return 'rate-limited'
   return 'unknown'
 }
 
@@ -95,13 +103,15 @@ function probeOnce(ref, probeCmd) {
 }
 
 // Attempts and backoff mirror the Justfile's `_pull-retry`, which exists for
-// this same registry and this same failure: the chart renders a Docker Hub
-// ref (clickhouse-server), and Docker Hub answers a concurrency burst from CI
-// with `toomanyrequests` even on an authenticated runner. Since 'unknown'
-// FAILS the required `chart-validate` check, one refusal would otherwise fail
-// every open PR at once. Retrying is not tolerance — tolerance would be
-// accepting a non-verdict as a pass; this is giving the probe enough chances
-// to reach a verdict at all.
+// this same registry and this same class of failure: the chart renders a
+// Docker Hub ref (clickhouse-server), and a runner's connection to Docker Hub
+// resets, times out or 5xxes often enough that a single probe is not evidence.
+// Since a no-verdict FAILS the required `chart-validate` check, one transport
+// blip would otherwise fail every open PR at once. Retrying is not tolerance —
+// tolerance would be accepting a non-verdict as a pass; this is giving the
+// probe enough chances to reach a verdict at all. It is bounded to the faults
+// another attempt can clear: a 'rate-limited' probe leaves the loop at once
+// (see classifyProbeFailure).
 const PROBE_ATTEMPTS = 5
 const PROBE_BACKOFF_STEP_MS = 3_000
 
@@ -115,7 +125,10 @@ const PROBE_RETRY = { attempts: PROBE_ATTEMPTS, sleep: sleepSync }
 // imageExists returns the probe's verdict, retrying ONLY while it has none.
 // 'present' and 'missing' are verdicts and return immediately — re-probing a
 // definitive not-found would add PROBE_ATTEMPTS worth of backoff to every
-// release PR, whose staged appVersion is legitimately absent.
+// release PR, whose staged appVersion is legitimately absent. 'rate-limited'
+// returns immediately too, for the opposite reason: it is not a verdict and
+// never becomes one within this loop's timescale, so re-probing only charges
+// the counter that refused.
 export function imageExists(ref, probeCmd = DOCKER_MANIFEST_INSPECT, retry = PROBE_RETRY) {
   let state = 'unknown'
   for (let attempt = 1; attempt <= retry.attempts; attempt++) {
@@ -128,7 +141,8 @@ export function imageExists(ref, probeCmd = DOCKER_MANIFEST_INSPECT, retry = PRO
 
 // probeVerdict maps a probe state onto the check's verdict. An image counts as
 // verified only when the probe positively confirmed it, so 'unknown' — an
-// auth/permission refusal, a rate limit, a DNS or TLS failure — is FATAL: a
+// auth/permission refusal, a DNS or TLS failure — and 'rate-limited' are
+// FATAL: a
 // guard that reached no verdict has verified nothing, and reporting green on
 // it means the `chart-validate` required check passes precisely when the guard
 // is broken. `SKIP_IMAGE_CHECK=1` is the explicit, visible waiver for runs with
@@ -138,6 +152,29 @@ export function probeVerdict(state, isStaged) {
   if (state === 'present') return 'ok'
   if (state === 'missing' && isStaged) return 'staged'
   return 'fail'
+}
+
+// probeFailureReport — why this ref failed, in the terms that make the next
+// action obvious. The three failing states need three different sentences: a
+// definitive not-found is a chart bug, a quota refusal is a pull-volume
+// problem the shared diagnosis already explains, and everything else is
+// registry access that has to be fixed before the guard means anything.
+export function probeFailureReport(state, ref) {
+  if (state === 'missing') {
+    return `rendered image does not exist in the registry: ${ref} — the chart's appVersion/image.tag points at an unpublished tag`
+  }
+  if (state === 'rate-limited') {
+    return (
+      `could not verify image ${ref} — ${rateLimitDiagnosis('the registry existence probe')} ` +
+      'The image-existence guard did not run, and an unverified image is not a verified one.'
+    )
+  }
+  return (
+    `could not verify image ${ref} — the registry probe was retried ${PROBE_ATTEMPTS} times with backoff and still ` +
+    `reached no verdict, so the image-existence guard did not run. That is a registry that is down or refusing, not ` +
+    `a single flaky call. Fix the registry access (or set SKIP_IMAGE_CHECK=1 for an air-gapped run); an unverified ` +
+    `image is not a verified one.`
+  )
 }
 
 // The appVersion this very change stages, or null if it is unchanged.
@@ -188,6 +225,8 @@ function gitShow(ref, path) {
 // verdict, and a refusal that says nothing about whether the image exists.
 const NOT_FOUND_STDERR = 'manifest unknown'
 const NO_VERDICT_STDERR = 'unauthorized: authentication required'
+// …and the refusal that says nothing about the image AND cannot be re-asked.
+const RATE_LIMITED_STDERR = 'toomanyrequests: You have reached your unauthenticated pull rate limit.'
 
 // probeCmd factories for the self-test: a node subprocess that writes `phrase`
 // to stderr and exits non-zero, and one that succeeds silently.
@@ -207,8 +246,9 @@ const failingProbe = (phrase) => () => [
 const succeedingProbe = () => [process.execPath, ['-e', '']]
 
 // One command per probe state, so a test can script what each attempt sees.
+const probeStderrFor = { missing: NOT_FOUND_STDERR, 'rate-limited': RATE_LIMITED_STDERR }
 const probeFor = (state) =>
-  state === 'present' ? succeedingProbe() : failingProbe(state === 'missing' ? NOT_FOUND_STDERR : NO_VERDICT_STDERR)()
+  state === 'present' ? succeedingProbe() : failingProbe(probeStderrFor[state] ?? NO_VERDICT_STDERR)()
 
 // scriptedProbe hands out one command per attempt from `states` (the last
 // entry repeats) and counts the attempts, so a test can assert not just the
@@ -255,7 +295,7 @@ function selfTest() {
   const recovered = scriptedProbe(['unknown', 'present'])
   check(
     probeVerdict(imageExists('probe-self-test', recovered.cmd, recordedRetry([])), false) === 'ok',
-    'a rate-limited probe that then answers ends verified — the retry is what reaches the verdict',
+    'a probe with no verdict that then answers ends verified — the retry is what reaches the verdict',
   )
   check(recovered.calls.count === 2, 'retrying stops the moment the probe reaches a verdict')
 
@@ -270,6 +310,37 @@ function selfTest() {
   check(
     slept.join() === expectedBackoff.join(),
     'backoff grows linearly between attempts, and nothing waits after the last one',
+  )
+
+  // The rate-limit class, against the negative control directly above it: a
+  // transport no-verdict spends every attempt, a quota refusal spends one. The
+  // pair is the whole point — the probe must still retry what retrying fixes,
+  // and must stop charging a counter whose window outlasts the loop.
+  const rateLimited = scriptedProbe(['rate-limited'])
+  check(
+    imageExists('probe-self-test', rateLimited.cmd, recordedRetry([])) === 'rate-limited',
+    'a 429 on the probe classifies as rate-limited, not as a generic no-verdict',
+  )
+  check(
+    rateLimited.calls.count === 1,
+    'a rate-limited probe is asked exactly once — re-probing spends the quota that refused it',
+  )
+  check(
+    probeVerdict('rate-limited', false) === 'fail' && probeVerdict('rate-limited', true) === 'fail',
+    'a rate-limited probe fails the check, staged or not — it verified nothing',
+  )
+  const rateLimitReport = probeFailureReport('rate-limited', 'clickhouse/clickhouse-server:25.8')
+  check(
+    /QUOTA, not an outage/.test(rateLimitReport) && /retrying cannot clear it/.test(rateLimitReport),
+    'the rate-limit report names the quota and says retrying cannot help',
+  )
+  check(
+    !/retried \d+ times/.test(rateLimitReport),
+    'the rate-limit report does not claim a retry budget was spent — one attempt was made',
+  )
+  check(
+    /retried \d+ times/.test(probeFailureReport('unknown', 'clickhouse/clickhouse-server:25.8')),
+    'a transport no-verdict still reports the retries it spent',
   )
 
   const unpublished = scriptedProbe(['missing'])
@@ -304,9 +375,17 @@ function selfTest() {
 
   // None of these says the image is absent, and none of them says it is there
   // either: each classifies as unknown, and unknown fails the check.
-  for (const noVerdict of [NO_VERDICT_STDERR, 'toomanyrequests: retry later', 'tls: handshake timeout']) {
+  for (const noVerdict of [NO_VERDICT_STDERR, 'tls: handshake timeout', 'dial tcp: i/o timeout']) {
     check(classifyProbeFailure({ stderr: noVerdict }) === 'unknown', `not a not-found verdict: ${noVerdict}`)
     check(probeVerdict(classifyProbeFailure({ stderr: noVerdict }), false) === 'fail', `probe failure fails the check: ${noVerdict}`)
+  }
+
+  // The quota refusals, in the forms `docker manifest inspect` relays them.
+  // They fail the check exactly as the above do, and are held apart from them
+  // only so the loop stops re-asking.
+  for (const refused of [RATE_LIMITED_STDERR, 'toomanyrequests: retry later', 'received 429 Too Many Requests']) {
+    check(classifyProbeFailure({ stderr: refused }) === 'rate-limited', `a quota refusal is its own state: ${refused}`)
+    check(probeVerdict(classifyProbeFailure({ stderr: refused }), false) === 'fail', `a quota refusal fails the check: ${refused}`)
   }
 
   check(probeVerdict('present', false) === 'ok', 'a confirmed image passes')
@@ -413,14 +492,7 @@ if (!SKIP_IMAGE_CHECK) {
         ghNotice(`image not published yet, as expected — this change stages appVersion ${staged}: ${ref}`)
         break
       default:
-        ghError(
-          state === 'missing'
-            ? `rendered image does not exist in the registry: ${ref} — the chart's appVersion/image.tag points at an unpublished tag`
-            : `could not verify image ${ref} — the registry probe was retried ${PROBE_ATTEMPTS} times with backoff and still ` +
-                `reached no verdict, so the image-existence guard did not run. That is a registry that is down, refusing, or ` +
-                `rate-limiting, not a single flaky call. Fix the registry access (or set SKIP_IMAGE_CHECK=1 for an air-gapped ` +
-                `run); an unverified image is not a verified one.`,
-        )
+        ghError(probeFailureReport(state, ref))
         ok = false
     }
   }

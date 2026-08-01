@@ -81,7 +81,6 @@ func CloneNode(n Node) Node {
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.GroupByAliases = cloneStrings(v.GroupByAliases)
 		c.AggFuncs = cloneAggFuncs(v.AggFuncs)
-		c.SeriesKey = cloneExpr(v.SeriesKey)
 		return &c
 	case *StepGrid:
 		c := *v

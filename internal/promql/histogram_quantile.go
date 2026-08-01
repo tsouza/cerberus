@@ -447,17 +447,31 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 // name + label matchers). `windowRange` is the `[range]` duration from
 // the wrapping `rate`/`increase` (zero if there's no range-vector
 // function — currently always set when this struct is built, but
-// kept explicit for clarity). `agg` carries the AggregateExpr metadata
-// (Op, Grouping, Without) when a wrapping aggregation is present; nil
-// means "no aggregation wrap, just rate(...)".
+// kept explicit for clarity). `windowMinSamples` is that function's
+// "no sample emitted" floor — see histogramWindowMinSamples. `agg` carries
+// the AggregateExpr metadata (Op, Grouping, Without) when a wrapping
+// aggregation is present; nil means "no aggregation wrap, just rate(...)".
 type histogramAggShape struct {
-	selector    *parser.VectorSelector
-	windowRange time.Duration
-	agg         *parser.AggregateExpr
+	selector         *parser.VectorSelector
+	windowRange      time.Duration
+	windowMinSamples int
+	agg              *parser.AggregateExpr
+}
+
+// histogramWindowMinSamples maps a matched range-vector function to the
+// number of samples reference PromQL needs inside `[range]` before it emits
+// at an anchor. rate / increase span a delta between two points and emit
+// nothing with fewer; sum_over_time folds whatever is there, so one sample
+// is a valid window.
+func histogramWindowMinSamples(fn string) int {
+	if fn == "rate" || fn == "increase" {
+		return rateMinSamples
+	}
+	return stalenessMinSamples
 }
 
 // matchHistogramAggIdiom walks the expression tree looking for the
-// shape `[sum by/without (...) ((paren))*] rate|increase|sum_over_time((paren)*
+// shape `[sum|avg by/without (...) ((paren))*] rate|increase|sum_over_time((paren)*
 // <VectorSelector>[range])`. Returns the captured shape on a match.
 //
 // Accepted shapes (after peeling ParenExpr / StepInvariantExpr at each
@@ -466,25 +480,51 @@ type histogramAggShape struct {
 //   - increase(metric_bucket[5m])
 //   - sum_over_time(metric_bucket[5m])   (DELTA-histogram aggregation)
 //   - sum by(le)(rate(metric_bucket[5m]))
+//   - avg by(le)(rate(metric_bucket[5m]))
 //   - sum by(le)(sum_over_time(metric_bucket[5m]))
 //   - sum without(...) (rate(metric_bucket[5m]))
+//   - avg without(...) (increase(metric_bucket[5m]))
 //
 // Anything else returns ok=false and the caller falls through to the
-// bare-selector path. Specifically rejected: non-sum aggregations
-// (avg / max / quantile / …), range-vector functions other than
-// rate / increase / sum_over_time, deeper nestings (e.g. `sum(sum(...))`).
+// bare-selector path. Specifically rejected: aggregations whose ladder
+// the element-wise per-bucket collapse cannot reproduce (see
+// classicBucketAggOpIsLadderPreserving), range-vector functions other
+// than rate / increase / sum_over_time, deeper nestings (e.g.
+// `sum(sum(...))`).
+// classicBucketAggOpIsLadderPreserving reports whether a PromQL
+// aggregation over per-`le` bucket samples yields a cumulative ladder that
+// the element-wise per-bucket collapse in classicBucketSumAggs reproduces.
+//
+// `sum` does, because summation commutes with the per-bucket → cumulative
+// running total. `avg` does too, one step removed: within a group every
+// row carries the same number of buckets (the layout is a group key, see
+// classicBucketAggGroupBy), so `avg` is `sum` divided by one row count
+// that is constant across every bucket position. histogram_quantile
+// interpolates the RATIO of cumulative counts to the total, so scaling the
+// whole ladder by that constant leaves the quantile untouched — the same
+// scale-invariance that lets `rate`, `increase` and `sum_over_time` share
+// one lowering.
+//
+// Every other aggregation needs the ladder accumulated BEFORE the
+// reduction and is rejected here — see classicBucketSumAggs for the
+// counterexample that rules out `min` / `max`.
+func classicBucketAggOpIsLadderPreserving(op parser.ItemType) bool {
+	return op == parser.SUM || op == parser.AVG
+}
+
 func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 	e = peelWrappers(e)
 
 	// Try an outer aggregation wrapper.
 	var agg *parser.AggregateExpr
 	if a, ok := e.(*parser.AggregateExpr); ok {
-		if a.Op != parser.SUM {
+		if !classicBucketAggOpIsLadderPreserving(a.Op) {
 			return histogramAggShape{}, false
 		}
 		if a.Param != nil {
-			// `sum` with a parameter (the parser allows topk/bottomk
-			// to surface as AggregateExpr with Param set; defensive).
+			// `sum` / `avg` with a parameter (the parser allows
+			// topk/bottomk to surface as AggregateExpr with Param set;
+			// defensive).
 			return histogramAggShape{}, false
 		}
 		agg = a
@@ -524,9 +564,10 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		return histogramAggShape{}, false
 	}
 	return histogramAggShape{
-		selector:    vs,
-		windowRange: ms.Range,
-		agg:         agg,
+		selector:         vs,
+		windowRange:      ms.Range,
+		windowMinSamples: histogramWindowMinSamples(call.Func.Name),
+		agg:              agg,
 	}, true
 }
 
@@ -606,21 +647,12 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 
 	// Build the Aggregate. GroupBy comes from the surrounding `sum`
 	// clause (dropping `le` from by-lists since OTel-CH classic
-	// histograms have no per-bucket rows); aggregations are
-	// sumForEach(BucketCounts) + any(ExplicitBounds).
-	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
-	aggFuncs := []chplan.AggFunc{
-		{
-			Name:  "sumForEach",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
-			Alias: s.BucketCountsColumn,
-		},
-		{
-			Name:  "any",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
-			Alias: s.ExplicitBoundsColumn,
-		},
-	}
+	// histograms have no per-bucket rows) plus the bucket LAYOUT — see
+	// classicBucketAggGroupBy. The only bucket aggregate is
+	// sumForEach(BucketCounts); ExplicitBounds rides the group key.
+	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	groupBy, groupByAliases := classicBucketAggGroupBy(userGroupBy, userAliases, s)
+	aggFuncs := classicBucketSumAggs(s)
 	agg := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            groupBy,
@@ -669,6 +701,67 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	}, nil
 }
 
+// classicBucketAggGroupBy appends the bucket LAYOUT to a classic-histogram
+// aggregation's group keys.
+//
+// The `le` ladder a classic OTel-CH row carries is the pair
+// (BucketCounts[i], ExplicitBounds[i]) — position i means nothing without
+// the bounds array it indexes. Aggregating counts element-wise across rows
+// is therefore only defined for rows that share one layout: adding
+// position i of a `[0.1, 0.5, 1]` row to position i of a `[1, 10, 100]` row
+// yields a count vector that indexes neither ladder, and the interpolation
+// then runs against whichever array an arbitrary pick returned. That is a
+// silently wrong quantile — no error, no empty result, just a number.
+//
+// Two ordinary shapes put mismatched layouts in one group: a producer
+// changing its bucket boundaries mid-window (rows of ONE series disagree
+// across timestamps), and two series with different layouts colliding once
+// `by (...)` drops the label that told them apart. Making the layout a
+// group key keeps each ladder whole — every group's counts and bounds come
+// from rows that agree on the layout — so each emitted quantile is
+// computed against the ladder it was actually measured on.
+//
+// The key is appended LAST so the user's own keys keep their aliases and
+// ordinal positions; the wrapping Project rebuilds Attributes from those
+// and reads ExplicitBounds by name, exactly as it read the old `any()`
+// aggregate's alias.
+func classicBucketAggGroupBy(userGroupBy []chplan.Expr, userAliases []string, s schema.Metrics) ([]chplan.Expr, []string) {
+	groupBy := make([]chplan.Expr, 0, len(userGroupBy)+1)
+	groupBy = append(groupBy, userGroupBy...)
+	groupBy = append(groupBy, &chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
+
+	aliases := make([]string, 0, len(userAliases)+1)
+	aliases = append(aliases, userAliases...)
+	aliases = append(aliases, s.ExplicitBoundsColumn)
+	return groupBy, aliases
+}
+
+// classicBucketSumAggs is the element-wise bucket-count collapse for the
+// classic-histogram aggregated paths.
+//
+// sumForEach is the ONLY per-bucket reducer that is sound here, and the
+// reason is structural rather than a matter of which functions ClickHouse
+// happens to ship. BucketCountsColumn holds PER-BUCKET counts; the ladder
+// histogram_quantile interpolates is their running total. Summation
+// commutes with that running total — cumsum(Σ_rows c[i]) == Σ_rows
+// cumsum(c)[i] — so summing per-bucket counts and then accumulating gives
+// exactly the ladder Prometheus builds by aggregating already-cumulative
+// per-`le` samples. No other reducer commutes: max over per-bucket counts
+// followed by cumsum is not the max over cumulative ladders (rows
+// [10, 0] and [0, 10] give ladder [10, 20] element-wise-max-then-cumsum
+// against Prometheus's [10, 10]), and the same holds for min. Those
+// aggregations need the ladder built BEFORE the reduction — see
+// matchHistogramAggIdiom for which PromQL aggregations reach here.
+func classicBucketSumAggs(s schema.Metrics) []chplan.AggFunc {
+	return []chplan.AggFunc{
+		{
+			Name:  "sumForEach",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
+			Alias: s.BucketCountsColumn,
+		},
+	}
+}
+
 // histogramAggGroupBy translates the user's `sum [by/without]` clause
 // into the chplan.Aggregate.GroupBy + GroupByAliases + the
 // Attributes-rebuild expression for the wrapping Project.
@@ -685,7 +778,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	if agg == nil {
 		// `histogram_quantile(phi, rate(metric[5m]))` — group by series
 		// identity so each series gets its own bucket-rate vector.
-		return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+		return []chplan.Expr{histogramIdentityExpr(s)},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
 	}
@@ -697,15 +790,15 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 		// Attributes map directly (CH rejects mapFilter with an empty
 		// IN list as a syntax error).
 		if len(agg.Grouping) == 0 {
-			return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+			return []chplan.Expr{histogramIdentityExpr(s)},
 				[]string{"gkey_0"},
 				&chplan.ColumnRef{Name: "gkey_0"}
 		}
 		return []chplan.Expr{
-				canonicalGroupKeyExpr(&chplan.MapWithoutKeys{
-					Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+				&chplan.MapWithoutKeys{
+					Map:  histogramIdentityExpr(s),
 					Keys: append([]string(nil), agg.Grouping...),
-				}, s),
+				},
 			},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
@@ -724,7 +817,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	mapArgs := make([]chplan.Expr, 0, len(labels)*2)
 	for i, label := range labels {
 		alias := fmt.Sprintf("gkey_%d", i)
-		groupBy[i] = attributeLookup(s.AttributesColumn, label)
+		groupBy[i] = attributeLookupExpr(histogramIdentityExpr(s), label)
 		aliases[i] = alias
 		mapArgs = append(
 			mapArgs,

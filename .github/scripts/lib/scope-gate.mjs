@@ -1,5 +1,7 @@
-// scope-gate.mjs — the shared decision behind "does THIS pull request touch the
-// scope a heavy lane guards?", used by the `mutation` and `compose-smoke` lanes.
+// scope-gate.mjs — the shared decision behind "does THIS change touch the scope
+// a heavy lane guards?", used by the `mutation` and `compose-smoke` lanes. The
+// change is a pull request's diff or a merge-queue batch's diff; both reduce to
+// a base/head pair of SHAs.
 //
 // Why this exists
 // ---------------
@@ -29,25 +31,53 @@
 
 import { git, warning } from './gh.mjs';
 
-// Events that must run the FULL lane, never a diff-scoped subset:
+// Events that run a diff-scoped subset rather than the FULL lane. Everything
+// not named here runs everything, so an event nobody anticipated fails OPEN.
 //
-//   push / schedule / workflow_dispatch — these are the safety net the scoped
-//     PR path leans on. A PR selects legs from its own diff, so a leg whose
-//     scope no PR happened to touch (an indirect dependency, a generated
-//     golden, a toolchain bump landing through another path) is still swept
-//     here. Scoping THESE would leave the sweep with no floor at all.
+//   pull_request — scoped to its own diff, unless the head branch is
+//     `release/*`. The release-staging PR is the last gate before a tag exists
+//     and RELEASE_REQUIRED_CHECKS names these lanes, so it runs the whole thing
+//     regardless of how small its own diff is (a release PR's diff is a version
+//     bump and a CHANGELOG — nearly empty by construction, and exactly the
+//     moment full evidence is required).
 //
-//   pull_request with a `release/*` head — the release-staging PR is the last
-//     gate before a tag exists, and RELEASE_REQUIRED_CHECKS names these lanes.
-//     It runs the whole thing regardless of how small its own diff is (a
-//     release PR's diff is a version bump and a CHANGELOG — nearly empty by
-//     construction, and exactly the moment full evidence is required).
+//   merge_group — scoped to the batch's own diff, for the same reason and by
+//     the same arithmetic as a pull request: `base_sha..head_sha` is precisely
+//     "what this batch adds on top of main", which is the union of the queued
+//     PRs' diffs. A merge-queue entry is a PRE-merge gate on a projected trunk,
+//     so it must ask the question a PR asks; running the full sweep there would
+//     charge every batch the whole matrix on top of the post-merge push run
+//     that already sweeps it, which is the wall-clock bill scoping exists to
+//     remove. The queue does NOT weaken the floor: `main` still advances to the
+//     merge group's own head SHA, and the push-to-main sweep (unscoped, below)
+//     runs on that commit exactly as it does today.
+//
+//     A `release/*` PR travelling through the queue is scoped here — the merge
+//     group payload carries no constituent head_ref to test — but it is not
+//     un-gated: it swept the full lane on its own `pull_request` event, and
+//     sweeps it again on the push that lands it.
+//
+// Events NOT named here, and why the full lane is right for them:
+//
+//   push / schedule / workflow_dispatch — the safety net every scoped path
+//     leans on. A leg whose scope no PR happened to touch (an indirect
+//     dependency, a generated golden, a toolchain bump landing through another
+//     path) is still swept here. Scoping THESE would leave the sweep with no
+//     floor at all.
+const DIFF_SCOPED_EVENTS = ['pull_request', 'merge_group'];
+
 export function runsFullLane({ eventName, headRef }) {
-  if (eventName !== 'pull_request') return true;
+  if (!DIFF_SCOPED_EVENTS.includes(eventName)) return true;
   return String(headRef ?? '').startsWith('release/');
 }
 
-// changedPaths — the repo-relative paths this PR touches, as a Set.
+// changedPaths — the repo-relative paths this change touches, as a Set.
+//
+// Callers pass `github.event.pull_request.base.sha` / `.head.sha` on a pull
+// request and `github.event.merge_group.base_sha` / `.head_sha` in a merge
+// queue. Both pairs answer the same question; a caller that opts a lane into
+// `merge_group:` must wire the merge-group pair, or the missing-sha branch
+// below runs the full lane.
 //
 // Returns null when the diff CANNOT be computed (missing refs, a shallow
 // checkout, an unrelated-history merge-base failure). null is not "nothing

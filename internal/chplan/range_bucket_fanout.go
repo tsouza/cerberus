@@ -80,6 +80,16 @@ type RangeBucketFanout struct {
 	// Scale / …) so downstream consumers read the columns by name.
 	AggFuncs []AggFunc
 
+	// MinSamples is the number of distinct sample timestamps an anchor's
+	// window must hold before the anchor emits a row. It carries the
+	// per-function "no sample emitted" rule the collapsed range-vector
+	// function owns: a bare selector resolves to at most one sample so one
+	// is enough, while the `rate` / `increase` idiom needs two points to
+	// span a delta and reference PromQL emits NOTHING at an anchor whose
+	// window holds fewer. Values <= 1 impose no filter — an anchor with no
+	// sample already produces no fanned row, hence no GROUP BY row.
+	MinSamples int
+
 	// AnchorAlias is the output column name for the grid anchor
 	// (always "anchor_ts" today).
 	AnchorAlias string
@@ -87,15 +97,6 @@ type RangeBucketFanout struct {
 	// TimestampCol is the per-sample timestamp column on Input — the
 	// argMax tie-break argument and the fan-out distance reference.
 	TimestampCol string
-
-	// MinSamplesPerSeries drops a (series, anchor) bucket with fewer than
-	// this many source samples before the user grouping is applied. Rate
-	// requires two samples per source series; aggregating first would let
-	// separate one-sample series incorrectly satisfy that requirement.
-	// SeriesKey identifies the raw source series for that check and is
-	// required when MinSamplesPerSeries is non-zero.
-	MinSamplesPerSeries int
-	SeriesKey           Expr
 }
 
 func (*RangeBucketFanout) planNode() {}
@@ -113,17 +114,10 @@ func (r *RangeBucketFanout) Equal(other Node) bool {
 	if r.Step != o.Step || r.Lookback != o.Lookback || r.Offset != o.Offset {
 		return false
 	}
+	if r.MinSamples != o.MinSamples {
+		return false
+	}
 	if r.AnchorAlias != o.AnchorAlias || r.TimestampCol != o.TimestampCol {
-		return false
-	}
-	if r.MinSamplesPerSeries != o.MinSamplesPerSeries {
-		return false
-	}
-	if r.SeriesKey == nil || o.SeriesKey == nil {
-		if r.SeriesKey != nil || o.SeriesKey != nil {
-			return false
-		}
-	} else if !r.SeriesKey.Equal(o.SeriesKey) {
 		return false
 	}
 	if len(r.GroupBy) != len(o.GroupBy) || len(r.AggFuncs) != len(o.AggFuncs) {

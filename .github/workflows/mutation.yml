@@ -11,6 +11,11 @@ name: mutation
 # schedule / dispatch and `release/*` PRs sweep the FULL matrix, so no leg's
 # efficacy floor depends on some PR happening to touch its package.
 #
+# A merge-queue entry is scoped the same way, off the merge group's own
+# `base_sha..head_sha`. The push that lands the batch still sweeps the full
+# matrix on the identical SHA, so the floor is unchanged and the queue is not
+# charged the sweep twice.
+#
 # Previously the matrix was skipped WHOLESALE on any non-release PR and the
 # required `mutation` aggregator reported that skip as green. That is a hollow
 # green — a required check passing on work it never did — and it let a PR drop
@@ -25,6 +30,11 @@ name: mutation
 
 on:
   pull_request:
+  # `mutation` is a required context, so the aggregator has to post inside the
+  # queue. The merge group selects legs from its OWN diff (`base_sha..head_sha`,
+  # the union of the batched PRs' diffs) exactly as a PR does — see the
+  # merge_group clause in .github/scripts/lib/scope-gate.mjs.
+  merge_group:
   push:
     branches: [main]
   schedule:
@@ -65,8 +75,10 @@ jobs:
           # that fallback is a safety net, not the intended path.
           fetch-depth: 0
 
-      # BASE_SHA/HEAD_SHA are empty off pull_request; the selector already runs
-      # the full matrix for those events and never consults them.
+      # A pull request and a merge group each name a base/head pair; the two are
+      # mutually exclusive, so one `||` picks whichever the event carries.
+      # BASE_SHA/HEAD_SHA are empty off both, and the selector already runs the
+      # full matrix for those events and never consults them.
       - id: emit
         name: select the phases this event runs
         run: node .github/scripts/mutation-matrix.mjs
@@ -74,8 +86,8 @@ jobs:
           MODE: emit
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
 
   mutate:
     # Per-phase mutation kill-zone. gremlins v0.6.0 has no per-package

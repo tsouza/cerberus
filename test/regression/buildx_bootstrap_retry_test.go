@@ -222,11 +222,21 @@ func TestBuildxCompositeAcquiresTheImageItBoots(t *testing.T) {
 func TestBuildkitImagePullRetriesAndFallsBack(t *testing.T) {
 	t.Parallel()
 
-	// The module's own retry budget. A pull that never succeeds against a
-	// daemon that holds no local copy must be attempted exactly this many
-	// times: fewer means the flake gets through, more means an unreachable
-	// registry stalls the job.
+	// The module's own retry budget for the TRANSPORT class. A pull that never
+	// succeeds against a daemon that holds no local copy must be attempted
+	// exactly this many times: fewer means the flake gets through, more means
+	// an unreachable registry stalls the job.
 	const pullAttempts = 5
+
+	// The two ways the bootstrap pull fails. A transport fault earns the full
+	// budget; a quota refusal earns exactly one attempt, because the window it
+	// is counted over outlasts any backoff this loop can spend and every extra
+	// attempt deepens the deficit (issue #1561).
+	const (
+		transportFault = "connection reset by peer"
+		rateLimited    = "toomanyrequests: You have reached your unauthenticated pull rate limit."
+		oneAttempt     = 1
+	)
 
 	cases := []struct {
 		name string
@@ -236,13 +246,17 @@ func TestBuildkitImagePullRetriesAndFallsBack(t *testing.T) {
 		// imageInDaemon makes the stub's `docker image inspect` succeed,
 		// i.e. the runner already holds the image.
 		imageInDaemon bool
-		wantExitCode  int
-		wantPulls     int
+		// failureText is what the stub's failing pull writes to stderr; it is
+		// what the module classifies on.
+		failureText  string
+		wantExitCode int
+		wantPulls    int
 	}{
 		{
 			name:           "retries a failing pull until the budget is spent",
 			pullSucceedsOn: pullAttempts + 1,
 			imageInDaemon:  false,
+			failureText:    transportFault,
 			wantExitCode:   1,
 			wantPulls:      pullAttempts,
 		},
@@ -250,6 +264,7 @@ func TestBuildkitImagePullRetriesAndFallsBack(t *testing.T) {
 			name:           "a transient failure is ridden out",
 			pullSucceedsOn: 2,
 			imageInDaemon:  false,
+			failureText:    transportFault,
 			wantExitCode:   0,
 			wantPulls:      2,
 		},
@@ -257,6 +272,29 @@ func TestBuildkitImagePullRetriesAndFallsBack(t *testing.T) {
 			name:           "an image already in the daemon satisfies the postcondition",
 			pullSucceedsOn: pullAttempts + 1,
 			imageInDaemon:  true,
+			failureText:    transportFault,
+			wantExitCode:   0,
+			wantPulls:      1,
+		},
+		{
+			name: "a rate-limited pull is attempted once, not five times",
+			// It would have succeeded on the second attempt. It still fails:
+			// what is under test is that the loop stops spending a quota it
+			// has just been told is exhausted.
+			pullSucceedsOn: 2,
+			imageInDaemon:  false,
+			failureText:    rateLimited,
+			wantExitCode:   1,
+			wantPulls:      oneAttempt,
+		},
+		{
+			name: "a locally present image still passes when the registry rate-limits",
+			// The fallback is asked BEFORE the quota question, because a copy
+			// in the daemon is the artefact wanted no matter why the pull
+			// failed — buildx boots from exactly that copy.
+			pullSucceedsOn: pullAttempts + 1,
+			imageInDaemon:  true,
+			failureText:    rateLimited,
 			wantExitCode:   0,
 			wantPulls:      1,
 		},
@@ -272,7 +310,7 @@ func TestBuildkitImagePullRetriesAndFallsBack(t *testing.T) {
 			if tc.imageInDaemon {
 				inspectStatus = 0
 			}
-			writeStubDocker(t, dir, callLog, tc.pullSucceedsOn, inspectStatus)
+			writeStubDocker(t, dir, callLog, tc.pullSucceedsOn, inspectStatus, tc.failureText)
 
 			cmd := exec.Command("node", "../../.github/scripts/"+buildxPullScript)
 			cmd.Env = append(
@@ -312,7 +350,7 @@ func TestBuildkitImagePullRetriesAndFallsBack(t *testing.T) {
 
 // writeStubDocker drops a `docker` onto dir that records every `pull` and
 // answers `image inspect` with inspectStatus.
-func writeStubDocker(t *testing.T, dir, callLog string, pullSucceedsOn, inspectStatus int) {
+func writeStubDocker(t *testing.T, dir, callLog string, pullSucceedsOn, inspectStatus int, failureText string) {
 	t.Helper()
 
 	script := strings.Join([]string{
@@ -322,7 +360,7 @@ func writeStubDocker(t *testing.T, dir, callLog string, pullSucceedsOn, inspectS
 		"    echo pull >> " + shellQuote(callLog),
 		"    attempts=$(wc -l < " + shellQuote(callLog) + " | tr -d ' ')",
 		"    [ \"$attempts\" -ge " + strconv.Itoa(pullSucceedsOn) + " ] && exit 0",
-		"    echo 'stub: connection reset by peer' >&2",
+		"    echo " + shellQuote("stub: "+failureText) + " >&2",
 		"    exit 1",
 		"    ;;",
 		"  image)",

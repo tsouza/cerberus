@@ -182,8 +182,9 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 			}
 
 			// Walk the tree under HistogramQuantile.Input — must contain
-			// an Aggregate node with `sumForEach` + `any` aggregators and
-			// a Scan against the classic histogram table.
+			// an Aggregate node with the `sumForEach` aggregator, the
+			// bucket-layout grouping key, and a Scan against the classic
+			// histogram table.
 			var foundAgg *chplan.Aggregate
 			var foundScan *chplan.Scan
 			chplan.Walk(hq.Input, func(n chplan.Node) bool {
@@ -210,17 +211,20 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 			}
 
 			// Validate the aggregate functions: sumForEach(BucketCounts)
-			// + any(ExplicitBounds).
+			// is the only reducer. ExplicitBounds is NOT reduced — it is
+			// a grouping key, so every row folded into a group shares
+			// one bucket layout and position i of the summed counts
+			// indexes the same bound for every contributing row.
 			if foundAgg != nil {
-				if len(foundAgg.AggFuncs) != 2 {
-					t.Errorf("Aggregate.AggFuncs = %d funcs, want 2", len(foundAgg.AggFuncs))
-				} else {
-					if foundAgg.AggFuncs[0].Name != "sumForEach" {
-						t.Errorf("AggFuncs[0].Name = %q, want sumForEach", foundAgg.AggFuncs[0].Name)
-					}
-					if foundAgg.AggFuncs[1].Name != "any" {
-						t.Errorf("AggFuncs[1].Name = %q, want any", foundAgg.AggFuncs[1].Name)
-					}
+				if len(foundAgg.AggFuncs) != 1 {
+					t.Errorf("Aggregate.AggFuncs = %d funcs, want 1", len(foundAgg.AggFuncs))
+				} else if foundAgg.AggFuncs[0].Name != "sumForEach" {
+					t.Errorf("AggFuncs[0].Name = %q, want sumForEach", foundAgg.AggFuncs[0].Name)
+				}
+				if len(foundAgg.GroupBy) == 0 {
+					t.Errorf("Aggregate.GroupBy is empty, want the %s layout key", s.ExplicitBoundsColumn)
+				} else if last, ok := foundAgg.GroupBy[len(foundAgg.GroupBy)-1].(*chplan.ColumnRef); !ok || last.Name != s.ExplicitBoundsColumn {
+					t.Errorf("Aggregate.GroupBy does not end in the %s layout key: %#v", s.ExplicitBoundsColumn, foundAgg.GroupBy)
 				}
 			}
 		})
@@ -231,8 +235,9 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 // that `le` is silently dropped from `sum by(le)` clauses on the
 // classic-histogram path. The bucket distribution lives in the
 // parallel BucketCounts × ExplicitBounds arrays — there is no `le`
-// label per row to group on — so `sum by(le)` semantically collapses
-// to a single group.
+// label per row to group on — so `sum by(le)` contributes no grouping
+// key of its own, and the only key left on the Aggregate is the
+// bucket-layout key the lowering always appends.
 func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	t.Parallel()
 
@@ -260,9 +265,14 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	if foundAgg == nil {
 		t.Fatalf("no Aggregate found")
 	}
-	if len(foundAgg.GroupBy) != 0 {
-		t.Errorf("Aggregate.GroupBy = %d expressions, want 0 (le must be dropped, no other labels)",
+	if len(foundAgg.GroupBy) != 1 {
+		t.Fatalf("Aggregate.GroupBy = %d expressions, want 1 (le must be dropped, no other labels, leaving only the layout key)",
 			len(foundAgg.GroupBy))
+	}
+	only, ok := foundAgg.GroupBy[0].(*chplan.ColumnRef)
+	if !ok || only.Name != s.ExplicitBoundsColumn {
+		t.Errorf("Aggregate.GroupBy[0] = %#v, want the %s layout key — anything else means `le` survived the by-clause",
+			foundAgg.GroupBy[0], s.ExplicitBoundsColumn)
 	}
 }
 
@@ -516,45 +526,6 @@ func TestLower_HistogramQuantile_NativeBareRange(t *testing.T) {
 	}
 	if sawCrossJoin {
 		t.Errorf("range lowering must not contain a CrossJoin (single-pass invariant)")
-	}
-}
-
-// TestLower_HistogramQuantileClassicRateRangeRequiresTwoSamplesPerSource
-// pins the rate rule before sum by(le) merges classic histogram series. A
-// single sample in each of two source series must not become a valid rate
-// merely because the output aggregation sees two rows.
-func TestLower_HistogramQuantileClassicRateRangeRequiresTwoSamplesPerSource(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := start.Add(5 * time.Minute)
-
-	expr, err := p.ParseExpr(`histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration_bucket[5m])))`)
-	if err != nil {
-		t.Fatalf("ParseExpr: %v", err)
-	}
-	plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
-	if err != nil {
-		t.Fatalf("LowerAtRange: %v", err)
-	}
-
-	var fanout *chplan.RangeBucketFanout
-	chplan.Walk(plan, func(n chplan.Node) bool {
-		if v, ok := n.(*chplan.RangeBucketFanout); ok {
-			fanout = v
-		}
-		return true
-	})
-	if fanout == nil {
-		t.Fatal("expected RangeBucketFanout")
-	}
-	if fanout.MinSamplesPerSeries != 2 {
-		t.Errorf("MinSamplesPerSeries = %d, want 2", fanout.MinSamplesPerSeries)
-	}
-	if got := canonicalMapKeyColName(t, fanout.SeriesKey); got != s.AttributesColumn {
-		t.Errorf("SeriesKey = %q, want mapSort(%q)", got, s.AttributesColumn)
 	}
 }
 

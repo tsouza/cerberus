@@ -7,6 +7,11 @@ on:
     # maintenance preflight reads these check-runs before publishing.
     branches: [main, 'release/*.x']
   pull_request:
+  # `check` / `lint` / `forbid-skip` are required contexts, so they must post on
+  # the merge queue's projected trunk as well — a required context the merge
+  # group never produces leaves the entry queued forever. See the merge-queue
+  # section of docs/test-strategy.md.
+  merge_group:
 
 permissions:
   contents: read
@@ -662,6 +667,13 @@ jobs:
       - name: Assert the compose-smoke scope gate decides correctly
         run: node --test .github/scripts/compose-smoke-scope.test.mjs
 
+      # The compose pre-pull's model→image decision. A service compose BUILDS
+      # must never be handed to `docker pull`: its ref exists in no registry, so
+      # the pre-pull burns every retry on a manifest that cannot resolve and
+      # fails the lane minutes in. Cheap to pin here, expensive to learn there.
+      - name: Assert the compose pre-pull fetches only fetchable images
+        run: node --test .github/scripts/compose-pull-images.test.mjs
+
       # Same discipline for the mutation lane's phase planner, one step further:
       # its selector decides which legs an ordinary PR runs, so a bug there is
       # not a slow release but a SILENT one — legs quietly deselected while the
@@ -671,6 +683,19 @@ jobs:
       # EXACTLY, not merely non-empty.
       - name: Assert the mutation phase selector scopes correctly
         run: node --test .github/scripts/mutation-matrix.test.mjs
+
+      # The two auto-labelers, same discipline: neither is a required check,
+      # so a broken mapping never turns anything red — it just quietly stops
+      # labeling, which is exactly how 62 issues ended up bare. The issue
+      # labeler's tests prove every area arm and every type arm is reachable
+      # from a real issue, and prove the CLI FAILS on each vacuity shape it
+      # exists to catch (zero issues scanned, a body never fetched, an issue
+      # no rule classifies). `pr-type-label.mjs --self-test` pins the shared
+      # type table the issue labeler imports rather than restates.
+      - name: Assert the auto-labelers still label
+        run: |
+          node .github/scripts/pr-type-label.mjs --self-test
+          node --test .github/scripts/issue-label.test.mjs
 
       # Committed-artefact discipline. Every other gate asks whether the tree
       # COMPILES and PASSES; none asks what it CONTAINS, so a build artefact
@@ -727,62 +752,12 @@ jobs:
       - name: Assert the parity baseline updater writes a gateable roster
         run: node --test .github/scripts/compat-baseline-sync.test.mjs
 
-  # `forbid-deferral` is the sibling of `forbid-skip` for PROSE. Where
-  # forbid-skip rejects a test that declines to assert, this rejects a change
-  # that names work it is not doing and walks away: the repository's rule is
-  # that out-of-scope findings become GitHub Issues, never a sentence in a PR
-  # body, a commit message, or a comment.
-  #
-  # Scope is the change's OWN additions — the description, the commit messages
-  # in its range, and the `+` lines of its diff. The tree at large is not
-  # scanned, because the phrases involved are also ordinary architecture prose
-  # ("out of scope for the unknown-name fan-out" describes a boundary, not a
-  # deferral), and a gate that fired on those would be unusable — an unusable
-  # gate gets routed around, which is worse than no gate. This is scoping, not
-  # an allow-list: there is no tolerance file and no way to park a violation.
-  # The one accepted resolution is an OPEN issue cited next to the marker.
-  #
-  # The commit-message surface is not decoration. A sweep of all 1326 commits
-  # on `main` found 217 carrying deferral text, and 178 of those carry it ONLY
-  # in intra-branch commit messages — absent from the PR description entirely.
-  # A description-only gate would miss ~82% of the real population.
-  #
-  # Runs on pull_request AND push-to-main so it is eligible as a required
-  # status check and posts the check-run that release-gate-drift.yml looks for.
-  forbid-deferral:
-    name: forbid-deferral
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # Every cited number is resolved through the API: a deferral is only
-      # tracked if the number names an issue (not a pull request) that is open.
-      issues: read
-      # On a push there is no event payload body, so the description surface is
-      # resolved from the head commit's associated pull request.
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # The gate walks a commit range and diffs base against head.
-          fetch-depth: 0
-      # Pure-unit guard over the marker table, the two scanners and the
-      # verdict. It runs FIRST and it is the anti-hollow-green pin: it proves
-      # each table row fires on a real example AND that the three measured
-      # false-positive shapes (Go's `defer` statement, the phrase used to
-      # record COMPLETED work, and a change that only DELETES a marker line)
-      # stay clean. A gate never shown to reject is indistinguishable from one
-      # that inspects nothing.
-      - name: Assert the deferral scanner matches, and does not over-match
-        run: node --test .github/scripts/forbid-deferral.test.mjs
-      - name: Reject untracked deferrals
-        run: node .github/scripts/forbid-deferral.mjs
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Bodies are attacker-controlled: passed via env, never interpolated
-          # into a shell `run:` line.
-          PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  # `forbid-deferral` used to live here. It moved to its own workflow file,
+  # `.github/workflows/forbid-deferral.yml`, because one of its three surfaces
+  # is the PR DESCRIPTION and this workflow's bare `pull_request:` trigger does
+  # not include `edited` — a body corrected exactly as the gate instructs
+  # produced no new check-run. Adding `types:` here would re-run the whole
+  # suite on every title tweak, so the gate got its own cheap trigger instead.
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no

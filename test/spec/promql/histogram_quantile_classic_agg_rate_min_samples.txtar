@@ -1,0 +1,70 @@
+# `histogram_quantile(phi, sum by(le)(rate(<classic hist>[1m])))` over a 10s
+# step grid, pinning the sample floor `rate` imposes on each anchor.
+#
+# Reference PromQL's rate needs TWO points inside `[1m]` to span a delta; an
+# anchor whose window holds one (or none) emits NOTHING — not a zero, not the
+# single sample's value. The seed puts scrapes at 00:00:00 and 00:00:15 only,
+# so across the 00:00:00..00:05:00 grid exactly four anchors qualify:
+#
+#   00:00:00  window (23:59:00, 00:00:00]  → 1 sample  → no row
+#   00:00:10  window (23:59:10, 00:00:10]  → 1 sample  → no row
+#   00:00:20 … 00:00:50                     → 2 samples → row
+#   00:01:00  window (00:00:00, 00:01:00]  → 1 sample  → no row (strict `>`
+#             drops the 00:00:00 scrape) — and every later anchor sees none.
+#
+# The two leading anchors are the exact shape the Prometheus compatibility
+# corpus caught: a 15s scrape interval sampled on a 10s grid leaves the first
+# steps of the range covered by a single scrape.
+#
+# Value: two rows of [1,1,1] sum to [2,2,2] with bounds [0.1,0.5], so
+# cumsum = [2,4,6] and total = 6. 0.5 * 6 = 3 lands in the second bucket
+# (cum 2 → 4), interpolating to 0.1 + (0.5-0.1) * (3-2)/(4-2) = 0.3.
+
+-- query.promql --
+histogram_quantile(0.5, sum by(le)(rate(http_server_request_duration[1m])))
+-- range_step --
+10s
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 1, 1], [0.1, 0.5]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:15', 9), [1, 1, 1], [0.1, 0.5]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:20Z", 0.30000000000000004],
+  ["", {}, "2026-01-01T00:00:30Z", 0.30000000000000004],
+  ["", {}, "2026-01-01T00:00:40Z", 0.30000000000000004],
+  ["", {}, "2026-01-01T00:00:50Z", 0.30000000000000004]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "http_server_request_duration"
+[3] string = "http.server.request.duration"
+[4] string = "http.server.request/duration"
+[5] string = "http.server.request_duration"
+[6] string = "http.server/request/duration"
+[7] string = "http.server/request_duration"
+[8] string = "http.server_request.duration"
+[9] string = "http.server_request_duration"
+[10] string = "http/server/request/duration"
+[11] string = "http/server/request_duration"
+[12] string = "http/server_request_duration"
+[13] string = "http_server.request.duration"
+[14] string = "http_server.request_duration"
+[15] string = "http_server_request.duration"
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.5 groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
+    Project [anchor_ts AS anchor_ts, CAST(map(), "Map(String,String)") AS Attributes, BucketCounts AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      RangeBucketFanout step=10s lookback=1m0s minSamples=2 groupBy=[ExplicitBounds AS ExplicitBounds] funcs=[sumForEach(BucketCounts) AS BucketCounts] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+        Filter predicate=(MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration"))
+          Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = length(arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))), arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[length(arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1))))], (if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1]) + (arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1))))] - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])) * ((0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])) / (arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1))))] - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])))))))) AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, `BucketCounts` AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT anchor_ts AS `anchor_ts`, `ExplicitBounds` AS `ExplicitBounds`, sumForEach(`BucketCounts`) AS `BucketCounts` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 10000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 60000000000, toInt64(10000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 60000000000, toInt64(10000000000)) < 0) + 1), least(31, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(10000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(10000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY anchor_ts, `ExplicitBounds` HAVING uniqExact(`TimeUnix`) >= 2)))

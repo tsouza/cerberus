@@ -231,9 +231,9 @@ func lowerHistogramValueFnRange(
 
 	agg := buildHistogramBucketFanout(
 		scan, pred, windowFor(vs, instantLookback),
-		[]chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		[]chplan.Expr{histogramIdentityExpr(s)},
 		[]string{s.AttributesColumn},
-		histogramValueLatestAggs(s), 0, s, ctx,
+		histogramValueLatestAggs(s), s, ctx,
 	)
 
 	return &chplan.Project{

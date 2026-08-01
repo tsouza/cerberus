@@ -282,8 +282,8 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Offset != 0 {
 			fmt.Fprintf(b, " offset=%s", v.Offset)
 		}
-		if v.MinSamplesPerSeries != 0 {
-			fmt.Fprintf(b, " minSamplesPerSeries=%d seriesKey=%s", v.MinSamplesPerSeries, printExpr(v.SeriesKey))
+		if v.MinSamples > 1 {
+			fmt.Fprintf(b, " minSamples=%d", v.MinSamples)
 		}
 		fmt.Fprintf(b, " groupBy=[%s] funcs=[%s]", strings.Join(gb, ", "), strings.Join(aggs, ", "))
 		if !v.Start.IsZero() || !v.End.IsZero() {

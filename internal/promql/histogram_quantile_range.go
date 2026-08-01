@@ -38,10 +38,13 @@ import (
 //   - The bucket aggregation function: `argMax(BucketCounts, TimeUnix)`
 //     + `argMax(ExplicitBounds, TimeUnix)` for the bare path (LWR-like
 //     "latest histogram sample per (series, anchor)"); `sumForEach`
-//     + `any` for the aggregated path (sums element-wise across rows
-//     in the rate window, same as instant mode).
+//     for the aggregated path (sums element-wise across rows in the
+//     rate window, same as instant mode).
 //   - The group-by labels: full Attributes for bare; user-supplied
-//     `by/without` clause for aggregated.
+//     `by/without` clause plus the bucket layout for aggregated. The
+//     bare path needs no layout key — argMax reads counts AND bounds
+//     off the one newest row, so its ladder is consistent by
+//     construction.
 //
 // Both variants surface the canonical 4-column Sample row contract to
 // downstream consumers (matrix pivot in handler.go), keyed by the
@@ -67,24 +70,50 @@ import (
 
 const histogramAnchorCol = "anchor_ts"
 
-const rateMinimumSamples = 2
+// stalenessMinSamples is the sample floor for a staleness-lookback window:
+// a bare selector resolves to at most one sample, so one is enough.
+const stalenessMinSamples = 1
+
+// rateMinSamples is the sample floor reference PromQL's rate / increase
+// family imposes — two points are needed to span a delta, and an anchor
+// whose window holds fewer emits NOTHING (not a zero). The leading steps of
+// a range query are exactly where that bites: the first anchors see only
+// the one scrape at the range start.
+const rateMinSamples = 2
 
 // histogramWindow is the per-anchor sample window a histogram fan-out
-// reads: `(anchor - offset - lookback, anchor - offset]`. lookback is the
-// staleness horizon (instantLookback for the bare / value-fn paths, the
-// inner rate's `[range]` for the aggregated ones); offset is the
-// selector's `offset` modifier, which shifts the window without moving
-// the emitted anchor timestamp. Keeping the two together means a lowering
-// cannot pass one and forget the other — dropping offset silently reads
-// the wrong window rather than failing.
+// reads: `(anchor - offset - lookback, anchor - offset]`, together with the
+// number of samples that window must hold for the anchor to emit. lookback
+// is the staleness horizon (instantLookback for the bare / value-fn paths,
+// the inner range-vector function's `[range]` for the aggregated ones);
+// offset is the selector's `offset` modifier, which shifts the window
+// without moving the emitted anchor timestamp; minSamples is the collapsed
+// function's "no sample emitted" floor. Keeping the three together means a
+// lowering cannot pass one and forget the others — dropping offset silently
+// reads the wrong window, and dropping minSamples silently emits at anchors
+// reference PromQL leaves empty, rather than failing.
 type histogramWindow struct {
-	lookback time.Duration
-	offset   time.Duration
+	lookback   time.Duration
+	offset     time.Duration
+	minSamples int
 }
 
-// windowFor builds the fan-out window for a selector under a lookback.
+// windowFor builds the staleness fan-out window for a bare selector.
 func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindow {
-	return histogramWindow{lookback: lookback, offset: vs.OriginalOffset}
+	return histogramWindow{lookback: lookback, offset: vs.OriginalOffset, minSamples: stalenessMinSamples}
+}
+
+// aggWindowFor builds the fan-out window for the aggregated idiom
+// `sum by(le)(<fn>(<bucket>[range]))`. The lookback is the matched
+// `[range]`; the sample floor is the matched function's, so a `rate` window
+// drops the leading anchors that hold a single scrape while a
+// `sum_over_time` window keeps them.
+func aggWindowFor(shape histogramAggShape) histogramWindow {
+	return histogramWindow{
+		lookback:   shape.windowRange,
+		offset:     shape.selector.OriginalOffset,
+		minSamples: shape.windowMinSamples,
+	}
 }
 
 // latestSampleAgg collapses a filtered histogram scan to the newest
@@ -102,11 +131,18 @@ func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindo
 func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics) chplan.Node {
 	return &chplan.Aggregate{
 		Input:              input,
-		GroupBy:            []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
 		AggFuncs:           aggs,
 		DropEmptyOnNoGroup: true,
 	}
+}
+
+// histogramIdentityExpr is the Prometheus-visible identity for histogram
+// rows. Histogram lowerings group directly over their scans, bypassing the
+// selector projection that ordinarily merges ResourceAttributes into labels.
+func histogramIdentityExpr(s schema.Metrics) chplan.Expr {
+	return selectorAttributesSource(nil, s)
 }
 
 // classicBucketLatestAggs renders the newest-sample aggregates for a
@@ -205,13 +241,13 @@ func lowerHistogramQuantileClassicBareRange(
 	// filter find rows.
 	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 	return buildHistogramRangeTree(
 		scan, pred, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
-		classicBucketLatestAggs(s), 0, phi, s, ctx,
+		classicBucketLatestAggs(s), phi, s, ctx,
 	)
 }
 
@@ -220,7 +256,9 @@ func lowerHistogramQuantileClassicBareRange(
 //
 // The lookback is the rate's [range] duration; the bucket aggregation is
 // sumForEach (mirrors the instant-mode classic-agg path's element-wise
-// sum across all rows in the rate window).
+// sum across all rows in the rate window), keyed by the bucket layout so
+// rows carrying different ExplicitBounds never share a ladder — see
+// classicBucketAggGroupBy and classicBucketSumAggs.
 func lowerHistogramQuantileClassicAggRange(
 	shape histogramAggShape,
 	phi phiArg,
@@ -233,23 +271,12 @@ func lowerHistogramQuantileClassicAggRange(
 	// histogram_quantile.go.
 	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
-	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
-	bucketAggs := []chplan.AggFunc{
-		{
-			Name:  "sumForEach",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
-			Alias: s.BucketCountsColumn,
-		},
-		{
-			Name:  "any",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
-			Alias: s.ExplicitBoundsColumn,
-		},
-	}
+	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	groupBy, groupByAliases := classicBucketAggGroupBy(userGroupBy, userAliases, s)
 	return buildHistogramRangeTree(
-		scan, pred, windowFor(vs, shape.windowRange),
+		scan, pred, aggWindowFor(shape),
 		groupBy, groupByAliases, attrsRebuild,
-		bucketAggs, rateMinimumSamples, phi, s, ctx,
+		classicBucketSumAggs(s), phi, s, ctx,
 	)
 }
 
@@ -279,14 +306,13 @@ func buildHistogramRangeTree(
 	userAliases []string,
 	attrsRebuild chplan.Expr,
 	bucketAggs []chplan.AggFunc,
-	minSamplesPerSeries int,
 	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, bucketAggs, minSamplesPerSeries, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, bucketAggs, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
@@ -369,7 +395,7 @@ func lowerHistogramQuantileNativeBareRange(
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
@@ -429,7 +455,7 @@ func lowerHistogramQuantileNativeAggRange(
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
 	}...)
 	return buildHistogramNativeRangeTreeMerge(
-		scan, pred, windowFor(vs, shape.windowRange),
+		scan, pred, aggWindowFor(shape),
 		groupBy, groupByAliases, attrsRebuild,
 		expHistMergeAggs, phi, s, ctx,
 	)
@@ -454,7 +480,7 @@ func buildHistogramNativeRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, expHistAggs, 0, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, expHistAggs, s, ctx)
 
 	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
 	// fields (already aliased to their schema-canonical names by the
@@ -531,7 +557,7 @@ func buildHistogramNativeRangeTreeMerge(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, mergeAggs, 0, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, mergeAggs, s, ctx)
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
@@ -614,7 +640,6 @@ func buildHistogramBucketFanout(
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	aggFuncs []chplan.AggFunc,
-	minSamplesPerSeries int,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
@@ -624,10 +649,6 @@ func buildHistogramBucketFanout(
 	var rawSide chplan.Node = scan
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
-	}
-	var seriesKey chplan.Expr
-	if minSamplesPerSeries != 0 {
-		seriesKey = canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)
 	}
 
 	return &chplan.RangeBucketFanout{
@@ -642,12 +663,11 @@ func buildHistogramBucketFanout(
 		// Canonicalising here rather than at each caller keeps the one
 		// path that reaches this node from splitting into a canonical
 		// and a non-canonical variant.
-		GroupBy:             canonicalGroupKeyExprs(userGroupBy, s),
-		GroupByAliases:      userAliases,
-		AggFuncs:            aggFuncs,
-		AnchorAlias:         histogramAnchorCol,
-		TimestampCol:        s.TimestampColumn,
-		MinSamplesPerSeries: minSamplesPerSeries,
-		SeriesKey:           seriesKey,
+		GroupBy:        canonicalGroupKeyExprs(userGroupBy, s),
+		GroupByAliases: userAliases,
+		AggFuncs:       aggFuncs,
+		MinSamples:     win.minSamples,
+		AnchorAlias:    histogramAnchorCol,
+		TimestampCol:   s.TimestampColumn,
 	}
 }

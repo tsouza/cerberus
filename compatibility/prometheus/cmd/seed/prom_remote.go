@@ -123,22 +123,35 @@ type histogramFixtureSource struct {
 
 var histogramFixtureSources = []histogramFixtureSource{
 	{"demo_api_request_duration_seconds", "otel_metrics_histogram"},
+	{"demo_resource_latency_seconds", "otel_metrics_histogram"},
 }
 
-// histogramFixtureSelect computes the `le` labels and the cumulative
-// counts IN CLICKHOUSE, using the same expressions cerberus's classic
-// bucket fan-out emits (internal/promql/histogram_bucket.go):
+// histogramFixtureSelect computes the `le` labels, the cumulative counts
+// and the Prom-sanitized resource labels IN CLICKHOUSE, using the same
+// expressions cerberus's own lowering emits — the classic bucket fan-out
+// (internal/promql/histogram_bucket.go) for the first two and the selector
+// attribute projection (internal/promql/lower.go) for the third:
 //
-//	le  = if(i > length(ExplicitBounds), '+Inf', toString(ExplicitBounds[i]))
-//	cum = arraySum(arraySlice(BucketCounts, 1, i))
+//	le    = if(i > length(ExplicitBounds), '+Inf', toString(ExplicitBounds[i]))
+//	cum   = arraySum(arraySlice(BucketCounts, 1, i))
+//	rlkey = replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_')
 //
-// Re-deriving them in Go would put a second float-to-label formatter in
-// the harness, and a `"0.5"` vs `"0.50"` disagreement between the two
-// would hard-diff every bucket series for a reason the fixture invented.
-// Computing them once, server-side, makes the two sides equal by
+// Re-deriving them in Go would put a second float-to-label formatter and a
+// second label sanitiser in the harness, and a `"0.5"` vs `"0.50"` (or a
+// `k8s_namespace_name` vs `k8s.namespace.name`) disagreement between the
+// two would hard-diff every bucket series for a reason the fixture
+// invented. Computing them once, server-side, makes the two sides equal by
 // construction.
+//
+// A fixture whose identifying label lives in ResourceAttributes rather than
+// Attributes is the point of the resource arm: cerberus must project it out
+// of the resource layer, while the mirrored Prometheus series carries it as
+// an ordinary wire label.
 const histogramFixtureSelect = `SELECT
         Attributes,
+        mapFromArrays(
+            arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(ResourceAttributes)),
+            mapValues(ResourceAttributes)) AS resource_labels,
         toUnixTimestamp64Milli(TimeUnix) AS ts_ms,
         arrayMap(i -> if(i > length(ExplicitBounds), '+Inf', toString(ExplicitBounds[i])),
                  arrayEnumerate(BucketCounts)) AS le_labels,
@@ -281,13 +294,21 @@ func readHistogramFixtureSeries(
 
 	acc := newPromSeriesSet()
 	for rows.Next() {
-		var attrs map[string]string
+		var attrs, resourceLabels map[string]string
 		var tsMS int64
 		var leLabels []string
 		var cumCounts []float64
 		var countValue, sumValue float64
-		if err := rows.Scan(&attrs, &tsMS, &leLabels, &cumCounts, &countValue, &sumValue); err != nil {
+		if err := rows.Scan(
+			&attrs, &resourceLabels, &tsMS, &leLabels, &cumCounts, &countValue, &sumValue,
+		); err != nil {
 			return nil, err
+		}
+		// The resource layer is folded into the wire label set for every
+		// arm of the family, so `_bucket`, `_count` and `_sum` carry the
+		// same series identity cerberus projects for them.
+		for k, v := range resourceLabels {
+			attrs[k] = v
 		}
 		if len(leLabels) != len(cumCounts) {
 			return nil, fmt.Errorf(

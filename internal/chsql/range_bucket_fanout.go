@@ -6,7 +6,10 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-const rangeBucketSourceSeriesAlias = "_source_series"
+// fanoutNoMinSampleFilter is the largest RangeBucketFanout.MinSamples that
+// needs no HAVING: an anchor with zero samples in its window already
+// contributes no fanned row, so "at least one" is free.
+const fanoutNoMinSampleFilter = 1
 
 // emitRangeBucketFanout renders a chplan.RangeBucketFanout — the
 // single-pass, bounded sample-side fan-out that supersedes the StepGrid
@@ -29,6 +32,7 @@ const rangeBucketSourceSeriesAlias = "_source_series"
 //	  FROM (<Input>)
 //	)
 //	GROUP BY <user-key_1>, …, anchor_ts
+//	HAVING uniqExact(<TimestampCol>) >= <MinSamples>   -- MinSamples > 1 only
 //
 // where `dist = dateDiff('nanosecond', TimeUnix, <shift_base>)` is the
 // sample's distance behind the newest OFFSET-SHIFTED anchor (identical to
@@ -39,7 +43,9 @@ const rangeBucketSourceSeriesAlias = "_source_series"
 // anchor) bucket with the configured AggFuncs. An anchor with no sample
 // in its window receives no fanned row and so produces no GROUP BY row —
 // preserving Prom's staleness gap, exactly as the old CROSS JOIN +
-// lookback Filter did.
+// lookback Filter did. RangeBucketFanout.MinSamples raises that floor for
+// the `rate` / `increase` idiom, which needs two scrapes in the window
+// before reference PromQL emits anything at an anchor.
 //
 // The fanout SELECT projects `*` so the inner Input's columns (the
 // AggFunc source columns + the group-key source columns + TimeUnix) flow
@@ -85,22 +91,6 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		for _, a := range af.Args {
 			if err := (&Builder{}).Expr(a); err != nil {
 				return err
-			}
-		}
-	}
-	if r.MinSamplesPerSeries < 0 {
-		return fmt.Errorf("%w: RangeBucketFanout.MinSamplesPerSeries must not be negative", ErrUnsupported)
-	}
-	if r.MinSamplesPerSeries > 0 {
-		if r.SeriesKey == nil {
-			return fmt.Errorf("%w: RangeBucketFanout requires SeriesKey when MinSamplesPerSeries is set", ErrUnsupported)
-		}
-		if err := (&Builder{}).Expr(r.SeriesKey); err != nil {
-			return err
-		}
-		for _, af := range r.AggFuncs {
-			if len(af.Args) != 1 || len(af.Params) != 0 {
-				return fmt.Errorf("%w: RangeBucketFanout sample suppression requires single-argument aggregates", ErrUnsupported)
 			}
 		}
 	}
@@ -151,35 +141,12 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
-	// AggFuncs. When a rate needs source-series sample suppression, first
-	// collapse each source series and filter it by sample count. Only then
-	// aggregate the surviving source series into the user grouping.
-	// The user group keys are projected first (under their
+	// AggFuncs. The user group keys are projected first (under their
 	// aliases) then the anchor, matching the column order the replaced
 	// Aggregate node emitted (anchor_ts came first there, but the
 	// downstream reshape Project references every column by name, not
 	// position, so the surface order is observationally identical).
-	collapse := e.rangeBucketCollapse(r, fanout.Frag())
-
-	e.emitSelect(collapse)
-	return nil
-}
-
-func (e *emitter) rangeBucketCollapse(r *chplan.RangeBucketFanout, fanout Frag) *QueryBuilder {
-	if r.MinSamplesPerSeries == 0 {
-		return rangeBucketAggregate(r, fanout)
-	}
-
-	perSeries := rangeBucketAggregate(r, fanout)
-	perSeries.SelectAs(func(b *Builder) { _ = b.Expr(r.SeriesKey) }, rangeBucketSourceSeriesAlias)
-	perSeries.GroupBy(func(b *Builder) { _ = b.Expr(r.SeriesKey) })
-	perSeries.Having(Gte(Call("count"), InlineLit(int64(r.MinSamplesPerSeries))))
-
-	return rangeBucketAggregateFromSeries(r, perSeries.Frag())
-}
-
-func rangeBucketAggregate(r *chplan.RangeBucketFanout, input Frag) *QueryBuilder {
-	collapse := NewQuery().From(input)
+	collapse := NewQuery().From(fanout.Frag())
 	collapse.Select(As(verbatim(r.AnchorAlias), r.AnchorAlias))
 	for i, g := range r.GroupBy {
 		expr := g
@@ -194,38 +161,25 @@ func rangeBucketAggregate(r *chplan.RangeBucketFanout, input Frag) *QueryBuilder
 		collapse.Select(aggFuncFrag(af))
 	}
 
+	// GROUP BY (anchor_ts, <user keys>). The anchor is referenced verbatim
+	// because it is the fanout SELECT's output column, not a base-table
+	// column; the user keys go through [groupKeyFrags].
 	groupFrags := make([]Frag, 0, len(r.GroupBy)+1)
 	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
 	groupFrags = append(groupFrags, groupKeyFrags(r.GroupBy, r.GroupByAliases)...)
 	collapse.GroupBy(groupFrags...)
-	return collapse
-}
 
-func rangeBucketAggregateFromSeries(r *chplan.RangeBucketFanout, input Frag) *QueryBuilder {
-	collapse := NewQuery().From(input)
-	collapse.Select(As(verbatim(r.AnchorAlias), r.AnchorAlias))
-	for i := range r.GroupBy {
-		alias := ""
-		if i < len(r.GroupByAliases) {
-			alias = r.GroupByAliases[i]
-		}
-		collapse.Select(As(Col(alias), alias))
-	}
-	for _, af := range r.AggFuncs {
-		agg := af
-		agg.Args = []chplan.Expr{&chplan.ColumnRef{Name: af.Alias}}
-		collapse.Select(aggFuncFrag(agg))
+	// Per-function "no sample emitted" rule. An anchor whose window holds
+	// fewer than MinSamples distinct sample timestamps produces no row at
+	// all — reference PromQL's rate/increase need two points to span a
+	// delta and emit nothing at the leading edge of a range where only one
+	// scrape has landed. Distinct timestamps rather than raw row count: the
+	// group may hold several series that share a scrape instant, and the
+	// rule is about how many scrapes the window spans, not how many rows.
+	if r.MinSamples > fanoutNoMinSampleFilter {
+		collapse.Having(Gte(Call("uniqExact", Col(r.TimestampCol)), InlineLit(int64(r.MinSamples))))
 	}
 
-	groupFrags := make([]Frag, 0, len(r.GroupBy)+1)
-	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
-	for i := range r.GroupBy {
-		alias := ""
-		if i < len(r.GroupByAliases) {
-			alias = r.GroupByAliases[i]
-		}
-		groupFrags = append(groupFrags, Col(alias))
-	}
-	collapse.GroupBy(groupFrags...)
-	return collapse
+	e.emitSelect(collapse)
+	return nil
 }
