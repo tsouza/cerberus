@@ -81,13 +81,20 @@ trap cleanup EXIT
 echo "==> bringing up tempo-compatibility stack"
 # Step 1: start tempo (no compose-level healthcheck — distroless image,
 # see compose.yml). The driver polls /ready before pushing.
-docker compose up -d --build tempo
+# Both `--build` invocations below build Dockerfile.local / the driver
+# Dockerfile, whose `FROM golang:1.26` BuildKit resolves from Docker Hub — a 429
+# there fails the lane before any query runs. The wrapper retries the command on
+# registry/network faults only; a genuine build failure still fails on the first
+# attempt.
+node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
+    docker compose up -d --build tempo
 
 # Step 2: `--wait` block on the healthchecked services. 5min compose-
 # level timeout is generous: CH boot can take 30-60s on a cold runner,
 # cerberus is <2s. If we time out, it's an infra-layer issue (image
 # pull, cgroup, etc.), not a harness bug.
-docker compose up -d --build --wait --wait-timeout 300 \
+node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
+    docker compose up -d --build --wait --wait-timeout 300 \
     clickhouse cerberus-tempo
 
 # The seeder and differ run as Go binaries on the host, connecting
