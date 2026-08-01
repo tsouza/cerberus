@@ -107,6 +107,16 @@ func (c lowerCtx) withAttributesPreMerged() lowerCtx {
 	return out
 }
 
+// rangeMode reports whether lowering carries a complete `query_range`
+// evaluation window: a step AND both bounds. Every grid-driven shape —
+// synthetic sources fanning across [start, end], matrix RangeWindow
+// fan-out, the subquery anchor grid — is gated on all three being
+// present, because a partial triple (a bare Lower(), an instant eval)
+// has no grid to fan across and would take its window from a zero time.
+func (c lowerCtx) rangeMode() bool {
+	return c.step > 0 && !c.start.IsZero() && !c.end.IsZero()
+}
+
 // instantLookback is the default Prometheus staleness window applied
 // when an instant-vector selector picks the latest sample per series.
 // Prom defaults to 5 minutes; cerberus matches the upstream constant

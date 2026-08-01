@@ -1,0 +1,96 @@
+-- query.promql --
+(time() - max(batch_last_success_timestamp_seconds))[1m:10s] offset 5m
+-- args --
+[0] string = ""
+[1] int64 = 1000000000
+[2] string = ""
+[3] string = "Map(String,String)"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "batch_last_success_timestamp_seconds"
+[11] string = "batch.last.success.timestamp.seconds"
+[12] string = "batch.last.success.timestamp/seconds"
+[13] string = "batch.last.success.timestamp_seconds"
+[14] string = "batch.last.success/timestamp/seconds"
+[15] string = "batch.last.success/timestamp_seconds"
+[16] string = "batch.last.success_timestamp.seconds"
+[17] string = "batch.last.success_timestamp_seconds"
+[18] string = "batch.last/success/timestamp/seconds"
+[19] string = "batch.last/success/timestamp_seconds"
+[20] string = "batch.last/success_timestamp_seconds"
+[21] string = "batch.last_success.timestamp.seconds"
+[22] string = "batch.last_success.timestamp_seconds"
+[23] string = "batch.last_success_timestamp.seconds"
+[24] string = "batch.last_success_timestamp_seconds"
+[25] string = "batch/last/success/timestamp/seconds"
+[26] string = "batch/last/success/timestamp_seconds"
+[27] string = "batch/last/success_timestamp_seconds"
+[28] string = "batch/last_success_timestamp_seconds"
+[29] string = "batch_last.success.timestamp.seconds"
+[30] string = "batch_last.success.timestamp_seconds"
+[31] string = "batch_last.success_timestamp.seconds"
+[32] string = "batch_last.success_timestamp_seconds"
+[33] string = "batch_last_success.timestamp.seconds"
+[34] string = "batch_last_success.timestamp_seconds"
+[35] string = "batch_last_success_timestamp.seconds"
+-- seed --
+-- PromQL re-evaluates a subquery's inner as an INSTANT query at every
+-- anchor of an absolute-epoch grid, so this fixture pins three things at
+-- once against the reference engine:
+--
+--   1. `time()` is the ANCHOR, not the scrape timestamp of whichever row
+--      the binary folded against. With the eval instant at 00:00:01 and
+--      `offset 5m`, the anchors are the 10s-epoch points in the left-open
+--      window (23:54:01, 23:55:01] — 23:54:10/20/30/40/50 and 23:55:00.
+--   2. Each anchor selects the latest sample within the 5m staleness
+--      lookback, NOT within one sub-step: the series is scraped every 30s,
+--      so an anchor at 23:54:10 has no sample of its own and must still
+--      resolve to the 23:54:00 one.
+--   3. 23:54:00 is NOT an anchor. It is the excluded left endpoint of the
+--      window, and emitting it would add a spurious leading 240.
+--
+-- The metric is a constant timestamp C = 1767225000 (2025-12-31T23:50:00Z)
+-- on two instances, the second lower so `max` always picks the first.
+-- Every anchor's value is therefore exactly `anchor - C` in seconds:
+-- 250, 260, 270, 280, 290, 300.
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('batch_last_success_timestamp_seconds', map('instance', 'a'), toDateTime64('2025-12-31 23:53:00', 9), 1767225000),
+    ('batch_last_success_timestamp_seconds', map('instance', 'a'), toDateTime64('2025-12-31 23:53:30', 9), 1767225000),
+    ('batch_last_success_timestamp_seconds', map('instance', 'a'), toDateTime64('2025-12-31 23:54:00', 9), 1767225000),
+    ('batch_last_success_timestamp_seconds', map('instance', 'a'), toDateTime64('2025-12-31 23:54:30', 9), 1767225000),
+    ('batch_last_success_timestamp_seconds', map('instance', 'a'), toDateTime64('2025-12-31 23:55:00', 9), 1767225000),
+    ('batch_last_success_timestamp_seconds', map('instance', 'b'), toDateTime64('2025-12-31 23:53:00', 9), 1767224900),
+    ('batch_last_success_timestamp_seconds', map('instance', 'b'), toDateTime64('2025-12-31 23:53:30', 9), 1767224900),
+    ('batch_last_success_timestamp_seconds', map('instance', 'b'), toDateTime64('2025-12-31 23:54:00', 9), 1767224900),
+    ('batch_last_success_timestamp_seconds', map('instance', 'b'), toDateTime64('2025-12-31 23:54:30', 9), 1767224900),
+    ('batch_last_success_timestamp_seconds', map('instance', 'b'), toDateTime64('2025-12-31 23:55:00', 9), 1767224900);
+-- expected_rows --
+[
+  [{}, "2025-12-31T23:54:10Z", "2025-12-31T23:54:10Z", 250],
+  [{}, "2025-12-31T23:54:20Z", "2025-12-31T23:54:20Z", 260],
+  [{}, "2025-12-31T23:54:30Z", "2025-12-31T23:54:30Z", 270],
+  [{}, "2025-12-31T23:54:40Z", "2025-12-31T23:54:40Z", 280],
+  [{}, "2025-12-31T23:54:50Z", "2025-12-31T23:54:50Z", 290],
+  [{}, "2025-12-31T23:55:00Z", "2025-12-31T23:55:00Z", 300]
+]
+-- sql --
+SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(`TimeUnix`) / ?)) - `Value`) AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `TimeUnix` AS `bucket_ts`, max(`Value`) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2025-12-31 23:55:00.000000000', 9) - toIntervalNanosecond(i * 10000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2025-12-31 23:55:00.000000000', 9)) - 300000000000, toInt64(10000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2025-12-31 23:55:00.000000000', 9)) - 300000000000, toInt64(10000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2025-12-31 23:55:00.000000000', 9)), toInt64(10000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2025-12-31 23:55:00.000000000', 9)), toInt64(10000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:54:10.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2025-12-31 23:55:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) GROUP BY `bucket_ts`)))
+-- chplan --
+Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+  Project ["" AS MetricName, Attributes, TimeUnix, (toFloat64((toUnixTimestamp64Nano(TimeUnix) / 1000000000)) - Value) AS Value]
+    Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+      Aggregate groupBy=[TimeUnix AS bucket_ts] funcs=[max(Value) AS Value]
+        RangeLWR step=10s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:54:10Z end=2025-12-31T23:55:00Z
+          Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName IN ("batch_last_success_timestamp_seconds", "batch.last.success.timestamp.seconds", "batch.last.success.timestamp/seconds", "batch.last.success.timestamp_seconds", "batch.last.success/timestamp/seconds", "batch.last.success/timestamp_seconds", "batch.last.success_timestamp.seconds", "batch.last.success_timestamp_seconds", "batch.last/success/timestamp/seconds", "batch.last/success/timestamp_seconds", "batch.last/success_timestamp_seconds", "batch.last_success.timestamp.seconds", "batch.last_success.timestamp_seconds", "batch.last_success_timestamp.seconds", "batch.last_success_timestamp_seconds", "batch/last/success/timestamp/seconds", "batch/last/success/timestamp_seconds", "batch/last/success_timestamp_seconds", "batch/last_success_timestamp_seconds", "batch_last.success.timestamp.seconds", "batch_last.success.timestamp_seconds", "batch_last.success_timestamp.seconds", "batch_last.success_timestamp_seconds", "batch_last_success.timestamp.seconds", "batch_last_success.timestamp_seconds", "batch_last_success_timestamp.seconds"))
+              Scan(merge(otel_metrics_gauge|otel_metrics_sum))

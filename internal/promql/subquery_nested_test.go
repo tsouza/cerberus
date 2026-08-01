@@ -111,3 +111,53 @@ func TestLowerSubquery_DirectNested_ZeroRange(t *testing.T) {
 		t.Errorf("Lower error = %q; want 'inner subquery range must be positive'", err)
 	}
 }
+
+// TestLowerSubquery_CallNested_NonPositiveRange pins the same
+// positive-inner-range guard on the OTHER nested shape,
+// `<fn>(<inner-sub>)[<outer-range>:<step>]`. Both shapes widen the
+// inner range to `sub.Range + innerSub.Range`, so a non-positive inner
+// range degenerates the widening — every outer anchor would reduce over
+// the identical sample set instead of its own lookback slice. PromQL's
+// parser rejects a non-positive range literal, so the AST is built
+// directly, matching the defensive-branch style above.
+func TestLowerSubquery_CallNested_NonPositiveRange(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		iRange time.Duration
+	}{
+		{name: "zero", iRange: 0},
+		{name: "negative", iRange: -time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			matrix := &parser.MatrixSelector{
+				VectorSelector: &parser.VectorSelector{
+					Name:          "m",
+					LabelMatchers: []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "__name__", "m")},
+				},
+				Range: time.Minute,
+			}
+			innerSub := &parser.SubqueryExpr{
+				Expr:  &parser.Call{Func: parser.MustGetFunction("rate"), Args: parser.Expressions{matrix}},
+				Range: tc.iRange,
+				Step:  30 * time.Second,
+			}
+			outerSub := &parser.SubqueryExpr{
+				Expr:  &parser.Call{Func: parser.MustGetFunction("max_over_time"), Args: parser.Expressions{innerSub}},
+				Range: time.Hour,
+				Step:  5 * time.Minute,
+			}
+
+			_, err := promql.Lower(context.Background(), outerSub, schema.DefaultOTelMetrics())
+			if err == nil {
+				t.Fatalf("Lower(max_over_time over %v-range subquery): want error, got nil", tc.iRange)
+			}
+			if !strings.Contains(err.Error(), "inner subquery range must be positive") {
+				t.Errorf("Lower error = %q; want 'inner subquery range must be positive'", err)
+			}
+		})
+	}
+}

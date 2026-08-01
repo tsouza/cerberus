@@ -43,6 +43,10 @@ on:
   # the rollup missing entries and block merges.
   pull_request:
     branches: [main]
+  # All four head checks are required contexts, so the merge queue waits on them
+  # against its projected trunk. No `branches:` filter is available or needed
+  # here — a merge group only ever targets the branch whose queue it belongs to.
+  merge_group:
   push:
     # `release/*.x` so the three compatibility head checks also run on a
     # maintenance-line hotfix push — giving release.yml's maintenance preflight
