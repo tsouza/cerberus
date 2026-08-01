@@ -552,7 +552,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// the raw scan with a StepGrid and collapsing latest-per-(series,
 	// anchor). Anchor modifiers (`offset`) are honoured by shifting the
 	// predicate against `anchor_ts` rather than a single end_ts.
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	if ctx.rangeMode() {
 		// `@<absolute>` / `@ start()` / `@ end()` pin a single anchor
 		// across all steps — every step evaluates the same fixed-time
 		// LWR. Collapse the StepGrid fan-out: run the LWR once at the
@@ -713,7 +713,7 @@ func lowerCompanionUnion(
 		}
 		return selectorInput, nil
 	}
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	if ctx.rangeMode() {
 		if hasAbsoluteAt(v) {
 			return wrapRangeAbsoluteAtBroadcast(selectorInput, nil, anchor, ctx, s), nil
 		}

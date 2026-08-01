@@ -12,9 +12,14 @@ package promql
 //   - chplan.ReanchorRange (returns a fresh deep copy),
 // to the SAME [start, end] and assert the resulting geometries are Equal.
 // Optimizer-substituted shapes are therefore what gets validated.
+//
+// A subquery whose inner grid is already pinned at lowering time (the
+// epoch-aligned sub-step grid) is the one shape the two passes must both
+// decline rather than agree on — see reanchorCase.pinnedInner.
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -25,29 +30,43 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// reanchorCase is one subquery shape plus how the two re-anchor passes are
+// expected to treat its inner spine.
+type reanchorCase struct {
+	// query lowers (in range mode) to an inner subquery plan.
+	query string
+	// pinnedInner marks a shape whose inner grid is fixed at LOWERING time
+	// onto the absolute-epoch sub-step grid PromQL evaluates a subquery's
+	// inner on. Neither pass may re-grid it: widenSubquerySpine carries no
+	// arm for the node kinds that hold such a grid (RangeLWR / VectorJoin)
+	// so it is a no-op, and ReanchorRange must fail closed with
+	// ErrReanchorGridMismatch so the sharded-pushdown solver routes A
+	// instead of re-gridding an epoch-aligned inner onto a shard's own
+	// request grid. Shapes without it keep their grid unpinned for the
+	// widen pass to fill, and the two passes must agree exactly.
+	pinnedInner bool
+}
+
 func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 	t.Parallel()
 
-	// Every query here lowers (in range mode) to an inner subquery plan
-	// whose spine widenSubquerySpine walks: matrix RangeWindow, optionally
-	// wrapped in Project / Aggregate / TopK / Filter by the aggregate /
-	// topk / count_values lowerings, and nested matrix spines.
-	queries := []string{
+	cases := []reanchorCase{
 		// Bare range-vector subquery inner (Identity matrix wrap).
-		`max_over_time(rate(demo_cpu[1m])[5m:30s])`,
+		{query: `max_over_time(rate(demo_cpu[1m])[5m:30s])`},
 		// *_over_time over a bare-selector subquery.
-		`avg_over_time(demo_mem[10m:1m])`,
+		{query: `avg_over_time(demo_mem[10m:1m])`},
 		// Aggregate-over-subquery: Project[Aggregate[matrix]].
-		`max_over_time(sum by(job)(rate(demo_cpu[1m]))[5m:1m])`,
+		{query: `max_over_time(sum by(job)(rate(demo_cpu[1m]))[5m:1m])`},
 		// without(...) aggregate spine.
-		`min_over_time(avg without(instance)(rate(demo_cpu[1m]))[10m:2m])`,
+		{query: `min_over_time(avg without(instance)(rate(demo_cpu[1m]))[10m:2m])`},
 		// topk-over-subquery: TopK[matrix].
-		`max_over_time(topk(3, rate(demo_cpu[1m]))[5m:1m])`,
+		{query: `max_over_time(topk(3, rate(demo_cpu[1m]))[5m:1m])`},
 		// Nested matrix spine: stacked RangeWindows whose grids widen
 		// cumulatively.
-		`max_over_time(rate(demo_cpu[1m])[5m:30s])`,
-		// Binary-inner subquery (Identity wrap over a per-sample rewrite).
-		`max_over_time((demo_cpu * 2)[5m:1m])`,
+		{query: `max_over_time(rate(demo_cpu[1m])[5m:30s])`},
+		// Binary-inner subquery: the inner is evaluated per anchor on the
+		// epoch-aligned sub-step grid, so its grid is pinned at lowering.
+		{query: `max_over_time((demo_cpu * 2)[5m:1m])`, pinnedInner: true},
 	}
 
 	s := schema.DefaultOTelMetrics()
@@ -56,8 +75,9 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 	end := start.Add(time.Hour)
 	step := time.Minute
 
-	for _, q := range queries {
-		q := q
+	for _, c := range cases {
+		c := c
+		q := c.query
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 
@@ -72,7 +92,16 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 
 			// Lower the inner subquery plan in range mode — the exact node
 			// lowerOuterRangeFnOverSubquery feeds to widenSubquerySpine.
-			inner, err := lowerSubquery(sub, s, lowerCtx{start: start, end: end, step: step})
+			// lowerers must be normalized exactly as the real entry
+			// points do: this test calls lowerSubquery directly, and a
+			// subquery inner now lowers on the range-mode selector seam,
+			// which dispatches through the strategy table.
+			inner, err := lowerSubquery(sub, s, lowerCtx{
+				start:    start,
+				end:      end,
+				step:     step,
+				lowerers: RangeLowerers{}.withDefaults(),
+			})
 			if err != nil {
 				t.Fatalf("lowerSubquery(%q): %v", q, err)
 			}
@@ -89,6 +118,18 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 			widenSubquerySpine(widenClone, wStart, end)
 
 			reanchored, err := chplan.ReanchorRange(optimized, wStart, end)
+			if c.pinnedInner {
+				// Both passes must leave a pinned inner grid alone —
+				// widenSubquerySpine by having no arm for the node kinds
+				// that carry it, ReanchorRange by failing closed.
+				if !errors.Is(err, chplan.ErrReanchorGridMismatch) {
+					t.Fatalf("ReanchorRange(%q) error = %v, want ErrReanchorGridMismatch", q, err)
+				}
+				if !widenClone.Equal(snapshot) {
+					t.Fatalf("widenSubquerySpine re-gridded the pinned inner of %q", q)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("ReanchorRange(%q): %v", q, err)
 			}

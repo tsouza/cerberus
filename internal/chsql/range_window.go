@@ -1481,6 +1481,58 @@ func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Fra
 	)
 }
 
+// stepAlignGrid centralises the StepAlign branch shared by the three
+// matrix emitters (emitWindowedArrayPairsMatrix / emitWindowedArrayMatrix
+// / emitWindowedArrayExtrapolatedMatrix) and the fused instant-subquery
+// emitter. When r.StepAlign is set, it snaps the anchor-grid base to a
+// phase-0 epoch multiple of stepNS (see epochAlignedEndFrag) and tightens
+// the anchor count to the exact grid PromQL evaluates (see
+// stepAlignedAnchorCount).
+//
+// When StepAlign is false the inputs pass through unchanged (byte-stable
+// goldens for the outer query_range grid and the Tempo metrics path).
+func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (Frag, int64) {
+	if !r.StepAlign {
+		return end, numAnchors
+	}
+	return epochAlignedEndFrag(end, stepNS), stepAlignedAnchorCount(r, stepNS, numAnchors)
+}
+
+// stepAlignedAnchorCount returns how many phase-0 anchors an epoch-aligned
+// subquery grid actually holds.
+//
+// The caller derives its count from the end-INCLUSIVE formula
+// `OuterRange/step + 1`, which is right for a grid anchored ON `End`.
+// A StepAlign grid is anchored on the snapped base `E' = E − δ` instead,
+// where `E = End − Offset` and `δ = E mod step`, and PromQL's subquery
+// window is left-OPEN: anchor `E' − i·step` belongs to the window iff
+// `E' − i·step > E − OuterRange`, i.e. `i·step < OuterRange − δ`. So the
+// grid holds exactly `ceil((OuterRange − δ)/step)` anchors — one fewer
+// than the inclusive formula whenever `δ` swallows the remainder, and
+// notably one fewer on every exactly-aligned grid (δ = 0, OuterRange a
+// multiple of step), which is the common `m[1m:10s]` shape. Emitting the
+// extra anchor materialises the window's excluded left endpoint as a real
+// data point (reference Prometheus's evalSubquery advances startTimestamp
+// by one interval for exactly this reason).
+//
+// A zero End means the grid base is `now64(9)`, resolved at execution
+// time, so δ is unknowable at emit time: fall back to the caller's
+// inclusive count, which is a superset and preserves those goldens.
+func stepAlignedAnchorCount(r *chplan.RangeWindow, stepNS, inclusive int64) int64 {
+	if r.End.IsZero() || r.OuterRange <= 0 || stepNS <= 0 {
+		return inclusive
+	}
+	base := r.End.Add(-r.Offset).UnixNano()
+	delta := ((base % stepNS) + stepNS) % stepNS
+	span := r.OuterRange.Nanoseconds() - delta
+	if span <= 0 {
+		// Sub-step window: reference clamps start to end and evaluates
+		// the single anchor at the snapped base.
+		return 1
+	}
+	return (span + stepNS - 1) / stepNS
+}
+
 // epochAlignedEndFrag snaps the anchor-grid base `end` down to the nearest
 // absolute-epoch multiple of stepNS (phase 0), spelled
 //
@@ -1498,31 +1550,6 @@ func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Fra
 // timestamp <= end. Snapping by a multiple of step preserves phase 0
 // regardless of offset, so this one wrap handles literal End, now64(9),
 // and the offset-shifted form uniformly.
-// stepAlignGrid centralises the StepAlign branch shared by the three
-// matrix emitters (emitWindowedArrayPairsMatrix / emitWindowedArrayMatrix
-// / emitWindowedArrayExtrapolatedMatrix). When r.StepAlign is set, it
-// snaps the anchor-grid base to a phase-0 epoch multiple of stepNS (see
-// epochAlignedEndFrag); numAnchors is left unchanged.
-//
-// The anchor count needs no over-provisioning: snapping shifts the base
-// down by δ ∈ [0, step), which maps every sample to an anchor index ≤ its
-// pre-snap index (dist shrinks by δ < step), so no sample crosses the
-// `least(numAnchors, …)` clamp that wasn't already inside it. The oldest
-// epoch-multiple any outer window needs sits at index
-// (snappedEnd − anchor)/step ≤ (OuterRange − δ)/step ≤ floor(OuterRange/
-// step) = numAnchors − 1 < numAnchors — already covered. (A speculative
-// +1 here regressed the subquery_over_increase cardinality ratchet
-// peak_intermediate 6→7 for zero coverage gain.)
-//
-// When StepAlign is false the inputs pass through unchanged (byte-stable
-// goldens for the outer query_range grid and the Tempo metrics path).
-func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (Frag, int64) {
-	if !r.StepAlign {
-		return end, numAnchors
-	}
-	return epochAlignedEndFrag(end, stepNS), numAnchors
-}
-
 func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 	step := InlineLit(stepNS)
 	// fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(end), step) * step)

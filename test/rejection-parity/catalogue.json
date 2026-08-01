@@ -864,13 +864,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#4050ccb7",
-      "message": "promql: inner subquery range must be positive, got %s",
-      "class": "internal",
-      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "rejection",
@@ -892,17 +885,17 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/subquery.go:lowerSubqueryOverSubquery#4050ccb7",
-      "message": "promql: inner subquery range must be positive, got %s",
-      "class": "internal",
-      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#1455acf5",
       "message": "promql: subquery over %s requires a scalar literal K",
       "class": "rejection",
       "trigger_query": "max_over_time(topk(scalar(up), up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:requirePositiveInnerRange#4050ccb7",
+      "message": "promql: inner subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
     },
     {
       "head": "promql",

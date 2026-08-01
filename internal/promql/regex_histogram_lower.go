@@ -150,7 +150,7 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 		}
 		return selectorInput, nil
 	}
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	if ctx.rangeMode() {
 		if hasAbsoluteAt(v) {
 			return wrapRangeAbsoluteAtBroadcast(selectorInput, nil, anchor, ctx, s), nil
 		}
