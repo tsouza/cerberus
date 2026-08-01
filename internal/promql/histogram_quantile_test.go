@@ -765,3 +765,23 @@ func TestLower_HistogramQuantile_BucketSuffixStrip(t *testing.T) {
 		})
 	}
 }
+
+// canonicalMapKeyColName asserts that expr is a `mapSort(<ColumnRef>)` wrapper
+// and returns the wrapped column name. SeriesKey on a RangeBucketFanout must
+// be canonicalised this way so the whole-Map series identity key has a stable
+// order (see canonicalGroupKeyExpr / canonicalAttributesExpr).
+func canonicalMapKeyColName(t *testing.T, expr chplan.Expr) string {
+		t.Helper()
+		call, ok := expr.(*chplan.FuncCall)
+		if !ok || call.Name != "mapSort" {
+			t.Fatalf("SeriesKey is not canonicalised: got %#v, want mapSort(<ColumnRef>)", expr)
+		}
+		if len(call.Args) != 1 {
+			t.Fatalf("mapSort args: got %d, want 1", len(call.Args))
+		}
+		ref, ok := call.Args[0].(*chplan.ColumnRef)
+		if !ok {
+			t.Fatalf("mapSort argument: got %#v, want a ColumnRef", call.Args[0])
+		}
+		return ref.Name
+}
