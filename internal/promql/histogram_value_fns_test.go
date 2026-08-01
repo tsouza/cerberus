@@ -2,6 +2,10 @@ package promql_test
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +19,7 @@ import (
 // TestLower_HistogramValueFns_InstantLatestSample pins the instant-mode
 // plan shape for the six native-histogram value functions over a bare
 // exp-hist selector: the filtered scan is aggregated with
-// argMax(<col>, TimeUnix) GROUP BY [Attributes] so the value math reads
+// argMax(<col>, TimeUnix) GROUP BY [series identity] so the value math reads
 // the newest sample per series. Before the fix the lowering emitted a
 // bare Project(Filter(Scan)) — every historical sample per series, all
 // stamped now64(9).
@@ -51,13 +55,11 @@ func TestLower_HistogramValueFns_InstantLatestSample(t *testing.T) {
 			if !ok {
 				t.Fatalf("Project.Input = %T, want *chplan.Aggregate (per-series latest-sample selection)", pj.Input)
 			}
-			// GROUP BY Attributes only (no per-anchor key in instant mode).
+			// GROUP BY series identity only (no per-anchor key in instant mode).
 			if len(agg.GroupBy) != 1 {
-				t.Fatalf("instant GroupBy len = %d, want 1 (Attributes)", len(agg.GroupBy))
+				t.Fatalf("instant GroupBy len = %d, want 1 (series identity)", len(agg.GroupBy))
 			}
-			if got := canonicalMapKeyColName(t, agg.GroupBy[0]); got != s.AttributesColumn {
-				t.Errorf("instant GroupBy[0] = %q, want mapSort(%q)", got, s.AttributesColumn)
-			}
+			assertSelectorIdentityKey(t, s, "instant GroupBy[0]", agg.GroupBy[0])
 			assertArgMaxLatestAggs(t, s, agg.AggFuncs)
 		})
 	}
@@ -65,7 +67,7 @@ func TestLower_HistogramValueFns_InstantLatestSample(t *testing.T) {
 
 // TestLower_HistogramValueFns_RangeLatestSample pins the range-mode plan
 // shape: a single-pass RangeBucketFanout keyed by [anchor_ts (implicit),
-// Attributes] with argMax(<col>, TimeUnix) so each step emits one row
+// series identity] with argMax(<col>, TimeUnix) so each step emits one row
 // carrying the newest in-window sample. Before the fix range queries
 // emitted N rows all stamped now64(9), so the matrix pivot collapsed to
 // empty; before this rework the fan-out was the O(rows × N) StepGrid
@@ -112,16 +114,14 @@ func TestLower_HistogramValueFns_RangeLatestSample(t *testing.T) {
 				t.Fatalf("Project.Input = %T, want *chplan.RangeBucketFanout", pj.Input)
 			}
 			// The anchor key is implicit (AnchorAlias); the user group key
-			// is the full Attributes column.
+			// is the full series identity.
 			if fanout.AnchorAlias != "anchor_ts" {
 				t.Errorf("AnchorAlias = %q, want anchor_ts", fanout.AnchorAlias)
 			}
 			if len(fanout.GroupBy) != 1 {
-				t.Fatalf("range GroupBy len = %d, want 1 ([Attributes])", len(fanout.GroupBy))
+				t.Fatalf("range GroupBy len = %d, want 1 (series identity)", len(fanout.GroupBy))
 			}
-			if got := canonicalMapKeyColName(t, fanout.GroupBy[0]); got != s.AttributesColumn {
-				t.Errorf("range GroupBy[0] = %q, want mapSort(%q)", got, s.AttributesColumn)
-			}
+			assertSelectorIdentityKey(t, s, "range GroupBy[0]", fanout.GroupBy[0])
 			assertArgMaxLatestAggs(t, s, fanout.AggFuncs)
 			// The single-pass fan-out must NOT contain the old O(rows × N)
 			// StepGrid CROSS JOIN scaffold.
@@ -194,23 +194,107 @@ func colName(t *testing.T, e chplan.Expr) string {
 	return cr.Name
 }
 
-// canonicalMapKeyColName asserts a series-identity group key is the
-// canonical `mapSort(<column>)` shape and returns the wrapped column
-// name. Without the wrap a Map key compares positionally, so one logical
-// series stored under two key orders splits into two groups.
-func canonicalMapKeyColName(t *testing.T, e chplan.Expr) string {
+// assertSelectorIdentityKey pins a histogram group key to the exact
+// series-identity expression a plain selector binds for the same schema.
+//
+// The histogram paths group straight off the scan with no selector
+// projection in between, so their group key IS the binding site. It must
+// therefore reproduce the selector's identity exactly — `mapSort` over the
+// ResourceAttributes-merged, ServiceName-overlaid label map. A bare
+// `mapSort(Attributes)` key would be canonically ordered yet carry a
+// different series identity than every gauge in the same query: two
+// services writing the same histogram would collapse into one series.
+func assertSelectorIdentityKey(t *testing.T, s schema.Metrics, what string, got chplan.Expr) {
 	t.Helper()
-	fc, ok := e.(*chplan.FuncCall)
-	if !ok {
-		t.Fatalf("group key = %T, want *chplan.FuncCall (mapSort)", e)
+	want := selectorIdentityExpr(t, s)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s does not match the selector series identity\n got: %s\nwant: %s",
+			what, exprShape(got), exprShape(want))
 	}
-	if fc.Name != "mapSort" {
-		t.Fatalf("group key func = %q, want mapSort", fc.Name)
+}
+
+// selectorIdentityExpr lowers a bare gauge selector and returns the
+// expression its Project binds to the Attributes column — the one
+// definition of Prometheus-visible series identity on the read path.
+//
+// It also asserts that identity is itself well-formed (a `mapSort` wrap
+// that reads both the resource-attribute and dedicated service columns),
+// so the comparison in [assertSelectorIdentityKey] cannot be satisfied by
+// a regression that flattens BOTH the selector and the histogram paths
+// back to the bare Attributes column.
+func selectorIdentityExpr(t *testing.T, s schema.Metrics) chplan.Expr {
+	t.Helper()
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr("my_gauge")
+	if err != nil {
+		t.Fatalf("ParseExpr(my_gauge): %v", err)
 	}
-	if len(fc.Args) != 1 {
-		t.Fatalf("mapSort arity = %d, want 1", len(fc.Args))
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower(my_gauge): %v", err)
 	}
-	return colName(t, fc.Args[0])
+	var identity chplan.Expr
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		pj, ok := n.(*chplan.Project)
+		if !ok || identity != nil {
+			return true
+		}
+		for _, p := range pj.Projections {
+			// The binding is the projection that BUILDS the map; the
+			// alias-to-itself pass-throughs stacked above it are not.
+			if p.Alias != s.AttributesColumn {
+				continue
+			}
+			if _, bare := p.Expr.(*chplan.ColumnRef); bare {
+				continue
+			}
+			identity = p.Expr
+			return false
+		}
+		return true
+	})
+	if identity == nil {
+		t.Fatalf("no Project binds %q to a built label map in the bare-selector plan", s.AttributesColumn)
+	}
+	if fc, ok := identity.(*chplan.FuncCall); !ok || fc.Name != "mapSort" {
+		t.Fatalf("selector identity = %s, want a mapSort(...) wrap", exprShape(identity))
+	}
+	for _, col := range []string{s.AttributesColumn, s.ResourceAttributesColumn, s.ServiceNameColumn} {
+		if !exprReadsColumn(identity, col) {
+			t.Fatalf("selector identity %s does not read column %q", exprShape(identity), col)
+		}
+	}
+	return identity
+}
+
+// exprReadsColumn reports whether e references the named table column.
+func exprReadsColumn(e chplan.Expr, name string) bool {
+	found := false
+	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+		if cr, ok := sub.(*chplan.ColumnRef); ok && cr.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// exprShape renders an expression as a nested function/column sketch so a
+// mismatch reports a readable tree instead of pointer addresses.
+func exprShape(e chplan.Expr) string {
+	switch v := e.(type) {
+	case *chplan.ColumnRef:
+		return v.Name
+	case *chplan.LitString:
+		return strconv.Quote(v.V)
+	case *chplan.FuncCall:
+		args := make([]string, 0, len(v.Args))
+		for _, a := range v.Args {
+			args = append(args, exprShape(a))
+		}
+		return v.Name + "(" + strings.Join(args, ", ") + ")"
+	default:
+		return fmt.Sprintf("%T", e)
+	}
 }
 
 // timeUnixAlias returns the column name backing the projection that the
