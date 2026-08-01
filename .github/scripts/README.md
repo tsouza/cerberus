@@ -193,7 +193,57 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   label edit from here would block its auto-rebase.
   - Env: none (the title is passed by the caller); argv `--self-test` pins the
     full mapping incl. the deps/release scope overrides and the no-match cases.
+    The self-test runs on the `forbid-skip` lane, in the same step as
+    `issue-label.test.mjs`.
   - Exit: `0` on a green self-test, `1` on any failed assertion.
+- **`issue-label.mjs`** — `issue-label.yml`, BOTH jobs (`label` + `backfill`).
+  The issue-side counterpart to `pr-type-label.mjs`: an ISSUE carries no
+  Conventional-Commit prefix, so its labels are inferred deterministically from
+  what the issue says. Two independent passes, both pure functions of
+  `(title, body)` — no LLM, no network guess:
+  1. **area** — `PATH_PREFIX_TO_AREA` maps repo subtrees to `area/*` by
+     LONGEST prefix (`internal/promql`->area/promql, `test/spec/logql`->
+     area/logql, `.github/workflows`->area/ci); cerberus issues cite exact
+     `file:line`, so the dominant cited subtree names the area. Production
+     citations (`internal/`, `cmd/`) outrank harness citations by
+     `PRODUCTION_PATH_WEIGHT`, because an issue's area is where the code under
+     discussion LIVES, not where the tests that observed it live. The title's
+     own `<prefix>:` token (`TITLE_PREFIX_TO_AREA`) ranks first when present,
+     with a head-keyword fallback (`HEAD_KEYWORD_TO_AREA`) for titles that
+     carry no prefix. At most `MAX_AREA_LABELS` (2), and every SECONDARY area
+     must clear `AREA_SECONDARY_MIN_PATHS` (2) distinct citations.
+  2. **type** — a Conventional-Commit title prefix is authoritative and is
+     resolved by importing `labelsForTitle()` from `pr-type-label.mjs` (the
+     type table has exactly ONE definition in this repo). Otherwise a scored
+     scan of `TYPE_SIGNALS` — curated phrases, not bare words — over the TITLE
+     first and the body only as a fallback: wrong answer / divergence / silent
+     empty -> `bug`, missing coverage / hollow test / mutation survivor ->
+     `test`, unbounded resource / scan cost / fan-out -> `performance`,
+     duplication / half-finished mechanical change -> `refactor`, stale or
+     contradictory prose -> `documentation`. Ties break by
+     `TYPE_TIEBREAK_ORDER`.
+
+  The apply step is ADDITIVE (only ever POSTs missing labels; never removes or
+  replaces one a human set) and IDEMPOTENT (re-running is a no-op). The caps
+  count labels already present, so a human-set `area/*` or type label is
+  respected rather than doubled. ANTI-VACUITY guards fail the run rather than
+  exiting green on nothing: empty mapping tables, an issue whose `body` key was
+  never fetched, ZERO issues processed, a backfill that applied zero labels
+  while unlabeled issues remain, and any issue no rule classifies (reported by
+  number — a growing residue means the mapping is too narrow). NOT a required
+  status check: this is automation, and its own correctness is gated by
+  `issue-label.test.mjs` on the `forbid-skip` lane.
+  - Env: `ISSUE_LABEL_MODE` (`event` | `backfill`, required), `GITHUB_TOKEN`,
+    `GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH` (event mode),
+    `ISSUE_LABEL_DRY_RUN` (`1`/`true` computes + reports, applies nothing),
+    `ISSUE_LABEL_FIXTURE` (dry-run only: a JSON array of
+    `{number, title, body, labels}` read INSTEAD of the API, so a dry run is
+    reproducible offline), `GITHUB_API_URL`; argv `--check-tables` asserts the
+    mapping tables are non-empty (spelled differently from its sibling's
+    `--self-test` because importing `pr-type-label.mjs` would consume that
+    flag first).
+  - Exit: `0` when every scanned issue was classified and its missing labels
+    applied, `1` on any vacuity guard, unclassifiable issue, or API error.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
