@@ -48,7 +48,11 @@ import (
 func remoteWriteFixture(ctx context.Context, conn driver.Conn, promURL string, logger *slog.Logger) error {
 	for _, src := range fixtureSources {
 		logger.Info("remote_write to prom", "metric", src.metricName, "table", src.table)
-		batch, err := readFixtureSeries(ctx, conn, src)
+		read := readFixtureSeries
+		if src.histogram {
+			read = readHistogramFixtureSeries
+		}
+		batch, err := read(ctx, conn, src)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", src.metricName, err)
 		}
@@ -72,19 +76,85 @@ func remoteWriteFixture(ctx context.Context, conn driver.Conn, promURL string, l
 type fixtureSource struct {
 	metricName string
 	table      string
+	histogram  bool
 }
 
 // fixtureSources mirrors fixtureInserts above — keep them in lock-step so
 // every CH-side INSERT has a corresponding Prom remote_write.
 var fixtureSources = []fixtureSource{
-	{"demo_cpu_usage_seconds_total", "otel_metrics_sum"},
-	{"demo_memory_usage_bytes", "otel_metrics_gauge"},
-	{"demo_sparse_memory_bytes", "otel_metrics_gauge"},
-	{"demo_http_requests_total", "otel_metrics_sum"},
-	{"demo_disk_usage_bytes", "otel_metrics_gauge"},
-	{"demo_disk_total_bytes", "otel_metrics_gauge"},
-	{"demo_num_cpus", "otel_metrics_gauge"},
-	{"up", "otel_metrics_gauge"},
+	{metricName: "demo_resource_latency_seconds", table: "otel_metrics_histogram", histogram: true},
+	{metricName: "demo_cpu_usage_seconds_total", table: "otel_metrics_sum"},
+	{metricName: "demo_memory_usage_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_sparse_memory_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_http_requests_total", table: "otel_metrics_sum"},
+	{metricName: "demo_disk_usage_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_disk_total_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_num_cpus", table: "otel_metrics_gauge"},
+	{metricName: "up", table: "otel_metrics_gauge"},
+}
+
+// readHistogramFixtureSeries expands OTel's per-row bucket arrays into the
+// cumulative Prometheus `_bucket` float series used by remote_write. The
+// compatibility fixture deliberately keeps k8s.namespace.name out of
+// Attributes so Cerberus must project it from ResourceAttributes, while the
+// mirrored Prometheus series receives its sanitized wire label directly.
+func readHistogramFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource) ([]prompb.TimeSeries, error) {
+	q := fmt.Sprintf(
+		"SELECT Attributes, ResourceAttributes, toUnixTimestamp64Milli(TimeUnix) AS ts_ms, BucketCounts, ExplicitBounds "+
+			"FROM %s WHERE MetricName = ? ORDER BY Attributes, TimeUnix",
+		src.table,
+	)
+	rows, err := conn.Query(ctx, q, src.metricName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	bySeries := map[string]*prompb.TimeSeries{}
+	for rows.Next() {
+		var attrs, resourceAttrs map[string]string
+		var tsMS int64
+		var counts []uint64
+		var bounds []float64
+		if err := rows.Scan(&attrs, &resourceAttrs, &tsMS, &counts, &bounds); err != nil {
+			return nil, err
+		}
+		labels := make(map[string]string, len(attrs)+len(resourceAttrs)+1)
+		for k, v := range attrs {
+			labels[k] = v
+		}
+		for k, v := range resourceAttrs {
+			labels[strings.ReplaceAll(k, ".", "_")] = v
+		}
+		var cumulative uint64
+		for i, count := range counts {
+			cumulative += count
+			bucketLabels := make(map[string]string, len(labels)+1)
+			for k, v := range labels {
+				bucketLabels[k] = v
+			}
+			if i < len(bounds) {
+				bucketLabels["le"] = fmt.Sprintf("%g", bounds[i])
+			} else {
+				bucketLabels["le"] = "+Inf"
+			}
+			key := canonicaliseLabels(bucketLabels)
+			ts, ok := bySeries[key]
+			if !ok {
+				ts = &prompb.TimeSeries{Labels: buildPromLabels(src.metricName+"_bucket", bucketLabels)}
+				bySeries[key] = ts
+			}
+			ts.Samples = append(ts.Samples, prompb.Sample{Value: float64(cumulative), Timestamp: tsMS})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]prompb.TimeSeries, 0, len(bySeries))
+	for _, ts := range bySeries {
+		out = append(out, *ts)
+	}
+	return out, nil
 }
 
 // readFixtureSeries reads every (Attributes, TimeUnix, Value) row for one
