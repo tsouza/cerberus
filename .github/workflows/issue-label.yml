@@ -1,0 +1,85 @@
+name: issue-label
+
+# Applies `area/*` + one type label to every ISSUE, derived deterministically
+# from the paths the issue body cites and the phrasing of its title. This is
+# the issue-side counterpart to `pr-label.yml`: PRs carry a Conventional-Commit
+# prefix so their type is unambiguous, but issues had no equivalent, and 62 of
+# 100 open issues were sitting unlabeled with no automated path to fix that.
+#
+# ALL of the logic lives in `.github/scripts/issue-label.mjs` (mapping tables,
+# inference, the additive/idempotent apply, and the anti-vacuity guards) —
+# per CLAUDE.md, non-trivial CI step logic is a dependency-light Node ESM
+# module, never inline YAML. The type table is not restated there either: the
+# script imports `labelsForTitle()` from `pr-type-label.mjs`, so the two
+# labelers cannot drift.
+#
+# Two jobs, one module:
+#   - label    — event-driven: on issues opened / edited / reopened it labels
+#                the one issue in the payload.
+#   - backfill — manual dispatch: walks every OPEN issue and applies any
+#                MISSING label. This is the entry point that backfilled the
+#                62, and re-running it is a no-op on an already-labeled issue.
+#
+# NOT A GATE. This workflow is automation, not a required status check — it
+# never runs on `pull_request` and is deliberately absent from branch
+# protection. Its own correctness is gated by `issue-label.test.mjs` on the
+# `forbid-skip` lane.
+#
+# ANTI-VACUITY: the script FAILS the run if it processes zero issues, if a
+# body was never fetched, if any issue matches no rule, or if a backfill
+# applies zero labels while unlabeled issues remain. A labeler that silently
+# labels nothing would otherwise be indistinguishable from a green no-op.
+#
+# SECURITY: `issues` is not a fork-controlled trigger — it fires on this
+# repository's own issues and runs the in-repo script from the default
+# branch. No PR head code is ever checked out or executed. Permissions are
+# least-privilege (issues: write only).
+on:
+  issues:
+    types: [opened, edited, reopened]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Compute and report the labels without applying them'
+        type: boolean
+        default: false
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  # Issue number for the event path; the run id keeps dispatch runs (which
+  # carry no issue number) from cancelling each other.
+  group: issue-label-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  label:
+    name: label
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - run: node .github/scripts/issue-label.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_LABEL_MODE: event
+
+  backfill:
+    name: backfill
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - run: node .github/scripts/issue-label.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_LABEL_MODE: backfill
+          ISSUE_LABEL_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
