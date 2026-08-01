@@ -32,12 +32,12 @@ import (
 func stripBucketSuffix(matchers []*labels.Matcher) []*labels.Matcher {
 	out := make([]*labels.Matcher, len(matchers))
 	for i, m := range matchers {
-		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && strings.HasSuffix(m.Value, "_bucket") {
+		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && strings.HasSuffix(m.Value, bucketSuffix) {
 			// labels.NewMatcher recompiles a regex when applicable; for
 			// MatchEqual that's cheap. Build a fresh matcher rather
 			// than mutating the input — the parser may reuse the
 			// matcher slice across lowering passes.
-			copied, err := labels.NewMatcher(m.Type, m.Name, strings.TrimSuffix(m.Value, "_bucket"))
+			copied, err := labels.NewMatcher(m.Type, m.Name, strings.TrimSuffix(m.Value, bucketSuffix))
 			if err != nil {
 				// Defensive: NewMatcher only errors on regex compile;
 				// MatchEqual cannot. Forward the original on the
@@ -50,6 +50,42 @@ func stripBucketSuffix(matchers []*labels.Matcher) []*labels.Matcher {
 			continue
 		}
 		out[i] = m
+	}
+	return out
+}
+
+// histogramQuantileMatcherPredicate builds the row filter for a
+// classic-histogram quantile selector.
+//
+// A `__name__` matcher pinned with `=` keeps the [stripBucketSuffix]
+// rewrite: the user named exactly one metric and the OTel-CH histogram
+// row carries its bare base name.
+//
+// An UNPINNED `__name__` matcher (`=~` / `!~` / `!=`) is instead a
+// predicate over the Prometheus WIRE name, which no OTel-CH column
+// holds — the wire surface of a classic histogram is the synthetic
+// `<base>_bucket` / `<base>_count` / `<base>_sum` triple. Reference
+// Prometheus's histogram_quantile skips every input series that carries
+// no `le` label, so of that triple only `<base>_bucket` reaches the
+// interpolation; the matcher is therefore evaluated against
+// `concat(MetricName, '_bucket')` and the `_count` / `_sum` members need
+// no arm at all. Testing the bare stored name (as the pinned path does)
+// matches no row, answering the empty vector where the reference
+// answers a quantile.
+//
+// Matcher order is preserved so an all-pinned selector folds to exactly
+// the predicate `buildPredicate(stripBucketSuffix(...))` produced before
+// the unpinned arm existed.
+func histogramQuantileMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
+	bucketWireName := func() chplan.Expr { return syntheticMetricNameExpr(s, bucketSuffix) }
+	stripped := stripBucketSuffix(matchers)
+	var out chplan.Expr
+	for i, m := range matchers {
+		if m.Name == model.MetricNameLabel && m.Type != labels.MatchEqual {
+			out = andExpr(out, metricNamePredicateOn(m, s, bucketWireName))
+			continue
+		}
+		out = andExpr(out, matcherToExpr(stripped[i], s))
 	}
 	return out
 }
@@ -261,7 +297,7 @@ func lowerHistogramQuantileClassicBare(
 	// `__name__` matcher so a Grafana query of
 	// `rate(<X>_bucket[5m])` filters against `MetricName='<X>'`.
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
+	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
 		return nil, err
@@ -543,7 +579,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// the rate's [range] adds the time-bound window. `_bucket` suffix
 	// strip mirrors the bare-selector path — see stripBucketSuffix.
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
+	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {

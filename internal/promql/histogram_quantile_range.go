@@ -203,7 +203,7 @@ func lowerHistogramQuantileClassicBareRange(
 	// fire `rate(<X>_bucket[r])`; the OTel-CH histogram row carries
 	// the bare `<X>` MetricName, so the strip is what makes the
 	// filter find rows.
-	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
+	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	groupByAliases := []string{s.AttributesColumn}
@@ -231,7 +231,7 @@ func lowerHistogramQuantileClassicAggRange(
 	scan := &chplan.Scan{Table: s.HistogramTable}
 	// `_bucket` suffix strip — see stripBucketSuffix in
 	// histogram_quantile.go.
-	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
+	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
 	bucketAggs := []chplan.AggFunc{
