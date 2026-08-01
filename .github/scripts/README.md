@@ -30,13 +30,30 @@ One implementation means a new rule guards BOTH lanes at once.
 
 `lib/registry.mjs` owns the one retry policy every container-registry fetch
 follows — the attempt budget (`registryAttempts`), the linear backoff
-(`readBackoffStepSeconds` / `sleepSeconds`), and `isTransientRegistryFailure()`,
-which decides whether command output names a registry / network fault (Docker
-Hub 429, manifest HEAD failure, TLS / reset / DNS / module-proxy transport) or a
-genuine build error. `pull-buildkit-image.mjs` (host-side bootstrap pull) and
-`build-with-registry-retry.mjs` (the build's own `FROM` resolution) hit the same
-rate-limit bucket and fail the same way, so they share the policy instead of
-re-deriving it.
+(`readBackoffStepSeconds` / `sleepSeconds`), and the classification that decides
+whether another attempt is help or harm. It sorts a failure into three classes,
+not two:
+
+- **transport** (`isTransientRegistryFailure()`): manifest HEAD failure, TLS /
+  reset / DNS / 5xx / module-proxy transport. Retryable — the registry is still
+  willing, this attempt just didn't land.
+- **rate limit** (`isRegistryRateLimit()`): `429` / `toomanyrequests` / `pull
+  rate limit`. **Never retryable.** Docker Hub counts pulls per account, or per
+  runner IP when the pull is unauthenticated, over a rolling window measured in
+  hours; a retry budget measured in seconds cannot outlast it, and each attempt
+  spends more of the quota that is already exhausted. Asked FIRST, because
+  BuildKit reports a 429 as `unexpected status from HEAD request …` — a
+  transport signature — so the rate-limit answer has to win outright.
+  `rateLimitDiagnosis()` is the one explanation every consumer prints for it.
+- **everything else**: a genuine build / command failure. Fails on the first
+  attempt, unretried.
+
+`pull-buildkit-image.mjs` (host-side bootstrap pull), the Justfile's
+`_pull-retry` / `_compose-pull-retry` (host pulls and compose pre-pulls, both
+routed through `build-with-registry-retry.mjs` rather than a bash loop),
+`build-with-registry-retry.mjs` (the build's own `FROM` resolution) and
+`chart-kubeconform.mjs`'s image probe all hit the same quota bucket and fail the
+same way, so they share the policy instead of re-deriving it.
 
 `lib/scope-gate.mjs` answers "does THIS change touch the scope a heavy lane
 guards?" — `runsFullLane()` (which events must never take a scoped subset),
@@ -650,13 +667,16 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   probes the rendered container image tag against the registry — the guard for
   an `appVersion` pointing at an unpublished tag. An image passes only when the
   probe positively confirms it: a definitive not-found fails, and so does any
-  probe that reaches no verdict (auth refusal, rate limit, DNS/TLS), because a
+  probe that reaches no verdict (auth refusal, DNS/TLS, a rate limit), because a
   guard that could not run has verified nothing. Because the chart renders a
-  Docker Hub ref and Docker Hub rate-limits CI bursts, a probe with no verdict
+  Docker Hub ref and a runner's path to Docker Hub blips, a probe with no verdict
   is retried — five attempts with linear backoff, mirroring the Justfile's
-  `_pull-retry` — so a transient refusal does not become a permanent
+  `_pull-retry` — so a transport fault does not become a permanent
   non-verdict; a verdict (`present` or a definitive not-found) is never
-  retried. Exhausted retries still fail. The one exemption is the appVersion
+  retried, and neither is a rate-limit refusal, which is its own
+  `'rate-limited'` state (classified through `lib/registry.mjs`): it fails the
+  check exactly as `'unknown'` does, but re-probing it would only charge the
+  quota that refused. Exhausted retries still fail. The one exemption is the appVersion
   the change itself stages, and it covers a definitive not-found only. The
   `--self-test` drives the real probe against a controlled failing command, so
   the spawn options are pinned at the call site and the retry loop runs for
@@ -1038,11 +1058,14 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   pre-acquiring it sufficient; the module therefore asserts presence in the
   daemon rather than a successful pull. The composite passes the same image ref
   to `driver-opts: image=…`, so the warmed ref and the booted ref cannot drift.
+  A rate-limit refusal ends the loop immediately (after the local-image
+  fallback, which is a pass regardless of why the pull failed).
   - Env: `BUILDKIT_IMAGE` (required — image ref to acquire),
     `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
-- **`build-with-registry-retry.mjs`** — the Justfile (`e2e-up`, `e2e-bwc-up`,
+- **`build-with-registry-retry.mjs`** — the Justfile (`_pull-retry`,
+  `_compose-pull-retry`, `e2e-up`, `e2e-bwc-up`,
   `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
   compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
   and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
@@ -1059,11 +1082,17 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   there is no local-image fallback: a tag an earlier run left in the daemon
   attests nothing about this tree, and a build failure that is not a registry
   failure fails on the FIRST attempt so a real break is never retried into
-  invisibility. Takes the command as its trailing argv.
+  invisibility. A rate-limit refusal fails on the first attempt too, for the
+  opposite reason: the retry cannot work and the attempts themselves are what
+  keep the quota window open (issue #1561). Takes the command as its trailing
+  argv, so the Justfile's host-side pulls route through it as well and inherit
+  the same three-way classification.
   - Env: `IMAGE_BUILD_RETRY_BACKOFF_SECONDS` (optional; default `10` — linear
-    backoff step, attempt N sleeps N × this).
-  - Exit: `0` on success; the command's own status when it failed for a
-    non-registry reason; `1` when the retry budget is spent.
+    backoff step, attempt N sleeps N × this; the Justfile's pull recipes pass
+    `3`).
+  - Exit: `0` on success; the command's own status when it failed for a reason
+    another attempt cannot clear (a genuine failure, or a rate-limit refusal);
+    `1` when the retry budget is spent on transport faults.
 
 ## Notes
 
