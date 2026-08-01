@@ -230,6 +230,7 @@ jobs:
             check
             lint
             forbid-skip
+            forbid-deferral
             chart-validate
             compatibility/prometheus
             compatibility/loki
@@ -239,6 +240,7 @@ jobs:
             roundtrip (promql)
             roundtrip (logql)
             roundtrip (traceql)
+            perf-guards
             compose-smoke
             dashboard
             coverage

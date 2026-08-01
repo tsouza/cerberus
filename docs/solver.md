@@ -67,12 +67,16 @@ The signals, each gathered in the one pass:
    outermost node predicts `[meta.Start, meta.End]` and each nested matrix
    window widens its start by the parent's `Range`. An @-pinned anchor diverges
    from the prediction and routes A.
-6. **Grid commensurability for nested spines.** Inner anchors are generated
-   backward from each node's `End` with no epoch alignment, so slicing shifts
-   the inner grid unless the slice quantum is a multiple of every inner
-   resolution. A nested spine routes A unless some quantum `m` in
-   `[MinAnchorsPerSlice, N/2]` satisfies `m·Step ≡ 0 (mod lcm(inner
-   resolutions))`.
+6. **Grid commensurability for end-phased nested spines.** A nested grid whose
+   anchors are generated backward from the node's own `End` — a nested
+   `RangeLWR`, or a nested matrix `RangeWindow` that is not `StepAlign`'d —
+   shifts phase when the slice boundary shifts `End`, so it routes A unless the
+   selected shard geometry's emitted quantum `m = ceil(N/K)` satisfies
+   `m·Step ≡ 0 (mod lcm(end-phased resolutions))`. A `StepAlign`'d nested spine
+   (the PromQL subquery inner-sample grid, snapped to absolute-epoch multiples
+   of its own `Step`) is phase-0 for **any** `End`, so its per-shard anchor set
+   is always a subset of the unsliced one and it imposes no quantum constraint
+   at all — the ordinary `expr[range:res]` subquery keeps routing.
 7. **Scalar replication cost.** A `ScalarSubquery` whose interior carries its
    own windowed spine is too expensive to replicate `K×`, so it routes A: the
    slice benefit cannot pay for `K` copies of an expensive scalar. A purely

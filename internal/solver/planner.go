@@ -259,11 +259,7 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	if sig.sawGridMismatch {
 		return sig, notRouted(ReasonGridMismatch).withGrid(sig, meta), 0, false
 	}
-	// (5) Grid commensurability for nested spines.
-	if sig.sawIncommensurate {
-		return sig, notRouted(ReasonIncommensurate).withGrid(sig, meta), 0, false
-	}
-	// (6) A ScalarSubquery too expensive to replicate K× (and that cannot be
+	// (7) A ScalarSubquery too expensive to replicate K× (and that cannot be
 	// classified safe by the cheap interior bound) → route A.
 	if sig.sawScalarHeavy {
 		return sig, notRouted(ReasonScalarHeavy).withGrid(sig, meta), 0, false
@@ -305,6 +301,12 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	if upper < 2 {
 		return sig, notRouted(ReasonHighD).withGrid(sig, meta), 0, false
 	}
+	// (6) An end-phased nested grid is generated backward from its own End,
+	// so the slice quantum must preserve its phase — checked against the
+	// same ceil(N/K) quantum the slicer will emit below.
+	if !sliceQuantumCommensurate(sig, step, int(kk)) {
+		return sig, notRouted(ReasonIncommensurate).withGrid(sig, meta), 0, false
+	}
 
 	return sig, nil, kk, true
 }
@@ -340,12 +342,11 @@ type signals struct {
 	allSliceInvariant bool
 	hasWindow         bool
 
-	sawNow64          bool
-	sawUnpinnedBound  bool
-	sawInstantWindow  bool
-	sawGridMismatch   bool
-	sawIncommensurate bool
-	sawScalarHeavy    bool
+	sawNow64         bool
+	sawUnpinnedBound bool
+	sawInstantWindow bool
+	sawGridMismatch  bool
+	sawScalarHeavy   bool
 
 	// sawInstantVectorJoin records a StepAligned==false VectorJoin — an
 	// instant-mode vector-vector join. Its emitter synthesizes the join-side
@@ -384,9 +385,13 @@ type signals struct {
 	maxFanout   int64         // F over every windowed node
 	cumulativeD time.Duration // D = Σ per-anchor lookback over every grid carrier
 
-	// innerResolutions records every inner-spine Step for the lcm
-	// commensurability check.
-	innerResolutions []time.Duration
+	// endPhasedResolutions records the step of every nested spine whose
+	// anchor PHASE is tied to the node's own End — the grids the selected
+	// slice quantum has to preserve. An epoch-aligned nested grid
+	// (RangeWindow.StepAlign, the PromQL subquery inner-sample grid) is
+	// phase-0 by construction and so invariant under any shift of End; it
+	// contributes nothing here. See sliceQuantumCommensurate.
+	endPhasedResolutions []time.Duration
 }
 
 // analyze runs the one eligibility pass over both the node tree and every
@@ -766,10 +771,18 @@ func (p *Planner) checkRangeWindowGrid(v *chplan.RangeWindow, predStart, predEnd
 		}
 	}
 
-	// (5) Inner spine resolution for the lcm commensurability check.
-	if depth > 0 && v.Step > 0 {
-		sig.innerResolutions = append(sig.innerResolutions, v.Step)
-		p.checkCommensurability(sig)
+	// (5) Nested-grid phase for the slice-quantum check. Only a nested grid
+	// generated backward from this node's own End is phase-sensitive to
+	// where the shard boundaries fall. StepAlign snaps the anchor base to an
+	// absolute-epoch multiple of Step (reference PromQL's subquery
+	// inner-sample grid — see chplan.RangeWindow.StepAlign and chsql's
+	// epochAlignedEndFrag), so the fanned anchors land on phase 0 no matter
+	// what End is: shifting End by a NON-multiple of Step selects a
+	// different newest anchor but never moves the grid off phase, and the
+	// per-shard anchor set stays a subset of the unsliced one. Such a spine
+	// therefore imposes no quantum constraint and must not be recorded here.
+	if depth > 0 && v.Step > 0 && !v.StepAlign {
+		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
 	}
 }
 
@@ -795,35 +808,41 @@ func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.
 	} else if startZero != endZero {
 		sig.sawUnpinnedBound = true
 	}
+	// RangeLWR has no StepAlign sibling: emitRangeLWR generates its anchors
+	// as `End - i*Step` with no epoch snap, so a nested one's phase moves
+	// with the shard's End and always constrains the slice quantum.
+	if depth > 0 && v.Step > 0 {
+		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
+	}
 }
 
-// checkCommensurability enforces signal (5): inner anchors are generated
-// backward from each node's End with no epoch alignment, so the slice quantum
-// m must be a multiple of every inner resolution: m*Step ≡ 0 (mod
-// lcm(res_1..res_d)). If no valid m in [MinAnchorsPerSlice, N/2] satisfies it,
-// route A. We can only evaluate this once the outer grid is known; the
-// caller re-runs it as inner resolutions accrue and after outerN is set.
-func (p *Planner) checkCommensurability(sig *signals) {
-	if sig.outerN == 0 || len(sig.innerResolutions) == 0 {
-		return // outer grid not yet seen; re-checked after the spine root sets it.
+// sliceQuantumCommensurate reports whether the quantum emitted by slice() is
+// phase-compatible with every END-PHASED nested grid — the ones whose anchors
+// are generated backward from the node's own End (RangeLWR always; a nested
+// matrix RangeWindow that is not StepAlign'd). Shard j ends at
+// `End - j*m*Step`, so every such grid keeps its phase iff `m*Step ≡ 0 (mod
+// lcm(resolutions))`, i.e. iff m is a multiple of `lcm/gcd(Step, lcm)`.
+//
+// The planner chooses K and the slicer then deterministically derives
+// m = ceil(N/K), so this checks the quantum that will ACTUALLY be emitted:
+// asking only whether SOME valid m exists would admit plans whose real shard
+// boundaries move a nested grid. Epoch-aligned nested grids are phase-0
+// regardless of End and are excluded upstream, so a plan carrying only those
+// reaches the empty-list fast path and routes.
+func sliceQuantumCommensurate(sig signals, outerStep time.Duration, k int) bool {
+	if len(sig.endPhasedResolutions) == 0 {
+		return true
 	}
 	resLcm := time.Duration(1)
-	for _, r := range sig.innerResolutions {
+	for _, r := range sig.endPhasedResolutions {
 		resLcm = lcmDuration(resLcm, r)
 	}
-	if resLcm <= 0 {
-		return
+	if resLcm <= 0 || outerStep <= 0 || k < 2 || sig.outerN < 2 {
+		return false
 	}
-	// Need some m in [MinAnchorsPerSlice, N/2] with (m*Step) % lcm == 0.
-	// Equivalently m must be a multiple of lcm/gcd(Step,lcm) = lcm/g.
-	// Defer the Step-dependent half to the slicer; here record the gate
-	// only when the outer grid is known.
-	loBound := p.Cfg.MinAnchorsPerSlice
-	hiBound := sig.outerN / 2
-	if hiBound < loBound {
-		// No room for a valid quantum window at all.
-		sig.sawIncommensurate = true
-	}
+	requiredAnchors := resLcm / gcdDuration(outerStep, resLcm)
+	quantum := (sig.outerN + k - 1) / k
+	return int64(quantum)%int64(requiredAnchors) == 0
 }
 
 // walkExpr sweeps an expr tree for now64 and recurses into any embedded
