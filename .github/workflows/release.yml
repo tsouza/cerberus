@@ -230,6 +230,7 @@ jobs:
             check
             lint
             forbid-skip
+            forbid-deferral
             chart-validate
             compatibility/prometheus
             compatibility/loki
