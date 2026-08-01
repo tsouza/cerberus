@@ -162,7 +162,7 @@ every PR) to *broad* (corpus-wide, nightly).
    `WITH RECURSIVE`, a correlated subquery — on the lowered plan *and* emitted
    SQL of **every** corpus fixture. Cheap, pre-execution, no chDB needed.
 2. **Per-construct scaling harness** — `test/perf/scaling`, in the
-   `perf-guards` chDB job (runs on every PR; informational). For a known-hot
+   required `perf-guards` chDB job (runs on every PR). For a known-hot
    construct it sweeps a parameter (step count, chain depth, recursion depth)
    and asserts wall-time stays **sub-linear** in it *and* peak intermediate
    cardinality stays **bounded**. This is the compute-fan-out axis the original
@@ -174,18 +174,19 @@ every PR) to *broad* (corpus-wide, nightly).
    by fan factor, and surfaces the worst as a job step-summary. The wide net
    for a fan-out in a construct nobody thought to write a guard for.
 4. **Cardinality ratchet** — `test/perf/cardinality_ratchet_test.go`, in the
-   `perf-guards` chDB job (runs on every PR; informational). Pins every
+   required `perf-guards` chDB job (runs on every PR). Pins every
    fixture's fan factor + structural flags + recursion depth in
    `test/perf/cardinality-baseline.json` and fails the run on an **upward**
    fan-factor regression, a new CROSS JOIN / `WITH RECURSIVE` where the baseline
-   had none, or a deeper recursion. A new fixture must add a baseline row, so a
-   new construct's absolute fan factor lands in the diff as a built-in cost
-   review.
+   had none, a deeper recursion, or any change at all to `scan_rows` /
+   `has_array_join` (structural identity, no better direction). A new fixture
+   must add a baseline row, so a new construct's absolute fan factor lands in
+   the diff as a built-in cost review.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
-scaling harness and cardinality ratchet run on every PR through the
-informational `perf-guards` chDB lane; the profiler is the nightly wide net for
-the unknown shapes.
+scaling harness and cardinality ratchet run on every PR through the required
+`perf-guards` chDB lane; the profiler is the nightly wide net for the unknown
+shapes.
 Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.
@@ -195,9 +196,9 @@ place. `chplan.ReanchorRange` shares the immutable off-spine subtree across the
 `K` shards instead of `CloneNode`-ing it K+1 times; the wall-clock measurement
 lives in the weekly informational `perf-benchmark` lane
 (`internal/solver.BenchmarkSlice`, which never gates), so the gating guard is a
-deterministic allocation pin -- `TestSliceAllocs_ChDB` in the `perf-guards` chDB
-job. It asserts `slice()`'s allocs/op stays under a pinned ceiling at K=4 and
-K=16, so a revert of the COW sharing back to a per-shard `CloneNode` re-inflates
+deterministic allocation pin -- `TestSliceAllocs_ChDB` in the required
+`perf-guards` chDB job. It asserts `slice()`'s allocs/op stays under a pinned
+ceiling at K=4 and K=16, so a revert of the COW sharing back to a per-shard `CloneNode` re-inflates
 the allocation count past the bound and turns the `perf-guards` lane red rather
 than silently regressing.
 

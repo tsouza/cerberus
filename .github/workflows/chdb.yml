@@ -282,6 +282,22 @@ jobs:
   #     CloneNode re-inflates the count past the bound and fails here. The
   #     wall-clock companion (internal/solver.BenchmarkSlice) is informational
   #     in perf-benchmark.yml; this is the gating arm.
+  #   - TestCardinalityRatchet: the corpus-wide compute-fan-out ratchet, every
+  #     executable TXTAR fixture diffed against test/perf/cardinality-baseline.json.
+  #   - TestScaleWallPin: the scan-amplification scale-wall pin.
+  #
+  # REQUIRED STATUS CHECK on `main`, and named in release.yml's
+  # RELEASE_REQUIRED_CHECKS. It was neither until the cardinality ratchet's
+  # rows were audited: the ratchet's own doc comment claimed the lane was
+  # "already-required" and it was not, so a fixture whose fan-out grew turned
+  # one non-blocking lane red and merged anyway. `test/regression/
+  # perf_guards_gate_test.go` pins the job name, the recipe it runs, and the
+  # release-set membership, because none of those are visible in a PR diff
+  # once branch protection is the thing holding them together.
+  #
+  # The docs-only guard is job-level (not per-step like `roundtrip`) because
+  # this is a plain non-matrix job: a skipped one still publishes its named
+  # context and resolves, which `probe` — required, same shape — proves.
   #
   # Wall-clock perf stays in the informational `perf-benchmark.yml`
   # (benchstat, never gates) to avoid runner-variance flake; only the
