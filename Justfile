@@ -323,7 +323,7 @@ coverage:
 # the solver routing-DECISION baseline, the text/expected_rows goldens (this
 # body), and the cardinality fan-factor baseline. This closes the recurring
 # miss where a new TXTAR fixture regenerated its goldens but left
-# `cardinality-baseline.json` unrecorded, turning the non-required
+# `cardinality-baseline.json` unrecorded, turning
 # `perf-guards` TestCardinalityRatchet red on main after merge (hit by #1096
 # native_resample_offset and #1098 increase_left_edge_scan_bound).
 #
