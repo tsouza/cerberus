@@ -55,10 +55,11 @@ branch as shields.io badge JSON; the README shows them live. On
   data).
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
-  template-expanded to 737 concrete cases.
-- **Today**: **737/737** cases pass; no allow-list exists. This is the
+  template-expanded to concrete cases, plus a small cerberus-owned tail for
+  shapes upstream cannot express (resource-attribute grouping) — 738 in all.
+- **Today**: **738/738** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 737/737 is a
+  a real reference. (Parity drift is report-only in CI; the 738/738 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -102,7 +103,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 737/737, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 738/738, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -110,8 +111,7 @@ All three run against a real reference backend on identical seeded data,
 so each catches genuine semantic divergence. The difference is *corpus
 provenance and breadth*: PromQL inherits an externally-curated standard;
 TraceQL's coverage is only as wide as the author wrote it. Raising
-TraceQL's confidence is the top improvement item (see the project
-roadmap / the PR that introduced this section).
+TraceQL's confidence is the top improvement item.
 
 ## Local run
 
@@ -339,9 +339,9 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 737 / 737    |
+| prometheus | 738 / 738    |
 | loki       | 116 / 116    |
-| tempo      | 48 / 48      |
+| tempo      | 49 / 49      |
 
 The baseline records **full parity** for every head — the ratchet asserts
 `passed == total == cases.length`, so the file has no shape in which a

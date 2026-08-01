@@ -3221,9 +3221,9 @@
   },
   {
     "fixture": "promql/histogram_quantile_classic_agg_offset_range",
-    "fan_factor": 1.25,
-    "scan_rows": 4,
-    "peak_intermediate": 5,
+    "fan_factor": 1.5714285714285714,
+    "scan_rows": 7,
+    "peak_intermediate": 11,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": false,
@@ -3236,6 +3236,16 @@
     "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_classic_agg_rate_min_samples",
+    "fan_factor": 6,
+    "scan_rows": 2,
+    "peak_intermediate": 12,
+    "has_cross_join": false,
+    "has_array_join": true,
     "has_recursive_cte": false,
     "max_recursion_depth": 0
   },
@@ -3322,8 +3332,8 @@
   {
     "fixture": "promql/histogram_quantile_classic_range_step",
     "fan_factor": 10,
-    "scan_rows": 1,
-    "peak_intermediate": 10,
+    "scan_rows": 2,
+    "peak_intermediate": 20,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": false,
@@ -7484,6 +7494,16 @@
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "traceql/search_trace_limit_tiebreak_boundary",
+    "fan_factor": 1,
+    "scan_rows": 5,
+    "peak_intermediate": 5,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,

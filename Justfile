@@ -323,7 +323,7 @@ coverage:
 # the solver routing-DECISION baseline, the text/expected_rows goldens (this
 # body), and the cardinality fan-factor baseline. This closes the recurring
 # miss where a new TXTAR fixture regenerated its goldens but left
-# `cardinality-baseline.json` unrecorded, turning the non-required
+# `cardinality-baseline.json` unrecorded, turning
 # `perf-guards` TestCardinalityRatchet red on main after merge (hit by #1096
 # native_resample_offset and #1098 increase_left_edge_scan_bound).
 #
@@ -708,6 +708,16 @@ _compose-pull-retry +FILES:
     done; \
     [ "$ok" = 1 ] || { echo "ERROR: docker compose pull failed after 5 attempts" >&2; exit 1; }
 
+# `_pull-retry` / `_compose-pull-retry` protect the images the HOST daemon
+# fetches. The images a BUILD fetches — the `FROM` refs BuildKit resolves while
+# running `docker build` / `docker compose up` — are a separate exposure that no
+# host-side pre-pull reaches (the `docker-container` driver resolves them from
+# the registry regardless of what the daemon holds), and a Docker Hub 429 on
+# `golang:1.26` took `e2e` + `migration-e2e` down on main. Every build-invoking
+# command below therefore runs through
+# `.github/scripts/build-with-registry-retry.mjs`, which retries the command on
+# registry/network faults only and fails immediately on a real build error.
+
 e2e-up: e2e-down
     @echo "==> pre-pulling k3s node image (retry — Docker Hub flaky from CI)"
     @just _pull-retry {{K3S_IMAGE}}
@@ -721,7 +731,8 @@ e2e-up: e2e-down
         {{K3D_EXTRA_ARGS}} \
         --wait
     @echo "==> building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
-    docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
     @echo "==> pre-pulling external images on host docker (retry)"
     @just _pull-retry {{E2E_EXTERNAL_IMAGES}}
     @echo "==> importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
@@ -1196,7 +1207,8 @@ e2e-bwc-up: e2e-down
         {{K3D_EXTRA_ARGS}} \
         --wait
     @echo "==> [bwc] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
-    docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
     @echo "==> [bwc] pre-pulling external + bwc images on host docker"
     @# The standalone-CH image (the *-alpine tag in E2E_EXTERNAL_IMAGES) backs
     @# test/e2e/k3s/clickhouse.yaml, which the bwc kustomization EXCLUDES — this
@@ -1394,7 +1406,7 @@ migration-cerberus-image:
     img="${CERBERUS_IMAGE:-$local_tag}"; \
     if [ "$img" = "$local_tag" ]; then \
         echo "==> migration cerberus image: build $img from Dockerfile.local"; \
-        docker build -f Dockerfile.local -t "$img" .; \
+        node .github/scripts/build-with-registry-retry.mjs docker build -f Dockerfile.local -t "$img" .; \
     else \
         echo "==> migration cerberus image: pull $img"; \
         just _pull-retry "$img"; \
@@ -1418,7 +1430,8 @@ migration-tier1-up:
     @just migration-cerberus-image
     @just _compose-pull-retry test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
     @echo "==> migration tier-1 stack up"
-    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         up --wait --wait-timeout 300
 
 # Every archetype an `@tier1` scenario actually reads fixture data from:
@@ -1557,7 +1570,8 @@ migration-tier2-up:
     @just _compose-pull-retry test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml
     @echo "==> migration tier-2 stack up"
-    docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker compose -f test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml \
         -f test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml \
         up --wait --wait-timeout 300
 

@@ -672,6 +672,19 @@ jobs:
       - name: Assert the mutation phase selector scopes correctly
         run: node --test .github/scripts/mutation-matrix.test.mjs
 
+      # The two auto-labelers, same discipline: neither is a required check,
+      # so a broken mapping never turns anything red — it just quietly stops
+      # labeling, which is exactly how 62 issues ended up bare. The issue
+      # labeler's tests prove every area arm and every type arm is reachable
+      # from a real issue, and prove the CLI FAILS on each vacuity shape it
+      # exists to catch (zero issues scanned, a body never fetched, an issue
+      # no rule classifies). `pr-type-label.mjs --self-test` pins the shared
+      # type table the issue labeler imports rather than restates.
+      - name: Assert the auto-labelers still label
+        run: |
+          node .github/scripts/pr-type-label.mjs --self-test
+          node --test .github/scripts/issue-label.test.mjs
+
       # Committed-artefact discipline. Every other gate asks whether the tree
       # COMPILES and PASSES; none asks what it CONTAINS, so a build artefact
       # that gets `git add`-ed by accident survives indefinitely — a compiled
@@ -726,6 +739,13 @@ jobs:
       # the very run it was taken from.
       - name: Assert the parity baseline updater writes a gateable roster
         run: node --test .github/scripts/compat-baseline-sync.test.mjs
+
+  # `forbid-deferral` used to live here. It moved to its own workflow file,
+  # `.github/workflows/forbid-deferral.yml`, because one of its three surfaces
+  # is the PR DESCRIPTION and this workflow's bare `pull_request:` trigger does
+  # not include `edited` — a body corrected exactly as the gate instructs
+  # produced no new check-run. Adding `types:` here would re-run the whole
+  # suite on every title tweak, so the gate got its own cheap trigger instead.
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It
   # runs lychee in pure OFFLINE mode (`--offline --include-fragments`): no
