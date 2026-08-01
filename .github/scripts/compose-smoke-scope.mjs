@@ -123,10 +123,10 @@ export function stalePaths(paths) {
 // It lives HERE, not in the shared runsFullLane(), for two reasons. The other
 // consumer of that helper is the mutation sweep, which genuinely does want a
 // manual dispatch to sweep the whole matrix. And runsFullLane() fails OPEN by
-// design — anything that is not a pull request runs everything — so turning it
-// into an allow-list would make an event nobody anticipated silently skip the
-// lane, which is precisely the hollow green this module exists to prevent.
-// Not booting is therefore always a named, per-lane decision.
+// design — an event it does not name runs everything — so folding this in there
+// would make an event nobody anticipated silently skip the lane, which is
+// precisely the hollow green this module exists to prevent. Not booting is
+// therefore always a named, per-lane decision.
 export const NON_BOOTING_EVENTS = ['workflow_dispatch'];
 
 // Whether the changed-path diff matters at all, or the event settles it. Used

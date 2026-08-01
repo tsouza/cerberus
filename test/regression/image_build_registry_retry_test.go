@@ -34,15 +34,28 @@ import (
 // wraps the build command itself, and these guards pin that every
 // build-invoking command goes through it and that it retries the transient
 // class ONLY.
+//
+// The rate limit is NOT in that class, and issue #1561 is what that cost. A
+// wrapper that retried `toomanyrequests` five times turned one refused pull
+// into five refused pulls on a counter that only time decrements — across ~8
+// open PRs and every image-pulling lane, the retry budget was itself holding
+// the quota window open. The window is hours; the backoff is ~100 seconds; no
+// number of attempts can outlast it. So a quota refusal fails on the FIRST
+// attempt, and the cases below pin both halves: the transport class still
+// retries, and the rate-limit class does not — even when the same output also
+// names a transport fault, which BuildKit's `unexpected status from HEAD
+// request … 429` always does.
 
 const (
 	buildRetryWrapper     = "build-with-registry-retry.mjs"
 	buildRetryWrapperPath = "../../.github/scripts/" + buildRetryWrapper
 
-	// The wrapper's own attempt budget (lib/registry.mjs `registryAttempts`).
-	// Fewer lets the flake through; more parks the job on a registry that is
-	// genuinely refusing this runner.
+	// The wrapper's own attempt budget for the TRANSPORT class (lib/registry.mjs
+	// `registryAttempts`). Fewer lets the flake through; more parks the job on a
+	// network path that is genuinely broken for this runner. A rate-limit
+	// refusal is not on this budget at all — it gets one attempt.
 	buildRetryAttempts = 5
+	rateLimitAttempts  = 1
 
 	// Floor for the class scan. The wrapped set is currently 13 (5 Justfile,
 	// 4 compatibility harness, 2 e2e.yml, 2 bench); the floor guards against a
@@ -177,21 +190,118 @@ func TestImageBuildingCommandsGoThroughTheRetryWrapper(t *testing.T) {
 	}
 }
 
+// TestCiScriptModulesAcquireImagesThroughTheSharedPolicy pins the same class fix
+// one layer down, for the `.mjs` modules that drive docker themselves.
+//
+// `docker run` and `docker create` pull a missing image implicitly, and that
+// implicit pull is single-attempt: a Docker Hub blip or a quota refusal surfaced
+// as "failed to start reference container" — a registry fault wearing the
+// costume of a broken gate (issue #1562). Going through `pullImageWithRetry`
+// gives every such site the same budget for the transport class, the same
+// immediate stop on the quota class, and the same words for which one it was.
+func TestCiScriptModulesAcquireImagesThroughTheSharedPolicy(t *testing.T) {
+	t.Parallel()
+
+	const (
+		scriptsDir = "../../.github/scripts"
+		// The module that IMPLEMENTS the policy: it is where the raw `docker
+		// pull` legitimately lives.
+		policyModule = "registry.mjs"
+		policyCall   = "pullImageWithRetry"
+	)
+
+	// `capture('docker', ['pull'|'run'|'create', …])` — the three subcommands
+	// that fetch from a registry (the latter two implicitly, when the image is
+	// absent). Both quote styles, because either is valid ESM.
+	fetchingDockerCall := regexp.MustCompile(`\(\s*['"]docker['"]\s*,\s*\[\s*['"](?:pull|run|create)['"]`)
+
+	entries, err := os.ReadDir(scriptsDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", scriptsDir, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".mjs" {
+			files = append(files, filepath.Join(scriptsDir, e.Name()))
+		}
+	}
+	libEntries, err := os.ReadDir(filepath.Join(scriptsDir, "lib"))
+	if err != nil {
+		t.Fatalf("read %s/lib: %v", scriptsDir, err)
+	}
+	for _, e := range libEntries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".mjs" && e.Name() != policyModule {
+			files = append(files, filepath.Join(scriptsDir, "lib", e.Name()))
+		}
+	}
+
+	sites := 0
+	for _, file := range files {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		// Matched against the whole file, not line by line: the argv array of a
+		// `docker run` spans several lines in every module that has one, and a
+		// per-line scan silently matched none of them.
+		text := string(src)
+		for _, loc := range fetchingDockerCall.FindAllStringIndex(text, -1) {
+			call := strings.TrimSpace(strings.SplitN(text[loc[0]:loc[1]], "\n", 2)[0])
+			if isProse(lineContaining(text, loc[0])) {
+				continue
+			}
+			sites++
+			if !strings.Contains(text, policyCall) {
+				t.Errorf("%s fetches from a registry without the shared policy:\n    %s\n"+
+					"Acquire the image with `%s(ref, …)` from ./lib/registry.mjs first, so a transport fault "+
+					"retries and a rate-limit refusal fails on the first attempt instead of spending four more "+
+					"pulls out of an exhausted quota.", file, call, policyCall)
+			}
+		}
+	}
+
+	if sites == 0 {
+		t.Fatalf("no .mjs module under %s runs `docker pull|run|create` — the guard is scanning for a shape "+
+			"that no longer exists", scriptsDir)
+	}
+}
+
+// lineContaining returns the source line that offset falls on.
+func lineContaining(src string, offset int) string {
+	start := strings.LastIndexByte(src[:offset], '\n') + 1
+	end := strings.IndexByte(src[offset:], '\n')
+	if end < 0 {
+		return src[start:]
+	}
+	return src[start : offset+end]
+}
+
 // TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures drives the module
-// against a stub `docker` on PATH. The two halves are equally load-bearing: a
-// wrapper that does not retry the 429 fixes nothing, and one that retries a
-// genuine build failure is a `continue-on-error` in disguise — it would turn a
-// broken build into five broken builds and a slower red.
+// against a stub `docker` on PATH. The three halves are equally load-bearing: a
+// wrapper that does not retry a reset connection fixes nothing, one that
+// retries a genuine build failure is a `continue-on-error` in disguise — it
+// would turn a broken build into five broken builds and a slower red — and one
+// that retries a rate-limit refusal spends four more pulls out of the exhausted
+// quota that is failing this job and every concurrent one.
 func TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures(t *testing.T) {
 	t.Parallel()
 
 	const (
+		// The two forms Docker Hub's refusal arrives in. The first is also a
+		// transport signature (`unexpected status from HEAD request`), so it
+		// doubles as the precedence case: rate limit wins, no retry.
 		hubRateLimit = "#5 ERROR: unexpected status from HEAD request to " +
 			"https://registry-1.docker.io/v2/library/golang/manifests/1.26: 429 Too Many Requests"
+		hubRateLimitProse = "toomanyrequests: You have reached your unauthenticated pull rate limit."
+
+		resetConnection     = `#4 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/": read: connection reset by peer`
 		compileError        = "internal/api/prom/handler.go:12:2: undefined: notAThing"
 		compileExitStatus   = 2
 		neverSucceeds       = buildRetryAttempts + 1
 		succeedsImmediately = 1
+		// Late enough that a retrying wrapper WOULD have succeeded: the
+		// rate-limit cases fail anyway, which is the behaviour under test.
+		wouldSucceedOnRetry = 3
 	)
 
 	cases := []struct {
@@ -202,22 +312,46 @@ func TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures(t *testing.T) {
 		failureExit  int
 		wantExitCode int
 		wantCalls    int
+		// wantReport is a phrase the failure report must carry. The wording is
+		// part of the fix, not decoration: the report this replaced said "the
+		// registry is not answering for this runner", and a whole afternoon of
+		// red lanes was diagnosed as a Docker Hub outage on the strength of it.
+		wantReport string
 	}{
 		{
-			name:         "a Docker Hub 429 is ridden out",
-			succeedsOn:   3,
-			failureText:  hubRateLimit,
+			name:         "a transport fault is ridden out",
+			succeedsOn:   wouldSucceedOnRetry,
+			failureText:  resetConnection,
 			failureExit:  1,
 			wantExitCode: 0,
-			wantCalls:    3,
+			wantCalls:    wouldSucceedOnRetry,
 		},
 		{
 			name:         "a registry that never answers spends the budget and fails the job",
 			succeedsOn:   neverSucceeds,
-			failureText:  hubRateLimit,
+			failureText:  resetConnection,
 			failureExit:  1,
 			wantExitCode: 1,
 			wantCalls:    buildRetryAttempts,
+			wantReport:   "transport fault",
+		},
+		{
+			name:         "a Docker Hub 429 fails on the first attempt, even though a retry would have worked",
+			succeedsOn:   wouldSucceedOnRetry,
+			failureText:  hubRateLimit,
+			failureExit:  1,
+			wantExitCode: 1,
+			wantCalls:    rateLimitAttempts,
+			wantReport:   "QUOTA, not an outage",
+		},
+		{
+			name:         "the prose form of the same refusal is not retried either",
+			succeedsOn:   wouldSucceedOnRetry,
+			failureText:  hubRateLimitProse,
+			failureExit:  1,
+			wantExitCode: 1,
+			wantCalls:    rateLimitAttempts,
+			wantReport:   "retrying cannot clear it",
 		},
 		{
 			name:         "a genuine build failure is not retried and keeps its exit status",
@@ -275,6 +409,10 @@ func TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures(t *testing.T) {
 			calls := len(strings.Fields(string(logged)))
 			if calls != tc.wantCalls {
 				t.Errorf("the build ran %d time(s), want %d\noutput:\n%s", calls, tc.wantCalls, out)
+			}
+			if tc.wantReport != "" && !strings.Contains(string(out), tc.wantReport) {
+				t.Errorf("the failure report never says %q, so it does not name why the job failed\noutput:\n%s",
+					tc.wantReport, out)
 			}
 		})
 	}

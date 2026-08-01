@@ -552,7 +552,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// the raw scan with a StepGrid and collapsing latest-per-(series,
 	// anchor). Anchor modifiers (`offset`) are honoured by shifting the
 	// predicate against `anchor_ts` rather than a single end_ts.
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	if ctx.rangeMode() {
 		// `@<absolute>` / `@ start()` / `@ end()` pin a single anchor
 		// across all steps — every step evaluates the same fixed-time
 		// LWR. Collapse the StepGrid fan-out: run the LWR once at the
@@ -713,7 +713,7 @@ func lowerCompanionUnion(
 		}
 		return selectorInput, nil
 	}
-	if ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero() {
+	if ctx.rangeMode() {
 		if hasAbsoluteAt(v) {
 			return wrapRangeAbsoluteAtBroadcast(selectorInput, nil, anchor, ctx, s), nil
 		}
@@ -1733,9 +1733,16 @@ func attributeLookupKeys(key string) []string {
 }
 
 func attributeLookup(col, key string) chplan.Expr {
+	return attributeLookupExpr(&chplan.ColumnRef{Name: col}, key)
+}
+
+// attributeLookupExpr is attributeLookup over an already-shaped label map.
+// Histogram paths group directly over their scans, so they use this form to
+// resolve labels from the ResourceAttributes-merged series identity.
+func attributeLookupExpr(m chplan.Expr, key string) chplan.Expr {
 	if !format.PromLabelNeedsDottedFallback(key) {
 		return &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: col},
+			Map: m,
 			Key: &chplan.LitString{V: key},
 		}
 	}
@@ -1746,7 +1753,7 @@ func attributeLookup(col, key string) chplan.Expr {
 		// to the bare MapAccess keeps the contract sane if the helper
 		// ever drifts.
 		return &chplan.MapAccess{
-			Map: &chplan.ColumnRef{Name: col},
+			Map: m,
 			Key: &chplan.LitString{V: key},
 		}
 	}
@@ -1761,10 +1768,9 @@ func attributeLookup(col, key string) chplan.Expr {
 	// candidate — when no candidate's key is present, the empty-string
 	// default matches Prom's "absent label" semantics for matcher
 	// comparison.
-	mapRef := &chplan.ColumnRef{Name: col}
 	last := candidates[len(candidates)-1]
 	var chain chplan.Expr = &chplan.MapAccess{
-		Map: mapRef,
+		Map: m,
 		Key: &chplan.LitString{V: last},
 	}
 	for i := len(candidates) - 2; i >= 0; i-- {
@@ -1775,12 +1781,12 @@ func attributeLookup(col, key string) chplan.Expr {
 				&chplan.FuncCall{
 					Name: "mapContains",
 					Args: []chplan.Expr{
-						mapRef,
+						m,
 						&chplan.LitString{V: k},
 					},
 				},
 				&chplan.MapAccess{
-					Map: mapRef,
+					Map: m,
 					Key: &chplan.LitString{V: k},
 				},
 				chain,

@@ -1,6 +1,13 @@
-// build-with-registry-retry.mjs — run an image-building command, and retry it
-// when (and only when) it failed because a registry did, not because the build
-// did.
+// build-with-registry-retry.mjs — run a command that fetches from a container
+// registry (an image build, a `docker pull`, a compose pre-pull) and retry it
+// when — and only when — it failed because the network path to the registry
+// did, not because the command itself did and not because the registry refused
+// on quota.
+//
+// The name is historical: the module was written for the build's own `FROM`
+// resolution, and the retry policy it applies turned out to be the same one
+// every registry fetch needs, so the host-side pulls route through it too
+// rather than re-deriving it in bash.
 //
 // The failure this closes, on main @ d939e299 (runs 30695961421 `e2e` and
 // 30695961427 `migration-e2e`, identical signature):
@@ -45,8 +52,11 @@
 //                                      seconds.
 //
 // Exit: 0 on success; the command's own status when it failed for a reason
-// that is not a registry / network fault (a real build error fails on the first
-// attempt, unretried); 1 when the retry budget is spent on transient failures.
+// another attempt cannot clear — a real build error, or a registry rate-limit
+// refusal (see `rateLimitDiagnosis` in lib/registry.mjs: the quota window is
+// hours, so retrying only spends more of the quota that is exhausted) — both
+// unretried, on the first attempt; 1 when the retry budget is spent on
+// transport faults.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -56,7 +66,9 @@ import process from 'node:process';
 
 import { error, log, notice } from './lib/gh.mjs';
 import {
+  isRegistryRateLimit,
   isTransientRegistryFailure,
+  rateLimitDiagnosis,
   readBackoffStepSeconds,
   registryAttempts,
   sleepSeconds,
@@ -124,10 +136,18 @@ for (let attempt = 1; attempt <= registryAttempts; attempt++) {
 
   if (status === 0) finish(0);
 
+  // Asked before the transient question, because a rate-limited fetch names a
+  // transport fault too — and this class is the one where another attempt makes
+  // the situation worse rather than merely wasting time.
+  if (isRegistryRateLimit(output)) {
+    error(rateLimitDiagnosis(`\`${rendered}\``));
+    finish(status);
+  }
+
   if (!isTransientRegistryFailure(output)) {
     error(
       `\`${rendered}\` failed with status ${status}, and its output names no registry or network fault. ` +
-        'Failing on the first attempt: retrying a genuine build failure only hides it.',
+        'Failing on the first attempt: retrying a genuine failure only hides it.',
     );
     finish(status);
   }
@@ -143,8 +163,9 @@ for (let attempt = 1; attempt <= registryAttempts; attempt++) {
 }
 
 error(
-  `\`${rendered}\` failed ${registryAttempts} times, every one of them on a transient registry or network ` +
-    'fault. The registry is not answering for this runner — failing the job rather than reporting a build ' +
-    'that never happened.',
+  `\`${rendered}\` failed ${registryAttempts} times, every one of them on a transport fault between this ` +
+    'runner and the registry (a reset connection, a TLS or DNS failure, a 5xx) — never a rate-limit refusal, ' +
+    'which fails on the first attempt instead. The network path to the registry is unhealthy for this runner: ' +
+    'failing the job rather than reporting a build that never happened.',
 );
 finish(1);

@@ -2,11 +2,17 @@
 #
 # This file is a near-verbatim copy of
 # compatibility/prometheus/upstream/promql/promql-test-queries.yml
-# (prometheus/compliance @ 7e28242) with one edit:
+# (prometheus/compliance @ 7e28242) with two edits:
 #
 # 1. The PromLabs "demo service" preamble (lines 1-31 of the upstream file)
 #    is stripped — it documents docker-run instructions for the prometheus-
 #    demo-service that the OTel-seeded harness doesn't use.
+# 2. One cerberus-owned case is appended to the histogram block: a
+#    `histogram_quantile` over `sum by (<resource attribute>, le) (rate(…))`.
+#    Upstream's corpus has no resource-attribute grouping because Prometheus
+#    has no resource attributes; the OTel-CH schema stores them apart from
+#    the datapoint attributes, so the aggregated fan-out has a grouping key
+#    no upstream case can reach.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -291,6 +297,7 @@ test_cases:
   - query: 'vector(time())'
   - query: 'histogram_quantile({{.quantile}}, rate(demo_api_request_duration_seconds_bucket[1m]))'
     variant_args: ['quantile']
+  - query: 'histogram_quantile(0.5, sum by (k8s_namespace_name, le) (rate(demo_resource_latency_seconds_bucket[1m])))'
   - query: 'histogram_quantile(0.9, nonexistent_metric)'
   - # Missing "le" label.
     query: 'histogram_quantile(0.9, demo_memory_usage_bytes)'

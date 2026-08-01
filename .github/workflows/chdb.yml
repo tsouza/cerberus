@@ -49,6 +49,12 @@ on:
   # required-status-checks — a path-skipped check leaves the rollup
   # missing entries and would block merges of pure-docs PRs.
   pull_request:
+  # Same reasoning one step further on: a merge queue gates on the same contexts
+  # branch protection does, so `probe` / `roundtrip (<ql>)` / `perf-guards` have
+  # to post on the projected trunk too. `roundtrip`'s docs-only guard is
+  # per-STEP, never job-level, precisely so its three matrix legs always publish
+  # their names — that property is what makes it queue-safe.
+  merge_group:
   workflow_dispatch:
   schedule:
     # nightly at 04:00 UTC

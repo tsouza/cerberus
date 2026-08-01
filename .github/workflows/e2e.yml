@@ -174,12 +174,18 @@ jobs:
       - id: scope
         name: decide whether this change is visible to the compose stack
         run: node .github/scripts/compose-smoke-scope.mjs
+        # The base/head pair is wired for both shapes the shared scope-gate
+        # understands, so this caller and mutation.yml's satisfy its contract
+        # identically. This lane declares no `merge_group:` trigger — it is a
+        # release gate that does its work on the merge commit — so the second
+        # half is inert today; leaving the two callers asymmetric is exactly the
+        # subtle divergence the shared module exists to prevent.
         env:
           MODE: emit
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
 
   compose-smoke-setup:
     name: compose-smoke-setup
@@ -296,6 +302,15 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - uses: ./.github/actions/setup-buildx
+
+      - name: pre-pull compose images (authenticated pull path)
+        run: |
+          # The images compose FETCHES are acquired here rather than by `up`.
+          # Compose's own pull path does not carry the credentials the login
+          # step above wrote: it spends the anonymous per-runner-IP quota and
+          # is refused as UNAUTHENTICATED seconds after a `docker pull` of the
+          # same image in the same job succeeded. See compose-pull-images.mjs.
+          node .github/scripts/compose-pull-images.mjs docker-compose.yml
 
       - name: compose up --wait (retried on registry faults)
         run: |
@@ -510,6 +525,14 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - uses: ./.github/actions/setup-buildx
+
+      # The images compose FETCHES are acquired here rather than by `up`.
+      # Compose's own pull path does not carry the credentials the login step
+      # above wrote: it spends the anonymous per-runner-IP quota and is refused
+      # as UNAUTHENTICATED seconds after a `docker pull` of the same image in
+      # the same job succeeded. See compose-pull-images.mjs.
+      - name: pre-pull compose images (authenticated pull path)
+        run: node .github/scripts/compose-pull-images.mjs docker-compose.yml
 
       # `up` builds the cerberus service from Dockerfile.local, so it resolves
       # `FROM golang:1.26` against Docker Hub; the wrapper retries that on
@@ -1164,6 +1187,10 @@ jobs:
     # mechanism kills the container on the first window expiry. Running
     # CH inline as a plain `docker run` step with our own poll loop
     # decouples the wait from GH's healthcheck timer and never races.
+    env:
+      # Named once: the pre-pull and the `docker run` must name the same ref,
+      # or the retry warms an image the run does not use.
+      CH_IMAGE: clickhouse/clickhouse-server:26.5
     steps:
       - uses: actions/checkout@v7
 
@@ -1175,6 +1202,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      # `docker run` pulls a missing image itself, single-attempt: a Docker Hub
+      # blip fails the job before ClickHouse is even started. `_pull-retry`
+      # acquires it under the shared registry policy first.
+      - name: Pre-pull ClickHouse
+        run: just _pull-retry "$CH_IMAGE"
 
       - name: Start ClickHouse
         run: |
@@ -1188,7 +1221,7 @@ jobs:
             -e CLICKHOUSE_DB=otel \
             -e CLICKHOUSE_USER=cerberus \
             -e CLICKHOUSE_PASSWORD=cerberus \
-            clickhouse/clickhouse-server:26.5
+            "$CH_IMAGE"
 
       - name: Wait for ClickHouse
         run: |
