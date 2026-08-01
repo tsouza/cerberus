@@ -667,6 +667,13 @@ jobs:
       - name: Assert the compose-smoke scope gate decides correctly
         run: node --test .github/scripts/compose-smoke-scope.test.mjs
 
+      # The compose pre-pull's model→image decision. A service compose BUILDS
+      # must never be handed to `docker pull`: its ref exists in no registry, so
+      # the pre-pull burns every retry on a manifest that cannot resolve and
+      # fails the lane minutes in. Cheap to pin here, expensive to learn there.
+      - name: Assert the compose pre-pull fetches only fetchable images
+        run: node --test .github/scripts/compose-pull-images.test.mjs
+
       # Same discipline for the mutation lane's phase planner, one step further:
       # its selector decides which legs an ordinary PR runs, so a bug there is
       # not a slow release but a SILENT one — legs quietly deselected while the

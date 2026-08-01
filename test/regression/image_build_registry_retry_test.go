@@ -190,6 +190,92 @@ func TestImageBuildingCommandsGoThroughTheRetryWrapper(t *testing.T) {
 	}
 }
 
+// TestCiScriptModulesAcquireImagesThroughTheSharedPolicy pins the same class fix
+// one layer down, for the `.mjs` modules that drive docker themselves.
+//
+// `docker run` and `docker create` pull a missing image implicitly, and that
+// implicit pull is single-attempt: a Docker Hub blip or a quota refusal surfaced
+// as "failed to start reference container" — a registry fault wearing the
+// costume of a broken gate (issue #1562). Going through `pullImageWithRetry`
+// gives every such site the same budget for the transport class, the same
+// immediate stop on the quota class, and the same words for which one it was.
+func TestCiScriptModulesAcquireImagesThroughTheSharedPolicy(t *testing.T) {
+	t.Parallel()
+
+	const (
+		scriptsDir = "../../.github/scripts"
+		// The module that IMPLEMENTS the policy: it is where the raw `docker
+		// pull` legitimately lives.
+		policyModule = "registry.mjs"
+		policyCall   = "pullImageWithRetry"
+	)
+
+	// `capture('docker', ['pull'|'run'|'create', …])` — the three subcommands
+	// that fetch from a registry (the latter two implicitly, when the image is
+	// absent). Both quote styles, because either is valid ESM.
+	fetchingDockerCall := regexp.MustCompile(`\(\s*['"]docker['"]\s*,\s*\[\s*['"](?:pull|run|create)['"]`)
+
+	entries, err := os.ReadDir(scriptsDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", scriptsDir, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".mjs" {
+			files = append(files, filepath.Join(scriptsDir, e.Name()))
+		}
+	}
+	libEntries, err := os.ReadDir(filepath.Join(scriptsDir, "lib"))
+	if err != nil {
+		t.Fatalf("read %s/lib: %v", scriptsDir, err)
+	}
+	for _, e := range libEntries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".mjs" && e.Name() != policyModule {
+			files = append(files, filepath.Join(scriptsDir, "lib", e.Name()))
+		}
+	}
+
+	sites := 0
+	for _, file := range files {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		// Matched against the whole file, not line by line: the argv array of a
+		// `docker run` spans several lines in every module that has one, and a
+		// per-line scan silently matched none of them.
+		text := string(src)
+		for _, loc := range fetchingDockerCall.FindAllStringIndex(text, -1) {
+			call := strings.TrimSpace(strings.SplitN(text[loc[0]:loc[1]], "\n", 2)[0])
+			if isProse(lineContaining(text, loc[0])) {
+				continue
+			}
+			sites++
+			if !strings.Contains(text, policyCall) {
+				t.Errorf("%s fetches from a registry without the shared policy:\n    %s\n"+
+					"Acquire the image with `%s(ref, …)` from ./lib/registry.mjs first, so a transport fault "+
+					"retries and a rate-limit refusal fails on the first attempt instead of spending four more "+
+					"pulls out of an exhausted quota.", file, call, policyCall)
+			}
+		}
+	}
+
+	if sites == 0 {
+		t.Fatalf("no .mjs module under %s runs `docker pull|run|create` — the guard is scanning for a shape "+
+			"that no longer exists", scriptsDir)
+	}
+}
+
+// lineContaining returns the source line that offset falls on.
+func lineContaining(src string, offset int) string {
+	start := strings.LastIndexByte(src[:offset], '\n') + 1
+	end := strings.IndexByte(src[offset:], '\n')
+	if end < 0 {
+		return src[start:]
+	}
+	return src[start : offset+end]
+}
+
 // TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures drives the module
 // against a stub `docker` on PATH. The three halves are equally load-bearing: a
 // wrapper that does not retry a reset connection fixes nothing, one that
