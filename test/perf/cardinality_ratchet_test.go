@@ -8,32 +8,64 @@
 // fan-out shows up as a step-summary outlier, not a merge block. This test
 // turns that measurement into a per-PR ratchet: it re-profiles the corpus
 // in-process via chDB and diffs every fixture against a committed baseline
-// (`cardinality-baseline.json`). It runs inside the already-required
-// `perf-guards` job (`just perf-chdb` → `go test -tags chdb ./test/perf/...`),
-// so it bites at PR time with no extra CI wiring.
+// (`cardinality-baseline.json`). It runs inside the `perf-guards` job
+// (`just perf-chdb` → `go test -tags chdb ./test/perf/...`), which is a
+// REQUIRED status check on `main`, so a regression blocks the merge rather
+// than colouring one non-blocking lane red.
 //
 // # What it ratchets (and what it deliberately does not)
 //
 // The baseline stores only the DETERMINISTIC, structural fan-out signals —
-// fan_factor (peak intermediate rows / leaf scan rows), the CROSS-JOIN and
-// recursive-CTE operator flags, and the recursion depth. Wall-time,
-// peak_bytes_read and result_rows from profile.Record are intentionally
-// excluded: they are environment-noisy and would make the baseline flap. The
-// retained fields are pure functions of the lowered SQL over the seeded
-// fixture data, so they reproduce run-to-run.
+// fan_factor (peak intermediate rows / leaf scan rows), the leaf scan row
+// count, the CROSS-JOIN / ARRAY-JOIN / recursive-CTE operator flags, and the
+// recursion depth. Wall-time, peak_bytes_read and result_rows from
+// profile.Record are intentionally excluded: they are environment-noisy and
+// would make the baseline flap. The retained fields are pure functions of the
+// lowered SQL over the seeded fixture data, so they reproduce run-to-run.
 //
 // A fixture FAILS the ratchet when, versus its baseline row:
 //   - fan_factor grows (the headline compute-fan-out regression),
+//   - scan_rows differs AT ALL (see "every stored field is compared" below),
+//   - has_array_join differs at all (likewise),
 //   - has_cross_join flips false→true (a CROSS JOIN appeared where none was),
 //   - has_recursive_cte flips false→true (an unbounded closure appeared), or
 //   - max_recursion_depth grows (a recursive walk got deeper).
 //
 // fan_factor DECREASES are always allowed (improvements never block); the
 // committed ceiling only tightens when a maintainer re-runs
-// `just update-cardinality-baseline`. has_array_join is recorded for diff
-// visibility but its flip alone is not a failure — arrayJoin is a normal,
-// bounded operator (topk/bottomk, metrics compare); any genuine cardinality
-// blow-up it causes is already caught by the fan_factor ceiling.
+// `just update-cardinality-baseline`. The same asymmetry applies to the two
+// operator flags with a "bad" direction (cross-join, recursive-CTE) and to the
+// recursion depth: their appearance is the regression, their disappearance is
+// the fix.
+//
+// # Every stored field is compared
+//
+// scan_rows and has_array_join have no "better" direction — they are
+// structural identity, not a budget — so they are compared for EXACT equality.
+// A field that is recorded but never compared is not soft coverage, it is a
+// hole: the row can drift from the fixture it claims to describe and nothing
+// says so. Both halves of that hole were live and both were found by
+// regenerating the baseline rather than by the gate:
+//
+//   - #1415 (regex metric-name histogram fan-out) added an arrayJoin to three
+//     promql fixtures' emitted SQL. has_array_join was documented as
+//     "recorded for diff visibility, a flip alone is not a failure", so the
+//     three rows kept claiming false against SQL that plainly contains
+//     arrayJoin;
+//   - #1411 recorded traceql/spanset_pipeline_intersect's row from the
+//     PRE-rewrite `-- sql --` (`LIMIT 1 BY TraceId, SpanId`) while committing
+//     the rewritten one (`LIMIT 1 BY TraceId`), pinning scan_rows /
+//     peak_intermediate for a query that never shipped.
+//
+// Neither moved fan_factor, so the ratchet stayed green over rows that
+// described queries the corpus does not contain. Comparing the fields the
+// baseline already stores is what makes the recorded row an assertion about
+// the fixture instead of a note about it.
+//
+// peak_intermediate stays diagnostic-only on purpose rather than by omission:
+// with scan_rows pinned exactly, fan_factor = peak_intermediate / scan_rows,
+// so the fan_factor ceiling already pins peak_intermediate's bad direction and
+// a second rule would only forbid improvements.
 //
 // # New / removed fixtures force a baseline edit (built-in cost review)
 //
@@ -179,6 +211,21 @@ func TestCardinalityRatchet(t *testing.T) {
 				"A query that fanned out N× now fans out more — root-cause the new intermediate blow-up; "+
 				"only run `just update-cardinality-baseline` if the increase is genuinely intended.",
 				id, base.FanFactor, cur.FanFactor, base.PeakIntermediate, cur.PeakIntermediate, cur.ScanRows)
+		}
+		if cur.ScanRows != base.ScanRows {
+			t.Errorf("%s: scan_rows drifted %d → %d. The leaf scan row count is a pure function of the "+
+				"fixture's seed and its recorded `-- sql --`, so a change means the fixture changed and "+
+				"its row no longer describes it — regenerate with `just update-cardinality-baseline` and "+
+				"review the diff. A row recorded against SQL the same invocation then rewrote is exactly "+
+				"how this drifts silently.",
+				id, base.ScanRows, cur.ScanRows)
+		}
+		if cur.HasArrayJoin != base.HasArrayJoin {
+			t.Errorf("%s: has_array_join drifted %v → %v. arrayJoin is a bounded operator, so this is not "+
+				"a fan-out verdict — it is a structural identity check that the row still describes the "+
+				"emitted SQL. Regenerate with `just update-cardinality-baseline` so the operator set the "+
+				"fixture actually emits lands in the PR diff.",
+				id, base.HasArrayJoin, cur.HasArrayJoin)
 		}
 		if cur.HasCrossJoin && !base.HasCrossJoin {
 			t.Errorf("%s: a CROSS JOIN appeared where the baseline had none — this is the classic "+
