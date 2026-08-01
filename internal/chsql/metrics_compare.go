@@ -356,9 +356,12 @@ func tsBoundExprs(tsCol string, startNano, endNano int64) (lo, hi chplan.Expr) {
 // matching child, so conjoining it preserves Tempo's root attributes. The
 // trace_id_ts gate is enabled only after its MV is known populated; without
 // that contract, callers leave the three metadata fields empty and this helper
-// declines to add a bound.
+// declines to add a bound. A half-configured triple is treated as not
+// configured — an envelope over an empty table or column identifier would be a
+// broken query, not a weaker bound. seed must be non-nil; the caller only
+// reaches here once it has one.
 func rootLookupTraceIDTsBounds(m *chplan.MetricsCompare, seed chplan.Node, timestampColumn string) (lo, hi chplan.Expr) {
-	if seed == nil || m.RootLookupTraceIDTsTable == "" ||
+	if m.RootLookupTraceIDTsTable == "" ||
 		m.RootLookupTraceIDTsStartColumn == "" || m.RootLookupTraceIDTsEndColumn == "" {
 		return nil, nil
 	}
@@ -594,10 +597,14 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 		// A root-scoped selection can use the request window directly. For a
 		// non-root selection, use the enabled trace_id_ts relation instead: its
 		// selected-trace envelope retains roots older than the request window.
+		// compareSeedNode yields nil for an Inner it cannot seed; with no cohort
+		// to look up there is no envelope to derive either, so the scan keeps
+		// #1214's unbounded-but-lossless shape.
 		var rootLo, rootHi chplan.Expr
-		if m.InnerRootScoped {
+		switch {
+		case m.InnerRootScoped:
 			rootLo, rootHi = lo, hi
-		} else {
+		case seed != nil:
 			rootLo, rootHi = rootLookupTraceIDTsBounds(m, seed, tsCol)
 		}
 		rootLookup, seeded := windowRootLookupTraceIDSeed(m.RootLookup, m.TraceIDColumn, seed, rootLo, rootHi)
