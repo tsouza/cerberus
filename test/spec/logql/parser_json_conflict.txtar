@@ -1,0 +1,39 @@
+-- query.logql --
+{level="error"} | json | level_extracted="warn"
+-- seed --
+CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('{"ts":"2025-01-01","level":"warn","msg":"picks-up"}'),
+    ('{"ts":"2025-01-01","level":"info","msg":"rejected"}'),
+    ('{"ts":"2025-01-01","level":"warn","msg":"also-picks-up"}');
+-- expected_rows --
+[
+  [{"level": "warn", "msg": "also-picks-up", "ts": "2025-01-01"}],
+  [{"level": "warn", "msg": "picks-up", "ts": "2025-01-01"}]
+]
+-- args --
+[0] string = "level"
+[1] string = "error"
+[2] string = "_extracted"
+[3] string = "String"
+[4] string = "Map(String,String)"
+[5] string = "level_extracted"
+[6] string = "_extracted"
+[7] string = "String"
+[8] string = "Map(String,String)"
+[9] string = "level_extracted"
+[10] string = "level_extracted"
+[11] string = "level_extracted"
+[12] string = "level.extracted"
+[13] string = "level.extracted"
+[14] string = "level/extracted"
+[15] string = "warn"
+-- chplan --
+Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)"))), "level_extracted"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], if(mapContains(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(JSONExtractKeysAndValues(`Body`, ?), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(JSONExtractKeysAndValues(`Body`, ?), ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
