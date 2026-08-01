@@ -2,7 +2,6 @@ package chclient
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -59,10 +58,24 @@ type recoveryPinger interface {
 // on the root Client; ForHead views share the pointer but never start a
 // second loop. stop() is idempotent and joins the goroutine so Close is
 // goleak-clean.
+//
+// The loop's single cancellation primitive is a context OWNED BY THIS HANDLE
+// (and therefore by the Client that holds it): cancel is the root of the ctx
+// the goroutine selects on AND the parent of every per-ping ctx. That parenting
+// is the whole point — an in-flight synthetic ping is aborted the instant
+// Close cancels, instead of running out its full per-ping timeout while
+// shutdown blocks on the join. A ping ctx rooted at context.Background()
+// (what this used to be) made Close block up to recoveryPingTimeout — i.e. a
+// full CH dial timeout of dead air on every shutdown that happened to land
+// mid-probe.
 type recoveryLoop struct {
-	stopOnce sync.Once
-	stopCh   chan struct{} // closed by stop() to signal the goroutine to exit
-	doneCh   chan struct{} // closed by the goroutine just before it returns
+	// cancel cancels the loop's root ctx: it stops the ticker select AND
+	// aborts an in-flight ping, because the per-ping ctx descends from it.
+	// context.CancelFunc is safe to call repeatedly and concurrently, which
+	// is what makes stop() idempotent (double Close, or a Close on a
+	// shared-pointer ForHead view).
+	cancel context.CancelFunc
+	doneCh chan struct{} // closed by the goroutine just before it returns
 }
 
 // recoveryPingTimeout is the per-tick synthetic-ping budget. It MUST be at
@@ -82,25 +95,29 @@ func recoveryPingTimeout(cfg Config) time.Duration {
 // Close). interval is the tick cadence — the same OPEN-state backoff the
 // breaker itself would admit a probe on, so the loop never probes faster than
 // the breaker's own recovery rhythm. pingTimeout is the per-probe budget
-// (recoveryPingTimeout). The breakers slice is every breaker the loop drives:
+// (recoveryPingTimeout), applied as an UPPER BOUND on top of the handle's
+// cancellable root ctx. The breakers slice is every breaker the loop drives:
 // the default plus every per-head registry entry.
 func startRecoveryLoop(
 	conn recoveryPinger,
 	breakers []*breaker,
 	interval, pingTimeout time.Duration,
 ) *recoveryLoop {
+	ctx, cancel := context.WithCancel(context.Background())
 	r := &recoveryLoop{
-		stopCh: make(chan struct{}),
+		cancel: cancel,
 		doneCh: make(chan struct{}),
 	}
-	go r.run(conn, breakers, interval, pingTimeout)
+	go r.run(ctx, conn, breakers, interval, pingTimeout)
 	return r
 }
 
 // run is the goroutine body: a ticker loop that, on each tick, drives every
 // non-CLOSED breaker toward recovery via a synthetic ping. It returns (and
-// closes doneCh) as soon as stopCh is signalled.
+// closes doneCh) as soon as ctx is cancelled — either between ticks (the
+// select below) or from inside a probe sweep (probeOnce's ctx checks).
 func (r *recoveryLoop) run(
+	ctx context.Context,
 	conn recoveryPinger,
 	breakers []*breaker,
 	interval, pingTimeout time.Duration,
@@ -110,10 +127,10 @@ func (r *recoveryLoop) run(
 	defer ticker.Stop()
 	for {
 		select {
-		case <-r.stopCh:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.probeOnce(conn, breakers, pingTimeout)
+			r.probeOnce(ctx, conn, breakers, pingTimeout)
 		}
 	}
 }
@@ -123,13 +140,31 @@ func (r *recoveryLoop) run(
 // happy path, where a healthy replica's loop never touches ClickHouse. For a
 // non-CLOSED breaker it tries to take the HALF-OPEN probe slot via allow();
 // if allow() admits (backoff elapsed and no REAL request already holds the
-// slot), it fires the synthetic ping under a fresh dedicated-timeout context
-// and feeds the outcome to record(), which either closes the circuit
-// (success) or re-opens it and restarts the backoff (failure). If allow()
-// declines — a real request is mid-probe, or the backoff hasn't elapsed — the
-// loop skips, so it never races or double-probes a real recovery in flight.
-func (r *recoveryLoop) probeOnce(conn recoveryPinger, breakers []*breaker, pingTimeout time.Duration) {
+// slot), it fires the synthetic ping under a fresh per-ping ctx and feeds the
+// outcome to record(), which either closes the circuit (success) or re-opens
+// it and restarts the backoff (failure). If allow() declines — a real request
+// is mid-probe, or the backoff hasn't elapsed — the loop skips, so it never
+// races or double-probes a real recovery in flight.
+//
+// The per-ping ctx DESCENDS from the loop's ctx, so pingTimeout is only an
+// UPPER bound: Close's cancel aborts the ping immediately instead of leaving
+// shutdown to wait it out. A ping cut short that way surfaces as
+// context.Canceled, which breaker.record treats as "no verdict" — it releases
+// the HALF-OPEN probe slot without counting a CH-health failure, exactly the
+// right reading of "we shut down mid-probe". The ctx check at the top of each
+// iteration keeps a multi-breaker sweep from starting a fresh ping after
+// cancellation.
+func (r *recoveryLoop) probeOnce(
+	ctx context.Context,
+	conn recoveryPinger,
+	breakers []*breaker,
+	pingTimeout time.Duration,
+) {
 	for _, br := range breakers {
+		// Cancelled mid-sweep (Close): stop before opening another ping.
+		if ctx.Err() != nil {
+			return
+		}
 		// Cheap read-only gate: a CLOSED breaker needs no recovery, so
 		// skip it WITHOUT touching CH. This is what keeps a healthy
 		// replica's loop a pure no-op — peek() takes only the breaker's
@@ -145,22 +180,24 @@ func (r *recoveryLoop) probeOnce(conn recoveryPinger, breakers []*breaker, pingT
 		if !br.allow() {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
-		err := conn.Ping(ctx)
-		br.record(ctx, err)
+		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+		err := conn.Ping(pingCtx)
+		br.record(pingCtx, err)
 		cancel()
 	}
 }
 
-// stop signals the goroutine to exit and blocks until it has. It is
-// idempotent — a sync.Once guards the channel close — so a double Close (or a
-// Close on a ForHead view that shares this handle) is safe. The join is what
-// makes Close goleak-clean: by the time stop returns, the recovery goroutine
-// has run its deferred close(doneCh) and exited.
+// stop cancels the loop's ctx and then blocks until the goroutine has exited.
+// The ORDER is the point: cancelling FIRST aborts an in-flight synthetic ping
+// (its ctx descends from the loop ctx), so the join that follows returns
+// promptly rather than waiting out the remainder of recoveryPingTimeout. It is
+// idempotent — context.CancelFunc tolerates repeated and concurrent calls, and
+// a receive on an already-closed doneCh returns immediately — so a double
+// Close (or a Close on a ForHead view that shares this handle) is safe. The
+// join is what makes Close goleak-clean: by the time stop returns, the
+// recovery goroutine has run its deferred close(doneCh) and exited.
 func (r *recoveryLoop) stop() {
-	r.stopOnce.Do(func() {
-		close(r.stopCh)
-	})
+	r.cancel()
 	<-r.doneCh
 }
 

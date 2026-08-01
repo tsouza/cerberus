@@ -591,8 +591,8 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	samples = clampLogSamples(samples, limit, dir)
-	streams := toStreamsWithTransform(samples, tx, categorize)
+	rows := clampLogRows(chclient.DecodeLogRows(samples), limit, dir)
+	streams := toStreamsWithTransform(rows, tx, categorize)
 	return &QueryData{
 		ResultType:    "streams",
 		EncodingFlags: encodingFlagsFor(categorize, streams),
@@ -615,8 +615,8 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	samples = clampLogSamples(samples, limit, dir)
-	streams := toStreamsWithTransform(samples, tx, categorize)
+	rows := clampLogRows(chclient.DecodeLogRows(samples), limit, dir)
+	streams := toStreamsWithTransform(rows, tx, categorize)
 	return &QueryData{
 		ResultType:    "streams",
 		EncodingFlags: encodingFlagsFor(categorize, streams),
@@ -726,10 +726,10 @@ func parseLogDirection(raw string) logDirection {
 	return directionBackward
 }
 
-// clampLogSamples sorts samples by timestamp (direction-aware) and
+// clampLogRows sorts log rows by timestamp (direction-aware) and
 // truncates to limit. Loki's wire contract applies `limit` to the
 // TOTAL entry count across all streams — not per-stream — so we sort
-// the flat sample slice first and let [toStreamsWithTransform] group
+// the flat row slice first and let [toStreamsWithTransform] group
 // the surviving subset into Streams by labelset. Without this clamp,
 // a query whose underlying SQL returns more rows than limit would
 // over-surface the response: reference Loki would return e.g. 1000
@@ -739,7 +739,7 @@ func parseLogDirection(raw string) logDirection {
 // drilldown with json and logfmt parsing` case surfaced as `streams
 // length: expected=1000 actual=1440`).
 //
-// Samples come back from the engine in CH's natural ORDER BY-free
+// Rows come back from the engine in CH's natural ORDER BY-free
 // order; sorting here is authoritative for the wire-format response
 // since the chsql emitter for log Scans doesn't currently project an
 // ORDER BY clause. Sorting before truncation keeps the chosen subset
@@ -748,23 +748,23 @@ func parseLogDirection(raw string) logDirection {
 // limit <= 0 is treated as "no clamp" so test callers that don't
 // care about the cap can pass 0; the production handler always
 // passes a positive value out of [parseLogLimit].
-func clampLogSamples(samples []chclient.Sample, limit int, dir logDirection) []chclient.Sample {
-	if len(samples) == 0 {
-		return samples
+func clampLogRows(rows []chclient.LogRow, limit int, dir logDirection) []chclient.LogRow {
+	if len(rows) == 0 {
+		return rows
 	}
 	if dir == directionBackward {
-		sort.SliceStable(samples, func(i, j int) bool {
-			return samples[i].Timestamp.After(samples[j].Timestamp)
+		sort.SliceStable(rows, func(i, j int) bool {
+			return rows[i].Timestamp.After(rows[j].Timestamp)
 		})
 	} else {
-		sort.SliceStable(samples, func(i, j int) bool {
-			return samples[i].Timestamp.Before(samples[j].Timestamp)
+		sort.SliceStable(rows, func(i, j int) bool {
+			return rows[i].Timestamp.Before(rows[j].Timestamp)
 		})
 	}
-	if limit > 0 && len(samples) > limit {
-		samples = samples[:limit]
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
 	}
-	return samples
+	return rows
 }
 
 // toVector groups samples by label set, picks the latest per series.
@@ -855,7 +855,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 	return out
 }
 
-// toStreamsWithTransform pivots samples into Loki's "streams" result shape
+// toStreamsWithTransform pivots log rows into Loki's "streams" result shape
 // and optionally runs a per-row transform (line_format / decolorize /
 // label_format) before grouping. Each distinct *output* label set
 // becomes one Stream; values are sorted by ts ascending. Nil tx is
@@ -866,19 +866,14 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 // only on a dropped label collapse into a single stream. Conversely,
 // two rows that share the original labels but diverge after a
 // template-set stay in distinct streams.
-//
-// Note: the synthesized projection writes the log Body string into
-// chclient.Sample.MetricName (since Sample.Value is float64). This is a
-// short-term hack — the proper fix is a new chclient row decoder for
-// log-stream output, which lands with the stream-aware decoder PR.
-func toStreamsWithTransform(samples []chclient.Sample, tx lineTransform, categorize bool) []Stream {
+func toStreamsWithTransform(rows []chclient.LogRow, tx lineTransform, categorize bool) []Stream {
 	type acc struct {
 		labels map[string]string
 		values []StreamValue
 	}
 	bySeries := map[string]*acc{}
-	for _, s := range samples {
-		line := s.MetricName
+	for _, s := range rows {
+		line := s.Line
 		labels := s.Labels
 		if tx != nil {
 			line, labels = tx(line, s.Timestamp.UnixNano(), labels)
