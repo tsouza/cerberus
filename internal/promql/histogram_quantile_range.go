@@ -67,22 +67,50 @@ import (
 
 const histogramAnchorCol = "anchor_ts"
 
+// stalenessMinSamples is the sample floor for a staleness-lookback window:
+// a bare selector resolves to at most one sample, so one is enough.
+const stalenessMinSamples = 1
+
+// rateMinSamples is the sample floor reference PromQL's rate / increase
+// family imposes — two points are needed to span a delta, and an anchor
+// whose window holds fewer emits NOTHING (not a zero). The leading steps of
+// a range query are exactly where that bites: the first anchors see only
+// the one scrape at the range start.
+const rateMinSamples = 2
+
 // histogramWindow is the per-anchor sample window a histogram fan-out
-// reads: `(anchor - offset - lookback, anchor - offset]`. lookback is the
-// staleness horizon (instantLookback for the bare / value-fn paths, the
-// inner rate's `[range]` for the aggregated ones); offset is the
-// selector's `offset` modifier, which shifts the window without moving
-// the emitted anchor timestamp. Keeping the two together means a lowering
-// cannot pass one and forget the other — dropping offset silently reads
-// the wrong window rather than failing.
+// reads: `(anchor - offset - lookback, anchor - offset]`, together with the
+// number of samples that window must hold for the anchor to emit. lookback
+// is the staleness horizon (instantLookback for the bare / value-fn paths,
+// the inner range-vector function's `[range]` for the aggregated ones);
+// offset is the selector's `offset` modifier, which shifts the window
+// without moving the emitted anchor timestamp; minSamples is the collapsed
+// function's "no sample emitted" floor. Keeping the three together means a
+// lowering cannot pass one and forget the others — dropping offset silently
+// reads the wrong window, and dropping minSamples silently emits at anchors
+// reference PromQL leaves empty, rather than failing.
 type histogramWindow struct {
-	lookback time.Duration
-	offset   time.Duration
+	lookback   time.Duration
+	offset     time.Duration
+	minSamples int
 }
 
-// windowFor builds the fan-out window for a selector under a lookback.
+// windowFor builds the staleness fan-out window for a bare selector.
 func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindow {
-	return histogramWindow{lookback: lookback, offset: vs.OriginalOffset}
+	return histogramWindow{lookback: lookback, offset: vs.OriginalOffset, minSamples: stalenessMinSamples}
+}
+
+// aggWindowFor builds the fan-out window for the aggregated idiom
+// `sum by(le)(<fn>(<bucket>[range]))`. The lookback is the matched
+// `[range]`; the sample floor is the matched function's, so a `rate` window
+// drops the leading anchors that hold a single scrape while a
+// `sum_over_time` window keeps them.
+func aggWindowFor(shape histogramAggShape) histogramWindow {
+	return histogramWindow{
+		lookback:   shape.windowRange,
+		offset:     shape.selector.OriginalOffset,
+		minSamples: shape.windowMinSamples,
+	}
 }
 
 // latestSampleAgg collapses a filtered histogram scan to the newest
@@ -100,11 +128,18 @@ func windowFor(vs *parser.VectorSelector, lookback time.Duration) histogramWindo
 func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics) chplan.Node {
 	return &chplan.Aggregate{
 		Input:              input,
-		GroupBy:            []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
 		AggFuncs:           aggs,
 		DropEmptyOnNoGroup: true,
 	}
+}
+
+// histogramIdentityExpr is the Prometheus-visible identity for histogram
+// rows. Histogram lowerings group directly over their scans, bypassing the
+// selector projection that ordinarily merges ResourceAttributes into labels.
+func histogramIdentityExpr(s schema.Metrics) chplan.Expr {
+	return selectorAttributesSource(nil, s)
 }
 
 // classicBucketLatestAggs renders the newest-sample aggregates for a
@@ -203,7 +238,7 @@ func lowerHistogramQuantileClassicBareRange(
 	// filter find rows.
 	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 	return buildHistogramRangeTree(
@@ -245,7 +280,7 @@ func lowerHistogramQuantileClassicAggRange(
 		},
 	}
 	return buildHistogramRangeTree(
-		scan, pred, windowFor(vs, shape.windowRange),
+		scan, pred, aggWindowFor(shape),
 		groupBy, groupByAliases, attrsRebuild,
 		bucketAggs, phi, s, ctx,
 	)
@@ -366,7 +401,7 @@ func lowerHistogramQuantileNativeBareRange(
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
-	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
@@ -426,7 +461,7 @@ func lowerHistogramQuantileNativeAggRange(
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
 	}...)
 	return buildHistogramNativeRangeTreeMerge(
-		scan, pred, windowFor(vs, shape.windowRange),
+		scan, pred, aggWindowFor(shape),
 		groupBy, groupByAliases, attrsRebuild,
 		expHistMergeAggs, phi, s, ctx,
 	)
@@ -637,6 +672,7 @@ func buildHistogramBucketFanout(
 		GroupBy:        canonicalGroupKeyExprs(userGroupBy, s),
 		GroupByAliases: userAliases,
 		AggFuncs:       aggFuncs,
+		MinSamples:     win.minSamples,
 		AnchorAlias:    histogramAnchorCol,
 		TimestampCol:   s.TimestampColumn,
 	}

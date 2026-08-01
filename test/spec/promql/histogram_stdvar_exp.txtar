@@ -45,22 +45,28 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 [21] float64 = 0
 [22] float64 = 1
 [23] float64 = 0.5
-[24] string = "latency_exp_hist"
-[25] string = "latency.exp.hist"
-[26] string = "latency.exp/hist"
-[27] string = "latency.exp_hist"
-[28] string = "latency/exp/hist"
-[29] string = "latency/exp_hist"
-[30] string = "latency_exp.hist"
-[31] string = "2026-01-01 00:00:01.000000000"
-[32] int64 = 9
-[33] string = "2026-01-01 00:00:01.000000000"
-[34] int64 = 9
-[35] int64 = 300000000000
+[24] string = "service.name"
+[25] string = "service_name"
+[26] string = "service.name"
+[27] string = "service_name"
+[28] string = ""
+[29] string = "service_name"
+[30] string = "latency_exp_hist"
+[31] string = "latency.exp.hist"
+[32] string = "latency.exp/hist"
+[33] string = "latency.exp_hist"
+[34] string = "latency/exp/hist"
+[35] string = "latency/exp_hist"
+[36] string = "latency_exp.hist"
+[37] string = "2026-01-01 00:00:01.000000000"
+[38] int64 = 9
+[39] string = "2026-01-01 00:00:01.000000000"
+[40] int64 = 9
+[41] int64 = 300000000000
 -- chplan --
 Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, (((arraySum(arrayMap((c, i) -> (toFloat64(c) * ((pow(pow(2, pow(2, (0 - toFloat64(Scale)))), ((PositiveOffset + (i - 1)) + 0.5)) - (Sum / toFloat64(Count))) * (pow(pow(2, pow(2, (0 - toFloat64(Scale)))), ((PositiveOffset + (i - 1)) + 0.5)) - (Sum / toFloat64(Count))))), PositiveBucketCounts, arrayEnumerate(PositiveBucketCounts))) + arraySum(arrayMap((c, i) -> (toFloat64(c) * (((0 - pow(pow(2, pow(2, (0 - toFloat64(Scale)))), ((NegativeOffset + (i - 1)) + 0.5))) - (Sum / toFloat64(Count))) * ((0 - pow(pow(2, pow(2, (0 - toFloat64(Scale)))), ((NegativeOffset + (i - 1)) + 0.5))) - (Sum / toFloat64(Count))))), NegativeBucketCounts, arrayEnumerate(NegativeBucketCounts)))) + (toFloat64(ZeroCount) * ((Sum / toFloat64(Count)) * (Sum / toFloat64(Count))))) / toFloat64(Count)) AS Value]
-  Aggregate groupBy=[mapSort(Attributes) AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+  Aggregate groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
     Filter predicate=(((MetricName IN ("latency_exp_hist", "latency.exp.hist", "latency.exp/hist", "latency.exp_hist", "latency/exp/hist", "latency/exp_hist", "latency_exp.hist")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       Scan(otel_metrics_exponential_histogram)
 -- sql --
-SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, (((arraySum(arrayMap((c, i) -> (toFloat64(c) * ((pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`PositiveOffset` + (i - toFloat64(?))) + toFloat64(?))) - (`Sum` / toFloat64(`Count`))) * (pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`PositiveOffset` + (i - toFloat64(?))) + toFloat64(?))) - (`Sum` / toFloat64(`Count`))))), `PositiveBucketCounts`, arrayEnumerate(`PositiveBucketCounts`))) + arraySum(arrayMap((c, i) -> (toFloat64(c) * (((toFloat64(?) - pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`NegativeOffset` + (i - toFloat64(?))) + toFloat64(?)))) - (`Sum` / toFloat64(`Count`))) * ((toFloat64(?) - pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`NegativeOffset` + (i - toFloat64(?))) + toFloat64(?)))) - (`Sum` / toFloat64(`Count`))))), `NegativeBucketCounts`, arrayEnumerate(`NegativeBucketCounts`)))) + (toFloat64(`ZeroCount`) * ((`Sum` / toFloat64(`Count`)) * (`Sum` / toFloat64(`Count`))))) / toFloat64(`Count`)) AS `Value` FROM (SELECT mapSort(`Attributes`) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, (((arraySum(arrayMap((c, i) -> (toFloat64(c) * ((pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`PositiveOffset` + (i - toFloat64(?))) + toFloat64(?))) - (`Sum` / toFloat64(`Count`))) * (pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`PositiveOffset` + (i - toFloat64(?))) + toFloat64(?))) - (`Sum` / toFloat64(`Count`))))), `PositiveBucketCounts`, arrayEnumerate(`PositiveBucketCounts`))) + arraySum(arrayMap((c, i) -> (toFloat64(c) * (((toFloat64(?) - pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`NegativeOffset` + (i - toFloat64(?))) + toFloat64(?)))) - (`Sum` / toFloat64(`Count`))) * ((toFloat64(?) - pow(pow(toFloat64(?), pow(toFloat64(?), (toFloat64(?) - toFloat64(`Scale`)))), ((`NegativeOffset` + (i - toFloat64(?))) + toFloat64(?)))) - (`Sum` / toFloat64(`Count`))))), `NegativeBucketCounts`, arrayEnumerate(`NegativeBucketCounts`)))) + (toFloat64(`ZeroCount`) * ((`Sum` / toFloat64(`Count`)) * (`Sum` / toFloat64(`Count`))))) / toFloat64(`Count`)) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)
