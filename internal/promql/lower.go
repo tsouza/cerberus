@@ -1629,9 +1629,26 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 const promMetricNormalizePattern = "[^a-zA-Z0-9_:]"
 
 func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
+	return metricNamePredicateOn(m, s, func() chplan.Expr {
+		return &chplan.ColumnRef{Name: s.MetricNameColumn}
+	})
+}
+
+// metricNamePredicateOn is [metricNamePredicate] with the name-bearing
+// expression injected, for callers whose rows expose the metric name
+// somewhere other than the raw MetricName column — notably the
+// classic-histogram quantile paths, whose Prometheus wire name is the
+// synthetic `concat(MetricName, '_bucket')` ladder rather than the bare
+// stored name (see histogramQuantileMatcherPredicate).
+//
+// nameExpr MUST mint a fresh node per call: the regex branch places the
+// name in two independent plan positions (raw + Prom-normalised) and
+// chplan trees are walked and rewritten in place, so a shared pointer
+// would alias them.
+func metricNamePredicateOn(m *labels.Matcher, s schema.Metrics, nameExpr func() chplan.Expr) chplan.Expr {
 	single := &chplan.Binary{
 		Op:    matchOp(m.Type),
-		Left:  &chplan.ColumnRef{Name: s.MetricNameColumn},
+		Left:  nameExpr(),
 		Right: &chplan.LitString{V: m.Value},
 	}
 	if m.Type == labels.MatchRegexp || m.Type == labels.MatchNotRegexp {
@@ -1640,7 +1657,7 @@ func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 			Left: &chplan.FuncCall{
 				Name: "replaceRegexpAll",
 				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: s.MetricNameColumn},
+					nameExpr(),
 					&chplan.LitString{V: promMetricNormalizePattern},
 					&chplan.LitString{V: "_"},
 				},
@@ -1684,7 +1701,7 @@ func metricNamePredicate(m *labels.Matcher, s schema.Metrics) chplan.Expr {
 		list[i] = &chplan.LitString{V: cand}
 	}
 	return &chplan.InList{
-		Left:    &chplan.ColumnRef{Name: s.MetricNameColumn},
+		Left:    nameExpr(),
 		List:    list,
 		Negated: m.Type == labels.MatchNotEqual,
 	}
