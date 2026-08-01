@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -248,10 +249,11 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 			return
 		}
 
+		rows := chclient.DecodeLogRows(samples)
 		// The tail websocket stream uses the plain two-element value shape:
 		// Grafana's tail client doesn't negotiate `categorize-labels` over
 		// the socket, so per-line structured metadata is not surfaced here.
-		streams := toStreamsWithTransform(samples, cfg.tx, false)
+		streams := toStreamsWithTransform(rows, cfg.tx, false)
 		// Advance the cursor. The batch is ordered ascending and capped at
 		// cfg.limit, so when it comes back FULL it may be truncated — more
 		// rows can exist in (lastSent, end]. In that case advance only PAST
@@ -262,8 +264,8 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 		// and only bumped it UP — but every row is bounded `<= end`, so the
 		// bump never fired and a truncated window silently dropped its tail.
 		nextCursor := end
-		if len(samples) > 0 && len(samples) == cfg.limit {
-			nextCursor = samples[len(samples)-1].Timestamp // latest sent (ASC order)
+		if len(rows) > 0 && len(rows) == cfg.limit {
+			nextCursor = rows[len(rows)-1].Timestamp // latest sent (ASC order)
 		}
 		// Tick forward by 1ns so the inclusive `>=` lower bound doesn't
 		// re-send the boundary row next poll. (A rare exact-nanosecond tie
@@ -304,17 +306,18 @@ func writeTailChunk(conn *websocket.Conn, streams []Stream, writeTimeout time.Du
 
 // buildTailSQL constructs the per-tick polling SELECT. The shape is:
 //
-//	SELECT `Body` AS MetricName, `ResourceAttributes` AS Attributes,
+//	SELECT `Body` AS Line, `ResourceAttributes` AS Attributes,
 //	       `Timestamp` AS TimeUnix, toFloat64(0) AS Value
 //	FROM `otel_logs`
 //	WHERE <matchers> AND `Timestamp` >= <cursor> AND `Timestamp` <= <end>
 //	ORDER BY `Timestamp` ASC
 //	LIMIT <n>
 //
-// MetricName carries the log line (same hijack as the other log-stream
-// handlers — chclient.Sample.Value is float64 so the line rides in
-// the String-typed MetricName slot). All identifiers and time-range
-// bounds flow through chsql.QueryBuilder — no fmt.Sprintf-on-SQL.
+// That is the log-stream projection shape [logql.LogLineColumn] names:
+// the line takes the positional row's first, String-typed column and the
+// Float64 column takes a placeholder, and chclient.DecodeLogRows decodes
+// the row into chclient.LogRow. All identifiers and time-range bounds
+// flow through chsql.QueryBuilder — no fmt.Sprintf-on-SQL.
 //
 // Rows are sorted ascending so the runTailLoop cursor-advance logic
 // picks the genuinely latest sample. Without ORDER BY the LIMIT could
@@ -324,7 +327,7 @@ func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Ti
 	pred := logql.SelectorPredicate(matchers, s)
 	sb := chsql.NewQuery().
 		Select(
-			chsql.As(chsql.Col(s.BodyColumn), "MetricName"),
+			chsql.As(chsql.Col(s.BodyColumn), logql.LogLineColumn),
 			chsql.As(chsql.Col(s.ResourceAttributesColumn), "Attributes"),
 			chsql.As(chsql.Col(s.TimestampColumn), "TimeUnix"),
 			chsql.As(toFloat64Zero(), "Value"),
@@ -348,7 +351,7 @@ func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Ti
 }
 
 // toFloat64Zero is the chsql.Frag for `toFloat64(0)` — used as the
-// placeholder Value column so the chclient.Sample scanner reads a
+// placeholder Value column so the positional row scanner reads a
 // stable Float64 instead of CH's UInt8 default for a bare literal `0`.
 // Composed via the typed Call constructor wrapping a Lit(0) argument;
 // the 0 binds as a positional `?` and CH coerces it inside toFloat64.
