@@ -49,6 +49,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { capture, error, notice, log } from './lib/gh.mjs';
+import { pullImageWithRetry } from './lib/registry.mjs';
 
 // SOURCE_BUILD_VERSION is what `go build ./cmd/cerberus` with no ldflags
 // reports — cmd/cerberus/main.go's `var Version = "dev"`. Held equal to that
@@ -136,11 +137,16 @@ function buildFromSource(binary) {
 // extractFromImage pulls the released image and copies its binary out, so the
 // CLI the scenarios exec is the same bytes as the server the stack runs.
 function extractFromImage(ref, binary) {
-  const pull = capture('docker', ['pull', ref]);
-  if (pull.status !== 0) {
+  // Through the shared policy rather than a bare `docker pull`: a transport
+  // fault gets the same retry budget every other registry fetch gets, and a
+  // quota refusal fails on the first attempt instead of spending four more of
+  // an exhausted counter. `acceptLocalCopy` is deliberately off — the whole
+  // point is to run the RELEASED bytes, so a stale copy the runner happens to
+  // hold must not stand in for them.
+  if (!pullImageWithRetry(ref, { consequence: 'the released binary cannot be extracted' })) {
     error(
-      `migration-artifact: docker pull ${ref} failed — the released image is unpullable from this ` +
-        `job (check the GHCR login step and the package's visibility):\n${pull.stdout}${pull.stderr}`,
+      `migration-artifact: ${ref} is unpullable from this job — if the failure above is not a registry ` +
+        "fault, check the GHCR login step and the package's visibility.",
     );
     process.exit(1);
   }

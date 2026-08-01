@@ -6,6 +6,11 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// fanoutNoMinSampleFilter is the largest RangeBucketFanout.MinSamples that
+// needs no HAVING: an anchor with zero samples in its window already
+// contributes no fanned row, so "at least one" is free.
+const fanoutNoMinSampleFilter = 1
+
 // emitRangeBucketFanout renders a chplan.RangeBucketFanout — the
 // single-pass, bounded sample-side fan-out that supersedes the StepGrid
 // CROSS JOIN + per-anchor lookback Filter + per-(series, anchor)
@@ -27,6 +32,7 @@ import (
 //	  FROM (<Input>)
 //	)
 //	GROUP BY <user-key_1>, …, anchor_ts
+//	HAVING uniqExact(<TimestampCol>) >= <MinSamples>   -- MinSamples > 1 only
 //
 // where `dist = dateDiff('nanosecond', TimeUnix, <shift_base>)` is the
 // sample's distance behind the newest OFFSET-SHIFTED anchor (identical to
@@ -37,7 +43,9 @@ import (
 // anchor) bucket with the configured AggFuncs. An anchor with no sample
 // in its window receives no fanned row and so produces no GROUP BY row —
 // preserving Prom's staleness gap, exactly as the old CROSS JOIN +
-// lookback Filter did.
+// lookback Filter did. RangeBucketFanout.MinSamples raises that floor for
+// the `rate` / `increase` idiom, which needs two scrapes in the window
+// before reference PromQL emits anything at an anchor.
 //
 // The fanout SELECT projects `*` so the inner Input's columns (the
 // AggFunc source columns + the group-key source columns + TimeUnix) flow
@@ -160,6 +168,17 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	groupFrags = append(groupFrags, verbatim(r.AnchorAlias))
 	groupFrags = append(groupFrags, groupKeyFrags(r.GroupBy, r.GroupByAliases)...)
 	collapse.GroupBy(groupFrags...)
+
+	// Per-function "no sample emitted" rule. An anchor whose window holds
+	// fewer than MinSamples distinct sample timestamps produces no row at
+	// all — reference PromQL's rate/increase need two points to span a
+	// delta and emit nothing at the leading edge of a range where only one
+	// scrape has landed. Distinct timestamps rather than raw row count: the
+	// group may hold several series that share a scrape instant, and the
+	// rule is about how many scrapes the window spans, not how many rows.
+	if r.MinSamples > fanoutNoMinSampleFilter {
+		collapse.Having(Gte(Call("uniqExact", Col(r.TimestampCol)), InlineLit(int64(r.MinSamples))))
+	}
 
 	e.emitSelect(collapse)
 	return nil

@@ -86,8 +86,21 @@ QUERIES=${TESTER_QUERIES:-"$ROOT_DIR/cerberus-test-queries.yml"}
 END_TIME=${TESTER_END_TIME:-"2026-05-11T01:00:00Z"}
 RANGE=${TESTER_RANGE:-3600}
 
+# The images compose FETCHES (ClickHouse, reference Prometheus) are acquired
+# here rather than by `up`. Compose's own pull path does not carry the
+# credentials `docker login` wrote: it spends the anonymous per-runner-IP quota
+# and is refused as UNAUTHENTICATED seconds after a `docker pull` of the same
+# image in the same job succeeded. See .github/scripts/compose-pull-images.mjs.
+echo "==> pre-pulling compose images (retry, over the authenticated pull path)"
+node "$REPO_ROOT/.github/scripts/compose-pull-images.mjs" docker-compose.yml
+
 echo "==> bringing up compatibility stack"
-docker compose up -d --build --wait clickhouse prometheus cerberus
+# `--build` builds Dockerfile.local, whose `FROM golang:1.26` BuildKit resolves
+# from Docker Hub — a 429 there fails the lane before any query runs. The
+# wrapper retries the command on registry/network faults only; a genuine build
+# failure still fails on the first attempt.
+node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
+    docker compose up -d --build --wait clickhouse prometheus cerberus
 echo "==> running seeder (go run ./cmd/seed)"
 (cd "$ROOT_DIR/../.." && go run ./compatibility/prometheus/cmd/seed/)
 

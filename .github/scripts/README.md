@@ -28,11 +28,49 @@ universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
 (unassigned / double-assigned / phantom / stale-exclude / bad-shard-name).
 One implementation means a new rule guards BOTH lanes at once.
 
-`lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
-lane guards?" — `runsFullLane()` (which events must never take a scoped
-subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
-when it cannot be computed, which callers must read as "run everything" rather
-than as "nothing changed"), and segment-wise `underPrefix` / `matchesAny`.
+`lib/registry.mjs` owns the one retry policy every container-registry fetch
+follows — the attempt budget (`registryAttempts`), the linear backoff
+(`readBackoffStepSeconds` / `sleepSeconds`), and the classification that decides
+whether another attempt is help or harm. It sorts a failure into three classes,
+not two:
+
+- **transport** (`isTransientRegistryFailure()`): manifest HEAD failure, TLS /
+  reset / DNS / 5xx / module-proxy transport. Retryable — the registry is still
+  willing, this attempt just didn't land.
+- **rate limit** (`isRegistryRateLimit()`): `429` / `toomanyrequests` / `pull
+  rate limit`. **Never retryable.** Docker Hub counts pulls per account, or per
+  runner IP when the pull is unauthenticated, over a rolling window measured in
+  hours; a retry budget measured in seconds cannot outlast it, and each attempt
+  spends more of the quota that is already exhausted. Asked FIRST, because
+  BuildKit reports a 429 as `unexpected status from HEAD request …` — a
+  transport signature — so the rate-limit answer has to win outright.
+  `rateLimitDiagnosis()` is the one explanation every consumer prints for it.
+- **everything else**: a genuine build / command failure. Fails on the first
+  attempt, unretried.
+
+`pullImageWithRetry(ref, …)` is that policy applied to acquiring one image, and
+is the only implementation of the loop: `pull-buildkit-image.mjs` (the buildx
+bootstrap image, the one caller that accepts a locally present copy in place of
+a fetch), `compose-pull-images.mjs` (a compose stack's fetchable services),
+`promql-surface-gate.mjs` (the reference Prometheus it starts) and
+`migration-artifact.mjs` (the released image it extracts a binary from) all go
+through it. `build-with-registry-retry.mjs` (a build's own `FROM` resolution)
+and `chart-kubeconform.mjs`'s image probe apply the same classification to
+commands rather than to a single ref. Everything hits the same quota bucket and
+fails the same way, so nothing re-derives the policy.
+
+The pre-pull fetches with `docker pull`, never `docker compose pull`: the two
+paths do not share a credential source. Measured four seconds apart in one job,
+the CLI pull carried the runner's Docker Hub login while compose's was refused
+as *unauthenticated* — so routed through compose, the mechanism built to absorb
+Docker Hub failures was spending the anonymous per-IP quota (issue #1565).
+
+`lib/scope-gate.mjs` answers "does THIS change touch the scope a heavy lane
+guards?" — `runsFullLane()` (which events must never take a scoped subset),
+`changedPaths()` (the change's own diff — a pull request against its merge base,
+a merge-queue entry across `base_sha..head_sha` — or `null` when it cannot be
+computed, which callers must read as "run everything" rather than as "nothing
+changed"), and segment-wise `underPrefix` / `matchesAny`.
 It exists so the two dangerous parts — the always-full event set and the
 uncomputable-diff fallback — cannot drift between the lanes that use it.
 
@@ -54,6 +92,49 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+- **`forbid-deferral.mjs`** — `forbid-deferral.yml`, its own workflow. The prose
+  sibling of `forbid-skip`: where that one rejects a test that declines to
+  assert, this rejects a change that names work it is not doing and walks away.
+  Scans exactly three surfaces, all of them the change's OWN additions — the PR
+  description, the commit messages in `BASE_SHA...HEAD_SHA`, and the `+` lines
+  of that diff — against the exported `DEFERRAL_MARKERS` table, and requires
+  every hit to cite an issue in this repository that is **open** and is an issue
+  rather than a pull request (GitHub's issues endpoint returns both; the
+  `pull_request` key discriminates). Citation scope follows the author's own
+  structure: a marker on a markdown heading is satisfied anywhere in the section
+  that heading introduces (through to the next heading of the same or higher
+  level), any other prose marker within its own paragraph, and a diff marker
+  within `CITATION_WINDOW_LINES` either side — so both the sanctioned
+  heading-then-list-of-issues body and a comment block that already names its
+  issue satisfy the gate.
+  It lives in its own workflow rather than in `ci.yml` because one of its
+  surfaces is the PR description and its remedy asks the author to edit it:
+  `ci.yml`'s bare `pull_request:` trigger excludes `edited`, so a corrected body
+  raised no event and the stale failure stood with no code to push. The split
+  buys `types: [… edited …]` for the price of one checkout instead of the whole
+  suite; `test/regression/forbid_deferral_trigger_test.go` pins both halves.
+  The commit-message surface is measured, not assumed: of 217 commits on `main`
+  carrying deferral text, 178 carry it ONLY in intra-branch commit messages, so
+  a description-only gate would miss ~82% of them.
+  The tree at large is deliberately NOT scanned — the same phrases are ordinary
+  architecture prose in `internal/**`, and a gate that fired on those would be
+  routed around. That is scoping, not an allow-list: there is no tolerance file
+  and no way to park a violation. Anti-vacuity is explicit — a missing
+  description surface, an unresolvable commit range, an empty commit list, an
+  empty file set or an empty marker table each fail LOUDLY rather than passing
+  green. `forbid-deferral.test.mjs` is the `node --test` guard (run as the step
+  BEFORE the gate): it proves every table row fires on a real example and that
+  the measured false-positive shapes — Go's `defer` statement, the phrase that
+  records COMPLETED work in prose or in a past-tense heading, a change that only
+  DELETES a marker line, and a heading whose section cites its issue below it —
+  stay clean.
+  - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `issues: read` and
+    `pull-requests: read`), `GITHUB_EVENT_NAME`, `PR_BODY` (required on a
+    `pull_request` run; may be empty, may not be unset), `BASE_SHA`, `HEAD_SHA`,
+    `GITHUB_API_URL` (optional; runner-provided).
+  - Exit: `0` when every marker is tracked by an open issue (or none were
+    found); `1` on an untracked deferral or a malformed input. ENFORCING and a
+    required status check on `main`.
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident
@@ -183,7 +264,57 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   label edit from here would block its auto-rebase.
   - Env: none (the title is passed by the caller); argv `--self-test` pins the
     full mapping incl. the deps/release scope overrides and the no-match cases.
+    The self-test runs on the `forbid-skip` lane, in the same step as
+    `issue-label.test.mjs`.
   - Exit: `0` on a green self-test, `1` on any failed assertion.
+- **`issue-label.mjs`** — `issue-label.yml`, BOTH jobs (`label` + `backfill`).
+  The issue-side counterpart to `pr-type-label.mjs`: an ISSUE carries no
+  Conventional-Commit prefix, so its labels are inferred deterministically from
+  what the issue says. Two independent passes, both pure functions of
+  `(title, body)` — no LLM, no network guess:
+  1. **area** — `PATH_PREFIX_TO_AREA` maps repo subtrees to `area/*` by
+     LONGEST prefix (`internal/promql`->area/promql, `test/spec/logql`->
+     area/logql, `.github/workflows`->area/ci); cerberus issues cite exact
+     `file:line`, so the dominant cited subtree names the area. Production
+     citations (`internal/`, `cmd/`) outrank harness citations by
+     `PRODUCTION_PATH_WEIGHT`, because an issue's area is where the code under
+     discussion LIVES, not where the tests that observed it live. The title's
+     own `<prefix>:` token (`TITLE_PREFIX_TO_AREA`) ranks first when present,
+     with a head-keyword fallback (`HEAD_KEYWORD_TO_AREA`) for titles that
+     carry no prefix. At most `MAX_AREA_LABELS` (2), and every SECONDARY area
+     must clear `AREA_SECONDARY_MIN_PATHS` (2) distinct citations.
+  2. **type** — a Conventional-Commit title prefix is authoritative and is
+     resolved by importing `labelsForTitle()` from `pr-type-label.mjs` (the
+     type table has exactly ONE definition in this repo). Otherwise a scored
+     scan of `TYPE_SIGNALS` — curated phrases, not bare words — over the TITLE
+     first and the body only as a fallback: wrong answer / divergence / silent
+     empty -> `bug`, missing coverage / hollow test / mutation survivor ->
+     `test`, unbounded resource / scan cost / fan-out -> `performance`,
+     duplication / half-finished mechanical change -> `refactor`, stale or
+     contradictory prose -> `documentation`. Ties break by
+     `TYPE_TIEBREAK_ORDER`.
+
+  The apply step is ADDITIVE (only ever POSTs missing labels; never removes or
+  replaces one a human set) and IDEMPOTENT (re-running is a no-op). The caps
+  count labels already present, so a human-set `area/*` or type label is
+  respected rather than doubled. ANTI-VACUITY guards fail the run rather than
+  exiting green on nothing: empty mapping tables, an issue whose `body` key was
+  never fetched, ZERO issues processed, a backfill that applied zero labels
+  while unlabeled issues remain, and any issue no rule classifies (reported by
+  number — a growing residue means the mapping is too narrow). NOT a required
+  status check: this is automation, and its own correctness is gated by
+  `issue-label.test.mjs` on the `forbid-skip` lane.
+  - Env: `ISSUE_LABEL_MODE` (`event` | `backfill`, required), `GITHUB_TOKEN`,
+    `GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH` (event mode),
+    `ISSUE_LABEL_DRY_RUN` (`1`/`true` computes + reports, applies nothing),
+    `ISSUE_LABEL_FIXTURE` (dry-run only: a JSON array of
+    `{number, title, body, labels}` read INSTEAD of the API, so a dry run is
+    reproducible offline), `GITHUB_API_URL`; argv `--check-tables` asserts the
+    mapping tables are non-empty (spelled differently from its sibling's
+    `--self-test` because importing `pr-type-label.mjs` would consume that
+    flag first).
+  - Exit: `0` when every scanned issue was classified and its missing labels
+    applied, `1` on any vacuity guard, unclassifiable issue, or API error.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
@@ -200,8 +331,9 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
 - **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
   phases run and emits them as the `mutate` `strategy.matrix`. On push /
   schedule / dispatch and on a `release/*` PR it selects every phase; on an
-  ordinary PR it selects only the legs whose scope the diff touches, applying
-  each leg's `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
+  ordinary PR — and on a merge-queue entry, off its own `base_sha..head_sha` —
+  it selects only the legs whose scope the diff touches, applying each leg's
+  `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
   A changed path that lies inside a phase scope while claiming no leg is a
   coverage gap and fails the job rather than being dropped. `verify` mode asserts
   the table alone (every scope an existing directory, every pattern legal under
@@ -545,13 +677,16 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   probes the rendered container image tag against the registry — the guard for
   an `appVersion` pointing at an unpublished tag. An image passes only when the
   probe positively confirms it: a definitive not-found fails, and so does any
-  probe that reaches no verdict (auth refusal, rate limit, DNS/TLS), because a
+  probe that reaches no verdict (auth refusal, DNS/TLS, a rate limit), because a
   guard that could not run has verified nothing. Because the chart renders a
-  Docker Hub ref and Docker Hub rate-limits CI bursts, a probe with no verdict
+  Docker Hub ref and a runner's path to Docker Hub blips, a probe with no verdict
   is retried — five attempts with linear backoff, mirroring the Justfile's
-  `_pull-retry` — so a transient refusal does not become a permanent
+  `_pull-retry` — so a transport fault does not become a permanent
   non-verdict; a verdict (`present` or a definitive not-found) is never
-  retried. Exhausted retries still fail. The one exemption is the appVersion
+  retried, and neither is a rate-limit refusal, which is its own
+  `'rate-limited'` state (classified through `lib/registry.mjs`): it fails the
+  check exactly as `'unknown'` does, but re-probing it would only charge the
+  quota that refused. Exhausted retries still fail. The one exemption is the appVersion
   the change itself stages, and it covers a definitive not-found only. The
   `--self-test` drives the real probe against a controlled failing command, so
   the spawn options are pinned at the call site and the retry loop runs for
@@ -706,6 +841,10 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` all checks pass / regenerate done, `1` on any gap / drift /
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
+  - Acquires `PROM_IMAGE` through `pullImageWithRetry` from `lib/registry.mjs`
+    before `docker run`, so a transport fault is retried and a Docker Hub rate
+    limit is diagnosed as such instead of surfacing as an opaque
+    container-start failure (#1562).
 
 - **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
   Decides whether a pull request has to boot the compose stack at all. The lane
@@ -721,7 +860,8 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   path still exists (a renamed entry matches nothing and silently retires the
   gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
   to `true`: push / schedule / `release/*` PRs always run the full lane, and an
-  uncomputable diff boots the stack rather than skipping it. `workflow_dispatch`
+  uncomputable diff boots the stack rather than skipping it. A merge-queue entry
+  is scoped like a pull request, off its own `base_sha..head_sha`. `workflow_dispatch`
   is the one named exception (`NON_BOOTING_EVENTS`) — e2e.yml's only dispatch
   input regenerates the k3d crawl inventory, which no compose shard can see.
   `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the
@@ -873,6 +1013,11 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
     pair, a failed build / pull / extract, a `--version` that errors, prints
     nothing, prints more than one line, or prints the wrong stamp.
+  - The image path acquires `cerberus_image` through `pullImageWithRetry` from
+    `lib/registry.mjs`, without `acceptLocalCopy` — the point of the path is to
+    exercise the RELEASED bytes, so falling back to a same-named image the
+    daemon happens to hold is exactly the substitution this module exists to
+    prevent.
 
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
@@ -932,10 +1077,71 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   pre-acquiring it sufficient; the module therefore asserts presence in the
   daemon rather than a successful pull. The composite passes the same image ref
   to `driver-opts: image=…`, so the warmed ref and the booted ref cannot drift.
+  A rate-limit refusal ends the loop immediately (after the local-image
+  fallback, which is a pass regardless of why the pull failed).
   - Env: `BUILDKIT_IMAGE` (required — image ref to acquire),
     `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
+- **`compose-pull-images.mjs`** — the Justfile (`_compose-pull-retry`, used by
+  `migration-tier{1,2}-up`), the three `compatibility/*/scripts/run-*.sh`
+  harnesses, `e2e.yml`'s two compose-smoke jobs, and `bench/histogram/run.sh`.
+  Acquires every image a compose stack FETCHES,
+  before `docker compose up` reaches for them. Two decisions carry the module.
+  What is fetchable is read off the compose model's `build:` sections
+  (`docker compose config --format json`, compose's own `--ignore-buildable`
+  semantics) and never inferred from daemon state — absence from the daemon
+  means "not built yet" as often as "not fetched yet", and pulling Tier-2's
+  built-during-`up` `dead-end-receiver` from a registry that serves it nowhere
+  failed a lane five attempts deep (run 30281594098). And the fetch itself is
+  `docker pull`, because compose's pull path does not carry the credentials
+  `docker login` wrote (issue #1565). An image already in the daemon is skipped,
+  which is what `--policy missing` did.
+  - Args: the compose files the lane brings up (each becomes a `-f`), then
+    optionally `--` and the service names to narrow the model to. Pass the
+    services when a stack starts one SEPARATELY because its failure is
+    tolerated (`bench/histogram`'s `mimir`, brought up with `|| MIMIR_OK=0`);
+    folding such an image into the core stack's pre-pull would turn a tolerated
+    failure into a hard one.
+  - Env: `COMPOSE_PULL_BACKOFF_SECONDS` (optional; default `3`).
+  - Exit: `0` when every fetchable image is in the local daemon, `1` otherwise.
+  - Gated by `compose-pull-images.test.mjs` on the required `check` lane (the
+    model → image-set decision, including the built-service shapes the live tree
+    does not yet contain) and by
+    `test/regression/justfile_pull_retry_test.go`, which drives the module over
+    the REAL `test/e2e/migration` compose files with a stub `docker`, pins the
+    pulled set exactly, and scans the whole tree — Justfile recipes, shell
+    scripts, workflow files — so no unit can bring a compose stack up without
+    pre-pulling through this module first.
+- **`build-with-registry-retry.mjs`** — the Justfile (`_pull-retry`,
+  `e2e-up`, `e2e-bwc-up`,
+  `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
+  compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
+  and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
+  `docker compose up|build`), retrying it when — and only when — its output
+  names a registry or network fault. It exists because a build's BASE images are
+  resolved by BuildKit *during* the build, so no host-side pre-pull protects
+  them: a Docker Hub 429 on `golang:1.26` (the `FROM` of `Dockerfile.local`)
+  failed `e2e` and `migration-e2e` on main with `unexpected status from HEAD
+  request … 429 Too Many Requests`. The retry wraps the command rather than
+  pre-pulling the ref because the built-in `docker` driver resolves `FROM` from
+  the daemon's image store while the `docker-container` driver
+  (`.github/actions/setup-buildx`) never does — a pre-pull would protect some
+  lanes and silently protect nothing in the rest. Unlike the bootstrap pull
+  there is no local-image fallback: a tag an earlier run left in the daemon
+  attests nothing about this tree, and a build failure that is not a registry
+  failure fails on the FIRST attempt so a real break is never retried into
+  invisibility. A rate-limit refusal fails on the first attempt too, for the
+  opposite reason: the retry cannot work and the attempts themselves are what
+  keep the quota window open (issue #1561). Takes the command as its trailing
+  argv, so the Justfile's host-side pulls route through it as well and inherit
+  the same three-way classification.
+  - Env: `IMAGE_BUILD_RETRY_BACKOFF_SECONDS` (optional; default `10` — linear
+    backoff step, attempt N sleeps N × this; the Justfile's pull recipes pass
+    `3`).
+  - Exit: `0` on success; the command's own status when it failed for a reason
+    another attempt cannot clear (a genuine failure, or a rate-limit refusal);
+    `1` when the retry budget is spent on transport faults.
 
 ## Notes
 

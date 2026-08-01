@@ -1500,6 +1500,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "histogram_quantile_avg_by_le",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "histogram_quantile_classic_agg_at_pinned_range",
     "routed": false,
     "k": 0,
@@ -1530,6 +1540,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "histogram_quantile_classic_agg_rate_min_samples",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 4,
+    "cumulative_d": "1m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "histogram_quantile_classic_bare_at_pin_stale",
     "routed": false,
     "k": 0,
@@ -1547,6 +1567,26 @@
     "n_anchors": 241,
     "fanout": 0,
     "cumulative_d": "0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "histogram_quantile_classic_bare_rate_min_samples",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 4,
+    "cumulative_d": "1m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "histogram_quantile_classic_duplicate_bounds",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
     "outer_range": "1h0m0s"
   },
   {
@@ -1871,6 +1911,16 @@
   },
   {
     "query": "histogram_quantile_sum_by_le",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "histogram_quantile_sum_by_le_mixed_layouts",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable",

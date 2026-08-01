@@ -72,6 +72,21 @@ test('push, schedule, dispatch and release PRs all run the full matrix', () => {
   assert.equal(release.phases.length, PHASES.length);
 });
 
+test('a merge-queue batch selects legs from its own diff, like a pull request', () => {
+  // The queue entry is a pre-merge gate on a projected trunk: `base_sha..head_sha`
+  // is the union of the batched PRs' diffs, so it selects the same legs those PRs
+  // selected. Sweeping the full matrix here instead would bill every batch ~15
+  // gremlins legs on top of the push-to-main sweep that lands the same SHA — the
+  // wall-clock cost scoping exists to remove, paid twice.
+  const inQueue = { eventName: 'merge_group', headRef: '' };
+  assert.deepEqual(names(select(['internal/chplan/plan.go'], inQueue)), ['phase1']);
+  assert.deepEqual(select(['docs/engine.md'], inQueue).phases, []);
+
+  // The safety net is unchanged: a batch whose diff cannot be computed sweeps
+  // everything rather than selecting nothing.
+  assert.equal(select(null, inQueue).phases.length, PHASES.length);
+});
+
 test('an uncomputable diff runs the full matrix rather than nothing', () => {
   const result = select(null);
   assert.equal(result.phases.length, PHASES.length);
