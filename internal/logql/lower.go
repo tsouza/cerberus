@@ -217,15 +217,14 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 //
 // Downstream label filters resolve against this composite labels map.
 // Loki's documented contract is "parsed labels appended; on conflict
-// the stream label wins and parsed gets `_extracted` suffix". For
-// `| logfmt` cerberus enforces that on the SQL side: the merge wraps
-// extracted keys in a `mapApply` (or, for typed `| logfmt foo="..."`,
-// a per-identifier `if(...)`) that suffixes the destination name when
-// the stream column already carries it. See [logfmtMergeLabels] and
-// [logfmtExpressionMergeLabels] for the exact lowering shape. Strict
-// conflict semantics for the other parser families (`| json`,
-// `| regexp`) remain a known approximation — extracted keys win on
-// conflict there — and are tracked separately.
+// the stream label wins and parsed gets `_extracted` suffix". Cerberus
+// enforces that on the SQL side for every parser family that lowers to
+// a labels merge — bare and typed `| logfmt`, bare and typed `| json`,
+// and `| regexp`. Both merge shapes route through a single pair of
+// constructors so the policy cannot be applied to one family and
+// skipped on another: [mergeParsedMap] wraps a query-time-unknown key
+// set in a `mapApply` rename, and [mergeParsedFields] wraps each
+// statically-known destination identifier in a per-key `if(...)`.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	node, _, err := lowerPipelineWithLabels(e, s, lc)
 	return node, err
@@ -594,11 +593,59 @@ const duplicateSuffix = "_extracted"
 // pair-delimiter / quote arguments mirror Loki's logfmt parser
 // defaults.
 func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
+	return mergeParsedMap(prev, s, extractKVPairs(s))
+}
+
+// parsedField pairs a parser stage's statically-known destination label
+// name with the expression that yields the label's value.
+type parsedField struct {
+	name  string
+	value chplan.Expr
+}
+
+// mergeParsedMap folds a parser stage's extracted `Map(String,String)`
+// onto the running labels map, applying Loki's collision policy to every
+// extracted key. Used by the parser forms whose extracted key set is only
+// known at query time — bare `| logfmt` and bare `| json` — so the rename
+// has to happen per-key inside a `mapApply` lambda.
+//
+// Together with [mergeParsedFields] this is one of the only two ways to
+// build a parser-stage labels merge. Both apply the collision policy
+// internally, so no parser family can merge extracted keys without it —
+// the divergence that let `| json` / `| regexp` extracted keys silently
+// overwrite stream labels is closed by construction rather than by
+// repeating the rename at each call site.
+func mergeParsedMap(prev chplan.Expr, s schema.Logs, extracted chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "mapConcat",
 		Args: []chplan.Expr{
 			prev,
-			renameExtractedOnCollision(s, extractKVPairs(s)),
+			renameExtractedOnCollision(s, extracted),
+		},
+	}
+}
+
+// mergeParsedFields folds a parser stage's statically-known destination
+// identifiers onto the running labels map, applying Loki's collision
+// policy to each name. Used by the parser forms whose destination
+// identifier set is fixed at SQL-emit time — typed `| logfmt foo="..."`,
+// typed `| json foo="..."`, and `| regexp` (named captures) — where the
+// rename is a per-key `if(mapContains(<stream>, '<id>'), '<id>_extracted',
+// '<id>')` evaluated once per row instead of via `mapApply`.
+//
+// Callers hand over the raw identifier, never a pre-built key expression:
+// the rename is this constructor's job, so a new parser family cannot
+// forget it. See [mergeParsedMap] for the dynamic-key counterpart.
+func mergeParsedFields(prev chplan.Expr, s schema.Logs, fields []parsedField) chplan.Expr {
+	args := make([]chplan.Expr, 0, len(fields)*2)
+	for _, f := range fields {
+		args = append(args, renameIdentifierOnCollision(s, f.name), f.value)
+	}
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			prev,
+			&chplan.FuncCall{Name: "map", Args: args},
 		},
 	}
 }
@@ -621,7 +668,7 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax
 		return logfmtMergeLabels(prev, s), nil
 	}
 	kvBase := extractKVPairs(s)
-	args := make([]chplan.Expr, 0, len(exprs)*2)
+	fields := make([]parsedField, 0, len(exprs))
 	for _, ext := range exprs {
 		if ext.Identifier == "" {
 			return nil, fmt.Errorf("logql: `| logfmt` expression has empty identifier")
@@ -634,22 +681,15 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax
 		if key == "" {
 			key = ext.Identifier
 		}
-		args = append(
-			args,
-			renameIdentifierOnCollision(s, ext.Identifier),
-			&chplan.MapAccess{
+		fields = append(fields, parsedField{
+			name: ext.Identifier,
+			value: &chplan.MapAccess{
 				Map: kvBase,
 				Key: &chplan.LitString{V: key},
 			},
-		)
+		})
 	}
-	return &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			prev,
-			&chplan.FuncCall{Name: "map", Args: args},
-		},
-	}, nil
+	return mergeParsedFields(prev, s, fields), nil
 }
 
 // renameExtractedOnCollision wraps a Map(String,String) expression with
@@ -660,9 +700,9 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax
 //	    (k, v) -> (if(mapContains(<stream>, k), concat(k, '_extracted'), k), v),
 //	    <extracted>)
 //
-// Used by the bare `| logfmt` form where the extracted-key set is
-// unknown at SQL-emit time, so the rename has to happen per-key inside
-// the lambda.
+// Applied by [mergeParsedMap] for the bare `| logfmt` and bare `| json`
+// forms, where the extracted-key set is unknown at SQL-emit time so the
+// rename has to happen per-key inside the lambda.
 func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Expr {
 	streamCol := &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
 	return &chplan.FuncCall{
@@ -704,11 +744,12 @@ func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Exp
 
 // renameIdentifierOnCollision returns a chplan.Expr that resolves at
 // query time to either `<id>` (when the stream's label set does not
-// contain `<id>`) or `<id>_extracted` (when it does). Used by typed
-// `| logfmt foo="..."` lowering where each destination identifier is
-// known statically — the rename is a per-key `if(mapContains(<stream>,
-// '<id>'), '<id>_extracted', '<id>')` evaluated once per row instead
-// of via mapApply.
+// contain `<id>`) or `<id>_extracted` (when it does). Applied by
+// [mergeParsedFields] for the typed `| logfmt foo="..."` / typed
+// `| json foo="..."` / `| regexp` lowerings, where each destination
+// identifier is known statically — the rename is a per-key
+// `if(mapContains(<stream>, '<id>'), '<id>_extracted', '<id>')`
+// evaluated once per row instead of via mapApply.
 func renameIdentifierOnCollision(s schema.Logs, id string) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "if",
@@ -745,9 +786,12 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 }
 
 // jsonBareMergeLabels wraps the current labelsExpr with a
-// `mapConcat(<prev>, CAST(JSONExtractKeysAndValues(Body, 'String') AS
-// Map(String,String)))` so subsequent label filters see the union of
-// stream-selector labels and JSON-parsed top-level key/value pairs.
+// `mapConcat(<prev>, mapApply(<rename>, CAST(JSONExtractKeysAndValues(
+// Body, 'String') AS Map(String,String))))` so subsequent label filters
+// see the union of stream-selector labels and JSON-parsed top-level
+// key/value pairs — with stream-selector labels winning on key
+// collisions and the shadowed JSON value reachable under the
+// `_extracted`-suffixed name (see [mergeParsedMap]).
 //
 // JSONExtractKeysAndValues(json, 'String') returns
 // `Array(Tuple(String, String))` for the top-level object keys with each
@@ -757,25 +801,19 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 // `parent_child` keys — that's an approximation of Loki's bare `| json`
 // semantics; the common flat-object case is exact.
 func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
-	return &chplan.FuncCall{
-		Name: "mapConcat",
+	return mergeParsedMap(prev, s, &chplan.FuncCall{
+		Name: "CAST",
 		Args: []chplan.Expr{
-			prev,
 			&chplan.FuncCall{
-				Name: "CAST",
+				Name: "JSONExtractKeysAndValues",
 				Args: []chplan.Expr{
-					&chplan.FuncCall{
-						Name: "JSONExtractKeysAndValues",
-						Args: []chplan.Expr{
-							&chplan.ColumnRef{Name: s.BodyColumn},
-							&chplan.LitString{V: "String"},
-						},
-					},
-					&chplan.LitString{V: "Map(String,String)"},
+					&chplan.ColumnRef{Name: s.BodyColumn},
+					&chplan.LitString{V: "String"},
 				},
 			},
+			&chplan.LitString{V: "Map(String,String)"},
 		},
-	}
+	})
 }
 
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
@@ -786,7 +824,9 @@ func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 // renders `JSONExtractString(Body, <segment...>)` with one variadic
 // argument per path segment — CH treats string segments as object keys
 // and integer segments as array indexes, the same shape Loki's runtime
-// expects.
+// expects. Each destination identifier goes through [mergeParsedFields],
+// so one that collides with a stream label lands under
+// `<id>_extracted` and the stream label wins.
 func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax.LabelExtractionExpr) (chplan.Expr, error) {
 	if len(exprs) == 0 {
 		// Defensive: a parser-emitted empty list is shaped like the
@@ -794,7 +834,7 @@ func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax.L
 		// stage entirely.
 		return jsonBareMergeLabels(prev, s), nil
 	}
-	args := make([]chplan.Expr, 0, len(exprs)*2)
+	fields := make([]parsedField, 0, len(exprs))
 	for _, ext := range exprs {
 		if ext.Identifier == "" {
 			return nil, fmt.Errorf("logql: `| json` expression has empty identifier")
@@ -809,19 +849,9 @@ func jsonExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax.L
 		if err != nil {
 			return nil, err
 		}
-		args = append(
-			args,
-			&chplan.LitString{V: ext.Identifier},
-			extract,
-		)
+		fields = append(fields, parsedField{name: ext.Identifier, value: extract})
 	}
-	return &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			prev,
-			&chplan.FuncCall{Name: "map", Args: args},
-		},
-	}, nil
+	return mergeParsedFields(prev, s, fields), nil
 }
 
 // jsonExtractStringExpr renders `JSONExtractString(Body, segment1,
@@ -857,7 +887,9 @@ func jsonExtractStringExpr(s schema.Logs, path string) (chplan.Expr, error) {
 // <pattern>)[<i>][1], ...)` literal that gets mapConcat'd onto the
 // running labels expression. The `[i][1]` indexing reaches into group
 // `i`'s array of matches and picks the first — Loki's regexp parser
-// records only the first match per group on each line.
+// records only the first match per group on each line. Each capture name
+// goes through [mergeParsedFields], so one that collides with a stream
+// label lands under `<name>_extracted` and the stream label wins.
 func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.Expr, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("logql: `| regexp` requires a non-empty pattern")
@@ -894,32 +926,25 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 			},
 		}
 	}
-	mapArgs := make([]chplan.Expr, 0, len(named)*2)
+	fields := make([]parsedField, 0, len(named))
 	for _, g := range named {
-		mapArgs = append(
-			mapArgs,
-			&chplan.LitString{V: g.name},
+		fields = append(fields, parsedField{
+			name: g.name,
 			// extractAllGroupsHorizontal(...)[<group>][1] — group i,
 			// first match. CH 1-indexes both dimensions. Allocate a
 			// fresh FuncCall per named capture so the chplan tree
 			// stays free of shared sub-pointers an optimizer rule
 			// might rewrite in place.
-			&chplan.MapAccess{
+			value: &chplan.MapAccess{
 				Map: &chplan.MapAccess{
 					Map: groupsCall(),
 					Key: &chplan.LitInt{V: int64(g.index)},
 				},
 				Key: &chplan.LitInt{V: 1},
 			},
-		)
+		})
 	}
-	return &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			prev,
-			&chplan.FuncCall{Name: "map", Args: mapArgs},
-		},
-	}, nil
+	return mergeParsedFields(prev, s, fields), nil
 }
 
 // labelFiltererLower handles `| label="val"` / `| label=~"regex"` and

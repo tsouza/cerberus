@@ -970,7 +970,27 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "logql/parser_json_conflict",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "logql/parser_json_typed",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/parser_json_typed_conflict",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
@@ -1021,6 +1041,16 @@
   },
   {
     "fixture": "logql/parser_regexp",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "logql/parser_regexp_conflict",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
