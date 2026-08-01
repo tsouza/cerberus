@@ -206,7 +206,7 @@ var fixtureInserts = []namedStmt{
             toFloat64(3 * (step + 1)),
             arrayMap(x -> toUInt64(step + 1), range(3)),
             [0.1, 0.5]
-        FROM numbers({steps:UInt64}) AS step`,
+        FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s`,
 	},
 	// demo_cpu_usage_seconds_total: 3 instances × 3 modes = 9 series, counters.
 	//
