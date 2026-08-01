@@ -1,5 +1,5 @@
-// Unit tests for forbid-deferral.mjs — run by `node --test` in ci.yml's
-// `forbid-deferral` job, before the gate itself runs.
+// Unit tests for forbid-deferral.mjs — run by `node --test` in the
+// `forbid-deferral` workflow, before the gate itself runs.
 //
 // The failure mode these pin is silence in BOTH directions. A gate that stops
 // matching reports a clean green on a change that parks work in prose; a gate
@@ -30,11 +30,13 @@ import {
   citationVerdict,
   evaluate,
   findMarkers,
+  headingLevel,
   issueRefs,
   paragraphs,
   parseDiff,
   scanDiff,
   scanProse,
+  sectionAt,
   stripFencedBlocks,
 } from './forbid-deferral.mjs';
 
@@ -57,6 +59,15 @@ const PUNTED_ON = lit('punted ', 'on');
 const REPO = 'tsouza/cerberus';
 
 const ids = (text) => findMarkers(text).map((m) => m.id);
+
+// The three real fixtures this repository supplies: an open issue, an issue
+// closed as a duplicate, and a number that resolves to a merged pull request
+// rather than an issue at all.
+const RESOLVED = new Map([
+  [1535, { kind: 'issue', state: 'open' }],
+  [1486, { kind: 'issue', state: 'closed' }],
+  [1143, { kind: 'pull-request', state: 'closed' }],
+]);
 
 // --- the marker table itself -------------------------------------------------
 
@@ -143,6 +154,27 @@ test('recording completed work is not deferring it', () => {
   }
   assert.deepEqual(ids(`${FOLLOWUP_WORD}: widen the ratchet`), ['followup-label']);
   assert.deepEqual(ids(`### ${FOLLOWUP_WORD}s`), ['followup-label']);
+});
+
+test('a heading that reports completed work in the past tense is clean', () => {
+  // The heading form of the same false positive, and the one that slipped past
+  // the row above: a section headed with the label but describing work this
+  // change DID. The gate cannot read intent, so the remedy names retitling as
+  // one of its three branches — and the past-tense titles it suggests have to
+  // actually be clean, or the advice sends the author in a circle.
+  for (const line of [
+    '## Resolved in this change: the assertion was corrected',
+    '## Fixed here: the wrong bound in the scanner',
+    '## Done in this change: three axes of assertion added',
+    '## What this change already fixes',
+  ]) {
+    assert.deepEqual(ids(line), [], `matched on: ${line}`);
+  }
+  // Recall is not traded away to get that precision: the mislabelled heading
+  // still fires, because "the section below might describe finished work" is
+  // not something a scanner can decide, and a heading reading as a deferral IS
+  // a deferral until its author says otherwise. Retitling is the remedy.
+  assert.deepEqual(ids(`## ${FOLLOWUP_WORD}: CI red on the new test`), ['followup-label']);
 });
 
 test('deleting a marker line is not adding one', () => {
@@ -238,6 +270,101 @@ test('the citation scope for prose is the paragraph, not the whole body', () => 
   const scan = (text) => scanProse({ text, surface: 'pr-body', locate: (l) => `line ${l}`, repoSlug: REPO });
   assert.deepEqual(scan(sameParagraph)[0].refs, [1535]);
   assert.deepEqual(scan(otherParagraph)[0].refs, [], 'a citation a paragraph away tracks something else');
+});
+
+// --- section scope: the shape paragraph scope got wrong ----------------------
+
+test('a heading introduces a section, bounded by the next heading of its level', () => {
+  const lines = ['# top', 'a', '## mid', 'b', '### deep', 'c', '## other', 'd'];
+  assert.deepEqual([1, 0, 2, 0, 3, 0, 2, 0], lines.map(headingLevel));
+  // A deeper heading is INSIDE the section; a same-level one ends it.
+  assert.equal(sectionAt(lines, 2), ['## mid', 'b', '### deep', 'c'].join('\n'));
+  // A higher-level section swallows every subsection under it.
+  assert.equal(sectionAt(lines, 0), lines.join('\n'));
+  // The last section runs to the end of the surface.
+  assert.equal(sectionAt(lines, 6), ['## other', 'd'].join('\n'));
+  // A line that is not a heading has no section.
+  assert.equal(sectionAt(lines, 1), null);
+});
+
+test('a heading is satisfied by an issue cited anywhere in its section', () => {
+  // The exact body shape the first live run rejected, and the one this gate
+  // should most want to see: a heading naming the category, then a list whose
+  // every entry leads with its issue. A markdown heading is its own paragraph,
+  // so paragraph scope reported "cites no issue at all" while the author was
+  // looking straight at the number — the most damaging thing a gate can say.
+  const body = [
+    `## Filed, ${NOT_FIXED_HERE}`,
+    '',
+    '- #1535 — the roundtrip harness cannot expand a star projection whose only',
+    '  column-name source is a raw table.',
+    '',
+    '## Something else entirely',
+    '',
+    'No citation here.',
+  ].join('\n');
+  const found = scanProse({ text: body, surface: 'pr-body', locate: (l) => `line ${l}`, repoSlug: REPO });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].scope, 'the section it introduces');
+  assert.deepEqual(found[0].refs, [1535]);
+  assert.deepEqual(evaluate(found, RESOLVED), [], 'a filed and cited finding is not a deferral');
+});
+
+test('a heading whose section cites nothing is still a violation', () => {
+  // The widening buys precision, not tolerance. Same body, citation removed.
+  const body = [
+    `## Filed, ${NOT_FIXED_HERE}`,
+    '',
+    '- the roundtrip harness cannot expand a star projection.',
+    '',
+    '## Something else entirely',
+    '',
+    'Tracked in #1535.',
+  ].join('\n');
+  const found = scanProse({ text: body, surface: 'pr-body', locate: (l) => `line ${l}`, repoSlug: REPO });
+  assert.equal(found.length, 1);
+  assert.deepEqual(found[0].refs, [], 'a citation under a different heading tracks something else');
+  const violations = evaluate(found, RESOLVED);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].detail, /cites no issue/);
+});
+
+test('a section citation only rescues a closed or wrong-kind reference honestly', () => {
+  const withClosed = [`## ${FOLLOWUP_WORD}`, '', '- widen the ratchet, tracked in #1486'].join('\n');
+  const withPr = [`## ${FOLLOWUP_WORD}`, '', '- widen the ratchet, tracked in #1143'].join('\n');
+  const scan = (text) => scanProse({ text, surface: 'pr-body', locate: (l) => `line ${l}`, repoSlug: REPO });
+  assert.match(evaluate(scan(withClosed), RESOLVED)[0].detail, /closed issue/);
+  assert.match(evaluate(scan(withPr), RESOLVED)[0].detail, /pull request, not an issue/);
+});
+
+test('only headings widen — a mid-section sentence keeps paragraph scope', () => {
+  // A heading is a label for the block beneath it. A sentence buried in prose
+  // is not, so an issue named two paragraphs down must not adopt it.
+  const body = [
+    '## Notes',
+    '',
+    `The bucket bug is ${NOT_FIXED_HERE}.`,
+    '',
+    'Unrelated paragraph that happens to mention #1535.',
+  ].join('\n');
+  const found = scanProse({ text: body, surface: 'pr-body', locate: (l) => `line ${l}`, repoSlug: REPO });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].scope, 'the same paragraph');
+  assert.deepEqual(found[0].refs, []);
+});
+
+test('a heading marker is reported on the heading line, not the line above it', () => {
+  // The heading arm starts at a zero-width line boundary. Consuming the
+  // preceding newline instead would report the line above and, worse, would not
+  // be recognised as a heading when its citation scope is computed — silently
+  // reverting this whole fix for any body without a blank line before the
+  // heading.
+  const body = ['intro text', `## ${FOLLOWUP_WORD}`, '', 'tracked in #1535'].join('\n');
+  const found = scanProse({ text: body, surface: 'pr-body', locate: (l) => `line ${l}`, repoSlug: REPO });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].location, 'line 2');
+  assert.equal(found[0].scope, 'the section it introduces');
+  assert.deepEqual(found[0].refs, [1535]);
 });
 
 test('paragraphs carry their starting line', () => {
@@ -336,12 +463,6 @@ test('a line that merely starts with a plus inside a hunk is still content', () 
 
 // --- verdict -----------------------------------------------------------------
 
-const RESOLVED = new Map([
-  [1535, { kind: 'issue', state: 'open' }],
-  [1486, { kind: 'issue', state: 'closed' }],
-  [1143, { kind: 'pull-request', state: 'closed' }],
-]);
-
 test('only an open issue tracks the work', () => {
   assert.equal(citationVerdict([1535], RESOLVED).tracked, true);
   assert.equal(citationVerdict([1486], RESOLVED).tracked, false);
@@ -355,6 +476,20 @@ test('each rejection says which arm rejected it', () => {
   assert.match(citationVerdict([1486], RESOLVED).detail, /closed issue/);
   assert.match(citationVerdict([1143], RESOLVED).detail, /pull request, not an issue/);
   assert.match(citationVerdict([9999], RESOLVED).detail, /names nothing/);
+});
+
+test('an issue closed as a duplicate is still closed', () => {
+  // The sharpest edge in practice, and it drew blood on the first day: a body
+  // cited an issue that had been closed as a duplicate and consolidated into
+  // another, still-open one. It looks maximally legitimate — somebody really
+  // did file it — but the work is now tracked under a number the body does not
+  // name, so the citation points at a closed record. The verdict must be the
+  // same as for any other closed issue, and the detail must say which.
+  const verdict = citationVerdict([1486], RESOLVED);
+  assert.equal(verdict.tracked, false);
+  assert.match(verdict.detail, /closed issue/);
+  // Repointing at the surviving open issue clears it.
+  assert.equal(citationVerdict([1535], RESOLVED).tracked, true);
 });
 
 test('one open issue among several citations is enough', () => {

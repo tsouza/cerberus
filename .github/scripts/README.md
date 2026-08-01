@@ -64,7 +64,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
-- **`forbid-deferral.mjs`** — `ci.yml`, the `forbid-deferral` job. The prose
+- **`forbid-deferral.mjs`** — `forbid-deferral.yml`, its own workflow. The prose
   sibling of `forbid-skip`: where that one rejects a test that declines to
   assert, this rejects a change that names work it is not doing and walks away.
   Scans exactly three surfaces, all of them the change's OWN additions — the PR
@@ -72,9 +72,19 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   of that diff — against the exported `DEFERRAL_MARKERS` table, and requires
   every hit to cite an issue in this repository that is **open** and is an issue
   rather than a pull request (GitHub's issues endpoint returns both; the
-  `pull_request` key discriminates). Citation scope is the paragraph for prose
-  and `CITATION_WINDOW_LINES` either side for a diff hunk, so a comment block
-  that already names its issue satisfies the gate when it grows.
+  `pull_request` key discriminates). Citation scope follows the author's own
+  structure: a marker on a markdown heading is satisfied anywhere in the section
+  that heading introduces (through to the next heading of the same or higher
+  level), any other prose marker within its own paragraph, and a diff marker
+  within `CITATION_WINDOW_LINES` either side — so both the sanctioned
+  heading-then-list-of-issues body and a comment block that already names its
+  issue satisfy the gate.
+  It lives in its own workflow rather than in `ci.yml` because one of its
+  surfaces is the PR description and its remedy asks the author to edit it:
+  `ci.yml`'s bare `pull_request:` trigger excludes `edited`, so a corrected body
+  raised no event and the stale failure stood with no code to push. The split
+  buys `types: [… edited …]` for the price of one checkout instead of the whole
+  suite; `test/regression/forbid_deferral_trigger_test.go` pins both halves.
   The commit-message surface is measured, not assumed: of 217 commits on `main`
   carrying deferral text, 178 carry it ONLY in intra-branch commit messages, so
   a description-only gate would miss ~82% of them.
@@ -86,8 +96,9 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   empty file set or an empty marker table each fail LOUDLY rather than passing
   green. `forbid-deferral.test.mjs` is the `node --test` guard (run as the step
   BEFORE the gate): it proves every table row fires on a real example and that
-  the three measured false-positive shapes — Go's `defer` statement, the phrase
-  that records COMPLETED work, and a change that only DELETES a marker line —
+  the measured false-positive shapes — Go's `defer` statement, the phrase that
+  records COMPLETED work in prose or in a past-tense heading, a change that only
+  DELETES a marker line, and a heading whose section cites its issue below it —
   stay clean.
   - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `issues: read` and
     `pull-requests: read`), `GITHUB_EVENT_NAME`, `PR_BODY` (required on a
