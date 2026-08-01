@@ -28,6 +28,16 @@ universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
 (unassigned / double-assigned / phantom / stale-exclude / bad-shard-name).
 One implementation means a new rule guards BOTH lanes at once.
 
+`lib/registry.mjs` owns the one retry policy every container-registry fetch
+follows — the attempt budget (`registryAttempts`), the linear backoff
+(`readBackoffStepSeconds` / `sleepSeconds`), and `isTransientRegistryFailure()`,
+which decides whether command output names a registry / network fault (Docker
+Hub 429, manifest HEAD failure, TLS / reset / DNS / module-proxy transport) or a
+genuine build error. `pull-buildkit-image.mjs` (host-side bootstrap pull) and
+`build-with-registry-retry.mjs` (the build's own `FROM` resolution) hit the same
+rate-limit bucket and fail the same way, so they share the policy instead of
+re-deriving it.
+
 `lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
 lane guards?" — `runsFullLane()` (which events must never take a scoped
 subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
@@ -54,6 +64,38 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+- **`forbid-deferral.mjs`** — `ci.yml`, the `forbid-deferral` job. The prose
+  sibling of `forbid-skip`: where that one rejects a test that declines to
+  assert, this rejects a change that names work it is not doing and walks away.
+  Scans exactly three surfaces, all of them the change's OWN additions — the PR
+  description, the commit messages in `BASE_SHA...HEAD_SHA`, and the `+` lines
+  of that diff — against the exported `DEFERRAL_MARKERS` table, and requires
+  every hit to cite an issue in this repository that is **open** and is an issue
+  rather than a pull request (GitHub's issues endpoint returns both; the
+  `pull_request` key discriminates). Citation scope is the paragraph for prose
+  and `CITATION_WINDOW_LINES` either side for a diff hunk, so a comment block
+  that already names its issue satisfies the gate when it grows.
+  The commit-message surface is measured, not assumed: of 217 commits on `main`
+  carrying deferral text, 178 carry it ONLY in intra-branch commit messages, so
+  a description-only gate would miss ~82% of them.
+  The tree at large is deliberately NOT scanned — the same phrases are ordinary
+  architecture prose in `internal/**`, and a gate that fired on those would be
+  routed around. That is scoping, not an allow-list: there is no tolerance file
+  and no way to park a violation. Anti-vacuity is explicit — a missing
+  description surface, an unresolvable commit range, an empty commit list, an
+  empty file set or an empty marker table each fail LOUDLY rather than passing
+  green. `forbid-deferral.test.mjs` is the `node --test` guard (run as the step
+  BEFORE the gate): it proves every table row fires on a real example and that
+  the three measured false-positive shapes — Go's `defer` statement, the phrase
+  that records COMPLETED work, and a change that only DELETES a marker line —
+  stay clean.
+  - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `issues: read` and
+    `pull-requests: read`), `GITHUB_EVENT_NAME`, `PR_BODY` (required on a
+    `pull_request` run; may be empty, may not be unset), `BASE_SHA`, `HEAD_SHA`,
+    `GITHUB_API_URL` (optional; runner-provided).
+  - Exit: `0` when every marker is tracked by an open issue (or none were
+    found); `1` on an untracked deferral or a malformed input. ENFORCING and a
+    required status check on `main`.
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident
@@ -936,6 +978,28 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
+- **`build-with-registry-retry.mjs`** — the Justfile (`e2e-up`, `e2e-bwc-up`,
+  `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
+  compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
+  and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
+  `docker compose up|build`), retrying it when — and only when — its output
+  names a registry or network fault. It exists because a build's BASE images are
+  resolved by BuildKit *during* the build, so no host-side pre-pull protects
+  them: a Docker Hub 429 on `golang:1.26` (the `FROM` of `Dockerfile.local`)
+  failed `e2e` and `migration-e2e` on main with `unexpected status from HEAD
+  request … 429 Too Many Requests`. The retry wraps the command rather than
+  pre-pulling the ref because the built-in `docker` driver resolves `FROM` from
+  the daemon's image store while the `docker-container` driver
+  (`.github/actions/setup-buildx`) never does — a pre-pull would protect some
+  lanes and silently protect nothing in the rest. Unlike the bootstrap pull
+  there is no local-image fallback: a tag an earlier run left in the daemon
+  attests nothing about this tree, and a build failure that is not a registry
+  failure fails on the FIRST attempt so a real break is never retried into
+  invisibility. Takes the command as its trailing argv.
+  - Env: `IMAGE_BUILD_RETRY_BACKOFF_SECONDS` (optional; default `10` — linear
+    backoff step, attempt N sleeps N × this).
+  - Exit: `0` on success; the command's own status when it failed for a
+    non-registry reason; `1` when the retry budget is spent.
 
 ## Notes
 

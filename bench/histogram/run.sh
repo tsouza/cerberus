@@ -48,11 +48,18 @@ case "$PROFILE" in
 esac
 
 echo "==> [1/5] building + starting core stack (clickhouse, cerberus, prometheus)"
-docker compose up -d --build --wait clickhouse cerberus prometheus
+# Every compose `up` here can fetch from Docker Hub — the cerberus service
+# builds Dockerfile.local (`FROM golang:1.26`), the rest pull. The wrapper
+# retries on registry/network faults only; a real build failure still fails on
+# the first attempt, and the best-effort `|| MIMIR_OK=0` below still sees a
+# non-zero status once the retries are spent.
+node ../../.github/scripts/build-with-registry-retry.mjs \
+    docker compose up -d --build --wait clickhouse cerberus prometheus
 
 echo "==> [2/5] starting mimir (best-effort)"
 MIMIR_OK=1
-docker compose up -d mimir || MIMIR_OK=0
+node ../../.github/scripts/build-with-registry-retry.mjs \
+    docker compose up -d mimir || MIMIR_OK=0
 if [[ "$MIMIR_OK" == "1" ]]; then
   MIMIR_OK=0
   for i in $(seq 1 40); do
