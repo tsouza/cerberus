@@ -111,14 +111,25 @@ func TestRegexpMergeLabelsSkipsUnnamedSubexps(t *testing.T) {
 		t.Fatalf("regexpMergeLabels(%q) inner map has %d args, want 2 — unnamed subexps leaked through the skip", pattern, len(inner.Args))
 	}
 
-	// First arg is the key literal. Confirm it's the named capture and
-	// not the empty positional-subexp name.
-	key, ok := inner.Args[0].(*chplan.LitString)
+	// First arg is the destination key. Each capture name goes through
+	// the stream-label collision rename (see mergeParsedFields), so the
+	// key is an `if(mapContains(<stream>, '<name>'), '<name>_extracted',
+	// '<name>')` call rather than a bare literal. Args[2] is the
+	// no-collision branch — the capture name itself. Confirm it's the
+	// named capture and not the empty positional-subexp name.
+	key, ok := inner.Args[0].(*chplan.FuncCall)
 	if !ok {
-		t.Fatalf("regexpMergeLabels(%q) inner map key is %T, want *chplan.LitString", pattern, inner.Args[0])
+		t.Fatalf("regexpMergeLabels(%q) inner map key is %T, want *chplan.FuncCall (collision rename)", pattern, inner.Args[0])
 	}
-	if key.V != "name" {
-		t.Fatalf("regexpMergeLabels(%q) inner map key = %q, want %q", pattern, key.V, "name")
+	if key.Name != "if" || len(key.Args) != 3 {
+		t.Fatalf("regexpMergeLabels(%q) inner map key = %s/%d args, want if/3 (collision rename)", pattern, key.Name, len(key.Args))
+	}
+	bare, ok := key.Args[2].(*chplan.LitString)
+	if !ok {
+		t.Fatalf("regexpMergeLabels(%q) rename no-collision branch is %T, want *chplan.LitString", pattern, key.Args[2])
+	}
+	if bare.V != "name" {
+		t.Fatalf("regexpMergeLabels(%q) inner map key = %q, want %q", pattern, bare.V, "name")
 	}
 }
 

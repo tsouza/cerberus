@@ -1,18 +1,20 @@
 -- query.logql --
 {job="api"} | json | level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, CAST(JSONExtractKeysAndValues(`Body`, ?), ?)), ?), mapConcat(`ResourceAttributes`, CAST(JSONExtractKeysAndValues(`Body`, ?), ?))[?], `LogAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(JSONExtractKeysAndValues(`Body`, ?), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(JSONExtractKeysAndValues(`Body`, ?), ?)))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
-[2] string = "String"
-[3] string = "Map(String,String)"
-[4] string = "level"
-[5] string = "String"
-[6] string = "Map(String,String)"
-[7] string = "level"
-[8] string = "level"
-[9] string = "error"
+[2] string = "_extracted"
+[3] string = "String"
+[4] string = "Map(String,String)"
+[5] string = "level"
+[6] string = "_extracted"
+[7] string = "String"
+[8] string = "Map(String,String)"
+[9] string = "level"
+[10] string = "level"
+[11] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
@@ -29,5 +31,5 @@ INSERT INTO otel_logs (Body) VALUES
   [{"level": "error", "msg": "retry", "ts": "2025-01-01"}]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)")), "level"), mapConcat(ResourceAttributes, CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)"))["level"], LogAttributes["level"]) = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)"))), "level"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(JSONExtractKeysAndValues(Body, "String"), "Map(String,String)")))["level"], LogAttributes["level"]) = "error"))
   Scan(otel_logs)
