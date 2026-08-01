@@ -1,5 +1,5 @@
 -- query.promql --
-histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration[5m])))
+histogram_quantile(0.95, avg by(le) (rate(http_server_request_duration[5m])))
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
@@ -11,6 +11,7 @@ CREATE TABLE otel_metrics_histogram (
 INSERT INTO otel_metrics_histogram VALUES
     ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
     ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [3, 4, 3], [0.1, 0.5, 1.0]);
+
 -- expected_rows --
 [
   ["", {}, "2026-01-01T00:00:01Z", 1.0]
