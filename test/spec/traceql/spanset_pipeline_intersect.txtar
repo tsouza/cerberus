@@ -6,8 +6,9 @@ cerberus lowers each via the shared pipeline folder and intersects on
 
 Both operands end in a spanset aggregate, so both un-collapse to the
 span rows the aggregate consumed under a `TraceId IN (<cohort>)`
-semi-join (see internal/traceql/spanset_operand.go) — the join key the
-intersect emitter needs (`L.SpanId`) exists only at span granularity.
+semi-join (see internal/traceql/spanset_operand.go) — the identity key
+the intersect emitter dedups on (`LIMIT 1 BY TraceId, SpanId`) exists
+only at span granularity.
 Each cohort keeps only the aggregate function its HAVING reads, so none
 of lowerAggregate's /api/search envelope columns are referenced and the
 seed needs just the four the assertion prints, with the attribute map
@@ -20,19 +21,17 @@ selectors.
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
-    SpanName String,
-    Timestamp DateTime64(9),
-    ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, String),
-    Duration UInt64
-) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    ('a1', 's1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), map('region', 'us', 'tier', 'gold'),    10000000),
-    ('a2', 's2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), map('region', 'eu', 'tier', 'gold'),    20000000),
-    ('a3', 's3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'backend'),  map('region', 'us', 'tier', 'silver'),  30000000);
+    Region String,
+    Tier String,
+    SpanAttributes Map(String, String) MATERIALIZED map('region', Region, 'tier', Tier)
+) ENGINE = MergeTree ORDER BY (TraceId, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, Region, Tier) VALUES
+    ('a1', 's1', 'us', 'gold'),
+    ('a2', 's2', 'eu', 'gold'),
+    ('a3', 's3', 'us', 'silver');
 -- expected_rows --
 [
-  ["a1", "s1", "span", "2024-01-01T00:00:00Z", {"service.name": "frontend"}, {"region": "us", "tier": "gold"}, 10000000]
+  ["a1", "s1", "us", "gold"]
 ]
 -- args --
 [0] string = "region"

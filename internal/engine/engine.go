@@ -1051,11 +1051,12 @@ type CursorResult struct {
 	PlanNodeCount int
 	Headers       map[string]string
 	Meta          Meta
-	// QueryID is the per-dispatch ClickHouse query_id fixed for this cursor's
-	// dispatch (the corpus join key). The handler that drains the cursor passes
-	// it back to ObserveDrainOutcome so a sample-budget 422 surfacing during
-	// the drain is stamped onto the same corpus record. Empty when the dispatch
-	// carried no trace id (un-instrumented caller) or when the corpus is off.
+	// QueryID is this cursor's corpus-record key. It is the dispatch query_id
+	// for route A and one shard query_id for route B; the reconciler indexes all
+	// of a routed query's shard ids onto its one logical record. The handler
+	// passes it to ObserveDrainOutcome so a sample-budget 422 surfacing during
+	// the drain is stamped onto that record. Empty when the dispatch carried no
+	// trace id (un-instrumented caller) or when the corpus is off.
 	QueryID string
 
 	// Retry is the failure-driven route memo's A->B retry hook (docs
@@ -1348,7 +1349,23 @@ func (e *Engine) buildRoutedCursorResult(
 		PlanNodeCount: nodes,
 		Headers:       headers,
 		Meta:          meta,
+		QueryID:       routedQueryID(info),
 	}
+}
+
+// routedQueryID selects a shard join key for a logical route-B record. The
+// reconciler indexes every shard id onto that one record, so one non-empty id
+// is sufficient to stamp a terminal drain outcome onto the whole fan-out.
+func routedQueryID(info *solver.ExecInfo) string {
+	if info == nil {
+		return ""
+	}
+	for _, id := range info.ShardQueryIDs {
+		if id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // ObserveDrainOutcome stamps a CERBERUS-side terminal outcome that surfaced
@@ -1442,5 +1459,6 @@ func (e *Engine) executeRoutedCursor(
 		PlanNodeCount: nodes,
 		Headers:       headers,
 		Meta:          meta,
+		QueryID:       routedQueryID(info),
 	}, nil
 }
