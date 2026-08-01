@@ -520,7 +520,7 @@ func TestSearch_ExplicitWindow_Honored(t *testing.T) {
 // mapping table from the design doc §3: a TraceQL parser failure
 // surfaces as codes.InvalidArgument (user-facing query error), not
 // the default codes.Internal. The HTTP equivalent returns 400 (see
-// classifySearchErr) — both heads converge on "user typed a broken
+// ClassifyErr) — both heads converge on "user typed a broken
 // query."
 func TestSearch_ParseErrorMapsToInvalidArgument(t *testing.T) {
 	t.Parallel()

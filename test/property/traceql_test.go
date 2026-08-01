@@ -74,6 +74,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -139,17 +140,17 @@ func TestTraceQL_Property(t *testing.T) {
 //	  "metrics": {"inspectedTraces": N, ...}
 //	}
 //
-// `inspectedTraces` equals `len(res.Samples)` from cerberus's handler
-// (see internal/api/tempo/handler.go's SearchMetrics population). The
+// `inspectedSpans` equals `len(res.Samples)` from cerberus's handler
+// (reported on the X-Cerberus-Inspected-Spans response header). The
 // oracle emits one row per matching span / one row for a satisfied
 // `count() OP N`, so the row-count comparison is exact when we
-// reshape the cerberus response into "inspectedTraces empty-label
+// reshape the cerberus response into "inspectedSpans empty-label
 // rows".
 //
-// We use InspectedTraces rather than len(traces) because the Tempo
+// We use the span count rather than len(traces) because the Tempo
 // search response collapses TraceSummary entries that share
 // (SpanName, Timestamp) — the generator already avoids that collapse
-// by stamping unique suffixes, but reading from InspectedTraces makes
+// by stamping unique suffixes, but reading the drained-row count makes
 // the comparator robust against a future generator widening.
 // propertyWindowMarginSec brackets the dataset anchor by ~a year on each
 // side — wide enough that the /api/search window can never clip a generated
@@ -201,13 +202,22 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 		}
 	}
 
-	// Reshape InspectedTraces (== len(res.Samples)) into
-	// InspectedTraces empty-label OutcomeRows. The framework's
-	// CompareOutcomes counts rows per label-key, so this gives the
-	// per-iteration row-count equality check the oracle is set up to
-	// support.
-	rows := make([]property.OutcomeRow, 0, parsed.Metrics.InspectedTraces)
-	for i := 0; i < parsed.Metrics.InspectedTraces; i++ {
+	// Reshape the inspected-SPAN count (== len(res.Samples)) into that
+	// many empty-label OutcomeRows. The framework's CompareOutcomes
+	// counts rows per label-key, so this gives the per-iteration
+	// row-count equality check the oracle is set up to support.
+	// SearchMetrics.InspectedTraces is a distinct-TRACE count and would
+	// undercount whenever a trace contributes more than one matching
+	// span, so the span count rides the header instead.
+	inspectedSpans, err := strconv.Atoi(resp.Header.Get(tempo.HeaderInspectedSpans))
+	if err != nil {
+		return property.Outcome{
+			Err: fmt.Errorf("property: %s header %q: %w", tempo.HeaderInspectedSpans,
+				resp.Header.Get(tempo.HeaderInspectedSpans), err),
+		}
+	}
+	rows := make([]property.OutcomeRow, 0, inspectedSpans)
+	for i := 0; i < inspectedSpans; i++ {
 		rows = append(rows, property.OutcomeRow{
 			Labels:      map[string]string{},
 			TimestampMs: 0,

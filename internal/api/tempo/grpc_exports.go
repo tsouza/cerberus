@@ -7,8 +7,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
-	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
@@ -236,57 +234,10 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
 	}
 
-	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Range:           step,
-		Step:            step,
-		Start:           start,
-		End:             end,
-		TimestampColumn: h.Schema.TimestampColumn,
-	}
-	wrapped := wrapMetricsForSample(
-		applyMetricsSecondStages(rw, stages, []string{chsql.RangeWindowAnchorAlias}),
-		metrics,
-	)
-
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
-		IsMetric:      true,
-		ResponseShape: "tempo-metrics-matrix",
-	})
+	series, _, qerr := h.execMetricsRange(ctx, query, inner, stages, metrics, start, end, step)
 	if qerr != nil {
 		return ExecMetricsRangeResult{}, qerr
 	}
-	h.Logger.Debug("cerberus tempo grpc metrics_query_range",
-		"traceql", query, "start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
-
-	samples := res.Samples
-	if metrics.Op == chplan.MetricsOpQuantileOverTime {
-		samples = postProcessQuantileBuckets(samples, metrics)
-	}
-	// Matrix-shape zero-fill is owned by the SQL emitter (see
-	// internal/chsql/range_window.go's countIf / conditional-bucket
-	// emit). No Go-side post-pass.
-	series := toMetricsSeries(samples, metrics)
-
-	// Best-effort exemplar enrichment. A failed emit / query keeps
-	// the empty Exemplars slice already attached by toMetricsSeries
-	// — the wire envelope stays well-formed.
-	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
-		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1, h.Schema.SpansTable)
-	if exErr != nil {
-		h.Logger.Warn("cerberus tempo grpc metrics_query_range exemplars emit failed",
-			"err", exErr)
-	} else {
-		exSamples, qErr := h.Client.Query(ctx, exSQL, exArgs...)
-		if qErr != nil {
-			h.Logger.Warn("cerberus tempo grpc metrics_query_range exemplars query failed",
-				"err", qErr)
-		} else {
-			attachExemplars(series, exSamples, metrics)
-		}
-	}
-
 	return ExecMetricsRangeResult{Series: series}, nil
 }
 
@@ -363,33 +314,9 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
 	}
 
-	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Range:           step,
-		Step:            step,
-		Start:           start,
-		End:             end,
-		TimestampColumn: h.Schema.TimestampColumn,
-	}
-	wrapped := wrapMetricsForSample(applyMetricsSecondStages(rw, stages, nil), metrics)
-
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
-		IsMetric:      true,
-		ResponseShape: "tempo-metrics-instant",
-	})
+	series, _, qerr := h.execMetricsInstant(ctx, query, inner, stages, metrics, end, step)
 	if qerr != nil {
 		return ExecMetricsInstantResult{}, qerr
 	}
-	h.Logger.Debug("cerberus tempo grpc metrics_query_instant",
-		"traceql", query, "start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
-
-	samples := res.Samples
-	if metrics.Op == chplan.MetricsOpQuantileOverTime {
-		samples = postProcessQuantileBuckets(samples, metrics)
-	}
-
-	return ExecMetricsInstantResult{
-		Series: toMetricsInstantSeries(samples, metrics),
-	}, nil
+	return ExecMetricsInstantResult{Series: series}, nil
 }

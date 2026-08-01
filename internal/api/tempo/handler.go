@@ -426,12 +426,15 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// two transports cannot diverge on eligibility.
 	res, err := h.SearchResult(ctx, q, limit)
 	if err != nil {
-		writeError(w, classifySearchErr(err), "", "", err)
+		writeError(w, httpErrStatus(err), "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
 
 	summaries, missingRoots := toTraceSummaries(res.Samples, spss)
+	// Accounted BEFORE TruncateSummaries — see SearchMetricsFor for why the
+	// pre-truncation grouping is the canonical InspectedTraces.
+	metrics, inspectedSpans := SearchMetricsFor(summaries, res.Samples)
 	summaries, missingRoots = TruncateSummaries(summaries, missingRoots, limit)
 	if len(missingRoots) > 0 {
 		// The result set lacked a root row for some traces — typical
@@ -458,9 +461,10 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeEngineHeaders(w, res.Headers)
+	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Traces:  summaries,
-		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
+		Metrics: metrics,
 	})
 }
 
@@ -472,76 +476,6 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 	for k, v := range hdr {
 		w.Header().Set(k, v)
 	}
-}
-
-// classifySearchErr maps an engine.Query error to its HTTP status:
-// parse failures → 400, lower failures → 422, emit failures → 500,
-// execute failures → 502. The Lang
-// adapter tags parse vs lower errors with errParseStage / errLowerStage
-// so errors.Is recovers the precise stage even though the engine
-// collapses both into its outer `engine: parse:` wrapper.
-//
-// Circuit-breaker fast-fail: when the chclient breaker is OPEN the
-// underlying error chains down to chclient.ErrCircuitOpen and we
-// surface HTTP 503 — the Retry-After: 5 stamp lives on the handler
-// side (see handleSearch / handleTraceByID).
-func classifySearchErr(err error) int {
-	if err == nil {
-		return http.StatusInternalServerError
-	}
-	switch {
-	case errors.Is(err, chclient.ErrCircuitOpen):
-		return http.StatusServiceUnavailable
-	// Sample-budget exceedance (CERBERUS_QUERY_MAX_SAMPLES) is an
-	// over-broad query, not a transport failure — surface 422 like the
-	// other "query is valid TraceQL but cannot be evaluated" rejections
-	// instead of a breaker-adjacent 5xx. The error body carries the
-	// chclient budget message including the configured limit.
-	case errors.Is(err, chclient.ErrTooManySamples):
-		return http.StatusUnprocessableEntity
-	// Wide-projection byte budget: the byte-axis sibling of the sample budget —
-	// the search's cumulative attribute-map bytes crossed the Go-heap ceiling. A
-	// resource rejection, 422 like the row budget above.
-	case errors.Is(err, chclient.ErrDrainBytesExceeded):
-		return http.StatusUnprocessableEntity
-	// ClickHouse memory-limit abort (code 241) — the server-side
-	// sibling of the sample budget: a per-query resource rejection,
-	// not a transport failure. 422 like the budget; the error body
-	// carries the chclient message naming the configured cap.
-	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
-		return http.StatusUnprocessableEntity
-	// Wall-clock timeout (CERBERUS_QUERY_TIMEOUT → ClickHouse
-	// max_execution_time, code 159, or the request ctx deadline): a
-	// per-query cap doing its job, not a transport failure. 503 like the
-	// breaker-open case so clients back off, rather than a generic 5xx —
-	// ClickHouse is healthy when it aborts an over-long query (the
-	// chclient breaker treats code 159 as a success for the same reason).
-	case errors.Is(err, chclient.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, errParseStage):
-		return http.StatusBadRequest
-	case errors.Is(err, errLowerStage):
-		return http.StatusUnprocessableEntity
-	case strings.Contains(err.Error(), "engine: emit:"):
-		return http.StatusInternalServerError
-	case strings.Contains(err.Error(), "engine: execute:"):
-		return http.StatusBadGateway
-	}
-	return http.StatusInternalServerError
-}
-
-// tagsErrStatus maps a /search/tags and /search/tag/.../values metadata-drain
-// error to its HTTP status. These endpoints buffer their whole result into a Go
-// slice; the per-query sample budget now bounds that drain (chclient
-// .drainBudgetExceeded), so a high-cardinality tag/value DISTINCT over a wide
-// window aborts with a resource-limit rejection (422, like the search path)
-// rather than OOMing the process. Any other failure stays a 502 transport
-// fault — the default these endpoints already returned.
-func tagsErrStatus(err error) int {
-	if errors.Is(err, chclient.ErrTooManySamples) || errors.Is(err, chclient.ErrMemoryLimitExceeded) {
-		return http.StatusUnprocessableEntity
-	}
-	return http.StatusBadGateway
 }
 
 // search/recent page-size bounds: the Tempo Search UI's first-page
@@ -644,7 +578,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	// benefits from the seed optimizer's projection-pushdown pass.
 	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{ResponseShape: "tempo-trace"})
 	if err != nil {
-		writeError(w, classifySearchErr(err), "", "", err)
+		writeError(w, httpErrStatus(err), "", "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
@@ -659,10 +593,15 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
+	// /search/recent applies its limit SQL-side (chplan.Limit), so the
+	// summary set is never truncated in Go and the pre-truncation trace
+	// count is simply the grouped set.
+	metrics, inspectedSpans := SearchMetricsFor(summaries, res.Samples)
 	writeEngineHeaders(w, res.Headers)
+	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Traces:  summaries,
-		Metrics: SearchMetrics{InspectedTraces: len(res.Samples)},
+		Metrics: metrics,
 	})
 }
 
@@ -736,7 +675,7 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	})
 	if err != nil {
 		h.Logger.Error("cerberus tempo traceByID CH query failed", "err", err, "trace_id", traceID)
-		writeError(w, classifyTraceByIDErr(err), traceID, "", err)
+		writeError(w, httpErrStatus(err), traceID, "", err)
 		return
 	}
 	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", res.Args)
@@ -801,39 +740,6 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	writeJSON(w, http.StatusOK, TraceByIDResponse{
 		Batches: groupBatches(res.Samples),
 	})
-}
-
-// classifyTraceByIDErr is the trace-by-ID counterpart to
-// classifySearchErr. Only emit (500) and execute (502) errors are
-// reachable today since the plan is hand-built and IsTraceByID skips
-// the optimizer; the helper keeps the same shape for consistency
-// with the search-path classifier.
-func classifyTraceByIDErr(err error) int {
-	if err == nil {
-		return http.StatusInternalServerError
-	}
-	if errors.Is(err, chclient.ErrCircuitOpen) {
-		return http.StatusServiceUnavailable
-	}
-	// Sample-budget exceedance → 422, mirroring classifySearchErr; see
-	// the rationale there.
-	if errors.Is(err, chclient.ErrTooManySamples) {
-		return http.StatusUnprocessableEntity
-	}
-	// CH memory-limit abort (code 241) → 422, mirroring
-	// classifySearchErr; see the rationale there.
-	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
-		return http.StatusUnprocessableEntity
-	}
-	// Wall-clock timeout (code 159 / ctx deadline) → 503, mirroring
-	// classifySearchErr; see the rationale there.
-	if errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) {
-		return http.StatusServiceUnavailable
-	}
-	if strings.Contains(err.Error(), "engine: execute:") {
-		return http.StatusBadGateway
-	}
-	return http.StatusInternalServerError
 }
 
 // lowerTraceByID builds a chplan tree equivalent to the TraceQL
@@ -2280,7 +2186,7 @@ func isValidTraceID(id string) bool {
 // (the GA-default downstream-CH circuit breaker is OPEN) the writer
 // stamps `Retry-After: 5` on the response so well-behaved clients
 // back off for the breaker's recovery window. The 503 status is
-// supplied by classifySearchErr / classifyTraceByIDErr; the header
+// supplied by ClassifyErr / ErrClass.HTTPStatus; the header
 // is set here so all Tempo error paths get it without each call site
 // repeating the boilerplate.
 func writeError(w http.ResponseWriter, status int, traceID, spanID string, err error) {

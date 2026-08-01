@@ -134,7 +134,7 @@ func (h *Handler) serveMetricsQueryRangeHistogram(
 		ResponseShape: "tempo-metrics-matrix",
 	})
 	if qerr != nil {
-		writeError(w, classifyMetricsQueryRangeErr(qerr), "", "", qerr)
+		writeError(w, httpErrStatus(qerr), "", "", qerr)
 		return
 	}
 	h.Logger.Debug("cerberus tempo metrics_query_range histogram",

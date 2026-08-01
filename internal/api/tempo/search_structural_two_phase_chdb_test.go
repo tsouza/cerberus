@@ -132,15 +132,15 @@ func TestSearch_StructuralTwoPhase_Parity_ChDB(t *testing.T) {
 	// fetch — phase B materialised the wide projection for only the top-N
 	// traces, not every matched span. Without the two-phase restriction the
 	// small-limit query would drain the full match set (the OOM).
-	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+	if small.InspectedSpans >= full.InspectedSpans {
 		t.Errorf("small-limit drain (%d spans) not bounded below full drain (%d spans) — the wide fetch was not restricted to the top-N",
-			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+			small.InspectedSpans, full.InspectedSpans)
 	}
 	// The small fetch drains exactly its kept traces' matched spans.
 	wantSmallDrain := structTwoPhaseSmallLimit * structTwoPhaseLeavesPerTrace
-	if small.Metrics.InspectedTraces != wantSmallDrain {
+	if small.InspectedSpans != wantSmallDrain {
 		t.Errorf("small-limit drain = %d spans, want %d (%d traces * %d matched leaves)",
-			small.Metrics.InspectedTraces, wantSmallDrain, structTwoPhaseSmallLimit, structTwoPhaseLeavesPerTrace)
+			small.InspectedSpans, wantSmallDrain, structTwoPhaseSmallLimit, structTwoPhaseLeavesPerTrace)
 	}
 }
 
@@ -176,12 +176,12 @@ func TestSearch_WrappedSelectTwoPhase_Parity_ChDB(t *testing.T) {
 		}
 	}
 	// Memory bound: proves two-phase actually engaged for the wrapped shape.
-	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+	if small.InspectedSpans >= full.InspectedSpans {
 		t.Errorf("wrapped-select small drain (%d) not bounded below full drain (%d) — the Project was not unwrapped, so it fell to single-query",
-			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+			small.InspectedSpans, full.InspectedSpans)
 	}
-	if want := structTwoPhaseSmallLimit * structTwoPhaseLeavesPerTrace; small.Metrics.InspectedTraces != want {
-		t.Errorf("wrapped-select small drain = %d, want %d", small.Metrics.InspectedTraces, want)
+	if want := structTwoPhaseSmallLimit * structTwoPhaseLeavesPerTrace; small.InspectedSpans != want {
+		t.Errorf("wrapped-select small drain = %d, want %d", small.InspectedSpans, want)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestSearch_WrappedSelectTwoPhase_Parity_ChDB(t *testing.T) {
 // `{leaf-svc} !>> {root-svc}` returns the ROOT spans (one per trace): roots have
 // no ancestors, so every one survives the anti-join and all N traces rank.
 //
-// The load-bearing leak-catch is the PRE-truncation drain, small.InspectedTraces
+// The load-bearing leak-catch is the PRE-truncation drain, small.InspectedSpans
 // == wantSmallDrain, NOT len(small.Traces): TruncateSummaries caps the returned
 // summaries to the request limit after a start-DESC sort, so a leak of older
 // non-top-N traces is silently truncated away and len stays == smallLimit either
@@ -215,13 +215,13 @@ func TestSearch_NegatedTwoPhase_Parity_ChDB(t *testing.T) {
 	// Leak keystone: the wide phase-B must drain only the top-N roots (one root
 	// row per trace). An unrestricted R side would drain a root from every trace.
 	wantSmallDrain := structTwoPhaseSmallLimit // 1 root row per kept trace
-	if small.Metrics.InspectedTraces != wantSmallDrain {
+	if small.InspectedSpans != wantSmallDrain {
 		t.Fatalf("negated small drain = %d, want %d — R-side NOT restricted, phase B pulled roots from non-top-N traces through the anti-join",
-			small.Metrics.InspectedTraces, wantSmallDrain)
+			small.InspectedSpans, wantSmallDrain)
 	}
-	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+	if small.InspectedSpans >= full.InspectedSpans {
 		t.Errorf("negated small drain (%d) not bounded below full (%d) — two-phase didn't engage",
-			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+			small.InspectedSpans, full.InspectedSpans)
 	}
 	for i := 0; i < structTwoPhaseSmallLimit; i++ {
 		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
@@ -259,9 +259,9 @@ func TestSearch_UnionTwoPhase_Parity_ChDB(t *testing.T) {
 				i, small.Traces[i], full.Traces[i])
 		}
 	}
-	if small.Metrics.InspectedTraces >= full.Metrics.InspectedTraces {
+	if small.InspectedSpans >= full.InspectedSpans {
 		t.Errorf("union small drain (%d) not bounded below full (%d) — an arm leaked non-top-N traces",
-			small.Metrics.InspectedTraces, full.Metrics.InspectedTraces)
+			small.InspectedSpans, full.InspectedSpans)
 	}
 	// Exact leak-catch. Each kept trace contributes its full union: 1 root
 	// (leftArm, an ancestor of the leaves) + structTwoPhaseLeavesPerTrace leaves
@@ -271,9 +271,9 @@ func TestSearch_UnionTwoPhase_Parity_ChDB(t *testing.T) {
 	// leak. Verified: with the closure step's TraceIDRestriction disabled this
 	// drain rises above wantSmallDrain and the assertion fires.
 	wantSmallDrain := structTwoPhaseSmallLimit * (1 + structTwoPhaseLeavesPerTrace)
-	if small.Metrics.InspectedTraces != wantSmallDrain {
+	if small.InspectedSpans != wantSmallDrain {
 		t.Errorf("union small drain = %d, want %d (%d traces * (1 root + %d leaves)) — an arm leaked non-top-N spans",
-			small.Metrics.InspectedTraces, wantSmallDrain, structTwoPhaseSmallLimit, structTwoPhaseLeavesPerTrace)
+			small.InspectedSpans, wantSmallDrain, structTwoPhaseSmallLimit, structTwoPhaseLeavesPerTrace)
 	}
 }
 
@@ -291,7 +291,7 @@ func TestSearch_StructuralTwoPhase_EmptyResult_ChDB(t *testing.T) {
 	if len(sr.Traces) != 0 {
 		t.Fatalf("got %d traces, want 0 (descendant side matches nothing)", len(sr.Traces))
 	}
-	if sr.Metrics.InspectedTraces != 0 {
-		t.Errorf("InspectedTraces = %d, want 0 (phase A short-circuits, phase B never runs)", sr.Metrics.InspectedTraces)
+	if sr.InspectedSpans != 0 {
+		t.Errorf("InspectedSpans = %d, want 0 (phase A short-circuits, phase B never runs)", sr.InspectedSpans)
 	}
 }

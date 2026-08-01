@@ -334,7 +334,7 @@ func (h *Handler) serveMetricsQueryRangeCompare(
 ) {
 	series, headers, err := h.execCompareRange(ctx, q, plan, cmp, start, end, step)
 	if err != nil {
-		writeError(w, classifyMetricsQueryRangeErr(err), "", "", err)
+		writeError(w, httpErrStatus(err), "", "", err)
 		return
 	}
 	writeEngineHeaders(w, headers)
