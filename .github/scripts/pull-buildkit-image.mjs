@@ -18,10 +18,12 @@
 // successful pull: an exhausted retry over an image the runner already holds
 // is a pass, because that is precisely the state buildx falls back to.
 //
-// The attempt budget, the backoff and the transient-failure vocabulary are
-// shared with the image-build wrapper via ./lib/registry.mjs — the bootstrap
-// pull and a build's `FROM` resolution hit the same registry and fail the same
-// way, so they retry to the same policy.
+// The attempt budget, the backoff and the failure vocabulary are shared with
+// the image-build wrapper via ./lib/registry.mjs — the bootstrap pull and a
+// build's `FROM` resolution hit the same registry and fail the same way, so
+// they retry to the same policy, and stop retrying on the same class: a
+// rate-limit refusal ends the loop at once rather than spending four more
+// pulls out of the quota that is refusing this one.
 //
 // Env:
 //   BUILDKIT_IMAGE                 (required) image ref to acquire, e.g.
@@ -37,7 +39,13 @@
 import process from 'node:process';
 
 import { capture, error, log, notice } from './lib/gh.mjs';
-import { readBackoffStepSeconds, registryAttempts, sleepSeconds } from './lib/registry.mjs';
+import {
+  isRegistryRateLimit,
+  rateLimitDiagnosis,
+  readBackoffStepSeconds,
+  registryAttempts,
+  sleepSeconds,
+} from './lib/registry.mjs';
 
 // A bootstrap pull is a single manifest + a handful of layers, so a short step
 // is enough to ride out a reset connection; the image-build wrapper waits
@@ -73,13 +81,23 @@ for (let attempt = 1; attempt <= registryAttempts; attempt++) {
     process.exit(0);
   }
 
+  // A quota refusal is checked only after the local-image fallback, because a
+  // copy already in the daemon satisfies the postcondition no matter why the
+  // pull failed. With no local copy there is nothing to wait for: the window
+  // outlasts the budget, so the remaining attempts would only deepen the
+  // deficit that is failing this job and every concurrent one.
+  if (isRegistryRateLimit(res.stderr + res.stdout)) {
+    error(rateLimitDiagnosis(`docker pull ${image}`));
+    process.exit(1);
+  }
+
   if (attempt < registryAttempts) {
     sleepSeconds(attempt * backoffStepSeconds);
   }
 }
 
 error(
-  `docker pull ${image} failed ${registryAttempts} times and the image is absent from the local daemon, ` +
-    'so `buildx inspect --bootstrap` has nothing to boot from.',
+  `docker pull ${image} failed ${registryAttempts} times on transport faults and the image is absent from the ` +
+    'local daemon, so `buildx inspect --bootstrap` has nothing to boot from.',
 );
 process.exit(1);

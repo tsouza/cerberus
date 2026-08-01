@@ -671,15 +671,18 @@ K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 # Pull each image with retry + linear backoff. Docker Hub from CI runners
 # intermittently times out the pull ("context deadline exceeded"); retrying
 # clears the transient failure instead of failing k3d creation / image staging.
+#
+# The retry itself is `.github/scripts/build-with-registry-retry.mjs` rather
+# than a bash loop, because WHICH failures deserve another attempt is the whole
+# question and it has exactly one right answer. A hand-rolled loop retries
+# everything: a `manifest unknown` five times (slower red, same verdict), and —
+# the failure that made this a rule — a Docker Hub rate-limit refusal five
+# times, spending four more pulls out of the quota that is already exhausted.
+# `lib/registry.mjs` owns that classification for every call site at once.
 _pull-retry +IMAGES:
     @for img in {{IMAGES}}; do \
-        ok=0; \
-        for attempt in 1 2 3 4 5; do \
-            echo "    docker pull $img (attempt $attempt)"; \
-            docker pull "$img" >/dev/null && { ok=1; break; }; \
-            sleep $((attempt * 3)); \
-        done; \
-        [ "$ok" = 1 ] || { echo "ERROR: docker pull $img failed after 5 attempts" >&2; exit 1; }; \
+        IMAGE_BUILD_RETRY_BACKOFF_SECONDS=3 node .github/scripts/build-with-registry-retry.mjs \
+            docker pull "$img" || exit 1; \
     done
 
 # Acquire every image a compose stack needs, with retry, BEFORE `up` reaches for
@@ -697,16 +700,13 @@ _pull-retry +IMAGES:
 # — `cerberus-migration-tier2:dead-end-receiver` exists in no registry, so the
 # pull failed five times and took the lane with it. Whether an image is
 # *pullable* is a property of the compose model, not of daemon state.
+#
+# Same retry owner as `_pull-retry`, for the same reason.
 _compose-pull-retry +FILES:
     @args=""; for f in {{FILES}}; do args="$args -f $f"; done; \
     echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
-    ok=0; \
-    for attempt in 1 2 3 4 5; do \
-        echo "    docker compose pull (attempt $attempt)"; \
-        docker compose $args pull --ignore-buildable --policy missing && { ok=1; break; }; \
-        sleep $((attempt * 3)); \
-    done; \
-    [ "$ok" = 1 ] || { echo "ERROR: docker compose pull failed after 5 attempts" >&2; exit 1; }
+    IMAGE_BUILD_RETRY_BACKOFF_SECONDS=3 node .github/scripts/build-with-registry-retry.mjs \
+        docker compose $args pull --ignore-buildable --policy missing
 
 # `_pull-retry` / `_compose-pull-retry` protect the images the HOST daemon
 # fetches. The images a BUILD fetches — the `FROM` refs BuildKit resolves while
