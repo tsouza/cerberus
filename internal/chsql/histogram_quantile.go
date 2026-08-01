@@ -126,9 +126,61 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// disagree exactly when the repair fires.
 	bcFloat := Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	lengthBC := Call("length", Col(bc))
-	lengthEB := Call("length", Col(eb))
 	arraySumBC := Call("arraySum", bcFloat)
-	arrayCumSumBC := Call("arrayCumSum", bcFloat)
+
+	// Coalesce buckets that share an upper bound, mirroring upstream's
+	// coalesceBuckets (promql/quantile.go), which runs before every
+	// interpolation. A repeated entry in ExplicitBounds describes a bucket
+	// whose interval is empty, so it carries no observation of its own; left
+	// in place it still splits the ladder, and arrayFirstIndex then stops at
+	// the FIRST rung of the flat run it creates. The lower edge read off
+	// that rung is the repeated bound rather than the true start of the
+	// bucket holding the rank, and the interpolation collapses onto the
+	// bound instead of interpolating across it — bounds [1, 1, 5] with
+	// counts [2, 3, 5, 0] answer phi=0.3 with 1 where the ladder
+	// (5 observations at or below 1) puts the rank at 0.6.
+	//
+	// Upstream merges by ADDING the duplicate rungs' counts because its
+	// input is one already-cumulative sample per `le`, and two entries with
+	// equal bounds are two independent series. Here the row is a single
+	// per-bucket array whose running total already absorbed the run, so the
+	// equivalent merge is to keep the LAST index of each run of equal
+	// bounds: its cumulative entry is exactly the total at that bound.
+	// The trailing +Inf rung is appended unconditionally — it has no
+	// ExplicitBounds entry to be duplicated, and its cumulative value is
+	// the total, which coalescing never changes.
+	//
+	// Duplicate-free input (every real producer) keeps every index, so the
+	// coalesced arrays are element-wise identical to the raw ones and the
+	// quantile is unchanged.
+	rawCumSum := Call("arrayCumSum", bcFloat)
+	boundCount := Call("length", Col(eb))
+	cumCount := Call("length", bcFloat)
+	// Rungs the ladder keeps: the last index of every run of equal bounds,
+	// then every cumulative entry past the bounds array untouched. That
+	// tail is the overflow rung the schema carries when BucketCounts runs
+	// one longer than ExplicitBounds; rebuilding it from arraySum instead
+	// would ADD a rung whenever the two arrays are the same length, so it
+	// is carried across verbatim and the ladder's height is preserved
+	// exactly.
+	keptBoundIdx := Call(
+		"arrayFilter",
+		Lambda1("i", Or(
+			Eq(BareIdent("i"), boundCount),
+			Neq(Subscript(Col(eb), BareIdent("i")), Subscript(Col(eb), Add(BareIdent("i"), InlineLit(1)))),
+		)),
+		Call("range", InlineLit(1), Add(boundCount, InlineLit(1))),
+	)
+	keptCumIdx := Call(
+		"arrayConcat",
+		keptBoundIdx,
+		Call("range", Add(boundCount, InlineLit(1)), Add(cumCount, InlineLit(1))),
+	)
+	coalescedEB := Call("arrayMap", Lambda1("i", Subscript(Col(eb), BareIdent("i"))), keptBoundIdx)
+	coalescedCumSum := Call("arrayMap", Lambda1("i", Subscript(rawCumSum, BareIdent("i"))), keptCumIdx)
+
+	lengthEB := Call("length", coalescedEB)
+	arrayCumSumBC := coalescedCumSum
 
 	// phi renders the phi parameter: the computed expression when PhiExpr
 	// is set, the inline float literal (query-shape param, mirrors
@@ -149,8 +201,8 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	negInf := verbatim("-inf")
 	posInf := verbatim("inf")
 	zeroF := verbatim("0.0")
-	highestBound := Subscript(Col(eb), lengthEB) // ExplicitBounds[length(ExplicitBounds)]
-	target := Paren(Mul(phi(), arraySumBC))      // (phi * arraySum(bc))
+	highestBound := Subscript(coalescedEB, lengthEB) // coalesced ExplicitBounds' last entry
+	target := Paren(Mul(phi(), arraySumBC))          // (phi * arraySum(bc))
 
 	// idx = arrayFirstIndex(c -> c >= target, cum). Computed phi:
 	// ClickHouse 24.8 rejects a scalar subquery anywhere in
@@ -182,7 +234,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		return Subscript(arrayCumSumBC, idxAtOffset(offsetMinusOne))
 	}
 	boundAt := func(offsetMinusOne bool) Frag {
-		return Subscript(Col(eb), idxAtOffset(offsetMinusOne))
+		return Subscript(coalescedEB, idxAtOffset(offsetMinusOne))
 	}
 	// Lower-edge selectors branch on idx = 1 → 0.0, else the [idx-1]
 	// lookup. bound_lo / cum_lo per the interpolation below.

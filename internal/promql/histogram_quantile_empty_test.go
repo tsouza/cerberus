@@ -19,15 +19,25 @@ import (
 // return EMPTY across the entire phi range — not a synthesised default
 // quantile (the user-visible "4.75 with metric:{}" wire shape).
 //
-// The aggregated lowering (`lowerHistogramQuantileAgg`) sets
-// `DropEmptyOnNoGroup: true` on the inner Aggregate so CH's default
-// "1-row-of-zeros over empty input" for aggregates without GROUP BY
-// is suppressed. The emit-time guard is `WHERE _cerb_n > 0` over a
-// synthesised `count()` companion column. This test pins the guard's
-// presence in the emitted SQL across a representative phi sweep —
-// `phi ∈ {0.0, 0.1, 0.5, 0.95, 1.0}` covers the edge-case branches
-// inside the quantile-interpolation expression (phi=0 → lowest bound,
-// phi=1 → highest bound, mid-range → linear interp).
+// CH synthesises a 1-row-of-zeros result for an aggregate with NO
+// GROUP BY over empty input, and that row is what surfaced as the
+// bogus quantile. The aggregated lowering (`lowerHistogramQuantileAgg`)
+// forecloses it structurally: `classicBucketAggGroupBy` always appends
+// the bucket-layout key, so the inner Aggregate carries at least one
+// grouping key even for `sum(...)` / `sum by(le)(...)`, where the
+// user's own clause contributes none. Zero input rows then yield zero
+// GROUPS, hence zero output rows — no filter required, and nothing for
+// a `count()`-companion guard to reject. This test pins that key's
+// presence across a representative phi sweep — `phi ∈ {0.0, 0.1, 0.5,
+// 0.95, 1.0}` covers the edge-case branches inside the
+// quantile-interpolation expression (phi=0 → lowest bound, phi=1 →
+// highest bound, mid-range → linear interp).
+//
+// Asserting the grouping key rather than `DropEmptyOnNoGroup` is
+// deliberate: the emitter applies that flag only when GroupBy is empty
+// (see emit_node.go), so with a layout key present the flag can no
+// longer fail, and an assertion on it would pass regardless of whether
+// the guarantee holds.
 //
 // The test runs at the Go-unit-test layer (no chDB build tag) so the
 // guarantee holds on every CI run, not just the chDB-tagged workflow.
@@ -56,7 +66,7 @@ func TestHistogramQuantile_EmptyInput_DropsRow(t *testing.T) {
 				t.Fatalf("Lower(%q): %v", query, err)
 			}
 
-			// Walk to the inner Aggregate and assert DropEmptyOnNoGroup.
+			// Walk to the inner Aggregate and assert it groups.
 			var agg *chplan.Aggregate
 			var walk func(chplan.Node)
 			walk = func(n chplan.Node) {
@@ -75,19 +85,22 @@ func TestHistogramQuantile_EmptyInput_DropsRow(t *testing.T) {
 			if agg == nil {
 				t.Fatalf("no Aggregate node in plan for %q", query)
 			}
-			if !agg.DropEmptyOnNoGroup {
-				t.Fatalf("Aggregate.DropEmptyOnNoGroup = false for %q; histogram_quantile over empty input would emit a default row", query)
+			if len(agg.GroupBy) == 0 {
+				t.Fatalf("Aggregate.GroupBy is empty for %q; CH synthesises a 1-row-of-zeros result for a no-GROUP-BY aggregate over empty input, so histogram_quantile would emit a default row", query)
+			}
+			last, ok := agg.GroupBy[len(agg.GroupBy)-1].(*chplan.ColumnRef)
+			if !ok || last.Name != s.ExplicitBoundsColumn {
+				t.Fatalf("Aggregate.GroupBy for %q does not end in the %s layout key: %#v", query, s.ExplicitBoundsColumn, agg.GroupBy)
 			}
 
-			// The emitted SQL must guard the no-group aggregate with
-			// `_cerb_n > 0` so CH's "1-row-of-zeros" behaviour can't
-			// produce a synthesised quantile out of empty input.
+			// The grouping must survive emission — a GROUP BY in the
+			// SQL is what turns zero input rows into zero result rows.
 			sql, _, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
 				t.Fatalf("Emit(%q): %v", query, err)
 			}
-			if !strings.Contains(sql, "`_cerb_n` > 0") {
-				t.Errorf("emitted SQL for %q lacks the empty-input guard `_cerb_n > 0`\nSQL: %s", query, sql)
+			if !strings.Contains(sql, "GROUP BY `"+s.ExplicitBoundsColumn+"`") {
+				t.Errorf("emitted SQL for %q lacks GROUP BY `%s`, so an empty scan would synthesise a default quantile row\nSQL: %s", query, s.ExplicitBoundsColumn, sql)
 			}
 		})
 	}
