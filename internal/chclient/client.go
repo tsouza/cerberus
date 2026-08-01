@@ -1095,16 +1095,24 @@ func newWithConn(conn driver.Conn) *Client {
 	return c
 }
 
-// Close stops the background breaker-recovery goroutine (joining it so the
-// shutdown is goleak-clean) and then releases all pooled connections. The two
-// steps are ordered: the recovery loop pings through c.conn, so the conn must
-// stay open until the loop has provably exited.
+// Close stops the background breaker-recovery goroutine (cancelling its ctx
+// and then joining it, so the shutdown is both PROMPT and goleak-clean) and
+// then releases all pooled connections. The two steps are ordered: the
+// recovery loop pings through c.conn, so the conn must stay open until the
+// loop has provably exited.
+//
+// "Prompt" is load-bearing. recovery.stop cancels the loop's root ctx BEFORE
+// joining, and every synthetic recovery ping runs under a child of that ctx,
+// so a shutdown that lands mid-probe aborts the in-flight ping instead of
+// blocking the join for the remainder of recoveryPingTimeout (a full CH dial
+// timeout). See breaker_recovery.go.
 //
 // It is idempotent and view-safe. c.recovery is non-nil only on the root
-// Client New started the loop on; its stop() is sync.Once-guarded, so a
-// double Close — or a Close on a shared-pointer ForHead view — stops the
-// single loop exactly once and joins without panicking. A nil c.recovery (the
-// test-only newWithConn seam, or a bare struct literal) has no loop to stop.
+// Client New started the loop on; its stop() cancels an already-cancelled ctx
+// and receives from an already-closed done channel, so a double Close — or a
+// Close on a shared-pointer ForHead view — stops the single loop exactly once
+// and joins without panicking. A nil c.recovery (the test-only newWithConn
+// seam, or a bare struct literal) has no loop to stop.
 func (c *Client) Close() error {
 	if c.recovery != nil {
 		c.recovery.stop()
@@ -1156,6 +1164,12 @@ func (c *Client) Ping(ctx context.Context) error {
 // Sample is one row of metrics data returned by Query. It's the shape the
 // /api/v1/query and /api/v1/query_range handlers expect — see api/prom.
 //
+// Sample is POSITIONAL: the scan binds the projection's columns by
+// position, and each head's SQL is responsible for projecting them in the
+// documented order. The Loki log-stream shape reuses the same positional
+// scan with a different meaning for column 1 — [DecodeLogRows] decodes it
+// into the named [LogRow] fields, and is the only place that mapping lives.
+//
 // Labels sharing contract: the cursor interns decoded label maps by
 // canonical key, so every Sample belonging to the same series carries
 // the SAME map instance — that is what keeps a multi-thousand-row
@@ -1164,10 +1178,16 @@ func (c *Client) Ping(ctx context.Context) error {
 // (internal/api/format.WithMetricName / NormalizeLabelMap and the
 // loki/tempo label pivots already allocate fresh output maps).
 type Sample struct {
+	// MetricName is the projection's first, String-typed column: the
+	// metric name for a metric query. A log-stream projection binds its
+	// log line here instead — see [LogRow].
 	MetricName string
 	Labels     map[string]string
 	Timestamp  time.Time
-	Value      float64
+	// Value is the projection's fourth, Float64 column: the metric value.
+	// A log-stream projection has no numeric value and binds a constant
+	// placeholder here; [DecodeLogRows] drops it.
+	Value float64
 	// SeriesID is a stable, per-cursor identity for the interned Labels
 	// map: every Sample whose Labels alias the same interned instance
 	// carries the same SeriesID, assigned in first-seen order starting at
