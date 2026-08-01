@@ -3,6 +3,7 @@ package chclient
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,9 +48,26 @@ func (c *recoveryFakeConn) Ping(context.Context) error {
 // driver. The caller MUST Close the returned Client — that is what stops +
 // joins the goroutine the goleak test asserts on.
 func newRecoveryTestClient(conn recoveryPinger, interval, pingTimeout time.Duration) *Client {
+	return newRecoveryTestClientWithSetup(conn, interval, pingTimeout, nil)
+}
+
+// newRecoveryTestClientWithSetup is newRecoveryTestClient plus a hook that runs
+// against the fresh default breaker BEFORE the loop goroutine is started. A
+// test that needs a breaker PRECONDITION (e.g. already OPEN) must establish it
+// here rather than after construction: post-construction tripping races the
+// loop's first tick, which can transition the breaker to HALF-OPEN before the
+// precondition assertion reads it.
+func newRecoveryTestClientWithSetup(
+	conn recoveryPinger,
+	interval, pingTimeout time.Duration,
+	setup func(def *breaker),
+) *Client {
 	// window=0 keeps the default rolling failure window; openInterval=interval
 	// makes the OPEN backoff elapse on the same tiny cadence the loop ticks at.
 	def, registry := buildBreakers(false, 0, 0, interval, nil)
+	if setup != nil {
+		setup(def)
+	}
 	c := &Client{br: def, breakers: registry, cursorDecoder: rowDecoder{}}
 	c.recovery = startRecoveryLoop(conn, breakerList(def, registry), interval, pingTimeout)
 	return c
@@ -155,4 +173,135 @@ func TestRecoveryLoop_ClosedBreakerNoPing(t *testing.T) {
 func TestRecoveryLoop_PingerIsConnSubset(t *testing.T) {
 	t.Parallel()
 	var _ recoveryPinger = driver.Conn(nil)
+}
+
+// blockingPinger is a recoveryPinger whose Ping PARKS until its ctx is done —
+// modelling the exact production shape the cancellation fix targets: a
+// synthetic recovery ping mid-dial against a dead ClickHouse, holding the loop
+// goroutine for the whole per-ping budget. It publishes when the ping has
+// entered (entered) and which error the ping ctx finally carried (pingErr).
+type blockingPinger struct {
+	entered   chan struct{} // closed once the first Ping is parked
+	enterOnce sync.Once
+
+	// pingErr is the ctx error the parked Ping observed. It is written by the
+	// recovery goroutine BEFORE that goroutine closes its done channel, and
+	// read by the test only AFTER Close's join has received from that channel —
+	// the join is a happens-before edge, so the unsynchronised read is
+	// race-free (and -race clean).
+	pingErr error
+}
+
+func newBlockingPinger() *blockingPinger {
+	return &blockingPinger{entered: make(chan struct{})}
+}
+
+func (p *blockingPinger) Ping(ctx context.Context) error {
+	p.enterOnce.Do(func() { close(p.entered) })
+	<-ctx.Done()
+	p.pingErr = ctx.Err()
+	return p.pingErr
+}
+
+var _ recoveryPinger = (*blockingPinger)(nil)
+
+// TestRecoveryLoop_CloseCancelsInFlightPing — Close must ABORT a recovery ping
+// that is already in flight, not wait it out.
+//
+// The bug: the per-ping ctx used to be rooted at context.Background(), so it
+// was reachable only by its own timer. Close signalled the loop and then joined
+// the goroutine — but the goroutine was parked inside Ping, so the join (and
+// therefore process shutdown) blocked for the full remaining
+// recoveryPingTimeout, which is sized to the ClickHouse dial timeout (5s by
+// default). Every shutdown that landed mid-probe paid it.
+//
+// The fix: the loop owns a cancellable root ctx and every per-ping ctx descends
+// from it, so stop() cancels BEFORE joining and the parked ping returns
+// immediately. This test parks a ping, times Close, and pins all four
+// observable consequences.
+func TestRecoveryLoop_CloseCancelsInFlightPing(t *testing.T) {
+	// Not parallel: it measures wall-clock Close latency, so it must not
+	// contend with sibling tests. goleak (registered FIRST, hence run LAST)
+	// proves the loop goroutine truly exited rather than being abandoned.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	const (
+		// Tick fast so the blocked ping is in flight within the setup window.
+		interval = time.Millisecond
+		// The per-ping budget, same order as production's recoveryPingTimeout
+		// (== the CH dial timeout, defaultDialTimeout = 5s). Deliberately far
+		// larger than closeBudget: a Close that waits this out IS the bug.
+		blockedPingTimeout = 5 * time.Second
+		// Wall-clock ceiling for Close while a ping is parked. Cancellation is
+		// signal-speed (a ctx-done close plus a goroutine wake), so this leaves
+		// orders of magnitude of headroom for a loaded CI runner while staying
+		// 10x under blockedPingTimeout — it cannot pass if Close waits for the
+		// ping's own deadline.
+		closeBudget = 500 * time.Millisecond
+		// How long to wait for the loop's first tick to reach Ping. Generous
+		// against a 1ms interval so a scheduling hiccup can't fail the setup.
+		enterBudget = 2 * time.Second
+	)
+
+	conn := newBlockingPinger()
+	// Trip the default breaker BEFORE the loop goroutine exists, so the
+	// precondition is deterministic — the loop's first tick then already has a
+	// non-CLOSED breaker to probe, and nothing races the assertion.
+	client := newRecoveryTestClientWithSetup(conn, interval, blockedPingTimeout, func(def *breaker) {
+		tripBreaker(def)
+		require.Equal(t, "open", def.currentState(),
+			"precondition: breaker must be OPEN so the loop fires a recovery ping")
+	})
+	// Safety net: on ANY exit path (including a t.Fatal above the measured
+	// Close) the loop is torn down before goleak's deferred check runs.
+	// Registered after goleak's defer, so it runs before it.
+	defer func() { _ = client.Close() }()
+
+	// Wait until the synthetic ping is provably parked inside Ping — that is
+	// the state whose shutdown cost this test bounds.
+	select {
+	case <-conn.entered:
+	case <-time.After(enterBudget):
+		t.Fatalf("recovery loop never entered Ping within %s", enterBudget)
+	}
+
+	start := time.Now()
+	require.NoError(t, client.Close())
+	elapsed := time.Since(start)
+
+	// 1. Close did not wait out the per-ping budget.
+	require.Less(t, elapsed, closeBudget,
+		"Close blocked %s joining an in-flight recovery ping (per-ping budget %s): the ping ctx is not cancelled by Close",
+		elapsed, blockedPingTimeout)
+
+	// 2. The ping observed CANCELLATION, not deadline expiry — proof the abort
+	//    came from Close's cancel propagating down the ctx tree rather than
+	//    from the per-ping timer firing. (Unsynchronised read is safe: Close
+	//    joined the goroutine; see blockingPinger.pingErr.)
+	require.ErrorIs(t, conn.pingErr, context.Canceled,
+		"in-flight ping must observe context.Canceled from Close")
+	require.NotErrorIs(t, conn.pingErr, context.DeadlineExceeded,
+		"ping ended on its own timeout instead of on Close's cancellation")
+
+	// 3. The goroutine is gone: its done channel is closed. Close's join is
+	//    what guarantees this, so an open channel here means the join is not
+	//    doing its job (and goleak would flag the survivor too).
+	select {
+	case <-client.recovery.doneCh:
+	default:
+		t.Fatal("recovery goroutine did not exit: done channel still open after Close")
+	}
+
+	// 4. A shutdown-cancelled probe is NO CH-health verdict. The breaker stays
+	//    HALF-OPEN (a failure verdict would have driven it back to OPEN, a
+	//    success to CLOSED) and its probe slot is released, so the next allow()
+	//    admits a fresh probe instead of stalling forever.
+	require.Equal(t, "half-open", client.br.currentState(),
+		"a cancelled probe must record no verdict, leaving the breaker HALF-OPEN")
+	require.True(t, client.br.allow(),
+		"the cancelled probe must release the HALF-OPEN probe slot")
+
+	// Close stays idempotent once the ctx is cancelled and the done channel is
+	// closed — the double-Close / shared-ForHead-view path.
+	require.NoError(t, client.Close())
 }

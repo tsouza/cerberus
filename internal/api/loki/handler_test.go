@@ -186,8 +186,10 @@ func TestQuery_Streams(t *testing.T) {
 	ts := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	q := &stubQuerier{
 		samples: []chclient.Sample{
-			// MetricName is hijacked to carry the log-line body for stream
-			// queries (see wrapWithLogSampleProjection).
+			// A log-stream projection binds the log line into the positional
+			// row's first, String-typed column — the one chclient.Sample
+			// names MetricName. chclient.DecodeLogRows reads it back out as
+			// chclient.LogRow.Line.
 			{MetricName: "request started", Labels: map[string]string{"job": "api"}, Timestamp: ts},
 			{MetricName: "request done", Labels: map[string]string{"job": "api"}, Timestamp: ts.Add(time.Second)},
 		},

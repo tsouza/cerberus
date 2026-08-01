@@ -419,8 +419,24 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 	// so the wire projection adds a fifth `Metadata` slot surfacing the
 	// per-line LogAttributes map (Loki's `[ts, line, {metadata}]` tuple).
 	if len(proj.Projections) != 5 {
-		t.Fatalf("got %d projections, want 5 (MetricName, Attributes, TimeUnix, Value, Metadata)",
+		t.Fatalf("got %d projections, want 5 (Line, Attributes, TimeUnix, Value, Metadata)",
 			len(proj.Projections))
+	}
+	// The line slot is the positional row's first, String-typed column,
+	// aliased to logql.LogLineColumn — the alias chclient.DecodeLogRows
+	// decodes into chclient.LogRow.Line. A drift here silently reshapes
+	// every log-stream response.
+	lineSlot := proj.Projections[0]
+	if lineSlot.Alias != logql.LogLineColumn {
+		t.Fatalf("line slot alias: got %q, want %q", lineSlot.Alias, logql.LogLineColumn)
+	}
+	lineRef, ok := lineSlot.Expr.(*chplan.ColumnRef)
+	if !ok {
+		t.Fatalf("line slot expr: got %T, want *chplan.ColumnRef (the schema's Body column)", lineSlot.Expr)
+	}
+	if lineRef.Name != s.BodyColumn {
+		t.Fatalf("line slot ColumnRef.Name: got %q, want %q (schema's BodyColumn)",
+			lineRef.Name, s.BodyColumn)
 	}
 	metaSlot := proj.Projections[4]
 	if metaSlot.Alias != "Metadata" {
