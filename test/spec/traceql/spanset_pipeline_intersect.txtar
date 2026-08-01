@@ -1,8 +1,8 @@
 Spanset set operation (&&) whose operands are full sub-pipelines, not
-bare selectors: `({} | count() > 1) && ({} | count() > 1)`. Reference
+bare selectors: `({} | count() > 0) && ({} | count() > 0)`. Reference
 Tempo accepts a parenthesised pipeline as a spanset-operation operand;
-cerberus lowers each via the shared pipeline folder and intersects on
-(TraceId, SpanId).
+cerberus lowers each via the shared pipeline folder, gates the union of
+the two arms on both trace cohorts, and dedups on (TraceId, SpanId).
 
 Both operands end in a spanset aggregate, so both un-collapse to the
 span rows the aggregate consumed under a `TraceId IN (<cohort>)`
