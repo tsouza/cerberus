@@ -289,7 +289,7 @@ func TestTail_SQLShape(t *testing.T) {
 	q.mu.Unlock()
 
 	for _, frag := range []string{
-		"`Body` AS `MetricName`",
+		"`Body` AS `Line`",
 		"`ResourceAttributes` AS `Attributes`",
 		"`Timestamp` AS `TimeUnix`",
 		"toFloat64(?) AS `Value`",

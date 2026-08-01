@@ -91,7 +91,12 @@ type Lang interface {
   canonical `chclient.Sample` shape — `(MetricName, Attributes,
   TimeUnix, Value)`. Each head's per-shape switch
   (canonical / derived / structural-join) lives in the adapter,
-  not in the engine.
+  not in the engine. The shape is *positional*: the Loki
+  log-stream projection reuses the same four/five-column scan with
+  a log line in the first, String-typed column (aliased
+  `logql.LogLineColumn`) and a placeholder in the Float64 one, and
+  `chclient.DecodeLogRows` decodes that row into the named
+  `chclient.LogRow` the streams pivot consumes.
 
 ### `Meta`
 
