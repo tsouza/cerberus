@@ -88,6 +88,14 @@ const (
 // series by instance deterministically instead of by an accident of ties.
 const intermittentInstanceOffset = 1000
 
+// resourceLatencyWarmupSteps is the number of pre-anchor samples seeded
+// for demo_resource_latency_seconds. rate()[1m] requires at least two
+// samples in its lookback window; without warmup the first evaluation
+// point at anchor has only one sample, so Prometheus returns NaN while
+// cerberus returns a value. Four steps × 15 s = 60 s of pre-anchor
+// headroom guarantees both backends agree from t=anchor.
+const resourceLatencyWarmupSteps = 4
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(logger); err != nil {
@@ -201,6 +209,7 @@ func insertFixture(ctx context.Context, conn driver.Conn) error {
 			clickhouse.Named("intermittent_gap_start_step", uint64(intermittentGapStartStep)),
 			clickhouse.Named("intermittent_gap_end_step", uint64(intermittentGapStartStep+intermittentGapSteps)),
 			clickhouse.Named("intermittent_instance_offset", uint64(intermittentInstanceOffset)),
+			clickhouse.Named("resource_latency_warmup_steps", uint64(resourceLatencyWarmupSteps)),
 		); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
@@ -230,6 +239,36 @@ type namedStmt struct {
 // the OTel resource layer and is unrelated to the Prom-side wire labels
 // the tester matches on.
 var fixtureInserts = []namedStmt{
+	// demo_resource_latency_seconds is a classic histogram whose namespace
+	// lives only in ResourceAttributes. The compatibility query groups its
+	// bucket rate by the Prom-sanitized resource label.
+	//
+	// resourceLatencyWarmupSteps pre-anchor samples are seeded so that
+	// rate()[1m] has at least two samples in its lookback window at the
+	// first evaluation point (t=anchor). Without them Prometheus returns
+	// NaN at t=anchor while cerberus returns a value. Using `number`
+	// (0..steps+warmup-1) for count/sum keeps the values positive and
+	// monotonically increasing regardless of offset.
+	{
+		name: "demo_resource_latency_seconds",
+		sql: `INSERT INTO otel_metrics_histogram
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Count, Sum, BucketCounts,
+             ExplicitBounds)
+        SELECT
+            map('k8s.namespace.name', 'prod'),
+            'demo_resource_latency_seconds',
+            'Resource label histogram',
+            'seconds',
+            map('route', '/api'),
+            toDateTime64({anchor:String}, 9),
+            addSeconds(toDateTime64({anchor:String}, 9), (toInt64(number) - toInt64({resource_latency_warmup_steps:UInt64})) * 15),
+            toUInt64(3 * (number + 1)),
+            toFloat64(3 * (number + 1)),
+            arrayMap(x -> toUInt64(number + 1), range(3)),
+            [0.1, 0.5]
+        FROM numbers({steps:UInt64} + {resource_latency_warmup_steps:UInt64})`,
+	},
 	// demo_cpu_usage_seconds_total: 3 instances × 3 modes = 9 series, counters.
 	//
 	// CROSS JOIN the instance + mode dimensions against the step axis so every
