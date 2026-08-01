@@ -40,10 +40,12 @@
 //                                          and false for a genuine build error.
 //   rateLimitDiagnosis(subject)            the one explanation every consumer
 //                                          prints for the rate-limit class.
+//   pullImageWithRetry(image, options)     acquire one image into the local
+//                                          daemon under that policy.
 
 import process from 'node:process';
 
-import { error } from './gh.mjs';
+import { capture, error, log, notice } from './gh.mjs';
 
 // Five attempts with a linear backoff: long enough to ride out a registry blip
 // or a transport fault, short enough that a genuinely unreachable registry
@@ -154,4 +156,76 @@ export function isTransientRegistryFailure(text) {
   const haystack = String(text ?? '');
   if (isRegistryRateLimit(haystack)) return false;
   return transientRegistryFailurePatterns.some((re) => re.test(haystack));
+}
+
+// An acquisition is a single manifest plus a handful of layers, so a short step
+// is enough to ride out a reset connection; the image-build wrapper waits longer
+// because a build's `FROM` resolution sits behind a much longer tail.
+const defaultPullBackoffStepSeconds = 3;
+
+function presentLocally(image) {
+  return capture('docker', ['image', 'inspect', image]).status === 0;
+}
+
+// pullImageWithRetry — acquire one image into the local daemon under the policy
+// above, and report every outcome in the shared vocabulary. This is the one
+// implementation: a caller that hand-rolls the loop is a call site that will
+// eventually diverge on the question the module exists to answer.
+//
+// Options:
+//   backoffStepSeconds  linear step; attempt N sleeps N × this.
+//   acceptLocalCopy     a failed pull still succeeds when the image is already
+//                       in the daemon. For callers whose postcondition is
+//                       PRESENCE rather than freshness (the buildx bootstrap:
+//                       buildx itself falls back to the local copy). Off by
+//                       default, because a caller that needs the released bytes
+//                       must not silently accept whatever the runner cached.
+//   consequence         clause naming what breaks when the budget is spent,
+//                       appended to the exhaustion error.
+//
+// Returns true when the image is in the local daemon, false otherwise.
+export function pullImageWithRetry(image, options = {}) {
+  const {
+    backoffStepSeconds = defaultPullBackoffStepSeconds,
+    acceptLocalCopy = false,
+    consequence = '',
+  } = options;
+
+  for (let attempt = 1; attempt <= registryAttempts; attempt++) {
+    log(`    docker pull ${image} (attempt ${attempt}/${registryAttempts})`);
+    const res = capture('docker', ['pull', image]);
+    if (res.status === 0) {
+      log(res.stdout.trim());
+      return true;
+    }
+    process.stderr.write(res.stderr);
+
+    // A quota refusal is checked only after the local-copy fallback, because a
+    // copy already in the daemon satisfies that caller's postcondition no
+    // matter why the pull failed.
+    if (acceptLocalCopy && presentLocally(image)) {
+      notice(
+        `docker pull ${image} failed, but the image is already in the local daemon — ` +
+          'the caller accepts the local copy.',
+      );
+      return true;
+    }
+
+    // With nothing local to fall back on there is nothing to wait for either:
+    // the window outlasts the budget, so the remaining attempts would only
+    // deepen the deficit failing this job and every concurrent one.
+    if (isRegistryRateLimit(res.stderr + res.stdout)) {
+      error(rateLimitDiagnosis(`docker pull ${image}`));
+      return false;
+    }
+
+    if (attempt < registryAttempts) {
+      sleepSeconds(attempt * backoffStepSeconds);
+    }
+  }
+
+  const absent = acceptLocalCopy ? ' and the image is absent from the local daemon' : '';
+  const because = consequence === '' ? '.' : `, so ${consequence}`;
+  error(`docker pull ${image} failed ${registryAttempts} times on transport faults${absent}${because}`);
+  return false;
 }

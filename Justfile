@@ -692,21 +692,18 @@ _pull-retry +IMAGES:
 # transient `prom/prometheus` fetch. `_pull-retry` already solved this for the
 # k3d lanes; the compose lanes just weren't going through it.
 #
-# Buildable services are skipped via compose's own `--ignore-buildable`, which
-# reads the `build:` sections in the model rather than guessing from what the
-# daemon happens to hold. Guessing is what broke Tier-2 on run 30281594098:
-# `dead-end-receiver` is built by compose during `up`, so it is absent from the
-# daemon at pre-pull time and a presence check classified it as "needs pulling"
-# — `cerberus-migration-tier2:dead-end-receiver` exists in no registry, so the
-# pull failed five times and took the lane with it. Whether an image is
-# *pullable* is a property of the compose model, not of daemon state.
-#
-# Same retry owner as `_pull-retry`, for the same reason.
+# The pre-pull runs `docker pull`, not `docker compose pull`, because the two
+# do not share a credential source: measured four seconds apart in one job, the
+# CLI pull carried the runner's Docker Hub login and compose's was refused as
+# UNAUTHENTICATED. Run through compose, the mechanism built to absorb Docker Hub
+# failures was spending the anonymous quota rather than the authenticated one —
+# which is why it never helped. `compose-pull-images.mjs` owns the resolution:
+# it reads which services are fetchable off the compose model's `build:`
+# sections (compose's own `--ignore-buildable` semantics) and pulls each one
+# through the shared retry policy. See that module's header for the evidence.
 _compose-pull-retry +FILES:
-    @args=""; for f in {{FILES}}; do args="$args -f $f"; done; \
-    echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
-    IMAGE_BUILD_RETRY_BACKOFF_SECONDS=3 node .github/scripts/build-with-registry-retry.mjs \
-        docker compose $args pull --ignore-buildable --policy missing
+    @echo "==> pre-pulling compose images (retry, over the authenticated pull path)"
+    @COMPOSE_PULL_BACKOFF_SECONDS=3 node .github/scripts/compose-pull-images.mjs {{FILES}}
 
 # `_pull-retry` / `_compose-pull-retry` protect the images the HOST daemon
 # fetches. The images a BUILD fetches — the `FROM` refs BuildKit resolves while

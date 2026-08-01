@@ -48,6 +48,13 @@ case "$PROFILE" in
 esac
 
 echo "==> [1/5] building + starting core stack (clickhouse, cerberus, prometheus)"
+# The images compose FETCHES are acquired here rather than by `up`. Compose's
+# own pull path does not carry the credentials `docker login` wrote: it spends
+# the anonymous per-runner-IP quota and is refused as UNAUTHENTICATED seconds
+# after a `docker pull` of the same image in the same job succeeded. Scoped to
+# the core services so mimir's optional image stays on its own best-effort line
+# below. See ../../.github/scripts/compose-pull-images.mjs.
+node ../../.github/scripts/compose-pull-images.mjs docker-compose.yml -- clickhouse cerberus prometheus
 # Every compose `up` here can fetch from Docker Hub — the cerberus service
 # builds Dockerfile.local (`FROM golang:1.26`), the rest pull. The wrapper
 # retries on registry/network faults only; a real build failure still fails on
@@ -58,8 +65,14 @@ node ../../.github/scripts/build-with-registry-retry.mjs \
 
 echo "==> [2/5] starting mimir (best-effort)"
 MIMIR_OK=1
-node ../../.github/scripts/build-with-registry-retry.mjs \
-    docker compose up -d mimir || MIMIR_OK=0
+# Same authenticated pre-pull, on mimir's own best-effort line: a failure here
+# leaves MIMIR_OK=0 and the bench continues with cerberus + prometheus, exactly
+# as an `up` failure does.
+node ../../.github/scripts/compose-pull-images.mjs docker-compose.yml -- mimir || MIMIR_OK=0
+if [[ "$MIMIR_OK" == "1" ]]; then
+  node ../../.github/scripts/build-with-registry-retry.mjs \
+      docker compose up -d mimir || MIMIR_OK=0
+fi
 if [[ "$MIMIR_OK" == "1" ]]; then
   MIMIR_OK=0
   for i in $(seq 1 40); do
