@@ -297,6 +297,15 @@ jobs:
 
       - uses: ./.github/actions/setup-buildx
 
+      - name: pre-pull compose images (authenticated pull path)
+        run: |
+          # The images compose FETCHES are acquired here rather than by `up`.
+          # Compose's own pull path does not carry the credentials the login
+          # step above wrote: it spends the anonymous per-runner-IP quota and
+          # is refused as UNAUTHENTICATED seconds after a `docker pull` of the
+          # same image in the same job succeeded. See compose-pull-images.mjs.
+          node .github/scripts/compose-pull-images.mjs docker-compose.yml
+
       - name: compose up --wait (retried on registry faults)
         run: |
           # --wait-timeout caps the wait at 5 min. Cold runners need
@@ -510,6 +519,14 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
       - uses: ./.github/actions/setup-buildx
+
+      # The images compose FETCHES are acquired here rather than by `up`.
+      # Compose's own pull path does not carry the credentials the login step
+      # above wrote: it spends the anonymous per-runner-IP quota and is refused
+      # as UNAUTHENTICATED seconds after a `docker pull` of the same image in
+      # the same job succeeded. See compose-pull-images.mjs.
+      - name: pre-pull compose images (authenticated pull path)
+        run: node .github/scripts/compose-pull-images.mjs docker-compose.yml
 
       # `up` builds the cerberus service from Dockerfile.local, so it resolves
       # `FROM golang:1.26` against Docker Hub; the wrapper retries that on

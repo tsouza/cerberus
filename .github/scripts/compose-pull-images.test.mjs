@@ -17,7 +17,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { pullableImages } from './compose-pull-images.mjs';
+import { pullableImages, splitArgs } from './compose-pull-images.mjs';
+
+test('the argument list splits compose files from service names at `--`', () => {
+  assert.deepEqual(splitArgs(['docker-compose.yml']), { files: ['docker-compose.yml'], services: [] });
+  assert.deepEqual(splitArgs(['a.yml', 'b.yml', '--', 'clickhouse', 'cerberus']), {
+    files: ['a.yml', 'b.yml'],
+    services: ['clickhouse', 'cerberus'],
+  });
+  // A trailing separator narrows nothing, which is the whole model — the same
+  // answer as omitting it, rather than an empty pull set.
+  assert.deepEqual(splitArgs(['a.yml', '--']), { files: ['a.yml'], services: [] });
+  // No compose file before the separator is the caller error `main` exits on;
+  // the split still reports it faithfully rather than absorbing it.
+  assert.deepEqual(splitArgs(['--', 'mimir']), { files: [], services: ['mimir'] });
+});
 
 test('a missing or serviceless model yields no images', () => {
   assert.deepEqual(pullableImages(undefined), []);

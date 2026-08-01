@@ -80,36 +80,101 @@ func justRecipes(t *testing.T, src string) map[string]string {
 	return recipes
 }
 
-// TestJustfileComposeUpPrePullsWithRetry pins that any recipe bringing a compose
-// stack up first acquires its images through `_compose-pull-retry`. Without it,
-// `up` does the pull itself, single-attempt, and a flaky registry fails the lane.
-func TestJustfileComposeUpPrePullsWithRetry(t *testing.T) {
+// composeUpUnits yields every unit of execution in the tree that can bring a
+// compose stack up, keyed by a label naming it: each Justfile recipe on its own,
+// and each shell script / workflow file whole. The unit is what a pre-pull has
+// to appear in — `just` runs one recipe, while a script and a job's step list
+// each run top to bottom in one shell, so anywhere above the `up` is the same
+// guarantee.
+func composeUpUnits(t *testing.T) map[string]string {
+	t.Helper()
+
+	units := map[string]string{}
+	for _, file := range buildScanFiles(t) {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if filepath.Base(file) == "Justfile" {
+			for name, body := range justRecipes(t, string(src)) {
+				units[file+":"+name] = body
+			}
+			continue
+		}
+		units[file] = string(src)
+	}
+	return units
+}
+
+// composePrePullMarkers are the two spellings of "this stack's images were
+// already acquired over the authenticated path": the Justfile's wrapper recipe,
+// and the module it delegates to, which a shell script or a workflow step calls
+// directly.
+var composePrePullMarkers = []string{composePrePullRecipeName, composePullModule}
+
+// `docker compose ... up`, on one logical line so the flags and `\`
+// continuations that sit between the two words don't hide it.
+var composeUpCommand = regexp.MustCompile(`\bdocker\s+compose\b.*\bup\b`)
+
+// minComposeUpSites is the floor for the class scan. The real count is 7 (2
+// Justfile recipes, 3 compatibility harnesses, e2e.yml, bench/histogram); the
+// floor sits below it so an ordinary lane removal doesn't fail the guard, while
+// a refactor that leaves it scanning for a shape nothing matches does.
+const minComposeUpSites = 5
+
+// TestComposeUpAcquiresImagesOverTheAuthenticatedPullPath pins that anything
+// bringing a compose stack up acquires that stack's images FIRST, through the
+// shared pre-pull.
+//
+// Two separate failures live in this one gate. `docker compose up` pulls what it
+// is missing with no retry of its own, so one transient Docker Hub timeout takes
+// the lane down — that is what broke the v1.13.0 release's Tier-1 leg. And
+// compose's pull path does not carry the credentials `docker login` wrote, so
+// even a retried compose pull spends the ANONYMOUS per-runner-IP quota: measured
+// three seconds after `Login Succeeded!`, `up` was refused with "you have reached
+// your UNAUTHENTICATED pull rate limit" while a `docker pull` of the same image
+// in the same job succeeded.
+//
+// The scan is repo-wide rather than Justfile-only because that is exactly how
+// the second failure survived the first fix: the Justfile lanes were covered,
+// and the three compatibility harnesses, e2e.yml's compose-smoke jobs and the
+// histogram bench — all of which call `docker compose up` from a shell script or
+// a workflow step — were not, so they went on spending the anonymous quota.
+func TestComposeUpAcquiresImagesOverTheAuthenticatedPullPath(t *testing.T) {
 	t.Parallel()
 
-	buf, err := os.ReadFile("../../Justfile")
-	if err != nil {
-		t.Fatalf("read Justfile: %v", err)
-	}
-
-	// `docker compose ... up`, allowing the flags and line continuations that
-	// sit between the two words in the real recipes.
-	composeUpRE := regexp.MustCompile(`docker compose[\s\S]*?\bup\b`)
-
 	found := 0
-	for name, body := range justRecipes(t, string(buf)) {
-		if !composeUpRE.MatchString(body) {
+	for label, body := range composeUpUnits(t) {
+		brings := false
+		for _, line := range logicalLines(body) {
+			if !isProse(line) && composeUpCommand.MatchString(line) {
+				brings = true
+				break
+			}
+		}
+		if !brings {
 			continue
 		}
 		found++
-		if !strings.Contains(body, "_compose-pull-retry") {
-			t.Errorf("Justfile recipe %q brings a compose stack up without calling `_compose-pull-retry` first. "+
-				"`docker compose up` pulls missing images with no retry, so one Docker Hub timeout fails the lane "+
-				"(this is what broke the v1.13.0 release's Tier-1 leg).", name)
+
+		prePulled := false
+		for _, marker := range composePrePullMarkers {
+			if strings.Contains(body, marker) {
+				prePulled = true
+				break
+			}
+		}
+		if !prePulled {
+			t.Errorf("%s brings a compose stack up without pre-pulling its images through %s. "+
+				"`docker compose up` pulls what it is missing single-attempt AND over the anonymous pull path, "+
+				"so a Docker Hub timeout or a rate limit fails the lane even though the job is logged in.",
+				label, strings.Join(composePrePullMarkers, " / "))
 		}
 	}
 
-	if found == 0 {
-		t.Fatal("no `docker compose ... up` recipe found — the guard is scanning for a shape that no longer exists")
+	if found < minComposeUpSites {
+		t.Fatalf("only %d unit(s) bring a compose stack up, want at least %d — the guard is scanning for a "+
+			"shape that no longer exists", found, minComposeUpSites)
 	}
 }
 

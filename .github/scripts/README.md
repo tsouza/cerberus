@@ -1081,7 +1081,9 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
 - **`compose-pull-images.mjs`** — the Justfile (`_compose-pull-retry`, used by
-  `migration-tier{1,2}-up`). Acquires every image a compose stack FETCHES,
+  `migration-tier{1,2}-up`), the three `compatibility/*/scripts/run-*.sh`
+  harnesses, `e2e.yml`'s two compose-smoke jobs, and `bench/histogram/run.sh`.
+  Acquires every image a compose stack FETCHES,
   before `docker compose up` reaches for them. Two decisions carry the module.
   What is fetchable is read off the compose model's `build:` sections
   (`docker compose config --format json`, compose's own `--ignore-buildable`
@@ -1092,15 +1094,22 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   `docker pull`, because compose's pull path does not carry the credentials
   `docker login` wrote (issue #1565). An image already in the daemon is skipped,
   which is what `--policy missing` did.
-  - Args: the compose files the lane brings up (each becomes a `-f`).
+  - Args: the compose files the lane brings up (each becomes a `-f`), then
+    optionally `--` and the service names to narrow the model to. Pass the
+    services when a stack starts one SEPARATELY because its failure is
+    tolerated (`bench/histogram`'s `mimir`, brought up with `|| MIMIR_OK=0`);
+    folding such an image into the core stack's pre-pull would turn a tolerated
+    failure into a hard one.
   - Env: `COMPOSE_PULL_BACKOFF_SECONDS` (optional; default `3`).
   - Exit: `0` when every fetchable image is in the local daemon, `1` otherwise.
   - Gated by `compose-pull-images.test.mjs` on the required `check` lane (the
     model → image-set decision, including the built-service shapes the live tree
     does not yet contain) and by
     `test/regression/justfile_pull_retry_test.go`, which drives the module over
-    the REAL `test/e2e/migration` compose files with a stub `docker` and pins
-    the pulled set exactly.
+    the REAL `test/e2e/migration` compose files with a stub `docker`, pins the
+    pulled set exactly, and scans the whole tree — Justfile recipes, shell
+    scripts, workflow files — so no unit can bring a compose stack up without
+    pre-pulling through this module first.
 - **`build-with-registry-retry.mjs`** — the Justfile (`_pull-retry`,
   `e2e-up`, `e2e-bwc-up`,
   `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s

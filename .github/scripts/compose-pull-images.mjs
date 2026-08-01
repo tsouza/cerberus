@@ -39,7 +39,15 @@
 // removes a fetch, so it cannot resurrect the bug above.
 //
 // Usage:
-//   node .github/scripts/compose-pull-images.mjs <compose-file>...
+//   node .github/scripts/compose-pull-images.mjs <compose-file>... [-- <service>...]
+//
+// The optional service list is forwarded to `docker compose config`, which
+// narrows the model to those services. Pass the ones the `up` being preceded
+// names, whenever a stack starts a service SEPARATELY because its failure is
+// tolerated: bench/histogram brings `mimir` up on its own with `|| MIMIR_OK=0`,
+// and folding its image into the core stack's pre-pull would convert that
+// tolerated failure into a hard one. With no service list the whole model is
+// pre-pulled, which is what a stack brought up in one command wants.
 //
 // Env:
 //   COMPOSE_PULL_BACKOFF_SECONDS  (optional; default 3) linear backoff step
@@ -83,10 +91,19 @@ export function pullableImages(model) {
   return [...refs].sort();
 }
 
-function resolveModel(files) {
+// splitArgs — compose files before the `--`, service names after it. Exported
+// for the self-test: the separator is the whole contract of the argument list.
+export function splitArgs(argv) {
+  const sep = argv.indexOf('--');
+  if (sep === -1) return { files: argv, services: [] };
+  return { files: argv.slice(0, sep), services: argv.slice(sep + 1) };
+}
+
+function resolveModel(files, services) {
   const args = ['compose'];
   for (const file of files) args.push('-f', file);
   args.push('config', '--format', 'json');
+  for (const service of services) args.push(service);
 
   const res = capture('docker', args);
   if (res.status !== 0) {
@@ -109,15 +126,17 @@ function presentLocally(image) {
   return capture('docker', ['image', 'inspect', image]).status === 0;
 }
 
-function main(files) {
+function main(argv) {
+  const { files, services } = splitArgs(argv);
   if (files.length === 0) {
     error('compose-pull-images: no compose file given. Pass every `-f` file the lane brings up.');
     process.exit(1);
   }
 
-  const images = pullableImages(resolveModel(files));
+  const scope = services.length === 0 ? files.join(', ') : `${files.join(', ')} (${services.join(', ')})`;
+  const images = pullableImages(resolveModel(files, services));
   if (images.length === 0) {
-    notice(`no fetchable image in ${files.join(', ')} — every service is built by compose.`);
+    notice(`no fetchable image in ${scope} — every service is built by compose.`);
     return 0;
   }
 
