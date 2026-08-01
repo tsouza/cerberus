@@ -16,6 +16,8 @@ name: coverage
 
 on:
   pull_request:
+  # `coverage` is a required context and must post on the projected trunk.
+  merge_group:
   push:
     # `release/*.x` so `coverage` also runs on a maintenance-line hotfix push —
     # release.yml's preflight is the only gate on that path (no PR, so no
@@ -43,8 +45,15 @@ jobs:
     # a release PR (head branch release/*). On a regular PR every heavy step is
     # skipped and the job reports green without work — so `coverage` can be a
     # required check that gates release PRs but never blocks ordinary PRs.
+    #
+    # A merge-queue entry is held to the PR posture, not the push posture. The
+    # queue validates the projected trunk against the SAME contexts branch
+    # protection asks a PR for; a queue that runs work the PR never ran can
+    # dequeue a PR that was green, which is the livelock the queue exists to
+    # remove. The real run is not lost — `main` advances to the merge group's
+    # own head SHA, and the push trigger above sweeps coverage on that commit.
     env:
-      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
+      RUN_HEAVY: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 

@@ -41,13 +41,23 @@ on:
     # the commit being shipped, which is what release.yml's preflight and
     # release-gate-drift.yml read.
     branches: [main, 'release/*.x']
+  # The queue builds a projected trunk and dispatches `merge_group` against it.
+  # `forbid-deferral` is a required context, so a workflow that did not declare
+  # this trigger would never post the check-run there and every queued entry
+  # would sit unmergeable until it timed out — the failure this gate's own
+  # regression pin (`TestEveryRequiredContextPostsOnTheMergeGroup`) exists to
+  # reject. The surface on a queue run is the same one a push resolves: the
+  # head commit's associated pull request.
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
   # Successive edits to one description supersede each other; the last body is
-  # the only one that matters. Pushes to main are never cancelled.
+  # the only one that matters. Pushes to main are never cancelled, and neither
+  # are queue runs: GitHub reads a cancelled check-run as a failure and dequeues
+  # the entry, so this expression must stay provably false on `merge_group`.
   group: forbid-deferral-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -84,5 +94,10 @@ jobs:
           # Bodies are attacker-controlled: passed via env, never interpolated
           # into a shell `run:` line.
           PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # Each event names its own range start. A merge group carries neither
+          # `pull_request.base.sha` nor `event.before`, so without its own term
+          # the range would collapse to `HEAD^` and inspect one commit of a
+          # batch. `github.sha` already IS the merge group's head commit, so the
+          # range end below needs no extra term.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

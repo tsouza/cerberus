@@ -10,6 +10,14 @@ name: chart-ci
 # GATES chart changes.
 on:
   pull_request:
+  # `chart-validate` is a required context, so it has to post inside the queue.
+  # The job carries no job-level `if:`, so it always publishes its name; the
+  # `changes` filter below only gates STEPS. Off a pull request that filter
+  # falls back to the default branch, so on a merge group it diffs the projected
+  # trunk against its merge base with `main` — the batch's own chart changes,
+  # which is the question the filter asks either way. The checkout is unshallow,
+  # so the merge base resolves.
+  merge_group:
   push:
     # `release/*.x` so `chart-validate` also runs on a maintenance-line hotfix
     # push. There is no PR on that path, so release.yml's preflight is the only

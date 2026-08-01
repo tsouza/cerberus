@@ -7,6 +7,11 @@ on:
     # maintenance preflight reads these check-runs before publishing.
     branches: [main, 'release/*.x']
   pull_request:
+  # `check` / `lint` / `forbid-skip` are required contexts, so they must post on
+  # the merge queue's projected trunk as well — a required context the merge
+  # group never produces leaves the entry queued forever. See the merge-queue
+  # section of docs/test-strategy.md.
+  merge_group:
 
 permissions:
   contents: read
