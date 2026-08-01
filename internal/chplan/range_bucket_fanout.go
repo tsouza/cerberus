@@ -80,6 +80,16 @@ type RangeBucketFanout struct {
 	// Scale / …) so downstream consumers read the columns by name.
 	AggFuncs []AggFunc
 
+	// MinSamples is the number of distinct sample timestamps an anchor's
+	// window must hold before the anchor emits a row. It carries the
+	// per-function "no sample emitted" rule the collapsed range-vector
+	// function owns: a bare selector resolves to at most one sample so one
+	// is enough, while the `rate` / `increase` idiom needs two points to
+	// span a delta and reference PromQL emits NOTHING at an anchor whose
+	// window holds fewer. Values <= 1 impose no filter — an anchor with no
+	// sample already produces no fanned row, hence no GROUP BY row.
+	MinSamples int
+
 	// AnchorAlias is the output column name for the grid anchor
 	// (always "anchor_ts" today).
 	AnchorAlias string
@@ -102,6 +112,9 @@ func (r *RangeBucketFanout) Equal(other Node) bool {
 		return false
 	}
 	if r.Step != o.Step || r.Lookback != o.Lookback || r.Offset != o.Offset {
+		return false
+	}
+	if r.MinSamples != o.MinSamples {
 		return false
 	}
 	if r.AnchorAlias != o.AnchorAlias || r.TimestampCol != o.TimestampCol {

@@ -28,12 +28,24 @@
 // variant that names this pull request.
 //
 // WHAT IS REQUIRED — every match must be accompanied by a reference to an OPEN
-// GitHub Issue (`#<n>`, or the full issues URL for this repository) in the same
-// prose paragraph, or within CITATION_WINDOW_LINES lines in a diff. Each cited
-// number is resolved through the API and must be an Issue (GitHub's issues
-// endpoint serves pull requests too, distinguished by the `pull_request` key)
-// and must be open. A pointer at a merged PR or a closed issue is untracked
-// work wearing a citation.
+// GitHub Issue (`#<n>`, or the full issues URL for this repository) close enough
+// to be about it. "Close enough" is the author's own structure, not a fixed
+// radius:
+//
+//   * a marker ON A MARKDOWN HEADING is satisfied anywhere in the SECTION that
+//     heading introduces — up to the next heading of the same or higher level.
+//     A heading is a label for the block beneath it, so the canonical correct
+//     shape is a heading naming the category followed by a list whose every
+//     item leads with its issue. Paragraph scope rejected exactly that shape,
+//     and told an author who had filed the issues that they had cited nothing.
+//   * any other prose marker is satisfied within its own paragraph — an issue
+//     named three paragraphs away tracks something else.
+//   * a marker in a diff is satisfied within CITATION_WINDOW_LINES lines.
+//
+// Each cited number is resolved through the API and must be an Issue (GitHub's
+// issues endpoint serves pull requests too, distinguished by the `pull_request`
+// key) and must be open. A pointer at a merged PR or a closed issue is
+// untracked work wearing a citation.
 //
 // ANTI-VACUITY — a gate that silently inspects nothing is worse than none, and
 // this repo has been bitten by exactly that class. Every run asserts positively
@@ -114,9 +126,13 @@ export const DEFERRAL_MARKERS = [
     // RECORD work already done ("Follow-up to #1234"), which is the opposite of
     // a deferral. Only the LABEL forms — a heading, or the colon that
     // introduces a list of things nobody has taken — match.
+    // The heading alternative starts at a zero-width line boundary rather than
+    // consuming the preceding newline, so the reported line is the heading's
+    // own — a match that swallowed the `\n` would report the line above it and
+    // would not be recognised as a heading when its citation scope is computed.
     id: 'followup-label',
     description: 'a heading or label introducing work nobody has taken',
-    pattern: String.raw`(?:^|\n)[ \t]*#{1,6}[ \t]*follow-?ups?\b|\bfollow-?ups?[ \t]*:`,
+    pattern: String.raw`(?<![^\n])[ \t]*#{1,6}[ \t]*follow-?ups?\b|\bfollow-?ups?[ \t]*:`,
   },
   {
     // Same shape as `unfixed-here`, kept separate because the sweep counted it
@@ -271,23 +287,58 @@ export function paragraphs(text) {
   return out.map((p) => ({ startLine: p.startLine, text: p.lines.join('\n') }));
 }
 
+// headingLevel — the ATX heading level of a line, or 0 when the line is not a
+// heading. Setext headings are not recognised: no surface this gate reads uses
+// them, and guessing would make an ordinary line of prose into a section head.
+export function headingLevel(line) {
+  const m = /^ {0,3}(#{1,6})\s/.exec(String(line ?? ''));
+  return m ? m[1].length : 0;
+}
+
+// sectionAt — the text of the section a heading introduces: the heading itself
+// through to just before the next heading of the same or higher level, or the
+// end of the surface. Returns null when the line is not a heading.
+//
+// The boundary is deliberately structural rather than a line budget. A section
+// is the unit of meaning the AUTHOR declared, so a heading with its issues
+// listed forty lines below is still one thought; capping the distance would
+// reintroduce an arbitrary number and reject bodies that are correct. The
+// widening is confined to headings for the same reason: a heading is a label
+// for the block beneath it, whereas a sentence buried mid-section is not, and
+// keeps paragraph scope.
+export function sectionAt(lines, headingIndex) {
+  const level = headingLevel(lines[headingIndex]);
+  if (level === 0) return null;
+  let end = lines.length;
+  for (let i = headingIndex + 1; i < lines.length; i += 1) {
+    const l = headingLevel(lines[i]);
+    if (l > 0 && l <= level) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(headingIndex, end).join('\n');
+}
+
 // scanProse — candidate violations in a prose surface (a description, a commit
 // message). `locate(line)` renders a human-addressable location.
 export function scanProse({ text, surface, locate, repoSlug }) {
   const stripped = stripFencedBlocks(text);
+  const allLines = stripped.split('\n');
   const candidates = [];
   for (const para of paragraphs(stripped)) {
-    const refs = issueRefs(para.text, repoSlug);
+    const paragraphRefs = issueRefs(para.text, repoSlug);
     for (const marker of findMarkers(para.text)) {
       const line = para.startLine + marker.line - 1;
+      const section = sectionAt(allLines, line - 1);
       candidates.push({
         surface,
         location: locate(line),
         markerId: marker.id,
         description: marker.description,
         markerText: marker.text,
-        scope: 'the same paragraph',
-        refs,
+        scope: section === null ? 'the same paragraph' : 'the section it introduces',
+        refs: section === null ? paragraphRefs : issueRefs(section, repoSlug),
       });
     }
   }
@@ -549,10 +600,17 @@ async function resolveRefs(numbers, { repo, token, apiBase }) {
   return resolved;
 }
 
+// Three remedies, because the marker has three honest causes and only one of
+// them is a deferral. Naming just the first taught authors to manufacture an
+// issue for work that was already finished — a gate that inflates the backlog
+// with fiction discredits the policy it exists to enforce.
 const REMEDY =
-  'Remedy: open an issue for the work (`gh issue create`) and cite it as #<n> ' +
-  'beside the marker. A description sentence is not a resting place — once the ' +
-  'pull request merges it appears in no list and nobody is assigned.';
+  'Remedy, whichever is true. (1) The work is genuinely outstanding: open an ' +
+  'issue for it (`gh issue create`) and cite it as #<n> — a description ' +
+  'sentence is not a resting place, because once the pull request merges it ' +
+  'appears in no list and nobody is assigned. (2) This change already DID the ' +
+  'work: say so in the past tense ("Resolved in this change: ...") — do not ' +
+  'file an issue for finished work. (3) Nothing is owed at all: delete the line.';
 
 async function main() {
   if (DEFERRAL_MARKERS.length === 0) {
