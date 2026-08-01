@@ -78,6 +78,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The images compose FETCHES (ClickHouse, reference Tempo) are acquired here
+# rather than by either `up` below. Compose's own pull path does not carry the
+# credentials `docker login` wrote: it spends the anonymous per-runner-IP quota
+# and is refused as UNAUTHENTICATED seconds after a `docker pull` of the same
+# image in the same job succeeded. See .github/scripts/compose-pull-images.mjs.
+echo "==> pre-pulling compose images (retry, over the authenticated pull path)"
+node "$REPO_ROOT/.github/scripts/compose-pull-images.mjs" docker-compose.yml
+
 echo "==> bringing up tempo-compatibility stack"
 # Step 1: start tempo (no compose-level healthcheck — distroless image,
 # see compose.yml). The driver polls /ready before pushing.

@@ -89,6 +89,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 import { error, notice, log, capture } from './lib/gh.mjs';
+import { pullImageWithRetry } from './lib/registry.mjs';
 
 const PROM_IMAGE = process.env.PROM_IMAGE || 'prom/prometheus:v3.11.3';
 const REF_PORT = process.env.REF_PORT || '39090';
@@ -120,6 +121,16 @@ function sleep(ms) {
 // for /-/ready. The reference scrapes nothing and needs no fixture — the
 // surface verdict is parse + type validation only.
 function startReference() {
+  // Acquire the reference image explicitly. `docker run` pulls a missing image
+  // itself, single-attempt, so a Docker Hub blip or a quota refusal surfaced
+  // here as "failed to start reference container" — a registry fault wearing
+  // the costume of a broken gate. Going through the shared policy retries the
+  // transport class, stops dead on a quota refusal, and names which one it was
+  // (issue #1562).
+  if (!pullImageWithRetry(PROM_IMAGE, { consequence: 'the reference Prometheus cannot be started' })) {
+    die(`could not acquire the reference image ${PROM_IMAGE}`);
+  }
+
   capture('docker', ['rm', '-f', REF_CONTAINER]);
   const promYml = [
     'global:',

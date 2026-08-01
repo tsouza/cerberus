@@ -48,12 +48,22 @@ not two:
 - **everything else**: a genuine build / command failure. Fails on the first
   attempt, unretried.
 
-`pull-buildkit-image.mjs` (host-side bootstrap pull), the Justfile's
-`_pull-retry` / `_compose-pull-retry` (host pulls and compose pre-pulls, both
-routed through `build-with-registry-retry.mjs` rather than a bash loop),
-`build-with-registry-retry.mjs` (the build's own `FROM` resolution) and
-`chart-kubeconform.mjs`'s image probe all hit the same quota bucket and fail the
-same way, so they share the policy instead of re-deriving it.
+`pullImageWithRetry(ref, …)` is that policy applied to acquiring one image, and
+is the only implementation of the loop: `pull-buildkit-image.mjs` (the buildx
+bootstrap image, the one caller that accepts a locally present copy in place of
+a fetch), `compose-pull-images.mjs` (a compose stack's fetchable services),
+`promql-surface-gate.mjs` (the reference Prometheus it starts) and
+`migration-artifact.mjs` (the released image it extracts a binary from) all go
+through it. `build-with-registry-retry.mjs` (a build's own `FROM` resolution)
+and `chart-kubeconform.mjs`'s image probe apply the same classification to
+commands rather than to a single ref. Everything hits the same quota bucket and
+fails the same way, so nothing re-derives the policy.
+
+The pre-pull fetches with `docker pull`, never `docker compose pull`: the two
+paths do not share a credential source. Measured four seconds apart in one job,
+the CLI pull carried the runner's Docker Hub login while compose's was refused
+as *unauthenticated* — so routed through compose, the mechanism built to absorb
+Docker Hub failures was spending the anonymous per-IP quota (issue #1565).
 
 `lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
 lane guards?" — `runsFullLane()` (which events must never take a scoped
@@ -829,6 +839,10 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` all checks pass / regenerate done, `1` on any gap / drift /
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
+  - Acquires `PROM_IMAGE` through `pullImageWithRetry` from `lib/registry.mjs`
+    before `docker run`, so a transport fault is retried and a Docker Hub rate
+    limit is diagnosed as such instead of surfacing as an opaque
+    container-start failure (#1562).
 
 - **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
   Decides whether a pull request has to boot the compose stack at all. The lane
@@ -996,6 +1010,11 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
     pair, a failed build / pull / extract, a `--version` that errors, prints
     nothing, prints more than one line, or prints the wrong stamp.
+  - The image path acquires `cerberus_image` through `pullImageWithRetry` from
+    `lib/registry.mjs`, without `acceptLocalCopy` — the point of the path is to
+    exercise the RELEASED bytes, so falling back to a same-named image the
+    daemon happens to hold is exactly the substitution this module exists to
+    prevent.
 
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
@@ -1061,8 +1080,38 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
+- **`compose-pull-images.mjs`** — the Justfile (`_compose-pull-retry`, used by
+  `migration-tier{1,2}-up`), the three `compatibility/*/scripts/run-*.sh`
+  harnesses, `e2e.yml`'s two compose-smoke jobs, and `bench/histogram/run.sh`.
+  Acquires every image a compose stack FETCHES,
+  before `docker compose up` reaches for them. Two decisions carry the module.
+  What is fetchable is read off the compose model's `build:` sections
+  (`docker compose config --format json`, compose's own `--ignore-buildable`
+  semantics) and never inferred from daemon state — absence from the daemon
+  means "not built yet" as often as "not fetched yet", and pulling Tier-2's
+  built-during-`up` `dead-end-receiver` from a registry that serves it nowhere
+  failed a lane five attempts deep (run 30281594098). And the fetch itself is
+  `docker pull`, because compose's pull path does not carry the credentials
+  `docker login` wrote (issue #1565). An image already in the daemon is skipped,
+  which is what `--policy missing` did.
+  - Args: the compose files the lane brings up (each becomes a `-f`), then
+    optionally `--` and the service names to narrow the model to. Pass the
+    services when a stack starts one SEPARATELY because its failure is
+    tolerated (`bench/histogram`'s `mimir`, brought up with `|| MIMIR_OK=0`);
+    folding such an image into the core stack's pre-pull would turn a tolerated
+    failure into a hard one.
+  - Env: `COMPOSE_PULL_BACKOFF_SECONDS` (optional; default `3`).
+  - Exit: `0` when every fetchable image is in the local daemon, `1` otherwise.
+  - Gated by `compose-pull-images.test.mjs` on the required `check` lane (the
+    model → image-set decision, including the built-service shapes the live tree
+    does not yet contain) and by
+    `test/regression/justfile_pull_retry_test.go`, which drives the module over
+    the REAL `test/e2e/migration` compose files with a stub `docker`, pins the
+    pulled set exactly, and scans the whole tree — Justfile recipes, shell
+    scripts, workflow files — so no unit can bring a compose stack up without
+    pre-pulling through this module first.
 - **`build-with-registry-retry.mjs`** — the Justfile (`_pull-retry`,
-  `_compose-pull-retry`, `e2e-up`, `e2e-bwc-up`,
+  `e2e-up`, `e2e-bwc-up`,
   `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
   compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
   and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
