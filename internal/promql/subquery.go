@@ -240,7 +240,11 @@ func lowerSubqueryOverBinary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	rangeCtx := ctx
+	// Synthetic operands such as time() materialize their own StepGrid.
+	// A subquery offset shifts that evaluation grid along with its window;
+	// leaving the original request bounds here evaluates time() at the outer
+	// grid while the enclosing RangeWindow reads the shifted subquery grid.
+	rangeCtx := subqueryOffsetCtx(sub, ctx)
 	rangeCtx.inRangeVector = true
 	inner, err := lowerBinary(b, s, rangeCtx)
 	if err != nil {
@@ -265,6 +269,23 @@ func lowerSubqueryOverBinary(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
+}
+
+// subqueryOffsetCtx shifts range-mode synthetic sources onto a subquery's
+// relative evaluation grid. Selector-backed inputs receive the offset from
+// the surrounding RangeWindow, but synthetic inputs have no selector and
+// therefore need the shifted bounds while they are lowered.
+func subqueryOffsetCtx(sub *parser.SubqueryExpr, ctx lowerCtx) lowerCtx {
+	if sub.OriginalOffset == 0 {
+		return ctx
+	}
+	if !ctx.start.IsZero() {
+		ctx.start = ctx.start.Add(-sub.OriginalOffset)
+	}
+	if !ctx.end.IsZero() {
+		ctx.end = ctx.end.Add(-sub.OriginalOffset)
+	}
+	return ctx
 }
 
 // lowerSubqueryOverVectorSelector — `metric[range:step]` lowering.
