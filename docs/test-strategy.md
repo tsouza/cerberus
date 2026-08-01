@@ -872,3 +872,25 @@ recur:
   doesn't silently break CI.
 - `seed_test.go` — the e2e seed program's row-count and metric-name
   invariants.
+- `generated_artifact_merge_gate_test.go` — pins the `.gitattributes`
+  `-merge` gate on every generated baseline, golden and inventory, and
+  fails on a new one that arrives ungated.
+
+### Generated baselines never auto-merge
+
+Every baseline, golden and inventory in this document is written by a
+regeneration command, and most are sorted arrays of records. Git's
+line-based merge blends two such files *without raising a conflict* when
+both sides insert entries at nearby offsets: the record boundaries shift,
+names pair with the next record's values, and the result still parses as
+valid JSON of a plausible length while every blended entry is wrong. A
+ratchet fed that file reports green while measuring nothing.
+
+`.gitattributes` marks these paths `-merge`, so git refuses to blend them
+and leaves the path conflicted instead — the only correct resolution being
+to take the merged code and re-run the generator. That file is also where
+the per-artefact regeneration command is recorded, so the conflict names
+its own fix. `compatibility/parity-baseline.json` is the one exception
+worth knowing before you hit it: it is rebuilt from a compatibility run's
+`compat-cases.json` artefact and therefore **cannot** be regenerated
+locally.
