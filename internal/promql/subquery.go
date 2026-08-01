@@ -77,8 +77,10 @@ func lowerSubqueryOverUnary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	rangeCtx := ctx
-	rangeCtx.inRangeVector = true
+	rangeCtx, err := subqueryEvalCtx(sub, step, ctx)
+	if err != nil {
+		return nil, err
+	}
 	inner, err := lowerUnary(u, s, rangeCtx)
 	if err != nil {
 		return nil, err
@@ -240,12 +242,10 @@ func lowerSubqueryOverBinary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	// Synthetic operands such as time() materialize their own StepGrid.
-	// A subquery offset shifts that evaluation grid along with its window;
-	// leaving the original request bounds here evaluates time() at the outer
-	// grid while the enclosing RangeWindow reads the shifted subquery grid.
-	rangeCtx := subqueryOffsetCtx(sub, ctx)
-	rangeCtx.inRangeVector = true
+	rangeCtx, err := subqueryEvalCtx(sub, step, ctx)
+	if err != nil {
+		return nil, err
+	}
 	inner, err := lowerBinary(b, s, rangeCtx)
 	if err != nil {
 		return nil, err
@@ -269,6 +269,42 @@ func lowerSubqueryOverBinary(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
+}
+
+// subqueryEvalCtx returns the lowering context for an instant expression that
+// is being re-evaluated at each subquery anchor.
+//
+// Subqueries do NOT evaluate arithmetic / comparisons / unary rewrites over raw
+// sample timestamps. They re-run the inner instant expression at each inner
+// subquery step, so selectors must take the LWR path, aggregations must group
+// by the per-step anchor, and synthetic scalars (`time()`, date fns, `vector`)
+// must materialise on the inner step grid rather than on raw sample times.
+//
+// Range-mode callers need the UNION of all inner anchors the outer query can
+// observe: for outer query_range that is `[ctx.start - sub.Range, ctx.end]`;
+// instant callers evaluate the one concrete subquery window
+// `[anchor.End - sub.Range, anchor.End]`. Offsets shift this evaluation grid
+// together with the subquery window, so synthetic sources are re-based through
+// [subqueryOffsetCtx] after the bounds are chosen.
+func subqueryEvalCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx) (lowerCtx, error) {
+	evalCtx := ctx
+	evalCtx.step = step
+	switch {
+	case ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero():
+		evalCtx.start = ctx.start.Add(-sub.Range)
+		evalCtx.end = ctx.end
+	default:
+		anchor, err := subqueryAnchor(sub, ctx)
+		if err != nil {
+			return lowerCtx{}, err
+		}
+		if anchor.End.IsZero() {
+			return lowerCtx{}, fmt.Errorf("promql: subquery instant expression requires query eval-time context (use LowerAt)")
+		}
+		evalCtx.start = anchor.End.Add(-sub.Range)
+		evalCtx.end = anchor.End
+	}
+	return subqueryOffsetCtx(sub, evalCtx), nil
 }
 
 // subqueryOffsetCtx shifts range-mode synthetic sources onto a subquery's
