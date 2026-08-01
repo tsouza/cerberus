@@ -77,6 +77,18 @@ func lowerSubqueryOverUnary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		inner, err := lowerUnary(u, s, grid)
+		if err != nil {
+			return nil, err
+		}
+		return subqueryAnchorShape(inner, s), nil
+	}
+
 	rangeCtx := ctx
 	rangeCtx.inRangeVector = true
 	inner, err := lowerUnary(u, s, rangeCtx)
@@ -107,7 +119,7 @@ func wrapSubqueryIdentity(
 	return &chplan.RangeWindow{
 		Input:           inner,
 		Identity:        true,
-		Range:           step, // per-anchor lookback = subquery step
+		Range:           subqueryStalenessLookback,
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
@@ -117,6 +129,131 @@ func wrapSubqueryIdentity(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}, nil
+}
+
+// subqueryGridCtx builds the lowering context a subquery's inner
+// expression is evaluated in when that inner is an ARITHMETIC shape
+// (binary / unary) rather than a bare selector.
+//
+// PromQL defines `<expr>[<range>:<step>]` as "re-evaluate <expr> as an
+// INSTANT query at every grid anchor". For a bare selector that is
+// indistinguishable from "attribute the raw samples to anchors
+// afterwards", which is what [wrapSubqueryIdentity] does. For an
+// arithmetic inner it is NOT: every anchor-dependent sub-expression —
+// `time()`, an aggregation's per-step bucket, a comparison filter —
+// must see the ANCHOR, not the scrape timestamp of whichever sample
+// happens to sit in the window. Lowering the inner over the raw sample
+// stream binds them to the sample grid instead, which is how
+// `(time() - max(m) < 1000)[5m:10s]` came out quantised to the 15s
+// scrape grid rather than the 10s subquery grid.
+//
+// The fix is to hand the inner a plain RANGE-MODE context whose grid IS
+// the subquery's anchor grid. Every existing range-mode seam then does
+// the right thing with no subquery awareness of its own: the selector
+// seam emits one canonical Sample row per (series, anchor) with
+// `TimeUnix` = anchor and the standard 5m staleness lookback,
+// aggregations bucket by that `TimeUnix`, vector joins step-align on
+// it, and the synthetic `time()` fold rebinds to it.
+//
+// Grid derivation mirrors reference `evalSubquery` (promql/engine.go):
+// anchors are absolute-epoch multiples of `step` (phase 0), the window
+// is left-OPEN, and `offset` shifts the whole grid (so the reported
+// timestamps shift too — matching the anchors the enclosing
+// [subqueryAnchorShape] / outer reducer read).
+//
+//   - `@`-pinned subqueries and instant eval anchor on the subquery's
+//     own `[End - Range, End]` window.
+//   - Range mode widens the grid to `[start - Range, end]` up front —
+//     the same window [widenSubquerySpine] would otherwise have to push
+//     down — so every outer anchor's `(t - Range, t]` lookback finds
+//     inner anchors. Doing it here keeps the whole inner subtree
+//     (selector seams, synthetic StepGrids, join arms) on ONE grid;
+//     widenSubquerySpine only walks RangeWindow spines and cannot reach
+//     across a join.
+//
+// ok is false when no eval anchor is available (a bare Lower() with no
+// query time threaded through) — the caller then keeps the raw-stream
+// lowering, which is grid-free.
+func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx) (lowerCtx, bool, error) {
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return lowerCtx{}, false, err
+	}
+	pinned := sub.Timestamp != nil || sub.StartOrEnd != 0
+	rangeMode := ctx.step > 0 && !ctx.start.IsZero() && !ctx.end.IsZero()
+
+	var windowEnd, windowStart time.Time
+	switch {
+	case pinned && !anchor.End.IsZero():
+		windowEnd = anchor.End
+		windowStart = anchor.End.Add(-sub.Range)
+	case rangeMode:
+		windowEnd = ctx.end
+		windowStart = ctx.start.Add(-sub.Range)
+	case !anchor.End.IsZero():
+		windowEnd = anchor.End
+		windowStart = anchor.End.Add(-sub.Range)
+	default:
+		return lowerCtx{}, false, nil
+	}
+
+	// `offset` shifts WHICH instants are evaluated; the grid is snapped
+	// after the shift so anchors stay on phase 0 (reference snaps
+	// `interval * ((endTs - offsetMillis) / interval)`).
+	gridEnd := epochFloor(windowEnd.Add(-anchor.Offset), step)
+	gridStart := epochFloor(windowStart.Add(-anchor.Offset), step)
+	if !gridStart.After(windowStart.Add(-anchor.Offset)) {
+		// Left-open window: an anchor landing exactly on the lower bound
+		// is excluded (reference bumps startTimestamp by one interval).
+		gridStart = gridStart.Add(step)
+	}
+	if gridStart.After(gridEnd) {
+		// Sub-step window — reference clamps start to end and evaluates
+		// the single anchor at the snapped base.
+		gridStart = gridEnd
+	}
+
+	out := ctx
+	out.inRangeVector = false
+	out.start = gridStart.UTC()
+	out.end = gridEnd.UTC()
+	out.step = step
+	return out, true, nil
+}
+
+// epochFloor snaps t down to the nearest absolute-epoch multiple of
+// step (phase 0) — the SQL-side twin of chsql's epochAlignedEndFrag.
+func epochFloor(t time.Time, step time.Duration) time.Time {
+	stepNS := step.Nanoseconds()
+	ns := t.UTC().UnixNano()
+	floor := ns / stepNS
+	if ns%stepNS != 0 && ns < 0 {
+		floor--
+	}
+	return time.Unix(0, floor*stepNS).UTC()
+}
+
+// subqueryAnchorShape re-exposes a grid-evaluated subquery inner under
+// the matrix column contract the enclosing reducer expects:
+// `(Attributes, anchor_ts, TimeUnix, Value)`. The inner's rows already
+// sit exactly on the subquery anchors (see [subqueryGridCtx]), so this
+// is a pure rename — no second windowing pass, which is what keeps a
+// comparison filter's dropped anchors dropped instead of letting a
+// staleness lookback carry the previous anchor's value forward.
+//
+// `TimeUnix` is kept alongside `anchor_ts` so the shape is ALSO a valid
+// top-level answer (`(time() - m)[1m:10s]` evaluated on its own) rather
+// than only an input to an outer `*_over_time`.
+func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
+	return &chplan.Project{
+		Input: inner,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: chplan.RangeWindowAnchorColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
@@ -240,6 +377,18 @@ func lowerSubqueryOverBinary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		inner, err := lowerBinary(b, s, grid)
+		if err != nil {
+			return nil, err
+		}
+		return subqueryAnchorShape(inner, s), nil
+	}
+
 	// Synthetic operands such as time() materialize their own StepGrid.
 	// A subquery offset shifts that evaluation grid along with its window;
 	// leaving the original request bounds here evaluates time() at the outer
@@ -250,25 +399,7 @@ func lowerSubqueryOverBinary(
 	if err != nil {
 		return nil, err
 	}
-
-	anchor, err := subqueryAnchor(sub, ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &chplan.RangeWindow{
-		Input:           inner,
-		Identity:        true,
-		Range:           step, // per-anchor lookback = subquery step
-		OuterRange:      sub.Range,
-		Step:            step,
-		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
-		Offset:          anchor.Offset,
-		TimestampColumn: s.TimestampColumn,
-		ValueColumn:     s.ValueColumn,
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	return wrapSubqueryIdentity(sub, inner, step, s, ctx)
 }
 
 // subqueryOffsetCtx shifts range-mode synthetic sources onto a subquery's
@@ -322,7 +453,7 @@ func lowerSubqueryOverVectorSelector(
 	return &chplan.RangeWindow{
 		Input:           inner,
 		Identity:        true,
-		Range:           step, // per-anchor lookback = subquery step
+		Range:           subqueryStalenessLookback,
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
@@ -599,12 +730,21 @@ func subqueryInstantSafe(call *parser.Call) bool {
 	return safe
 }
 
-// subqueryStalenessLookback is the per-anchor lookback the
-// subquery-over-absent lowering applies: reference Prometheus
-// evaluates the subquery's inner expression as an instant query at
-// each anchor, and instant selector evaluation uses the engine's
-// lookback delta — 5 minutes by default (promql.defaultLookbackDelta).
-const subqueryStalenessLookback = 5 * time.Minute
+// subqueryStalenessLookback is the per-anchor lookback every subquery
+// lowering applies: reference Prometheus evaluates the subquery's inner
+// expression as an instant query at each anchor, and instant selector
+// evaluation uses the engine's lookback delta — 5 minutes by default
+// (promql.defaultLookbackDelta). It is the same window the top-level
+// instant selector seam uses, hence the alias rather than a second
+// literal: an anchor carries forward the last sample within 5m of it,
+// and an anchor with no sample in that window emits nothing.
+//
+// Deriving the lookback from the subquery STEP instead (the shape this
+// replaced) is wrong in both directions — a step shorter than the
+// scrape interval silently drops anchors that reference carries a value
+// forward to, and a step longer than 5m resurrects samples reference
+// considers stale.
+const subqueryStalenessLookback = instantLookback
 
 // lowerSubqueryOverAbsent — `absent(<v>)[<range>:<step>]`, typically
 // under an outer reducer (`max_over_time(absent(up)[5m:1m])`).
@@ -843,6 +983,12 @@ func lowerSubqueryOverAggregate(
 		Projections: []chplan.Projection{
 			{Expr: attrsExpr, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+			// The anchor doubles as the row's timestamp. An outer
+			// reducer reads `anchor_ts`, but a BARE subquery-over-
+			// aggregate (`max(m)[1m:10s]`) is itself the answer, and
+			// without this slot the response layer had no TimeUnix to
+			// read and stamped every point with wall-clock now64(9).
+			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: s.TimestampColumn},
 			{
 				Expr: &chplan.FuncCall{
 					Name: "toFloat64",
@@ -888,6 +1034,7 @@ func wrapSubqueryQuantilePhiGuard(
 			Projections: []chplan.Projection{
 				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 				{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+				{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: s.TimestampColumn},
 				{Expr: value, Alias: s.ValueColumn},
 			},
 		}
@@ -1365,7 +1512,7 @@ func lowerSubqueryOverSubquery(
 	return &chplan.RangeWindow{
 		Input:           wideInner,
 		Identity:        true,
-		Range:           step,
+		Range:           subqueryStalenessLookback,
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)

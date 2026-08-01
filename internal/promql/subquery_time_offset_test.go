@@ -17,6 +17,8 @@ func TestLowerSubqueryOverBinary_ShiftsSyntheticGridForOffset(t *testing.T) {
 	start := time.Date(2026, time.January, 1, 0, 10, 0, 0, time.UTC)
 	end := start.Add(10 * time.Minute)
 	offset := 2 * time.Minute
+	subRange := 5 * time.Minute
+	subStep := time.Minute
 
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(query)
 	if err != nil {
@@ -27,9 +29,10 @@ func TestLowerSubqueryOverBinary_ShiftsSyntheticGridForOffset(t *testing.T) {
 		t.Fatalf("parsed %T, want *parser.SubqueryExpr", expr)
 	}
 	plan, err := lowerSubquery(sub, schema.DefaultOTelMetrics(), lowerCtx{
-		start: start,
-		end:   end,
-		step:  time.Minute,
+		start:    start,
+		end:      end,
+		step:     subStep,
+		lowerers: RangeLowerers{}.withDefaults(),
 	})
 	if err != nil {
 		t.Fatalf("lowerSubquery(%q): %v", query, err)
@@ -38,11 +41,17 @@ func TestLowerSubqueryOverBinary_ShiftsSyntheticGridForOffset(t *testing.T) {
 	if grid == nil {
 		t.Fatal("lowered subquery has no synthetic StepGrid")
 	}
-	if !grid.Start.Equal(start.Add(-offset)) {
-		t.Errorf("StepGrid.Start = %s, want %s", grid.Start, start.Add(-offset))
+	// The inner grid covers the union of every outer step's subquery
+	// window, shifted by the offset: (start-offset-range, end-offset].
+	// The window is left-open, so the lower endpoint itself is excluded
+	// and the first anchor sits one sub-step later.
+	wantStart := start.Add(-offset).Add(-subRange).Add(subStep)
+	wantEnd := end.Add(-offset)
+	if !grid.Start.Equal(wantStart) {
+		t.Errorf("StepGrid.Start = %s, want %s", grid.Start, wantStart)
 	}
-	if !grid.End.Equal(end.Add(-offset)) {
-		t.Errorf("StepGrid.End = %s, want %s", grid.End, end.Add(-offset))
+	if !grid.End.Equal(wantEnd) {
+		t.Errorf("StepGrid.End = %s, want %s", grid.End, wantEnd)
 	}
 }
 
