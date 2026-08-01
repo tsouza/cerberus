@@ -1,10 +1,13 @@
 package regression
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -210,60 +213,170 @@ func TestIntegrationImagePinsMatchTheJustfile(t *testing.T) {
 	}
 }
 
-// TestComposePrePullSkipsBuildableImages pins that the compose pre-pull decides
-// what is pullable from the compose model, not from what the daemon happens to
-// hold.
+// TestComposePrePullUsesTheAuthenticatedPullPath pins that the pre-pull fetches
+// with `docker pull`, not `docker compose pull`.
 //
-// The first cut of `_compose-pull-retry` pulled every image `config --images`
-// listed that `docker image inspect` could not find locally. Tier-2's
-// `dead-end-receiver` is built by compose during `up`, so at pre-pull time it is
-// legitimately absent — and `cerberus-migration-tier2:dead-end-receiver` exists
-// in no registry, so the pull failed five times and took the lane with it (run
-// 30281594098). Absence from the daemon means "not built yet" just as often as
-// it means "not fetched yet"; only the `build:` sections distinguish them, which
-// is what compose's own `--ignore-buildable` reads.
-func TestComposePrePullSkipsBuildableImages(t *testing.T) {
+// The two do not share a credential source. Measured four seconds apart inside
+// one job (run 30702344415, job 91376064528): `docker pull` fetched a Docker Hub
+// image whole, while compose's pull in the same job was refused with "you have
+// reached your UNAUTHENTICATED pull rate limit" — the registry's own words for a
+// request that carried no credentials, seconds after `docker/login-action`
+// reported success. Run through compose, the mechanism built to absorb Docker
+// Hub failures was spending the ANONYMOUS quota, which is why the pre-pull never
+// helped the lanes it was added for (issue #1565).
+func TestComposePrePullUsesTheAuthenticatedPullPath(t *testing.T) {
 	t.Parallel()
 
 	buf, err := os.ReadFile("../../Justfile")
 	if err != nil {
 		t.Fatalf("read Justfile: %v", err)
 	}
+	body := composePrePullRecipe(t, string(buf))
 
-	const prePullRecipe = "_compose-pull-retry"
-	body, ok := justRecipes(t, string(buf))[prePullRecipe]
-	if !ok {
-		t.Fatalf("no %q recipe in the Justfile — the guard is scanning for a shape that no longer exists", prePullRecipe)
+	if !strings.Contains(body, composePullModule) {
+		t.Errorf("%s does not go through `%s`, which owns the model resolution and the shared retry policy.",
+			composePrePullRecipeName, composePullModule)
 	}
 
-	buildable := buildableComposeImages(t, "../../test/e2e/migration")
-	if len(buildable) == 0 {
-		t.Fatalf("no compose service under test/e2e/migration is built rather than fetched — " +
-			"the guard is scanning for a shape that no longer exists")
-	}
-
-	if !strings.Contains(body, "--ignore-buildable") {
-		t.Errorf("%s pulls without `--ignore-buildable`, but these compose services are built rather than fetched: %s.\n"+
-			"Their images exist in no registry, so pulling them fails the lane. Let compose read its own `build:` "+
-			"sections instead of inferring pullability from `docker image inspect`.", prePullRecipe, strings.Join(buildable, ", "))
-	}
-	if strings.Contains(body, "docker image inspect") {
-		t.Errorf("%s gates the pull on `docker image inspect`. Absence from the local daemon means \"not built yet\" "+
-			"as often as \"not fetched yet\" — %s are built during `up` and would be pulled from a registry that "+
-			"does not serve them.", prePullRecipe, strings.Join(buildable, ", "))
+	for _, line := range logicalLines(body) {
+		if isProse(line) {
+			continue
+		}
+		if regexp.MustCompile(`\bdocker\s+compose\b.*\bpull\b`).MatchString(line) {
+			t.Errorf("%s pre-pulls with `docker compose pull`: %s\n"+
+				"Compose's pull path does not carry the credentials `docker login` wrote, so it spends the "+
+				"anonymous per-runner-IP quota and fails while `docker pull` of the same image succeeds.",
+				composePrePullRecipeName, strings.TrimSpace(line))
+		}
 	}
 }
 
-// buildableComposeImages returns `<file>: <service>` for every compose service
-// under root that compose builds rather than fetches.
-func buildableComposeImages(t *testing.T, root string) []string {
+// TestComposePrePullPullsExactlyTheFetchableImages drives the resolver against a
+// stub `docker` whose `compose config` reports the REAL migration-tier compose
+// model, and asserts it pulls every fetchable image and no built one.
+//
+// The first cut of the pre-pull pulled every image `config --images` listed that
+// `docker image inspect` could not find locally. Tier-2's `dead-end-receiver` is
+// built by compose during `up`, so at pre-pull time it is legitimately absent —
+// and `cerberus-migration-tier2:dead-end-receiver` exists in no registry, so the
+// pull failed five times and took the lane with it (run 30281594098). Absence
+// from the daemon means "not built yet" just as often as "not fetched yet"; only
+// the `build:` sections distinguish them.
+func TestComposePrePullPullsExactlyTheFetchableImages(t *testing.T) {
+	t.Parallel()
+
+	model, fetchable, built := composeModelFromTree(t, "../../test/e2e/migration")
+	if len(built) == 0 {
+		t.Fatal("no compose service under test/e2e/migration is built rather than fetched — " +
+			"the guard is scanning for a shape that no longer exists")
+	}
+	if len(fetchable) == 0 {
+		t.Fatal("no compose service under test/e2e/migration is fetched from a registry — " +
+			"the guard is scanning for a shape that no longer exists")
+	}
+
+	dir := t.TempDir()
+	modelPath := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(modelPath, model, 0o600); err != nil {
+		t.Fatalf("write compose model: %v", err)
+	}
+	callLog := filepath.Join(dir, "pulls")
+	writeStubComposeDocker(t, dir, modelPath, callLog)
+
+	cmd := exec.Command("node", "../../.github/scripts/"+composePullModule, "docker-compose.yml")
+	cmd.Env = append(
+		os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"COMPOSE_PULL_BACKOFF_SECONDS=0",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed on a model whose every pull succeeds: %v\noutput:\n%s", composePullModule, err, out)
+	}
+
+	logged, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatalf("read stub call log: %v", err)
+	}
+	pulled := strings.Fields(string(logged))
+	sort.Strings(pulled)
+
+	if !slices.Equal(pulled, fetchable) {
+		t.Errorf("pulled %v, want exactly %v\noutput:\n%s", pulled, fetchable, out)
+	}
+	for _, ref := range built {
+		if slices.Contains(pulled, ref) {
+			t.Errorf("pulled %q, which compose BUILDS during `up`. It exists in no registry, so the pull "+
+				"fails and takes the lane with it.", ref)
+		}
+	}
+}
+
+const (
+	composePrePullRecipeName = "_compose-pull-retry"
+	composePullModule        = "compose-pull-images.mjs"
+)
+
+func composePrePullRecipe(t *testing.T, justfile string) string {
+	t.Helper()
+
+	body, ok := justRecipes(t, justfile)[composePrePullRecipeName]
+	if !ok {
+		t.Fatalf("no %q recipe in the Justfile — the guard is scanning for a shape that no longer exists",
+			composePrePullRecipeName)
+	}
+	return body
+}
+
+// writeStubComposeDocker drops a `docker` onto dir that answers `compose …
+// config` with the model at modelPath, reports every image as absent from the
+// daemon, and records each `docker pull <ref>`.
+func writeStubComposeDocker(t *testing.T, dir, modelPath, callLog string) {
+	t.Helper()
+
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"case \"$1\" in",
+		"  compose)",
+		"    cat " + shellQuote(modelPath),
+		"    exit 0",
+		"    ;;",
+		"  image)",
+		// Nothing is held locally, so the model — not daemon state — is the
+		// only thing that can keep a built image out of the pull set.
+		"    exit 1",
+		"    ;;",
+		"  pull)",
+		"    echo \"$2\" >> " + shellQuote(callLog),
+		"    exit 0",
+		"    ;;",
+		"esac",
+		"echo \"stub: unexpected docker $*\" >&2",
+		"exit 2",
+		"",
+	}, "\n")
+
+	path := filepath.Join(dir, "docker")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub docker: %v", err)
+	}
+}
+
+// composeModelFromTree reads every compose file under root and renders the
+// merged services as the JSON `docker compose config --format json` prints,
+// alongside the sorted image refs compose would fetch and the ones it builds.
+func composeModelFromTree(t *testing.T, root string) (model []byte, fetchable, built []string) {
 	t.Helper()
 
 	type service struct {
+		Image      string    `yaml:"image"`
 		Build      yaml.Node `yaml:"build"`
 		PullPolicy string    `yaml:"pull_policy"`
 	}
-	var found []string
+
+	services := map[string]any{}
+	fetchSet := map[string]bool{}
+	builtSet := map[string]bool{}
 	files := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -289,8 +402,20 @@ func buildableComposeImages(t *testing.T, root string) []string {
 		}
 		files++
 		for name, svc := range doc.Services {
-			if !svc.Build.IsZero() || svc.PullPolicy == "build" || svc.PullPolicy == "never" {
-				found = append(found, base+":"+name)
+			isBuilt := !svc.Build.IsZero() || svc.PullPolicy == "build" || svc.PullPolicy == "never"
+			rendered := map[string]any{"image": svc.Image}
+			if !svc.Build.IsZero() {
+				rendered["build"] = map[string]any{"context": "."}
+			}
+			if svc.PullPolicy != "" {
+				rendered["pull_policy"] = svc.PullPolicy
+			}
+			services[base+"-"+name] = rendered
+			switch {
+			case isBuilt:
+				builtSet[svc.Image] = true
+			case svc.Image != "":
+				fetchSet[svc.Image] = true
 			}
 		}
 		return nil
@@ -302,8 +427,26 @@ func buildableComposeImages(t *testing.T, root string) []string {
 		t.Fatalf("no compose file under %s — the guard is scanning for a shape that no longer exists", root)
 	}
 
-	sort.Strings(found)
-	return found
+	model, err = json.Marshal(map[string]any{"services": services})
+	if err != nil {
+		t.Fatalf("render compose model: %v", err)
+	}
+	// A ref that is built in one tier and fetched in another is built: compose
+	// would have it in the daemon, and no registry serves it.
+	for ref := range fetchSet {
+		if builtSet[ref] {
+			delete(fetchSet, ref)
+		}
+	}
+	for ref := range fetchSet {
+		fetchable = append(fetchable, ref)
+	}
+	for ref := range builtSet {
+		built = append(built, ref)
+	}
+	sort.Strings(fetchable)
+	sort.Strings(built)
+	return model, fetchable, built
 }
 
 // TestJustfileNoUnretriedDockerPull pins that `docker pull` appears only inside

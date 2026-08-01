@@ -1164,6 +1164,10 @@ jobs:
     # mechanism kills the container on the first window expiry. Running
     # CH inline as a plain `docker run` step with our own poll loop
     # decouples the wait from GH's healthcheck timer and never races.
+    env:
+      # Named once: the pre-pull and the `docker run` must name the same ref,
+      # or the retry warms an image the run does not use.
+      CH_IMAGE: clickhouse/clickhouse-server:26.5
     steps:
       - uses: actions/checkout@v7
 
@@ -1175,6 +1179,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      # `docker run` pulls a missing image itself, single-attempt: a Docker Hub
+      # blip fails the job before ClickHouse is even started. `_pull-retry`
+      # acquires it under the shared registry policy first.
+      - name: Pre-pull ClickHouse
+        run: just _pull-retry "$CH_IMAGE"
 
       - name: Start ClickHouse
         run: |
@@ -1188,7 +1198,7 @@ jobs:
             -e CLICKHOUSE_DB=otel \
             -e CLICKHOUSE_USER=cerberus \
             -e CLICKHOUSE_PASSWORD=cerberus \
-            clickhouse/clickhouse-server:26.5
+            "$CH_IMAGE"
 
       - name: Wait for ClickHouse
         run: |
