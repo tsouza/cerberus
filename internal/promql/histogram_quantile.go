@@ -411,13 +411,27 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 // name + label matchers). `windowRange` is the `[range]` duration from
 // the wrapping `rate`/`increase` (zero if there's no range-vector
 // function — currently always set when this struct is built, but
-// kept explicit for clarity). `agg` carries the AggregateExpr metadata
-// (Op, Grouping, Without) when a wrapping aggregation is present; nil
-// means "no aggregation wrap, just rate(...)".
+// kept explicit for clarity). `windowMinSamples` is that function's
+// "no sample emitted" floor — see histogramWindowMinSamples. `agg` carries
+// the AggregateExpr metadata (Op, Grouping, Without) when a wrapping
+// aggregation is present; nil means "no aggregation wrap, just rate(...)".
 type histogramAggShape struct {
-	selector    *parser.VectorSelector
-	windowRange time.Duration
-	agg         *parser.AggregateExpr
+	selector         *parser.VectorSelector
+	windowRange      time.Duration
+	windowMinSamples int
+	agg              *parser.AggregateExpr
+}
+
+// histogramWindowMinSamples maps a matched range-vector function to the
+// number of samples reference PromQL needs inside `[range]` before it emits
+// at an anchor. rate / increase span a delta between two points and emit
+// nothing with fewer; sum_over_time folds whatever is there, so one sample
+// is a valid window.
+func histogramWindowMinSamples(fn string) int {
+	if fn == "rate" || fn == "increase" {
+		return rateMinSamples
+	}
+	return stalenessMinSamples
 }
 
 // matchHistogramAggIdiom walks the expression tree looking for the
@@ -488,9 +502,10 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		return histogramAggShape{}, false
 	}
 	return histogramAggShape{
-		selector:    vs,
-		windowRange: ms.Range,
-		agg:         agg,
+		selector:         vs,
+		windowRange:      ms.Range,
+		windowMinSamples: histogramWindowMinSamples(call.Func.Name),
+		agg:              agg,
 	}, true
 }
 
