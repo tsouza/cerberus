@@ -96,13 +96,27 @@ test('push, schedule and release PRs always run the full lane', () => {
   }
 });
 
+test('a merge-queue batch is scoped by its own diff, not swept wholesale', () => {
+  // A merge group is a PRE-merge gate on a projected trunk, so it asks the
+  // question a pull request asks: did THIS batch touch the surface the stack
+  // sees? Sweeping it instead would charge every batch the full ~25-minute boot
+  // on top of the push-to-main run that lands the same SHA moments later.
+  const inQueue = { eventName: 'merge_group', headRef: '' };
+  assert.equal(decide({ ...inQueue, changed: ['docs/engine.md'] }).inScope, false);
+  assert.equal(decide({ ...inQueue, changed: ['internal/chsql/emit_node.go'] }).inScope, true);
+
+  // …and the fail-open direction survives: a batch whose diff cannot be
+  // computed (no merge-group SHAs wired, shallow clone, a git failure) boots.
+  assert.equal(decide({ ...inQueue, changed: null }).inScope, true);
+});
+
 test('workflow_dispatch does not boot the stack, whatever the diff says', () => {
   // The guard this module replaced listed push / schedule / release-PR and left
   // workflow_dispatch out, so dispatching e2e.yml never booted compose. That
   // exclusion is deliberate — the workflow's only dispatch input regenerates the
   // k3d crawl inventory — and it is easy to lose by accident, because
-  // runsFullLane() answers `true` for every non-PR event. Pinned in both
-  // directions: even a diff that WOULD put a PR in scope must not boot here.
+  // runsFullLane() answers `true` for every event it does not name. Pinned in
+  // both directions: even a diff that WOULD put a PR in scope must not boot here.
   for (const changed of [['docs/engine.md'], ['internal/chsql/emit_node.go'], null]) {
     const { inScope } = decide({ eventName: 'workflow_dispatch', headRef: '', changed });
     assert.equal(inScope, false, `workflow_dispatch with changed=${JSON.stringify(changed)} must short-circuit`);

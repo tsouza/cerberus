@@ -7,6 +7,11 @@ on:
     # maintenance preflight reads these check-runs before publishing.
     branches: [main, 'release/*.x']
   pull_request:
+  # `check` / `lint` / `forbid-skip` are required contexts, so they must post on
+  # the merge queue's projected trunk as well — a required context the merge
+  # group never produces leaves the entry queued forever. See the merge-queue
+  # section of docs/test-strategy.md.
+  merge_group:
 
 permissions:
   contents: read
@@ -748,7 +753,8 @@ jobs:
   # A description-only gate would miss ~82% of the real population.
   #
   # Runs on pull_request AND push-to-main so it is eligible as a required
-  # status check and posts the check-run that release-gate-drift.yml looks for.
+  # status check and posts the check-run that release-gate-drift.yml looks for,
+  # and on a merge group so the same context resolves on the projected trunk.
   forbid-deferral:
     name: forbid-deferral
     runs-on: ubuntu-latest
@@ -757,8 +763,9 @@ jobs:
       # Every cited number is resolved through the API: a deferral is only
       # tracked if the number names an issue (not a pull request) that is open.
       issues: read
-      # On a push there is no event payload body, so the description surface is
-      # resolved from the head commit's associated pull request.
+      # Only a pull_request payload carries the description inline; on a push
+      # or a merge group the surface is resolved from the head commit's
+      # associated pull request.
       pull-requests: read
     steps:
       - uses: actions/checkout@v7
@@ -781,7 +788,12 @@ jobs:
           # Bodies are attacker-controlled: passed via env, never interpolated
           # into a shell `run:` line.
           PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # Each event names its own range start. A merge group carries neither
+          # `pull_request.base.sha` nor `event.before`, so without its own term
+          # the range would collapse to `HEAD^` and inspect one commit of a
+          # batch. `github.sha` already IS the merge group's head commit, so the
+          # range end needs no extra term.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
   # `link-check` is the INTERNAL markdown link + anchor integrity gate. It

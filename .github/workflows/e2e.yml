@@ -174,12 +174,18 @@ jobs:
       - id: scope
         name: decide whether this change is visible to the compose stack
         run: node .github/scripts/compose-smoke-scope.mjs
+        # The base/head pair is wired for both shapes the shared scope-gate
+        # understands, so this caller and mutation.yml's satisfy its contract
+        # identically. This lane declares no `merge_group:` trigger — it is a
+        # release gate that does its work on the merge commit — so the second
+        # half is inert today; leaving the two callers asymmetric is exactly the
+        # subtle divergence the shared module exists to prevent.
         env:
           MODE: emit
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
 
   compose-smoke-setup:
     name: compose-smoke-setup

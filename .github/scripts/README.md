@@ -38,11 +38,12 @@ genuine build error. `pull-buildkit-image.mjs` (host-side bootstrap pull) and
 rate-limit bucket and fail the same way, so they share the policy instead of
 re-deriving it.
 
-`lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
-lane guards?" — `runsFullLane()` (which events must never take a scoped
-subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
-when it cannot be computed, which callers must read as "run everything" rather
-than as "nothing changed"), and segment-wise `underPrefix` / `matchesAny`.
+`lib/scope-gate.mjs` answers "does THIS change touch the scope a heavy lane
+guards?" — `runsFullLane()` (which events must never take a scoped subset),
+`changedPaths()` (the change's own diff — a pull request against its merge base,
+a merge-queue entry across `base_sha..head_sha` — or `null` when it cannot be
+computed, which callers must read as "run everything" rather than as "nothing
+changed"), and segment-wise `underPrefix` / `matchesAny`.
 It exists so the two dangerous parts — the always-full event set and the
 uncomputable-diff fallback — cannot drift between the lanes that use it.
 
@@ -242,8 +243,9 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
 - **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
   phases run and emits them as the `mutate` `strategy.matrix`. On push /
   schedule / dispatch and on a `release/*` PR it selects every phase; on an
-  ordinary PR it selects only the legs whose scope the diff touches, applying
-  each leg's `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
+  ordinary PR — and on a merge-queue entry, off its own `base_sha..head_sha` —
+  it selects only the legs whose scope the diff touches, applying each leg's
+  `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
   A changed path that lies inside a phase scope while claiming no leg is a
   coverage gap and fails the job rather than being dropped. `verify` mode asserts
   the table alone (every scope an existing directory, every pattern legal under
@@ -763,7 +765,8 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   path still exists (a renamed entry matches nothing and silently retires the
   gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
   to `true`: push / schedule / `release/*` PRs always run the full lane, and an
-  uncomputable diff boots the stack rather than skipping it. `workflow_dispatch`
+  uncomputable diff boots the stack rather than skipping it. A merge-queue entry
+  is scoped like a pull request, off its own `base_sha..head_sha`. `workflow_dispatch`
   is the one named exception (`NON_BOOTING_EVENTS`) — e2e.yml's only dispatch
   input regenerates the k3d crawl inventory, which no compose shard can see.
   `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the

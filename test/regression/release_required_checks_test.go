@@ -333,6 +333,10 @@ func tagCuttingCommand(line string) string {
 type checkOwner struct {
 	file         string
 	pushBranches []string
+	// mergeGroup records whether the workflow declares the `merge_group:`
+	// trigger, i.e. whether it posts its check-runs on the projected trunk a
+	// merge queue builds. See merge_queue_test.go.
+	mergeGroup bool
 }
 
 func (o checkOwner) pushesOn(branch string) bool {
@@ -650,7 +654,11 @@ func workflowCheckOwners(t *testing.T) checkOwnerIndex {
 			}
 		}
 
-		owner := checkOwner{file: path, pushBranches: triggers.Push.Branches}
+		owner := checkOwner{
+			file:         path,
+			pushBranches: triggers.Push.Branches,
+			mergeGroup:   onDeclares(doc.On, mergeGroupTrigger),
+		}
 		for id, jb := range doc.Jobs {
 			name := jb.Name
 			if name == "" {
