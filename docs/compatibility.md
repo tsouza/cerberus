@@ -110,8 +110,7 @@ All three run against a real reference backend on identical seeded data,
 so each catches genuine semantic divergence. The difference is *corpus
 provenance and breadth*: PromQL inherits an externally-curated standard;
 TraceQL's coverage is only as wide as the author wrote it. Raising
-TraceQL's confidence is the top improvement item (see the project
-roadmap / the PR that introduced this section).
+TraceQL's confidence is the top improvement item.
 
 ## Local run
 
