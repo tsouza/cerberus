@@ -110,7 +110,12 @@ trap cleanup EXIT
 mkdir -p "$(dirname "$REPORT")"
 
 echo "==> bringing up loki-compatibility stack (compose up --wait)"
-docker compose up -d --build --wait clickhouse loki cerberus
+# `--build` builds Dockerfile.local, whose `FROM golang:1.26` BuildKit resolves
+# from Docker Hub — a 429 there fails the lane before any query runs. The
+# wrapper retries the command on registry/network faults only; a genuine build
+# failure still fails on the first attempt.
+node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
+    docker compose up -d --build --wait clickhouse loki cerberus
 
 echo "==> running seeder (go run ./cmd/seed)"
 (cd "$REPO_ROOT" && go run ./compatibility/loki/cmd/seed/)

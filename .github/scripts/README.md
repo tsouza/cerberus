@@ -28,6 +28,16 @@ universe, from `PLAYWRIGHT_DIR`) and `collectShardCoverageViolations()`
 (unassigned / double-assigned / phantom / stale-exclude / bad-shard-name).
 One implementation means a new rule guards BOTH lanes at once.
 
+`lib/registry.mjs` owns the one retry policy every container-registry fetch
+follows — the attempt budget (`registryAttempts`), the linear backoff
+(`readBackoffStepSeconds` / `sleepSeconds`), and `isTransientRegistryFailure()`,
+which decides whether command output names a registry / network fault (Docker
+Hub 429, manifest HEAD failure, TLS / reset / DNS / module-proxy transport) or a
+genuine build error. `pull-buildkit-image.mjs` (host-side bootstrap pull) and
+`build-with-registry-retry.mjs` (the build's own `FROM` resolution) hit the same
+rate-limit bucket and fail the same way, so they share the policy instead of
+re-deriving it.
+
 `lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
 lane guards?" — `runsFullLane()` (which events must never take a scoped
 subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
@@ -936,6 +946,28 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
+- **`build-with-registry-retry.mjs`** — the Justfile (`e2e-up`, `e2e-bwc-up`,
+  `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
+  compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
+  and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
+  `docker compose up|build`), retrying it when — and only when — its output
+  names a registry or network fault. It exists because a build's BASE images are
+  resolved by BuildKit *during* the build, so no host-side pre-pull protects
+  them: a Docker Hub 429 on `golang:1.26` (the `FROM` of `Dockerfile.local`)
+  failed `e2e` and `migration-e2e` on main with `unexpected status from HEAD
+  request … 429 Too Many Requests`. The retry wraps the command rather than
+  pre-pulling the ref because the built-in `docker` driver resolves `FROM` from
+  the daemon's image store while the `docker-container` driver
+  (`.github/actions/setup-buildx`) never does — a pre-pull would protect some
+  lanes and silently protect nothing in the rest. Unlike the bootstrap pull
+  there is no local-image fallback: a tag an earlier run left in the daemon
+  attests nothing about this tree, and a build failure that is not a registry
+  failure fails on the FIRST attempt so a real break is never retried into
+  invisibility. Takes the command as its trailing argv.
+  - Env: `IMAGE_BUILD_RETRY_BACKOFF_SECONDS` (optional; default `10` — linear
+    backoff step, attempt N sleeps N × this).
+  - Exit: `0` on success; the command's own status when it failed for a
+    non-registry reason; `1` when the retry budget is spent.
 
 ## Notes
 
