@@ -62,6 +62,7 @@ var branchProtectionContexts = []string{
 	"compatibility/prometheus-forced-route",
 	"compatibility/tempo",
 	"coverage",
+	"forbid-deferral",
 	"forbid-skip",
 	"lint",
 	"mutation",
