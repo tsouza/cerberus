@@ -411,13 +411,27 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 // name + label matchers). `windowRange` is the `[range]` duration from
 // the wrapping `rate`/`increase` (zero if there's no range-vector
 // function — currently always set when this struct is built, but
-// kept explicit for clarity). `agg` carries the AggregateExpr metadata
-// (Op, Grouping, Without) when a wrapping aggregation is present; nil
-// means "no aggregation wrap, just rate(...)".
+// kept explicit for clarity). `windowMinSamples` is that function's
+// "no sample emitted" floor — see histogramWindowMinSamples. `agg` carries
+// the AggregateExpr metadata (Op, Grouping, Without) when a wrapping
+// aggregation is present; nil means "no aggregation wrap, just rate(...)".
 type histogramAggShape struct {
-	selector    *parser.VectorSelector
-	windowRange time.Duration
-	agg         *parser.AggregateExpr
+	selector         *parser.VectorSelector
+	windowRange      time.Duration
+	windowMinSamples int
+	agg              *parser.AggregateExpr
+}
+
+// histogramWindowMinSamples maps a matched range-vector function to the
+// number of samples reference PromQL needs inside `[range]` before it emits
+// at an anchor. rate / increase span a delta between two points and emit
+// nothing with fewer; sum_over_time folds whatever is there, so one sample
+// is a valid window.
+func histogramWindowMinSamples(fn string) int {
+	if fn == "rate" || fn == "increase" {
+		return rateMinSamples
+	}
+	return stalenessMinSamples
 }
 
 // matchHistogramAggIdiom walks the expression tree looking for the
@@ -488,9 +502,10 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		return histogramAggShape{}, false
 	}
 	return histogramAggShape{
-		selector:    vs,
-		windowRange: ms.Range,
-		agg:         agg,
+		selector:         vs,
+		windowRange:      ms.Range,
+		windowMinSamples: histogramWindowMinSamples(call.Func.Name),
+		agg:              agg,
 	}, true
 }
 
@@ -649,7 +664,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	if agg == nil {
 		// `histogram_quantile(phi, rate(metric[5m]))` — group by series
 		// identity so each series gets its own bucket-rate vector.
-		return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+		return []chplan.Expr{histogramIdentityExpr(s)},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
 	}
@@ -661,15 +676,15 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 		// Attributes map directly (CH rejects mapFilter with an empty
 		// IN list as a syntax error).
 		if len(agg.Grouping) == 0 {
-			return []chplan.Expr{canonicalGroupKeyExpr(&chplan.ColumnRef{Name: s.AttributesColumn}, s)},
+			return []chplan.Expr{histogramIdentityExpr(s)},
 				[]string{"gkey_0"},
 				&chplan.ColumnRef{Name: "gkey_0"}
 		}
 		return []chplan.Expr{
-				canonicalGroupKeyExpr(&chplan.MapWithoutKeys{
-					Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+				&chplan.MapWithoutKeys{
+					Map:  histogramIdentityExpr(s),
 					Keys: append([]string(nil), agg.Grouping...),
-				}, s),
+				},
 			},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
@@ -688,7 +703,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	mapArgs := make([]chplan.Expr, 0, len(labels)*2)
 	for i, label := range labels {
 		alias := fmt.Sprintf("gkey_%d", i)
-		groupBy[i] = attributeLookup(s.AttributesColumn, label)
+		groupBy[i] = attributeLookupExpr(histogramIdentityExpr(s), label)
 		aliases[i] = alias
 		mapArgs = append(
 			mapArgs,

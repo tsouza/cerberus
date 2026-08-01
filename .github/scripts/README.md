@@ -65,7 +65,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Env: `CHECK` is one of `t-skip`, `not-implemented`,
     `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
-- **`forbid-deferral.mjs`** — `ci.yml`, the `forbid-deferral` job. The prose
+- **`forbid-deferral.mjs`** — `forbid-deferral.yml`, its own workflow. The prose
   sibling of `forbid-skip`: where that one rejects a test that declines to
   assert, this rejects a change that names work it is not doing and walks away.
   Scans exactly three surfaces, all of them the change's OWN additions — the PR
@@ -73,9 +73,19 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   of that diff — against the exported `DEFERRAL_MARKERS` table, and requires
   every hit to cite an issue in this repository that is **open** and is an issue
   rather than a pull request (GitHub's issues endpoint returns both; the
-  `pull_request` key discriminates). Citation scope is the paragraph for prose
-  and `CITATION_WINDOW_LINES` either side for a diff hunk, so a comment block
-  that already names its issue satisfies the gate when it grows.
+  `pull_request` key discriminates). Citation scope follows the author's own
+  structure: a marker on a markdown heading is satisfied anywhere in the section
+  that heading introduces (through to the next heading of the same or higher
+  level), any other prose marker within its own paragraph, and a diff marker
+  within `CITATION_WINDOW_LINES` either side — so both the sanctioned
+  heading-then-list-of-issues body and a comment block that already names its
+  issue satisfy the gate.
+  It lives in its own workflow rather than in `ci.yml` because one of its
+  surfaces is the PR description and its remedy asks the author to edit it:
+  `ci.yml`'s bare `pull_request:` trigger excludes `edited`, so a corrected body
+  raised no event and the stale failure stood with no code to push. The split
+  buys `types: [… edited …]` for the price of one checkout instead of the whole
+  suite; `test/regression/forbid_deferral_trigger_test.go` pins both halves.
   The commit-message surface is measured, not assumed: of 217 commits on `main`
   carrying deferral text, 178 carry it ONLY in intra-branch commit messages, so
   a description-only gate would miss ~82% of them.
@@ -87,8 +97,9 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   empty file set or an empty marker table each fail LOUDLY rather than passing
   green. `forbid-deferral.test.mjs` is the `node --test` guard (run as the step
   BEFORE the gate): it proves every table row fires on a real example and that
-  the three measured false-positive shapes — Go's `defer` statement, the phrase
-  that records COMPLETED work, and a change that only DELETES a marker line —
+  the measured false-positive shapes — Go's `defer` statement, the phrase that
+  records COMPLETED work in prose or in a past-tense heading, a change that only
+  DELETES a marker line, and a heading whose section cites its issue below it —
   stay clean.
   - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `issues: read` and
     `pull-requests: read`), `GITHUB_EVENT_NAME`, `PR_BODY` (required on a
@@ -226,7 +237,57 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   label edit from here would block its auto-rebase.
   - Env: none (the title is passed by the caller); argv `--self-test` pins the
     full mapping incl. the deps/release scope overrides and the no-match cases.
+    The self-test runs on the `forbid-skip` lane, in the same step as
+    `issue-label.test.mjs`.
   - Exit: `0` on a green self-test, `1` on any failed assertion.
+- **`issue-label.mjs`** — `issue-label.yml`, BOTH jobs (`label` + `backfill`).
+  The issue-side counterpart to `pr-type-label.mjs`: an ISSUE carries no
+  Conventional-Commit prefix, so its labels are inferred deterministically from
+  what the issue says. Two independent passes, both pure functions of
+  `(title, body)` — no LLM, no network guess:
+  1. **area** — `PATH_PREFIX_TO_AREA` maps repo subtrees to `area/*` by
+     LONGEST prefix (`internal/promql`->area/promql, `test/spec/logql`->
+     area/logql, `.github/workflows`->area/ci); cerberus issues cite exact
+     `file:line`, so the dominant cited subtree names the area. Production
+     citations (`internal/`, `cmd/`) outrank harness citations by
+     `PRODUCTION_PATH_WEIGHT`, because an issue's area is where the code under
+     discussion LIVES, not where the tests that observed it live. The title's
+     own `<prefix>:` token (`TITLE_PREFIX_TO_AREA`) ranks first when present,
+     with a head-keyword fallback (`HEAD_KEYWORD_TO_AREA`) for titles that
+     carry no prefix. At most `MAX_AREA_LABELS` (2), and every SECONDARY area
+     must clear `AREA_SECONDARY_MIN_PATHS` (2) distinct citations.
+  2. **type** — a Conventional-Commit title prefix is authoritative and is
+     resolved by importing `labelsForTitle()` from `pr-type-label.mjs` (the
+     type table has exactly ONE definition in this repo). Otherwise a scored
+     scan of `TYPE_SIGNALS` — curated phrases, not bare words — over the TITLE
+     first and the body only as a fallback: wrong answer / divergence / silent
+     empty -> `bug`, missing coverage / hollow test / mutation survivor ->
+     `test`, unbounded resource / scan cost / fan-out -> `performance`,
+     duplication / half-finished mechanical change -> `refactor`, stale or
+     contradictory prose -> `documentation`. Ties break by
+     `TYPE_TIEBREAK_ORDER`.
+
+  The apply step is ADDITIVE (only ever POSTs missing labels; never removes or
+  replaces one a human set) and IDEMPOTENT (re-running is a no-op). The caps
+  count labels already present, so a human-set `area/*` or type label is
+  respected rather than doubled. ANTI-VACUITY guards fail the run rather than
+  exiting green on nothing: empty mapping tables, an issue whose `body` key was
+  never fetched, ZERO issues processed, a backfill that applied zero labels
+  while unlabeled issues remain, and any issue no rule classifies (reported by
+  number — a growing residue means the mapping is too narrow). NOT a required
+  status check: this is automation, and its own correctness is gated by
+  `issue-label.test.mjs` on the `forbid-skip` lane.
+  - Env: `ISSUE_LABEL_MODE` (`event` | `backfill`, required), `GITHUB_TOKEN`,
+    `GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH` (event mode),
+    `ISSUE_LABEL_DRY_RUN` (`1`/`true` computes + reports, applies nothing),
+    `ISSUE_LABEL_FIXTURE` (dry-run only: a JSON array of
+    `{number, title, body, labels}` read INSTEAD of the API, so a dry run is
+    reproducible offline), `GITHUB_API_URL`; argv `--check-tables` asserts the
+    mapping tables are non-empty (spelled differently from its sibling's
+    `--self-test` because importing `pr-type-label.mjs` would consume that
+    flag first).
+  - Exit: `0` when every scanned issue was classified and its missing labels
+    applied, `1` on any vacuity guard, unclassifiable issue, or API error.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
