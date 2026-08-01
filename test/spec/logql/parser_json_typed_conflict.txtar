@@ -1,0 +1,41 @@
+-- query.logql --
+{level="error"} | json level="severity" | level_extracted="warn"
+-- seed --
+CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) MATERIALIZED map(),
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error')
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES
+    ('{"ts":"2025-01-01","severity":"warn","msg":"picks-up"}'),
+    ('{"ts":"2025-01-01","severity":"info","msg":"rejected"}'),
+    ('{"ts":"2025-01-01","severity":"warn","msg":"also-picks-up"}');
+-- expected_rows --
+[
+  [{"msg": "also-picks-up", "severity": "warn", "ts": "2025-01-01"}],
+  [{"msg": "picks-up", "severity": "warn", "ts": "2025-01-01"}]
+]
+-- args --
+[0] string = "level"
+[1] string = "error"
+[2] string = "level"
+[3] string = "level_extracted"
+[4] string = "level"
+[5] string = "severity"
+[6] string = "level_extracted"
+[7] string = "level"
+[8] string = "level_extracted"
+[9] string = "level"
+[10] string = "severity"
+[11] string = "level_extracted"
+[12] string = "level_extracted"
+[13] string = "level_extracted"
+[14] string = "level.extracted"
+[15] string = "level.extracted"
+[16] string = "level/extracted"
+[17] string = "warn"
+-- chplan --
+Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), JSONExtractString(Body, "severity"))), "level_extracted"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), JSONExtractString(Body, "severity")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], if(mapContains(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), JSONExtractString(`Body`, ?))), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), JSONExtractString(`Body`, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
