@@ -1,0 +1,66 @@
+emitSearchTraceLimit ranks traces by `min(Timestamp) DESC, TraceId ASC` and
+keeps the first N. The TraceId leg is not cosmetic: when two traces share a
+start time it decides which one the page keeps, so at the LIMIT boundary a
+wrong direction is not a reordering — it is a trace the user should have seen
+going missing.
+
+This fixture puts the tie exactly on that boundary. `search_limit: 2` over
+three traces, all matching, all inside the request window:
+
+  - `ffff…ff03` starts at 00:00:30 — strictly newest, takes slot 1 outright.
+  - `0000…aa01` and `0000…bb02` BOTH start at 00:00:10 — an exact tie on
+    min(Timestamp), so the sort key alone cannot separate them. They straddle
+    slot 2: one is inside the page, one is outside, and only the TraceId leg
+    decides which.
+
+ASC picks `0000…aa01`, so the outer drain returns that trace's two spans plus
+the newest trace's span; `0000…bb02` contributes nothing. Flip the tie-break
+to DESC and the expected rows become `0000…bb02`'s — the fixture fails. The
+seed also discriminates the sort key itself: `0000…bb02` has the later LAST
+span (00:00:25 vs 00:00:20), so ranking by max(Timestamp) instead of min lands
+on the other side of the boundary too, and ranking ASC instead of DESC drops
+the newest trace.
+
+The matcher is the `name` intrinsic rather than a resource attribute so the
+seed carries no Map column: the emitted drain is `SELECT s.*`, and the
+round-trip harness cannot enumerate a bare `SELECT * FROM <table>` to wrap a
+Map in toJSONString.
+
+-- search_limit --
+2
+-- search_window --
+1767225600 1767225660
+-- query.traceql --
+{ name = "checkout" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanName String
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces VALUES
+    ('0000000000000000000000000000aa01', '0000000000000011', toDateTime64('2026-01-01 00:00:10', 9), 'checkout'),
+    ('0000000000000000000000000000aa01', '0000000000000012', toDateTime64('2026-01-01 00:00:20', 9), 'checkout'),
+    ('0000000000000000000000000000bb02', '0000000000000021', toDateTime64('2026-01-01 00:00:10', 9), 'checkout'),
+    ('0000000000000000000000000000bb02', '0000000000000022', toDateTime64('2026-01-01 00:00:25', 9), 'checkout'),
+    ('ffffffffffffffffffffffffffffff03', '0000000000000031', toDateTime64('2026-01-01 00:00:30', 9), 'checkout');
+-- expected_rows --
+[
+  ["0000000000000000000000000000aa01", "0000000000000011", "2026-01-01T00:00:10Z", "checkout"],
+  ["0000000000000000000000000000aa01", "0000000000000012", "2026-01-01T00:00:20Z", "checkout"],
+  ["ffffffffffffffffffffffffffffff03", "0000000000000031", "2026-01-01T00:00:30Z", "checkout"]
+]
+-- args --
+[0] string = "checkout"
+[1] int64 = 1767225600000000000
+[2] int64 = 1767225660000000000
+[3] string = "checkout"
+[4] int64 = 1767225600000000000
+[5] int64 = 1767225660000000000
+-- chplan --
+SearchTraceLimit traceLimit=2
+  Filter predicate=(((SpanName = "checkout") AND (Timestamp >= fromUnixTimestamp64Nano(1767225600000000000))) AND (Timestamp <= fromUnixTimestamp64Nano(1767225660000000000)))
+    Scan(otel_traces)
+-- sql --
+SELECT s.* FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 2)
