@@ -18,10 +18,12 @@
 // successful pull: an exhausted retry over an image the runner already holds
 // is a pass, because that is precisely the state buildx falls back to.
 //
-// The attempt budget, the backoff and the transient-failure vocabulary are
-// shared with the image-build wrapper via ./lib/registry.mjs — the bootstrap
-// pull and a build's `FROM` resolution hit the same registry and fail the same
-// way, so they retry to the same policy.
+// The attempt budget, the backoff and the failure vocabulary are shared with
+// the image-build wrapper via ./lib/registry.mjs — the bootstrap pull and a
+// build's `FROM` resolution hit the same registry and fail the same way, so
+// they retry to the same policy, and stop retrying on the same class: a
+// rate-limit refusal ends the loop at once rather than spending four more
+// pulls out of the quota that is refusing this one.
 //
 // Env:
 //   BUILDKIT_IMAGE                 (required) image ref to acquire, e.g.
@@ -36,17 +38,12 @@
 
 import process from 'node:process';
 
-import { capture, error, log, notice } from './lib/gh.mjs';
-import { readBackoffStepSeconds, registryAttempts, sleepSeconds } from './lib/registry.mjs';
+import { error } from './lib/gh.mjs';
+import { pullImageWithRetry, readBackoffStepSeconds } from './lib/registry.mjs';
 
 // A bootstrap pull is a single manifest + a handful of layers, so a short step
-// is enough to ride out a reset connection; the image-build wrapper waits
-// longer because a Hub 429 burst outlives it.
-const defaultBackoffStepSeconds = 3;
-
-function presentLocally(image) {
-  return capture('docker', ['image', 'inspect', image]).status === 0;
-}
+// is enough to ride out a reset connection.
+const bootstrapBackoffStepSeconds = 3;
 
 const image = (process.env.BUILDKIT_IMAGE ?? '').trim();
 if (image === '') {
@@ -54,32 +51,11 @@ if (image === '') {
   process.exit(1);
 }
 
-const backoffStepSeconds = readBackoffStepSeconds('BUILDKIT_PULL_BACKOFF_SECONDS', defaultBackoffStepSeconds);
-
-for (let attempt = 1; attempt <= registryAttempts; attempt++) {
-  log(`    docker pull ${image} (attempt ${attempt}/${registryAttempts})`);
-  const res = capture('docker', ['pull', image]);
-  if (res.status === 0) {
-    log(res.stdout.trim());
-    process.exit(0);
-  }
-  process.stderr.write(res.stderr);
-
-  if (presentLocally(image)) {
-    notice(
-      `docker pull ${image} failed, but the image is already in the local daemon — ` +
-        'buildx boots the builder from the local copy.',
-    );
-    process.exit(0);
-  }
-
-  if (attempt < registryAttempts) {
-    sleepSeconds(attempt * backoffStepSeconds);
-  }
-}
-
-error(
-  `docker pull ${image} failed ${registryAttempts} times and the image is absent from the local daemon, ` +
-    'so `buildx inspect --bootstrap` has nothing to boot from.',
-);
-process.exit(1);
+const acquired = pullImageWithRetry(image, {
+  backoffStepSeconds: readBackoffStepSeconds('BUILDKIT_PULL_BACKOFF_SECONDS', bootstrapBackoffStepSeconds),
+  // buildx boots from a local copy when its own pull fails, so presence — not a
+  // successful fetch — is this module's postcondition.
+  acceptLocalCopy: true,
+  consequence: '`buildx inspect --bootstrap` has nothing to boot from',
+});
+process.exit(acquired ? 0 : 1);

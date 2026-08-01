@@ -7,6 +7,11 @@ on:
     # maintenance preflight reads these check-runs before publishing.
     branches: [main, 'release/*.x']
   pull_request:
+  # `check` / `lint` / `forbid-skip` are required contexts, so they must post on
+  # the merge queue's projected trunk as well — a required context the merge
+  # group never produces leaves the entry queued forever. See the merge-queue
+  # section of docs/test-strategy.md.
+  merge_group:
 
 permissions:
   contents: read
@@ -661,6 +666,13 @@ jobs:
       # declared path still resolves, so a rename cannot quietly retire the gate.
       - name: Assert the compose-smoke scope gate decides correctly
         run: node --test .github/scripts/compose-smoke-scope.test.mjs
+
+      # The compose pre-pull's model→image decision. A service compose BUILDS
+      # must never be handed to `docker pull`: its ref exists in no registry, so
+      # the pre-pull burns every retry on a manifest that cannot resolve and
+      # fails the lane minutes in. Cheap to pin here, expensive to learn there.
+      - name: Assert the compose pre-pull fetches only fetchable images
+        run: node --test .github/scripts/compose-pull-images.test.mjs
 
       # Same discipline for the mutation lane's phase planner, one step further:
       # its selector decides which legs an ordinary PR runs, so a bug there is

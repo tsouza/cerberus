@@ -671,15 +671,18 @@ K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 # Pull each image with retry + linear backoff. Docker Hub from CI runners
 # intermittently times out the pull ("context deadline exceeded"); retrying
 # clears the transient failure instead of failing k3d creation / image staging.
+#
+# The retry itself is `.github/scripts/build-with-registry-retry.mjs` rather
+# than a bash loop, because WHICH failures deserve another attempt is the whole
+# question and it has exactly one right answer. A hand-rolled loop retries
+# everything: a `manifest unknown` five times (slower red, same verdict), and —
+# the failure that made this a rule — a Docker Hub rate-limit refusal five
+# times, spending four more pulls out of the quota that is already exhausted.
+# `lib/registry.mjs` owns that classification for every call site at once.
 _pull-retry +IMAGES:
     @for img in {{IMAGES}}; do \
-        ok=0; \
-        for attempt in 1 2 3 4 5; do \
-            echo "    docker pull $img (attempt $attempt)"; \
-            docker pull "$img" >/dev/null && { ok=1; break; }; \
-            sleep $((attempt * 3)); \
-        done; \
-        [ "$ok" = 1 ] || { echo "ERROR: docker pull $img failed after 5 attempts" >&2; exit 1; }; \
+        IMAGE_BUILD_RETRY_BACKOFF_SECONDS=3 node .github/scripts/build-with-registry-retry.mjs \
+            docker pull "$img" || exit 1; \
     done
 
 # Acquire every image a compose stack needs, with retry, BEFORE `up` reaches for
@@ -689,24 +692,18 @@ _pull-retry +IMAGES:
 # transient `prom/prometheus` fetch. `_pull-retry` already solved this for the
 # k3d lanes; the compose lanes just weren't going through it.
 #
-# Buildable services are skipped via compose's own `--ignore-buildable`, which
-# reads the `build:` sections in the model rather than guessing from what the
-# daemon happens to hold. Guessing is what broke Tier-2 on run 30281594098:
-# `dead-end-receiver` is built by compose during `up`, so it is absent from the
-# daemon at pre-pull time and a presence check classified it as "needs pulling"
-# — `cerberus-migration-tier2:dead-end-receiver` exists in no registry, so the
-# pull failed five times and took the lane with it. Whether an image is
-# *pullable* is a property of the compose model, not of daemon state.
+# The pre-pull runs `docker pull`, not `docker compose pull`, because the two
+# do not share a credential source: measured four seconds apart in one job, the
+# CLI pull carried the runner's Docker Hub login and compose's was refused as
+# UNAUTHENTICATED. Run through compose, the mechanism built to absorb Docker Hub
+# failures was spending the anonymous quota rather than the authenticated one —
+# which is why it never helped. `compose-pull-images.mjs` owns the resolution:
+# it reads which services are fetchable off the compose model's `build:`
+# sections (compose's own `--ignore-buildable` semantics) and pulls each one
+# through the shared retry policy. See that module's header for the evidence.
 _compose-pull-retry +FILES:
-    @args=""; for f in {{FILES}}; do args="$args -f $f"; done; \
-    echo "==> pre-pulling compose images (retry — Docker Hub flaky from CI)"; \
-    ok=0; \
-    for attempt in 1 2 3 4 5; do \
-        echo "    docker compose pull (attempt $attempt)"; \
-        docker compose $args pull --ignore-buildable --policy missing && { ok=1; break; }; \
-        sleep $((attempt * 3)); \
-    done; \
-    [ "$ok" = 1 ] || { echo "ERROR: docker compose pull failed after 5 attempts" >&2; exit 1; }
+    @echo "==> pre-pulling compose images (retry, over the authenticated pull path)"
+    @COMPOSE_PULL_BACKOFF_SECONDS=3 node .github/scripts/compose-pull-images.mjs {{FILES}}
 
 # `_pull-retry` / `_compose-pull-retry` protect the images the HOST daemon
 # fetches. The images a BUILD fetches — the `FROM` refs BuildKit resolves while

@@ -9,11 +9,13 @@ CREATE TABLE otel_metrics_histogram (
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_histogram VALUES
-    ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
-    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [3, 4, 3], [0.1, 0.5, 1.0]);
+    ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), [10, 0, 0, 0], [1.0, 2.0, 3.0]),
+    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0, 10], [100.0, 200.0, 300.0]);
+
 -- expected_rows --
 [
-  ["", {}, "2026-01-01T00:00:01Z", 0.3666666666666667]
+  ["", {}, "2026-01-01T00:00:01Z", 0.5],
+  ["", {}, "2026-01-01T00:00:01Z", 300.0]
 ]
 -- args --
 [0] string = ""

@@ -90,6 +90,7 @@ export const ROOT_ALLOWLIST = [
   '.dockerignore',
   '.editorconfig',
   '.envrc',
+  '.gitattributes',
   '.github',
   '.gitignore',
   '.gitmodules',

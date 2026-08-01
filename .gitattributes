@@ -1,0 +1,140 @@
+# Generated artefacts: never line-merge, always regenerate.
+#
+# Every path marked `-merge` below is written by a regeneration command, not by
+# hand. For those files a three-way line merge is NEVER a correct resolution —
+# and, the dangerous part, it usually does not look like an incorrect one
+# either. A generated baseline is typically a sorted array of records or a
+# sorted roster of IDs, so two branches that each insert entries at nearby
+# offsets produce a merge git resolves *without a conflict*: the record
+# boundaries shift, names end up paired with the next record's values, and the
+# result still parses as valid JSON with a plausible length while every entry in
+# the blended region is wrong.
+#
+# That happened on PR #1422 to test/perf/cardinality-baseline.json: the whole
+# traceql block came out off by one, and so did the promql
+# histogram_quantile_classic_* block from the other side. A ratchet fed a
+# silently blended baseline is worse than no ratchet — it reports green while
+# measuring nothing real.
+#
+# `-merge` is the fix. It unsets the merge attribute, so git falls back to the
+# binary merge driver and refuses to blend: a concurrent change leaves the path
+# CONFLICTED with no markers written into it, which forces the only correct
+# resolution — take the merged code, re-run the generator named below, commit
+# its output.
+#
+# `-merge` is not `-diff`. These stay ordinary text for `git diff`, `git blame`
+# and review; only the automatic merge is withheld. It also only bites when BOTH
+# sides changed the file — a one-sided change still resolves cleanly.
+#
+# Adding a new generated artefact? Add it here. The gate is pinned from both
+# directions by test/regression/generated_artifact_merge_gate_test.go, which
+# also fails on any tracked data file NAMED like a generated artefact that is
+# neither gated here nor recorded in the hand-authored section at the bottom.
+
+# --- Perf ratchet baselines -------------------------------------------------
+# Regenerate: `just update-cardinality-baseline`
+#   (UPDATE_CARDINALITY_BASELINE=1 go test -tags chdb -count=1
+#    -run TestCardinalityRatchet ./test/perf/ — needs libchdb.so via
+#   `just chdb-install`). Also reached by `just update-golden`, which chains it
+#   as a SUBSEQUENT dep so it profiles the freshly rewritten `-- sql --`.
+#   Top-level flat array of 805 fixture records: the shape that bit us.
+test/perf/cardinality-baseline.json          -merge
+
+# Regenerate: `just update-solver-decision-baseline`
+#   (UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1
+#    -run TestSolverDecisionRatchet ./test/perf/ — pure Go, no chDB). Also
+#   reached by `just update-golden`, which chains it as a PRIOR dep.
+#   Top-level flat array of 452 query records — same shape, same hazard.
+test/perf/solver-decision-baseline.json      -merge
+
+# Regenerate: `just update-scale-wall-baseline`
+#   (UPDATE_SCALE_WALL_BASELINE=1 go test -tags chdb -count=1
+#    -run TestScaleWallPin ./test/perf/ — needs libchdb.so). NOT chained into
+#   `just update-golden`: it records measured wall/scan ceilings, so it moves
+#   only when a cost increase is genuinely intended.
+test/perf/scale-wall-baseline.json           -merge
+
+# --- Compatibility ----------------------------------------------------------
+# CANNOT be regenerated locally. `.github/scripts/compat-baseline-sync.mjs`
+# rewrites one head's entry from that head's `compat-cases.json` RUN ARTEFACT,
+# which only a compatibility/{prometheus,loki,tempo} job against a live
+# reference backend produces. The resolution here is therefore NOT "re-run a
+# recipe": take the roster from the compatibility run on the merged commit, or
+# hand-fix the entry so `passed == total == cases.length` with `cases` sorted
+# and unique. compat-ratchet.mjs gates on the exact roster and fails closed.
+compatibility/parity-baseline.json           -merge
+
+# Regenerate: go run ./compatibility/loki/cmd/loki-compliance-tester
+#   -corpus=compatibility/loki/upstream/loki-bench/queries
+#   -skip-baseline=compatibility/loki/upstream-skip-baseline.txt -regen-baseline
+#   Corpus-only — contacts no Loki endpoint, so it runs locally.
+#   One sorted line per record, which is exactly what a line merge shuffles.
+compatibility/loki/upstream-skip-baseline.txt  -merge
+
+# --- Tier-0 migration harness goldens ---------------------------------------
+# Regenerate: `just migration-golden`
+#   (MIGRATION_UPDATE_GOLDENS=1 go test -tags=migration
+#    ./test/e2e/migration/tiers/tier0-offline/... -count=1).
+#   NOT covered by `just update-golden`, and it refuses to run when CI is set:
+#   a golden is a reviewed artefact, never rewritten by the lane asserting it.
+# Matched by basename so a new archetype's goldens are gated on arrival.
+# Deliberately NOT gated: expected/compliance-retention.json and
+# expected/tier1.json are hand-authored fixtures that are read, never written.
+test/e2e/migration/archetypes/*/expected/corpus.json     -merge
+test/e2e/migration/archetypes/*/expected/explain.txt     -merge
+test/e2e/migration/archetypes/*/expected/gate.json       -merge
+test/e2e/migration/archetypes/*/expected/gate-go.json    -merge
+test/e2e/migration/archetypes/*/expected/classify.json   -merge
+test/e2e/migration/archetypes/*/expected/lookback.json   -merge
+test/e2e/migration/archetypes/*/expected/rulegraph.json  -merge
+test/e2e/migration/expected/schema/*.sql                 -merge
+
+# --- Feature / surface inventories ------------------------------------------
+# Regenerate: `CERBERUS_UPDATE_INVENTORY=1 go test <package>`. Each is a sorted
+# flat array of rows behind a small wrapper object — the wrapper does not help,
+# the hazard lives one level down. The `-exclusions.json` siblings of the
+# ql-inventory files are hand-authored and deliberately absent from this list.
+# CERBERUS_UPDATE_INVENTORY=1 go test ./test/oracle/inventory/...
+test/e2e/grafana/ql-inventory/promql-feature-inventory.json   -merge
+test/e2e/grafana/ql-inventory/logql-feature-inventory.json    -merge
+test/e2e/grafana/ql-inventory/traceql-feature-inventory.json  -merge
+# CERBERUS_UPDATE_INVENTORY=1 go test ./test/rejection-parity/
+# (regen preserves the curated fields of surviving sites; new sites arrive
+#  unclassified, so the diff is the review)
+test/rejection-parity/catalogue.json         -merge
+# CERBERUS_UPDATE_INVENTORY=1 go test ./test/surface-parity/
+test/surface-parity/inventory.json           -merge
+# Regenerate: REGENERATE=1 node .github/scripts/promql-surface-gate.mjs
+#   (starts a local reference Prometheus in Docker; normally produced by the
+#    compatibility/promql-surface job)
+test/surface-parity/promql-reference-verdicts.json  -merge
+
+# --- Grafana surface crawl inventories --------------------------------------
+# Regenerate: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=<stack>
+#   npx playwright test crawl/crawl.spec.ts — needs that stack healthy
+#   (compose: the local compose stack; k3d: `just e2e-up && just e2e-seed-rolling`,
+#   or dispatch the e2e workflow with update_crawl_inventory=true and commit the
+#   uploaded artefact). `surfaces` is a flat array sorted by URL.
+test/e2e/playwright/crawl/grafana-surface-inventory.compose.json  -merge
+test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
+
+# --- Named like a generated artefact, but HAND-AUTHORED ---------------------
+# These are recorded rather than gated. Each is hand-maintained, and each is
+# self-checking: its consumer recomputes the value it pins, so a bad blend fails
+# loudly instead of silently widening a tolerance — which is the property that
+# makes `-merge` necessary for everything above and unnecessary here.
+# hand-authored: test/e2e/migration/coverage-baseline.json — raise-only counts;
+#   migration-e2e.mjs only reads it and errors telling you to reconcile.
+# hand-authored: test/e2e/migration/pass-assertions.pin.json — deliberately has
+#   no regeneration mode; the gate re-derives each sha256 before comparing.
+#
+# Two further families are deliberately left ungated, for the same "a blend is
+# loud, not silent" reason:
+#   - test/spec/**/*.txtar — `-- sql --` / `-- expected_rows --` are generated by
+#     `just update-golden`, but every section is delimiter-framed, so a shifted
+#     boundary yields a malformed or duplicated `-- name --` header that the
+#     txtar parse surfaces immediately.
+#   - docs/configuration.md, docs/coverage.md, docs/clickhouse-optimizations.md,
+#     docs/benchmarks.md, CHANGELOG.md — generated from code, but each already
+#     has a CI drift gate that re-renders and diffs, so staleness cannot survive
+#     a merge unnoticed.

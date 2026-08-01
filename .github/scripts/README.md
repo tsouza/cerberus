@@ -30,19 +30,47 @@ One implementation means a new rule guards BOTH lanes at once.
 
 `lib/registry.mjs` owns the one retry policy every container-registry fetch
 follows — the attempt budget (`registryAttempts`), the linear backoff
-(`readBackoffStepSeconds` / `sleepSeconds`), and `isTransientRegistryFailure()`,
-which decides whether command output names a registry / network fault (Docker
-Hub 429, manifest HEAD failure, TLS / reset / DNS / module-proxy transport) or a
-genuine build error. `pull-buildkit-image.mjs` (host-side bootstrap pull) and
-`build-with-registry-retry.mjs` (the build's own `FROM` resolution) hit the same
-rate-limit bucket and fail the same way, so they share the policy instead of
-re-deriving it.
+(`readBackoffStepSeconds` / `sleepSeconds`), and the classification that decides
+whether another attempt is help or harm. It sorts a failure into three classes,
+not two:
 
-`lib/scope-gate.mjs` answers "does THIS pull request touch the scope a heavy
-lane guards?" — `runsFullLane()` (which events must never take a scoped
-subset), `changedPaths()` (the PR's own diff against its merge base, or `null`
-when it cannot be computed, which callers must read as "run everything" rather
-than as "nothing changed"), and segment-wise `underPrefix` / `matchesAny`.
+- **transport** (`isTransientRegistryFailure()`): manifest HEAD failure, TLS /
+  reset / DNS / 5xx / module-proxy transport. Retryable — the registry is still
+  willing, this attempt just didn't land.
+- **rate limit** (`isRegistryRateLimit()`): `429` / `toomanyrequests` / `pull
+  rate limit`. **Never retryable.** Docker Hub counts pulls per account, or per
+  runner IP when the pull is unauthenticated, over a rolling window measured in
+  hours; a retry budget measured in seconds cannot outlast it, and each attempt
+  spends more of the quota that is already exhausted. Asked FIRST, because
+  BuildKit reports a 429 as `unexpected status from HEAD request …` — a
+  transport signature — so the rate-limit answer has to win outright.
+  `rateLimitDiagnosis()` is the one explanation every consumer prints for it.
+- **everything else**: a genuine build / command failure. Fails on the first
+  attempt, unretried.
+
+`pullImageWithRetry(ref, …)` is that policy applied to acquiring one image, and
+is the only implementation of the loop: `pull-buildkit-image.mjs` (the buildx
+bootstrap image, the one caller that accepts a locally present copy in place of
+a fetch), `compose-pull-images.mjs` (a compose stack's fetchable services),
+`promql-surface-gate.mjs` (the reference Prometheus it starts) and
+`migration-artifact.mjs` (the released image it extracts a binary from) all go
+through it. `build-with-registry-retry.mjs` (a build's own `FROM` resolution)
+and `chart-kubeconform.mjs`'s image probe apply the same classification to
+commands rather than to a single ref. Everything hits the same quota bucket and
+fails the same way, so nothing re-derives the policy.
+
+The pre-pull fetches with `docker pull`, never `docker compose pull`: the two
+paths do not share a credential source. Measured four seconds apart in one job,
+the CLI pull carried the runner's Docker Hub login while compose's was refused
+as *unauthenticated* — so routed through compose, the mechanism built to absorb
+Docker Hub failures was spending the anonymous per-IP quota (issue #1565).
+
+`lib/scope-gate.mjs` answers "does THIS change touch the scope a heavy lane
+guards?" — `runsFullLane()` (which events must never take a scoped subset),
+`changedPaths()` (the change's own diff — a pull request against its merge base,
+a merge-queue entry across `base_sha..head_sha` — or `null` when it cannot be
+computed, which callers must read as "run everything" rather than as "nothing
+changed"), and segment-wise `underPrefix` / `matchesAny`.
 It exists so the two dangerous parts — the always-full event set and the
 uncomputable-diff fallback — cannot drift between the lanes that use it.
 
@@ -303,8 +331,9 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
 - **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
   phases run and emits them as the `mutate` `strategy.matrix`. On push /
   schedule / dispatch and on a `release/*` PR it selects every phase; on an
-  ordinary PR it selects only the legs whose scope the diff touches, applying
-  each leg's `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
+  ordinary PR — and on a merge-queue entry, off its own `base_sha..head_sha` —
+  it selects only the legs whose scope the diff touches, applying each leg's
+  `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
   A changed path that lies inside a phase scope while claiming no leg is a
   coverage gap and fails the job rather than being dropped. `verify` mode asserts
   the table alone (every scope an existing directory, every pattern legal under
@@ -648,13 +677,16 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   probes the rendered container image tag against the registry — the guard for
   an `appVersion` pointing at an unpublished tag. An image passes only when the
   probe positively confirms it: a definitive not-found fails, and so does any
-  probe that reaches no verdict (auth refusal, rate limit, DNS/TLS), because a
+  probe that reaches no verdict (auth refusal, DNS/TLS, a rate limit), because a
   guard that could not run has verified nothing. Because the chart renders a
-  Docker Hub ref and Docker Hub rate-limits CI bursts, a probe with no verdict
+  Docker Hub ref and a runner's path to Docker Hub blips, a probe with no verdict
   is retried — five attempts with linear backoff, mirroring the Justfile's
-  `_pull-retry` — so a transient refusal does not become a permanent
+  `_pull-retry` — so a transport fault does not become a permanent
   non-verdict; a verdict (`present` or a definitive not-found) is never
-  retried. Exhausted retries still fail. The one exemption is the appVersion
+  retried, and neither is a rate-limit refusal, which is its own
+  `'rate-limited'` state (classified through `lib/registry.mjs`): it fails the
+  check exactly as `'unknown'` does, but re-probing it would only charge the
+  quota that refused. Exhausted retries still fail. The one exemption is the appVersion
   the change itself stages, and it covers a definitive not-found only. The
   `--self-test` drives the real probe against a controlled failing command, so
   the spawn options are pinned at the call site and the retry loop runs for
@@ -809,6 +841,10 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` all checks pass / regenerate done, `1` on any gap / drift /
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
+  - Acquires `PROM_IMAGE` through `pullImageWithRetry` from `lib/registry.mjs`
+    before `docker run`, so a transport fault is retried and a Docker Hub rate
+    limit is diagnosed as such instead of surfacing as an opaque
+    container-start failure (#1562).
 
 - **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
   Decides whether a pull request has to boot the compose stack at all. The lane
@@ -824,7 +860,8 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   path still exists (a renamed entry matches nothing and silently retires the
   gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
   to `true`: push / schedule / `release/*` PRs always run the full lane, and an
-  uncomputable diff boots the stack rather than skipping it. `workflow_dispatch`
+  uncomputable diff boots the stack rather than skipping it. A merge-queue entry
+  is scoped like a pull request, off its own `base_sha..head_sha`. `workflow_dispatch`
   is the one named exception (`NON_BOOTING_EVENTS`) — e2e.yml's only dispatch
   input regenerates the k3d crawl inventory, which no compose shard can see.
   `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the
@@ -976,6 +1013,11 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
     pair, a failed build / pull / extract, a `--version` that errors, prints
     nothing, prints more than one line, or prints the wrong stamp.
+  - The image path acquires `cerberus_image` through `pullImageWithRetry` from
+    `lib/registry.mjs`, without `acceptLocalCopy` — the point of the path is to
+    exercise the RELEASED bytes, so falling back to a same-named image the
+    daemon happens to hold is exactly the substitution this module exists to
+    prevent.
 
 - **`dashboard-matrix.mjs`** — `e2e.yml`, the `dashboard-setup` job. The k3d
   twin of `compose-smoke-matrix.mjs`: single source of truth for how the
@@ -1035,11 +1077,44 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   pre-acquiring it sufficient; the module therefore asserts presence in the
   daemon rather than a successful pull. The composite passes the same image ref
   to `driver-opts: image=…`, so the warmed ref and the booted ref cannot drift.
+  A rate-limit refusal ends the loop immediately (after the local-image
+  fallback, which is a pass regardless of why the pull failed).
   - Env: `BUILDKIT_IMAGE` (required — image ref to acquire),
     `BUILDKIT_PULL_BACKOFF_SECONDS` (optional; default `3` — linear backoff
     step, attempt N sleeps N × this).
   - Exit: `0` when the image is in the local daemon, `1` when it is not.
-- **`build-with-registry-retry.mjs`** — the Justfile (`e2e-up`, `e2e-bwc-up`,
+- **`compose-pull-images.mjs`** — the Justfile (`_compose-pull-retry`, used by
+  `migration-tier{1,2}-up`), the three `compatibility/*/scripts/run-*.sh`
+  harnesses, `e2e.yml`'s two compose-smoke jobs, and `bench/histogram/run.sh`.
+  Acquires every image a compose stack FETCHES,
+  before `docker compose up` reaches for them. Two decisions carry the module.
+  What is fetchable is read off the compose model's `build:` sections
+  (`docker compose config --format json`, compose's own `--ignore-buildable`
+  semantics) and never inferred from daemon state — absence from the daemon
+  means "not built yet" as often as "not fetched yet", and pulling Tier-2's
+  built-during-`up` `dead-end-receiver` from a registry that serves it nowhere
+  failed a lane five attempts deep (run 30281594098). And the fetch itself is
+  `docker pull`, because compose's pull path does not carry the credentials
+  `docker login` wrote (issue #1565). An image already in the daemon is skipped,
+  which is what `--policy missing` did.
+  - Args: the compose files the lane brings up (each becomes a `-f`), then
+    optionally `--` and the service names to narrow the model to. Pass the
+    services when a stack starts one SEPARATELY because its failure is
+    tolerated (`bench/histogram`'s `mimir`, brought up with `|| MIMIR_OK=0`);
+    folding such an image into the core stack's pre-pull would turn a tolerated
+    failure into a hard one.
+  - Env: `COMPOSE_PULL_BACKOFF_SECONDS` (optional; default `3`).
+  - Exit: `0` when every fetchable image is in the local daemon, `1` otherwise.
+  - Gated by `compose-pull-images.test.mjs` on the required `check` lane (the
+    model → image-set decision, including the built-service shapes the live tree
+    does not yet contain) and by
+    `test/regression/justfile_pull_retry_test.go`, which drives the module over
+    the REAL `test/e2e/migration` compose files with a stub `docker`, pins the
+    pulled set exactly, and scans the whole tree — Justfile recipes, shell
+    scripts, workflow files — so no unit can bring a compose stack up without
+    pre-pulling through this module first.
+- **`build-with-registry-retry.mjs`** — the Justfile (`_pull-retry`,
+  `e2e-up`, `e2e-bwc-up`,
   `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
   compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
   and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
@@ -1056,11 +1131,17 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   there is no local-image fallback: a tag an earlier run left in the daemon
   attests nothing about this tree, and a build failure that is not a registry
   failure fails on the FIRST attempt so a real break is never retried into
-  invisibility. Takes the command as its trailing argv.
+  invisibility. A rate-limit refusal fails on the first attempt too, for the
+  opposite reason: the retry cannot work and the attempts themselves are what
+  keep the quota window open (issue #1561). Takes the command as its trailing
+  argv, so the Justfile's host-side pulls route through it as well and inherit
+  the same three-way classification.
   - Env: `IMAGE_BUILD_RETRY_BACKOFF_SECONDS` (optional; default `10` — linear
-    backoff step, attempt N sleeps N × this).
-  - Exit: `0` on success; the command's own status when it failed for a
-    non-registry reason; `1` when the retry budget is spent.
+    backoff step, attempt N sleeps N × this; the Justfile's pull recipes pass
+    `3`).
+  - Exit: `0` on success; the command's own status when it failed for a reason
+    another attempt cannot clear (a genuine failure, or a rate-limit refusal);
+    `1` when the retry budget is spent on transport faults.
 
 ## Notes
 
