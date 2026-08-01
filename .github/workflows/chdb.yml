@@ -39,9 +39,10 @@ name: chdb
 
 on:
   push:
-    # `release/*.x` so `probe` + `roundtrip (<ql>)` (required checks) also run on
-    # a maintenance-line hotfix push, giving release.yml's maintenance preflight
-    # check-runs to verify before publishing.
+    # `release/*.x` so `probe` + `roundtrip (<ql>)` + `perf-guards` (required
+    # checks, and all three named in release.yml's RELEASE_REQUIRED_CHECKS) also
+    # run on a maintenance-line hotfix push, giving release.yml's maintenance
+    # preflight check-runs to verify before publishing.
     branches: [main, 'release/*.x']
   # PR trigger has no `paths:` filter so `probe` and `roundtrip (<ql>)`
   # always appear in the PR rollup. Required for promoting them to
