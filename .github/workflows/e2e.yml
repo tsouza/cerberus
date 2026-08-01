@@ -297,12 +297,18 @@ jobs:
 
       - uses: ./.github/actions/setup-buildx
 
-      - name: docker compose up --wait
+      - name: compose up --wait (retried on registry faults)
         run: |
           # --wait-timeout caps the wait at 5 min. Cold runners need
           # ~30-60s for the Go build + ~10-20s for CH first-boot; 300s
           # is generous slack.
-          docker compose up --wait --wait-timeout 300
+          #
+          # `up` builds the cerberus service from Dockerfile.local, so it
+          # resolves `FROM golang:1.26` against Docker Hub; the wrapper
+          # retries that on registry/network faults only (a real build
+          # failure still fails on the first attempt).
+          node .github/scripts/build-with-registry-retry.mjs \
+            docker compose up --wait --wait-timeout 300
 
       - name: smoke cerberus /healthz + /readyz
         run: |
@@ -505,8 +511,12 @@ jobs:
 
       - uses: ./.github/actions/setup-buildx
 
-      - name: docker compose up --wait
-        run: docker compose up --wait --wait-timeout 300
+      # `up` builds the cerberus service from Dockerfile.local, so it resolves
+      # `FROM golang:1.26` against Docker Hub; the wrapper retries that on
+      # registry/network faults only (a real build failure still fails on the
+      # first attempt).
+      - name: compose up --wait (retried on registry faults)
+        run: node .github/scripts/build-with-registry-retry.mjs docker compose up --wait --wait-timeout 300
 
       - name: smoke cerberus /healthz + /readyz
         run: |

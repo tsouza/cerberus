@@ -573,40 +573,135 @@ func TestPlan_ScalarHeavyRejected(t *testing.T) {
 	}
 }
 
-// TestPlan_IncommensurateNestedSpine: a nested spine whose inner resolution
-// leaves no valid slice quantum window → incommensurate.
-func TestPlan_IncommensurateNestedSpine(t *testing.T) {
-	t.Parallel()
-	// Outer grid N small enough that N/2 < MinAnchorsPerSlice, so there is
-	// no room for a valid quantum window once a nested spine exists.
-	step := time.Minute
+// nestedSpineStep is the outer grid step the commensurability tests classify
+// on: a 1-minute grid keeps the N / K / quantum arithmetic in each test's
+// comment checkable by hand.
+const nestedSpineStep = time.Minute
+
+// nestedSpine wraps inner in the canonical outer matrix spine the
+// commensurability tests share: a max_over_time window on the
+// nestedSpineStep grid spanning [gridStart, gridStart+outerRange], pinned
+// exactly where the returned RequestMeta predicts it, so the only signal
+// under test is the nested grid's phase.
+func nestedSpine(inner chplan.Node, outerRange time.Duration) (*chplan.RangeWindow, RequestMeta) {
 	start := gridStart
-	end := start.Add(20 * time.Minute) // N = 21
-	inner := &chplan.RangeWindow{
-		Input:           leafScan(),
-		Func:            "rate",
-		Range:           time.Minute,
-		Step:            7 * time.Second, // co-prime inner resolution
-		TimestampColumn: "TimeUnix",
-		ValueColumn:     "Value",
-	}
+	end := start.Add(outerRange)
 	outer := &chplan.RangeWindow{
 		Input:           inner,
 		Func:            "max_over_time",
 		Range:           5 * time.Minute,
-		Step:            step,
-		OuterRange:      20 * time.Minute,
+		Step:            nestedSpineStep,
+		OuterRange:      outerRange,
 		Start:           start,
 		End:             end,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     "Value",
 	}
-	p := &Planner{Cfg: autoCfg()}
-	d, routed := p.Plan(outer, RequestMeta{Lang: "promql", Start: start, End: end, Step: step})
+	return outer, RequestMeta{Lang: "promql", Start: start, End: end, Step: nestedSpineStep}
+}
+
+// shardedPlanner floors the cost thresholds so eligibility — not cost —
+// decides these rows.
+func shardedPlanner() *Planner {
+	cfg := DefaultConfig()
+	cfg.Mode = ModeSharded
+	return &Planner{Cfg: cfg}
+}
+
+// TestPlan_IncommensurateNestedSpine pins that the selected slice quantum,
+// rather than merely some theoretical quantum, preserves an end-phased nested
+// grid. A nested RangeLWR generates its anchors as `End - i*Step` with no
+// epoch snap, so a quantum that shifts End off its resolution moves the grid.
+func TestPlan_IncommensurateNestedSpine(t *testing.T) {
+	t.Parallel()
+	inner := &chplan.RangeLWR{
+		Input:        leafScan(),
+		Step:         7 * time.Second, // requires a multiple-of-7 quantum.
+		Lookback:     time.Minute,
+		TimestampCol: "TimeUnix",
+		ValueCol:     "Value",
+	}
+	// N = 65, K = 4, m = ceil(65/4) = 17 anchors → 17m per shard, and
+	// 17m mod 7s = 5s, so every shard boundary would re-phase the leaf.
+	outer, meta := nestedSpine(inner, 64*time.Minute)
+	d, routed := shardedPlanner().Plan(outer, meta)
 	if routed {
 		t.Fatal("incommensurate nested spine must not route")
 	}
 	if d.Reason != ReasonIncommensurate {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonIncommensurate)
+	}
+}
+
+func TestPlan_CommensurateNestedRangeLWRRoutes(t *testing.T) {
+	t.Parallel()
+	inner := &chplan.RangeLWR{
+		Input:        leafScan(),
+		Step:         40 * time.Second, // requires an even quantum.
+		Lookback:     time.Minute,
+		TimestampCol: "TimeUnix",
+		ValueCol:     "Value",
+	}
+	// N = 64, K = 4, m = ceil(64/4) = 16 anchors → 16m, an exact multiple
+	// of the leaf's 40s resolution, so every shard keeps its phase.
+	outer, meta := nestedSpine(inner, 63*time.Minute)
+	d, routed := shardedPlanner().Plan(outer, meta)
+	if !routed {
+		t.Fatalf("commensurate nested RangeLWR must route; got reason=%q", d.Reason)
+	}
+}
+
+// TestPlan_IncommensurateNestedMatrixSpine pins that a nested MATRIX window
+// whose grid is NOT epoch-aligned is end-phased too: its anchors walk back
+// from the node's own End, so the same quantum arithmetic applies as for the
+// nested RangeLWR above.
+func TestPlan_IncommensurateNestedMatrixSpine(t *testing.T) {
+	t.Parallel()
+	inner := &chplan.RangeWindow{
+		Input:           leafScan(),
+		Func:            "rate",
+		Range:           time.Minute,
+		Step:            7 * time.Second, // requires a multiple-of-7 quantum.
+		StepAlign:       false,           // anchors walk back from End verbatim.
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+	}
+	// Same geometry as the RangeLWR case: N = 65, K = 4, m = 17 → 17m,
+	// which is not a multiple of 7s.
+	outer, meta := nestedSpine(inner, 64*time.Minute)
+	d, routed := shardedPlanner().Plan(outer, meta)
+	if routed {
+		t.Fatal("incommensurate nested matrix spine must not route")
+	}
+	if d.Reason != ReasonIncommensurate {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonIncommensurate)
+	}
+}
+
+// TestPlan_EpochAlignedNestedSpineRoutes is the counterpart: the SAME
+// arithmetically-hostile nested resolution routes when the nested grid is
+// StepAlign'd. The epoch snap (chplan.RangeWindow.StepAlign → chsql's
+// epochAlignedEndFrag) puts every nested anchor on an absolute-epoch multiple
+// of the nested Step, so moving End to a shard boundary picks a different
+// newest anchor but never moves the grid off phase — the per-shard anchor set
+// stays a subset of the unsliced one. This is the ordinary PromQL
+// `expr[range:res]` subquery shape (`max_over_time(sum(up)[5m:1m])` on a 15s
+// request grid), which must keep routing: refusing it would strand the whole
+// subquery family on route A.
+func TestPlan_EpochAlignedNestedSpineRoutes(t *testing.T) {
+	t.Parallel()
+	inner := &chplan.RangeWindow{
+		Input:           leafScan(),
+		Func:            "rate",
+		Range:           time.Minute,
+		Step:            7 * time.Second, // hostile to every quantum below…
+		StepAlign:       true,            // …but epoch-anchored, so phase-invariant.
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+	}
+	outer, meta := nestedSpine(inner, 64*time.Minute)
+	d, routed := shardedPlanner().Plan(outer, meta)
+	if !routed {
+		t.Fatalf("epoch-aligned nested spine must route; got reason=%q", d.Reason)
 	}
 }
