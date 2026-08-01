@@ -38,10 +38,13 @@ import (
 //   - The bucket aggregation function: `argMax(BucketCounts, TimeUnix)`
 //     + `argMax(ExplicitBounds, TimeUnix)` for the bare path (LWR-like
 //     "latest histogram sample per (series, anchor)"); `sumForEach`
-//     + `any` for the aggregated path (sums element-wise across rows
-//     in the rate window, same as instant mode).
+//     for the aggregated path (sums element-wise across rows in the
+//     rate window, same as instant mode).
 //   - The group-by labels: full Attributes for bare; user-supplied
-//     `by/without` clause for aggregated.
+//     `by/without` clause plus the bucket layout for aggregated. The
+//     bare path needs no layout key — argMax reads counts AND bounds
+//     off the one newest row, so its ladder is consistent by
+//     construction.
 //
 // Both variants surface the canonical 4-column Sample row contract to
 // downstream consumers (matrix pivot in handler.go), keyed by the
@@ -253,7 +256,9 @@ func lowerHistogramQuantileClassicBareRange(
 //
 // The lookback is the rate's [range] duration; the bucket aggregation is
 // sumForEach (mirrors the instant-mode classic-agg path's element-wise
-// sum across all rows in the rate window).
+// sum across all rows in the rate window), keyed by the bucket layout so
+// rows carrying different ExplicitBounds never share a ladder — see
+// classicBucketAggGroupBy and classicBucketSumAggs.
 func lowerHistogramQuantileClassicAggRange(
 	shape histogramAggShape,
 	phi phiArg,
@@ -266,23 +271,12 @@ func lowerHistogramQuantileClassicAggRange(
 	// histogram_quantile.go.
 	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
-	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
-	bucketAggs := []chplan.AggFunc{
-		{
-			Name:  "sumForEach",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
-			Alias: s.BucketCountsColumn,
-		},
-		{
-			Name:  "any",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
-			Alias: s.ExplicitBoundsColumn,
-		},
-	}
+	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	groupBy, groupByAliases := classicBucketAggGroupBy(userGroupBy, userAliases, s)
 	return buildHistogramRangeTree(
 		scan, pred, aggWindowFor(shape),
 		groupBy, groupByAliases, attrsRebuild,
-		bucketAggs, phi, s, ctx,
+		classicBucketSumAggs(s), phi, s, ctx,
 	)
 }
 
