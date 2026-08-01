@@ -443,9 +443,20 @@ func composePrePullRecipe(t *testing.T, justfile string) string {
 	return body
 }
 
+// mirrorRegistryPrefix is how a ref announces itself as the GHCR copy rather
+// than the upstream image (.github/scripts/lib/mirror.mjs).
+const mirrorRegistryPrefix = "ghcr.io/"
+
 // writeStubComposeDocker drops a `docker` onto dir that answers `compose …
 // config` with the model at modelPath, reports every image as absent from the
-// daemon, and records each `docker pull <ref>`.
+// daemon, and records each image the caller ACQUIRES under its upstream name.
+//
+// Acquisition has two shapes and the log flattens them, because what this test
+// asserts is which images end up in the daemon, not which registry answered.
+// `pullImageWithRetry` reaches for the mirrored copy first and re-tags it to the
+// upstream name, so a mirrored image is `docker pull ghcr.io/…` followed by
+// `docker tag ghcr.io/… <upstream>`; an unmirrored one is a plain `docker pull
+// <upstream>`. The stub records the upstream name in both cases.
 func writeStubComposeDocker(t *testing.T, dir, modelPath, callLog string) {
 	t.Helper()
 
@@ -462,7 +473,15 @@ func writeStubComposeDocker(t *testing.T, dir, modelPath, callLog string) {
 		"    exit 1",
 		"    ;;",
 		"  pull)",
+		"    case \"$2\" in",
+		// The mirror fetch itself is not the acquisition; the re-tag is.
+		"      " + mirrorRegistryPrefix + "*) exit 0 ;;",
+		"    esac",
 		"    echo \"$2\" >> " + shellQuote(callLog),
+		"    exit 0",
+		"    ;;",
+		"  tag)",
+		"    echo \"$3\" >> " + shellQuote(callLog),
 		"    exit 0",
 		"    ;;",
 		"esac",
