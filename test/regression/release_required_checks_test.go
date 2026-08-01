@@ -65,6 +65,7 @@ var branchProtectionContexts = []string{
 	"forbid-skip",
 	"lint",
 	"mutation",
+	"perf-guards",
 	"probe",
 	"property (PromQL + LogQL + TraceQL, rapid N=500)",
 	"roundtrip (logql)",

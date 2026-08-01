@@ -1164,6 +1164,12 @@ func (c *Client) Ping(ctx context.Context) error {
 // Sample is one row of metrics data returned by Query. It's the shape the
 // /api/v1/query and /api/v1/query_range handlers expect — see api/prom.
 //
+// Sample is POSITIONAL: the scan binds the projection's columns by
+// position, and each head's SQL is responsible for projecting them in the
+// documented order. The Loki log-stream shape reuses the same positional
+// scan with a different meaning for column 1 — [DecodeLogRows] decodes it
+// into the named [LogRow] fields, and is the only place that mapping lives.
+//
 // Labels sharing contract: the cursor interns decoded label maps by
 // canonical key, so every Sample belonging to the same series carries
 // the SAME map instance — that is what keeps a multi-thousand-row
@@ -1172,10 +1178,16 @@ func (c *Client) Ping(ctx context.Context) error {
 // (internal/api/format.WithMetricName / NormalizeLabelMap and the
 // loki/tempo label pivots already allocate fresh output maps).
 type Sample struct {
+	// MetricName is the projection's first, String-typed column: the
+	// metric name for a metric query. A log-stream projection binds its
+	// log line here instead — see [LogRow].
 	MetricName string
 	Labels     map[string]string
 	Timestamp  time.Time
-	Value      float64
+	// Value is the projection's fourth, Float64 column: the metric value.
+	// A log-stream projection has no numeric value and binds a constant
+	// placeholder here; [DecodeLogRows] drops it.
+	Value float64
 	// SeriesID is a stable, per-cursor identity for the interned Labels
 	// map: every Sample whose Labels alias the same interned instance
 	// carries the same SeriesID, assigned in first-seen order starting at

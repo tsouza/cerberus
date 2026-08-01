@@ -110,7 +110,7 @@ for the rosters themselves and the procedure for moving one.
 | `chart-validate`                        | `chart-ci.yml` (`chart-validate`)                    | PR + push + dispatch                | Required  | Helm chart lint + `helm-docs` README drift gate + `kubeconform` render + render assertions (split PDBs / derived `GOMEMLIMIT`) + `ct lint` over `deploy/helm/cerberus`; short-circuits to a green no-op when no chart file changed, so it reports on every PR                                                                                                                                                                                                                                                                         |
 | `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)               | PR + push + nightly + dispatch      | Required  | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`) | PR + push + nightly + dispatch      | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half)                                                                                                                                                                                                                                                                                                              |
-| `perf-guards`                           | `chdb.yml` (`perf-guards`)                           | PR + push + nightly                 | Info      | `just perf-chdb` (`go test -tags chdb ./test/perf/...`): the cardinality / scale-wall ratchets, per-construct scaling harness, and cycle-guards (Layer 12 chdb lanes)                                                                                                                                                                                                                                                                                                                                                                 |
+| `perf-guards`                           | `chdb.yml` (`perf-guards`)                           | PR + push + nightly                 | Required  | `just perf-chdb` (`go test -tags chdb ./test/perf/...`): the cardinality / scale-wall ratchets, per-construct scaling harness, and cycle-guards (Layer 12 chdb lanes)                                                                                                                                                                                                                                                                                                                                                                 |
 | `perf-profile`                          | `perf-profile.yml` (`profile`)                       | release PR + push + nightly + disp. | Release   | Corpus-wide compute-fan-out profiler over every executable TXTAR fixture (EXPLAIN + per-subquery `count()` fan-factor); top-40 to step summary (Layer 12, Component B)                                                                                                                                                                                                                                                                                                                                                                |
 | `perf-benchmark`                        | `perf-benchmark.yml` (`benchstat diff`)              | PR (path-match) + weekly + dispatch | Info      | benchstat wall-clock regression vs baseline (Layer 11)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `dashboard`                             | `e2e.yml` (`dashboard`)                              | release PR + push + nightly + disp. | Release   | k3d + cerberus + Grafana + Playwright full smoke + `k3d` crawl (Layer 9)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -132,13 +132,20 @@ is the only required lane that observes the strict production scan; nothing else
 in the required set can catch the emit-type class, because chDB coerces the very
 divergence the class is made of.
 
-The `compatibility/promql-surface` and `perf-guards` lanes ride the same
-`compatibility.yml` / `chdb.yml` workflows as their required siblings and run on
-every PR, but are not promoted to branch-protection gates — they stay
-informational until each has held a green soak streak (the same flip discipline
-the three `compatibility/<head>` heads and `strict-scan` went through). Anything
-those lanes prove that must not regress silently also needs a pin on the required
-`check` job. The connection-teardown contract carries exactly that pairing
+The `compatibility/promql-surface` lane rides the same `compatibility.yml`
+workflow as its required siblings and runs on every PR, but is not promoted to a
+branch-protection gate — it stays informational until it has held a green soak
+streak (the same flip discipline the three `compatibility/<head>` heads,
+`strict-scan` and `perf-guards` went through). Anything that lane proves that
+must not regress silently also needs a pin on the required `check` job.
+`perf-guards` completed that flip: it carries the cardinality and scale-wall
+ratchets, whose whole purpose is to block a merge, and an unblocking ratchet is
+indistinguishable from no ratchet — the rows it guards had drifted out of step
+with the corpus precisely while the lane was reporting green without gating.
+`test/regression/perf_guards_gate_test.go` holds the job name, the recipe and
+the release-set membership the flip now depends on.
+
+The connection-teardown contract carries exactly that pairing
 regardless of gate status: `internal/chclient/conn_teardown_integration_test.go`
 proves the driver behaviour against a real server, and the Layer 8 / Layer 10
 pins in `test/regression/` hold the ordering, the bound and the startup
@@ -389,7 +396,11 @@ for the strategy):
   `just update-cardinality-baseline` — which `just update-golden` now
   chains automatically, so adding a TXTAR fixture records its ratchet
   entry in the same pass that fills the goldens (closing the recurring
-  "unrecorded fixture → red `perf-guards` on main" miss).
+  "unrecorded fixture → red `perf-guards` on main" miss). `scan_rows` and
+  `has_array_join` are compared for exact equality rather than ratcheted:
+  neither has a "better" direction, so a change is the row ceasing to describe
+  its fixture, and a stored field nothing compares is a hole rather than soft
+  coverage.
 - **Solver-decision ratchet** (`test/perf/solver_decision_ratchet_test.go`,
   chDB-free, in `check`) — pins the per-fixture route A/B classification
   against `solver-decision-baseline.json` so a routing-heuristic change

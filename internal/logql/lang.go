@@ -109,13 +109,21 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	return plan, meta, nil
 }
 
+// LogLineColumn is the projection alias a log-stream query binds the log
+// `Body` column to. It names the first, String-typed column of the
+// positional row the chclient cursor scans — the column a metric query
+// projects the metric name into. chclient.DecodeLogRows decodes that row
+// into chclient.LogRow, whose Line field is what the Loki streams pivot
+// reads.
+const LogLineColumn = "Line"
+
 // ProjectSamples wraps plan with the projection that reshapes the
-// emitted rows into chclient.Sample's positional shape. Metric queries
-// synthesise MetricName + a near-now TimeUnix anchor (mirrors the
-// promql side's anchor trick to keep matrix step-grid bucketing from
-// dropping the only row); log queries pull the log Body into the
-// MetricName slot (Sample.Value is float64, so the string body has to
-// ride in a String column).
+// emitted rows into the positional shape the chclient cursor scans.
+// Metric queries synthesise MetricName + a near-now TimeUnix anchor
+// (mirrors the promql side's anchor trick to keep matrix step-grid
+// bucketing from dropping the only row); log queries project the log
+// Body under [LogLineColumn], since a log line is a String and the
+// positional row's fourth column is a float64.
 func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	s := l.Schema
 	if meta.IsMetric {
@@ -204,11 +212,13 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 			},
 		}
 	}
-	// Log-stream query: chclient.Sample is (MetricName, Attributes, Timestamp,
-	// Value) where Value is float64. The log line `Body` is a String, so it
-	// can't ride in Value — instead we put it in MetricName (also a String)
-	// and write a 0.0 placeholder into Value. toStreamsWithTransform reads
-	// back from Sample.MetricName as the line content.
+	// Log-stream query: the positional row the chclient cursor scans is
+	// (<String>, Attributes, TimeUnix, <Float64>). A log line is a String,
+	// so it takes the first column — the slot a metric query fills with the
+	// metric name — under the [LogLineColumn] alias, and the Float64 slot
+	// takes a 0.0 placeholder to keep the row as wide as the scan.
+	// chclient.DecodeLogRows turns that row into the named
+	// chclient.LogRow the Loki streams pivot consumes.
 	//
 	// The Attributes column is wrapped in [withDetectedLevel] so the
 	// emitted stream identity carries the synthesized severity label
@@ -255,7 +265,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		attrsExpr = withDetectedLevel(s, attrsExpr)
 	}
 	projections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: "MetricName"},
+		{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: LogLineColumn},
 		{Expr: attrsExpr, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
 		// LitFloat is wrapped centrally in toFloat64(?) by
