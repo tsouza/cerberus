@@ -897,9 +897,37 @@ func queryTimeoutAPIError(err error) *apiError {
 // expiry (context.DeadlineExceeded), the latter being how a query that
 // hangs past the budget without the server-side cap firing surfaces. A
 // plain context.Canceled (client walked away) is deliberately NOT
-// treated as a timeout — that maps to the canceled wire shape elsewhere.
+// treated as a timeout — isQueryCanceled maps it to the canceled wire
+// shape instead.
 func isQueryTimeout(err error) bool {
 	return errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// isQueryCanceled reports whether err is a caller-initiated cancellation:
+// the client closed the connection (a browser tab shutting on a slow
+// panel, an aborted fetch, a dashboard refresh superseding its own
+// in-flight request), so net/http cancels the request context and the
+// in-flight query unwinds with context.Canceled. Distinct from
+// isQueryTimeout: nothing exceeded a budget, the caller simply stopped
+// waiting.
+func isQueryCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// queryCanceledAPIError is the head-idiomatic reply for a cancelled
+// query — HTTP 503, errorType "canceled", mirroring upstream
+// Prometheus's web/api/v1 handling of promql.ErrQueryCanceled
+// (errorCanceled → 503) down to the message text. It is emphatically
+// NOT a 5xx server fault: cerberus and ClickHouse are both healthy and
+// nothing failed, so it is breaker-neutral. Counting these as server
+// errors inflates the 5xx rate with events that are not server errors,
+// which is what makes the signal unusable for alerting.
+func queryCanceledAPIError() *apiError {
+	return &apiError{
+		Kind:   ErrCanceled,
+		Err:    errors.New("query was canceled"),
+		Status: http.StatusServiceUnavailable,
+	}
 }
 
 // classifyDrainError maps errors surfaced while draining a query_range
@@ -919,6 +947,9 @@ func classifyDrainError(err error) error {
 	}
 	if isQueryTimeout(err) {
 		return queryTimeoutAPIError(err)
+	}
+	if isQueryCanceled(err) {
+		return queryCanceledAPIError()
 	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 }
@@ -970,6 +1001,12 @@ func classifyEngineError(err error) error {
 	// query ran exactly as long as it was allowed to.
 	if isQueryTimeout(err) {
 		return queryTimeoutAPIError(err)
+	}
+	// Caller-initiated cancellation (open path): the client hung up
+	// before the cursor opened. 503 errorType=canceled; never a 5xx —
+	// nothing failed, the caller stopped waiting.
+	if isQueryCanceled(err) {
+		return queryCanceledAPIError()
 	}
 	var ps *parseStageError
 	if errors.As(err, &ps) {

@@ -528,7 +528,8 @@ func classifyEngineErr(err error) error {
 	// exceeded" path), NOT a 5xx fault — the query ran exactly as long as
 	// it was allowed to; ClickHouse is healthy (the chclient breaker
 	// treats code 159 as a success for the same reason). A plain
-	// context.Canceled (client gone) is deliberately not caught here.
+	// context.Canceled (client gone) is deliberately not caught here —
+	// it falls to the cancellation branch immediately below.
 	if errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) {
 		msg := "query timed out"
 		var qt *chclient.QueryTimeoutError
@@ -538,6 +539,21 @@ func classifyEngineErr(err error) error {
 		return &apiError{
 			Kind:   ErrTimeout,
 			Err:    errors.New(msg),
+			Status: http.StatusServiceUnavailable,
+		}
+	}
+	// Caller-initiated cancellation: the client closed the connection (a
+	// browser tab shutting on a slow panel, an aborted fetch, a dashboard
+	// refresh superseding its own in-flight request), so net/http cancels
+	// the request context and the in-flight query unwinds with
+	// context.Canceled. HTTP 503 errorType=canceled, mirroring the Prom
+	// head — emphatically NOT a 5xx: nothing failed, the caller simply
+	// stopped waiting, and counting these as server faults inflates the
+	// 5xx rate with events that are not server errors.
+	if errors.Is(err, context.Canceled) {
+		return &apiError{
+			Kind:   ErrCanceled,
+			Err:    errors.New("query was canceled"),
 			Status: http.StatusServiceUnavailable,
 		}
 	}
