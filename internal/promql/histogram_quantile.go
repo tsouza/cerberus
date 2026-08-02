@@ -171,7 +171,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// shapes whose underlying terminal is a bare VectorSelector; anything
 	// else falls through to today's bare-selector path (which still emits
 	// the existing error message if the shape isn't recognised).
-	if shape, ok := matchHistogramAggIdiom(c.Args[1]); ok {
+	if shape, ok := matchHistogramAggIdiom(c.Args[1]); ok && histogramAggShapeLowerable(shape, s) {
 		if s.IsExpHistogramMetric(shape.selector.Name) {
 			// Range mode: fan the exp-histogram merge + quantile
 			// interpolation across the request's step grid, or — under an
@@ -456,6 +456,12 @@ type histogramAggShape struct {
 	windowRange      time.Duration
 	windowMinSamples int
 	agg              *parser.AggregateExpr
+	// classicFold is the per-`le` rung reduction the classic-histogram
+	// paths apply, resolved from `agg`'s operator (SUM when `agg` is
+	// nil — a bare `rate(...)` still folds every in-window row of a
+	// series into one ladder). nil means no classic lowering exists for
+	// that operator; see classicBucketLadderFold.
+	classicFold classicBucketRungFold
 }
 
 // histogramWindowMinSamples maps a matched range-vector function to the
@@ -485,31 +491,110 @@ func histogramWindowMinSamples(fn string) int {
 //   - sum without(...) (rate(metric_bucket[5m]))
 //   - avg without(...) (increase(metric_bucket[5m]))
 //
+//   - min / max / count / group / stddev / stdvar in place of sum / avg
+//     (classic histograms only — see classicBucketLadderFold)
+//
 // Anything else returns ok=false and the caller falls through to the
-// bare-selector path. Specifically rejected: aggregations whose ladder
-// the element-wise per-bucket collapse cannot reproduce (see
-// classicBucketAggOpIsLadderPreserving), range-vector functions other
-// than rate / increase / sum_over_time, deeper nestings (e.g.
-// `sum(sum(...))`).
-// classicBucketAggOpIsLadderPreserving reports whether a PromQL
-// aggregation over per-`le` bucket samples yields a cumulative ladder that
-// the element-wise per-bucket collapse in classicBucketSumAggs reproduces.
+// bare-selector path. Specifically rejected: PARAMETERISED aggregations
+// (`topk` / `bottomk` / `quantile` / `count_values`), which select or
+// re-label series rather than reduce each group to one value and so have
+// no per-`le` rung reduction; range-vector functions other than rate /
+// increase / sum_over_time; deeper nestings (e.g. `sum(sum(...))`).
 //
-// `sum` does, because summation commutes with the per-bucket → cumulative
-// running total. `avg` does too, one step removed: within a group every
-// row carries the same number of buckets (the layout is a group key, see
-// classicBucketAggGroupBy), so `avg` is `sum` divided by one row count
-// that is constant across every bucket position. histogram_quantile
-// interpolates the RATIO of cumulative counts to the total, so scaling the
-// whole ladder by that constant leaves the quantile untouched — the same
-// scale-invariance that lets `rate`, `increase` and `sum_over_time` share
-// one lowering.
+// A matched shape still has to be LOWERABLE for the metric's histogram
+// flavour — see histogramAggShapeLowerable, which the dispatcher applies.
+
+// classicBucketRungFold reduces one `le` rung's per-row cumulative counts
+// into the group's rung for that bound. `rungs` is an Array expression
+// holding the contributing rows' cumulative counts at that bound.
+type classicBucketRungFold func(rungs chplan.Expr) chplan.Expr
+
+// promGroupSampleValue is the value PromQL's `group` aggregation writes
+// into every output sample. It carries no data from the input, only the
+// fact that the group exists.
+const promGroupSampleValue = 1.0
+
+// classicBucketLadderFold maps a PromQL aggregation to the ClickHouse
+// reduction that folds one `le` rung across a group's rows.
 //
-// Every other aggregation needs the ladder accumulated BEFORE the
-// reduction and is rejected here — see classicBucketSumAggs for the
-// counterexample that rules out `min` / `max`.
-func classicBucketAggOpIsLadderPreserving(op parser.ItemType) bool {
+// Prometheus aggregates classic histograms in the CUMULATIVE domain: each
+// input series is one already-cumulative float sample per `le`, and
+// `sum by(le)` / `max by(le)` / … reduce those floats rung by rung. This
+// table is that reduction transcribed — which is why it is total over
+// every non-parameterised aggregation rather than the `sum` / `avg`
+// whitelist an element-wise PER-BUCKET collapse forces. A per-bucket
+// collapse is only sound for reducers that commute with the running
+// total (`sum`, and `avg` by scale-invariance); folding in the cumulative
+// domain has no such restriction because the ladder is built BEFORE the
+// reduction. See classicBucketMergedLadderExpr for that construction.
+//
+// Absent by construction: `topk` / `bottomk` / `quantile` /
+// `count_values` all carry a parameter and are rejected in
+// matchHistogramAggIdiom — they select series or mint labels rather than
+// reduce a group to one value per rung, so no entry here could express
+// them.
+func classicBucketLadderFold(op parser.ItemType) classicBucketRungFold {
+	arrayFold := func(name string) classicBucketRungFold {
+		return func(rungs chplan.Expr) chplan.Expr {
+			return &chplan.FuncCall{Name: name, Args: []chplan.Expr{rungs}}
+		}
+	}
+	reduceFold := func(agg string) classicBucketRungFold {
+		return func(rungs chplan.Expr) chplan.Expr {
+			return &chplan.FuncCall{
+				Name: "arrayReduce",
+				Args: []chplan.Expr{&chplan.LitString{V: agg}, rungs},
+			}
+		}
+	}
+	switch op {
+	case parser.SUM:
+		return arrayFold("arraySum")
+	case parser.AVG:
+		return arrayFold("arrayAvg")
+	case parser.MIN:
+		return arrayFold("arrayMin")
+	case parser.MAX:
+		return arrayFold("arrayMax")
+	case parser.COUNT:
+		// Prom's `count` is the number of contributing series at that
+		// `le`; here it is the number of contributing ROWS, the same
+		// window model every other fold on this path uses.
+		return arrayFold("length")
+	case parser.GROUP:
+		return func(chplan.Expr) chplan.Expr {
+			return &chplan.LitFloat{V: promGroupSampleValue}
+		}
+	case parser.STDDEV:
+		// Prom's stddev / stdvar are POPULATION statistics over the
+		// group's samples (promql/engine.go), so stddevPop / varPop.
+		return reduceFold("stddevPop")
+	case parser.STDVAR:
+		return reduceFold("varPop")
+	}
+	return nil
+}
+
+// expHistogramAggOpIsMergeable reports whether a PromQL aggregation over
+// NATIVE (exponential) histogram series has a merged-distribution
+// lowering. Prometheus merges native histograms under `sum` and `avg`;
+// every other aggregation DROPS histogram samples with an annotation, so
+// an empty result is the reference answer there and the dispatcher lets
+// the shape fall through to the empty fold.
+func expHistogramAggOpIsMergeable(op parser.ItemType) bool {
 	return op == parser.SUM || op == parser.AVG
+}
+
+// histogramAggShapeLowerable reports whether a matched aggregation idiom
+// has a lowering for the histogram flavour its metric is stored in. The
+// two flavours diverge because Prometheus itself does: classic buckets
+// are ordinary float series that every aggregation reduces, while native
+// histogram samples are dropped by everything except `sum` / `avg`.
+func histogramAggShapeLowerable(shape histogramAggShape, s schema.Metrics) bool {
+	if s.IsExpHistogramMetric(shape.selector.Name) {
+		return shape.agg == nil || expHistogramAggOpIsMergeable(shape.agg.Op)
+	}
+	return shape.classicFold != nil
 }
 
 func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
@@ -517,17 +602,24 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 
 	// Try an outer aggregation wrapper.
 	var agg *parser.AggregateExpr
+	// A bare `rate(...)` with no aggregation wrapper still folds every
+	// in-window row of a series into one ladder, and summing is what that
+	// window collapse means — so the fold defaults to SUM.
+	foldOp := parser.ItemType(parser.SUM)
 	if a, ok := e.(*parser.AggregateExpr); ok {
-		if !classicBucketAggOpIsLadderPreserving(a.Op) {
-			return histogramAggShape{}, false
-		}
 		if a.Param != nil {
-			// `sum` / `avg` with a parameter (the parser allows
-			// topk/bottomk to surface as AggregateExpr with Param set;
-			// defensive).
+			// Parameterised aggregation (`quantile` / `topk` /
+			// `bottomk` / `count_values`). `quantile` is a genuine
+			// per-group reducer and would fit the rung fold below;
+			// `topk` / `bottomk` are selectors that keep their input
+			// series' full label sets, and `count_values` mints a new
+			// label — neither collapses an `le` group to one value, so
+			// the fold has no shape for them. All four are tracked in
+			// #1590.
 			return histogramAggShape{}, false
 		}
 		agg = a
+		foldOp = a.Op
 		e = peelWrappers(a.Expr)
 	}
 
@@ -568,6 +660,7 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		windowRange:      ms.Range,
 		windowMinSamples: histogramWindowMinSamples(call.Func.Name),
 		agg:              agg,
+		classicFold:      classicBucketLadderFold(foldOp),
 	}, true
 }
 
@@ -593,11 +686,12 @@ func peelWrappers(e parser.Expr) parser.Expr {
 // The shape of the produced tree:
 //
 //	Project [Sample-row contract]
-//	  HistogramQuantile phi=phi, groupBy=[Attributes]
-//	    Project [Attributes (rebuilt from gkeys), BucketCounts, ExplicitBounds]
-//	      Aggregate groupBy=[<user labels>] funcs=[sumForEach(BucketCounts), any(ExplicitBounds)]
-//	        Filter <metric matchers> AND TimeUnix in (anchor-Range, anchor]
-//	          Scan(otel_metrics_histogram)
+//	  HistogramQuantile phi=phi, cumulative, groupBy=[Attributes]
+//	    Project [Attributes, monotonic(ladder) AS BucketCounts, ExplicitBounds]
+//	      Project [Attributes (rebuilt from gkeys), merged ladder, union bounds]
+//	        Aggregate groupBy=[<user labels>] funcs=[groupArray(ExplicitBounds), groupArray(BucketCounts)]
+//	          Filter <metric matchers> AND TimeUnix in (anchor-Range, anchor]
+//	            Scan(otel_metrics_histogram)
 //
 // When `agg` is nil (bare `rate(...)` with no surrounding `sum`),
 // the Aggregate groups by the full Attributes map (preserving per-series
@@ -647,39 +741,34 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 
 	// Build the Aggregate. GroupBy comes from the surrounding `sum`
 	// clause (dropping `le` from by-lists since OTel-CH classic
-	// histograms have no per-bucket rows) plus the bucket LAYOUT — see
-	// classicBucketAggGroupBy. The only bucket aggregate is
-	// sumForEach(BucketCounts); ExplicitBounds rides the group key.
+	// histograms have no per-bucket rows). The bucket aggregates collect
+	// every row's layout + counts so the reshape can merge them across
+	// layouts — see classicBucketMergeShaping.
 	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
-	groupBy, groupByAliases := classicBucketAggGroupBy(userGroupBy, userAliases, s)
-	aggFuncs := classicBucketSumAggs(s)
+	shaping := classicBucketMergeShaping(shape.classicFold, s)
 	agg := &chplan.Aggregate{
 		Input:              input,
-		GroupBy:            groupBy,
-		GroupByAliases:     groupByAliases,
-		AggFuncs:           aggFuncs,
+		GroupBy:            userGroupBy,
+		GroupByAliases:     userAliases,
+		AggFuncs:           shaping.aggs,
 		DropEmptyOnNoGroup: true,
 	}
 
-	// Inner Project re-shapes the aggregate output back into the
+	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
-	// column (rebuilt from the gkey aliases) plus BucketCounts +
-	// ExplicitBounds aliased through unchanged.
-	rebuilt := &chplan.Project{
-		Input: agg,
-		Projections: []chplan.Projection{
-			{Expr: attrsRebuild, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
-		},
-	}
+	// column (rebuilt from the gkey aliases) plus the merged
+	// BucketCounts + ExplicitBounds pair.
+	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
+		{Expr: attrsRebuild, Alias: s.AttributesColumn},
+	}, s)
 
 	hq := &chplan.HistogramQuantile{
-		Input:                rebuilt,
-		Phi:                  phi.lit,
-		PhiExpr:              phi.expr,
-		BucketCountsColumn:   s.BucketCountsColumn,
-		ExplicitBoundsColumn: s.ExplicitBoundsColumn,
+		Input:                  rebuilt,
+		Phi:                    phi.lit,
+		PhiExpr:                phi.expr,
+		BucketCountsColumn:     s.BucketCountsColumn,
+		ExplicitBoundsColumn:   s.ExplicitBoundsColumn,
+		BucketCountsCumulative: cumulative,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},
@@ -701,65 +790,269 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	}, nil
 }
 
-// classicBucketAggGroupBy appends the bucket LAYOUT to a classic-histogram
-// aggregation's group keys.
-//
-// The `le` ladder a classic OTel-CH row carries is the pair
-// (BucketCounts[i], ExplicitBounds[i]) — position i means nothing without
-// the bounds array it indexes. Aggregating counts element-wise across rows
-// is therefore only defined for rows that share one layout: adding
-// position i of a `[0.1, 0.5, 1]` row to position i of a `[1, 10, 100]` row
-// yields a count vector that indexes neither ladder, and the interpolation
-// then runs against whichever array an arbitrary pick returned. That is a
-// silently wrong quantile — no error, no empty result, just a number.
-//
-// Two ordinary shapes put mismatched layouts in one group: a producer
-// changing its bucket boundaries mid-window (rows of ONE series disagree
-// across timestamps), and two series with different layouts colliding once
-// `by (...)` drops the label that told them apart. Making the layout a
-// group key keeps each ladder whole — every group's counts and bounds come
-// from rows that agree on the layout — so each emitted quantile is
-// computed against the ladder it was actually measured on.
-//
-// The key is appended LAST so the user's own keys keep their aliases and
-// ordinal positions; the wrapping Project rebuilds Attributes from those
-// and reads ExplicitBounds by name, exactly as it read the old `any()`
-// aggregate's alias.
-func classicBucketAggGroupBy(userGroupBy []chplan.Expr, userAliases []string, s schema.Metrics) ([]chplan.Expr, []string) {
-	groupBy := make([]chplan.Expr, 0, len(userGroupBy)+1)
-	groupBy = append(groupBy, userGroupBy...)
-	groupBy = append(groupBy, &chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
+// Aliases for the classic-histogram layout merge. The `_hq_` prefix keeps
+// them out of the user-label namespace, matching the native-histogram
+// merge aliases further down this file.
+const (
+	// hqAggBoundsListAlias / hqAggCountsListAlias hold the group's
+	// groupArray of each row's ExplicitBounds / BucketCounts array.
+	hqAggBoundsListAlias = "_hq_bounds_list"
+	hqAggCountsListAlias = "_hq_counts_list"
+	// hqAggLadderAlias holds the merged, not-yet-repaired cumulative
+	// ladder. It gets its own Project layer because the monotonic repair
+	// reads the ladder twice and inlining it would square the SQL.
+	hqAggLadderAlias = "_hq_ladder"
+)
 
-	aliases := make([]string, 0, len(userAliases)+1)
-	aliases = append(aliases, userAliases...)
-	aliases = append(aliases, s.ExplicitBoundsColumn)
-	return groupBy, aliases
+// Lambda parameter names for the layout-merge expressions. `u` is the
+// union bound currently being folded; `bs` / `cs` are one row's
+// ExplicitBounds / BucketCounts; `b` / `c` are one bucket's bound and
+// count inside a row; `v` / `pbs` pair a row's cumulative count with the
+// bounds array it came from; `i` indexes the ladder during the repair.
+const (
+	paramUnionBound  = "u"
+	paramRowBounds   = "bs"
+	paramRowCounts   = "cs"
+	paramBucketBound = "b"
+	paramBucketCount = "c"
+	paramRowCum      = "v"
+	paramRowLayout   = "pbs"
+	paramLadderIdx   = "i"
+)
+
+// classicBucketShaping bundles a classic-histogram group's bucket
+// aggregates with the reshape they owe the HistogramQuantile node.
+type classicBucketShaping struct {
+	aggs []chplan.AggFunc
+	// fold is nil when the aggregate already surfaces BucketCounts +
+	// ExplicitBounds by name (the argMax newest-row bare-selector path,
+	// which picks ONE row per group and so has no layouts to merge).
+	// Non-nil selects the layout-merge reshape and names the per-rung
+	// reduction it applies.
+	fold classicBucketRungFold
 }
 
-// classicBucketSumAggs is the element-wise bucket-count collapse for the
-// classic-histogram aggregated paths.
-//
-// sumForEach is the ONLY per-bucket reducer that is sound here, and the
-// reason is structural rather than a matter of which functions ClickHouse
-// happens to ship. BucketCountsColumn holds PER-BUCKET counts; the ladder
-// histogram_quantile interpolates is their running total. Summation
-// commutes with that running total — cumsum(Σ_rows c[i]) == Σ_rows
-// cumsum(c)[i] — so summing per-bucket counts and then accumulating gives
-// exactly the ladder Prometheus builds by aggregating already-cumulative
-// per-`le` samples. No other reducer commutes: max over per-bucket counts
-// followed by cumsum is not the max over cumulative ladders (rows
-// [10, 0] and [0, 10] give ladder [10, 20] element-wise-max-then-cumsum
-// against Prometheus's [10, 10]), and the same holds for min. Those
-// aggregations need the ladder built BEFORE the reduction — see
-// matchHistogramAggIdiom for which PromQL aggregations reach here.
-func classicBucketSumAggs(s schema.Metrics) []chplan.AggFunc {
-	return []chplan.AggFunc{
-		{
-			Name:  "sumForEach",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
-			Alias: s.BucketCountsColumn,
+// classicBucketMergeShaping is the shaping for the aggregated classic
+// paths: collect every row's layout and counts, then merge them.
+func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) classicBucketShaping {
+	return classicBucketShaping{
+		aggs: []chplan.AggFunc{
+			{
+				Name:  "groupArray",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
+				Alias: hqAggBoundsListAlias,
+			},
+			{
+				Name:  "groupArray",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
+				Alias: hqAggCountsListAlias,
+			},
 		},
+		fold: fold,
 	}
+}
+
+// reshape wraps a grouped node in the Projects that surface the
+// histogram-row contract (ExplicitBoundsColumn + BucketCountsColumn),
+// carrying `passthrough` through every layer it adds. It reports whether
+// the resulting BucketCounts is an already-cumulative ladder, which the
+// caller hands to chplan.HistogramQuantile.BucketCountsCumulative.
+func (sh classicBucketShaping) reshape(
+	group chplan.Node,
+	passthrough []chplan.Projection,
+	s schema.Metrics,
+) (chplan.Node, bool) {
+	if sh.fold == nil {
+		projections := make([]chplan.Projection, 0, len(passthrough)+2)
+		projections = append(projections, passthrough...)
+		projections = append(
+			projections,
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
+		)
+		return &chplan.Project{Input: group, Projections: projections}, false
+	}
+
+	// Layer 1: the merged layout (union of every row's bounds) and the
+	// per-`le` ladder folded across the group's rows.
+	merged := make([]chplan.Projection, 0, len(passthrough)+2)
+	merged = append(merged, passthrough...)
+	merged = append(
+		merged,
+		chplan.Projection{Expr: classicBucketMergedLadderExpr(sh.fold), Alias: hqAggLadderAlias},
+		chplan.Projection{Expr: classicBucketUnionBoundsExpr(), Alias: s.ExplicitBoundsColumn},
+	)
+
+	// Layer 2: Prometheus's ensureMonotonicAndIgnoreSmallDeltas over that
+	// ladder, aliased into the BucketCounts slot HistogramQuantile reads.
+	repaired := make([]chplan.Projection, 0, len(passthrough)+2)
+	for _, p := range passthrough {
+		repaired = append(repaired, chplan.Projection{Expr: &chplan.ColumnRef{Name: p.Alias}, Alias: p.Alias})
+	}
+	repaired = append(
+		repaired,
+		chplan.Projection{Expr: classicBucketMonotonicLadderExpr(), Alias: s.BucketCountsColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
+	)
+
+	return &chplan.Project{
+		Input:       &chplan.Project{Input: group, Projections: merged},
+		Projections: repaired,
+	}, true
+}
+
+// classicBucketUnionBoundsExpr renders the merged bucket layout: every
+// distinct upper bound any row in the group carried, ascending.
+//
+// This is the output layout, and it is what makes the merged quantile
+// match Prometheus. Prometheus never sees a "layout" at all — a classic
+// histogram reaches it as one float series per `le`, so `sum by(le)`
+// over two producers with different boundaries yields the UNION of their
+// `le` values, each rung summed over whichever series actually reported
+// it. Keying the group on the layout instead (one output row per layout)
+// answers a question nobody asked: the caller asked for one series per
+// group, not one per boundary set.
+func classicBucketUnionBoundsExpr() chplan.Expr {
+	return &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+		&chplan.FuncCall{Name: "arrayDistinct", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "arrayFlatten", Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: hqAggBoundsListAlias},
+			}},
+		}},
+	}}
+}
+
+// classicBucketMergedLadderExpr renders the group's cumulative per-`le`
+// ladder over the merged layout: one rung per union bound, plus the
+// trailing +Inf rung, each reduced across the group's rows by `fold`.
+//
+// The merge happens in the CUMULATIVE domain because that is the only
+// domain in which rows carrying different layouts can be combined at all.
+// A per-bucket count is meaningless without the bounds array it indexes —
+// position i of a `[0.1, 0.5, 1]` row and position i of a `[1, 10, 100]`
+// row measure different things — whereas a cumulative count at a bound is
+// a self-contained quantity: "observations at or below u". That is
+// exactly Prometheus's own representation (one already-cumulative float
+// per `le`), so folding there reproduces its answer rung for rung.
+//
+// Per union bound u:
+//
+//	fold(arrayFilter((v, pbs) -> has(pbs, u),
+//	     arrayMap((bs, cs) -> <cumulative count at u>, BL, CL), BL))
+//
+// The arrayFilter is load-bearing, not an optimisation: a row whose
+// layout does not contain u contributes NO `{le=u}` series in
+// Prometheus's model, so it must be absent from the reduction rather than
+// contribute a zero. Under `sum` the distinction is invisible; under
+// `min` / `avg` / `count` it is the whole answer.
+//
+// The +Inf rung folds over every row unconditionally — the overflow
+// bucket exists in every layout, so `{le="+Inf"}` is reported by all of
+// them.
+func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
+	boundsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggBoundsListAlias})
+	countsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggCountsListAlias})
+
+	// One row's cumulative count at u: the sum of every bucket whose
+	// upper bound is <= u. BucketCounts runs one longer than
+	// ExplicitBounds (the +Inf overflow), so the pairing slices that
+	// trailing rung off — it belongs to no finite bound.
+	rowCumulativeAtBound := &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
+		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramBucketBound, paramBucketCount},
+				Body: &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+					&chplan.Binary{
+						Op:    chplan.OpLe,
+						Left:  &chplan.BareIdent{Name: paramBucketBound},
+						Right: &chplan.BareIdent{Name: paramUnionBound},
+					},
+					&chplan.BareIdent{Name: paramBucketCount},
+					&chplan.LitInt{V: 0},
+				}},
+			},
+			&chplan.BareIdent{Name: paramRowBounds},
+			&chplan.FuncCall{Name: "arraySlice", Args: []chplan.Expr{
+				&chplan.BareIdent{Name: paramRowCounts},
+				&chplan.LitInt{V: 1},
+				&chplan.FuncCall{Name: "length", Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowBounds}}},
+			}},
+		}},
+	}}
+
+	contributingRungs := &chplan.FuncCall{Name: "arrayFilter", Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramRowCum, paramRowLayout},
+			Body: &chplan.FuncCall{Name: "has", Args: []chplan.Expr{
+				&chplan.BareIdent{Name: paramRowLayout},
+				&chplan.BareIdent{Name: paramUnionBound},
+			}},
+		},
+		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramRowBounds, paramRowCounts},
+				Body:   rowCumulativeAtBound,
+			},
+			boundsList,
+			countsList,
+		}},
+		boundsList,
+	}}
+
+	infRungs := &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramRowCounts},
+			Body: &chplan.FuncCall{
+				Name: "arraySum",
+				Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowCounts}},
+			},
+		},
+		countsList,
+	}}
+
+	return &chplan.FuncCall{Name: "arrayConcat", Args: []chplan.Expr{
+		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{paramUnionBound}, Body: fold(contributingRungs)},
+			classicBucketUnionBoundsExpr(),
+		}},
+		&chplan.FuncCall{Name: "array", Args: []chplan.Expr{fold(infRungs)}},
+	}}
+}
+
+// classicBucketMonotonicLadderExpr renders Prometheus's
+// ensureMonotonicAndIgnoreSmallDeltas (promql/quantile.go) over the
+// merged ladder in hqAggLadderAlias, as a prefix maximum.
+//
+// The repair is mandatory here, not defensive. A ladder accumulated from
+// non-negative per-bucket counts is non-decreasing by construction, but
+// this one is not accumulated — each rung is folded independently over
+// whichever rows reported that bound, so a bound only one producer
+// carries can sit BELOW the rung beneath it. The mixed-layout case makes
+// it concrete: bounds [1,2,3] with counts [10,0,0,0] and bounds
+// [100,200,300] with counts [0,0,0,10] sum to the ladder
+// [10,10,10,0,0,0,20], which the repair lifts to [10,10,10,10,10,10,20] —
+// exactly what upstream produces for the same two series.
+//
+// Upstream also smooths deltas within a 1e-12 relative tolerance, which
+// exists to absorb float error accumulated by ITS callers' repeated
+// additions; the prefix maximum already subsumes every case where that
+// smoothing changes a value (it can only raise a dip back to the running
+// maximum), so there is nothing left for a tolerance to do.
+func classicBucketMonotonicLadderExpr() chplan.Expr {
+	ladder := chplan.Expr(&chplan.ColumnRef{Name: hqAggLadderAlias})
+	return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramLadderIdx},
+			Body: &chplan.FuncCall{Name: "arrayMax", Args: []chplan.Expr{
+				&chplan.FuncCall{Name: "arraySlice", Args: []chplan.Expr{
+					ladder,
+					&chplan.LitInt{V: 1},
+					&chplan.BareIdent{Name: paramLadderIdx},
+				}},
+			}},
+		},
+		&chplan.FuncCall{Name: "arrayEnumerate", Args: []chplan.Expr{ladder}},
+	}}
 }
 
 // histogramAggGroupBy translates the user's `sum [by/without]` clause

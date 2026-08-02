@@ -20,15 +20,13 @@ package chplan
 //     over the classic-histogram table; for `sum by(...)` aggregation,
 //     a chplan.Aggregate that element-wise-sums the arrays via
 //     `sumForEach` and groups by GroupBy).
-//   - BucketCountsColumn is PER-BUCKET and non-negative, never an
-//     already-cumulative ladder: the emitter cumulates it itself with
-//     arrayCumSum, which over non-negative elements is monotone
-//     non-decreasing by construction. That invariant is what makes
-//     Prometheus's ensureMonotonicAndIgnoreSmallDeltas repair unreachable
-//     on this node. Any future Input that supplies a pre-cumulated or
-//     independently-derived per-`le` ladder must apply that repair before
-//     this node sees the array (see the note in
-//     chsql.histogramQuantileValueFrag).
+//   - BucketCountsColumn is PER-BUCKET and non-negative by default, and
+//     the emitter cumulates it itself with arrayCumSum, which over
+//     non-negative elements is monotone non-decreasing by construction.
+//     That invariant is what makes Prometheus's
+//     ensureMonotonicAndIgnoreSmallDeltas repair unreachable in that mode.
+//     BucketCountsCumulative flips the contract for Inputs that already
+//     carry a per-`le` ladder — see its own doc.
 //   - Phi is a scalar literal; PhiExpr is the computed-phi sibling
 //     (typically a ScalarSubquery built from `scalar(<vector>)`) and
 //     takes precedence over Phi at emit time. The emitter adds a
@@ -54,6 +52,24 @@ type HistogramQuantile struct {
 	PhiExpr              Expr
 	BucketCountsColumn   string
 	ExplicitBoundsColumn string
+
+	// BucketCountsCumulative declares that BucketCountsColumn already
+	// holds the CUMULATIVE per-`le` ladder (Prometheus's own bucket
+	// representation) rather than per-bucket counts, so the emitter must
+	// not arrayCumSum it and must read the observation total off the
+	// ladder's top rung instead of summing the array.
+	//
+	// The classic-histogram bucket-layout merge sets this: folding rows
+	// whose ExplicitBounds differ is only well-defined in the cumulative
+	// domain (a per-bucket count means nothing without the layout it was
+	// measured against), so the merge projection emits a ladder over the
+	// union of bounds. Because that ladder is derived per `le` rather
+	// than accumulated from non-negative counts, the producer owes
+	// Prometheus's ensureMonotonicAndIgnoreSmallDeltas repair — a prefix
+	// maximum — BEFORE this node sees the array. The emitter then reads
+	// the total off the repaired top rung, so total and ladder cannot
+	// disagree (see the note in chsql.histogramQuantileValueFrag).
+	BucketCountsCumulative bool
 
 	// GroupBy + GroupByAliases name the per-series projection from the
 	// inner subquery. The emitter projects each as `<expr> AS <alias>`
@@ -92,6 +108,7 @@ func (h *HistogramQuantile) Equal(other Node) bool {
 	if h.Phi != o.Phi ||
 		h.BucketCountsColumn != o.BucketCountsColumn ||
 		h.ExplicitBoundsColumn != o.ExplicitBoundsColumn ||
+		h.BucketCountsCumulative != o.BucketCountsCumulative ||
 		h.MetricNameColumn != o.MetricNameColumn ||
 		h.AttributesColumn != o.AttributesColumn ||
 		h.TimestampColumn != o.TimestampColumn ||

@@ -512,6 +512,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		} else {
 			fmt.Fprintf(b, "%sHistogramQuantile phi=%s", indent, strconv.FormatFloat(v.Phi, 'g', -1, 64))
 		}
+		if v.BucketCountsCumulative {
+			b.WriteString(" cumulative")
+		}
 		if len(gb) > 0 {
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}
