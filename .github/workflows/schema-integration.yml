@@ -115,10 +115,9 @@ jobs:
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
           DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-        uses: docker/login-action@v4
-        with:
-          username: tsouza
-          password: ${{ secrets.DOCKER_HUB_PAT }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
 
       # Cerberus's own copy of every upstream image this job pulls lives in a
       # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
