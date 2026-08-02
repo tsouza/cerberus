@@ -68,22 +68,30 @@ jobs:
       # is exactly what this job exists to stop spending. Skips silently when
       # the secret is absent (forks), where the copy still works against the
       # anonymous limit for an inventory this small.
+      #
+      # RETRIED, and not via docker/login-action, which has no retry input. This
+      # step is where the workflow died on its first real run (30724446834) with
+      # `context deadline exceeded` on the /v2/ handshake — before pulling
+      # anything, so the mirror shipped inert while the PR merged green. The
+      # script classifies with lib/registry.mjs, so a handshake fault retries
+      # while a quota refusal still fails on the first attempt.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
           DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-        uses: docker/login-action@v4
-        with:
-          username: tsouza
-          password: ${{ secrets.DOCKER_HUB_PAT }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
 
-      # Writing side.
+      # Writing side. Retried for the same reason: an unpopulated mirror is
+      # silent at every point of use, so the handshake that enables writing to
+      # it is not a good place to be one-shot.
       - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
 
       - name: Mirror the inventory
         run: node .github/scripts/mirror-images.mjs

@@ -685,6 +685,16 @@ jobs:
       - name: Assert the image mirror maps its inventory correctly
         run: node --test .github/scripts/mirror-images.test.mjs
 
+      # The login that populates that mirror, and specifically the ORDER its
+      # failure classes are asked in. Three of the four can match one output —
+      # a quota refusal reaches BuildKit as `unexpected status from HEAD
+      # request … 429`, which also reads as a transport fault — and each wrong
+      # order is silent in its own way: a retried quota refusal spends the
+      # window it was refused for, and a handshake blip classed as fatal is the
+      # run (30724446834) that shipped the mirror inert.
+      - name: Assert the registry login retries only what retrying can fix
+        run: node --test .github/scripts/registry-login.test.mjs
+
       # Same discipline for the mutation lane's phase planner, one step further:
       # its selector decides which legs an ordinary PR runs, so a bug there is
       # not a slow release but a SILENT one — legs quietly deselected while the
@@ -694,6 +704,23 @@ jobs:
       # EXACTLY, not merely non-empty.
       - name: Assert the mutation phase selector scopes correctly
         run: node --test .github/scripts/mutation-matrix.test.mjs
+
+      # Whether a job that pulls an image logged in first. An anonymous pull is
+      # not an error: it succeeds until the shared per-runner-IP quota happens to
+      # be spent, and then reads as flake — which is how #1572 fixed the class by
+      # construction and three jobs were still on the anonymous path afterwards.
+      # The detector resolves each step to the registry it reaches (through
+      # `just`, through the scripts, through the composite actions) rather than
+      # grepping for `docker pull`, because the one shape that looks like a
+      # violation and is not — this lane's own `node --test` of an image-pulling
+      # module — has to be excluded by a fact about the command and never by a
+      # list of job names. The tests run first: they prove the gate still FAILS
+      # on the real workflow text with a login step deleted, without which
+      # "clean" and "not reading the workflows" report the same green.
+      - name: Assert every image-acquiring job authenticates first
+        run: |
+          node --test .github/scripts/assert-image-jobs-authenticate.test.mjs
+          node .github/scripts/assert-image-jobs-authenticate.mjs
 
       # The two auto-labelers, same discipline: neither is a required check,
       # so a broken mapping never turns anything red — it just quietly stops
@@ -718,10 +745,11 @@ jobs:
       # motivating artefact had none), and the repository root must match an
       # exhaustive allow-list rather than a "dotfiles are fine" pattern.
       #
-      # The self-test runs FIRST and proves both scans actually fire: it
-      # builds a throwaway git repo, plants a synthetic ELF blob and a stray
-      # root file, and asserts a non-zero exit naming each — a gate never
-      # shown to fail is indistinguishable from one that does nothing.
+      # The self-test runs FIRST and proves every scan actually fires: it
+      # builds throwaway git repos, plants a synthetic ELF blob, a stray root
+      # file and a workflow step using docker/login-action, and asserts a
+      # non-zero exit naming each — a gate never shown to fail is
+      # indistinguishable from one that does nothing.
       - name: Self-test the committed-artefact gate
         run: node --test .github/scripts/repo-hygiene.test.mjs
       - name: Reject tracked binary artefacts
@@ -732,6 +760,15 @@ jobs:
         run: node .github/scripts/repo-hygiene.mjs
         env:
           CHECK: root-allowlist
+      # docker/login-action has no retry input, so a login that loses one
+      # handshake fails the job before it pulls anything — and a failed GHCR
+      # login is SILENT at the point of use, because a mirror miss falls back
+      # to Docker Hub. Without this scan the Action creeps back one step at a
+      # time, which is how it reached 32 sites.
+      - name: Reject registry logins that cannot retry
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: registry-login
 
       # Same rationale, one lane over: the compat-scores badge publisher only
       # runs on push-to-main, so a break in it surfaces either as stale README

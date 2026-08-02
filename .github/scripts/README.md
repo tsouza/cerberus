@@ -79,7 +79,7 @@ authenticated CLI `docker pull` of `clickhouse/clickhouse-server` was refused as
 A ref that names GHCR reaches GHCR whichever path resolves it, including the
 paths nobody has audited yet, and GHCR's budget is not the one every other
 tenant of the runner's IP is drawing on. The packages are **private**, so every consuming
-job needs a `docker/login-action` against `ghcr.io` with its own `GITHUB_TOKEN`
+job needs a `registry-login.mjs` step against `ghcr.io` with its own `GITHUB_TOKEN`
 and `packages: read`; a job that forgets is slower and quota-exposed, never
 broken. Nothing in the tree names a mirrored ref — compose files, Kubernetes
 manifests, the quickstart and the Helm chart keep naming Docker Hub, because
@@ -178,7 +178,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident
-  survives indefinitely. Two scans close that class. `binary` rejects any
+  survives indefinitely. Three scans close that class. `binary` rejects any
   tracked blob that is compiled output, detected by CONTENT — an executable
   magic (ELF / Mach-O / PE / WebAssembly / ar archive) at offset 0, or a NUL
   byte inside the same leading window git itself sniffs when it classifies a
@@ -194,16 +194,27 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   is retried out of the object store and, failing that, exits non-zero rather
   than being assumed to be text. Since `git ls-files` is the input, the
   companion fix for anything this catches is a `git rm` PLUS a `.gitignore`
-  rule — the ignore rule is what stops it coming back.
+  rule — the ignore rule is what stops it coming back. `registry-login`
+  rejects any workflow step that `uses: docker/login-action`: that Action has
+  no retry input, so a login losing one handshake fails the job before it has
+  pulled anything, and because a mirror miss falls back to Docker Hub a failed
+  GHCR login is SILENT at the point of use. Registry logins go through
+  `registry-login.mjs` instead, which retries transport faults and refuses to
+  retry a spent quota or a rejected credential. The scan matches the `uses:`
+  form only, so prose NAMING the Action — this paragraph included — stays
+  legal; a gate that policed the word instead of the step would make its own
+  rationale unwritable.
   `repo-hygiene.test.mjs` is the `node --test` guard (cheap discipline lane,
   run as the step BEFORE the gate): it builds a throwaway git repo, plants a
-  synthetic ELF blob and a stray root file, and asserts a non-zero exit
-  naming each, plus a clean exit on a conforming fixture — a gate never shown
-  to fail is indistinguishable from one that does nothing.
-  - Env: `CHECK` is one of `binary`, `root-allowlist`; `REPO_ROOT` (optional)
-    points the scan at another checkout (the self-test's fixture repo).
+  synthetic ELF blob, a stray root file, and a workflow step using
+  `docker/login-action`, and asserts a non-zero exit naming each, plus a clean
+  exit on a conforming fixture — a gate never shown to fail is
+  indistinguishable from one that does nothing.
+  - Env: `CHECK` is one of `binary`, `root-allowlist`, `registry-login`;
+    `REPO_ROOT` (optional) points the scan at another checkout (the
+    self-test's fixture repo).
   - Exit: `0` clean, `1` on any tracked binary / unsanctioned or rotted root
-    entry / unreadable blob / bad `CHECK`.
+    entry / `docker/login-action` step / unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
@@ -1194,6 +1205,34 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Args: the image refs to acquire.
   - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`).
   - Exit: `0` when every ref is in the local daemon, `1` as soon as one is not.
+- **`assert-image-jobs-authenticate.mjs`** — the required `check` lane. Fails
+  when a job that acquires an image has not logged in to the registry it
+  acquires from. An anonymous pull is not an error: it succeeds until the shared
+  per-runner-IP quota happens to be spent, and then surfaces as a 429 in an
+  unrelated lane, which is why the mirror shipped and three jobs were still on
+  the anonymous path afterwards — nothing in CI was asking the question.
+  - Resolves what a step DOES rather than what it says: through `just` recipes
+    and their variables, through the `.mjs` modules and the commands they spawn,
+    through a local composite action's own steps, and through `docker compose`
+    and `k3d`. Grepping for `docker pull` would see almost none of it.
+  - "Logs in" is not "uses `docker/login-action`". A `run:` step whose script
+    spawns `docker login` counts, with the registry read off the step's `env:`
+    (unset means Docker Hub, matching `docker login` itself) — so
+    `registry-login.mjs` is a login on the same terms.
+  - There is no allow-list and no exempted job name. The one shape that looks
+    like an acquisition and is not — this lane's own `node --test` of a module
+    that pulls images — is excluded because `node --test` imports a module and
+    runs its tests rather than its CLI, which is a fact about the command and
+    holds for every module.
+  - Env: `WORKFLOW_DIR` (optional; default `.github/workflows`), `REPO_ROOT`
+    (optional; default the working directory).
+  - Exit: `0` when every acquiring job is authenticated, `1` on a violation, on
+    a reference that resolves to nothing, or when no acquiring job is found at
+    all — a scan that reads nothing must not report the same green as a clean
+    tree.
+  - Gated by `assert-image-jobs-authenticate.test.mjs`, which strips a login
+    step out of the real workflow text and asserts each rule goes red. A gate
+    that cannot fail is a gap, not coverage.
 - **`mirror-images.mjs`** — `mirror-images.yml` (daily cron, `workflow_dispatch`,
   and pushes to the mirror's own files). Copies every ref in `lib/mirror.mjs`'s
   inventory into cerberus's GHCR namespace with `docker buildx imagetools
@@ -1217,6 +1256,33 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     the inventory→ref mapping and rejects two upstream refs colliding on one
     mirror ref — the one mirror bug that presents as a WRONG image rather than
     as a miss.
+  - Every copy is read back with `imagetools inspect` before it counts as
+    mirrored. "The copy command exited 0" and "a consumer can resolve this ref"
+    are different claims, and the difference is invisible downstream: an
+    unresolvable mirror is a miss, and a miss falls back to Docker Hub.
+- **`registry-login.mjs`** — `mirror-images.yml`, both login steps. `docker
+  login` under the same retry policy every other registry interaction here has.
+  It exists because `docker/login-action` has no retry input and the workflow
+  died on its first real run (30724446834) with `context deadline exceeded` on
+  the `/v2/` handshake, before pulling anything — so the mirror shipped inert
+  while the PR merged green, and every lane silently fell back to Docker Hub.
+  The classification is not re-implemented: it imports `lib/registry.mjs`'s
+  classifiers, so a login inherits the same verdicts a pull gets. Four classes,
+  asked in this order — a quota refusal fails on the first attempt (retrying
+  spends the window it was refused for), a rejected credential fails
+  immediately (wrong on attempt 1 is wrong on attempt 5), a transport fault
+  retries, anything else is fatal rather than retried five times and read as
+  flake.
+  - Env: `REGISTRY` (blank/unset means Docker Hub, matching `docker login`'s own
+    default), `USERNAME` (required), `PASSWORD` (required; passed on stdin,
+    never argv, so it cannot reach a process listing),
+    `REGISTRY_LOGIN_BACKOFF_STEP_SECONDS` (optional; default `2` — attempt N
+    waits N × step).
+  - Exit: `0` on a successful login, `1` on any class that is not retried and on
+    a transport fault that outlived every attempt.
+  - Gated by `registry-login.test.mjs` on the required `check` lane, which pins
+    the ORDER rather than the patterns: three of the four classes can match the
+    same output, and each wrong order fails silently in its own way.
 
 ## Notes
 

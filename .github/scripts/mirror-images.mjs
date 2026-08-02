@@ -51,6 +51,23 @@ function copy(upstream, mirror) {
   return { ok: false, detail: (res.stderr + res.stdout).trim().split('\n').slice(-1)[0] ?? 'failed' };
 }
 
+// verify — read the mirrored ref back out of GHCR after writing it.
+//
+// A copy that reported success is not the same claim as a ref a consumer can
+// resolve, and the difference is invisible where it matters: `pullImageWithRetry`
+// treats an unresolvable mirror as a miss and falls back to Docker Hub, so a
+// mirror that is empty and a mirror that is working look identical from every
+// consuming job. Reading it back is the only step that can tell them apart, and
+// this job is the one place where the answer is actionable.
+function verify(mirror) {
+  const res = capture('docker', ['buildx', 'imagetools', 'inspect', mirror]);
+  if (res.status === 0) return { ok: true, detail: 'copied + resolves' };
+  return {
+    ok: false,
+    detail: `copied but does not resolve: ${(res.stderr + res.stdout).trim().split('\n').slice(-1)[0] ?? 'failed'}`,
+  };
+}
+
 function writeSummary(rows) {
   const path = process.env.GITHUB_STEP_SUMMARY;
   if (path === undefined || path.trim() === '') return;
@@ -88,7 +105,8 @@ function main(argv) {
   const rows = [];
   for (const { upstream, mirror } of pairs) {
     log(`==> ${upstream} -> ${mirror}`);
-    const outcome = copy(upstream, mirror);
+    const copied = copy(upstream, mirror);
+    const outcome = copied.ok ? verify(mirror) : copied;
     rows.push({ upstream, ...outcome });
     if (!outcome.ok) error(`could not mirror ${upstream}: ${outcome.detail}`);
   }

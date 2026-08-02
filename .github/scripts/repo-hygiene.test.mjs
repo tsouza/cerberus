@@ -16,6 +16,11 @@
 //      fixture carrying a synthetic ELF blob.
 //   5. the CLI exits non-zero, with an ::error:: naming the offender, on a
 //      fixture carrying a stray root file.
+//   6. loginActionUses matches the `uses:` step form and NOT prose naming the
+//      Action, so the gate's own rationale stays writable.
+//   7. the CLI exits non-zero, naming file:line, on a fixture workflow that
+//      uses docker/login-action.
+//   8. the CLI exits 0 on a fixture workflow that runs registry-login.mjs.
 //
 // The live tree is deliberately NOT asserted here: the workflow runs the real
 // CLI against it in the two steps that follow this one, so duplicating that
@@ -29,7 +34,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +44,7 @@ import {
   classifyBlob,
   diffAllowlist,
   gitBinarySniffBytes,
+  loginActionUses,
   rootEntriesOf,
 } from './repo-hygiene.mjs';
 
@@ -158,4 +164,70 @@ test('the CLI rejects an unknown CHECK rather than passing silently', () => {
   const { status, out } = runGate('', dir);
   assert.notEqual(status, 0);
   assert.match(out, /unknown CHECK/);
+});
+
+// newWorkflowFixtureRepo — a throwaway repo carrying one tracked workflow.
+// Deliberately NOT newFixtureRepo(): that helper materialises every
+// ROOT_ALLOWLIST entry as a plain FILE, so `.github` there is a file and
+// could never hold `.github/workflows/*.yml`. The registry-login scan reads
+// the tracked workflow set and ignores the rest of the root, so a minimal
+// repo is both sufficient and honest about what the scan actually looks at.
+function newWorkflowFixtureRepo(workflowYaml) {
+  const dir = mkdtempSync(join(tmpdir(), 'repo-hygiene-wf-'));
+  const run = (args) => {
+    const res = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    assert.equal(res.status, 0, `git ${args.join(' ')} failed: ${res.stderr}`);
+  };
+  run(['init', '--quiet']);
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'workflows', 'probe.yml'), workflowYaml);
+  run(['add', '-A']);
+  return dir;
+}
+
+test('loginActionUses matches the step form and not prose naming the Action', () => {
+  const source = [
+    '# docker/login-action@v4 is banned here; this comment must stay legal.',
+    '#   uses: docker/login-action@v4   <- indented inside a comment',
+    'jobs:',
+    '  a:',
+    '    steps:',
+    '      - uses: docker/login-action@v4',
+    "      - uses: 'docker/login-action@v4'",
+    '      - run: node .github/scripts/registry-login.mjs',
+  ].join('\n');
+  const hits = loginActionUses(source);
+  assert.deepEqual(
+    hits.map((h) => h.line),
+    [6, 7],
+    `only the two real step declarations are violations; got ${JSON.stringify(hits)}`,
+  );
+});
+
+test('the CLI FAILS on a workflow that uses docker/login-action, naming file:line', () => {
+  const dir = newWorkflowFixtureRepo(
+    ['jobs:', '  a:', '    steps:', '      - uses: docker/login-action@v4', ''].join('\n'),
+  );
+  const { status, out } = runGate('registry-login', dir);
+  assert.notEqual(status, 0, `the registry-login scan must fail; got:\n${out}`);
+  assert.match(out, /::error::/);
+  assert.match(out, /\.github\/workflows\/probe\.yml:4/);
+  assert.match(out, /registry-login\.mjs/);
+});
+
+test('the CLI PASSES on a workflow that runs the retrying login script', () => {
+  const dir = newWorkflowFixtureRepo(
+    [
+      'jobs:',
+      '  a:',
+      '    steps:',
+      '      - name: Log in to the image mirror (GHCR)',
+      '        env:',
+      '          REGISTRY: ghcr.io',
+      '        run: node .github/scripts/registry-login.mjs',
+      '',
+    ].join('\n'),
+  );
+  const { status, out } = runGate('registry-login', dir);
+  assert.equal(status, 0, `the registry-login scan must pass; got:\n${out}`);
 });
