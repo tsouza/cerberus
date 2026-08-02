@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"math"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
-	"github.com/tsouza/cerberus/internal/chclient"
 )
 
 // This file implements the two metrics StreamingQuerier RPCs:
@@ -34,17 +32,18 @@ import (
 // level (server.go); the per-RPC code below does NOT re-acquire a
 // slot.
 //
-// Error mapping (matches the design-doc §3 table):
-//   - tempo.ErrParseStage / tempo.ErrLowerStage → codes.InvalidArgument
-//     (user-facing query errors — bad TraceQL, non-metrics-pipeline
-//     expression, missing start/end/step).
-//   - chclient.ErrCircuitOpen → codes.Unavailable.
-//   - any other engine / CH error → codes.Internal.
+// Error mapping runs through grpcStatusFor — the gRPC encoder over the
+// Tempo head's single tempo.ClassifyErr classification, shared with the
+// Search RPC and with every HTTP handler in the sibling package. See
+// errclass.go for the class↔code table. These RPCs previously ran their
+// own three-case ladder that mapped ErrTooManySamples,
+// ErrDrainBytesExceeded, ErrQueryTimeout, context.DeadlineExceeded and
+// context.Canceled all onto codes.Internal.
 //
 // Cancellation: stream.Context() flows through Handler.ExecMetrics*
 // → engine.QueryPlan → chclient.Client.Query, so a client disconnect
-// surfaces as ctx.Err() on the in-flight CH driver call and the gRPC
-// transport closes the stream with codes.Canceled.
+// surfaces as ctx.Err() on the in-flight CH driver call and
+// grpcStatusFor closes the stream with codes.Canceled.
 
 // MetricsQueryRange implements StreamingQuerier_MetricsQueryRangeServer.
 // Mirrors the HTTP /api/metrics/query_range endpoint: evaluate the
@@ -84,7 +83,7 @@ func (s *Service) MetricsQueryRange(req *tempopb.QueryRangeRequest, stream tempo
 
 	out, err := metricsExecRange(ctx, s.Handler, req.Query, start, end, step)
 	if err != nil {
-		return mapMetricsError(err)
+		return grpcStatusFor(err)
 	}
 	return mapStreamSendError(stream.Send(out))
 }
@@ -121,7 +120,7 @@ func (s *Service) MetricsQueryInstant(req *tempopb.QueryInstantRequest, stream t
 
 	out, err := metricsExecInstant(ctx, s.Handler, req.Query, start, end)
 	if err != nil {
-		return mapMetricsError(err)
+		return grpcStatusFor(err)
 	}
 	return mapStreamSendError(stream.Send(out))
 }
@@ -202,35 +201,6 @@ func metricsLabelsToKeyValues(in []tempo.MetricsLabel) []v1.KeyValue {
 		})
 	}
 	return out
-}
-
-// mapMetricsError converts an Engine / pipeline error into the gRPC
-// status the metrics RPCs return. Mirrors classifyMetricsQueryRangeErr's
-// HTTP-status mapping while adopting the gRPC error vocabulary:
-//
-//   - parse + lower (tempo.ErrParseStage / ErrLowerStage) →
-//     codes.InvalidArgument (user-facing query errors).
-//   - chclient circuit-open (errors.Is against chclient.ErrCircuitOpen) →
-//     codes.Unavailable (downstream saturation, retry-after).
-//   - CH memory-limit abort (code 241, errors.Is chclient.ErrMemoryLimitExceeded)
-//     → codes.ResourceExhausted (the over-broad query exceeded the per-query
-//     memory cap — a resource ceiling, not a server fault). Mirrors the HTTP
-//     path's 422 for the same sentinel; without this it fell through to
-//     codes.Internal, mis-signalling an availability bug.
-//   - everything else (emit / execute / unexpected) → codes.Internal.
-func mapMetricsError(err error) error {
-	if err == nil {
-		return nil
-	}
-	switch {
-	case errors.Is(err, chclient.ErrCircuitOpen):
-		return status.Errorf(codes.Unavailable, "%v", err)
-	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
-		return status.Errorf(codes.ResourceExhausted, "%v", err)
-	case errors.Is(err, tempo.ErrParseStage), errors.Is(err, tempo.ErrLowerStage):
-		return status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-	return status.Errorf(codes.Internal, "%v", err)
 }
 
 // nanosToTime converts a tempopb-wire-format nanosecond timestamp

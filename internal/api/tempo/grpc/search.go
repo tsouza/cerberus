@@ -1,13 +1,12 @@
 package grpc
 
 import (
-	"context"
-	"errors"
 	"strconv"
 	"time"
 
 	"github.com/grafana/tempo/pkg/tempopb"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
@@ -42,11 +41,10 @@ const searchFrameSize = 20
 // land. See .claude/plans/tempo-grpc-streaming-design.md §3 (Search row)
 // + §4 (frame mapping) for the cross-RPC strategy.
 //
-// Error mapping (matches the design-doc table):
-//   - TraceQL parser error / lowering error → codes.InvalidArgument
-//     (errors.Is against tempo.ErrParseStage / tempo.ErrLowerStage).
-//   - chclient circuit-open → codes.Unavailable.
-//   - any other engine/CH error → codes.Internal.
+// Error mapping runs through grpcStatusFor — the gRPC encoder over the
+// Tempo head's single tempo.ClassifyErr classification, shared with the
+// metrics RPCs and with every HTTP handler in the sibling package. See
+// errclass.go for the class↔code table.
 //
 // The admit limiter is enforced upstream by the stream interceptor
 // wired in NewServer (see server.go); a saturated head short-circuits
@@ -65,6 +63,7 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		// mirror that by emitting one empty frame with zero metrics
 		// rather than InvalidArgument so the streaming health-check
 		// stays equivalent to the HTTP one.
+		stream.SetTrailer(metadata.Pairs(tempo.HeaderInspectedSpans, strconv.Itoa(0)))
 		return stream.Send(&tempopb.SearchResponse{
 			Traces:  []*tempopb.TraceSearchMetadata{},
 			Metrics: &tempopb.SearchMetrics{InspectedTraces: 0},
@@ -118,10 +117,10 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// needs the full sample set to group spans by TraceID, so gRPC never streamed
 	// on the Go heap anyway; the byte budget still charges the drain, and the
 	// two-phase split shrinks it to the response traces. Cancellation now surfaces
-	// at the query boundary (mapEngineError maps ctx errors below).
+	// at the query boundary (grpcStatusFor maps ctx errors).
 	res, err := s.Handler.SearchResult(ctx, req.Query, limit)
 	if err != nil {
-		return mapEngineError(err)
+		return grpcStatusFor(err)
 	}
 	samples := res.Samples
 
@@ -130,6 +129,11 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// Tempo's documented defaults inside the shared helpers), so the
 	// streaming path stays wire-equivalent with /api/search.
 	summaries, missingRoots := tempo.ToTraceSummaries(samples, int(req.SpansPerSpanSet))
+	// Accounted BEFORE the truncation below, off the SAME shared helper the
+	// HTTP handler uses — tempo.SearchMetricsFor documents why the
+	// pre-truncation distinct-trace count is the canonical InspectedTraces
+	// and why the span-drain volume rides its own signal instead.
+	searchMetrics, inspectedSpans := tempo.SearchMetricsFor(summaries, samples)
 	// Use the clamped `limit` (not the raw req.Limit) so the truncation honours
 	// the same ceiling the trace-limit pushdown above was bounded to.
 	summaries, missingRoots = tempo.TruncateSummaries(summaries, missingRoots, limit)
@@ -161,6 +165,11 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		}
 	}
 	tail := flusher.Tail()
+	// The span-drain volume has no home in tempopb.SearchMetrics, so it
+	// rides the trailer under the same name the HTTP head uses for its
+	// response header (tempo.HeaderInspectedSpans). Set before the final
+	// Send so it is attached whether or not that Send succeeds.
+	stream.SetTrailer(metadata.Pairs(tempo.HeaderInspectedSpans, strconv.Itoa(inspectedSpans)))
 	// Always emit a tail frame, even when summaries is empty or the
 	// final shard would be empty — Grafana parses SearchMetrics from
 	// the tail and an empty trailer keeps the wire envelope round-
@@ -168,50 +177,13 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	if err := stream.Send(&tempopb.SearchResponse{
 		Traces: tail,
 		Metrics: &tempopb.SearchMetrics{
-			//nolint:gosec // search result count is bounded by CH row LIMIT; overflow would require > 4B summaries which the engine can't materialise.
-			InspectedTraces: uint32(len(summaries)),
+			//nolint:gosec // trace count is bounded by CH row LIMIT; overflow would require > 4B traces which the engine can't materialise.
+			InspectedTraces: uint32(searchMetrics.InspectedTraces),
 		},
 	}); err != nil {
 		return mapStreamError(err)
 	}
 	return nil
-}
-
-// mapEngineError converts an engine.Query / Engine.QueryCursor error
-// into the gRPC status the Search RPC returns. Mirrors
-// classifySearchErr's HTTP-status mapping in handler.go: parse + lower
-// stages → codes.InvalidArgument (user-facing query errors);
-// chclient circuit-open → codes.Unavailable; anything else → codes.Internal.
-func mapEngineError(err error) error {
-	if err == nil {
-		return nil
-	}
-	switch {
-	// Client cancellation: the eager SearchResult surfaces it at the query
-	// boundary (the old streaming path caught it per-row via ctx.Err).
-	case errors.Is(err, context.Canceled):
-		return status.FromContextError(err).Err()
-	// Timeout family — a CH wall-clock cap (ErrQueryTimeout, code 159) or a ctx
-	// deadline. HTTP classifySearchErr maps BOTH to 503; codes.Unavailable is the
-	// gRPC 503 (transient, retryable), so the two heads stay symmetric. Without
-	// the ErrQueryTimeout case it fell through to a misleading Internal.
-	case errors.Is(err, chclient.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
-		return status.Errorf(codes.Unavailable, "%v", err)
-	case errors.Is(err, chclient.ErrCircuitOpen):
-		return status.Errorf(codes.Unavailable, "%v", err)
-	case errors.Is(err, tempo.ErrParseStage), errors.Is(err, tempo.ErrLowerStage):
-		return status.Errorf(codes.InvalidArgument, "%v", err)
-	// Resource-exhausted family — the per-query budgets (row-count sample budget,
-	// wide-projection byte budget) and the CH memory-limit abort. All are
-	// "the query asked for too much", not an outage, so ResourceExhausted (the
-	// gRPC sibling of HTTP 422 — see classifySearchErr), symmetric with the HTTP
-	// head rather than a misleading Internal.
-	case errors.Is(err, chclient.ErrTooManySamples),
-		errors.Is(err, chclient.ErrDrainBytesExceeded),
-		errors.Is(err, chclient.ErrMemoryLimitExceeded):
-		return status.Errorf(codes.ResourceExhausted, "%v", err)
-	}
-	return status.Errorf(codes.Internal, "%v", err)
 }
 
 // mapStreamError converts a stream.Send error into the appropriate

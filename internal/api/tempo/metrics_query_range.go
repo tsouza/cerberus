@@ -9,13 +9,11 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
@@ -311,82 +309,13 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Range = Step → each bucket spans exactly one step width, matching
-	// Tempo's reference metrics semantics where `count_over_time` over
-	// a step-sized bucket is the per-step count.
-	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Range:           step,
-		Step:            step,
-		Start:           start,
-		End:             end,
-		TimestampColumn: h.Schema.TimestampColumn,
-	}
-	wrapped := wrapMetricsForSample(
-		applyMetricsSecondStages(rw, stages, []string{chsql.RangeWindowAnchorAlias}),
-		metrics,
-	)
-
-	// metricsLang.ProjectSamples is a passthrough (we already wrapped
-	// with the Sample projection above) so engine.QueryPlan runs
-	// optimize → emit → execute without re-wrapping the matrix shape.
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
-		IsMetric:      true,
-		ResponseShape: "tempo-metrics-matrix",
-	})
+	series, headers, qerr := h.execMetricsRange(ctx, q, inner, stages, metrics, start, end, step)
 	if qerr != nil {
-		writeError(w, classifyMetricsQueryRangeErr(qerr), "", "", qerr)
+		writeError(w, httpErrStatus(qerr), "", "", qerr)
 		return
 	}
-	h.Logger.Debug("cerberus tempo metrics_query_range",
-		"traceql", q, "start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
 
-	// quantile_over_time: the matrix SQL emits `(group, anchor, bucket,
-	// count)` tuples (with synthetic 0-bucket / 0-count phantom rows
-	// per (group, anchor) so empty anchors survive the GROUP BY).
-	// Collapse the bucket rows into the per-(group, phi, anchor) scalar
-	// wire shape via Tempo's `Log2QuantileWithBucket` — empty anchors
-	// resolve to 0 because the phantom rows are all the anchor has, so
-	// its histogram is empty once they are discarded.
-	samples := res.Samples
-	if metrics.Op == chplan.MetricsOpQuantileOverTime {
-		samples = postProcessQuantileBuckets(samples, metrics)
-	}
-
-	// Matrix-shape zero-fill is the SQL emitter's concern, not the
-	// handler's: `internal/chsql.emitRangeWindowMetrics` swaps the
-	// outer WHERE clause for `countIf(<window pred>)` on the
-	// count_over_time / rate paths, and
-	// `emitRangeWindowMetricsQuantileBuckets` emits a phantom
-	// 0-bucket / 0-count row per (group, anchor) — both produce one
-	// row per (group, anchor) tuple the inner fanout materialises,
-	// matching Tempo's StepAggregator + HistogramAggregator
-	// emit-every-anchor wire shape without a Go-side post-pass. See
-	// `metricsOpZeroFillsEmptyBuckets` in internal/chsql/range_window.go
-	// for the per-op rationale (NaN-skip operators — sum / avg / min /
-	// max — keep the WHERE-filtered "observed-only" shape).
-	series := toMetricsSeries(samples, metrics)
-
-	exSQL, exArgs, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
-		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, 1, h.Schema.SpansTable)
-	if exErr != nil {
-		// Emit failure: the matrix response still ships with an empty
-		// `Exemplars` array per Tempo's wire shape. Warn so production
-		// can see this rather than silently degrade.
-		h.Logger.Warn("cerberus tempo metrics_query_range exemplars emit failed (matrix returns without exemplars)", "err", exErr)
-	} else {
-		exSamples, qErr := h.Client.Query(ctx, exSQL, exArgs...)
-		if qErr != nil {
-			// Execution failure: same wire shape applies. Warn so a
-			// transient CH failure doesn't go unnoticed.
-			h.Logger.Warn("cerberus tempo metrics_query_range exemplars query failed (matrix returns without exemplars)", "err", qErr)
-		} else {
-			attachExemplars(series, exSamples, metrics)
-		}
-	}
-
-	writeEngineHeaders(w, res.Headers)
+	writeEngineHeaders(w, headers)
 	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
 		Series: series,
 	})
@@ -436,39 +365,6 @@ func (h *Handler) serveMetricsQueryRangeNonScalar(
 	}
 	writeError(w, http.StatusBadRequest, "", "",
 		fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query_range requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", q))
-}
-
-// classifyMetricsQueryRangeErr maps engine.QueryPlan failures to HTTP
-// status: emit → 500, execute → 502. Parse / lower never bubble through
-// QueryPlan here because the handler runs them inline before wrapping.
-func classifyMetricsQueryRangeErr(err error) int {
-	if err == nil {
-		return http.StatusInternalServerError
-	}
-	// Breaker-open → 503, mirroring classifySearchErr in handler.go; see
-	// the rationale there.
-	if errors.Is(err, chclient.ErrCircuitOpen) {
-		return http.StatusServiceUnavailable
-	}
-	// Sample-budget exceedance → 422, mirroring classifySearchErr in
-	// handler.go; see the rationale there.
-	if errors.Is(err, chclient.ErrTooManySamples) {
-		return http.StatusUnprocessableEntity
-	}
-	// CH memory-limit abort (code 241) → 422, mirroring
-	// classifySearchErr in handler.go; see the rationale there.
-	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
-		return http.StatusUnprocessableEntity
-	}
-	// Wall-clock timeout / request-ctx deadline → 503, mirroring
-	// classifySearchErr in handler.go; see the rationale there.
-	if errors.Is(err, chclient.ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) {
-		return http.StatusServiceUnavailable
-	}
-	if strings.Contains(err.Error(), "engine: execute:") {
-		return http.StatusBadGateway
-	}
-	return http.StatusInternalServerError
 }
 
 // parseMetricsStep parses the `step` query parameter. Accepts a Go
