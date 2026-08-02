@@ -705,6 +705,23 @@ jobs:
       - name: Assert the mutation phase selector scopes correctly
         run: node --test .github/scripts/mutation-matrix.test.mjs
 
+      # Whether a job that pulls an image logged in first. An anonymous pull is
+      # not an error: it succeeds until the shared per-runner-IP quota happens to
+      # be spent, and then reads as flake — which is how #1572 fixed the class by
+      # construction and three jobs were still on the anonymous path afterwards.
+      # The detector resolves each step to the registry it reaches (through
+      # `just`, through the scripts, through the composite actions) rather than
+      # grepping for `docker pull`, because the one shape that looks like a
+      # violation and is not — this lane's own `node --test` of an image-pulling
+      # module — has to be excluded by a fact about the command and never by a
+      # list of job names. The tests run first: they prove the gate still FAILS
+      # on the real workflow text with a login step deleted, without which
+      # "clean" and "not reading the workflows" report the same green.
+      - name: Assert every image-acquiring job authenticates first
+        run: |
+          node --test .github/scripts/assert-image-jobs-authenticate.test.mjs
+          node .github/scripts/assert-image-jobs-authenticate.mjs
+
       # The two auto-labelers, same discipline: neither is a required check,
       # so a broken mapping never turns anything red — it just quietly stops
       # labeling, which is exactly how 62 issues ended up bare. The issue
