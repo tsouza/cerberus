@@ -1,0 +1,52 @@
+# A named capture group in the regex, referenced as `${svc}` in the
+# replacement. Go's ExpandString — the engine Prometheus runs
+# label_replace's replacement through — resolves the name to the index
+# of the group carrying it, so the destination label gets the captured
+# text. qlcommon.ReplacementToCH performs that resolution at lowering
+# time and emits CH's positional `\1`.
+-- query.promql --
+label_replace(temperature, "service", "svc-${svc}", "host", "host-(?P<svc>.*)")
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'host-prod'), toDateTime64('2026-01-01 00:00:00', 9), 22.5);
+-- expected_rows --
+[
+  ["temperature", {"host": "host-prod", "service": "svc-prod"}, "2026-01-01T00:00:00Z", 22.5]
+]
+-- args --
+[0] string = "host"
+[1] string = "^host-(?P<svc>.*)$"
+[2] string = "service"
+[3] string = "host"
+[4] string = "svc-"
+[5] string = "host"
+[6] string = "^host-(?P<svc>.*)$"
+[7] string = "svc-\\1"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = "service.name"
+[11] string = "service_name"
+[12] string = ""
+[13] string = "service_name"
+[14] string = "temperature"
+[15] string = "2026-01-01 00:00:01.000000000"
+[16] int64 = 9
+[17] string = "2026-01-01 00:00:01.000000000"
+[18] int64 = 9
+[19] int64 = 300000000000
+-- chplan --
+Project [MetricName, labelReplace(Attributes, dst="service", replacement="svc-\\1", src="host", regex="host-(?P<svc>.*)", emptyReplacement="svc-") AS Attributes, TimeUnix, Value]
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName = "temperature")
+            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, replaceRegexpOne(`Attributes`[?], ?, ?)))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))

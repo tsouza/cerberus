@@ -52,11 +52,16 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 	// `Attributes` — and rewrite THAT map. Reading ResourceAttributes
 	// unconditionally surfaced as 502 `Unknown expression identifier
 	// 'ResourceAttributes'` for `label_replace(sum by (...) (...), …)`.
+	chReplacement, err := qlcommon.ReplacementToCH(e.Replacement, e.Regex)
+	if err != nil {
+		return nil, fmt.Errorf("logql: label_replace: %w", err)
+	}
+
 	cols := logSampleColumns(inner, s)
 	attrs := &chplan.LabelReplace{
 		Map:              &chplan.ColumnRef{Name: cols.attrsCol},
 		Dst:              e.Dst,
-		Replacement:      qlcommon.ReplacementToCH(e.Replacement, e.Regex),
+		Replacement:      chReplacement,
 		Src:              e.Src,
 		Regex:            e.Regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(e.Replacement),
