@@ -58,22 +58,115 @@ func TestUnpack_DuplicateSuffix(t *testing.T) {
 	}
 }
 
-// TestUnpack_NonJSONLeavesLineAlone — a non-JSON line silently passes
-// through. Loki sets `__error__=JSONParserErr` in that case; cerberus
-// uses silent-fallback semantics (matching its line_format /
-// label_format style).
-func TestUnpack_NonJSONLeavesLineAlone(t *testing.T) {
+// TestUnpack_NonJSONStampsParserError — a payload that is not a JSON
+// object keeps the line but is an ERROR: Loki's UnpackParser stamps
+// `__error__="JSONParserErr"` and an `__error_details__` sentinel. The
+// details text is byte-compared because callers filter on it, and
+// because swallowing the pair inverts `| __error__=""` — the whole of
+// issue #1447.
+func TestUnpack_NonJSONStampsParserError(t *testing.T) {
 	t.Parallel()
 
 	expr, _ := syntax.ParseExpr(`{job="api"} | unpack`)
 	tx, _ := postProcessExtract(expr)
 
-	gotLine, gotLabels := tx("not json", 0, map[string]string{"job": "api"})
-	if gotLine != "not json" {
-		t.Errorf("line should pass through; got %q", gotLine)
+	for _, line := range []string{"not json", `[1,2]`, `"a string"`, `42`} {
+		gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+		if gotLine != line {
+			t.Errorf("line should pass through; got %q, want %q", gotLine, line)
+		}
+		want := map[string]string{
+			"job":               "api",
+			"__error__":         "JSONParserErr",
+			"__error_details__": "expecting json object(6), but it is not",
+		}
+		if !reflect.DeepEqual(gotLabels, want) {
+			t.Errorf("labels for %q\n got %#v\nwant %#v", line, gotLabels, want)
+		}
+	}
+}
+
+// TestUnpack_EmptyLineIsNotAnError — upstream returns early on a
+// zero-length line BEFORE the `{` check, so no error is stamped. Folding
+// this into the non-object branch would mark every empty line broken.
+func TestUnpack_EmptyLineIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	expr, _ := syntax.ParseExpr(`{job="api"} | unpack`)
+	tx, _ := postProcessExtract(expr)
+
+	gotLine, gotLabels := tx("", 0, map[string]string{"job": "api"})
+	if gotLine != "" {
+		t.Errorf("line should stay empty; got %q", gotLine)
 	}
 	if !reflect.DeepEqual(gotLabels, map[string]string{"job": "api"}) {
 		t.Errorf("labels should be unchanged; got %#v", gotLabels)
+	}
+}
+
+// TestUnpack_MalformedObjectStampsParserError — a line that opens with
+// `{` but does not parse carries the underlying decoder's message
+// through to `__error_details__`, exactly as upstream passes
+// jsonparser's error to addErrLabel.
+func TestUnpack_MalformedObjectStampsParserError(t *testing.T) {
+	t.Parallel()
+
+	expr, _ := syntax.ParseExpr(`{job="api"} | unpack`)
+	tx, _ := postProcessExtract(expr)
+
+	const line = `{"_entry":"l","pod":`
+	gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	if gotLine != line {
+		t.Errorf("malformed line should pass through unmodified; got %q", gotLine)
+	}
+	if gotLabels["__error__"] != "JSONParserErr" {
+		t.Errorf("__error__ = %q, want JSONParserErr", gotLabels["__error__"])
+	}
+	if gotLabels["__error_details__"] == "" {
+		t.Error("__error_details__ should carry the decoder's message")
+	}
+	if _, ok := gotLabels["pod"]; ok {
+		t.Error("labels collected before the failure must be discarded")
+	}
+}
+
+// TestUnpack_NoPackedEntryExtractsNothing — upstream flushes its label
+// buffer only when a top-level string `_entry` key was found. A
+// well-formed object without one is a complete no-op. Extracting the
+// labels anyway invents series identity out of an ordinary JSON log
+// line, which is the silently-wrong shape from the other direction.
+func TestUnpack_NoPackedEntryExtractsNothing(t *testing.T) {
+	t.Parallel()
+
+	expr, _ := syntax.ParseExpr(`{job="api"} | unpack`)
+	tx, _ := postProcessExtract(expr)
+
+	const line = `{"pod":"web-1","container":"app"}`
+	gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	if gotLine != line {
+		t.Errorf("line should pass through; got %q", gotLine)
+	}
+	if !reflect.DeepEqual(gotLabels, map[string]string{"job": "api"}) {
+		t.Errorf("no labels should be extracted without `_entry`; got %#v", gotLabels)
+	}
+}
+
+// TestUnpack_SanitizesLabelKeys — upstream runs every extracted key
+// through sanitizeLabelKey, so a key that is not a valid label name
+// arrives normalised rather than verbatim.
+func TestUnpack_SanitizesLabelKeys(t *testing.T) {
+	t.Parallel()
+
+	expr, _ := syntax.ParseExpr(`{job="api"} | unpack`)
+	tx, _ := postProcessExtract(expr)
+
+	const line = `{"_entry":"l","pod-name":"web-1","9lives":"cat"}`
+	_, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	if gotLabels["pod_name"] != "web-1" {
+		t.Errorf("`pod-name` should sanitise to `pod_name`; got %#v", gotLabels)
+	}
+	if gotLabels["_9lives"] != "cat" {
+		t.Errorf("leading-digit key should gain the `_` prefix; got %#v", gotLabels)
 	}
 }
 
