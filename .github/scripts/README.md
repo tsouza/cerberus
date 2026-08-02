@@ -143,16 +143,35 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   and no way to park a violation. Anti-vacuity is explicit — a missing
   description surface, an unresolvable commit range, an empty commit list, an
   empty file set or an empty marker table each fail LOUDLY rather than passing
-  green. `forbid-deferral.test.mjs` is the `node --test` guard (run as the step
+  A citation the API cannot resolve is never read as a citation that names
+  nothing. GitHub answers a resource the caller may not read with **404, not
+  403** — it declines to confirm the resource exists — so at the issue endpoint
+  "this number is not an issue" and "this token may not read issues" are the
+  same status code, and mapping both to "untracked" tells an author who filed
+  the issue that they filed nothing (PR #1413's red, whose only variable was a
+  workflow version without the `issues: read` grant). The first unresolvable
+  number therefore triggers a one-per-run capability probe: `GET
+  /repos/{owner}/{repo}` (readable by any token that can see the repository at
+  all, needing only the implicit metadata permission) followed by `GET
+  /repos/{owner}/{repo}/issues` (needing exactly `issues: read`, and answering
+  200 with an empty array even where there are no issues). The two requests
+  differ in one variable, so a failure of the first is reported as an
+  unreadable repository and a failure of only the second as a missing issues
+  grant — and because both are authenticated, the discrimination holds on
+  private repositories, where the obvious "probe a public resource anonymously"
+  alternative answers 404 for everyone and would flag every run.
+  `forbid-deferral.test.mjs` is the `node --test` guard (run as the step
   BEFORE the gate): it proves every table row fires on a real example and that
   the measured false-positive shapes — Go's `defer` statement, the phrase that
   records COMPLETED work in prose or in a past-tense heading, a change that only
   DELETES a marker line, and a heading whose section cites its issue below it —
   stay clean.
   - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `issues: read` and
-    `pull-requests: read`), `GITHUB_EVENT_NAME`, `PR_BODY` (required on a
-    `pull_request` run; may be empty, may not be unset), `BASE_SHA`, `HEAD_SHA`,
-    `GITHUB_API_URL` (optional; runner-provided).
+    `pull-requests: read`; a token without either fails the run with a
+    permission diagnostic rather than a verdict about the author's prose),
+    `GITHUB_EVENT_NAME`, `PR_BODY` (required on a `pull_request` run; may be
+    empty, may not be unset), `BASE_SHA`, `HEAD_SHA`, `GITHUB_API_URL`
+    (optional; runner-provided).
   - Exit: `0` when every marker is tracked by an open issue (or none were
     found); `1` on an untracked deferral or a malformed input. ENFORCING and a
     required status check on `main`.
