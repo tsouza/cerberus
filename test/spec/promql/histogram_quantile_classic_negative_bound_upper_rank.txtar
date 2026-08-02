@@ -1,17 +1,12 @@
-# Sibling of histogram_quantile_classic_zero_count_plateau: same seed, a phi
-# whose target lands PAST the plateau, in the trailing +Inf bucket.
+# Companion to histogram_quantile_classic_negative_lowest_bound: the SAME
+# non-positive-bounded ladder with a rank that lands ABOVE the first bucket.
+# The non-positive-first-bucket short-circuit must not fire here — the guard
+# is `b == 0`, not "the histogram has a non-positive bound" — so ordinary
+# linear interpolation still runs.
 #
-# cum [2, 2, 2, 5], total 5, target = 0.8*5 = 4. The first cumulative entry
-# reaching 4 is index 4 = length(cum), so the overflow branch returns the
-# highest FINITE bound, ExplicitBounds[length(ExplicitBounds)] = 1.0 —
-# never +Inf.
-#
-# Hand-check against upstream on the equivalent `le` ladder
-# {0.1:2, 0.5:2, 1.0:2, +Inf:5}: rank = 4, sort.Search finds no bucket with
-# count >= 4 below +Inf, so b = len(buckets)-1 and Prometheus returns
-# buckets[len-2].UpperBound = 1.0. Same value, and the plateau does not
-# shift which bound is selected.
-
+# bounds [-10, 0, 5], counts [4, 1, 1, 1] → ladder [4, 5, 6, 7], total 7.
+# phi=0.8 → rank 5.6, first covered by rung 3 (6), so the answer interpolates
+# across (0, 5] : 0 + (5-0) * (5.6-5)/(6-5) = 3.
 -- query.promql --
 histogram_quantile(0.8, http_server_request_duration)
 -- seed --
@@ -23,10 +18,10 @@ CREATE TABLE otel_metrics_histogram (
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_histogram VALUES
-    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [2, 0, 0, 3], [0.1, 0.5, 1.0]);
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [4, 1, 1, 1], [-10.0, 0.0, 5.0]);
 -- expected_rows --
 [
-  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 1.0]
+  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 3.0000000000000027]
 ]
 -- args --
 [0] string = ""

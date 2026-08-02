@@ -278,7 +278,25 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// if(idx = length(cum), highest_bound, <interp>) — the +Inf bucket
 	// (only the trailing bucket crosses target) returns the highest
 	// explicit bound.
-	idxBranch := If(Eq(idx(), Call("length", arrayCumSumBC)), highestBound, interp)
+	//
+	// Nested inside the else: upstream's `b == 0 && buckets[0].UpperBound
+	// <= 0` short-circuit. The interpolation below assumes the first
+	// bucket spans `(0, ExplicitBounds[1]]`, which is only a bucket when
+	// that bound is positive. OTel permits negative and zero explicit
+	// bounds, and there the assumed lower edge sits ABOVE the upper one:
+	// interpolating across `[0, -10]` walks a negative-width interval and
+	// answers with a number no observation could have produced. Upstream
+	// returns the bound itself, so every rank landing in that bucket
+	// reports its upper edge. The branch order matches BucketQuantile's
+	// switch exactly — a lone +Inf bucket satisfies both predicates and
+	// upstream resolves it as the trailing bucket.
+	lowestBound := Subscript(coalescedEB, InlineLit(1))
+	firstBucketNonPositive := And(Eq(idx(), InlineLit(1)), Lte(lowestBound, InlineLit(0)))
+	idxBranch := If(
+		Eq(idx(), Call("length", arrayCumSumBC)),
+		highestBound,
+		If(firstBucketNonPositive, lowestBound, interp),
+	)
 
 	// Nested edge-case chain, outermost first:
 	//   if(length(bc) = 0, nan,
