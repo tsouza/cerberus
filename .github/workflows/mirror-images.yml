@@ -1,0 +1,89 @@
+# `mirror-images` keeps cerberus's own GHCR copy of every upstream image its CI
+# pulls. It is the durable half of the Docker Hub quota fix.
+#
+# Docker Hub meters pulls per ACCOUNT when the pull is authenticated and per
+# SOURCE IP when it is not, and a GitHub-hosted runner shares its IP with
+# everyone else on the host. Moving every pull onto the account bucket looked
+# like the fix until an AUTHENTICATED CLI pull of `clickhouse/clickhouse-server`
+# was refused as *unauthenticated* while `grafana/loki` succeeded on the same
+# path 0.8s later (run 30713014897): hold the path fixed and the refusal follows
+# the IMAGE, so authenticating harder restores nothing. A mirror does not have
+# to answer which bucket a pull draws on — a ref that resolves to GHCR reaches
+# GHCR whichever path resolves it, including the paths nobody has audited yet.
+#
+# WHAT CONSUMES THIS. Nothing in the tree names the mirror. `pullImageWithRetry`
+# (.github/scripts/lib/registry.mjs) pulls the mirrored copy and `docker tag`s
+# it to the upstream name, so compose files, Kubernetes manifests, the
+# quickstart and the Helm chart keep naming Docker Hub — they are read by
+# operators, who should not be pointed at a mirror this project runs for its own
+# CI. See .github/scripts/lib/mirror.mjs for the inventory and the mapping.
+#
+# WHY IT IS NOT A REQUIRED CHECK. A consumer treats a mirror miss as a fallback
+# and pulls upstream, so a stale mirror degrades to the behaviour that existed
+# before it and never fails a lane. That tolerance is why the completeness
+# question is asked HERE instead: this job fails when it cannot copy something
+# the inventory names, which is the one place where the answer is actionable.
+# `TestMirrorInventoryCoversEveryUpstreamImage` closes the other direction, on
+# the required `check` lane — a new upstream image in the tree fails there
+# rather than quietly never being mirrored.
+name: mirror-images
+
+on:
+  # Daily, because upstream can retag a moving reference (`grafana/tempo:main-*`
+  # is one) and because a copy is cheap: `imagetools create` transfers manifests
+  # between registries, not layers through this runner.
+  schedule:
+    - cron: '17 4 * * *'
+  # Every merge that could introduce or bump a ref. The inventory is the SoT, so
+  # its own file is the trigger that matters; the consumers are listed because a
+  # bump there without an inventory update is exactly what the `check`-lane test
+  # rejects, and this run is what makes the corrected inventory real.
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/lib/mirror.mjs'
+      - '.github/scripts/mirror-images.mjs'
+      - '.github/workflows/mirror-images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The whole point of the job: write the copies into ghcr.io/<owner>/.
+  packages: write
+
+concurrency:
+  # Serialised rather than cancel-in-progress: a cancelled copy leaves the
+  # mirror half-populated, and the next consumer reads that as a miss.
+  group: mirror-images
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Reading side. Authenticated, because copying the inventory is itself a
+      # burst of manifest reads against Docker Hub — the anonymous per-IP bucket
+      # is exactly what this job exists to stop spending. Skips silently when
+      # the secret is absent (forks), where the copy still works against the
+      # anonymous limit for an inventory this small.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: tsouza
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Writing side.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mirror the inventory
+        run: node .github/scripts/mirror-images.mjs

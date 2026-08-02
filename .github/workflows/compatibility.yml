@@ -85,6 +85,9 @@ permissions:
   # && github.ref == 'refs/heads/main'`), so they effectively run as
   # read-only despite the elevated grant.
   contents: write
+  # Pulling this project's own mirrored copies of the upstream images out of
+  # ghcr.io (.github/scripts/lib/mirror.mjs); the packages are private.
+  packages: read
 
 concurrency:
   group: compatibility-${{ github.ref }}
@@ -259,8 +262,8 @@ jobs:
       # Authenticated Docker Hub pulls get a far higher rate limit than
       # anonymous pulls from shared runner IPs — two image-pull flakes
       # in one night hit this workflow (run 27241748868). Skips
-      # silently when the secrets are absent (forks). Mirroring the
-      # upstream images to GHCR is the stronger long-term fix.
+      # silently when the secrets are absent (forks). The GHCR mirror
+      # login below is what removes the dependence on this limit.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
@@ -269,6 +272,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run compatibility harness
         id: compat
@@ -460,6 +475,18 @@ jobs:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run forced-route compatibility harness
         id: compat
         # CERBERUS_EVAL_ROUTE=sharded is interpolated into the cerberus
@@ -584,6 +611,18 @@ jobs:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run PromQL surface-completeness gate
         id: gate
         # The script stands up + tears down the flag-enabled reference
@@ -629,6 +668,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Buildx gives the Compose build cache, multi-arch support, and a
       # consistent build backend. The harness uses local build contexts
@@ -765,6 +816,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Buildx gives the Compose build cache + a consistent backend
       # for the local cerberus image context.

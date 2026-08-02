@@ -47,6 +47,22 @@
 // key) and must be open. A pointer at a merged PR or a closed issue is
 // untracked work wearing a citation.
 //
+// WHY A CAPABILITY PROBE GUARDS THAT LOOKUP — GitHub answers a resource the
+// caller may not read with 404, never 403: confirming a 403 would confirm the
+// resource exists, which is precisely what it declines to do. So "#1431 names
+// nothing in this repository" and "this token may not read issues at all"
+// arrive at the issue endpoint as the same status code, and reading the second
+// as the first accuses the author of parking work they in fact filed. That is
+// not hypothetical: a run whose workflow lacked the `issues: read` grant
+// resolved zero of two genuinely open citations and reported an untracked
+// deferral, while the same module over the same range and body passed locally.
+// So the first unresolvable number triggers issuesReadability() below, which
+// separates the two by asking the API a question whose answer cannot be
+// ambiguous, and a token that cannot read issues FAILS the run naming itself as
+// the cause. A gate that reports the wrong reason is worse than one that
+// reports none: the author corrects prose that was already correct while the
+// real fault stays hidden.
+//
 // ANTI-VACUITY — a gate that silently inspects nothing is worse than none, and
 // this repo has been bitten by exactly that class. Every run asserts positively
 // that it did work: the marker table is non-empty and every pattern compiles,
@@ -60,7 +76,10 @@
 //                      which issues-URL host/slug counts as a citation.
 //   GITHUB_TOKEN       REQUIRED. Needs `issues: read` to resolve a cited
 //                      number's kind + state, and `pull-requests: read` to
-//                      resolve the description surface on a push event.
+//                      resolve the description surface on a push event. A token
+//                      without `issues: read` fails the run with a permission
+//                      diagnostic rather than reporting the citations it could
+//                      not read as untracked work — see issuesReadability().
 //   GITHUB_EVENT_NAME  REQUIRED. `pull_request` reads PR_BODY; anything else
 //                      resolves the description from the API by head commit.
 //   PR_BODY            REQUIRED on a pull_request run — the description, passed
@@ -100,8 +119,15 @@ import { appendStepSummary, error, git, log, notice } from './lib/gh.mjs';
 // line inside the block still counts.
 export const CITATION_WINDOW_LINES = 3;
 
-// GitHub's "not found" for a cited number that names nothing.
+// GitHub's "not found" — for a cited number that names nothing AND for one the
+// token may not read. The two are indistinguishable at the issue endpoint by
+// design, which is why issuesReadability() exists.
 const HTTP_NOT_FOUND = 404;
+
+// The capability probe reads the smallest page the list endpoint will serve: it
+// wants the status line, never the payload, and a repository with thousands of
+// issues must not cost a page of them to answer one yes/no question.
+const CAPABILITY_PROBE_PAGE_SIZE = 1;
 
 // DEFERRAL_MARKERS — the whole marker table, in one place so it is reviewable
 // and testable in isolation. Every pattern is applied case-insensitively.
@@ -470,6 +496,80 @@ export function evaluate(candidates, resolved) {
   return violations;
 }
 
+// --- issue-lookup capability -------------------------------------------------
+
+// issuesReadability — can this token read this repository's issues at all?
+//
+// `get(url)` performs one GET and returns `{ ok, status, statusText }`; the
+// probe never reads a body, only the status line. Two requests, in order:
+//
+//   1. `/repos/{owner}/{repo}` — the repository itself. Every token that can
+//      see the repository can read this, whatever else it may not do; it needs
+//      only the metadata permission, which is granted implicitly and cannot be
+//      dropped. A failure HERE means the token cannot see the repository at
+//      all (wrong slug, expired credential, a fork run with no access), which
+//      is a different fault with a different fix, and it must not be reported
+//      as a missing issues grant.
+//   2. `/repos/{owner}/{repo}/issues` — the list endpoint, which requires
+//      exactly the `issues: read` permission a cited number's lookup needs.
+//
+// Why this is SOUND and not merely plausible, on both visibilities:
+//
+//   * The two requests differ in one variable — the issues permission bit. They
+//     use the same token, the same host and the same repository, so anything
+//     that could make request 2 fail for a reason unrelated to issues (network,
+//     auth, visibility, a wrong slug, an unreachable GHES base) makes request 1
+//     fail first and is reported as itself.
+//   * The list endpoint answers 200 with an EMPTY ARRAY for an authorised
+//     caller in a repository with no issues, so a non-OK status is never "there
+//     is nothing to list". There is no state of the repository that makes an
+//     authorised list fail.
+//   * It does not assume a public repository. An unauthenticated probe of a
+//     "known-public" resource is the obvious alternative and it is unsound: on
+//     a PRIVATE repository an anonymous GET answers 404 for everyone, so the
+//     probe returns the same answer whether the token is fine or broken, and it
+//     would report a permission fault on every private-repo run. This probe
+//     compares two AUTHENTICATED reads that differ only in the permission under
+//     test, so it behaves identically on public and private repositories.
+//   * A repository with the Issues feature disabled also fails request 2. That
+//     is honest: a gate whose only accepted resolution is filing an issue
+//     cannot function there either, and it is a configuration fact rather than
+//     something the author wrote.
+export async function issuesReadability({ repo, apiBase, get }) {
+  const repoUrl = `${apiBase}/repos/${repo}`;
+  const repoRes = await get(repoUrl);
+  if (!repoRes.ok) {
+    return {
+      readable: false,
+      reason:
+        `the token cannot read the repository ${repo} — GET ${repoUrl} answered HTTP ` +
+        `${repoRes.status} ${repoRes.statusText}. Every issue lookup this run would make is ` +
+        'therefore meaningless, so no citation verdict is reported: a number that cannot be ' +
+        'resolved is not the same as a number that names nothing. Check GITHUB_REPOSITORY, ' +
+        'GITHUB_API_URL and the job token before reading this run as a violation.',
+    };
+  }
+
+  const issuesUrl = `${apiBase}/repos/${repo}/issues?per_page=${CAPABILITY_PROBE_PAGE_SIZE}`;
+  const issuesRes = await get(issuesUrl);
+  if (!issuesRes.ok) {
+    return {
+      readable: false,
+      reason:
+        `the token cannot read issues in ${repo} — GET ${repoUrl} answered 200 but GET ` +
+        `${issuesUrl} answered HTTP ${issuesRes.status} ${issuesRes.statusText}. GitHub answers ` +
+        'a resource the caller may not read with 404 rather than 403, so with this token every ' +
+        'cited number looks like it names nothing and every correctly filed citation would be ' +
+        'reported as untracked work. This is a permission fault in the job, not a fault in what ' +
+        'the author wrote: the workflow must grant `issues: read` to this job ' +
+        '(.github/workflows/forbid-deferral.yml does; a fork-scoped token, an expired ' +
+        'credential, or a fine-grained PAT without the Issues scope does not).',
+    };
+  }
+
+  return { readable: true };
+}
+
 // --- runner plumbing --------------------------------------------------------
 
 function requireEnv(name, why) {
@@ -543,6 +643,13 @@ function apiHeaders(token) {
   };
 }
 
+// probeStatus — one GET reduced to its status line. The capability probe asks
+// only whether a read was permitted, so it must not depend on a payload shape.
+async function probeStatus(url, token) {
+  const res = await fetch(url, { headers: apiHeaders(token) });
+  return { ok: res.ok, status: res.status, statusText: res.statusText };
+}
+
 async function apiJson(url, token, what) {
   const res = await fetch(url, { headers: apiHeaders(token) });
   if (res.status === HTTP_NOT_FOUND) return null;
@@ -573,7 +680,17 @@ async function descriptionSurface({ eventName, repo, head, token, apiBase }) {
     'list pull requests for the head commit',
   );
   if (pulls === null || !Array.isArray(pulls)) {
-    throw new Error(`could not list the pull requests associated with ${head}`);
+    // Same 404-means-two-things shape as the issue lookup, one layer up: a
+    // commit with no associated pull request answers 200 with an empty array,
+    // so a 404 here is the endpoint being unreadable rather than the commit
+    // being unassociated, and the description surface must not silently
+    // collapse to empty on a permission fault.
+    throw new Error(
+      `could not list the pull requests associated with ${head} — the endpoint answered 404, ` +
+        'which for this call means the token may not read it rather than that the commit has ' +
+        'no pull request (a commit with none answers 200 and an empty list). The job needs ' +
+        '`pull-requests: read`.',
+    );
   }
   if (pulls.length === 0) {
     return { text: '', origin: `explicitly empty: no pull request is associated with ${head.slice(0, 12)}` };
@@ -586,9 +703,23 @@ async function descriptionSurface({ eventName, repo, head, token, apiBase }) {
 
 async function resolveRefs(numbers, { repo, token, apiBase }) {
   const resolved = new Map();
+  // The capability probe runs at most once per run, and only once a lookup has
+  // actually come back empty: a run whose every citation resolves has nothing
+  // to disambiguate and pays nothing, and the answer for the first unresolvable
+  // number is the answer for all of them.
+  let probed = false;
   for (const n of numbers) {
     const issue = await apiJson(`${apiBase}/repos/${repo}/issues/${n}`, token, `resolve #${n}`);
     if (issue === null) {
+      if (!probed) {
+        probed = true;
+        const capability = await issuesReadability({
+          repo,
+          apiBase,
+          get: (url) => probeStatus(url, token),
+        });
+        if (!capability.readable) throw new Error(capability.reason);
+      }
       resolved.set(n, { kind: 'missing' });
       continue;
     }

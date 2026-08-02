@@ -32,6 +32,7 @@ import {
   findMarkers,
   headingLevel,
   issueRefs,
+  issuesReadability,
   paragraphs,
   parseDiff,
   scanDiff,
@@ -494,6 +495,81 @@ test('an issue closed as a duplicate is still closed', () => {
 
 test('one open issue among several citations is enough', () => {
   assert.equal(citationVerdict([1143, 1486, 1535], RESOLVED).tracked, true);
+});
+
+// --- the issue-lookup capability probe ---------------------------------------
+
+// GitHub answers an unreadable resource with 404, not 403, so "no such issue"
+// and "this token may not read issues" reach the gate as one status code.
+// Reporting the second as the first tells an author who filed the issue that
+// they filed nothing. These four cases pin the discrimination: the probe must
+// separate the permission fault from the missing issue, must attribute a
+// repository-level failure to the repository rather than to the issues grant,
+// and must stay silent when the token is fine.
+const API = 'https://api.github.com';
+const OK = { ok: true, status: 200, statusText: 'OK' };
+const NOT_FOUND = { ok: false, status: 404, statusText: 'Not Found' };
+
+// recordingGet — a probe transport that answers from a URL->response table and
+// records the order it was asked, so the two-request sequence is pinned too.
+function recordingGet(answers) {
+  const calls = [];
+  return {
+    calls,
+    get: async (url) => {
+      calls.push(url);
+      for (const [fragment, res] of answers) {
+        if (url.includes(fragment)) return res;
+      }
+      throw new Error(`the probe requested an unexpected URL: ${url}`);
+    },
+  };
+}
+
+test('a token that can read issues leaves the lookup trusted', async () => {
+  const { get, calls } = recordingGet([
+    ['/issues', OK],
+    [`/repos/${REPO}`, OK],
+  ]);
+  const verdict = await issuesReadability({ repo: REPO, apiBase: API, get });
+  assert.deepEqual(verdict, { readable: true });
+  assert.equal(calls.length, 2, 'the probe asks the repository first, then the issue list');
+  assert.ok(calls[0].endsWith(`/repos/${REPO}`), `first call was ${calls[0]}`);
+  assert.match(calls[1], /\/issues\?per_page=\d+$/);
+});
+
+test('an empty issue list is readable — 200 with no rows is not a refusal', async () => {
+  // The list endpoint answers 200 and an empty array in a repository with no
+  // issues, which is why a non-OK status can only mean the read was refused.
+  const { get } = recordingGet([
+    ['/issues', OK],
+    [`/repos/${REPO}`, OK],
+  ]);
+  assert.equal((await issuesReadability({ repo: REPO, apiBase: API, get })).readable, true);
+});
+
+test('a 404 on the issue list is reported as a permission fault, never as the author', async () => {
+  const { get } = recordingGet([
+    ['/issues', NOT_FOUND],
+    [`/repos/${REPO}`, OK],
+  ]);
+  const verdict = await issuesReadability({ repo: REPO, apiBase: API, get });
+  assert.equal(verdict.readable, false);
+  assert.match(verdict.reason, /cannot read issues/);
+  assert.match(verdict.reason, /issues: read/);
+  assert.match(verdict.reason, /not a fault in what the author wrote/);
+});
+
+test('an unreadable repository is not reported as a missing issues grant', async () => {
+  // A wrong slug, an expired credential and a fork-scoped token all land here,
+  // and each has a different fix from "grant issues: read". Naming the wrong
+  // one sends the reader to the wrong file.
+  const { get, calls } = recordingGet([[`/repos/${REPO}`, NOT_FOUND]]);
+  const verdict = await issuesReadability({ repo: REPO, apiBase: API, get });
+  assert.equal(verdict.readable, false);
+  assert.match(verdict.reason, /cannot read the repository/);
+  assert.doesNotMatch(verdict.reason, /issues: read/);
+  assert.equal(calls.length, 1, 'the issue list is not probed when the repository itself is unreadable');
 });
 
 test('evaluate keeps only the candidates no citation rescues', () => {
