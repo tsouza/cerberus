@@ -185,8 +185,13 @@ func (h *Handler) Lang() engine.Lang { return h.lang }
 // spss caps the spans collected into each summary's SpanSet (Tempo's
 // `spss` / SpansPerSpanSet request param); <= 0 applies
 // DefaultSpansPerSpanSet.
-func ToTraceSummaries(samples []chclient.Sample, spss int) ([]TraceSummary, []string) {
-	return toTraceSummaries(samples, spss)
+//
+// meta is the engine.Result.Meta of the query that produced samples. It
+// carries the per-query response-shaping bits the row stream cannot —
+// today whether the query named the `name` intrinsic (see observeSpan) —
+// so passing a zero Meta silently shapes the response as if it hadn't.
+func ToTraceSummaries(samples []chclient.Sample, spss int, meta engine.Meta) ([]TraceSummary, []string) {
+	return toTraceSummaries(samples, spss, meta)
 }
 
 // ResolveMissingRoots issues the follow-up CH lookup that recovers root-
@@ -431,7 +436,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
 
-	summaries, missingRoots := toTraceSummaries(res.Samples, spss)
+	summaries, missingRoots := toTraceSummaries(res.Samples, spss, res.Meta)
 	// Accounted BEFORE TruncateSummaries — see SearchMetricsFor for why the
 	// pre-truncation grouping is the canonical InspectedTraces.
 	metrics, inspectedSpans := SearchMetricsFor(summaries, res.Samples)
@@ -583,7 +588,10 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
 
-	summaries, missingRoots := toTraceSummaries(res.Samples, DefaultSpansPerSpanSet)
+	// /search/recent has no TraceQL query, so res.Meta carries no
+	// name-intrinsic bit and spans come back with name unset — the same
+	// shape reference Tempo returns for a query that names no intrinsic.
+	summaries, missingRoots := toTraceSummaries(res.Samples, DefaultSpansPerSpanSet, res.Meta)
 	if len(missingRoots) > 0 {
 		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
 		if lookupErr != nil {
@@ -1395,6 +1403,20 @@ func searchLimitFromMeta(meta engine.Meta) int64 {
 	return 0
 }
 
+// metaKeyRefsNameIntrinsic keys the "this query named the `name` intrinsic"
+// bit the TraceQL Lang stashes in engine.Meta.Extra (set in lang.go from
+// ast.RootExpr.ReferencesIntrinsic) so the response shaper can decide
+// whether spanSets[].spans[].name is populated. See observeSpan.
+const metaKeyRefsNameIntrinsic = "refsNameIntrinsic"
+
+// refsNameIntrinsicFromMeta reads that bit, defaulting to false for the
+// plan-only paths that never run the parser (/api/search/recent builds its
+// chplan directly, and stub-querier fixtures construct Meta by hand).
+func refsNameIntrinsicFromMeta(meta engine.Meta) bool {
+	v, _ := meta.Extra[metaKeyRefsNameIntrinsic].(bool)
+	return v
+}
+
 // boundNewestTraces caps a spanset-aggregation search (`| count() > N`,
 // `| by(name)`, `| avg(...) > X`) to the newest `limit` qualifying traces
 // server-side as ORDER BY TraceStartNs DESC LIMIT N — the parity counterpart to
@@ -1635,10 +1657,11 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 // filter queries (`{ status = error }`, `{ kind = consumer }`) only
 // match child spans. resolveTraceRoots fetches the real root from
 // otel_traces and patches the affected summaries.
-func toTraceSummaries(samples []chclient.Sample, spss int) ([]TraceSummary, []string) {
+func toTraceSummaries(samples []chclient.Sample, spss int, meta engine.Meta) ([]TraceSummary, []string) {
 	if spss <= 0 {
 		spss = DefaultSpansPerSpanSet
 	}
+	withName := refsNameIntrinsicFromMeta(meta)
 	byTrace := map[string]*summaryAcc{}
 	for _, s := range samples {
 		traceID, hasID := s.Labels[searchKeyTraceID]
@@ -1659,7 +1682,7 @@ func toTraceSummaries(samples []chclient.Sample, spss int) ([]TraceSummary, []st
 			a.startNS = ns
 		}
 		a.observeDuration(s)
-		a.observeSpan(s, ns)
+		a.observeSpan(s, ns, withName)
 		a.observeRoot(s, ns)
 	}
 	out := make([]TraceSummary, 0, len(byTrace))
@@ -1771,26 +1794,44 @@ func (a *summaryAcc) observeDuration(s chclient.Sample) {
 // stub-querier rows don't, and their summaries omit spanSets entirely
 // rather than fabricating a span list.
 //
-// Name stays unset on plain spanset-filter queries: reference Tempo
-// emits `name: ""` there (verified live against grafana/tempo by the
-// compatibility differ — populating it from SpanName produced a
-// per-span field_mismatch on every matched span). The one exception
-// mirrors reference too: `| select(name)` carries the span name in the
-// reserved searchKeySelName slot and reference Tempo populates
-// tempopb.Span.Name from the selected IntrinsicName attribute
-// (pkg/traceql/engine.go asTraceSearchMetadata).
+// Name is populated exactly when the query named the `name` intrinsic,
+// which is the rule reference Tempo follows: asTraceSearchMetadata
+// (pkg/traceql/engine.go) sets tempopb.Span.Name only when
+// NewIntrinsic(IntrinsicName) is present in the span's AllAttributes,
+// and an intrinsic lands there only if the query put a condition on it.
+// Both halves of that rule are load-bearing, and getting one without the
+// other is a per-span field_mismatch in the compatibility differ:
+//
+//   - `{ resource.service.name = "checkout" }` never names `name`, so
+//     reference emits `name: ""` and so do we. refsNameIntrinsic is false.
+//   - `{ name = "GET /x" }` / `{ name != nil }` / `{ .a = 1 } >> { name = "b" }`
+//     do name it, so reference emits the span name and so do we — sourced
+//     from Sample.MetricName, which canonicalSampleProjections already
+//     aliases from the SpanName column on every search projection.
+//
+// The reference rule is query-wide rather than per-filter because
+// upstream's RootExpr.extractConditions folds every stage into one
+// FetchSpansRequest; ast.RootExpr.ReferencesIntrinsic mirrors that scope.
+//
+// `| select(name)` is the same rule reached by a second route: it puts
+// the span name in the reserved searchKeySelName slot, which wins here
+// because it is the value the projection actually selected.
 //
 // Attributes carries the user-selected `| select(...)` values smuggled
 // through the `__cerberus_sel_*` reserved Labels keys — Tempo's wire
 // spec puts them in spanSets[].spans[].attributes and Grafana's Traces
 // Drilldown structure tab hard-fails (`nestedSetLeft not found!`)
 // when its selected nested-set bounds are missing.
-func (a *summaryAcc) observeSpan(s chclient.Sample, ns int64) {
+func (a *summaryAcc) observeSpan(s chclient.Sample, ns int64, refsNameIntrinsic bool) {
 	spanID, ok := s.Labels[searchKeySpanID]
 	if !ok || spanID == "" {
 		return
 	}
 	a.matched++
+	name := s.Labels[searchKeySelName]
+	if name == "" && refsNameIntrinsic {
+		name = s.MetricName
+	}
 	// DurationNanos: proto3 JSON encodes the uint64 as a decimal
 	// string and omits zero values; Sample.Value carries the per-row
 	// Duration column in nanoseconds on this path.
@@ -1800,7 +1841,7 @@ func (a *summaryAcc) observeSpan(s chclient.Sample, ns int64) {
 	}
 	a.spans = append(a.spans, SpanSetSpan{
 		SpanID:            spanID,
-		Name:              s.Labels[searchKeySelName],
+		Name:              name,
 		StartTimeUnixNano: strconv.FormatInt(ns, 10),
 		DurationNanos:     durationNanos,
 		Attributes:        selectedSpanAttributes(s.Labels),
