@@ -117,6 +117,9 @@ on:
 
 permissions:
   contents: read
+  # Pulling this project's own mirrored copies of the upstream images out of
+  # ghcr.io (.github/scripts/lib/mirror.mjs); the packages are private.
+  packages: read
 
 # No file-level concurrency — the two lanes have different policies.
 # `compose-smoke` cancels in-progress on PR events; `dashboard` /
@@ -300,6 +303,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/setup-buildx
 
@@ -523,6 +538,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/setup-buildx
 
@@ -888,6 +915,18 @@ jobs:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
 
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Bring up k3d stack
         if: env.RUN_SHARD == 'true'
         # E2E_MODE drives the chart deployment topology `just e2e-up` installs:
@@ -1203,6 +1242,18 @@ jobs:
         with:
           tool: just
 
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # `docker run` pulls a missing image itself, single-attempt: a Docker Hub
       # blip fails the job before ClickHouse is even started. `_pull-retry`
       # acquires it under the shared registry policy first.
@@ -1336,6 +1387,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Reuse the e2e k3d bring-up (same first steps as the dashboard job):
       # cluster, cerberus:e2e image, manifests, host port maps
@@ -1521,6 +1584,18 @@ jobs:
         with:
           username: tsouza
           password: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Bring up k3d + MinIO + bundled-ClickHouse stack
         run: just e2e-bwc-up

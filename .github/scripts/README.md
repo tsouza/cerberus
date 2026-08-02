@@ -65,6 +65,27 @@ the CLI pull carried the runner's Docker Hub login while compose's was refused
 as *unauthenticated* — so routed through compose, the mechanism built to absorb
 Docker Hub failures was spending the anonymous per-IP quota (issue #1565).
 
+`pullImageWithRetry` also reaches the GHCR mirror BEFORE Docker Hub: it pulls
+the mirrored copy and `docker tag`s it to the upstream name, so the caller asks
+for the upstream ref and the local daemon ends up holding something
+indistinguishable from an upstream pull. A miss is a fallback, not a failure.
+
+`lib/mirror.mjs` is that mirror's inventory and its upstream→mirror mapping —
+`mirrorRegistry`, `mirroredImages`, `mirroredRef(ref)`. It exists because
+moving every pull onto the authenticated account bucket does not work: an
+authenticated CLI `docker pull` of `clickhouse/clickhouse-server` was refused as
+*unauthenticated* while `grafana/loki` succeeded on the same path 0.8s later
+(run 30713014897), so the refusal follows the IMAGE and not the credential path.
+A ref that names GHCR reaches GHCR whichever path resolves it, including the
+paths nobody has audited yet, and GHCR's budget is not the one every other
+tenant of the runner's IP is drawing on. The packages are **private**, so every consuming
+job needs a `docker/login-action` against `ghcr.io` with its own `GITHUB_TOKEN`
+and `packages: read`; a job that forgets is slower and quota-exposed, never
+broken. Nothing in the tree names a mirrored ref — compose files, Kubernetes
+manifests, the quickstart and the Helm chart keep naming Docker Hub, because
+operators read those files and should not be pointed at a mirror this project
+runs for its own CI.
+
 `lib/scope-gate.mjs` answers "does THIS change touch the scope a heavy lane
 guards?" — `runsFullLane()` (which events must never take a scoped subset),
 `changedPaths()` (the change's own diff — a pull request against its merge base,
@@ -1132,8 +1153,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     pulled set exactly, and scans the whole tree — Justfile recipes, shell
     scripts, workflow files — so no unit can bring a compose stack up without
     pre-pulling through this module first.
-- **`build-with-registry-retry.mjs`** — the Justfile (`_pull-retry`,
-  `e2e-up`, `e2e-bwc-up`,
+- **`build-with-registry-retry.mjs`** — the Justfile (`e2e-up`, `e2e-bwc-up`,
   `migration-cerberus-image`, `migration-tier{1,2}-up`), `e2e.yml`'s
   compose-smoke shards, the three `compatibility/*/scripts/run-*.sh` harnesses,
   and `bench/histogram/run.sh`. Runs an image-building command (`docker build` /
@@ -1161,6 +1181,42 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` on success; the command's own status when it failed for a reason
     another attempt cannot clear (a genuine failure, or a rate-limit refusal);
     `1` when the retry budget is spent on transport faults.
+- **`pull-images.mjs`** — the Justfile (`_pull-retry`, which the k3d e2e
+  recipes and the `-tags=integration` ClickHouse lanes go through). Acquires a
+  NAMED list of images, where `compose-pull-images.mjs` acquires the list a
+  compose model implies. The two shapes are the same policy from a different
+  source of truth: `k3d image import` and testcontainers just know their refs.
+  It exists so `_pull-retry` stops hand-rolling `docker pull` in a shell loop —
+  a hand-rolled loop reaches Docker Hub directly, so it never consults the GHCR
+  mirror and spends the quota the mirror exists to stop spending. The first
+  failure ends the run: the lane cannot start without the image, and a second
+  pull into a spent quota only deepens the deficit for every concurrent job.
+  - Args: the image refs to acquire.
+  - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`).
+  - Exit: `0` when every ref is in the local daemon, `1` as soon as one is not.
+- **`mirror-images.mjs`** — `mirror-images.yml` (daily cron, `workflow_dispatch`,
+  and pushes to the mirror's own files). Copies every ref in `lib/mirror.mjs`'s
+  inventory into cerberus's GHCR namespace with `docker buildx imagetools
+  create`, which transfers the manifest LIST between registries — every
+  architecture, the original digests — without materialising layers on the
+  runner. `docker pull && docker tag && docker push` would flatten a multi-arch
+  image to the runner's architecture, which is how a mirror silently starts
+  serving amd64 to an arm64 consumer. A failure here is FATAL, unlike a miss on
+  the consumer side: consumers fall back to upstream because failing a lane over
+  a perfectly reachable image would be worse than the problem the mirror solves,
+  and that tolerance is only honest if completeness is asked somewhere it can be
+  answered. `TestMirrorInventoryCoversEveryUpstreamImage` closes the other
+  direction on the required `check` lane — a new upstream image in the tree
+  fails there rather than quietly never being mirrored.
+  - Args: `--list` prints the upstream→mirror plan and copies nothing.
+  - Env: `IMAGE_MIRROR_REGISTRY` (optional; a scratch namespace to copy into
+    while changing the job — unset in CI), `GITHUB_STEP_SUMMARY` (optional;
+    appended with the per-image outcome table).
+  - Exit: `0` when every inventoried image is in the mirror, `1` otherwise.
+  - Gated by `mirror-images.test.mjs` on the required `check` lane, which pins
+    the inventory→ref mapping and rejects two upstream refs colliding on one
+    mirror ref — the one mirror bug that presents as a WRONG image rather than
+    as a miss.
 
 ## Notes
 
