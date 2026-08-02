@@ -37,6 +37,13 @@ import (
 // client-side view alone is driver bookkeeping; the server-side view makes
 // "the socket was destroyed" a fact rather than an inference.
 //
+// The arms do NOT share a probe, and that is load-bearing rather than
+// incidental — see teardownDrainableProbeSQL / teardownStalledProbeSQL. Each
+// ordering is only decidable when the driver has exactly one terminal branch
+// available to it, and the two orderings need opposite stream shapes to get
+// there: one needs a remainder that drains inside the budget, the other needs a
+// remainder the server has not produced yet.
+//
 // Gated behind the `integration` build tag (Docker required); the strict-scan
 // lane runs it via `just chclient-integration`.
 func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
@@ -45,7 +52,7 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 
 	// The probe must stream several blocks so the driver's process goroutine is
 	// provably still in flight when the teardown runs. Asserted rather than
-	// left to a comment, because the shape is what makes the cancel arm
+	// left to a comment, because the shape is what makes the release arm
 	// deterministic and a future edit to either constant could silently undo it.
 	if blocks := teardownProbeRows / teardownProbeBlockRows; blocks <= driverBlockBufferDepth+1 {
 		t.Fatalf("probe streams %d blocks; need more than %d so the driver parks mid-stream",
@@ -65,7 +72,7 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 
 	t.Run("close before cancel keeps the connection pooled", func(t *testing.T) {
 		qctx, qcancel := context.WithCancel(ctx)
-		cur, err := fx.subject.QueryCursor(qctx, teardownProbeSQL)
+		cur, err := fx.subject.QueryCursor(qctx, teardownDrainableProbeSQL)
 		if err != nil {
 			qcancel()
 			t.Fatalf("QueryCursor: %v", err)
@@ -98,7 +105,14 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 
 	t.Run("cancel before close destroys the connection", func(t *testing.T) {
 		qctx, qcancel := context.WithCancel(ctx)
-		cur, err := fx.subject.QueryCursor(qctx, teardownProbeSQL)
+		// The STALLED probe. With the drainable one this arm asserts the
+		// outcome of a race inside clickhouse-go rather than the ordering:
+		// Close() drains, the drain unparks the driver's producer, and if the
+		// producer reaches EndOfStream before connect.cancel() closes the
+		// socket, `process` returns nil, `release(conn, nil)` pools the
+		// connection, and the session census never moves.
+		opened := time.Now()
+		cur, err := fx.subject.QueryCursor(qctx, teardownStalledProbeSQL)
 		if err != nil {
 			qcancel()
 			t.Fatalf("QueryCursor: %v", err)
@@ -107,7 +121,22 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 			qcancel()
 			t.Fatalf("cursor yielded no rows: %v", cur.Err())
 		}
-		// The inverted ordering CloseCursor exists to prevent.
+		// The stall is this arm's PREMISE, so it is asserted rather than
+		// assumed. Reaching the first row costs the server one block's worth of
+		// per-row sleeps; if a future ClickHouse folds that away, the remainder
+		// is buffered client-side again and the assertion below silently decays
+		// into a coin flip. Failing here says so out loud instead.
+		if waited := time.Since(opened); waited < teardownStallFloor {
+			qcancel()
+			_ = cur.Close()
+			t.Fatalf("first row arrived after %s; want at least %s — the probe's per-row server-side stall is not in effect, so the remainder can be buffered client-side and the cancel would race the drain",
+				waited, teardownStallFloor)
+		}
+
+		// The inverted ordering CloseCursor exists to prevent. The remainder is
+		// still inside the server, so the drain in Close() has nothing to reach
+		// EndOfStream with: the driver's only terminal branch is the cancel,
+		// which destroys the socket.
 		qcancel()
 		_ = cur.Close()
 
@@ -145,14 +174,40 @@ const teardownOneRowSQL = teardownProbeColumns + ` LIMIT 1`
 // against a baseline rather than an absolute.
 const serverSessionsSQL = `SELECT value FROM system.metrics WHERE metric = 'TCPConnection'`
 
-// teardownProbeSQL is the probe both arms tear down mid-stream. max_block_size
-// is pinned so the result arrives in teardownProbeRows/teardownProbeBlockRows
-// blocks regardless of the server's own default — it is the block COUNT, not
-// the row count, that parks the driver mid-stream and makes the two orderings
-// diverge deterministically.
-var teardownProbeSQL = fmt.Sprintf(
+// teardownDrainableProbeSQL is the RELEASE arm's probe. max_block_size is
+// pinned so the result arrives in teardownProbeRows/teardownProbeBlockRows
+// blocks regardless of the server's own default: more than the driver's block
+// buffer holds, so the producer is parked mid-stream when the teardown starts
+// and the drain is a real one — yet small enough that the whole remainder
+// arrives well inside chclient.CursorDrainBudget, so the release is never
+// decided by machine speed.
+var teardownDrainableProbeSQL = fmt.Sprintf(
 	`%s SETTINGS max_block_size = %d`,
 	teardownProbeColumns, teardownProbeBlockRows,
+)
+
+// teardownStalledProbeSQL is the DESTROY arm's probe: the same shape, held back
+// by a per-row server-side sleep.
+//
+// The stall is what makes that arm an assertion instead of a coin flip.
+// clickhouse-go's `connect.process` selects over three ready-able cases —
+// ctx.Done, the reader's error, the reader's completion — and `rows.Close()`
+// DRAINS, which is precisely what lets the reader complete. Hand the destroy
+// arm a probe whose remainder is already in the client's socket buffer and the
+// drain can reach EndOfStream before the cancellation is observed; `process`
+// then returns nil, `release(conn, nil)` returns the connection to the idle
+// pool, and the server keeps the session the arm is trying to watch die. Two
+// orderings, one outcome, decided by whichever goroutine the scheduler picked.
+//
+// A remainder the SERVER has not produced yet removes that branch outright:
+// there is nothing to drain, the reader is blocked on the wire rather than on
+// the block channel, and the cancel is the only way the query can end. It also
+// keeps the reader off the block channel while the driver closes it, which is
+// the one ordering in which clickhouse-go would close a channel out from under
+// a parked sender.
+var teardownStalledProbeSQL = fmt.Sprintf(
+	`%s WHERE sleepEachRow(%v) = 0 SETTINGS max_block_size = %d`,
+	teardownProbeColumns, teardownStallSecondsPerRow, teardownProbeBlockRows,
 )
 
 const (
@@ -171,9 +226,28 @@ const (
 	// blocks: comfortably past driverBlockBufferDepth, yet small enough that
 	// the whole remainder drains in tens of milliseconds on a race-instrumented
 	// build — an order of magnitude inside chclient.CursorDrainBudget, so the
-	// release arm is never decided by machine speed.
+	// release arm is never decided by machine speed. teardownProbeBlockRows
+	// pins the probe table's index granularity as well as max_block_size, so
+	// the block count is the server's behaviour rather than arithmetic.
 	teardownProbeRows      = 2_000
 	teardownProbeBlockRows = 250
+
+	// teardownStallSecondsPerRow is the destroy arm's server-side brake: every
+	// row the stalled probe emits costs the server this much sleep, so the
+	// remainder stays inside ClickHouse instead of being buffered on the
+	// client where a drain could reach the end of it.
+	teardownStallSecondsPerRow = 0.002
+
+	// teardownStallPerBlock is what one block of the stalled probe therefore
+	// costs — the gap the cancellation has to win, against a scheduler wakeup
+	// and a socket close.
+	teardownStallPerBlock = time.Duration(teardownStallSecondsPerRow*float64(time.Second)) * teardownProbeBlockRows
+
+	// teardownStallFloor is how much of that gap must be OBSERVED for the stall
+	// to count as in effect. Half a block absorbs ClickHouse's own sleep
+	// granularity while staying two orders of magnitude above the unstalled
+	// case, which arrives in single-digit milliseconds.
+	teardownStallFloor = teardownStallPerBlock / 2
 
 	// poolSettleBudget is how long a pool statistic is given to reach its
 	// terminal value: the driver's release / destroy runs on its own process
@@ -228,14 +302,20 @@ func startTeardownFixture(ctx context.Context, t *testing.T) teardownFixture {
 		observer: newTeardownClient(t, addr, teardownObserverConns),
 	}
 
-	if err := fx.subject.Exec(ctx, `
+	// index_granularity is pinned to the probe's block size, not left at the
+	// default. A MergeTree reader cannot subdivide a granule for the filter
+	// stage, so with the default 8192 the whole 2000-row table is ONE block
+	// there however max_block_size is set — which would collapse the stalled
+	// probe into a single block with no remainder to stall.
+	if err := fx.subject.Exec(ctx, fmt.Sprintf(`
 		CREATE TABLE otel_metrics_gauge (
 			MetricName String,
 			Attributes Map(String, String),
 			TimeUnix DateTime64(9),
 			Value Float64
 		) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix)
-	`); err != nil {
+		SETTINGS index_granularity = %d
+	`, teardownProbeBlockRows)); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	if err := fx.subject.Exec(ctx, `
