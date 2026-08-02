@@ -51,6 +51,34 @@ version: "2"
 run:
   timeout: 5m
 
+  # golangci-lint analyses ONE build configuration per invocation, so a run
+  # that sets no tags cannot see a single tagged file — 120 `chdb` files (the
+  # round-trip execution layer, the property harness's chDB driver, the seeded
+  # fixture paths), the `agpl_oracle` differentials, the `integration` and
+  # `e2e` suites, the migration tiers. `./...` still reports green over what is
+  # left, and that green reads as "the tree is clean" when it means "the
+  # default build is clean". This list is the union of every build tag in the
+  # tree.
+  #
+  # One configuration is not enough on its own: five files are constrained the
+  # other way (`!chdb`, `!chaos_sleep` stubs), and this configuration excludes
+  # exactly those. The `lint` recipe therefore runs a second, untagged pass.
+  # Every `//go:build` line in the tree is a single term, positive or negated,
+  # so those two passes between them analyse every file —
+  # test/regression/lint_build_tags_test.go proves both halves of that claim
+  # from the tree's own constraints rather than trusting this comment.
+  build-tags:
+    - agpl_oracle
+    - chaos_sleep
+    - chdb
+    - e2e
+    - integration
+    - migration
+    - migration_tier1
+    - migration_tier2
+    - remote_correctness
+    - startup_bench
+
 linters:
   default: none
   enable:

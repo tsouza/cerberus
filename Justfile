@@ -11,6 +11,14 @@ MARKDOWNLINT_VERSION := "v0.18.1"
 ACTIONLINT_VERSION := "v1.7.12"
 MODULE := "github.com/tsouza/cerberus"
 
+# The build tag the untagged lint pass runs under. `.golangci.yml` declares the
+# union of every tag in the tree, and golangci-lint's flag REPLACES that value
+# rather than adding to it — so naming a tag no file constrains on is how the
+# second pass gets the plain build configuration, the one that owns the `!chdb`
+# and `!chaos_sleep` stubs the union excludes.
+# test/regression/lint_build_tags_test.go asserts it stays inert.
+LINT_UNTAGGED_BUILD := "cerberus_untagged_build"
+
 # Per-checkout compose project suffix, exported into every recipe so no compose
 # call site has to remember it: each docker-compose file spells its project name
 # `<stable-base>${COMPOSE_PROJECT_SUFFIX:-}`, and a compose invocation from a
@@ -541,9 +549,16 @@ mutate-chdb:
 
 # === Lint / format ===
 
-# Run Go linters.
+# Run Go linters over both build configurations.
+#
+# One invocation analyses one build configuration. The first pass takes the tag
+# union from `.golangci.yml`, which is every tagged file in the tree; the second
+# names an inert tag to clear that union, which is the `!chdb` / `!chaos_sleep`
+# stubs. Every `//go:build` line in the tree is a single term, so the two passes
+# together leave no file unanalysed.
 lint:
     golangci-lint run ./...
+    golangci-lint run --build-tags {{LINT_UNTAGGED_BUILD}} ./...
 
 # Validate GitHub Actions workflow files (expression contexts, action
 # inputs, shellcheck of run blocks). Deliberately separate from `lint`
