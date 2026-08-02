@@ -54,6 +54,15 @@ test/perf/solver-decision-baseline.json      -merge
 #   only when a cost increase is genuinely intended.
 test/perf/scale-wall-baseline.json           -merge
 
+# Regenerate: `just update-coverage-floor`
+#   (COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs, reading
+#    the cover-merged.out `just coverage` leaves behind — needs libchdb.so so the
+#    chdb lane is in the profile). One `"<package>": <percent>` line per package:
+#    a blend pairs no key with the wrong value, but it can silently carry a
+#    LOWERED floor across from a branch that had regenerated after a drop, and a
+#    floor that quietly fell is exactly the regression the gate exists to catch.
+test/coverage-floor.json                     -merge
+
 # --- Compatibility ----------------------------------------------------------
 # CANNOT be regenerated locally. `.github/scripts/compat-baseline-sync.mjs`
 # rewrites one head's entry from that head's `compat-cases.json` RUN ARTEFACT,

@@ -90,6 +90,7 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/perf/cardinality-baseline.json", "just update-cardinality-baseline"},
 	{"test/perf/solver-decision-baseline.json", "just update-solver-decision-baseline"},
 	{"test/perf/scale-wall-baseline.json", "just update-scale-wall-baseline"},
+	{"test/coverage-floor.json", "just update-coverage-floor"},
 
 	{"compatibility/parity-baseline.json", parityBaselineSync},
 	{"compatibility/loki/upstream-skip-baseline.txt", "-regen-baseline"},

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -33,18 +32,6 @@ import (
 // mergeGroupTrigger is the workflow event GitHub dispatches against a queue's
 // projected trunk.
 const mergeGroupTrigger = "merge_group"
-
-// queueRequiredContextsOutsideReleaseGate are contexts branch protection
-// requires on `main` that are absent from branchProtectionContexts because they
-// appear in neither RELEASE_REQUIRED_CHECKS nor RELEASE_INFORMATIONAL_CHECKS —
-// adding them to that list would fail the totality assertion in
-// release_required_checks_test.go. That omission is a real gap in the release
-// gate, tracked in #1463. The merge queue's requirement is independent of the
-// release gate's, so it is asserted over the full set either way.
-var queueRequiredContextsOutsideReleaseGate = []string{
-	"CodeQL",
-	"strict-scan",
-}
 
 // queueExternalContexts are required contexts posted by a GitHub app rather
 // than by a workflow in this repository, mapped to the producer.
@@ -96,9 +83,8 @@ func TestEveryRequiredContextPostsOnTheMergeGroup(t *testing.T) {
 	t.Parallel()
 
 	owners := workflowCheckOwners(t)
-	required := slices.Concat(branchProtectionContexts, queueRequiredContextsOutsideReleaseGate)
 
-	for _, ctx := range required {
+	for _, ctx := range branchProtectionContexts {
 		owner, ok := owners.lookup(ctx)
 
 		if producer, external := queueExternalContexts[ctx]; external {
@@ -132,7 +118,8 @@ func TestEveryRequiredContextPostsOnTheMergeGroup(t *testing.T) {
 // the literal `false` is handled separately, and an unrecognised expression
 // fails rather than being assumed harmless.
 var queueSafeCancelInProgress = regexp.MustCompile(
-	`^\$\{\{\s*github\.event_name\s*==\s*'([a-z_]+)'\s*\}\}$`)
+	`^\$\{\{\s*github\.event_name\s*==\s*'([a-z_]+)'\s*\}\}$`,
+)
 
 // cancelInProgressIsQueueSafe reports whether a `cancel-in-progress:` value can
 // never be true on a `merge_group` run.

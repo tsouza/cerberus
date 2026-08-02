@@ -291,11 +291,25 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   `Co-authored-by:` trailers, HTML/template comments, image-only lines), then
   requires the remainder to be substantive: at least `MIN_CHARS` (20) of
   meaningful text and not a lone placeholder token (`cat`/`wip`/`todo`/…). Runs
-  on `pull_request` (incl. `edited`, so fixing the body re-runs the gate). The
-  body is read from the `PR_BODY` env var — never interpolated into a shell line.
-  - Env: `PR_BODY` (the pull request body); argv `--self-test`.
-  - Exit: `0` when the description is substantive (or self-test passes), `1` on
-    an empty / stub body (with one `::error::` explaining what to write).
+  on `pull_request` (incl. `edited`, so fixing the body re-runs the gate), on
+  `merge_group`, and on a push to `main` / `release/*.x` — `pr-body` is a
+  required context, so it has to post on every surface branch protection and
+  the release preflight ask it about. Only `pull_request` carries a body in the
+  payload; the other two resolve the description from the pull request
+  associated with the head commit through `forbid-deferral.mjs`'s
+  `descriptionSurface`, so the two gates cannot drift on what "the
+  description" means. A commit with NO associated pull request passes — it has
+  no description to be a stub — and `pr-body-check.test.mjs` drives the real
+  resolver to pin that the exemption keys off the resolver's own origin label
+  rather than off emptiness. The body is read from the `PR_BODY` env var —
+  never interpolated into a shell line.
+  - Env: `PR_BODY` (the pull request body, `pull_request` only);
+    `GITHUB_EVENT_NAME`; `GITHUB_REPOSITORY` / `GITHUB_SHA` / `GITHUB_TOKEN`
+    (needs `pull-requests: read`, off the `pull_request` path);
+    `GITHUB_API_URL`; argv `--self-test`.
+  - Exit: `0` when the description is substantive, the commit has no pull
+    request, or the self-test passes; `1` on an empty / stub body (with one
+    `::error::` explaining what to write).
 - **`pr-type-label.mjs`** — `pr-label.yml`, BOTH jobs (`label` + `backfill`).
   The single source of truth for the PR-title -> Conventional-Commit type-label
   mapping. Pure exported `labelsForTitle(title)` returns the label array a PR
@@ -366,6 +380,29 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     flag first).
   - Exit: `0` when every scanned issue was classified and its missing labels
     applied, `1` on any vacuity guard, unclassifiable issue, or API error.
+- **`coverage-summary.mjs`** — `coverage.yml`, invoked at the end of the `just
+  coverage` recipe rather than as its own workflow step (so a local run gets the
+  same verdict CI does). Renders the per-package coverage table into the step
+  summary AND holds every package to the floor committed in
+  `test/coverage-floor.json`. The floor is what makes the lane a gate: it used
+  to print an awk-built table nothing compared against, so coverage could rot
+  one package at a time with every run green. The comparison runs in BOTH
+  directions — a package below its floor, a package carrying statements with no
+  floor, and a floor whose package contributed no statements are all failures,
+  because a one-directional check degrades into an allow-list the moment a
+  package stops being measured. `just update-coverage-floor` ratchets the ledger
+  UP only and refuses to lower an entry, so a coverage drop has to be a
+  hand-edited, reviewable line in the diff. `coverage-summary.test.mjs` is the
+  `node --test` guard.
+  - Env: `COVERAGE_PROFILE` (default `cover-merged.out`), `COVERAGE_FLOORS`
+    (default `test/coverage-floor.json`), `COVERAGE_LANES` (`default+chdb` or
+    `default`; the Justfile sets it from whether libchdb.so was found),
+    `COVERAGE_REQUIRE_LANES` (CI sets `default+chdb` so a soft-failing chdb
+    install cannot silently downgrade the gate to a skip),
+    `COVERAGE_UPDATE_FLOORS=1` (rewrite instead of compare),
+    `GITHUB_STEP_SUMMARY`.
+  - Exit: `0` when every package clears its floor (or the ledger was
+    rewritten), `1` on unreadable input, a lane mismatch, or a violation.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).

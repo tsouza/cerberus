@@ -664,7 +664,7 @@ async function apiJson(url, token, what) {
 // body, so the associated pull request is resolved from the head commit; a
 // commit with none (a maintenance cherry-pick) yields an EXPLICITLY empty
 // surface, recorded as such rather than silently skipped.
-async function descriptionSurface({ eventName, repo, head, token, apiBase }) {
+export async function descriptionSurface({ eventName, repo, head, token, apiBase }) {
   if (eventName === 'pull_request' || eventName === 'pull_request_target') {
     if (process.env.PR_BODY === undefined) {
       throw new Error(

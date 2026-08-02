@@ -1,31 +1,62 @@
 name: pr-hygiene
 
 # Cheap, fast PR-metadata gates that the heavy ci.yml jobs don't cover.
-# Runs only on pull_request (the body lives in the event payload, not the
-# tree). `edited` is included so fixing the description re-runs the gate and
-# clears it without a new commit.
+#
+# `pr-body` is a REQUIRED status check, so it has to post on every surface
+# branch protection asks it about, not just on the pull request:
+#
+#   - `pull_request` — the description lives in the event payload. `edited` is
+#     included so fixing it re-runs the gate and clears it without a new commit.
+#   - `merge_group` — a queue entry waits for every required context on the
+#     projected trunk; a workflow that never posts there stalls the queue in
+#     silence rather than failing it.
+#   - `push` to `main` and to a maintenance line — release.yml's preflight
+#     requires this check-run to exist on the commit being shipped, and on the
+#     maintenance path there is no pull request and therefore no branch
+#     protection, leaving that preflight as the only gate.
+#
+# Off the pull_request path the description is resolved from the pull request
+# associated with the head commit, which needs `pull-requests: read`.
 
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
+  push:
+    branches: [main, 'release/*.x']
 
 permissions:
   contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-hygiene-${{ github.ref }}
+  # Never true on `merge_group`: GitHub reads a cancelled check-run as a failed
+  # one, so a cancelled queue run would dequeue the pull request it was
+  # validating.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pr-body:
     name: pr-body
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
       - name: Pin the gate logic
         run: node .github/scripts/pr-body-check.mjs --self-test
 
+      - name: Guard the gate logic
+        run: node --test .github/scripts/pr-body-check.test.mjs
+
       # Reject an empty / stub PR description (the `--body 'cat'` incident).
       # PR_BODY is attacker-controlled, so it is passed via env and read by the
-      # script — never interpolated into a shell `run:` line.
+      # script — never interpolated into a shell `run:` line. It is empty off
+      # the pull_request path, where the script resolves the description from
+      # the head commit's associated pull request instead.
       - name: Reject empty / stub PR descriptions
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/pr-body-check.mjs
