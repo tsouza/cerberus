@@ -20,10 +20,19 @@ import (
 // path looks green until the day the quota is spent, which is the failure this
 // whole mechanism exists to remove.
 
-// mirrorLoginMarker is the line `docker/login-action` carries when it is pointed
-// at GHCR. Matching the registry rather than the step name keeps the gate on
-// what the step DOES.
-const mirrorLoginMarker = "registry: ghcr.io"
+// mirrorLoginMarker is the line a login step carries when it is pointed at
+// GHCR: `REGISTRY: ghcr.io` in the env block of a `registry-login.mjs` step.
+// The case-insensitive form also admits `registry: ghcr.io`, the input name
+// `docker/login-action` used — that Action is forbidden repo-wide by the
+// `registry-login` hygiene scan, so nothing can reintroduce it, but keying on
+// the registry rather than the step name keeps the gate on what the step DOES
+// and survives the next change of login mechanism.
+var mirrorLoginMarker = regexp.MustCompile(`(?im)^\s*registry:\s*ghcr\.io\s*$`)
+
+// mirrorLoginRemedy is what to add when the gate fires. It names the script
+// rather than an Action because `registry-login.mjs` retries transport faults
+// and refuses to retry a spent quota or a rejected credential.
+const mirrorLoginRemedy = "`REGISTRY: ghcr.io` step running `node .github/scripts/registry-login.mjs`"
 
 // imageConsumingMarkers are the module and action names that acquire an image
 // through the shared policy, i.e. through the mirror.
@@ -147,11 +156,11 @@ func TestEveryImageConsumingJobLogsIntoTheMirror(t *testing.T) {
 				continue
 			}
 			consuming++
-			if !strings.Contains(body, mirrorLoginMarker) {
+			if !mirrorLoginMarker.MatchString(body) {
 				t.Errorf("%s job %q acquires images (%s) but never logs into ghcr.io, so every pull it makes "+
-					"misses the mirror and falls back to Docker Hub's shared anonymous quota. Add a "+
-					"`docker/login-action` step with `%s` and give the job `packages: read`.",
-					file, job, why, mirrorLoginMarker)
+					"misses the mirror and falls back to Docker Hub's shared anonymous quota. Add a %s "+
+					"and give the job `packages: read`.",
+					file, job, why, mirrorLoginRemedy)
 			}
 		}
 	}
