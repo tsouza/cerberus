@@ -2230,6 +2230,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "label_replace_backref_above_group_count",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "label_replace_basic",
     "routed": true,
     "k": 8,
@@ -2251,6 +2261,16 @@
   },
   {
     "query": "label_replace_missing_src_overwrite",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "label_replace_named_capture",
     "routed": true,
     "k": 8,
     "reason": "routed",
