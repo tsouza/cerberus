@@ -85,16 +85,17 @@ type TagScope struct {
 //   - "intrinsic" → only the intrinsic bucket
 //   - "none" or "" → every scope (default; matches AttributeScopeNone)
 //
-// Anything else is a 400. We accept "all" as a friendly alias for the
-// default — upstream Tempo doesn't define it, but the parameter is
-// otherwise free-form to clients and "all" is the obvious user
-// intuition for "give me everything", so we let it through.
+// Anything else is a 400. In particular "all" is *not* a scope:
+// upstream's `traceql.AttributeScopeFromString` folds it to
+// AttributeScopeUnknown and ParseSearchTagsRequest turns that into
+// `invalid scope: all`. Accepting it here would make cerberus the more
+// permissive backend, which silently trains clients into a request
+// shape that breaks the moment they point at real Tempo.
 const (
 	tagScopeResource  = "resource"
 	tagScopeSpan      = "span"
 	tagScopeIntrinsic = "intrinsic"
 	tagScopeNone      = "none"
-	tagScopeAll       = "all"
 )
 
 // handleSearchTags implements `GET /api/search/tags`. Returns the union
@@ -201,12 +202,11 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 // upstream Tempo allowlist. Returns the canonical scope keyword the
 // rest of the handler branches on, or an error suitable for a 400. The
 // empty string and the literal "none" both collapse to "none" (= every
-// scope, matching upstream's AttributeScopeNone). "all" is accepted as
-// a synonym for "none" because it's the obvious user intuition; every
-// other value is rejected with the same shape upstream Tempo uses.
+// scope, matching upstream's AttributeScopeNone). Every other value —
+// "all" included — is rejected with the same shape upstream Tempo uses.
 func parseTagScope(raw string) (string, error) {
 	switch raw {
-	case "", tagScopeNone, tagScopeAll:
+	case "", tagScopeNone:
 		return tagScopeNone, nil
 	case tagScopeResource, tagScopeSpan, tagScopeIntrinsic:
 		return raw, nil
