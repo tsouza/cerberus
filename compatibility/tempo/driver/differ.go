@@ -228,10 +228,9 @@ func Compare(aBody, bBody []byte, aLabel, bLabel string, opts DiffOptions) (Diff
 		})
 	}
 
-	// Intersection — diff every per-summary field that both sides
-	// populate. Skipping a side's blank field keeps the differ from
-	// false-positing on optional-field omission (Tempo and cerberus
-	// can each legitimately omit StartTimeUnixNano in some builds).
+	// Intersection — diff every per-summary field, blank included. An
+	// asymmetric blank is a real divergence (the backend that omitted the
+	// field is the bug), so there is no optional-field tolerance here.
 	matched := make([]string, 0, len(aByKey))
 	for key := range aByKey {
 		if _, ok := bByKey[key]; ok {

@@ -28,8 +28,10 @@
 #     traceIdx) seconds — last trace lands ~400s after anchor.
 #
 # Diff strategy reminder (see differ.go top-of-file):
-#   * Trace IDs are canonicalised via H(rootServiceName||rootTraceName)
-#     so cerberus's currently-synthetic TraceID doesn't false-positive.
+#   * Trace IDs are the diff key as-is: cerberus emits the real
+#     hex(TraceId), so byte-equality across backends is the contract and
+#     a mismatch surfaces as missing_in_a / missing_in_b rather than
+#     being canonicalised away.
 #   * Numeric fields compare under 1e-9 relative epsilon.
 #   * Cardinality is reported as a reason but every key-level miss is
 #     also surfaced under missing_in_a / missing_in_b.

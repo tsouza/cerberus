@@ -514,6 +514,13 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#4353c2b3",
+      "message": "promql: %s must be lowered by lowerCountValues, not the generic aggregate path",
+      "class": "internal",
+      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/lower.go:buildAggFunc#54d1c35e",
       "message": "promql: aggregation %s does not take a parameter",
       "class": "internal",
@@ -532,13 +539,6 @@
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
       "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered."
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:buildAggFunc#e759e84f",
-      "message": "promql: %s changes output shape and lands with M1.7 result shaping",
-      "class": "internal",
-      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted"
     },
     {
       "head": "promql",
