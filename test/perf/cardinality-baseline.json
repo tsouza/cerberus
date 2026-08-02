@@ -3850,6 +3850,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/info_data_label_matcher_drops_unmatched",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/info_regex_name_matcher_unions_info_metrics",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/info_target_info_enrichment",
     "fan_factor": 1,
     "scan_rows": 2,

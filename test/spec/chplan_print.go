@@ -330,6 +330,12 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if len(v.DataLabels) > 0 {
 			fmt.Fprintf(b, " dataLabels=[%s]", strings.Join(v.DataLabels, ", "))
 		}
+		if v.DropUnmatched {
+			b.WriteString(" dropUnmatched")
+		}
+		if v.MergeInfoMetrics {
+			b.WriteString(" mergeInfoMetrics")
+		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
 		printNode(b, v.Info, depth+1)

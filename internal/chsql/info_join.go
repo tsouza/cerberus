@@ -32,7 +32,19 @@ const infoMetricNameLabel = "__name__"
 // The join is LEFT so base series with no matching info series pass
 // through unchanged — matching the reference engine, whose default
 // `target_info` case (no data-label matcher) keeps every unmatched base
-// series. `<info extras>` is the info Attributes with the identity labels
+// series. When InfoJoin.DropUnmatched is set the join is INNER instead:
+// a data-label matcher that cannot match the empty string makes an
+// unmatched base sample unrepresentable, and the reference engine drops
+// it (see combineWithInfoVector's `allMatchersMatchEmpty` branch).
+//
+// When InfoJoin.MergeInfoMetrics is set the `__name__` matchers may
+// select several info metrics at once, so one base sample can join
+// several info rows. The reference engine unions their data labels onto
+// a single output sample; the emitter reproduces that by grouping on the
+// base sample's four columns and folding the per-row extras maps into
+// one (see infoMergedExtrasFrag).
+//
+// `<info extras>` is the info Attributes with the identity labels
 // + `__name__` stripped (and, when DataLabels is set, narrowed to exactly
 // those names); `mapConcat(extras, base)` lets the base side win on any
 // conflicting key, mirroring the reference rule that skips info labels
@@ -60,6 +72,11 @@ func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 		return err
 	}
 
+	kind := LeftJoin
+	if j.DropUnmatched {
+		kind = InnerJoin
+	}
+
 	sb := NewQuery().
 		Select(
 			As(qualColFrag("L", j.MetricNameColumn), j.MetricNameColumn),
@@ -69,12 +86,29 @@ func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 		).
 		From(aliasedFrag(leftFrag, "L")).
 		Join(
-			LeftJoin,
+			kind,
 			aliasedFrag(rightFrag, "R"),
 			infoJoinPredicateFrag(j),
 		)
+	if j.MergeInfoMetrics {
+		sb.GroupBy(infoBaseSampleKeyFrags(j)...)
+	}
 	e.emitSelect(sb)
 	return nil
+}
+
+// infoBaseSampleKeyFrags returns the four base-side columns that identify
+// one output sample. Grouping the join result on them collapses the
+// per-info-metric fan-out back to one row per base sample; the base side
+// is per-series-latest (or per-step) by construction, so the group is
+// exactly the join's own fan-out and never merges distinct base samples.
+func infoBaseSampleKeyFrags(j *chplan.InfoJoin) []Frag {
+	return []Frag{
+		qualColFrag("L", j.MetricNameColumn),
+		qualColFrag("L", j.AttributesColumn),
+		qualColFrag("L", j.TimestampColumn),
+		qualColFrag("L", j.ValueColumn),
+	}
 }
 
 func (e *emitter) validateInfoJoinCols(j *chplan.InfoJoin) error {
@@ -111,11 +145,33 @@ func infoJoinPredicateFrag(j *chplan.InfoJoin) Frag {
 // later-key-wins, so listing L.Attributes second keeps the base side's
 // value on any conflicting key — matching the reference engine's rule of
 // skipping info labels already present on the base.
+//
+// Under MergeInfoMetrics the extras map is first folded across the base
+// sample's join rows (one per matched info metric) so the union of every
+// matched info metric's data labels lands on one output sample.
 func infoOutputAttributesFrag(j *chplan.InfoJoin) Frag {
+	extras := infoExtrasFrag(j)
+	if j.MergeInfoMetrics {
+		extras = infoMergedExtrasFrag(extras)
+	}
 	return Call(
 		"mapConcat",
-		infoExtrasFrag(j),
+		extras,
 		qualColFrag("L", j.AttributesColumn),
+	)
+}
+
+// infoMergedExtrasFrag folds a per-join-row extras map into one map per
+// group: `mapFromArrays(groupArrayArray(mapKeys(x)), groupArrayArray(mapValues(x)))`
+// concatenates every row's key array and value array position-wise, so
+// the result carries every matched info metric's data labels. An
+// unmatched LEFT JOIN row contributes the default empty map, which
+// concatenates as nothing.
+func infoMergedExtrasFrag(extras Frag) Frag {
+	return Call(
+		"mapFromArrays",
+		Call("groupArrayArray", Call("mapKeys", extras)),
+		Call("groupArrayArray", Call("mapValues", extras)),
 	)
 }
 
