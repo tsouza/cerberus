@@ -263,11 +263,18 @@ func substituteMessage(msg string, groupKey map[string]string, env Env) string {
 }
 
 // unclassifiedLabel is what an absent classification reads as in a finding
-// MESSAGE. A group key over route or decision_reason carries the empty token on
-// a row the solver never classified (see geometryColumns in columns.go), and
+// MESSAGE. A group key over route or decision_reason can carry the empty token
+// on a row the solver never classified (see geometryColumns in columns.go), and
 // splicing that straight into prose renders as "reason=" — indistinguishable
 // from a substitution bug. The group key itself keeps the corpus value verbatim:
 // this is a rendering choice, not a change to class identity.
+//
+// The two columns reach it by different routes, and only route always does.
+// route is empty on EVERY unclassified row. decision_reason is empty only when
+// the dispatch recorded no reason at all — a PromQL row with the Solver off, or
+// a row written before the reason existed; a LogQL / TraceQL row names its own
+// absence with the non-promql token and so renders verbatim, which is the point
+// of having the token.
 const unclassifiedLabel = "unclassified"
 
 func resolvePlaceholder(name string, groupKey map[string]string, env Env) string {

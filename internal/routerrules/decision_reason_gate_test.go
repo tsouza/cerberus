@@ -5,6 +5,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
@@ -18,16 +19,16 @@ var costDeclinedReasons = map[string]bool{
 }
 
 // TestDecisionReasonDomainMatchesSolverVocabulary pins the hand-maintained wire
-// contract between the solver's Reason* vocabulary and the decision_reason enum
-// domain this package declares. routerrules deliberately imports neither the
-// solver nor optcorpus in production code (see the CorpusTableName contract in
-// columns.go), so nothing but this test stops the two from drifting: a Reason
-// added to the solver but not here is a token no rule can ever name, and a token
-// here that the solver never emits is a rule that can never fire.
+// contract between the solver's Reason* vocabulary, the corpus-only non-PromQL
+// reason, and the decision_reason enum domain this package declares.
+// routerrules deliberately imports neither dependency in production code (see
+// the CorpusTableName contract in columns.go), so nothing but this test stops
+// the declarations from drifting.
 func TestDecisionReasonDomainMatchesSolverVocabulary(t *testing.T) {
 	t.Parallel()
 
 	want := append([]string(nil), solver.Reasons...)
+	want = append(want, engine.CorpusReasonNonPromQL)
 	sort.Strings(want)
 	got := EnumDomain("decision_reason")
 

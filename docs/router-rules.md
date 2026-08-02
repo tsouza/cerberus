@@ -260,7 +260,15 @@ scalar) — context, never a gate, so no inline tolerance number is needed.
 routing decision (`routed`, `below-threshold`, `not-sliceable`, `instant`,
 `instant-join`, `high-D`, `now64`, `grid-mismatch`, `incommensurate`,
 `scalar-heavy`, `routing-disabled`, `extraction-failed`; see
-[`internal/solver/decision.go`](../internal/solver/decision.go)). Its primary
+[`internal/solver/decision.go`](../internal/solver/decision.go)), plus one
+corpus-only token the solver never emits: `non-promql`, stamped by the engine on
+a LogQL / TraceQL row to say the head never entered `Solver.Classify` at all (see
+`engine.CorpusReasonNonPromQL`). It is taxonomy, not a decision — such a row
+still has an empty `route` and zero geometry — so a rule that wants the
+unclassified population selects it by `language` or `route`, never by reading
+`non-promql` as though a classifier had refused something.
+
+Its primary
 use is **grouping / attribution**: the failure rules group by it so the operator
 can see *which solver path* produced the failure and pick the right lever (shard
 vs cap vs reject vs rewrite) — the catalog never encodes that branch in a number.
@@ -281,7 +289,8 @@ the vocabulary, so `route_a_high_fanout_should_shard`-style typos
 (`below_threshold`) fail at catalog load rather than producing a rule that never
 fires. Two meta-tests keep the vocabulary honest — one in
 [`internal/routerrules`](../internal/routerrules/decision_reason_gate_test.go)
-pins the enum domain against `solver.Reasons` (and proves the reason gate itself
+pins the enum domain against `solver.Reasons` plus
+`engine.CorpusReasonNonPromQL` (and proves the reason gate itself
 fires only for the two cost-declined tokens), and one in
 [`test/regression`](../test/regression/router_corpus_seed_test.go) pins the seed
 corpus's tokens to the same list so the fixtures never drift from production.
@@ -404,8 +413,9 @@ class, a high-fanout route-A class, and a high-geometry sub-population.
 
 Every fixture is constrained to states the production solver can actually reach,
 and `test/regression/router_corpus_seed_test.go` pins that: a `decision_reason` is
-a `solver.Reasons` member or absent, `route == "B"` and the `routed` reason are the
-same event, and only a PromQL row carries a route, a reason, or geometry at all —
+a `solver.Reasons` member, the corpus-only `non-promql` token, or absent;
+`route == "B"` and the `routed` reason are the
+same event, and only a PromQL row carries a route or geometry at all —
 the router classifies nothing else, so on every other head those columns are
 absent rather than small. That last invariant is the load-bearing one. A fixture
 that fakes geometry onto a LogQL row makes a `cumulative_d >= p(cumulative_d)`

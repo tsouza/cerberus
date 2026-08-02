@@ -186,17 +186,15 @@ func isGeometryColumn(name string) bool {
 //
 // route / exit_status / language mirror the optcorpus Enum8 DDL. decision_reason
 // is LowCardinality(String) on disk but its writer-side vocabulary is just as
-// closed: it is re-declared here verbatim from the solver's Reason* consts,
-// following the same deliberate no-import contract as CorpusTableName above
-// (this package depends on neither the solver nor optcorpus). The two
-// declarations are a wire contract — a new Reason* const must be added here in
-// lockstep, and decision_reason_gate_test.go pins that they agree (a test file
-// may import the solver; production code in this package may not).
+// closed: it is re-declared here verbatim from the solver's Reason* consts plus
+// the corpus-only non-PromQL token, following the same deliberate no-import
+// contract as CorpusTableName above (this package depends on neither the solver
+// nor optcorpus). The declarations are a wire contract — a new token must be
+// added here in lockstep, and decision_reason_gate_test.go pins that they agree
+// (a test file may import the engine and solver; production code may not).
 //
-// The unclassified reason (the empty string every non-PromQL row carries,
-// because Solver.Classify only classifies PromQL) is deliberately NOT a member:
-// a rule must select its population by `language`, never by the absence of a
-// classification.
+// The non-promql token records why those rows lack a solver classification. A
+// rule must still select that population by `language`, never by route.
 //
 // route carries the same asymmetry, and for the same reason. The corpus column
 // has a THIRD member — the unclassified token an unrouted row is stored under
@@ -226,6 +224,8 @@ var enumDomains = map[string]map[string]struct{}{
 		// because the plan is cheap. A rule that reads the cost columns must
 		// exclude this population, not average it in.
 		"extraction-failed",
+		// Corpus-only: LogQL and TraceQL do not enter Solver.Classify.
+		"non-promql",
 	),
 }
 

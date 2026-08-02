@@ -64,12 +64,15 @@ type RouteFeatures struct {
 	Step uint32
 	// KShards is the shard count on route B, 0 on route A.
 	KShards uint8
-	// DecisionReason is the classifier's Reason* vocabulary value.
+	// DecisionReason is the classifier's Reason* vocabulary value, or the
+	// corpus-only token naming why NO classification ran (Present false).
+	// It is therefore the one routing column an unclassified row may carry.
 	DecisionReason string
 	// Present reports whether routing features were captured for this
 	// dispatch. It is false when the Solver is off or the head is not the
 	// classified head, so the reconciler can leave the routing columns at
 	// their zero defaults rather than record a fictitious route-A row.
+	// DecisionReason is exempt — see joinRouteFeatures.
 	Present bool
 }
 
@@ -1520,9 +1523,30 @@ func exitStatusToken(chStatus ExitStatus, rec Record) string {
 }
 
 // joinRouteFeatures copies the dispatch-side routing read-out from rec onto
-// row. Left at zero when no classification ran for the dispatch (route stays
-// ""). Shared by the query_log join and the decision-only rejection flush.
+// row. Shared by the query_log join and the decision-only rejection flush.
+//
+// decision_reason is copied UNCONDITIONALLY; route and every geometry column
+// only when a classification actually ran. The two halves answer different
+// questions and so have different absence semantics:
+//
+//   - route / n_anchors / fanout / cumulative_d / outer_range / step / k_shards
+//     are the classifier's OUTPUT. With Present false there is no output, and
+//     writing route="A" with a zero grid would fabricate a below-threshold
+//     route-A decision that no classifier ever made — exactly the fictitious
+//     row TestReconcileOnce_RouteAbsent_ZeroColumns pins against. They stay at
+//     their zero defaults.
+//   - decision_reason names WHY the row sits where it does, so on an
+//     unclassified row it is the only column that can say anything true at all
+//     ("non-promql": this head never enters Solver.Classify). Dropping it is
+//     what made the whole unclassified population indistinguishable from a
+//     Solver-off PromQL row, and it is why the reason the engine already
+//     emitted never reached the persisted record.
+//
+// Reading the reason from rec rather than deriving it here keeps the taxonomy
+// owned by the emitting seam: a row carries a reason iff its dispatch site
+// recorded one.
 func joinRouteFeatures(row *Row, rec Record) {
+	row.DecisionReason = rec.Route.DecisionReason
 	if !rec.Route.Present {
 		return
 	}
@@ -1533,7 +1557,6 @@ func joinRouteFeatures(row *Row, rec Record) {
 	row.OuterRange = rec.Route.OuterRange
 	row.Step = rec.Route.Step
 	row.KShards = rec.Route.KShards
-	row.DecisionReason = rec.Route.DecisionReason
 }
 
 // flushRejections drains the buffered decision-only rejection Records into
