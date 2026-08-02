@@ -3665,7 +3665,11 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		}, nil
 
 	case parser.COUNT_VALUES:
-		return chplan.AggFunc{}, fmt.Errorf("promql: %s changes output shape and lands with M1.7 result shaping", a.Op.String())
+		// Unreachable from the wire: count_values changes the output shape
+		// (a synthetic label per distinct value), so lowerAggregate and
+		// lowerSubqueryOverAggregate intercept it before buildAggFunc is
+		// consulted. Arriving here is a routing bug, not a missing feature.
+		return chplan.AggFunc{}, fmt.Errorf("promql: %s must be lowered by lowerCountValues, not the generic aggregate path", a.Op.String())
 	}
 
 	return chplan.AggFunc{}, fmt.Errorf("promql: aggregation op %s is not yet supported", a.Op.String())

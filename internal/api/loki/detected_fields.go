@@ -38,9 +38,10 @@ const defaultDetectedFieldsLimit = 1000
 // not the cerberus heap. This clamp caps the row COUNT the SQL LIMIT returns
 // (and thus the buffered slice): 10k newest lines is 10x the default and ample
 // for a field/pattern heuristic. It removes the unbounded-row OOM; the
-// absolute heap still scales with line SIZE × concurrency, which the deferred
-// uniform per-drain maxSamples backstop (the "complete the net" follow-up)
-// bounds hard. Mirrors the parseLogLimit/maxLogQueryLimit clamp on the log path.
+// absolute heap still scales with line SIZE × concurrency, which chclient's
+// maxLogPeekBytes backstop bounds hard on the byte axis, alongside the
+// client-wide per-drain row budget (drainBudgetExceeded, Config.MaxQuerySamples).
+// Mirrors the parseLogLimit/maxLogQueryLimit clamp on the log path.
 const maxLogPeekLineLimit = 10_000
 
 // maxDetectedFieldsLimit hard-caps the returned-field count. Each tracked

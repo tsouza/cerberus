@@ -25,12 +25,13 @@ const phaseARankTsAlias = "rankTs"
 // `| select(...)` Project wrapped over it (unwrapped here). The negated anti-join
 // is admitted because the emitter now restricts its R side to the top-N traces
 // (structural_join.go), so phase B stays a faithful subset — without that fix a
-// naive gate relax would leak non-top-N traces (a WRONG result). Direct ops
-// (`>` / `<` / `~`) have a far cheaper single-INNER-JOIN projection and are
-// excluded; the union (`&>>`) two-arm shape leaves its left arm's inverse-closure
-// side unrestricted and still needs its own emitter fix before admission. Any
-// other wrapped shape (a set operation, an aggregate, a NestedSetAnnotate) falls
-// to the single-query path — never a wrong result, just no memory win.
+// naive gate relax would leak non-top-N traces (a WRONG result). The union
+// (`&>>`) two-arm shape is admitted on the same footing: each arm INNER JOINs on
+// TraceId to a restricted closure side, so neither the canonical anchor nor the
+// inverse closure step leaks. Direct ops (`>` / `<` / `~`) have a far cheaper
+// single-INNER-JOIN projection and are excluded. Any other wrapped shape (a set
+// operation, an aggregate, a NestedSetAnnotate) falls to the single-query path —
+// never a wrong result, just no memory win.
 func structuralTwoPhaseTarget(plan chplan.Node) (*chplan.StructuralJoin, bool) {
 	root := plan
 	// Unwrap a single pure-select Project (`… >> … | select(attr)`). The select

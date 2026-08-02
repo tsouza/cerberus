@@ -1016,14 +1016,15 @@ const (
 //     TimeUnix=now64(); read Value from the Aggregate's alias.
 //  4. Project — lowerSelect for `| select(...)` produces a user-shaped
 //     projection (TraceId, SpanId, Timestamp, <selected-attrs>) that
-//     doesn't expose SpanName / Duration / ResourceAttributes. The
-//     /api/search response envelope only needs the canonical Sample
-//     fields, so we strip the user Project and re-wrap the underlying
-//     Scan / Filter(Scan) with the canonical projection. The
-//     user-selected attrs are dropped from the HTTP search response
-//     (they were never surfaced in the trace-summary shape); the spec
-//     fixtures that pin the lowerSelect shape go through chDB without
-//     wrap-projection so they're unaffected.
+//     doesn't expose SpanName / Duration / ResourceAttributes. Replace
+//     the user Project with one rooted in the same input that emits the
+//     canonical Sample fields AND the selected values, each smuggled
+//     through a reserved `__cerberus_sel_*` Labels key that
+//     toTraceSummaries pivots into SpanSetSpan.Attributes — reference
+//     Tempo surfaces selected attributes there, and Grafana's Traces
+//     Drilldown structure tab hard-fails without nestedSetLeft /
+//     nestedSetRight. The spec fixtures that pin the lowerSelect shape
+//     go through chDB without wrap-projection so they're unaffected.
 func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Meta) chplan.Node {
 	switch {
 	case isStructuralJoin(plan):
