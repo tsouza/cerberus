@@ -129,7 +129,7 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// HTTP handler honours `spss` + `limit` (zero values fall back to
 	// Tempo's documented defaults inside the shared helpers), so the
 	// streaming path stays wire-equivalent with /api/search.
-	summaries, missingRoots := tempo.ToTraceSummaries(samples, int(req.SpansPerSpanSet))
+	summaries, missingRoots := tempo.ToTraceSummaries(samples, int(req.SpansPerSpanSet), res.Meta)
 	// Use the clamped `limit` (not the raw req.Limit) so the truncation honours
 	// the same ceiling the trace-limit pushdown above was bounded to.
 	summaries, missingRoots = tempo.TruncateSummaries(summaries, missingRoots, limit)

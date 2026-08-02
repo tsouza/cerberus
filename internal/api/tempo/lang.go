@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // errParseStage / errLowerStage are sentinel markers the Lang adapter
@@ -90,7 +91,15 @@ func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 		// Carry the /api/search trace limit so ProjectSamples can cap a
 		// spanset-aggregation search to the newest N traces server-side
 		// (the parity counterpart to plain search's SearchTraceLimit node).
-		Extra: map[string]any{metaKeySearchTraceLimit: traceql_lower.SearchTraceLimit(ctx)},
+		Extra: map[string]any{
+			metaKeySearchTraceLimit: traceql_lower.SearchTraceLimit(ctx),
+			// Carry whether the query named the `name` intrinsic, so the
+			// response shaper can populate spanSets[].spans[].name for
+			// exactly the queries reference Tempo populates it for. Must
+			// be computed here: this is the only place the parsed AST is
+			// still in hand.
+			metaKeyRefsNameIntrinsic: expr.ReferencesIntrinsic(traceql.IntrinsicName),
+		},
 	}, nil
 }
 
