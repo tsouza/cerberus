@@ -1205,6 +1205,34 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Args: the image refs to acquire.
   - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`).
   - Exit: `0` when every ref is in the local daemon, `1` as soon as one is not.
+- **`assert-image-jobs-authenticate.mjs`** — the required `check` lane. Fails
+  when a job that acquires an image has not logged in to the registry it
+  acquires from. An anonymous pull is not an error: it succeeds until the shared
+  per-runner-IP quota happens to be spent, and then surfaces as a 429 in an
+  unrelated lane, which is why the mirror shipped and three jobs were still on
+  the anonymous path afterwards — nothing in CI was asking the question.
+  - Resolves what a step DOES rather than what it says: through `just` recipes
+    and their variables, through the `.mjs` modules and the commands they spawn,
+    through a local composite action's own steps, and through `docker compose`
+    and `k3d`. Grepping for `docker pull` would see almost none of it.
+  - "Logs in" is not "uses `docker/login-action`". A `run:` step whose script
+    spawns `docker login` counts, with the registry read off the step's `env:`
+    (unset means Docker Hub, matching `docker login` itself) — so
+    `registry-login.mjs` is a login on the same terms.
+  - There is no allow-list and no exempted job name. The one shape that looks
+    like an acquisition and is not — this lane's own `node --test` of a module
+    that pulls images — is excluded because `node --test` imports a module and
+    runs its tests rather than its CLI, which is a fact about the command and
+    holds for every module.
+  - Env: `WORKFLOW_DIR` (optional; default `.github/workflows`), `REPO_ROOT`
+    (optional; default the working directory).
+  - Exit: `0` when every acquiring job is authenticated, `1` on a violation, on
+    a reference that resolves to nothing, or when no acquiring job is found at
+    all — a scan that reads nothing must not report the same green as a clean
+    tree.
+  - Gated by `assert-image-jobs-authenticate.test.mjs`, which strips a login
+    step out of the real workflow text and asserts each rule goes red. A gate
+    that cannot fail is a gap, not coverage.
 - **`mirror-images.mjs`** — `mirror-images.yml` (daily cron, `workflow_dispatch`,
   and pushes to the mirror's own files). Copies every ref in `lib/mirror.mjs`'s
   inventory into cerberus's GHCR namespace with `docker buildx imagetools
