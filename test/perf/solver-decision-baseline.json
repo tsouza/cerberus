@@ -1640,6 +1640,26 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "histogram_quantile_classic_negative_bound_upper_rank",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "histogram_quantile_classic_negative_lowest_bound",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "histogram_quantile_classic_plateau_overflow",
     "routed": false,
     "k": 0,
