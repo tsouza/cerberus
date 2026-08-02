@@ -6,9 +6,26 @@
 package qlcommon
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
+
+// maxCHBackref is the highest capture-group index ClickHouse's
+// `replaceRegexpOne` substitution syntax can address: `\0` (the whole
+// match) through `\9`. Go's replacement templates have no such ceiling,
+// so a reference above this is the one shape the translation below
+// cannot express and rejects instead.
+const maxCHBackref = 9
+
+// unresolvedGroup is the capture-group index reported for a reference
+// that binds to nothing — an index past the regex's group count, or a
+// `$name` naming no group. Go's `ExpandString` substitutes the empty
+// string for both, so the translation drops the backref.
+const unresolvedGroup = -1
 
 // ReplacementToCH translates a Go-`regexp` replacement template
 // (`$1` / `${1}` / `$$` syntax — used by both PromQL's
@@ -32,54 +49,47 @@ import (
 // verbatim and emitted as the literal string `svc-$1` — the capture
 // group is never substituted.
 //
-// Translation rules implemented here (single-digit captures only — the
-// upstream label_replace functions don't constrain the index but CH's
-// backref syntax tops out at `\9`; multi-digit / named captures are
-// not used by any test or compatibility fixture and would need a
-// separate emit path):
+// Translation rules implemented here — the reference for every one of
+// them is Go's `Regexp.ExpandString`, which is the engine both QLs run
+// their replacement through, so this function reproduces its reference
+// splitter ([extractRef]) rather than approximating it:
 //
-//   - Pre-escape every existing `\` in the input to `\\`, so any
-//     literal backslash in the QL template survives as a literal
-//     backslash in CH (and is not re-interpreted as a CH backref by
-//     the digits we're about to introduce).
+//   - Every literal `\` in the input becomes `\\`, so a literal
+//     backslash in the QL template survives as a literal backslash in
+//     CH and is not re-read as the start of one of the `\N` backrefs
+//     spliced in below.
 //   - `$$` → `$` (literal dollar).
-//   - `$N` for a single ASCII digit (0-9) → `\N`.
-//   - `${N}` for a single ASCII digit (0-9) → `\N`.
-//   - Any other `$<x>` (including bare `$` at end-of-string, `$<letter>`,
-//     `${name}`, `$10` etc.) is preserved verbatim so we don't silently
-//     mistranslate a shape we don't fully support.
+//   - `$N` / `${N}` for ANY index N — including multi-digit `$10` —
+//     → `\N`, provided the regex has at least N capture groups.
+//   - `$name` / `${name}` → `\N` for the index of the capture group
+//     that carries that name.
+//   - A reference that binds to nothing — an index past the regex's
+//     group count, or a name no group carries — expands to the empty
+//     string, exactly as ExpandString does.
+//   - A `$` that starts no reference at all (end of string, `$-`,
+//     `${unclosed`) is emitted verbatim, again as ExpandString does.
 //
-// regex is the regex string the replacement is applied against;
-// it's used to count capture groups so out-of-range backrefs can be
-// rewritten to the empty string. CH validates `replaceRegexpOne`'s
-// substitution string against the regex's capture-group count at SQL-
-// parse time and rejects backrefs that exceed it (Code 36, BAD_ARGUMENTS)
-// — even on rows where match() short-circuits the if-branch that owns
-// the replaceRegexpOne call. The upstream QL semantics silently
-// substitute the empty string for missing groups (Go's ExpandString
-// semantics); replacing the backref with "" preserves that observable
-// behaviour on the (unreachable) hot path and unblocks the SQL parser
-// on the (very-much-reachable) cold path where the regex doesn't match
+// The single shape with no faithful translation is a reference to a
+// capture group that EXISTS but sits above CH's `\9` substitution
+// ceiling; that returns an error so the query is rejected loudly rather
+// than answered with a wrong label.
+//
+// regex is the regex string the replacement is applied against; it is
+// compiled to resolve capture-group names and to count groups so
+// out-of-range backrefs can be rewritten to the empty string. CH
+// validates `replaceRegexpOne`'s substitution string against the
+// regex's capture-group count at SQL-parse time and rejects backrefs
+// that exceed it (Code 36, BAD_ARGUMENTS) — even on rows where match()
+// short-circuits the if-branch that owns the replaceRegexpOne call.
+// Dropping the backref preserves the upstream empty-string semantics on
+// the (unreachable) hot path and unblocks the SQL parser on the
+// (very-much-reachable) cold path where the regex doesn't match
 // anything.
-func ReplacementToCH(repl, regex string) string {
-	// First pass: double every literal backslash so CH sees them as
-	// "literal backslash" (`\\`) rather than the start of its own
-	// backref escape sequence after we splice `\N` in below.
-	escaped := strings.ReplaceAll(repl, `\`, `\\`)
-
-	// Count capture groups in the anchored regex (the same anchoring
-	// the SQL emitter applies). Best-effort: if Go's parser can't
-	// compile the regex, fall back to allowing every single-digit
-	// backref — the emit-path will surface the compile error to the
-	// client via CH's own parse stage.
-	const maxBackref = 9
-	allowed := maxBackref
-	if compiled, err := regexp.Compile("^" + regex + "$"); err == nil {
-		allowed = compiled.NumSubexp()
-	}
+func ReplacementToCH(repl, regex string) (string, error) {
+	groups := newCaptureGroups(regex)
 
 	var b strings.Builder
-	b.Grow(len(escaped))
+	b.Grow(len(repl))
 	// Step-based loop: each branch returns the number of input bytes it
 	// consumed via `step`, and the for-iterator advances `i` by that
 	// amount. Phrasing the loop this way (rather than using `continue` /
@@ -90,77 +100,218 @@ func ReplacementToCH(repl, regex string) string {
 	// statements ran between the keyword and the iterator step. See PR
 	// #499 (the mutant-kill tests) and the follow-up PR that landed this
 	// refactor for the full diagnosis.
-	for i := 0; i < len(escaped); {
-		step := replacementStep(&b, escaped, i, allowed)
+	for i := 0; i < len(repl); {
+		step, err := replacementStep(&b, repl, i, groups)
+		if err != nil {
+			return "", err
+		}
 		i += step
 	}
-	return b.String()
+	return b.String(), nil
+}
+
+// captureGroups resolves a replacement template's `$N` / `$name`
+// references to capture-group indices for one regex.
+type captureGroups struct {
+	// count is the regex's capture-group count. A numbered reference
+	// above it binds to nothing.
+	count int
+	// byName maps each capture-group name to every index carrying it.
+	// Go's regexp permits the same name on several groups, so this is a
+	// slice rather than a single index. Empty when the regex did not
+	// compile, so every named reference then binds to nothing.
+	byName map[string][]int
+}
+
+// newCaptureGroups compiles regex for its capture-group metadata.
+//
+// Compilation is best-effort: when Go's parser rejects the regex there
+// is no group metadata to read, so every single-digit numbered backref
+// is allowed through and CH's own parse stage surfaces the regex error
+// to the client — the same fallback the pre-name-resolution version of
+// this file used.
+func newCaptureGroups(regex string) captureGroups {
+	// Anchored to mirror the SQL emitter. Anchoring shifts no group
+	// index, so the metadata read back is the unanchored regex's.
+	compiled, err := regexp.Compile("^" + regex + "$")
+	if err != nil {
+		return captureGroups{count: maxCHBackref}
+	}
+	g := captureGroups{count: compiled.NumSubexp(), byName: map[string][]int{}}
+	for i, name := range compiled.SubexpNames() {
+		if name == "" {
+			continue
+		}
+		g.byName[name] = append(g.byName[name], i)
+	}
+	return g
+}
+
+// resolve maps one extracted reference to its capture-group index, or
+// [unresolvedGroup] when the reference binds to nothing. It errors on
+// the references CH's fixed `\N` substitution cannot express.
+func (g captureGroups) resolve(ref templateRef) (int, error) {
+	idx := unresolvedGroup
+	switch carriers := g.byName[ref.name]; {
+	case ref.num != unresolvedGroup:
+		// A numbered reference past the regex's group count binds to
+		// nothing, which is the empty string — not an error.
+		if ref.num <= g.count {
+			idx = ref.num
+		}
+	case len(carriers) > 1:
+		// Go's regexp permits several groups to share one name, and
+		// ExpandString then picks the first of them that TOOK PART in
+		// the row's match. That choice varies row by row; a CH `\N`
+		// backref is fixed when the SQL is built and cannot follow it.
+		return 0, fmt.Errorf(
+			"references capture-group name %q, which %d capture groups share — "+
+				"ClickHouse's `\\N` substitution cannot pick between them per row",
+			ref.name, len(carriers),
+		)
+	case len(carriers) == 1:
+		idx = carriers[0]
+	}
+	if idx > maxCHBackref {
+		return 0, fmt.Errorf(
+			"references capture group %d, above ClickHouse's `\\%d` substitution ceiling",
+			idx, maxCHBackref,
+		)
+	}
+	return idx, nil
 }
 
 // replacementStep handles a single dispatch step of ReplacementToCH at
-// offset `i` of `escaped`. It writes the translated bytes to `b` and
-// returns the number of input bytes it consumed (always >= 1, so the
-// outer loop always makes progress).
+// offset `i` of `repl`. It writes the translated bytes to `b` and
+// returns the number of input bytes it consumed (always >= 1 on the
+// success path, so the outer loop always makes progress).
 //
 // Splitting this out of the loop body keeps the per-iteration consumed
 // count observable in the caller's iterator clause, so the gremlins
 // INVERT_LOOPCTRL operator can't swap `continue` ↔ `break` and produce
 // an equivalent mutant — the dispatch keywords don't live in a `for`
 // scope at all here.
-func replacementStep(b *strings.Builder, escaped string, i, allowed int) int {
-	c := escaped[i]
+func replacementStep(b *strings.Builder, repl string, i int, groups captureGroups) (int, error) {
+	c := repl[i]
 	if c != '$' {
+		if c == '\\' {
+			// Double the literal backslash so CH reads it as a literal
+			// rather than as the start of a `\N` backref.
+			b.WriteString(`\\`)
+			return 1, nil
+		}
 		b.WriteByte(c)
-		return 1
+		return 1, nil
 	}
-	// Lone `$` at end of string — preserve.
-	if i+1 >= len(escaped) {
+	// Lone `$` at end of string — ExpandString emits it verbatim.
+	if i+1 >= len(repl) {
 		b.WriteByte('$')
-		return 1
+		return 1, nil
 	}
-	next := escaped[i+1]
-	switch {
-	case next == '$':
+	if repl[i+1] == '$' {
 		// `$$` → literal `$`.
 		b.WriteByte('$')
-		return 2
-	case next >= '0' && next <= '9':
-		// `$N` → `\N` (single digit only — `$10` is preserved
-		// verbatim per upstream Go regexp semantics, but CH
-		// has no `\10`, so we'd mistranslate either way; preserving
-		// keeps the failure visible rather than silently wrong).
-		if i+2 < len(escaped) && escaped[i+2] >= '0' && escaped[i+2] <= '9' {
-			b.WriteByte('$')
-			return 1
-		}
-		n := int(next - '0')
-		// `\0` references the whole match and is always valid; for
-		// numbered captures, only emit `\N` if the regex actually
-		// has N capture groups. Out-of-range refs are dropped so
-		// CH's substitution validator stays happy.
-		if n == 0 || n <= allowed {
-			b.WriteByte('\\')
-			b.WriteByte(next)
-		}
-		return 2
-	case next == '{':
-		// `${N}` (single digit) → `\N`. Anything else (named
-		// captures, multi-digit indices) is preserved verbatim.
-		if i+3 < len(escaped) && escaped[i+2] >= '0' && escaped[i+2] <= '9' && escaped[i+3] == '}' {
-			n := int(escaped[i+2] - '0')
-			if n == 0 || n <= allowed {
-				b.WriteByte('\\')
-				b.WriteByte(escaped[i+2])
-			}
-			return 4
-		}
-		b.WriteByte('$')
-		return 1
-	default:
-		// `$<letter>` etc. — preserve verbatim.
-		b.WriteByte('$')
-		return 1
+		return 2, nil
 	}
+	ref, ok := extractRef(repl[i+1:])
+	if !ok {
+		// Not a reference at all (`$-`, `${unclosed`) — ExpandString
+		// emits the `$` verbatim and resumes at the next byte.
+		b.WriteByte('$')
+		return 1, nil
+	}
+	idx, err := groups.resolve(ref)
+	if err != nil {
+		return 0, fmt.Errorf("replacement %q %w", repl, err)
+	}
+	if idx != unresolvedGroup {
+		b.WriteByte('\\')
+		b.WriteString(strconv.Itoa(idx))
+	}
+	// An unresolved reference binds to nothing; ExpandString substitutes
+	// the empty string for it, so there is nothing to write.
+	return 1 + ref.width, nil
+}
+
+// templateRef is one `$…` reference split off the front of a Go
+// replacement template.
+type templateRef struct {
+	// name is the reference text with any braces stripped: `1`, `10`,
+	// `svc`.
+	name string
+	// num is the capture-group index when name is a plain decimal index,
+	// and [unresolvedGroup] when the reference is a NAME instead.
+	num int
+	// width is how many bytes of the template the reference occupies,
+	// not counting the leading `$`.
+	width int
+}
+
+// extractRef mirrors the unexported `extract` helper in Go's regexp
+// package, which is what `Regexp.ExpandString` — the engine both
+// PromQL's and LogQL's `label_replace` run their replacement through —
+// uses to split a `$…` reference off the front of a template.
+//
+// Reproducing it rather than pattern-matching a digit is what makes the
+// translation agree with the reference implementations on the shapes
+// that a hand-rolled scan gets wrong: `$10` is capture group TEN (Go
+// takes the LONGEST run of name characters, not one digit), `$1x` is a
+// reference to a group NAMED `1x` rather than group 1 followed by a
+// literal `x`, and `$01` is likewise a name because Go rejects leading
+// zeros as indices.
+//
+// str is the template starting immediately after the `$`. The reported
+// width excludes that `$`.
+func extractRef(str string) (templateRef, bool) {
+	rest := str
+	braced := strings.HasPrefix(rest, "{")
+	if braced {
+		rest = rest[1:]
+	}
+	// A name runs to the first byte that is not a letter, digit or `_`.
+	end := 0
+	for end < len(rest) {
+		r, size := utf8.DecodeRuneInString(rest[end:])
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			break
+		}
+		end += size
+	}
+	if end == 0 {
+		// An empty name is not a reference.
+		return templateRef{}, false
+	}
+	name := rest[:end]
+	width := end
+	if braced {
+		if end >= len(rest) || rest[end] != '}' {
+			// Missing closing brace — not a reference.
+			return templateRef{}, false
+		}
+		// Both braces are part of the reference's width.
+		width += len("{}")
+	}
+	return templateRef{name: name, num: refNum(name), width: width}, true
+}
+
+// refNum returns the capture-group index a reference name denotes, or
+// [unresolvedGroup] when the name is not a plain decimal index and must
+// be looked up as a capture-group NAME instead. Mirrors the numeric half
+// of Go's `extract`: a leading zero on a multi-character name, any
+// non-digit byte, or a value too large to hold demotes the reference to
+// a name lookup.
+func refNum(name string) int {
+	if name[0] == '0' && len(name) > 1 {
+		return unresolvedGroup
+	}
+	// The name charset is letters / digits / `_`, so Atoi can only fail
+	// on a non-digit byte or on overflow — both of which Go's own parse
+	// loop also treats as "this is a name".
+	num, err := strconv.Atoi(name)
+	if err != nil {
+		return unresolvedGroup
+	}
+	return num
 }
 
 // EmptyCapturesReplacement returns the result of substituting Go's
@@ -188,14 +339,19 @@ func replacementStep(b *strings.Builder, escaped string, i, allowed int) int {
 //	empty-captures result and using it as a short-circuit when the
 //	source value is empty at row time.
 //
-// Substitution rules (mirror `ReplacementToCH` but resolve each
-// backref to the empty string instead of CH's `\N` form):
+// Substitution rules (the same reference splitter `ReplacementToCH`
+// uses, but every reference resolves to the empty string instead of to
+// CH's `\N` form):
 //
-//   - `$$`                → literal `$`
-//   - `$N` / `${N}`       → empty string (the N-th capture binds to ""
-//     when the full match was "")
-//   - Any other `$<x>`    → preserved verbatim (named groups,
-//     multi-digit indices — same opt-out as `ReplacementToCH`)
+//   - `$$` → literal `$`
+//   - `$N` / `${N}` / `$name` / `${name}` → empty string. Every
+//     reference ExpandString recognises contributes "" here: a group
+//     that took part in the empty match expanded to "", and a group
+//     that bound to nothing (index past the group count, unknown name)
+//     expands to "" as well. No regex is needed to tell the two apart
+//     because the answer is the same either way.
+//   - A `$` that starts no reference (end of string, `$-`,
+//     `${unclosed`) → preserved verbatim, as ExpandString does.
 func EmptyCapturesReplacement(repl string) string {
 	var b strings.Builder
 	b.Grow(len(repl))
@@ -229,35 +385,19 @@ func emptyCapturesStep(b *strings.Builder, repl string, i int) int {
 		b.WriteByte('$')
 		return 1
 	}
-	next := repl[i+1]
-	switch {
-	case next == '$':
+	if repl[i+1] == '$' {
 		// `$$` → literal `$`.
 		b.WriteByte('$')
 		return 2
-	case next >= '0' && next <= '9':
-		// `$N` → "" (capture N is empty for an empty-string match).
-		// Two-digit `$10`+ is preserved verbatim — `ReplacementToCH`
-		// makes the same opt-out, so the regex compile / CH parse
-		// error surfaces consistently.
-		if i+2 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' {
-			b.WriteByte('$')
-			return 1
-		}
-		// Single-digit numbered capture → empty. Skip past the digit.
-		return 2
-	case next == '{':
-		// `${N}` (single digit) → "". Anything else (named captures,
-		// multi-digit indices) is preserved verbatim — same opt-out
-		// as `ReplacementToCH`.
-		if i+3 < len(repl) && repl[i+2] >= '0' && repl[i+2] <= '9' && repl[i+3] == '}' {
-			return 4
-		}
-		b.WriteByte('$')
-		return 1
-	default:
-		// `$<letter>` etc. — preserve verbatim.
+	}
+	ref, ok := extractRef(repl[i+1:])
+	if !ok {
+		// Not a reference — ExpandString emits the `$` verbatim and
+		// resumes at the next byte.
 		b.WriteByte('$')
 		return 1
 	}
+	// Every recognised reference expands to "" against an empty match,
+	// so there is nothing to write — just step over the reference.
+	return 1 + ref.width
 }

@@ -66,6 +66,13 @@
     },
     {
       "head": "logql",
+      "site": "internal/logql/label_fns.go:lowerLabelReplace#8cd9f67b",
+      "message": "logql: label_replace: %w",
+      "class": "rejection",
+      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$10\", \"src\", \"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\")"
+    },
+    {
+      "head": "logql",
       "site": "internal/logql/label_fns.go:lowerLabelReplace#997ce6c3",
       "message": "logql: label_replace has nil inner",
       "class": "internal",
@@ -504,6 +511,13 @@
       "message": "promql: label_replace expects 5 arguments, got %d",
       "class": "internal",
       "rationale": "parser-enforced arity: label_replace requires exactly five arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelReplace#d11e3df4",
+      "message": "promql: label_replace: %w",
+      "class": "rejection",
+      "trigger_query": "label_replace(up, \"d\", \"$10\", \"src\", \"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\")"
     },
     {
       "head": "promql",

@@ -42,6 +42,11 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		return nil, err
 	}
 
+	chReplacement, err := qlcommon.ReplacementToCH(replacement, regex)
+	if err != nil {
+		return nil, fmt.Errorf("promql: label_replace: %w", err)
+	}
+
 	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
@@ -49,7 +54,7 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 	attrs := &chplan.LabelReplace{
 		Map:              &chplan.ColumnRef{Name: s.AttributesColumn},
 		Dst:              dst,
-		Replacement:      qlcommon.ReplacementToCH(replacement, regex),
+		Replacement:      chReplacement,
 		Src:              src,
 		Regex:            regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),

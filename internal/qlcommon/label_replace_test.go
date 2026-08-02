@@ -1,12 +1,21 @@
 package qlcommon
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // nineCaptureRegex is a 9-group regex used as the "always-has-enough-
 // captures" sentinel in the table-driven test below. Each case that
 // references `$N` for any single-digit N expects the rewrite to succeed
 // because this regex has all 9 groups.
 const nineCaptureRegex = `(.)(.)(.)(.)(.)(.)(.)(.)(.)`
+
+// tenCaptureRegex has one group MORE than ClickHouse's `\9`
+// substitution ceiling, so `$10` against it names a group that really
+// exists and really cannot be expressed — the one shape
+// [ReplacementToCH] rejects instead of translating.
+const tenCaptureRegex = `(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)`
 
 // TestReplacementToCH locks down the QL → ClickHouse replacement
 // template rewrite that PromQL + LogQL `label_replace` both rely on.
@@ -33,11 +42,44 @@ func TestReplacementToCH(t *testing.T) {
 		{"dollar_dollar_literal", "$$", nineCaptureRegex, "$"},
 		{"dollar_dollar_then_text", "$$x", nineCaptureRegex, "$x"},
 		{"braced_single_digit", "${1}-suffix", nineCaptureRegex, `\1-suffix`},
-		{"braced_multi_digit_preserved", "${10}", nineCaptureRegex, "${10}"},
-		{"multi_digit_unbraced_preserved", "$10", nineCaptureRegex, "$10"},
-		{"named_capture_preserved", "${name}", nineCaptureRegex, "${name}"},
+		{"braced_with_trailing_text", "xy${1}z", nineCaptureRegex, `xy\1z`},
 		{"lone_dollar_at_end", "abc$", nineCaptureRegex, "abc$"},
-		{"dollar_letter_preserved", "$x", nineCaptureRegex, "$x"},
+		// Every case below is an ExpandString shape a single-digit scan
+		// gets wrong. The `want` column is the CH template whose
+		// substitution reproduces what Go's ExpandString — the engine
+		// PromQL's and LogQL's label_replace both run the replacement
+		// through — actually yields; each was read off ExpandString
+		// rather than reasoned about. Go takes the LONGEST run of name
+		// characters after the `$`, so all of these are ONE reference,
+		// and each binds to nothing against a 9-group regex, which
+		// ExpandString renders as the empty string.
+		{"multi_digit_above_group_count", "$10", nineCaptureRegex, ""},
+		{"braced_multi_digit_above_group_count", "${10}", nineCaptureRegex, ""},
+		{"multi_digit_nineteen", "$19", nineCaptureRegex, ""},
+		{"unknown_named_capture_braced", "${name}", nineCaptureRegex, ""},
+		{"unknown_named_capture_bare", "$x", nineCaptureRegex, ""},
+		{"unknown_named_capture_underscore", "$_", nineCaptureRegex, ""},
+		// `$1x` is a reference to a group NAMED `1x`, not group 1
+		// followed by a literal `x` — the digit-scan reading emitted
+		// `\1x`, which substitutes a real capture and is the
+		// silently-wrong label the issue describes.
+		{"digit_then_letter_is_a_name", "$1x", nineCaptureRegex, ""},
+		// Leading zeros disqualify a reference from being an index, so
+		// `$01` is likewise a NAME lookup that finds nothing.
+		{"leading_zero_is_a_name", "$01", nineCaptureRegex, ""},
+		// Overflowing index — Go's parse loop gives up and treats it as
+		// a name, which no group carries.
+		{"index_overflow_is_a_name", "$99999999999999999999", nineCaptureRegex, ""},
+		{"literal_context_around_dropped_ref", "a-$x-b", nineCaptureRegex, "a--b"},
+		// `$` followed by a byte that can't start a name is not a
+		// reference at all; ExpandString emits the `$` verbatim.
+		{"dollar_then_non_name_byte", "$-", nineCaptureRegex, "$-"},
+		// Named captures resolve to the index of the group carrying the
+		// name — the whole point of the rewrite.
+		{"named_capture_resolves", "$svc", `(?P<svc>.*)`, `\1`},
+		{"named_capture_braced_resolves", "${svc}-x", `(?P<svc>.*)`, `\1-x`},
+		{"named_capture_second_group", "$svc", `(a)(?P<svc>.*)`, `\2`},
+		{"named_group_also_reachable_by_index", "$1", `(?P<svc>.*)`, `\1`},
 		{"existing_backslash_escaped", `\1`, nineCaptureRegex, `\\1`},
 		{"existing_backslash_and_backref", `\$1`, nineCaptureRegex, `\\\1`},
 		// Out-of-range backrefs drop. The regex has 0 capture groups,
@@ -59,64 +101,112 @@ func TestReplacementToCH(t *testing.T) {
 		// will surface the regex error to the client). The replacement
 		// translation is unchanged from the always-allowed shape.
 		{"invalid_regex_passthrough", "$1", "(.*", `\1`},
-		// Targeted mutation-kill cases pinning the gremlins CONDITIONALS_
-		// BOUNDARY / INVERT_LOGICAL / ARITHMETIC_BASE / REMOVE_SELF_
-		// ASSIGNMENTS mutants on the multi-digit-preserve and `${N}`
-		// branches inside `replacementStep` (the digit lookahead at the
-		// `next >= '0' && next <= '9'` arm, and the brace-block parse at
-		// the `next == '{'` arm). Each row below is calibrated so the
-		// original implementation produces the listed `want`, and at
-		// least one boundary-mutated variant produces an observably
-		// different string (or panics). Treat these as low-level guards
-		// — the user-facing semantics are already covered above; these
-		// only widen the discriminator set the mutation tool can use to
-		// prove the boundaries are load-bearing.
+		// Boundary guards on [extractRef]'s brace handling and on the
+		// capture-count gate. Each row is calibrated so the original
+		// produces the listed `want` and a boundary-mutated variant
+		// produces an observably different string (or panics), which is
+		// what lets the mutation tool prove the bounds are load-bearing.
 		//
-		//  * `multi_digit_unbraced_nine` pins the `<= '9'` upper bound
-		//    of the inner multi-digit lookahead inside the `next >= '0'`
-		//    case. Char at i+2 is exactly '9', so the boundary mutant
-		//    `< '9'` misses the branch and emits the single-digit form
-		//    `\19` instead of the verbatim `$19`.
-		{"multi_digit_unbraced_nine", "$19", nineCaptureRegex, "$19"},
-		//  * `braced_zero_with_caps` pins the `>= '0'` lower bound of
-		//    the braced digit check inside the `next == '{'` case. Char
-		//    at i+2 is exactly '0', so the boundary mutant `> '0'`
-		//    skips the branch and falls through to write the literal
-		//    `${0}` instead of the canonical `\0`.
+		//  * `braced_zero_with_caps` / `braced_nine_with_caps` pin the
+		//    `ref.num <= g.count` capture-count gate at both ends of
+		//    the single-digit range against a regex with exactly 9
+		//    groups: `< g.count` drops `\9`, and mishandling index 0
+		//    (the whole match, always valid) drops `\0`.
 		{"braced_zero_with_caps", "${0}", nineCaptureRegex, `\0`},
-		//  * `braced_nine_with_caps` pins both the `<= '9'` upper bound
-		//    of the braced digit check AND the `n <= allowed` capture-
-		//    count gate. Char at i+2 is exactly '9' and the regex has
-		//    exactly 9 capture groups, so both boundary mutants (`< '9'`
-		//    and `< allowed`) diverge from the canonical `\9`.
 		{"braced_nine_with_caps", "${9}", nineCaptureRegex, `\9`},
-		//  * `braced_non_digit_inner` pins both INVERT_LOGICAL mutants
-		//    on the chained `&&` in the brace-block parse. The char at
-		//    i+2 is a non-digit (`x`), so the original short-circuits
-		//    on `'x' <= '9'` and falls through to the literal-write
-		//    path. Either `&&` → `||` mutation upgrades the partial
-		//    truth into a full match, enters the consuming branch and
-		//    drops the entire `${x}` from the output.
-		{"braced_non_digit_inner", "${x}", nineCaptureRegex, "${x}"},
-		//  * `braced_truncated_digit` pins the ARITHMETIC_BASE mutant
-		//    on `i+3` AND the CONDITIONALS_BOUNDARY mutant on `<` in
-		//    the brace-block parse. The input is one byte short of a
-		//    closing `}`, so the original short-circuits on
-		//    `i+3 < len` (3 < 3 == false). The `i-3` mutant evaluates
-		//    `-3 < 3` as true and continues into the OOB `escaped[i+3]`
-		//    read; the `<=` mutant evaluates `3 <= 3` as true and does
-		//    the same. Both surface as test-failing panics.
+		//  * `braced_unclosed_before_text` pins the missing-closing-
+		//    brace rejection in extractRef. Dropping that check reads
+		//    `1` as a reference and emits `\1x` instead of the verbatim
+		//    text ExpandString produces.
+		{"braced_unclosed_before_text", "${1x", nineCaptureRegex, "${1x"},
+		//  * `braced_truncated_digit` pins the same rejection at
+		//    end-of-string, where a missing bounds check reads past the
+		//    end of the template.
 		{"braced_truncated_digit", "${1", nineCaptureRegex, "${1"},
+		//  * `empty_braces` pins the zero-length-name rejection: `${}`
+		//    carries no name, so it is not a reference.
+		{"empty_braces", "${}", nineCaptureRegex, "${}"},
+		//  * `brace_width_accounting` pins the `width += len("{}")`
+		//    term. If the braces aren't counted, the loop resumes
+		//    inside the reference and replays `}` as literal text.
+		{"brace_width_accounting", "${9}tail", nineCaptureRegex, `\9tail`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := ReplacementToCH(tc.in, tc.regex)
+			got, err := ReplacementToCH(tc.in, tc.regex)
+			if err != nil {
+				t.Fatalf("ReplacementToCH(%q, %q): unexpected error: %v", tc.in, tc.regex, err)
+			}
 			if got != tc.want {
 				t.Fatalf("ReplacementToCH(%q, %q): got %q, want %q",
 					tc.in, tc.regex, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestReplacementToCHRejectsInexpressibleBackrefs pins the two shapes
+// that Go's ExpandString resolves to a real capture but ClickHouse's
+// fixed `\N` substitution cannot reproduce. Both used to be emitted as
+// literal template text — a 200 carrying a label whose value was the
+// template rather than an expansion of it, which is the silently-wrong
+// output issue #1490 reported. Rejecting at lowering makes the failure
+// loud instead.
+func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		in       string
+		regex    string
+		wantErrs []string
+	}{
+		// Group 10 exists in a 10-group regex, so ExpandString expands
+		// it; CH tops out at `\9`.
+		{"index_above_ch_ceiling", "$10", tenCaptureRegex, []string{"capture group 10", `\9`}},
+		{"braced_index_above_ch_ceiling", "${10}", tenCaptureRegex, []string{"capture group 10", `\9`}},
+		// Go permits several groups to share a name and picks the first
+		// that took part in the row's match; a build-time `\N` can't.
+		{
+			"ambiguous_named_capture",
+			"$dup",
+			`(?P<dup>a)|(?P<dup>b)`,
+			[]string{`"dup"`, "2 capture groups"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ReplacementToCH(tc.in, tc.regex)
+			if err == nil {
+				t.Fatalf("ReplacementToCH(%q, %q): want error, got %q", tc.in, tc.regex, got)
+			}
+			if got != "" {
+				t.Fatalf("ReplacementToCH(%q, %q): want empty result alongside the error, got %q",
+					tc.in, tc.regex, got)
+			}
+			for _, want := range tc.wantErrs {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("ReplacementToCH(%q, %q): error %q does not name %q",
+						tc.in, tc.regex, err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestReplacementToCHIndexBelowCeilingSurvivesLargeRegex guards the
+// rejection above from over-firing: a regex with more than nine groups
+// is fine as long as the replacement doesn't reach past `\9`.
+func TestReplacementToCHIndexBelowCeilingSurvivesLargeRegex(t *testing.T) {
+	t.Parallel()
+	got, err := ReplacementToCH("$9", tenCaptureRegex)
+	if err != nil {
+		t.Fatalf("ReplacementToCH($9, tenCaptureRegex): unexpected error: %v", err)
+	}
+	if want := `\9`; got != want {
+		t.Fatalf("ReplacementToCH($9, tenCaptureRegex): got %q, want %q", got, want)
 	}
 }
 
@@ -152,62 +242,48 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 		{"dollar_dollar_then_text", "$$x", "$x"},
 		// Braced single-digit form behaves the same as bare `$N`.
 		{"braced_single_digit", "${1}-suffix", "-suffix"},
-		// Multi-digit indices and named captures are preserved verbatim
-		// — same opt-out as `ReplacementToCH`.
-		{"braced_multi_digit_preserved", "${10}", "${10}"},
-		{"multi_digit_unbraced_preserved", "$10", "$10"},
-		{"named_capture_preserved", "${name}", "${name}"},
-		// Edge cases that ExpandString handles literally.
+		// Multi-digit indices and named captures resolve to "" like any
+		// other reference: against an empty match a group that took
+		// part expanded to "", and one that binds to nothing expands to
+		// "" as well, so the two cases are indistinguishable here.
+		{"braced_multi_digit", "${10}", ""},
+		{"multi_digit_unbraced", "$10", ""},
+		{"named_capture", "${name}", ""},
+		{"named_capture_bare", "$svc", ""},
+		{"digit_then_letter_is_a_name", "$1x", ""},
+		{"leading_zero_is_a_name", "$01", ""},
+		// Edge cases that ExpandString handles literally: a `$` that
+		// starts no reference stays a `$`.
 		{"lone_dollar_at_end", "abc$", "abc$"},
-		{"dollar_letter_preserved", "$x", "$x"},
+		{"dollar_then_non_name_byte", "$-", "$-"},
+		{"empty_braces", "${}", "${}"},
+		{"braced_unclosed_before_text", "${1x", "${1x"},
 		// Literal backslashes pass through unchanged — only `$`-prefixed
 		// metacharacters are interpreted in the Go regex replacement
 		// template the QLs feed us.
 		{"existing_backslash_preserved", `\1`, `\1`},
-		// Targeted mutation-kill cases pinning the gremlins CONDITIONALS_
-		// BOUNDARY / INVERT_LOGICAL / ARITHMETIC_BASE / REMOVE_SELF_
-		// ASSIGNMENTS mutants on the multi-digit-preserve and `${N}`
-		// branches inside `emptyCapturesStep`. The mirror of the
-		// ReplacementToCH cases above, recalibrated for the empty-
-		// captures resolver (numbered captures collapse to "" instead
-		// of `\N`, so the original on the consuming branch returns the
-		// empty string).
+		// Boundary guards mirroring the ReplacementToCH set, calibrated
+		// for the empty-captures resolver (every recognised reference
+		// collapses to "" instead of to `\N`).
 		//
-		//  * `multi_digit_unbraced_nine` pins the `<= '9'` upper bound
-		//    of the multi-digit lookahead inside the `next >= '0'` case.
-		//    Char at i+2 is '9'; the boundary mutant `< '9'` falls into
-		//    the single-digit-collapse branch and emits the trailing
-		//    `9` alone instead of the verbatim `$19`.
-		{"multi_digit_unbraced_nine", "$19", "$19"},
-		//  * `braced_zero` pins the `>= '0'` lower bound in the brace-
-		//    block parse. Char at i+2 is '0'; the boundary mutant
-		//    `> '0'` skips the consuming branch and writes the literal
-		//    `${0}` instead of the empty result the original produces.
+		//  * `multi_digit_unbraced_nine` pins that the reference runs to
+		//    the END of the digit run. A splitter that stopped after one
+		//    digit would leave the trailing `9` in the output.
+		{"multi_digit_unbraced_nine", "$19", ""},
 		{"braced_zero", "${0}", ""},
-		//  * `braced_nine` pins the `<= '9'` upper bound in the brace-
-		//    block parse. Char at i+2 is '9'; the boundary mutant
-		//    `< '9'` skips the consuming branch and writes the literal
-		//    `${9}` instead of the empty result.
 		{"braced_nine", "${9}", ""},
-		//  * `braced_non_digit_inner` pins both INVERT_LOGICAL mutants
-		//    on the chained `&&` in the brace-block parse. Char at i+2
-		//    is non-digit; either `&&` → `||` swap upgrades the partial
-		//    truth into a full match and erases the brace block.
-		{"braced_non_digit_inner", "${x}", "${x}"},
-		//  * `braced_truncated_digit` pins ARITHMETIC_BASE on `i+3`
-		//    AND CONDITIONALS_BOUNDARY on `<` in the brace-block parse.
-		//    Same mechanism as the ReplacementToCH twin: the OOB
-		//    `repl[i+3]` read panics under either mutant.
+		//  * `braced_non_digit_inner` pins that a braced NAME is a
+		//    reference too, not literal text.
+		{"braced_non_digit_inner", "${x}", ""},
+		//  * `braced_truncated_digit` pins the missing-closing-brace
+		//    rejection, including the bounds check that a mutant would
+		//    read past.
 		{"braced_truncated_digit", "${1", "${1"},
-		//  * `braced_with_trailing_text` pins the ARITHMETIC_BASE
-		//    mutant on the `return 4` step value of the brace-block
-		//    branch. The literal prefix `xy` shifts the `${1}` to
-		//    offset 2; the original returns step 4 (consuming the
-		//    brace block) so the next iteration lands on `z`. If the
-		//    consumed-byte count is mutated to 1 the next iteration
-		//    lands on the digit `1` inside the brace block, replays
-		//    the suffix as plain text and emits `xy1}z` instead of
-		//    `xyz`.
+		//  * `braced_with_trailing_text` pins the reference's width
+		//    accounting. The literal prefix `xy` shifts the `${1}` to
+		//    offset 2; if the consumed-byte count is short, the next
+		//    iteration lands inside the brace block, replays the suffix
+		//    as plain text and emits `xy1}z` instead of `xyz`.
 		{"braced_with_trailing_text", "xy${1}z", "xyz"},
 	}
 	for _, tc := range cases {
