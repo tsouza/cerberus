@@ -160,7 +160,7 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 
 	sawAbsentReference := false
 	var missing []string
-	for _, name := range sortedKeys(referenced) {
+	for _, name := range sortedSetKeys(referenced) {
 		if strings.HasPrefix(name, absentMetricPrefix) {
 			sawAbsentReference = true
 			continue
@@ -215,7 +215,7 @@ func renderFixtures(fs []seedFixture) string {
 	return strings.Join(out, ", ")
 }
 
-func sortedKeys(set map[string]bool) []string {
+func sortedSetKeys(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for k := range set {
 		out = append(out, k)
