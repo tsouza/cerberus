@@ -248,7 +248,7 @@ export const PHASES = [
     // ast/parser.go only — where the ~109 timeout-inducing loop-control mutants
     // live. exclude-files matches SCOPE-RELATIVE paths (here, relative to
     // ./internal/traceql/ast), so entries are bare filenames.
-    exclude_files: '^(assert|attribute|doc|enum|expr|lexer|metrics|parse|pipeline|rewrite|static)\\.go$',
+    exclude_files: '^(assert|attribute|doc|enum|expr|lexer|metrics|parse|pipeline|references|rewrite|static)\\.go$',
   },
   {
     phase: 'phase4-traceql-ast',
