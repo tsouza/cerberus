@@ -169,6 +169,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
       target: seed
     networks: [cerberus-dev]
     environment:
@@ -268,6 +271,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     networks: [cerberus-dev]
     environment:
       # CERBERUS_HTTP_ADDR    HTTP listen addr for Prom/Loki/Tempo APIs.
@@ -390,6 +396,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     networks: [cerberus-dev]
     environment:
       CERBERUS_HTTP_ADDR: ":8080"

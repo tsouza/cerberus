@@ -99,6 +99,9 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.local
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     environment:
       CERBERUS_HTTP_ADDR: ":29092"
       CERBERUS_CH_ADDR: "clickhouse:9000"
@@ -146,6 +149,9 @@ services:
     build:
       context: ../..
       dockerfile: compatibility/tempo/driver/Dockerfile
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     command: ["seed"]
     environment:
       # Targets are reachable on the compose network by service name.

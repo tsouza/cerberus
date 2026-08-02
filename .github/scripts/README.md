@@ -1186,9 +1186,20 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   keep the quota window open (issue #1561). Takes the command as its trailing
   argv, so the Justfile's host-side pulls route through it as well and inherit
   the same three-way classification.
+    It also resolves the base images themselves, which retry alone cannot do: a
+    refusal that repeats every attempt is not a transport fault, and the wrapper
+    correctly declines to retry it. Before running the command it sets each name
+    in `lib/mirror.mjs`'s `buildBaseImageArgs` — one build arg per base image —
+    to that image's mirror ref when the mirror answers, and to the upstream ref
+    when it does not, so a `FROM ${GO_IMAGE}` resolves through GHCR without any
+    Dockerfile naming a package an outside contributor cannot read (issue
+    #1576). Every build site in the tree passes the arg through, so the wrapper
+    is the single place the decision is made.
   - Env: `IMAGE_BUILD_RETRY_BACKOFF_SECONDS` (optional; default `10` — linear
     backoff step, attempt N sleeps N × this; the Justfile's pull recipes pass
-    `3`).
+    `3`). `GO_IMAGE` (optional) — the Go toolchain base ref. Normally unset and
+    computed as above; an explicit non-empty value is left alone, so a caller
+    can pin a base image without the mirror overriding it.
   - Exit: `0` on success; the command's own status when it failed for a reason
     another attempt cannot clear (a genuine failure, or a rate-limit refusal);
     `1` when the retry budget is spent on transport faults.

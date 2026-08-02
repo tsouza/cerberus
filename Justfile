@@ -626,16 +626,20 @@ CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
 # pulling on the host docker daemon (which has its own auth + cache) and
 # importing into k3d via the API, we never go through containerd's pull
 # path. See run 26136032208 for the symptom.
-# MUST stay in lock-step with the image pins in test/e2e/k3s/*.yaml —
-# a stale entry here means the pod pulls straight from the registry at
-# start-up (no pre-pull, no import, full Docker-Hub-flake exposure).
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.5-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
+# This list and the image pins under test/e2e/k3s*/ are one set seen twice: an
+# image the manifests ask for and this list omits is pulled by containerd at pod
+# start — anonymously, un-mirrored, the whole exposure the pre-pull removes.
+# `TestE2EPrePullCoversEveryManifestImage` enforces the equality both ways,
+# because the convention it replaces had already failed silently: #1263 moved the
+# k3d ClickHouse to 26.6-alpine and left this line on 26.5-alpine, so for ten days
+# the one image the pre-pull was written for was the one it did not cover (#1461).
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 grafana/grafana:12.2.9 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
 
 # Extra images the bundled-ClickHouse ("bwc") object-storage lane needs on top
 # of E2E_EXTERNAL_IMAGES: the MinIO object store + its `mc` client (the
 # bucket-create Job) and the bundled ClickHouse image the Helm chart deploys.
-# Same pre-pull+import rationale as E2E_EXTERNAL_IMAGES. MUST stay in lock-step
-# with the pins in test/e2e/k3s-bwc/*.yaml (minio + mc) and
+# Same pre-pull+import rationale as E2E_EXTERNAL_IMAGES, and the same gate holds
+# it against the pins in test/e2e/k3s-bwc/*.yaml (minio + mc) and
 # test/e2e/k3s/cerberus-values-bwc.yaml (clickhouse.bundled.image) — the chart
 # maps the CH container's pullPolicy to .Values.image.pullPolicy (Never in the
 # e2e values), so the exact bundled-CH tag MUST be imported here.
@@ -669,8 +673,10 @@ CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"
 # `k3d cluster create --image` — k3d then boots from the host-cached copy
 # instead of letting cluster creation pull k3s from Docker Hub mid-flight, which
 # intermittently times out ("registry-1.docker.io ... context deadline
-# exceeded") and fails the whole e2e. To drop the Docker Hub dependency entirely,
-# re-tag this into ghcr.io (co-located with the CI runners) and point here.
+# exceeded") and fails the whole e2e. The Docker Hub dependency is already gone:
+# `_pull-retry` resolves this ref through the GHCR mirror first and re-tags the
+# result to the upstream name, so the host cache holds it under the name below
+# without any file here naming a mirror an outside operator cannot read (#1514).
 K3S_IMAGE := "rancher/k3s:v1.31.5-k3s1"
 
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
@@ -751,7 +757,7 @@ e2e-up: e2e-down
         --wait
     @echo "==> building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
-        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
+        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
     @echo "==> pre-pulling external images on host docker (retry)"
     @just _pull-retry {{E2E_EXTERNAL_IMAGES}}
     @echo "==> importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
@@ -1235,7 +1241,7 @@ e2e-bwc-up: e2e-down
         --wait
     @echo "==> [bwc] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
-        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" -f Dockerfile.local .
+        docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
     @echo "==> [bwc] pre-pulling external + bwc images on host docker"
     @# The standalone-CH image (the *-alpine tag in E2E_EXTERNAL_IMAGES) backs
     @# test/e2e/k3s/clickhouse.yaml, which the bwc kustomization EXCLUDES — this
@@ -1433,7 +1439,7 @@ migration-cerberus-image:
     img="${CERBERUS_IMAGE:-$local_tag}"; \
     if [ "$img" = "$local_tag" ]; then \
         echo "==> migration cerberus image: build $img from Dockerfile.local"; \
-        node .github/scripts/build-with-registry-retry.mjs docker build -f Dockerfile.local -t "$img" .; \
+        node .github/scripts/build-with-registry-retry.mjs docker build --build-arg GO_IMAGE -f Dockerfile.local -t "$img" .; \
     else \
         echo "==> migration cerberus image: pull $img"; \
         just _pull-retry "$img"; \

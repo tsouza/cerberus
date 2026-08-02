@@ -84,6 +84,9 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.local
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     environment:
       CERBERUS_HTTP_ADDR: ":29091"
       CERBERUS_CH_ADDR: "clickhouse:9000"

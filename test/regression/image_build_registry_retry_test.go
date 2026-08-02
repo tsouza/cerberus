@@ -418,13 +418,22 @@ func TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures(t *testing.T) {
 	}
 }
 
-// writeStubDockerBuild drops a `docker` onto dir that records every call and
-// fails with failureText/failureExit until the succeedsOn-th one.
+// writeStubDockerBuild drops a `docker` onto dir that records every BUILD call
+// and fails with failureText/failureExit until the succeedsOn-th one. Any other
+// subcommand is refused without being recorded.
 func writeStubDockerBuild(t *testing.T, dir, callLog string, succeedsOn int, failureText string, failureExit int) {
 	t.Helper()
 
 	script := strings.Join([]string{
 		"#!/bin/sh",
+		// The stub stands in for the BUILD, so only a build counts as a call.
+		// The wrapper also probes the mirror for its base-image refs
+		// (`docker buildx imagetools inspect`), and a probe that failed the
+		// count would make the retry assertions below read one attempt short.
+		// Refusing it is the honest answer for a runner holding no mirror
+		// credentials, and it exercises the wrapper's fall-back-to-upstream
+		// path; the mirror-hit path is pinned by the sibling test.
+		`[ "$1" = build ] || exit 1`,
 		"echo call >> " + shellQuote(callLog),
 		"attempts=$(wc -l < " + shellQuote(callLog) + " | tr -d ' ')",
 		"[ \"$attempts\" -ge " + strconv.Itoa(succeedsOn) + " ] && exit 0",

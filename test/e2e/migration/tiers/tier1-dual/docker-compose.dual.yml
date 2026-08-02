@@ -185,6 +185,9 @@ services:
     build:
       context: ../../../../..
       dockerfile: Dockerfile.local
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     volumes:
       # Every non-credential setting lives in this file, mounted where cerberus
       # discovers it, because a config file is what a real deployment hands the

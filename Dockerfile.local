@@ -5,7 +5,17 @@
 # built by goreleaser. For E2E we want a one-shot multi-stage build that
 # produces the same final image without needing goreleaser locally.
 
-FROM golang:1.26 AS build
+# The Go toolchain image, reached through a build arg so CI can point the build
+# at the GHCR mirror. BuildKit's `docker-container` driver resolves a `FROM`
+# against the registry with its own content store, never the host daemon's, so
+# a host-side pre-pull cannot cover this line — only the ref itself can.
+#
+# The default is the upstream ref and must stay that way. The mirror packages
+# are private, so a plain `docker build` run by anyone outside this repo has to
+# resolve Docker Hub. `build-with-registry-retry.mjs` sets GO_IMAGE for every
+# build CI runs; see .github/scripts/lib/mirror.mjs.
+ARG GO_IMAGE=golang:1.26
+FROM ${GO_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 # `go mod download` occasionally fails with a transient

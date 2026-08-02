@@ -121,6 +121,9 @@ services:
       # docker inspect if tier2-ruler ever moves to a different depth.
       context: ../../../../..
       dockerfile: test/e2e/migration/tiers/tier2-ruler/receiver/Dockerfile
+      args:
+        # Mirror-first base image, default upstream. See lib/mirror.mjs.
+        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
     ports:
       - "27450:8090"
     healthcheck:

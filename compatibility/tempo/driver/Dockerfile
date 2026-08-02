@@ -21,7 +21,11 @@
 #                 + shields.io endpoint-badge score JSON. Report-only;
 #                 parity drift does not change the exit code.
 
-FROM golang:1.26 AS build
+# Reached through a build arg so CI resolves the GHCR mirror rather than Docker
+# Hub; the default stays upstream because the mirror packages are private. See
+# Dockerfile.local for the full rationale.
+ARG GO_IMAGE=golang:1.26
+FROM ${GO_IMAGE} AS build
 WORKDIR /src
 
 # Build context is the cerberus repo root (set in docker-compose.yml's
