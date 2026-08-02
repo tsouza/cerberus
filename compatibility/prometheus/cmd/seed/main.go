@@ -39,8 +39,13 @@ import (
 // instant.
 const anchor = "2026-05-11 00:00:00"
 
-// fixtureSteps is the number of 15s samples per series. 240 × 15s = 1h —
-// matches TESTER_RANGE=3600 in run-compatibility.sh.
+// fixtureStepSeconds is the scrape interval every fixture series is written
+// at. fixtureSteps × fixtureStepSeconds must equal TESTER_RANGE in
+// scripts/run-compatibility.sh, or the tester's window runs off the fixture.
+const fixtureStepSeconds = 15
+
+// fixtureSteps is the number of samples per series. 240 × fixtureStepSeconds
+// = 1h — matches TESTER_RANGE=3600 in run-compatibility.sh.
 const fixtureSteps = 240
 
 // sparseFixtureSteps ends demo_sparse_memory_bytes a quarter of the way
@@ -49,6 +54,39 @@ const fixtureSteps = 240
 // per evaluation timestamp — the arms overlap early and diverge later,
 // so a match key that ignores the timestamp diverges from Prometheus.
 const sparseFixtureSteps = fixtureSteps / 4
+
+// batchIntervalSteps is how often the simulated batch job succeeds:
+// 80 × fixtureStepSeconds = 20m. Three runs land inside the 1h window, so
+// changes(...[1h]) sees two transitions, and `time() - max(...)` sweeps
+// 0..1200s inside every interval — crossing the corpus's `< 1000` threshold
+// in both directions rather than sitting on one side of it.
+const batchIntervalSteps = 80
+
+// batchInstanceLagSteps staggers the three instances by 60s so max() has a
+// distinguishable winner AND the trailing instances' timestamps fall on the
+// previous day: hour / day_of_month / day_of_week are then non-constant
+// across series, which is the only way the 7 date functions are actually
+// discriminated.
+const batchInstanceLagSteps = 4
+
+// intermittentPeriodSteps writes demo_intermittent_metric every 3rd step
+// (45s). That is inside the 5m PromQL lookback, so ordinary sparseness
+// exercises the repeat-last-sample path without producing a staleness gap.
+const intermittentPeriodSteps = 3
+
+// intermittentGapStartStep / intermittentGapSteps carve one contiguous
+// blackout of 48 × fixtureStepSeconds = 12m — longer than the 5m lookback,
+// so both backends must report a genuine staleness gap rather than a
+// carried sample.
+const (
+	intermittentGapStartStep = 80
+	intermittentGapSteps     = 48
+)
+
+// intermittentInstanceOffset separates the three instances' value ranges by
+// more than the whole step range (240), so `topk` / `max` / `sort` order the
+// series by instance deterministically instead of by an accident of ties.
+const intermittentInstanceOffset = 1000
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -139,8 +177,8 @@ func waitReady(ctx context.Context, conn driver.Conn, logger *slog.Logger) error
 	}
 }
 
-// insertFixture writes the six logical series families used by the
-// PromQL-compliance suite. Each block mirrors a section of the previous
+// insertFixture writes every logical series family the PromQL-compliance
+// suite queries. Each block mirrors a section of the previous
 // seed.sql; the SELECT-from-numbers shape is preserved so the resulting
 // rows are byte-identical to the prior fixture. Column lists are explicit
 // so the upstream-DDL columns we don't populate (ServiceName, ScopeName,
@@ -156,6 +194,13 @@ func insertFixture(ctx context.Context, conn driver.Conn) error {
 			clickhouse.Named("anchor", anchor),
 			clickhouse.Named("steps", uint64(fixtureSteps)),
 			clickhouse.Named("sparse_steps", uint64(sparseFixtureSteps)),
+			clickhouse.Named("step_seconds", uint64(fixtureStepSeconds)),
+			clickhouse.Named("batch_interval_steps", uint64(batchIntervalSteps)),
+			clickhouse.Named("batch_lag_steps", uint64(batchInstanceLagSteps)),
+			clickhouse.Named("intermittent_period_steps", uint64(intermittentPeriodSteps)),
+			clickhouse.Named("intermittent_gap_start_step", uint64(intermittentGapStartStep)),
+			clickhouse.Named("intermittent_gap_end_step", uint64(intermittentGapStartStep+intermittentGapSteps)),
+			clickhouse.Named("intermittent_instance_offset", uint64(intermittentInstanceOffset)),
 		); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
@@ -228,7 +273,7 @@ var fixtureInserts = []namedStmt{
             'seconds',
             map('instance', instance, 'job', 'demo', 'mode', mode),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             toFloat64(step + (instance_idx * 1000) + (mode_idx * 100)),
             0,
             2,
@@ -263,7 +308,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'type', type),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             toFloat64(2 * 1024 * 1024 * 1024 + (step * 1024) + (instance_idx * 10000000) + (type_idx * 1000000))
         FROM (
             SELECT step, instance, instance_idx, type, type_idx
@@ -299,7 +344,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'type', type),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             toFloat64(1024 * 1024 * 1024 + (step * 2048) + (instance_idx * 20000000) + (type_idx * 2000000))
         FROM (
             SELECT step, instance, instance_idx, type, type_idx
@@ -334,7 +379,7 @@ var fixtureInserts = []namedStmt{
             map('instance', instance, 'job', 'demo',
                 'method', method, 'path', path, 'status', status),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             if(step < 120,
                 toFloat64(step * 10 + (instance_idx * 1000) + (method_idx * 500) + (path_idx * 250) + (status_idx * 100)),
                 toFloat64((step - 120) * 10 + (instance_idx * 1000) + (method_idx * 500) + (path_idx * 250) + (status_idx * 100))),
@@ -375,7 +420,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'device', device),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             toFloat64(10 * 1024 * 1024 * 1024 + step * (device_idx + 1) * 1024 + (instance_idx * 4096))
         FROM (
             SELECT step, instance, instance_idx, device, device_idx
@@ -403,7 +448,7 @@ var fixtureInserts = []namedStmt{
             'bytes',
             map('instance', instance, 'job', 'demo', 'device', device),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             toFloat64(100 * 1024 * 1024 * 1024)
         FROM (
             SELECT step, instance, device
@@ -435,7 +480,7 @@ var fixtureInserts = []namedStmt{
             '1',
             map('instance', instance, 'job', 'demo'),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             4.0
         FROM (
             SELECT step, instance
@@ -445,6 +490,166 @@ var fixtureInserts = []namedStmt{
                     ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
                 ) AS instance
             ) AS i
+        )`,
+	},
+	// demo_api_request_duration_seconds: 2 instances × 2 methods = 4
+	// classic-histogram series. The OTel-CH exporter writes ONE row per
+	// observation window under the BARE base name with Count / Sum /
+	// BucketCounts / ExplicitBounds as columns; cerberus's lowering fans
+	// that row out into the Prom-wire `_bucket` / `_count` / `_sum`
+	// companions, so 4 CH series surface as 36 Prom series
+	// (4 × [7 bucket + count + sum]).
+	//
+	// Geometry, stated explicitly because every quantile the corpus asks
+	// for has to land strictly INSIDE a finite bucket — a rank that falls
+	// exactly on a cumulative boundary makes the interpolation degenerate
+	// and hides interpolation bugs behind an exact bound:
+	//
+	//	ExplicitBounds       = [0.1, 0.5, 1, 2.5, 5, 10]   (6 finite edges)
+	//	per-step increments  = [5, 20, 60, 45, 40, 29, 1]  (7 buckets, +Inf last)
+	//	cumulative           = [5, 25, 85, 130, 170, 199, 200]
+	//
+	// 200 observations per step per unit of `mult`. Landing ranks for the
+	// quantiles the corpus drives — 0.1→20, 0.5→100, 0.75→150, 0.9→180,
+	// 0.95→190, 0.99→198 — are 20, 100, 150, 180, 190, 198; none equals a
+	// cumulative entry, so all six interpolate. q=1 resolves to the
+	// highest finite bound (10) and q outside [0,1] to ∓Inf.
+	//
+	// BucketCounts is cumulative OVER TIME (`incr × (step+1) × mult`) so
+	// `_bucket` behaves as a Prometheus counter under rate(). `mult` is
+	// `instance_idx * 2 + method_idx + 1` ∈ {1,2,3,4}: a per-series scale
+	// factor, so quantiles (a shape property) are identical across series
+	// while rate() values differ — a label-mixup bug still shows.
+	//
+	// Sum = 509.5 × (step+1) × mult is the count-weighted sum of bucket
+	// midpoints; 509.5 is exactly representable in binary, so `_sum`
+	// carries no float drift.
+	{
+		name: "demo_api_request_duration_seconds",
+		sql: `INSERT INTO otel_metrics_histogram
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix,
+             Count, Sum, BucketCounts, ExplicitBounds,
+             Flags, AggregationTemporality)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_api_request_duration_seconds',
+            'API request duration',
+            'seconds',
+            map('instance', instance, 'job', 'demo', 'method', method),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            toUInt64(200 * (step + 1) * (instance_idx * 2 + method_idx + 1)),
+            toFloat64(509.5 * (step + 1) * (instance_idx * 2 + method_idx + 1)),
+            arrayMap(d -> toUInt64(d * (step + 1) * (instance_idx * 2 + method_idx + 1)),
+                     [5, 20, 60, 45, 40, 29, 1]),
+            [toFloat64(0.1), toFloat64(0.5), toFloat64(1), toFloat64(2.5),
+             toFloat64(5), toFloat64(10)],
+            0,
+            2
+        FROM (
+            SELECT step, instance, instance_idx, method, method_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(['demo.promlabs.com:10000','demo.promlabs.com:10001']) AS instance,
+                indexOf(['demo.promlabs.com:10000','demo.promlabs.com:10001'], instance) - 1 AS instance_idx
+            ) AS i
+            CROSS JOIN (
+                SELECT arrayJoin(['GET','POST']) AS method,
+                indexOf(['GET','POST'], method) - 1 AS method_idx
+            ) AS me
+        )`,
+	},
+	// demo_batch_last_success_timestamp_seconds: 3 instances, gauge whose
+	// VALUE is a unix timestamp — the shape `time() - max(...)` and the
+	// seven date functions are written against.
+	//
+	// Value = anchor_epoch + floor(step / batch_interval_steps) ×
+	// batch_interval_steps × step_seconds − instance_idx ×
+	// batch_lag_steps × step_seconds. It is derived from the SAME anchor
+	// string as TimeUnix and parsed in the same server timezone, so the
+	// sample time and the value can't diverge on a timezone difference.
+	//
+	// With anchor 2026-05-11 00:00:00 (a Monday) instance 0 reports
+	// 00:00 / 00:20 / 00:40 on the 11th while instances 1 and 2 start at
+	// 23:59 / 23:58 on the 10th (a Sunday). hour, day_of_month and
+	// day_of_week are therefore non-constant across the series, which is
+	// what makes the 21 `{{.dateFunc}}(... offset ...)` cases discriminate
+	// anything at all.
+	{
+		name: "demo_batch_last_success_timestamp_seconds",
+		sql: `INSERT INTO otel_metrics_gauge
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_batch_last_success_timestamp_seconds',
+            'Unix timestamp of the last successful batch run',
+            'seconds',
+            map('instance', instance, 'job', 'demo'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            toFloat64(
+                toInt64(toUnixTimestamp(toDateTime({anchor:String})))
+                + toInt64(intDiv(step, {batch_interval_steps:UInt64})
+                    * {batch_interval_steps:UInt64} * {step_seconds:UInt64})
+                - toInt64(instance_idx * {batch_lag_steps:UInt64} * {step_seconds:UInt64}))
+        FROM (
+            SELECT step, instance, instance_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+        )`,
+	},
+	// demo_intermittent_metric: 3 instances, gauge on a sparse cadence
+	// with one blackout longer than the PromQL lookback.
+	//
+	// Samples land every intermittentPeriodSteps (45s), which is inside
+	// the 5m lookback, so the ordinary sparseness exercises the
+	// repeat-last-sample path. Steps [intermittent_gap_start_step,
+	// intermittent_gap_end_step) are dropped entirely — a 12m hole, longer
+	// than the lookback, so both backends must report a genuine staleness
+	// gap there rather than carrying the previous sample.
+	//
+	// Deliberate: samples sit at multiples of 45s while the tester's grid
+	// is 10s-aligned from the window start, so grid points EXACTLY 300s
+	// after a sample do occur (sample at 90s ↔ grid at 390s). The fixture
+	// therefore exercises Prometheus's exclusive lookback boundary
+	// (`t − sampleTime > 5m` ⇒ stale), not only the interior.
+	{
+		name: "demo_intermittent_metric",
+		sql: `INSERT INTO otel_metrics_gauge
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_intermittent_metric',
+            'Gauge reported on a sparse cadence with one blackout longer than the lookback',
+            '1',
+            map('instance', instance, 'job', 'demo'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            toFloat64(step + (instance_idx * {intermittent_instance_offset:UInt64}))
+        FROM (
+            SELECT step, instance, instance_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+            WHERE step % {intermittent_period_steps:UInt64} = 0
+              AND (step < {intermittent_gap_start_step:UInt64}
+                OR step >= {intermittent_gap_end_step:UInt64})
         )`,
 	},
 	// up: 3 instances, all up.
@@ -460,7 +665,7 @@ var fixtureInserts = []namedStmt{
             '1',
             map('instance', instance, 'job', 'demo'),
             toDateTime64({anchor:String}, 9),
-            toDateTime64({anchor:String}, 9) + INTERVAL step * 15 SECOND,
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             1.0
         FROM (
             SELECT step, instance
