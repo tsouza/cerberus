@@ -187,7 +187,7 @@ func TestScanResourceBound_PartitionPruneEXPLAIN(t *testing.T) {
 
 	boundParts, _ := explainEstimate(t, db, narrowSQL)
 	fullParts, _ := explainEstimate(t, db, wideSQL)
-	if !(boundParts < fullParts) {
+	if boundParts >= fullParts {
 		t.Errorf("window bound must prune partitions: bounded_parts=%d full_parts=%d\nnarrow: %s",
 			boundParts, fullParts, narrowSQL)
 	}
