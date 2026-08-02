@@ -672,18 +672,16 @@ K3D_EXTRA_ARGS := env_var_or_default("K3D_EXTRA_ARGS", "")
 # intermittently times out the pull ("context deadline exceeded"); retrying
 # clears the transient failure instead of failing k3d creation / image staging.
 #
-# The retry itself is `.github/scripts/build-with-registry-retry.mjs` rather
-# than a bash loop, because WHICH failures deserve another attempt is the whole
-# question and it has exactly one right answer. A hand-rolled loop retries
-# everything: a `manifest unknown` five times (slower red, same verdict), and —
-# the failure that made this a rule — a Docker Hub rate-limit refusal five
-# times, spending four more pulls out of the quota that is already exhausted.
-# `lib/registry.mjs` owns that classification for every call site at once.
+# The retry itself is `.github/scripts/pull-images.mjs` rather than a bash loop,
+# because WHICH failures deserve another attempt is the whole question and it
+# has exactly one right answer. A hand-rolled loop retries everything: a
+# `manifest unknown` five times (slower red, same verdict), and — the failure
+# that made this a rule — a Docker Hub rate-limit refusal five times, spending
+# four more pulls out of the quota that is already exhausted. `lib/registry.mjs`
+# owns that classification for every call site at once, and reaches the GHCR
+# mirror ahead of Docker Hub, which a shell `docker pull` cannot do.
 _pull-retry +IMAGES:
-    @for img in {{IMAGES}}; do \
-        IMAGE_BUILD_RETRY_BACKOFF_SECONDS=3 node .github/scripts/build-with-registry-retry.mjs \
-            docker pull "$img" || exit 1; \
-    done
+    @IMAGE_PULL_BACKOFF_SECONDS=3 node .github/scripts/pull-images.mjs {{IMAGES}}
 
 # Acquire every image a compose stack needs, with retry, BEFORE `up` reaches for
 # them. `docker compose up` pulls what it is missing but has no retry of its own,

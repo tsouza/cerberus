@@ -674,6 +674,17 @@ jobs:
       - name: Assert the compose pre-pull fetches only fetchable images
         run: node --test .github/scripts/compose-pull-images.test.mjs
 
+      # The GHCR mirror's inventory→ref mapping. A mapping bug is INVISIBLE at
+      # runtime: `mirroredRef` returning null is the documented miss path, so a
+      # broken mapping degrades every consumer back to the anonymous Docker Hub
+      # quota without a word. Two upstream refs colliding on one mirror ref is
+      # worse still — the second copy overwrites the first and a consumer gets
+      # the wrong image rather than no image. Both are pinned here; the
+      # completeness half (does the inventory name every image the tree pulls?)
+      # is `TestMirrorInventoryCoversEveryUpstreamImage` in test/regression.
+      - name: Assert the image mirror maps its inventory correctly
+        run: node --test .github/scripts/mirror-images.test.mjs
+
       # Same discipline for the mutation lane's phase planner, one step further:
       # its selector decides which legs an ordinary PR runs, so a bug there is
       # not a slow release but a SILENT one — legs quietly deselected while the

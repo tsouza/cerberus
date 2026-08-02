@@ -41,11 +41,19 @@
 //   rateLimitDiagnosis(subject)            the one explanation every consumer
 //                                          prints for the rate-limit class.
 //   pullImageWithRetry(image, options)     acquire one image into the local
-//                                          daemon under that policy.
+//                                          daemon under that policy, from the
+//                                          GHCR mirror when there is one.
+//
+// The best answer to a quota is not to draw on it. `pullImageWithRetry` reaches
+// for `lib/mirror.mjs`'s GHCR copy first and re-tags it to the upstream name,
+// so the retry policy below is what protects the FALLBACK rather than the
+// common case. See that module for why a mirror beats authenticating each pull
+// path in turn.
 
 import process from 'node:process';
 
 import { capture, error, log, notice } from './gh.mjs';
+import { mirroredRef } from './mirror.mjs';
 
 // Five attempts with a linear backoff: long enough to ride out a registry blip
 // or a transport fault, short enough that a genuinely unreachable registry
@@ -167,6 +175,48 @@ function presentLocally(image) {
   return capture('docker', ['image', 'inspect', image]).status === 0;
 }
 
+// acquireFromMirror — try the GHCR copy first and re-tag it to the ref the
+// caller asked for.
+//
+// The re-tag is the whole point. What the caller wants is the image PRESENT in
+// the local daemon under its upstream name: compose files, Kubernetes
+// manifests, and `k3d image import` all name Docker Hub, and compose only
+// fetches an image it cannot find locally. Tagging the mirrored copy to the
+// upstream name satisfies every one of them without a single ref rewritten in
+// a file an operator reads.
+//
+// A miss returns false and says so once, at notice level. It is not a failure:
+// the caller falls back to the upstream ref under the ordinary policy, which is
+// exactly the behaviour that existed before the mirror. Completeness is gated
+// where it can be fixed — in `mirror-images.mjs` and the inventory test — not
+// here, where the only available response would be to fail a lane over an
+// image that is perfectly reachable upstream.
+function acquireFromMirror(image) {
+  const mirror = mirroredRef(image);
+  if (mirror === null) return false;
+
+  log(`    docker pull ${mirror} (mirror of ${image})`);
+  const pull = capture('docker', ['pull', mirror]);
+  if (pull.status !== 0) {
+    notice(
+      `${mirror} could not be pulled, falling back to ${image} on Docker Hub. The mirror is stale or the ` +
+        `package is not public; \`mirror-images.mjs\` is what fixes that.\n${pull.stderr.trim()}`,
+    );
+    return false;
+  }
+
+  const tag = capture('docker', ['tag', mirror, image]);
+  if (tag.status !== 0) {
+    notice(
+      `pulled ${mirror} but could not tag it as ${image}, falling back to Docker Hub.\n${tag.stderr.trim()}`,
+    );
+    return false;
+  }
+
+  log(`    ${image} acquired from the mirror`);
+  return true;
+}
+
 // pullImageWithRetry — acquire one image into the local daemon under the policy
 // above, and report every outcome in the shared vocabulary. This is the one
 // implementation: a caller that hand-rolls the loop is a call site that will
@@ -190,6 +240,8 @@ export function pullImageWithRetry(image, options = {}) {
     acceptLocalCopy = false,
     consequence = '',
   } = options;
+
+  if (acquireFromMirror(image)) return true;
 
   for (let attempt = 1; attempt <= registryAttempts; attempt++) {
     log(`    docker pull ${image} (attempt ${attempt}/${registryAttempts})`);
