@@ -26,7 +26,19 @@
 //                         `perf-profile`, and a root file that is deleted
 //                         cannot leave a rotting entry behind.
 //
-// Both scans read the tracked set from `git ls-files -s`, so .gitignored
+//   CHECK=registry-login  No workflow step may `uses: docker/login-action`.
+//                         That Action has no retry input, so a login that
+//                         loses one handshake fails the job before it pulls
+//                         anything — and because a mirror miss falls back to
+//                         Docker Hub, a failed GHCR login is invisible to
+//                         every consuming step. Registry logins go through
+//                         `.github/scripts/registry-login.mjs`, which retries
+//                         transport faults and refuses to retry a spent quota
+//                         or a rejected credential. The scan matches the
+//                         `uses:` form only, so prose that NAMES the Action
+//                         (this comment included) stays legal.
+//
+// All three scans read the tracked set from `git ls-files`, so .gitignored
 // paths are out of scope by construction: the companion fix for an artefact
 // this gate catches is usually a `git rm` PLUS a .gitignore rule, and the
 // ignore rule alone is what keeps it from coming back.
@@ -36,14 +48,14 @@
 // and, failing that, exit non-zero rather than assume it is text.
 //
 // Env contract:
-//   CHECK      one of: binary | root-allowlist   (required)
+//   CHECK      one of: binary | root-allowlist | registry-login   (required)
 //   REPO_ROOT  optional; directory to scan (default: the process cwd, which
 //              on a runner is the checkout root). The self-test points this
 //              at a synthetic fixture repo to prove the gate FIRES.
 //
 // Exit codes: 0 = clean, 1 = a violation was found (or bad $CHECK).
 
-import { closeSync, openSync, readSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync } from 'node:fs';
 import process from 'node:process';
 
 import { capture, error, git, log, notice } from './lib/gh.mjs';
@@ -169,6 +181,23 @@ export function diffAllowlist(entries, allowlist) {
   return { unexpected, stale };
 }
 
+// loginActionUses — the `uses: docker/login-action` step declarations in one
+// workflow's text, as [{ line, text }]. Anchored on `uses:` so that a comment
+// or a doc paragraph naming the Action is not a violation: the gate is about
+// what the workflow RUNS, not about what it is allowed to talk about. A gate
+// that policed the word instead of the step would make its own rationale
+// unwritable. Exported for the self-test.
+export function loginActionUses(source) {
+  const hits = [];
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*-?\s*uses:\s*['"]?docker\/login-action\b/.test(lines[i])) {
+      hits.push({ line: i + 1, text: lines[i].trim() });
+    }
+  }
+  return hits;
+}
+
 // trackedBlobs — `git ls-files -s` -> [{ mode, sha, path }] for the entries
 // that carry sniffable content. Submodule gitlinks and symlinks are dropped
 // here (they have no blob in this repository / store a path, not content).
@@ -275,6 +304,36 @@ function scanRootAllowlist() {
   notice(`repo-hygiene: repository root matches the allow-list (${ROOT_ALLOWLIST.length} entries)`);
 }
 
+function scanRegistryLogin() {
+  const res = git(['ls-files', '-z', '.github/workflows']);
+  if (res.status !== 0) {
+    error(`git ls-files failed: ${res.stderr.trim()}`);
+    process.exit(res.status);
+  }
+  const workflows = res.stdout
+    .split('\0')
+    .filter((p) => p.endsWith('.yml') || p.endsWith('.yaml'))
+    .sort();
+  const violations = [];
+  for (const path of workflows) {
+    for (const hit of loginActionUses(readFileSync(path, 'utf8'))) {
+      violations.push({ path, ...hit });
+    }
+  }
+  if (violations.length > 0) {
+    for (const v of violations) log(`${v.path}:${v.line}: ${v.text}`);
+    error(
+      `${violations.length} workflow step(s) use docker/login-action, which has no retry input. A login that loses ` +
+        `one handshake fails the job before it pulls anything, and a failed GHCR login is silent at the point of ` +
+        `use because a mirror miss falls back to Docker Hub. Replace the step with ` +
+        `\`run: node .github/scripts/registry-login.mjs\`, passing REGISTRY (blank for Docker Hub), USERNAME and ` +
+        `PASSWORD as env.`,
+    );
+    process.exit(1);
+  }
+  notice(`repo-hygiene: no workflow uses docker/login-action (${workflows.length} workflows scanned)`);
+}
+
 function isMain() {
   const invoked = process.argv[1] || '';
   return invoked.endsWith('repo-hygiene.mjs');
@@ -291,8 +350,13 @@ if (isMain()) {
     case 'root-allowlist':
       scanRootAllowlist();
       break;
+    case 'registry-login':
+      scanRegistryLogin();
+      break;
     default:
-      error(`repo-hygiene.mjs: unknown CHECK="${CHECK}" (expected one of: binary, root-allowlist)`);
+      error(
+        `repo-hygiene.mjs: unknown CHECK="${CHECK}" (expected one of: binary, root-allowlist, registry-login)`,
+      );
       process.exit(1);
   }
   process.exit(0);

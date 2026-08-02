@@ -25,7 +25,7 @@
 // visibility, and would put a copy of other projects' images under this org's
 // name for anyone to pull — an outward-facing act this repository has no reason
 // to take for a CI convenience. The cost is that every consuming job needs a
-// `docker/login-action` against `ghcr.io` with the job's own `GITHUB_TOKEN`
+// `registry-login.mjs` step against `ghcr.io` with the job's own `GITHUB_TOKEN`
 // (`packages: read`); that is mechanical, reviewable, and local to each job.
 // Without it `acquireFromMirror` gets a denial, says so once at notice level,
 // and the caller falls back to Docker Hub — so a job that forgets the login is

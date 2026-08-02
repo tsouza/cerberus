@@ -728,10 +728,11 @@ jobs:
       # motivating artefact had none), and the repository root must match an
       # exhaustive allow-list rather than a "dotfiles are fine" pattern.
       #
-      # The self-test runs FIRST and proves both scans actually fire: it
-      # builds a throwaway git repo, plants a synthetic ELF blob and a stray
-      # root file, and asserts a non-zero exit naming each — a gate never
-      # shown to fail is indistinguishable from one that does nothing.
+      # The self-test runs FIRST and proves every scan actually fires: it
+      # builds throwaway git repos, plants a synthetic ELF blob, a stray root
+      # file and a workflow step using docker/login-action, and asserts a
+      # non-zero exit naming each — a gate never shown to fail is
+      # indistinguishable from one that does nothing.
       - name: Self-test the committed-artefact gate
         run: node --test .github/scripts/repo-hygiene.test.mjs
       - name: Reject tracked binary artefacts
@@ -742,6 +743,15 @@ jobs:
         run: node .github/scripts/repo-hygiene.mjs
         env:
           CHECK: root-allowlist
+      # docker/login-action has no retry input, so a login that loses one
+      # handshake fails the job before it pulls anything — and a failed GHCR
+      # login is SILENT at the point of use, because a mirror miss falls back
+      # to Docker Hub. Without this scan the Action creeps back one step at a
+      # time, which is how it reached 32 sites.
+      - name: Reject registry logins that cannot retry
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: registry-login
 
       # Same rationale, one lane over: the compat-scores badge publisher only
       # runs on push-to-main, so a break in it surfaces either as stale README

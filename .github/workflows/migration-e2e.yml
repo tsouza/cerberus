@@ -174,11 +174,11 @@ jobs:
       # there is no condition whose falsification would let the release path
       # silently fall back to a source build.
       - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
 
       # WHICH cerberus this run tests. On a PR / dispatch / push run both inputs
       # are empty and the resolver compiles the CLI from this tree; on
@@ -279,19 +279,18 @@ jobs:
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
           DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-        uses: docker/login-action@v4
-        with:
-          username: tsouza
-          password: ${{ secrets.DOCKER_HUB_PAT }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
 
       # See migration-tier0's identical block: unconditional so the artifact
       # lane's GHCR pull can never silently degrade into a source build.
       - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
 
       # migration-tier1 runs on a separate runner with a fresh checkout, so
       # the enumerator output from migration-setup must travel as an
@@ -435,18 +434,17 @@ jobs:
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
           DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-        uses: docker/login-action@v4
-        with:
-          username: tsouza
-          password: ${{ secrets.DOCKER_HUB_PAT }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
 
       # See migration-tier0's identical block.
       - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
 
       - name: download migration scenarios enumeration
         uses: actions/download-artifact@v8

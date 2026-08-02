@@ -79,7 +79,7 @@ authenticated CLI `docker pull` of `clickhouse/clickhouse-server` was refused as
 A ref that names GHCR reaches GHCR whichever path resolves it, including the
 paths nobody has audited yet, and GHCR's budget is not the one every other
 tenant of the runner's IP is drawing on. The packages are **private**, so every consuming
-job needs a `docker/login-action` against `ghcr.io` with its own `GITHUB_TOKEN`
+job needs a `registry-login.mjs` step against `ghcr.io` with its own `GITHUB_TOKEN`
 and `packages: read`; a job that forgets is slower and quota-exposed, never
 broken. Nothing in the tree names a mirrored ref — compose files, Kubernetes
 manifests, the quickstart and the Helm chart keep naming Docker Hub, because
@@ -178,7 +178,7 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident
-  survives indefinitely. Two scans close that class. `binary` rejects any
+  survives indefinitely. Three scans close that class. `binary` rejects any
   tracked blob that is compiled output, detected by CONTENT — an executable
   magic (ELF / Mach-O / PE / WebAssembly / ar archive) at offset 0, or a NUL
   byte inside the same leading window git itself sniffs when it classifies a
@@ -194,16 +194,27 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   is retried out of the object store and, failing that, exits non-zero rather
   than being assumed to be text. Since `git ls-files` is the input, the
   companion fix for anything this catches is a `git rm` PLUS a `.gitignore`
-  rule — the ignore rule is what stops it coming back.
+  rule — the ignore rule is what stops it coming back. `registry-login`
+  rejects any workflow step that `uses: docker/login-action`: that Action has
+  no retry input, so a login losing one handshake fails the job before it has
+  pulled anything, and because a mirror miss falls back to Docker Hub a failed
+  GHCR login is SILENT at the point of use. Registry logins go through
+  `registry-login.mjs` instead, which retries transport faults and refuses to
+  retry a spent quota or a rejected credential. The scan matches the `uses:`
+  form only, so prose NAMING the Action — this paragraph included — stays
+  legal; a gate that policed the word instead of the step would make its own
+  rationale unwritable.
   `repo-hygiene.test.mjs` is the `node --test` guard (cheap discipline lane,
   run as the step BEFORE the gate): it builds a throwaway git repo, plants a
-  synthetic ELF blob and a stray root file, and asserts a non-zero exit
-  naming each, plus a clean exit on a conforming fixture — a gate never shown
-  to fail is indistinguishable from one that does nothing.
-  - Env: `CHECK` is one of `binary`, `root-allowlist`; `REPO_ROOT` (optional)
-    points the scan at another checkout (the self-test's fixture repo).
+  synthetic ELF blob, a stray root file, and a workflow step using
+  `docker/login-action`, and asserts a non-zero exit naming each, plus a clean
+  exit on a conforming fixture — a gate never shown to fail is
+  indistinguishable from one that does nothing.
+  - Env: `CHECK` is one of `binary`, `root-allowlist`, `registry-login`;
+    `REPO_ROOT` (optional) points the scan at another checkout (the
+    self-test's fixture repo).
   - Exit: `0` clean, `1` on any tracked binary / unsanctioned or rotted root
-    entry / unreadable blob / bad `CHECK`.
+    entry / `docker/login-action` step / unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
