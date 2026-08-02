@@ -301,6 +301,69 @@ test('the job that writes the mirror is not required to read through it', () => 
 });
 
 // ---------------------------------------------------------------------------
+// A login's registry is matched by HOST, one policy for both registries.
+//
+// CodeQL flagged the mirror half as an incomplete-sanitization hole and it was
+// right: `registry.startsWith('ghcr.io')` also accepts `ghcr.io.evil.example`.
+// The Hub half had the mirrored defect in the other direction — a raw string-set
+// match misses spellings `docker login` itself accepts. Each case below goes red
+// on the pre-fix comparison, which is the only reason they are worth having.
+// ---------------------------------------------------------------------------
+
+// A job that pulls through the shared policy, so R3 is the rule under test and
+// the only variable is how its one login names a registry.
+const jobLoggingInTo = (registry) => ({
+  acquisitions: ['pullImageWithRetry'],
+  logins: [{ registry }],
+  viaSharedPolicy: true,
+  refs: new Set(),
+  unresolved: [],
+  composePolicyFiles: new Set(),
+  composeMaterialised: [],
+  mirrorWrites: 0,
+});
+
+test('a login to a host that merely starts with ghcr.io is not a mirror login', () => {
+  // `startsWith` accepted this; a hostname compare does not. Somebody else owns
+  // that name, so reading it as the mirror would greenlight an anonymous pull.
+  const violations = violationsFor('some:job', jobLoggingInTo('ghcr.io.evil.example'));
+  assert.ok(
+    violations.some((m) => m.includes('no ghcr.io login')),
+    `expected R3 to fire for a lookalike host, got ${JSON.stringify(violations)}`,
+  );
+  assert.deepEqual(violationsFor('some:job', jobLoggingInTo('ghcr.io')), []);
+});
+
+test('a Docker Hub login is recognised in every spelling docker login accepts', () => {
+  // Same normalisation on both halves. A raw string-set match saw only the bare
+  // forms, so a job authenticated as the URL form was reported as anonymous.
+  for (const spelling of ['', 'docker.io', 'index.docker.io', 'https://index.docker.io/v1/']) {
+    // The mirror login is held fixed so the Hub spelling is the only variable.
+    const f = {
+      ...jobLoggingInTo('ghcr.io'),
+      logins: [{ registry: 'ghcr.io' }, { registry: spelling }],
+      refs: new Set(['redis:7']),
+    };
+    assert.deepEqual(
+      violationsFor('some:job', f),
+      [],
+      `${JSON.stringify(spelling)} should read as a Docker Hub login`,
+    );
+  }
+});
+
+test('a registry value that is not a host at all matches nothing', () => {
+  // Deliberate failure direction. An unexpanded `${{ … }}` reaching this far is
+  // unparseable, and a false alarm about a login the job does have is the safe
+  // way to be wrong — the unsafe way is reading it as the empty registry, which
+  // means Docker Hub, and passing a job whose Hub credentials never resolved.
+  const f = { ...jobLoggingInTo('${{ env.REGISTRY }}'), refs: new Set(['redis:7']) };
+  const violations = violationsFor('some:job', f);
+  assert.ok(violations.some((m) => m.includes('no ghcr.io login')));
+  assert.ok(violations.some((m) => m.includes('no Docker Hub login')));
+});
+
+// ---------------------------------------------------------------------------
 // Logging in without `docker/login-action`.
 //
 // "Logs in" must not be read as "uses docker/login-action". PR #1586 replaces

@@ -1009,14 +1009,38 @@ function defaultInputs(lines) {
 // The rules.
 // ---------------------------------------------------------------------------
 
+// A login's registry is matched by HOST, never by prefix or raw string. Prefix
+// matching is the wider hole -- `startsWith('ghcr.io')` also accepts
+// `ghcr.io.example.com`, a host somebody else controls, which would read as a
+// mirror login. Raw-string matching is the narrower one: it misses the
+// equivalent spellings `docker login` itself accepts, so a job that really is
+// authenticated to Docker Hub as `https://index.docker.io/v1/` would be
+// reported as anonymous.
+//
+// Returns '' for an unset registry, because `docker login` with no argument
+// targets Docker Hub, and null for a value that is not a host at all -- null
+// equals no registry in the set, so an unparseable spelling matches nothing
+// rather than collapsing into the '' that means Docker Hub.
+function registryHost(registry) {
+  const raw = String(registry ?? '')
+    .trim()
+    .toLowerCase();
+  if (raw === '') return '';
+  try {
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
 export function violationsFor(jobId, findings) {
   const out = [];
   if (findings.acquisitions.length === 0) return out;
 
   const how = [...new Set(findings.acquisitions)].join(', ');
   const hasAny = findings.logins.length > 0;
-  const hasHub = findings.logins.some((l) => dockerHubRegistries.has(l.registry));
-  const hasMirror = findings.logins.some((l) => l.registry.startsWith(mirrorHost));
+  const hasHub = findings.logins.some((l) => dockerHubRegistries.has(registryHost(l.registry)));
+  const hasMirror = findings.logins.some((l) => registryHost(l.registry) === mirrorHost);
 
   if (!hasAny) {
     out.push(`${jobId}: acquires images (${how}) with no registry login step — the pull is anonymous`);
