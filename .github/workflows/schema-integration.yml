@@ -108,6 +108,17 @@ jobs:
         with:
           tool: just
 
+      # The mirror below is reached for FIRST, but a mirror miss falls back to
+      # Docker Hub — and that fallback spends the anonymous shared
+      # per-runner-IP quota unless this step has run.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
+
       # Cerberus's own copy of every upstream image this job pulls lives in a
       # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
       # Docker Hub. That reach works only once this step has written ghcr.io
