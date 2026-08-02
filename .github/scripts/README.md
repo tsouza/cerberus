@@ -1217,6 +1217,33 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     the inventory→ref mapping and rejects two upstream refs colliding on one
     mirror ref — the one mirror bug that presents as a WRONG image rather than
     as a miss.
+  - Every copy is read back with `imagetools inspect` before it counts as
+    mirrored. "The copy command exited 0" and "a consumer can resolve this ref"
+    are different claims, and the difference is invisible downstream: an
+    unresolvable mirror is a miss, and a miss falls back to Docker Hub.
+- **`registry-login.mjs`** — `mirror-images.yml`, both login steps. `docker
+  login` under the same retry policy every other registry interaction here has.
+  It exists because `docker/login-action` has no retry input and the workflow
+  died on its first real run (30724446834) with `context deadline exceeded` on
+  the `/v2/` handshake, before pulling anything — so the mirror shipped inert
+  while the PR merged green, and every lane silently fell back to Docker Hub.
+  The classification is not re-implemented: it imports `lib/registry.mjs`'s
+  classifiers, so a login inherits the same verdicts a pull gets. Four classes,
+  asked in this order — a quota refusal fails on the first attempt (retrying
+  spends the window it was refused for), a rejected credential fails
+  immediately (wrong on attempt 1 is wrong on attempt 5), a transport fault
+  retries, anything else is fatal rather than retried five times and read as
+  flake.
+  - Env: `REGISTRY` (blank/unset means Docker Hub, matching `docker login`'s own
+    default), `USERNAME` (required), `PASSWORD` (required; passed on stdin,
+    never argv, so it cannot reach a process listing),
+    `REGISTRY_LOGIN_BACKOFF_STEP_SECONDS` (optional; default `2` — attempt N
+    waits N × step).
+  - Exit: `0` on a successful login, `1` on any class that is not retried and on
+    a transport fault that outlived every attempt.
+  - Gated by `registry-login.test.mjs` on the required `check` lane, which pins
+    the ORDER rather than the patterns: three of the four classes can match the
+    same output, and each wrong order fails silently in its own way.
 
 ## Notes
 

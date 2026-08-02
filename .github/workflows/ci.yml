@@ -685,6 +685,16 @@ jobs:
       - name: Assert the image mirror maps its inventory correctly
         run: node --test .github/scripts/mirror-images.test.mjs
 
+      # The login that populates that mirror, and specifically the ORDER its
+      # failure classes are asked in. Three of the four can match one output —
+      # a quota refusal reaches BuildKit as `unexpected status from HEAD
+      # request … 429`, which also reads as a transport fault — and each wrong
+      # order is silent in its own way: a retried quota refusal spends the
+      # window it was refused for, and a handshake blip classed as fatal is the
+      # run (30724446834) that shipped the mirror inert.
+      - name: Assert the registry login retries only what retrying can fix
+        run: node --test .github/scripts/registry-login.test.mjs
+
       # Same discipline for the mutation lane's phase planner, one step further:
       # its selector decides which legs an ordinary PR runs, so a bug there is
       # not a slow release but a SILENT one — legs quietly deselected while the
