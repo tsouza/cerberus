@@ -1,8 +1,19 @@
 Spanset set operation (&&) whose operands are full sub-pipelines, not
-bare selectors: `({} | count() > 1) && ({} | count() > 1)`. Reference
+bare selectors: `({} | count() > 0) && ({} | count() > 0)`. Reference
 Tempo accepts a parenthesised pipeline as a spanset-operation operand;
-cerberus lowers each via the shared pipeline folder and intersects on
-(TraceId, SpanId).
+cerberus lowers each via the shared pipeline folder, gates the union of
+the two arms on both trace cohorts, and dedups on (TraceId, SpanId).
+
+Both operands end in a spanset aggregate, so both un-collapse to the
+span rows the aggregate consumed under a `TraceId IN (<cohort>)`
+semi-join (see internal/traceql/spanset_operand.go) — the identity key
+the intersect emitter dedups on (`LIMIT 1 BY TraceId, SpanId`) exists
+only at span granularity.
+Each cohort keeps only the aggregate function its HAVING reads, so none
+of lowerAggregate's /api/search envelope columns are referenced and the
+seed needs just the four the assertion prints, with the attribute map
+MATERIALIZED off two of them. `a1/s1` is the only span matching both
+selectors.
 
 -- query.traceql --
 ({ span.region = "us" } | count() > 0) && ({ span.tier = "gold" } | count() > 0)
@@ -10,38 +21,38 @@ cerberus lowers each via the shared pipeline folder and intersects on
 CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
-    SpanName String,
-    Timestamp DateTime64(9),
-    ResourceAttributes Map(String, String),
-    SpanAttributes Map(String, String),
-    Duration UInt64
-) ENGINE = Memory;
-INSERT INTO otel_traces VALUES
-    ('a1', 's1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), map('region', 'us', 'tier', 'gold'),    10000000),
-    ('a2', 's2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), map('region', 'eu', 'tier', 'gold'),    20000000),
-    ('a3', 's3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'backend'),  map('region', 'us', 'tier', 'silver'),  30000000);
--- args --
-[0] int64 = 1
-[1] string = "region"
-[2] string = "us"
-[3] int64 = 0
-[4] int64 = 1
-[5] string = "tier"
-[6] string = "gold"
-[7] int64 = 0
--- chplan --
-SetOperation op=&&
-  Filter predicate=(Value > 0)
-    Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
-      Filter predicate=(SpanAttributes["region"] = "us")
-        Scan(otel_traces)
-  Filter predicate=(Value > 0)
-    Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
-      Filter predicate=(SpanAttributes["tier"] = "gold")
-        Scan(otel_traces)
--- sql --
-WITH _setand_l_1 AS (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)), _setand_r_1 AS (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`
+    Region String,
+    Tier String,
+    SpanAttributes Map(String, String) MATERIALIZED map('region', Region, 'tier', Tier)
+) ENGINE = MergeTree ORDER BY (TraceId, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, Region, Tier) VALUES
+    ('a1', 's1', 'us', 'gold'),
+    ('a2', 's2', 'eu', 'gold'),
+    ('a3', 's3', 'us', 'silver');
 -- expected_rows --
 [
-  ["a1", 1, "span", {"service.name": "frontend"}, "2024-01-01T00:00:00Z", 1704067200000000000, 1704067200010000000]
+  ["a1", "s1", "us", "gold"]
 ]
+-- args --
+[0] string = "region"
+[1] string = "us"
+[2] int64 = 1
+[3] string = "region"
+[4] string = "us"
+[5] int64 = 0
+[6] string = "tier"
+[7] string = "gold"
+[8] int64 = 1
+[9] string = "tier"
+[10] string = "gold"
+[11] int64 = 0
+-- chplan --
+SetOperation op=&&
+  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 0) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value] ; Filter predicate=(SpanAttributes["region"] = "us") ; Scan(otel_traces)})
+    Filter predicate=(SpanAttributes["region"] = "us")
+      Scan(otel_traces)
+  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 0) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value] ; Filter predicate=(SpanAttributes["tier"] = "gold") ; Scan(otel_traces)})
+    Filter predicate=(SpanAttributes["tier"] = "gold")
+      Scan(otel_traces)
+-- sql --
+WITH _setand_l_1 AS (SELECT * FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)))), _setand_r_1 AS (SELECT * FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)))) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`

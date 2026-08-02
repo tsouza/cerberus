@@ -377,10 +377,10 @@ func TestEmitNode_SetOperation_Union(t *testing.T) {
 	}
 }
 
-// TestEmitNode_SetOperation_MissingTraceID — TraceIDColumn is the one
-// identity column the SetOperation emitter cannot do without. Unset, the
-// JOIN predicate (or LIMIT BY key) would reference an empty identifier
-// and produce a CH syntax error at runtime.
+// TestEmitNode_SetOperation_MissingTraceID — TraceIDColumn carries the
+// trace cohort the `&&` gate and the `||` dedup key are both built from.
+// Unset, the WHERE cohort test and the LIMIT BY key would reference an
+// empty identifier and produce a CH syntax error at runtime.
 func TestEmitNode_SetOperation_MissingTraceID(t *testing.T) {
 	t.Parallel()
 
@@ -420,54 +420,35 @@ func TestEmitNode_SetOperation_MissingTraceID(t *testing.T) {
 	}
 }
 
-// TestEmitNode_SetOperation_TraceGranularity — SpanIDColumn unset is
-// LEGAL, not an error: a parenthesised sub-pipeline ending in an
-// aggregate grouped on TraceID (`({…} | count() > 0) && ({…})`) exposes
-// no per-span column, so the identity dedup key degrades to TraceID
-// alone. The lowerer signals that by leaving SpanIDColumn empty; a
-// `LIMIT 1 BY (…, SpanId)` against such an arm is what ClickHouse
-// rejected with "Identifier 'SpanId' cannot be resolved from subquery".
-// Both ops emit the span-level cohort UNION (see emitSetOperation), so
-// both must drop the SpanId term from their `LIMIT 1 BY` key here.
-func TestEmitNode_SetOperation_TraceGranularity(t *testing.T) {
+// TestEmitNode_SetOperation_MissingSpanID — SpanIDColumn is as
+// mandatory as TraceIDColumn. Every arm a TraceQL set operation can
+// carry exposes per-span identity: a spanset-aggregate operand is
+// un-collapsed back to the spans it stands for before it ever reaches
+// the emitter (internal/traceql.spanGranularOperand), `| by(…)` and
+// `| coalesce()` carry `any(SpanId)` / group on it, and `| select(…)`
+// projects it. So an unset SpanIDColumn is a lowering bug, and the
+// emitter must say so rather than silently emitting a `LIMIT 1 BY
+// TraceId` that dedups whole traces down to one span.
+//
+// Both ops go through the same guard; both are exercised so neither
+// path can grow a bypass.
+func TestEmitNode_SetOperation_MissingSpanID(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name    string
-		op      chplan.SetOp
-		want    string
-		notWant string
-	}{
-		{
-			name:    "intersect dedups on trace id alone",
-			op:      chplan.SetIntersect,
-			want:    "LIMIT 1 BY `TraceId`",
-			notWant: "SpanId",
-		},
-		{
-			name:    "union dedups on trace id alone",
-			op:      chplan.SetUnion,
-			want:    "LIMIT 1 BY `TraceId`",
-			notWant: "SpanId",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, op := range []chplan.SetOp{chplan.SetIntersect, chplan.SetUnion} {
+		t.Run(string(op), func(t *testing.T) {
 			t.Parallel()
-			sql, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
+			_, _, err := chsql.Emit(context.Background(), &chplan.SetOperation{
 				Left:          &chplan.Scan{Table: "otel_traces"},
 				Right:         &chplan.Scan{Table: "otel_traces"},
-				Op:            tc.op,
+				Op:            op,
 				TraceIDColumn: "TraceId",
 			})
-			if err != nil {
-				t.Fatalf("Emit: %v", err)
+			if err == nil {
+				t.Fatal("SetOperation with unset SpanIDColumn did not error")
 			}
-			if !strings.Contains(sql, tc.want) {
-				t.Errorf("SQL missing %q:\n%s", tc.want, sql)
-			}
-			if strings.Contains(sql, tc.notWant) {
-				t.Errorf("SQL references %q despite SpanIDColumn being unset:\n%s", tc.notWant, sql)
+			if !errors.Is(err, chsql.ErrUnsupported) {
+				t.Errorf("err = %v; want wrapped ErrUnsupported", err)
 			}
 		})
 	}
