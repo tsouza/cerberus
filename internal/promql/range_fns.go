@@ -86,8 +86,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		// across the grid. The native PredictLinear strategy is skipped
 		// deliberately — timeSeriesPredictLinearToGrid computes a
 		// per-grid-anchor regression, which is the shape the pin forbids.
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, "predict_linear",
-			metricNameFromMatchers(vs.LabelMatchers), &chplan.ColumnRef{Name: s.ValueColumn}), nil
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, &chplan.ColumnRef{Name: s.ValueColumn}), nil
 	case gridSingleAnchor:
 	}
 	// Route through the boot-wired PredictLinear strategy: the native impl
@@ -166,8 +165,7 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 	case gridBroadcast:
 		// `@`-pinned: smooth the pinned window once, broadcast the
 		// per-series result across the grid.
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, "holt_winters",
-			metricNameFromMatchers(vs.LabelMatchers), &chplan.ColumnRef{Name: s.ValueColumn}), nil
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, &chplan.ColumnRef{Name: s.ValueColumn}), nil
 	case gridSingleAnchor:
 	}
 	return rw, nil
@@ -306,8 +304,7 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		// across the grid. The value substitution folds into the
 		// broadcast projection rather than going through
 		// projectValueOverInner, which has no branch for that shape.
-		return wrapRangeWindowAtBroadcast(window, ctx, s, "quantile_over_time",
-			metricNameFromMatchers(vs.LabelMatchers), value), nil
+		return wrapRangeWindowAtBroadcast(window, ctx, s, nil, value), nil
 	case gridSingleAnchor:
 	}
 	if !replaceValue {

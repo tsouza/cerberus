@@ -2027,8 +2027,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// across the step grid via a CrossJoin(StepGrid). This is the
 		// range-vector sibling of wrapRangeAbsoluteAtBroadcast (the
 		// bare-selector `@`-pin path).
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, c.Func.Name,
-			metricNameFromMatchers(vs.LabelMatchers), &chplan.ColumnRef{Name: s.ValueColumn}), nil
+		var nameExpr chplan.Expr
+		if rangeFnPreservesName(c.Func.Name) {
+			nameExpr = preservedNameExpr(rw, vs.LabelMatchers, s)
+		}
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr, &chplan.ColumnRef{Name: s.ValueColumn}), nil
 	case gridFanout:
 		// In range mode, fan the range function across the request's step
 		// grid: each anchor in [start, end] (spaced by step) emits one row
@@ -2106,14 +2109,13 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// derived-shape `LitString{""} AS MetricName` synthesis, so the
 	// literal flows through and `__name__` appears on the wire.
 	//
-	// The matcher's `__name__` value must be a single equality matcher
-	// (`metric_name{...}`) for `metricNameFromMatchers` to return a
-	// non-empty string. Regex `__name__=~"foo|bar"` falls through to
-	// the existing empty-MetricName behaviour — threading per-series
-	// names through the windowed aggregation is a larger structural
-	// change not modelled here.
-	if c.Func.Name == "last_over_time" || c.Func.Name == "first_over_time" {
-		return wrapRangeWindowPreserveName(rw, s, metricNameFromMatchers(vs.LabelMatchers)), nil
+	// A single `__name__="x"` equality matcher pins one name for every
+	// row, so the projection can use a literal. A regex matcher
+	// (`__name__=~"foo|bar"`) spans several metrics whose names differ
+	// per series, so `preservedNameExpr` threads MetricName through the
+	// window's grouping key instead.
+	if rangeFnPreservesName(c.Func.Name) {
+		return wrapRangeWindowPreserveName(rw, s, preservedNameExpr(rw, vs.LabelMatchers, s)), nil
 	}
 	return node, nil
 }
@@ -2479,7 +2481,47 @@ func isIdentityColumnRef(x chplan.Expr, name string) bool {
 // the handler uses for derived-shape Projects. The outer
 // `wrapWithSampleProjection` canonical branch reads back the
 // `s.TimestampColumn` alias verbatim either way.
-func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name string) chplan.Node {
+// rangeFnPreservesName reports whether a PromQL range function keeps
+// `__name__` on its output. Mirrors upstream:
+//
+//	prometheus/prometheus@cerberus-parser/promql/engine.go:2114
+//	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
+func rangeFnPreservesName(fn string) bool {
+	return fn == "last_over_time" || fn == "first_over_time"
+}
+
+// preservedNameExpr picks the expression a preserve-name wrapper should
+// project as the MetricName column.
+//
+// A single `__name__="x"` equality matcher pins the same name onto every
+// row, so a literal is enough and the window's grouping key is left
+// alone. Anything else — `__name__=~"a|b"`, or a selector carrying no
+// name matcher — spans several metrics whose names differ per series. A
+// literal cannot express that: `last_over_time({__name__=~"a|b"}[5m])`
+// would answer with rows whose `__name__` is absent, and, worse, two
+// metrics sharing an attribute set would collapse into a single series
+// because MetricName is not part of the grouping key. So the name rides
+// through the window on the group key and is projected per row.
+func preservedNameExpr(rw *chplan.RangeWindow, ms []*labels.Matcher, s schema.Metrics) chplan.Expr {
+	if name := metricNameFromMatchers(ms); name != "" {
+		return &chplan.LitString{V: name}
+	}
+	if s.MetricNameColumn == "" {
+		// A schema with no metric-name column has no per-series name to
+		// carry; the literal keeps the canonical 4-column shape intact.
+		return &chplan.LitString{V: ""}
+	}
+	nameRef := &chplan.ColumnRef{Name: s.MetricNameColumn}
+	for _, g := range rw.GroupBy {
+		if isIdentityColumnRef(g, s.MetricNameColumn) {
+			return nameRef
+		}
+	}
+	rw.GroupBy = append(append(make([]chplan.Expr, 0, len(rw.GroupBy)+1), rw.GroupBy...), nameRef)
+	return nameRef
+}
+
+func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name chplan.Expr) chplan.Node {
 	var tsExpr chplan.Expr
 	if rw.OuterRange > 0 {
 		// The matrix RangeWindow keeps anchor_ts offset-SHIFTED for the
@@ -2503,7 +2545,7 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 	return &chplan.Project{
 		Input: rw,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: name}, Alias: s.MetricNameColumn},
+			{Expr: name, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
@@ -2524,12 +2566,14 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 // downstream consumers (aggregations, arithmetic) see the identical
 // column shape whether or not the inner carried an `@` pin.
 //
-// `last_over_time` / `first_over_time` preserve `__name__`
-// (dropName=false in Prom); for them the projection pins MetricName to
-// the matcher's literal name and exposes the canonical 4-column Sample
-// contract `(MetricName, Attributes, anchor_ts AS TimeUnix, Value)`,
-// mirroring wrapRangeWindowPreserveName's matrix branch. Every other
-// range fn drops `__name__`, so MetricName is omitted.
+// `name` is the expression projected as the MetricName column, or nil
+// when the range function drops `__name__`. `last_over_time` /
+// `first_over_time` preserve it (dropName=false in Prom); for them the
+// caller supplies `preservedNameExpr`'s literal-or-column choice and the
+// projection exposes the canonical 4-column Sample contract
+// `(MetricName, Attributes, anchor_ts AS TimeUnix, Value)`, mirroring
+// wrapRangeWindowPreserveName's matrix branch. Every other range fn
+// passes nil, so MetricName is omitted.
 //
 // `value` is the expression projected as the Value column. Callers that
 // forward the window's own value pass `&chplan.ColumnRef{Name:
@@ -2541,16 +2585,15 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 // TimeUnix and drops `anchor_ts`, which is precisely the column the
 // broadcast exists to carry.
 func wrapRangeWindowAtBroadcast(
-	rw *chplan.RangeWindow, ctx lowerCtx, s schema.Metrics, fn, name string, value chplan.Expr,
+	rw *chplan.RangeWindow, ctx lowerCtx, s schema.Metrics, name, value chplan.Expr,
 ) chplan.Node {
 	grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 	joined := &chplan.CrossJoin{Left: grid, Right: rw}
 
-	preserveName := fn == "last_over_time" || fn == "first_over_time"
 	projections := make([]chplan.Projection, 0, 4)
-	if preserveName {
+	if name != nil {
 		projections = append(projections,
-			chplan.Projection{Expr: &chplan.LitString{V: name}, Alias: s.MetricNameColumn})
+			chplan.Projection{Expr: name, Alias: s.MetricNameColumn})
 	}
 	projections = append(
 		projections,
