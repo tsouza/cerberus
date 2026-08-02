@@ -38,6 +38,9 @@ on:
 
 permissions:
   contents: read
+  # Pulling this project's own mirrored copies of the upstream images out of
+  # ghcr.io (.github/scripts/lib/mirror.mjs); the packages are private.
+  packages: read
 
 concurrency:
   group: schema-integration-${{ github.ref }}
@@ -104,6 +107,18 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      - name: Log in to the image mirror (GHCR)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run schema/ddl integration tests (real ClickHouse)
         run: just schema-ddl-test
