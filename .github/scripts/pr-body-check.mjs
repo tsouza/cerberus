@@ -9,12 +9,36 @@
 // requires what remains to be a genuine description: at least MIN_CHARS of
 // meaningful text and not a lone placeholder token.
 //
+// `pr-body` is a required status check, so it has to report on every surface
+// branch protection asks it about — a pull request, the merge queue's projected
+// trunk, and a push to `main` or a maintenance line. Only the first carries a
+// body in the event payload, so the other two resolve the description from the
+// pull request associated with the head commit, sharing forbid-deferral's
+// resolver rather than growing a second one that could drift from it.
+//
+// A commit with NO associated pull request passes. That is not a tolerance
+// list: the gate's subject is a pull request description, and a commit that has
+// none has no description to be a stub. Every path that can introduce one — the
+// `pull_request` event, and a squash-merge whose commit resolves back to its
+// PR — is inspected.
+//
 // Env:
-//   PR_BODY   the pull request body (pass via env, NEVER interpolated into a
-//             shell `run:` line — bodies are attacker-controlled).
+//   GITHUB_EVENT_NAME  REQUIRED. `pull_request` reads PR_BODY; anything else
+//                      resolves the description from the head commit.
+//   PR_BODY            REQUIRED on a pull_request run — the description (pass
+//                      via env, NEVER interpolated into a shell `run:` line;
+//                      bodies are attacker-controlled).
+//   GITHUB_SHA         the head commit, used off the pull_request path.
+//   GITHUB_REPOSITORY  REQUIRED off the pull_request path. `owner/repo`.
+//   GITHUB_TOKEN       REQUIRED off the pull_request path. Needs
+//                      `pull-requests: read`.
+//   GITHUB_API_URL     API base (runner-provided; default https://api.github.com).
 //
 // argv `--self-test` runs the in-process assertion suite and exits.
 
+import process from 'node:process';
+import { pathToFileURL } from 'node:url';
+import { descriptionSurface } from './forbid-deferral.mjs';
 import { error, notice } from './lib/gh.mjs';
 
 export const MIN_CHARS = 20;
@@ -117,19 +141,67 @@ function selfTest() {
   notice('pr-body-check --self-test: all assertions passed');
 }
 
+// unassociatedOrigin is how descriptionSurface labels a head commit that no
+// pull request points at. That case is a pass here, so the label is matched
+// rather than the text being classified — an empty body from an EXISTING pull
+// request is still a stub.
+const UNASSOCIATED_ORIGIN = 'explicitly empty: no pull request';
+
+// inspect turns a resolved description surface into a verdict. Split out from
+// main so the unassociated-commit exemption is testable on its own: it is the
+// one path that passes without reading the text, and a bug there would make the
+// gate green on every pull request rather than on the commits it is meant to
+// exempt.
+export function inspect(description) {
+  if (description.origin.startsWith(UNASSOCIATED_ORIGIN)) {
+    return { stub: false, unassociated: true };
+  }
+  return classify(description.text);
+}
+
+function requireEnv(name, why) {
+  const v = process.env[name];
+  if (!v) throw new Error(`${name} is unset — ${why}`);
+  return v;
+}
+
+async function main() {
+  const eventName = requireEnv('GITHUB_EVENT_NAME', 'the description surface is resolved per event');
+  const onPullRequest = eventName === 'pull_request' || eventName === 'pull_request_target';
+
+  const description = await descriptionSurface({
+    eventName,
+    repo: onPullRequest ? '' : requireEnv('GITHUB_REPOSITORY', 'the head commit cannot be resolved without it'),
+    head: onPullRequest ? '' : requireEnv('GITHUB_SHA', 'there is no head commit to resolve a pull request from'),
+    token: onPullRequest ? '' : requireEnv('GITHUB_TOKEN', 'resolving the associated pull request needs pull-requests:read'),
+    apiBase: process.env.GITHUB_API_URL || 'https://api.github.com',
+  });
+
+  const { stub, reason, unassociated } = inspect(description);
+  if (unassociated) {
+    notice(`pr-body-check: ${description.origin} — no pull request description to inspect.`);
+    process.exit(0);
+  }
+  if (stub) {
+    error(
+      `pr-body-check: this PR has no real description — ${reason} (read from ${description.origin}). ` +
+        `Write a description of WHAT changed and WHY (the gate strips the AI footer, ` +
+        `Co-authored-by trailers, and comments before measuring), then the check re-runs on edit.`,
+    );
+    process.exit(1);
+  }
+  notice(`pr-body-check: PR description is non-empty and substantive (read from ${description.origin}).`);
+  process.exit(0);
+}
+
 if (process.argv.includes('--self-test')) {
   selfTest();
   process.exit(0);
 }
 
-const { stub, reason } = classify(process.env.PR_BODY);
-if (stub) {
-  error(
-    `pr-body-check: this PR has no real description — ${reason}. ` +
-      `Write a description of WHAT changed and WHY (the gate strips the AI footer, ` +
-      `Co-authored-by trailers, and comments before measuring), then the check re-runs on edit.`,
-  );
-  process.exit(1);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    error(`pr-body-check: ${e.message}`);
+    process.exit(1);
+  });
 }
-notice('pr-body-check: PR description is non-empty and substantive.');
-process.exit(0);

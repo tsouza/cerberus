@@ -1237,7 +1237,7 @@ or a stable backport never drags any of the three backwards.
 #### De-gated lanes on the publish path
 
 The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
-branch-protection context except the two below, which are listed in
+branch-protection context except the three below, which are listed in
 `RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
 verdict does not hold a publish. Each one is a deliberate trade, so each one
 carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`
@@ -1251,10 +1251,11 @@ lanes `compose-smoke`, `dashboard` and `profile` went the OTHER way — they
 stopped gating pull requests and became release-required, so this preflight is
 now the only thing standing between them and a publish.
 
-| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                     |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                 |
-| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact. It ran green under branch protection on the release PR, and requiring it here would put its ~11-leg matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly. |
+| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                         |
+| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact. It ran green under branch protection on the release PR, and requiring it here would put its ~11-leg matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly.                                                                                         |
+| `CodeQL`                   | The only required context with no workflow file behind it: code-scanning default setup is configured on the repository and dispatches on the default branch and its pull requests only, so a `release/*.x` push produces no CodeQL run at all and requiring it would stall every hotfix waiting for a check that is never coming. The scan still gates the code on the way in — nothing reaches a maintenance line except through a `main` pull request CodeQL blocked on. |
 
 #### Homebrew tap
 

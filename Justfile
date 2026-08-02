@@ -263,15 +263,20 @@ fuzz QL="promql" DURATION="60s":
 bench:
     go test -bench=. -benchmem -benchtime=5x -run='^$' ./...
 
-# Generate the GA-prep coverage baseline (default-tag + chdb-tagged
-# lanes, merged via in-line awk because gocovmerge can't reconcile
-# block-boundary drift between the two compilations). Writes
-# cover.out, cover-chdb.out, and cover-merged.out, then prints the
-# total + a per-package summary sorted by coverage.
+# Generate the coverage profile and hold it to the committed per-package
+# floors (default-tag + chdb-tagged lanes, merged via in-line awk because
+# gocovmerge can't reconcile block-boundary drift between the two
+# compilations). Writes cover.out, cover-chdb.out, and cover-merged.out, then
+# hands the merged profile to coverage-summary.mjs, which prints the total + a
+# per-package summary sorted by coverage AND fails on a package below its floor
+# in test/coverage-floor.json.
 #
-# Requires chDB for the second lane (`just chdb-install`). If
-# libchdb.so isn't present, the recipe still emits cover.out and
-# treats cover-merged.out as cover.out (default-tag baseline only).
+# Requires chDB for the second lane (`just chdb-install`). If libchdb.so isn't
+# present, the recipe still emits cover.out and treats cover-merged.out as
+# cover.out — a narrower profile the floors were not measured against, so the
+# comparison reports instead of failing. COVERAGE_LANES tells the script which
+# of the two it got; CI sets COVERAGE_REQUIRE_LANES so a chdb install that
+# quietly no-ops fails the job instead of disarming the gate.
 coverage:
     @echo "==> default-tag coverage"
     # `|| true` tolerates partial failures (e.g. `main` packages that
@@ -287,28 +292,28 @@ coverage:
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
         } > cover-merged.out; \
+        LANES=default+chdb; \
     else \
         echo "==> libchdb.so not found, skipping chdb lane"; \
         cp cover.out cover-merged.out; \
-    fi
+        LANES=default; \
+    fi; \
+    echo; \
+    COVERAGE_LANES="$LANES" node .github/scripts/coverage-summary.mjs
+
+# Raise test/coverage-floor.json to what the tree currently achieves. Reads the
+# profile `just coverage` leaves behind, so run that first. The ledger is a
+# ratchet: this recipe never lowers a floor — a package that has dropped is
+# reported and the run fails, because a tool that rewrites a floor to match a
+# regression launders the regression into a green run. Restore the tests, or
+# lower the floor by hand so the drop is a reviewable line in the diff.
+update-coverage-floor:
+    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; floors recorded without the chdb lane would under-record every package that lane reaches" >&2; exit 1; }
+    @test -s cover-merged.out || { echo "error: cover-merged.out not found — run 'just coverage' first; the floors are derived from the profile it writes" >&2; exit 1; }
+    @COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs
     @echo
-    @echo "==> Total"
-    @go tool cover -func=cover-merged.out | tail -1
-    @echo
-    @echo "==> Per-package (sorted by coverage)"
-    @awk -F'[: ,]' 'NR > 1 { \
-        n = split($0, w, " "); stmts = w[n-1]; hits = w[n]; \
-        split($0, a, ":"); fp = a[1]; \
-        sub(/^github\.com\/tsouza\/cerberus\//, "", fp); \
-        k = fp; sub(/\/[^\/]+$/, "", k); \
-        total[k] += stmts; \
-        if (hits != 0) covered[k] += stmts; \
-      } END { \
-        for (p in total) { \
-          pct = (total[p] > 0) ? 100.0*covered[p]/total[p] : 0; \
-          printf "%6.2f%%  %5d / %-5d  %s\n", pct, covered[p], total[p], p; \
-        } \
-      }' cover-merged.out | sort -rn
+    @echo "Diff of regenerated floors:"
+    @git --no-pager diff --stat test/coverage-floor.json || true
 
 # Regenerate TXTAR golden sections in test/spec/**/*.txtar from current output.
 # Two lanes: the default-tag pass rewrites `-- sql --` / `-- chplan --`
@@ -370,16 +375,50 @@ coverage:
 #   skipped. It must run AFTER, which is safe: the body's chdb-tagged
 #   asserting lane scopes to ./test/spec/..., never ./test/perf/.
 #
-# All four are no-ops on a corpus already in sync (zero diff).
-# Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/*-baseline.json`
-# before committing.
-update-golden: update-solver-decision-baseline migration-golden && update-cardinality-baseline
+# - `update-parity-ledgers` is a PRIOR dep, for the same reasons as
+#   `migration-golden`. It re-probes the three parsers' symbol tables and the
+#   catalogued rejection sites directly from `internal/**`, so it reads neither
+#   `test/spec/**` nor either perf baseline and the body cannot change what it
+#   records. Running it FIRST puts its output inside the closing diff-stat.
+#   Pure Go, no build tags, ~2s.
+#
+# All five are no-ops on a corpus already in sync (zero diff).
+# Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/*-baseline.json
+# test/surface-parity/ test/rejection-parity/` before committing.
+update-golden: update-solver-decision-baseline migration-golden update-parity-ledgers && update-cardinality-baseline
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; without it the chdb-tagged -- expected_rows -- sections (and the cardinality baseline) cannot regenerate and go stale" >&2; exit 1; }
     GOLDEN_UPDATE=1 go test ./...
     GOLDEN_UPDATE=1 go test -tags chdb -count=1 ./test/spec/...
     @echo
-    @echo "Diff of regenerated fixtures and migration goldens:"
-    @git --no-pager diff --stat test/spec/ test/e2e/migration/archetypes/ || true
+    @echo "Diff of regenerated fixtures, migration goldens and parity ledgers:"
+    @git --no-pager diff --stat test/spec/ test/e2e/migration/archetypes/ test/surface-parity/ test/rejection-parity/ || true
+
+# Regenerate the parser-surface parity ledgers: test/surface-parity/inventory.json
+# (every PromQL / LogQL / TraceQL symbol the three parsers expose, with the
+# in-process cerberus verdict for each) and test/rejection-parity/catalogue.json
+# (every rejection site in internal/{promql,logql,traceql}). Both re-probe the
+# parsers directly, so they drift on a PARSER-SURFACE change rather than a
+# plan-shape one — a different trigger from the TXTAR goldens, the same failure
+# shape if nobody regenerates them (#1595).
+#
+# Curation survives: a site already in the catalogue keeps its class, trigger
+# query, endpoint and rationale. A site whose key MOVED — the key is derived
+# from the rejection message, so editing that message relocates the entry —
+# lands unclassified, and the verify test refuses an unclassified entry. That
+# is the loud outcome, and it is why this is worth chaining rather than leaving
+# to be rediscovered on a CI lane.
+#
+# test/surface-parity/promql-reference-verdicts.json is deliberately NOT here:
+# `REGENERATE=1 node .github/scripts/promql-surface-gate.mjs` probes a live
+# prom/prometheus container started with --enable-feature=promql-experimental-functions,
+# so it needs Docker and a network pull. That is a heavier prerequisite than
+# `update-golden` assumes, which puts it with the k3d/compose inventories and
+# the compat parity baseline rather than in this recipe.
+update-parity-ledgers:
+    CERBERUS_UPDATE_INVENTORY=1 go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
+    @echo
+    @echo "Diff of regenerated parity ledgers:"
+    @git --no-pager diff --stat test/surface-parity/ test/rejection-parity/ || true
 
 # Regenerate the cardinality/fan-factor ratchet baseline (perf-assessment
 # Component C) from the current corpus profile. Re-profiles every executable

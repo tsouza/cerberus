@@ -55,6 +55,7 @@ import (
 // on faster than the merge commit could; they moved to the release gate rather
 // than disappearing.
 var branchProtectionContexts = []string{
+	"CodeQL",
 	"chart-validate",
 	"check",
 	"compatibility/loki",
@@ -67,11 +68,13 @@ var branchProtectionContexts = []string{
 	"lint",
 	"mutation",
 	"perf-guards",
+	"pr-body",
 	"probe",
 	"property (PromQL + LogQL + TraceQL, rapid N=500)",
 	"roundtrip (logql)",
 	"roundtrip (promql)",
 	"roundtrip (traceql)",
+	"strict-scan",
 }
 
 const workflowsDir = "../../.github/workflows"

@@ -30,7 +30,10 @@ name: strict-scan
 
 on:
   push:
-    branches: [main]
+    # `release/*.x` so `strict-scan` also runs on a maintenance-line hotfix
+    # push — release.yml's preflight is the only gate on that path (no PR, so
+    # no branch protection) and it requires this check-run to exist.
+    branches: [main, 'release/*.x']
   pull_request:
   # `strict-scan` is a required context and must post on the projected trunk.
   merge_group:

@@ -241,6 +241,8 @@ jobs:
             roundtrip (logql)
             roundtrip (traceql)
             perf-guards
+            strict-scan
+            pr-body
             compose-smoke
             dashboard
             coverage
@@ -253,12 +255,20 @@ jobs:
           # block a release. `mutation` is a test-QUALITY ratchet rather than a
           # correctness gate on the artifact being shipped; requiring it here
           # would put its ~11-leg matrix on the critical path of every publish,
-          # including maintenance hotfixes. A prefix here that swallows a
-          # RELEASE_REQUIRED_CHECKS name fails the preflight as a wiring error
-          # rather than quietly de-gating it.
+          # including maintenance hotfixes. `CodeQL` is required on `main` but
+          # cannot be required here: code-scanning DEFAULT SETUP is configured
+          # by the repository, not by a workflow file in the tree, and it
+          # dispatches on the default branch and its pull requests only — a
+          # maintenance-line push produces no CodeQL run at all, so requiring it
+          # would stall every hotfix on a check that is never coming. The scan
+          # still gates the code on the way in: nothing reaches a release branch
+          # except through a `main` PR that CodeQL blocked on. A prefix here
+          # that swallows a RELEASE_REQUIRED_CHECKS name fails the preflight as
+          # a wiring error rather than quietly de-gating it.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
+            CodeQL
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
