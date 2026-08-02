@@ -357,6 +357,14 @@ func writeStubDocker(t *testing.T, dir, callLog string, pullSucceedsOn, inspectS
 		"#!/bin/sh",
 		"case \"$1\" in",
 		"  pull)",
+		// This fixture holds no mirrored copy, so the GHCR reach misses and the
+		// module falls back to Docker Hub — the path every case below is about.
+		// The miss is deliberately NOT logged: what these cases count is
+		// upstream attempts, and folding a mirror probe into that number would
+		// make the retry budget unreadable.
+		"    case \"$2\" in",
+		"      " + mirrorRegistryPrefix + "*) echo 'stub: no mirrored copy in this fixture' >&2; exit 1 ;;",
+		"    esac",
 		"    echo pull >> " + shellQuote(callLog),
 		"    attempts=$(wc -l < " + shellQuote(callLog) + " | tr -d ' ')",
 		"    [ \"$attempts\" -ge " + strconv.Itoa(pullSucceedsOn) + " ] && exit 0",
