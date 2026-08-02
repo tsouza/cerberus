@@ -12,10 +12,10 @@
 // which the emitter renders as a `TraceId IN (SELECT … GROUP BY TraceId
 // ORDER BY min(Timestamp) DESC, TraceId LIMIT N)` restriction. The SQL
 // then returns only the kept traces' spans, so the drain — and the
-// InspectedTraces count the response reports (len(res.Samples)) — is
+// inspected-SPAN count the response reports (len(res.Samples)) — is
 // bounded to N traces, not the whole table.
 //
-// The load-bearing assertion is InspectedTraces: it equals the kept
+// The load-bearing assertion is the inspected-span count: it equals the kept
 // traces' span count, NOT the full seed. Temporarily reverting
 // stampSearchTraceLimit's wrap (so the plan stays a bare Scan / Filter)
 // makes the count jump to the full seed — that before/after is reported
@@ -108,12 +108,23 @@ func newManyTracesChDBServer(t *testing.T, seed string) *httptest.Server {
 	return srv
 }
 
-func doSearch(t *testing.T, srv *httptest.Server, path string) tempo.SearchResponse {
+// searchResult is the decoded /api/search envelope plus the span-drain
+// count the handler reports out-of-band. SearchMetrics.InspectedTraces
+// is a DISTINCT TRACE count (Tempo's own field semantics, and the same
+// number the gRPC head reports); the drain bound these regressions
+// guard is a SPAN count, which rides tempo.HeaderInspectedSpans.
+type searchResult struct {
+	tempo.SearchResponse
+	InspectedSpans int
+}
+
+func doSearch(t *testing.T, srv *httptest.Server, path string) searchResult {
 	t.Helper()
 	resp, err := http.Get(srv.URL + path)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
+	spansHdr := resp.Header.Get(tempo.HeaderInspectedSpans)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
@@ -122,14 +133,18 @@ func doSearch(t *testing.T, srv *httptest.Server, path string) tempo.SearchRespo
 	if err := json.Unmarshal([]byte(body), &sr); err != nil {
 		t.Fatalf("decode: %v\nbody: %s", err, body)
 	}
-	return sr
+	spans, err := strconv.Atoi(spansHdr)
+	if err != nil {
+		t.Fatalf("%s header = %q, want an integer: %v", tempo.HeaderInspectedSpans, spansHdr, err)
+	}
+	return searchResult{SearchResponse: sr, InspectedSpans: spans}
 }
 
 // TestSearch_TraceLimitPushdown_BoundsDrain_ChDB is the genuinely-failing
 // repro: it seeds many traces, drives a plain `{}` search with a small
 // limit, and asserts the kept set is the newest-by-min-start prefix AND
-// that the drain (InspectedTraces == len(res.Samples)) is bounded to the
-// kept traces' spans, not the full seed. The InspectedTraces bound is the
+// that the drain (InspectedSpans == len(res.Samples)) is bounded to the
+// kept traces' spans, not the full seed. The inspected-span bound is the
 // assertion that fails without stampSearchTraceLimit's wrap.
 func TestSearch_TraceLimitPushdown_BoundsDrain_ChDB(t *testing.T) {
 	srv := newManyTracesChDBServer(t, manyTracesSeed())
@@ -163,13 +178,13 @@ func TestSearch_TraceLimitPushdown_BoundsDrain_ChDB(t *testing.T) {
 
 	// ★ Load-bearing: the drain is bounded to the kept traces' spans.
 	// kept = searchLimit traces * spansPerTrace spans. The full seed is
-	// seedTraceCount*spansPerTrace; without the pushdown InspectedTraces
+	// seedTraceCount*spansPerTrace; without the pushdown InspectedSpans
 	// would equal the full seed (the OOM-prone unbounded drain).
 	wantInspected := searchLimit * spansPerTrace
 	fullSeed := seedTraceCount * spansPerTrace
-	if sr.Metrics.InspectedTraces != wantInspected {
-		t.Errorf("InspectedTraces = %d, want %d (kept %d traces * %d spans); full seed is %d — a value of %d means the drain was NOT bounded (the OOM bug)",
-			sr.Metrics.InspectedTraces, wantInspected, searchLimit, spansPerTrace, fullSeed, fullSeed)
+	if sr.InspectedSpans != wantInspected {
+		t.Errorf("InspectedSpans = %d, want %d (kept %d traces * %d spans); full seed is %d — a value of %d means the drain was NOT bounded (the OOM bug)",
+			sr.InspectedSpans, wantInspected, searchLimit, spansPerTrace, fullSeed, fullSeed)
 	}
 	// Guard the assertion against a degenerate seed: the bound must be a
 	// real reduction, otherwise the test proves nothing.
@@ -182,7 +197,7 @@ func TestSearch_TraceLimitPushdown_BoundsDrain_ChDB(t *testing.T) {
 // into the shared bounds-drain harness as the proven reference row: the same
 // seed-many / request-few / assert-O(output) shape as the PromQL range
 // regression (OOM #2), expressed once through chclienttest.RunBoundsDrain.
-// The drain count is Tempo's SearchMetrics.InspectedTraces (== len(samples)
+// The drain count is the handler's X-Cerberus-Inspected-Spans header (== len(samples)
 // the handler buffered); the output bound is searchLimit traces × spansPerTrace
 // spans; the full seed is the whole table an unbounded /api/search would drain.
 //
@@ -198,7 +213,7 @@ func TestBoundsDrain_TempoSearch_ChDB(t *testing.T) {
 			srv := newManyTracesChDBServer(t, manyTracesSeed())
 			sr := doSearch(t, srv,
 				fmt.Sprintf("/api/search?q=%%7B%%7D&limit=%d&spss=20%s", searchLimit, seedWindow))
-			return int64(sr.Metrics.InspectedTraces), int64(seedTraceCount * spansPerTrace)
+			return int64(sr.InspectedSpans), int64(seedTraceCount * spansPerTrace)
 		},
 	}})
 }
@@ -347,7 +362,7 @@ func TestSearch_FatTrace_MatchedUncapped_BudgetBackstop(t *testing.T) {
 	// cursor, unit-tested in internal/chclient), so drive the budget
 	// crossing through a querier that surfaces the same *TooManySamplesError
 	// the production cursor raises and assert the /api/search handler maps
-	// it to 422 via classifySearchErr. ---
+	// it to 422 via ClassifyErr. ---
 	budgetQ := &stubQuerier{err: &chclient.TooManySamplesError{Limit: fatTraceMatchedSpans - 1}}
 	budgetSrv := newServer(budgetQ, "v-test")
 	t.Cleanup(budgetSrv.Close)

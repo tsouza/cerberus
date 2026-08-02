@@ -451,13 +451,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/info_fn.go:lowerInfo#4ef6f344",
-      "message": "promql: info(...) second-argument __name__ matcher must be an equality match, got %q",
-      "class": "rejection",
-      "trigger_query": "info(up, {__name__=~\"target.*\"})"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/info_fn.go:lowerInfo#9e913846",
       "message": "promql: info expects 1 or 2 arguments, got %d",
       "class": "internal",

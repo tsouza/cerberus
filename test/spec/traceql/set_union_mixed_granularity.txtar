@@ -1,0 +1,57 @@
+Spanset union (`||`) whose arms mix granularities: a parenthesised
+sub-pipeline ending in a spanset aggregate on the left, a plain span
+selector on the right. Reference Tempo keeps every span of a spanset
+through `Aggregate.evaluate` / `ScalarFilter.evaluate` and then unions
+SPANS (`uniqueSpans`), so the aggregate arm contributes the spans its
+selector matched, restricted to the traces whose count passed — not one
+row per trace. Lowering therefore un-collapses the GROUP BY into a
+`TraceId IN (<cohort>)` semi-join over the same span rows, which also
+gives both arms the identical `SELECT *` column list ClickHouse's
+positional UNION requires (a count mismatch is CH error 258).
+
+Seed: t1 has two `region=us` spans (count 2 > 1 — both survive), t2 has
+one (count 1 — dropped), t3's span is `tier=gold` and enters via the
+right arm alone. The cohort keeps only the aggregate function its HAVING
+reads, so none of lowerAggregate's /api/search envelope columns are
+referenced and the seed needs just the four the assertion prints, with
+the attribute map MATERIALIZED off two of them.
+
+-- query.traceql --
+({ span.region = "us" } | count() > 1) || ({ span.tier = "gold" })
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Region String,
+    Tier String,
+    SpanAttributes Map(String, String) MATERIALIZED map('region', Region, 'tier', Tier)
+) ENGINE = MergeTree ORDER BY (TraceId, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, Region, Tier) VALUES
+    ('t1', 's1', 'us', 'silver'),
+    ('t1', 's2', 'us', 'silver'),
+    ('t2', 's3', 'us', 'silver'),
+    ('t3', 's4', 'eu', 'gold');
+-- expected_rows --
+[
+  ["t1", "s1", "us", "silver"],
+  ["t1", "s2", "us", "silver"],
+  ["t3", "s4", "eu", "gold"]
+]
+-- args --
+[0] string = "region"
+[1] string = "us"
+[2] int64 = 1
+[3] string = "region"
+[4] string = "us"
+[5] int64 = 1
+[6] string = "tier"
+[7] string = "gold"
+-- chplan --
+SetOperation op=||
+  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 1) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value] ; Filter predicate=(SpanAttributes["region"] = "us") ; Scan(otel_traces)})
+    Filter predicate=(SpanAttributes["region"] = "us")
+      Scan(otel_traces)
+  Filter predicate=(SpanAttributes["tier"] = "gold")
+    Scan(otel_traces)
+-- sql --
+SELECT * FROM ((SELECT * FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)))) UNION ALL (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`

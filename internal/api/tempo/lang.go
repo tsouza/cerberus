@@ -20,11 +20,10 @@ import (
 // into a single bucket; carrying the stage in the wrapped error chain
 // preserves the per-stage HTTP-status mapping.
 //
-// ErrParseStage / ErrLowerStage are the exported aliases the sibling
-// gRPC handler (internal/api/tempo/grpc) chains via errors.Is to map
-// user-facing query errors onto codes.InvalidArgument (parser + lower)
-// while keeping emit/execute on codes.Internal — sibling of
-// classifySearchErr's HTTP-status mapping.
+// ErrParseStage / ErrLowerStage are the exported aliases callers outside
+// this package chain via errors.Is. Both the HTTP handlers and the sibling
+// gRPC handler (internal/api/tempo/grpc) reach them through the shared
+// ClassifyErr ladder in errclass.go rather than matching directly.
 var (
 	errParseStage = errors.New("traceql parse stage")
 	errLowerStage = errors.New("traceql lower stage")

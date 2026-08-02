@@ -261,7 +261,7 @@ func TestSearchTagsV2_ScopePartition(t *testing.T) {
 // TestSearchTagsV2_ScopeFilter — the `?scope=` query parameter on
 // /api/v2/search/tags must restrict the response to the requested
 // bucket. Mirrors upstream Tempo's pkg/api.ParseSearchTagsRequest
-// semantics (resource / span / intrinsic / none-or-empty / "all" alias).
+// semantics (resource / span / intrinsic / none-or-empty).
 // Before this fix the handler silently emitted every scope, so
 // Grafana's per-scope autocomplete iterated over irrelevant keys.
 func TestSearchTagsV2_ScopeFilter(t *testing.T) {
@@ -280,7 +280,6 @@ func TestSearchTagsV2_ScopeFilter(t *testing.T) {
 		{name: "intrinsic_only", query: "?scope=intrinsic", wantScopes: []string{"intrinsic"}, wantTag: "name"},
 		{name: "none_default", query: "", wantScopes: []string{"resource", "span", "intrinsic"}},
 		{name: "none_explicit", query: "?scope=none", wantScopes: []string{"resource", "span", "intrinsic"}},
-		{name: "all_alias", query: "?scope=all", wantScopes: []string{"resource", "span", "intrinsic"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -356,6 +355,58 @@ func TestSearchTagsV2_InvalidScope(t *testing.T) {
 	}
 	if !strings.Contains(er.Message, "invalid scope") {
 		t.Errorf("expected error message to mention %q, got %q", "invalid scope", er.Message)
+	}
+}
+
+// TestSearchTags_ScopeAllRejected — `scope=all` is not a Tempo scope.
+// Upstream's `traceql.AttributeScopeFromString` (pkg/traceql/
+// enum_attributes.go) maps only "", "none", "trace", "span",
+// "resource", "event", "link" and "instrumentation" to a real scope;
+// everything else folds to AttributeScopeUnknown, and
+// `pkg/api.ParseSearchTagsRequest` (pkg/api/search_tags.go:392) turns
+// that into `invalid scope: <v>` — the same shape it produces for
+// upstream's own `scope=blerg` test case.
+//
+// Cerberus used to wave "all" through as a friendly alias for the
+// default. That made cerberus the strictly more permissive backend, so
+// a client written against cerberus broke the moment it was pointed at
+// real Tempo, and the differential harness could not catch it: it only
+// sends queries both backends accept.
+//
+// Both the V1 and V2 tag endpoints route through the same
+// `parseTagScope`, so both are pinned here.
+func TestSearchTags_ScopeAllRejected(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/api/search/tags", "/api/v2/search/tags"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{stringsBySQL: map[string][]string{
+				"`ResourceAttributes`": {"service.name"},
+				"`SpanAttributes`":     {"http.method"},
+			}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + path + "?scope=all")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("scope=all: status=%d want 400 body=%s", resp.StatusCode, readBody(t, resp))
+			}
+			var er tempo.ErrorResponse
+			if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !er.Error {
+				t.Errorf("expected error=true, got %+v", er)
+			}
+			// Byte-identical to upstream's `fmt.Errorf("invalid scope: %s", scope)`.
+			if want := "invalid scope: all"; !strings.Contains(er.Message, want) {
+				t.Errorf("message = %q, want it to contain %q", er.Message, want)
+			}
+		})
 	}
 }
 
@@ -527,8 +578,8 @@ func TestSearchTagsV2_IntrinsicListMatchesTempo(t *testing.T) {
 
 // TestSearchTags_V1OmitsIntrinsicsByDefault — pins the V1 no-leak rule:
 // without explicit `?scope=intrinsic`, the envelope must carry zero
-// intrinsics regardless of whether the caller passed `?scope=none`,
-// `?scope=all`, or no scope at all. Matches upstream Tempo's
+// intrinsics regardless of whether the caller passed `?scope=none` or
+// no scope at all. Matches upstream Tempo's
 // `tag_handlers.go` carve-out (intrinsics only when `Scope ==
 // ParamScopeIntrinsic`) so the tags_v1_all compat case passes.
 func TestSearchTags_V1OmitsIntrinsicsByDefault(t *testing.T) {
@@ -541,7 +592,7 @@ func TestSearchTags_V1OmitsIntrinsicsByDefault(t *testing.T) {
 		"span:name", "span:kind", "trace:id",
 		"event:name", "link:spanID", "instrumentation:name",
 	}
-	for _, query := range []string{"", "?scope=none", "?scope=all"} {
+	for _, query := range []string{"", "?scope=none"} {
 		query := query
 		t.Run("query="+query, func(t *testing.T) {
 			t.Parallel()

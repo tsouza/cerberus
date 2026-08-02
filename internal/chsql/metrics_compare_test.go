@@ -245,9 +245,146 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 	// Negative arm (regression discriminator): a non-root selection must NOT gain
 	// the direct bound — the prefix before the seed is only the ParentSpanId
 	// filter. This is what makes the test fail if the emitter half is reverted.
+	// compareNodeWithRoot leaves the trace_id_ts lookup fields empty, so the
+	// envelope of TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound is
+	// off too: asserting on the Timestamp column rather than on one bound's
+	// rendering pins that NEITHER bound shape reaches this scan.
 	nonRootPrefix := prefixBeforeSeed(t, false)
-	if strings.Contains(nonRootPrefix, "fromUnixTimestamp64Nano") {
-		t.Errorf("non-root: root scan must stay unbounded (no direct Timestamp bound before the seed), got prefix:\n%s", nonRootPrefix)
+	if strings.Contains(nonRootPrefix, "`Timestamp`") {
+		t.Errorf("non-root: root scan must stay unbounded (no Timestamp bound before the seed), got prefix:\n%s", nonRootPrefix)
+	}
+}
+
+// TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound proves the
+// non-root strategy retains Tempo's root enrichment without pretending the
+// request window contains the root. The trace_id_ts min/max envelope is built
+// from exactly the seeded cohort, then conjoined on the physical root scan.
+func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
+	t.Parallel()
+
+	m := compareNodeWithRoot()
+	m.RootLookupTraceIDTsTable = "otel_traces_trace_id_ts"
+	m.RootLookupTraceIDTsStartColumn = "Start"
+	m.RootLookupTraceIDTsEndColumn = "End"
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Range:           time.Minute,
+		Step:            time.Minute,
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "Timestamp",
+	}
+	sql, args, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
+	if onIdx < 0 {
+		t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
+	}
+	rLeg := sql[:onIdx]
+	start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
+	// The trace_id_ts scalar bounds each contain the same cohort seed. The
+	// final occurrence is the root scan's exact membership predicate, after
+	// both bounds have been established.
+	seed := strings.LastIndex(rLeg, "`TraceId` IN (SELECT `TraceId`")
+	if start < 0 || seed < 0 || seed <= start {
+		t.Fatalf("expected root scan filter then TraceId seed:\n%s", rLeg)
+	}
+	prefix := rLeg[start:seed]
+	// Each bound is a ScalarSubquery over a no-GROUP Aggregate whose AggFunc
+	// carries an alias, and chsql renders a Filter-over-Scan as a derived
+	// table — so the canonical rendering is
+	// `(SELECT <agg> AS <col> FROM (SELECT * FROM <ts> WHERE …))`.
+	for _, want := range []string{
+		"`Timestamp` >= (SELECT min(`Start`) AS `Start` FROM (SELECT * FROM `otel_traces_trace_id_ts`",
+		"`Timestamp` <= addSeconds((SELECT max(`End`) AS `End` FROM (SELECT * FROM `otel_traces_trace_id_ts`",
+	} {
+		if !strings.Contains(prefix, want) {
+			t.Errorf("non-root root scan must carry %q before its exact seed:\n%s", want, prefix)
+		}
+	}
+	firstNestedSeed := strings.Index(prefix, "`TraceId` IN (SELECT `TraceId`")
+	if firstNestedSeed < 0 {
+		t.Fatalf("expected the trace_id_ts scalar bound to use the cohort seed:\n%s", prefix)
+	}
+	// The nested seed is request-windowed, as it must be. Only the root scan's
+	// direct predicate is forbidden from using that window; before the scalar's
+	// first seed it must be the lookup-derived min(Start) bound.
+	directPrefix := prefix[:firstNestedSeed]
+	if strings.Contains(directPrefix, "fromUnixTimestamp64Nano") {
+		t.Errorf("non-root root scan must not use the request window directly:\n%s", directPrefix)
+	}
+
+	// addSeconds() alone does not prove the upper bound is actually widened —
+	// a zero pad renders identically. trace_id_ts stores End as a DateTime
+	// floored from a DateTime64(9) max(Timestamp), so the pad must be a full
+	// second for the envelope to stay a superset of the trace's last span.
+	// The exact TraceId-IN seed renders last and contributes exactly the two
+	// request-window params, so the pad is the third argument from the end.
+	const wantEndPadSeconds = int64(1)
+	const padArgsFromEnd = 3
+	if len(args) < padArgsFromEnd {
+		t.Fatalf("expected at least %d args, got %#v", padArgsFromEnd, args)
+	}
+	if got := args[len(args)-padArgsFromEnd]; got != any(wantEndPadSeconds) {
+		t.Errorf("addSeconds pad = %#v, want %d second", got, wantEndPadSeconds)
+	}
+}
+
+// TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig pins that the
+// trace_id_ts readiness triple is all-or-nothing. A schema override can name
+// the table but leave a column blank; emitting `min()` over an empty
+// identifier would be a broken query, not a looser envelope, so each
+// half-configured triple must fall back to the unbounded-but-lossless shape.
+// Each row also discriminates one clause of the readiness guard.
+func TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name              string
+		table, start, end string
+	}{
+		{"noTable", "", "Start", "End"},
+		{"noStartColumn", "otel_traces_trace_id_ts", "", "End"},
+		{"noEndColumn", "otel_traces_trace_id_ts", "Start", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := compareNodeWithRoot()
+			m.RootLookupTraceIDTsTable = tc.table
+			m.RootLookupTraceIDTsStartColumn = tc.start
+			m.RootLookupTraceIDTsEndColumn = tc.end
+			rw := &chplan.RangeWindow{
+				Input:           m,
+				Range:           time.Minute,
+				Step:            time.Minute,
+				Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+				End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+				TimestampColumn: "Timestamp",
+			}
+			sql, _, err := chsql.Emit(context.Background(), rw)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
+			if onIdx < 0 {
+				t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
+			}
+			rLeg := sql[:onIdx]
+			start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
+			// With no envelope the FIRST TraceId-IN is the exact cohort seed, so
+			// the prefix is the whole pre-seed scan filter.
+			seed := strings.Index(rLeg, "`TraceId` IN (SELECT `TraceId`")
+			if start < 0 || seed < 0 || seed <= start {
+				t.Fatalf("expected root scan filter then TraceId seed:\n%s", rLeg)
+			}
+			if prefix := rLeg[start:seed]; strings.Contains(prefix, "`Timestamp`") {
+				t.Errorf("half-configured trace_id_ts must not bound the root scan, got prefix:\n%s", prefix)
+			}
+		})
 	}
 }
 

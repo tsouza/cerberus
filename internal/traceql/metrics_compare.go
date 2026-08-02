@@ -156,6 +156,11 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 		node.TraceIDColumn = s.TraceIDColumn
 		node.RootNameAlias = rootNameAlias
 		node.RootServiceAlias = rootServiceAlias
+		if s.TraceIDTsEnabled {
+			node.RootLookupTraceIDTsTable = s.TraceIDTsTable
+			node.RootLookupTraceIDTsStartColumn = s.TraceIDTsStartColumn
+			node.RootLookupTraceIDTsEndColumn = s.TraceIDTsEndColumn
+		}
 		// A root-scoped selection (`{ nestedSetParent < 0 }` → Filter(ParentSpanId
 		// = '') over Scan — the traces-drilldown "Comparison" shape) only seeds
 		// TraceIds whose root span is in the request window, so the emitter can

@@ -154,7 +154,7 @@ func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.Structural
 	phaseA := buildStructuralPhaseAPlan(sj, h.Schema, limit)
 	sql, args, err := chsql.Emit(chsql.WithSpansTable(ctx, h.Schema.SpansTable), phaseA)
 	if err != nil {
-		// Mirror the engine's `emit:` wrapping so classifySearchErr maps this
+		// Mirror the engine's `emit:` wrapping so ClassifyErr maps this
 		// to HTTP 500 like any other emit failure.
 		return nil, fmt.Errorf("engine: emit: structural phase A: %w", err)
 	}

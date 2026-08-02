@@ -513,6 +513,21 @@ millisecond counter where a per-request middleware is in play).
 Tests assert their presence — they are part of the wire contract,
 not an internal detail.
 
+Individual heads add their own headers where an upstream wire format
+has no field for a number cerberus needs to report. The Tempo head's
+`/api/search` stamps one:
+
+| Header                       | Source                   | Meaning                                                                             |
+| ---------------------------- | ------------------------ | ----------------------------------------------------------------------------------- |
+| `X-Cerberus-Inspected-Spans` | `tempo.SearchMetricsFor` | Span ROWS drained from ClickHouse to answer the search — the resource-bound signal. |
+
+It is the companion to `SearchMetrics.InspectedTraces` in the response
+body, which counts distinct **traces** (upstream Tempo's semantics).
+The two are different quantities, so they get different names; the
+gRPC `StreamingQuerier.Search` RPC reports the span count on an
+identically-named trailer so both transports answer the same question
+the same way.
+
 ## Extension points
 
 The engine has two designed-in extension points beyond the `Lang`

@@ -208,7 +208,7 @@ func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string,
 	if e.QueryObserver == nil || queryID == "" {
 		return
 	}
-	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveQuery(
 		queryID, planShapeID(plan), e.Settings.enabledOpts(), language,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
@@ -251,7 +251,7 @@ func (e *Engine) observeRoutedQuery(info *solver.ExecInfo, plan chplan.Node, lan
 	if len(ids) == 0 {
 		return
 	}
-	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveRoutedQuery(
 		ids, info.Parallelism, planShapeID(plan), e.Settings.enabledOpts(), language,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
@@ -337,7 +337,7 @@ func (e *Engine) observeRejection(language string, plan chplan.Node, decision *s
 	if e.QueryObserver == nil {
 		return
 	}
-	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveRejection(
 		planShapeID(plan), e.Settings.enabledOpts(), language, token,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
@@ -356,7 +356,7 @@ func (e *Engine) observeDispatchedRejection(queryID, language string, plan chpla
 	if e.QueryObserver == nil {
 		return
 	}
-	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(decision)
+	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveDispatchedRejection(
 		queryID, planShapeID(plan), e.Settings.enabledOpts(), language, token,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
@@ -373,18 +373,50 @@ const routeSecond = int64(time.Second)
 const (
 	corpusRouteA = "A"
 	corpusRouteB = "B"
+
+	// CorpusReasonNonPromQL is the corpus decision_reason for a row that has
+	// no route decision because its head never enters the solver. It is corpus
+	// TAXONOMY, not a solver Reason: LogQL and TraceQL keep an empty route,
+	// zero solver geometry, route-A execution and NO shadow header — only the
+	// reason column distinguishes them, and only so a mining rule can name the
+	// unclassified population instead of inferring it from an absence.
+	//
+	// Exported because the column's writer-side vocabulary is a closed wire
+	// contract that two other packages must agree with, and both derive it from
+	// here rather than restating the literal (internal/routerrules'
+	// decision_reason enum domain, and the corpus fixture invariants in
+	// test/regression). The engine declares it because the engine is where the
+	// "no decision, and here is why" call is made.
+	CorpusReasonNonPromQL = "non-promql"
 )
 
 // routeFeatures unpacks a solver Decision into the primitive routing-feature
-// scalars the QueryObserver seam takes. A nil decision (no classification ran)
-// returns present=false with zero scalars so the corpus leaves the routing
-// columns empty. Durations (D / OuterRange / Step) are reported in whole
-// seconds to match the UInt32 corpus columns. The Route enum is "B" on a true
-// route (Strategy set), "A" otherwise — read from the recorded Strategy, never
-// the Reason string, so a Reason added to the solver later cannot be misread as
-// a route.
-func routeFeatures(d *solver.Decision) (present bool, route string, nAnchors, fanout, cumulativeD, outerRange, step uint32, kShards uint8, reason string) {
+// scalars the QueryObserver seam takes. Durations (D / OuterRange / Step) are
+// reported in whole seconds to match the UInt32 corpus columns. The Route enum
+// is "B" on a true route (Strategy set), "A" otherwise — read from the recorded
+// Strategy, never the Reason string, so a Reason added to the solver later
+// cannot be misread as a route.
+//
+// A nil decision always reports present=false with zero geometry: nothing was
+// classified, so there is no route and no grid to report. It splits on LANGUAGE
+// only to name WHY, and the two arms are not interchangeable:
+//
+//   - a non-PromQL head can never be classified — solver.Classify is gated on
+//     LangPromQL — so the absence is structural and permanent, and the corpus
+//     records CorpusReasonNonPromQL to say so;
+//   - a PromQL head with a nil decision merely had the Solver switched off, a
+//     deployment setting that can change tomorrow. It records NO reason, because
+//     claiming "non-promql" for the head that IS PromQL would mislabel the only
+//     population that ever carries a route.
+//
+// Keying on the language rather than on "decision == nil" is therefore the whole
+// correctness of the split: the default deployment runs the Solver off, so the
+// nil-decision case is dominated by PromQL rows.
+func routeFeatures(language string, d *solver.Decision) (present bool, route string, nAnchors, fanout, cumulativeD, outerRange, step uint32, kShards uint8, reason string) {
 	if d == nil {
+		if language != solver.LangPromQL {
+			return false, "", 0, 0, 0, 0, 0, 0, CorpusReasonNonPromQL
+		}
 		return false, "", 0, 0, 0, 0, 0, 0, ""
 	}
 	route = corpusRouteA

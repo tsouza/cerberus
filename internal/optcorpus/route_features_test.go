@@ -5,7 +5,16 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/tsouza/cerberus/internal/engine"
 )
+
+// nonPromQLReason is the corpus-only decision_reason an unclassified head
+// carries, taken from the engine seam that emits it rather than restated: the
+// point of the absent-route test below is that the EXACT token the dispatch
+// site records is the one that survives the join. optcorpus's production code
+// imports neither the engine nor the solver — this is a test-only edge.
+const nonPromQLReason = engine.CorpusReasonNonPromQL
 
 // TestRow_JSONRoundTrip_NewFields pins that the extended Row (routing features
 // + exit_status) survives a JSON encode/decode unchanged — the JSONL sink's
@@ -110,8 +119,19 @@ func TestReconcileOnce_JoinsRouteFeatures(t *testing.T) {
 }
 
 // TestReconcileOnce_RouteAbsent_ZeroColumns pins that a dispatch with no
-// routing classification (Solver off / unclassified head) leaves the routing
-// columns empty rather than recording a fictitious route-A row.
+// routing classification (Solver off / unclassified head) records no route and
+// no geometry, rather than a fictitious route-A row — while still keeping the
+// corpus-only decision_reason that names WHY it is unclassified.
+//
+// The Record deliberately carries a full set of NON-ZERO geometry scalars
+// alongside Present=false. That is the teeth: with a zero-valued Record every
+// geometry assertion below would hold no matter what the reconciler did, so the
+// test would pass even if joinRouteFeatures copied the routing output through
+// unconditionally. Feeding it fabricated geometry makes each zero assertion a
+// statement that the reconciler SUPPRESSED an unclassified row's routing
+// output, which is the invariant. decision_reason is the sole exemption, and
+// exempting it cannot fabricate a route: no mining rule can read a route, a
+// shard count or a cost-grid bucket out of it.
 func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 	t.Parallel()
 
@@ -119,7 +139,20 @@ func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 	sink := &memSink{}
 	r := New(src, sink, Options{RingCapacity: 8})
 
-	r.Observe(Record{QueryID: "qid-noroute", ShapeID: "cerb:scan", Language: "logql"})
+	r.Observe(Record{
+		QueryID: "qid-noroute", ShapeID: "cerb:scan", Language: "logql",
+		Route: RouteFeatures{
+			Present:        false,
+			Route:          "B",
+			NAnchors:       241,
+			Fanout:         20,
+			CumulativeD:    300,
+			OuterRange:     3600,
+			Step:           15,
+			KShards:        8,
+			DecisionReason: nonPromQLReason,
+		},
+	})
 	src.seed(SourceRow{QueryID: "qid-noroute", ReadRows: 1, ExitStatus: ExitOK})
 
 	r.reconcileOnce(context.Background())
@@ -129,9 +162,19 @@ func TestReconcileOnce_RouteAbsent_ZeroColumns(t *testing.T) {
 		t.Fatalf("sink rows = %d; want 1", len(rows))
 	}
 	got := rows[0]
-	if got.Route != "" || got.KShards != 0 || got.DecisionReason != "" ||
-		got.NAnchors != 0 || got.Fanout != 0 {
-		t.Errorf("absent route should leave columns zero: %+v", got)
+	if got.Route != "" || got.KShards != 0 || got.NAnchors != 0 || got.Fanout != 0 ||
+		got.CumulativeD != 0 || got.OuterRange != 0 || got.Step != 0 {
+		t.Errorf("absent route must leave route + every geometry column zero: %+v", got)
+	}
+	if got.DecisionReason != nonPromQLReason {
+		t.Errorf("decision_reason = %q, want %q", got.DecisionReason, nonPromQLReason)
+	}
+	// The execution-observability columns are joined from query_log and are
+	// orthogonal to classification: an unclassified query still ran and still
+	// cost something. Pinned so a future tightening of the routing invariant
+	// cannot quietly start blanking real cost.
+	if got.ReadRows != 1 {
+		t.Errorf("joined cost must survive an absent route: ReadRows = %d, want 1", got.ReadRows)
 	}
 }
 

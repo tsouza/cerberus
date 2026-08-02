@@ -2110,6 +2110,26 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "info_data_label_matcher_drops_unmatched",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "info_regex_name_matcher_unions_info_metrics",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "info_target_info_enrichment",
     "routed": false,
     "k": 0,

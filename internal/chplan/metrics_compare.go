@@ -88,6 +88,13 @@ type MetricsCompare struct {
 	ValAlias         string
 	ValueAlias       string
 	Inner            Node
+	// RootLookupTraceIDTs* describe the opt-in trace timestamp lookup used to
+	// bound non-root root enrichment. Its per-trace [Start, End] envelope is a
+	// superset of every span timestamp, including a root that predates the
+	// compare request window.
+	RootLookupTraceIDTsTable       string
+	RootLookupTraceIDTsStartColumn string
+	RootLookupTraceIDTsEndColumn   string
 	// InnerRootScoped is set by lowering when Inner is confined to root spans
 	// (ParentSpanId = ''). It lets the emitter prune the root-lookup scan by the
 	// request-window Timestamp losslessly — the seed's roots are then in-window
@@ -111,6 +118,9 @@ func (m *MetricsCompare) Equal(other Node) bool {
 	}
 	if m.TopN != o.TopN || m.StartNs != o.StartNs || m.EndNs != o.EndNs ||
 		m.InnerRootScoped != o.InnerRootScoped ||
+		m.RootLookupTraceIDTsTable != o.RootLookupTraceIDTsTable ||
+		m.RootLookupTraceIDTsStartColumn != o.RootLookupTraceIDTsStartColumn ||
+		m.RootLookupTraceIDTsEndColumn != o.RootLookupTraceIDTsEndColumn ||
 		m.TraceIDColumn != o.TraceIDColumn ||
 		m.RootNameAlias != o.RootNameAlias || m.RootServiceAlias != o.RootServiceAlias ||
 		m.SelAlias != o.SelAlias || m.AttrAlias != o.AttrAlias ||

@@ -210,22 +210,32 @@ func TestSolver_SingleMode_ShadowHeaderReportsClassification(t *testing.T) {
 
 // TestSolver_NonPromQLHead_NoShadowHeader pins the Lang gate: a non-PromQL
 // head skips the solver entirely, so the shadow header is OMITTED and the
-// response is byte-identical to the nil-Solver path.
+// response is byte-identical to the nil-Solver path. It also pins the ONE thing
+// such a head does contribute to the corpus: an explicit non-promql
+// decision_reason, carried on a row that still reports no route and no solver
+// geometry.
+//
+// The context must carry a span. The corpus dispatch seam is keyed on the
+// per-dispatch ClickHouse query_id, and chclient.EnsureQueryID mints "" without
+// a trace — on a bare context.Background() observeQuery short-circuits and the
+// read-out below is empty for want of a join key, not for want of the reason.
 func TestSolver_NonPromQLHead_NoShadowHeader(t *testing.T) {
 	t.Parallel()
 
 	q := &fakeQuerier{rows: []chclient.Sample{{MetricName: "up", Timestamp: time.Unix(1, 0), Value: 1}}}
 	rec := &recordingCursorClient{}
+	obs := &recordingObserver{}
 	eng := &engine.Engine{
-		Optimizer: optimizer.Default(),
-		Client:    q,
-		Solver:    singleModeSolver(t, rec),
+		Optimizer:     optimizer.Default(),
+		Client:        q,
+		Solver:        singleModeSolver(t, rec),
+		QueryObserver: obs,
 	}
 
 	lang := matrixLang()
 	lang.name = "logql" // not the PromQL head — classification is bypassed.
 
-	res, err := eng.Query(context.Background(), lang, "rate(up[5m])")
+	res, err := eng.Query(tracedCtx(), lang, "rate(up[5m])")
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -234,6 +244,60 @@ func TestSolver_NonPromQLHead_NoShadowHeader(t *testing.T) {
 	}
 	if rec.opens != 0 {
 		t.Errorf("Executor invoked for non-PromQL head: opens=%d", rec.opens)
+	}
+	if len(obs.routePresent) != 1 {
+		t.Fatalf("corpus observations = %d; want exactly 1 dispatch-seam row", len(obs.routePresent))
+	}
+	if obs.routePresent[0] || obs.routes[0] != "" ||
+		obs.decisionRsns[0] != engine.CorpusReasonNonPromQL {
+		t.Errorf("corpus routing read-out = (present=%v route=%q reason=%q); want (false, %q, %q)",
+			obs.routePresent[0], obs.routes[0], obs.decisionRsns[0], "", engine.CorpusReasonNonPromQL)
+	}
+	// The reason must not smuggle solver geometry in behind it: a non-PromQL
+	// row records WHY it is unclassified and nothing else.
+	if obs.lastNAnchors != 0 || obs.lastFanout != 0 || obs.lastCumD != 0 ||
+		obs.lastOuterRng != 0 || obs.lastStep != 0 || obs.lastKShards != 0 {
+		t.Errorf("non-PromQL head reported solver geometry: N=%d F=%d D=%d outer=%d step=%d K=%d",
+			obs.lastNAnchors, obs.lastFanout, obs.lastCumD,
+			obs.lastOuterRng, obs.lastStep, obs.lastKShards)
+	}
+}
+
+// TestSolver_Off_PromQLHead_NoNonPromQLReason pins the INVERSE boundary of the
+// non-promql reason: a PromQL dispatch with no Solver wired also has a nil
+// Decision, and it must record NO reason at all.
+//
+// This is the direction that would silently corrupt the corpus rather than
+// merely under-populate it. The default deployment runs the Solver off, so if
+// the reason were keyed on "nil decision" instead of on the language, the entire
+// PromQL population — the only population that HAS routes — would be stamped
+// "non-promql", and every mining rule that partitions by that reason to isolate
+// the unclassified heads would silently select all of production.
+func TestSolver_Off_PromQLHead_NoNonPromQLReason(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{rows: []chclient.Sample{{MetricName: "up", Timestamp: time.Unix(1, 0), Value: 1}}}
+	obs := &recordingObserver{}
+	eng := &engine.Engine{
+		Optimizer:     optimizer.Default(),
+		Client:        q,
+		QueryObserver: obs,
+		// Solver deliberately nil: the default configuration.
+	}
+
+	if _, err := eng.Query(tracedCtx(), matrixLang(), "rate(up[5m])"); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(obs.decisionRsns) != 1 {
+		t.Fatalf("corpus observations = %d; want exactly 1", len(obs.decisionRsns))
+	}
+	if obs.decisionRsns[0] != "" {
+		t.Errorf("Solver-off PromQL row reason = %q; want empty (the Solver was off, the head IS PromQL)",
+			obs.decisionRsns[0])
+	}
+	if obs.routePresent[0] || obs.routes[0] != "" {
+		t.Errorf("Solver-off PromQL row claims a route: present=%v route=%q",
+			obs.routePresent[0], obs.routes[0])
 	}
 }
 

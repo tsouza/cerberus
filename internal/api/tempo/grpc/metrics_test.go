@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -240,7 +239,7 @@ func TestMetricsQueryInstant_FrameShape(t *testing.T) {
 // TestMetricsQueryRange_ParseError confirms the gRPC error-mapping
 // table from the design doc §3: a TraceQL parser failure surfaces as
 // codes.InvalidArgument (user-facing query error), not codes.Internal.
-// The HTTP equivalent returns 400 (see classifyMetricsQueryRangeErr) —
+// The HTTP equivalent returns 400 (see ClassifyErr / ErrClass.HTTPStatus) —
 // both surfaces converge on "user typed a broken metrics query."
 func TestMetricsQueryRange_ParseError(t *testing.T) {
 	t.Parallel()
@@ -318,15 +317,15 @@ func TestMetricsQueryInstant_Cancellation(t *testing.T) {
 	if !ok {
 		t.Fatalf("want grpc status, got %v", recvErr)
 	}
-	// Either codes.Canceled (transport saw cancel first) or
-	// codes.Internal wrapping context.Canceled (engine surfaced
-	// ctx.Err() as an execute-stage error first). Both prove the
-	// cancellation flowed through.
-	if st.Code() != codes.Canceled && st.Code() != codes.Internal {
-		t.Errorf("code: got %s, want Canceled or Internal", st.Code())
-	}
-	if st.Code() == codes.Internal && !strings.Contains(st.Message(), "context canceled") {
-		t.Errorf("Internal status message: want to mention 'context canceled', got %q", st.Message())
+	// Exactly codes.Canceled, whichever race won. If the transport saw
+	// the cancel first it reports Canceled directly; if the engine got
+	// there first it surfaces ctx.Err() wrapped in an execute-stage
+	// error, and ClassifyErr unwraps that to ErrClassCanceled — which
+	// grpcCodeFor also encodes as Canceled. The old "Canceled OR
+	// Internal" form here could not fail on the second branch, which is
+	// precisely the divergence unified classification removes.
+	if st.Code() != codes.Canceled {
+		t.Errorf("code: got %s, want %s", st.Code(), codes.Canceled)
 	}
 }
 

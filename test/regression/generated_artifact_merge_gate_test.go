@@ -60,9 +60,12 @@ type generatedArtifact struct {
 	regen string
 }
 
-// migrationGoldenRecipe regenerates every Tier-0 migration golden. It is NOT
-// reached by `just update-golden`, and it refuses to run when CI is set, so a
-// resolver who assumes the umbrella recipe covers it leaves these stale.
+// migrationGoldenRecipe regenerates every Tier-0 migration golden. It refuses
+// to run when CI is set, so only a local run repairs these. `just
+// update-golden` chains it (see TestUpdateGoldenChainsMigrationGolden), but the
+// instruction names this recipe directly: a resolver fixing one stale artifact
+// wants the command that regenerates exactly it, not the umbrella that also
+// rewrites every TXTAR fixture and both perf baselines.
 const migrationGoldenRecipe = "just migration-golden"
 
 // inventoryUpdateEnv is the env gate that rewrites each feature/surface

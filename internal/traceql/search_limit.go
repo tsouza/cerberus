@@ -215,6 +215,17 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 		v.Left = windowRecursiveScans(v.Left, startNano, endNano, tsCol)
 		v.Right = windowRecursiveScans(v.Right, startNano, endNano, tsCol)
 		return v
+	case *chplan.Filter:
+		// Same Expr-slot blind spot pushLeafPredicate documents: the trace-cohort
+		// subquery of a spanset-aggregate operand (`({A} >> {B} | count() > 1)`)
+		// can itself hold a structural closure, and RewriteChildren cannot reach a
+		// Node behind an Expr. Descend it explicitly; the input recurse below is
+		// what the generic default would have done.
+		for _, in := range cohortSubqueries(v.Predicate) {
+			in.Subquery = windowRecursiveScans(in.Subquery, startNano, endNano, tsCol)
+		}
+		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol)
+		return v
 	default:
 		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
 			return windowRecursiveScans(c, startNano, endNano, tsCol), true
@@ -257,6 +268,13 @@ func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 		// Leaf: wrap in a Filter carrying the predicate.
 		return &chplan.Filter{Input: v, Predicate: pred}
 	case *chplan.Filter:
+		// A spanset-aggregate operand carries its trace cohort in an
+		// InSubquery predicate (see spanset_operand.go) — a Node reachable
+		// only through an Expr slot, which RewriteChildren cannot see by
+		// construction (chplan/in_subquery.go). Descend it explicitly, or the
+		// cohort aggregation scans full retention behind an inert membership
+		// test: GAP-3, one level down.
+		pushLeafPredicateIntoCohort(v.Predicate, pred)
 		// A Filter directly on a Scan conjoins (one Filter); otherwise recurse.
 		if _, ok := v.Input.(*chplan.Scan); ok {
 			v.Predicate = conjoin(v.Predicate, pred)
@@ -285,6 +303,33 @@ func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 		})
 		return out
 	}
+}
+
+// pushLeafPredicateIntoCohort ANDs pred into the leaves of every trace-cohort
+// subquery predicate carries, so a spanset-aggregate operand's cohort
+// aggregation is bounded by the same window / top-N gate as the span rows it
+// selects.
+func pushLeafPredicateIntoCohort(predicate, pred chplan.Expr) {
+	for _, in := range cohortSubqueries(predicate) {
+		in.Subquery = pushLeafPredicate(in.Subquery, pred)
+	}
+}
+
+// cohortSubqueries collects every InSubquery reachable from e — the trace-cohort
+// membership test a spanset-aggregate operand carries (spanset_operand.go).
+// Both stamping walks recurse through the collected Subquery nodes because a
+// Node behind an Expr slot is invisible to chplan.RewriteChildren by
+// construction; chplan.InspectExpr is the maintained, exhaustive Expr walk, so
+// a cohort nested under any future Expr shape is still found.
+func cohortSubqueries(e chplan.Expr) []*chplan.InSubquery {
+	var out []*chplan.InSubquery
+	chplan.InspectExpr(e, func(x chplan.Expr) bool {
+		if in, ok := x.(*chplan.InSubquery); ok && in.Subquery != nil {
+			out = append(out, in)
+		}
+		return true
+	})
+	return out
 }
 
 // stampSearchWindow folds the /api/search request window into every leaf

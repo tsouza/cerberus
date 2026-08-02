@@ -330,6 +330,12 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if len(v.DataLabels) > 0 {
 			fmt.Fprintf(b, " dataLabels=[%s]", strings.Join(v.DataLabels, ", "))
 		}
+		if v.DropUnmatched {
+			b.WriteString(" dropUnmatched")
+		}
+		if v.MergeInfoMetrics {
+			b.WriteString(" mergeInfoMetrics")
+		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
 		printNode(b, v.Info, depth+1)
@@ -642,6 +648,15 @@ func printExpr(e chplan.Expr) string {
 		flat := strings.TrimRight(sb.String(), "\n")
 		flat = strings.Join(strings.Fields(strings.ReplaceAll(flat, "\n", " ; ")), " ")
 		return fmt.Sprintf("scalarSubquery{%s}", flat)
+	case *chplan.InSubquery:
+		// Same one-line flattening as ScalarSubquery: the membership plan
+		// (e.g. a spanset-aggregate operand's trace cohort) stays visible in
+		// the IR snapshot instead of collapsing to an opaque token.
+		var sb strings.Builder
+		printNode(&sb, v.Subquery, 0)
+		flat := strings.TrimRight(sb.String(), "\n")
+		flat = strings.Join(strings.Fields(strings.ReplaceAll(flat, "\n", " ; ")), " ")
+		return fmt.Sprintf("(%s IN {%s})", printExpr(v.Left), flat)
 	case *chplan.BoundedTraceScope:
 		// One-line greppable form: the gate shows on each leaf Filter of a
 		// bounded structure-tab row source so the IR snapshot proves the

@@ -10,7 +10,6 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
@@ -126,7 +125,7 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 			// for why the instant anchor sits at `end` only.
 			series, headers, cerr := h.execCompareRange(ctx, q, plan, cmp, end, end, step)
 			if cerr != nil {
-				writeError(w, classifyMetricsQueryRangeErr(cerr), "", "", cerr)
+				writeError(w, httpErrStatus(cerr), "", "", cerr)
 				return
 			}
 			writeEngineHeaders(w, headers)
@@ -148,53 +147,15 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Start = End on purpose: the matrix emitter generates
-	// (End-Start)/Step + 1 anchors at `End - i*Step`, so Start==End
-	// yields the single anchor at `end` whose right-closed window
-	// (end - Range, end] IS the instant bucket [start, end] Tempo's
-	// IntervalMapperInstant evaluates. Passing Start=start here would
-	// fan out a second anchor at `start` covering (start-step, start]
-	// — entirely before the requested window — which evaluates to 0
-	// and, being the earliest sample, used to win the
-	// first-sample-by-timestamp pick in toMetricsInstantSeries: every
-	// instant compat case returned 0 instead of the real value. The
-	// inner-scan time-bound pushdown still prunes on
-	// (Start - Range, End] = (start, end], so partition pruning is
-	// unaffected.
-	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Range:           step,
-		Step:            step,
-		Start:           end,
-		End:             end,
-		TimestampColumn: h.Schema.TimestampColumn,
-	}
-	wrapped := wrapMetricsForSample(applyMetricsSecondStages(rw, stages, nil), metrics)
-
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
-		IsMetric:      true,
-		ResponseShape: "tempo-metrics-instant",
-	})
+	series, headers, qerr := h.execMetricsInstant(ctx, q, inner, stages, metrics, end, step)
 	if qerr != nil {
-		writeError(w, classifyMetricsQueryRangeErr(qerr), "", "", qerr)
+		writeError(w, httpErrStatus(qerr), "", "", qerr)
 		return
 	}
-	h.Logger.Debug("cerberus tempo metrics_query_instant",
-		"traceql", q, "start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
 
-	// quantile_over_time: same bucket-shape → quantile collapse as in
-	// the range handler — Tempo's reference engine routes the instant
-	// shape through the same HistogramAggregator, so the post-processor
-	// runs before the instant projection.
-	samples := res.Samples
-	if metrics.Op == chplan.MetricsOpQuantileOverTime {
-		samples = postProcessQuantileBuckets(samples, metrics)
-	}
-
-	writeEngineHeaders(w, res.Headers)
+	writeEngineHeaders(w, headers)
 	writeJSON(w, http.StatusOK, MetricsQueryInstantResponse{
-		Series: toMetricsInstantSeries(samples, metrics),
+		Series: series,
 	})
 }
 
