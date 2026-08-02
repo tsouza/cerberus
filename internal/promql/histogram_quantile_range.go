@@ -247,18 +247,17 @@ func lowerHistogramQuantileClassicBareRange(
 	return buildHistogramRangeTree(
 		scan, pred, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
-		classicBucketLatestAggs(s), phi, s, ctx,
+		classicBucketShaping{aggs: classicBucketLatestAggs(s)}, phi, s, ctx,
 	)
 }
 
 // lowerHistogramQuantileClassicAggRange builds the range-mode plan tree
 // for `histogram_quantile(phi, sum [by/without] (rate(<bucket>[r])))`.
 //
-// The lookback is the rate's [range] duration; the bucket aggregation is
-// sumForEach (mirrors the instant-mode classic-agg path's element-wise
-// sum across all rows in the rate window), keyed by the bucket layout so
-// rows carrying different ExplicitBounds never share a ladder — see
-// classicBucketAggGroupBy and classicBucketSumAggs.
+// The lookback is the rate's [range] duration; the bucket aggregation
+// collects every in-window row's layout and counts per anchor and merges
+// them over the union of bounds, mirroring the instant-mode classic-agg
+// path — see classicBucketMergeShaping and classicBucketMergedLadderExpr.
 func lowerHistogramQuantileClassicAggRange(
 	shape histogramAggShape,
 	phi phiArg,
@@ -272,25 +271,25 @@ func lowerHistogramQuantileClassicAggRange(
 	pred := buildPredicate(stripBucketSuffix(vs.LabelMatchers), s)
 
 	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
-	groupBy, groupByAliases := classicBucketAggGroupBy(userGroupBy, userAliases, s)
 	return buildHistogramRangeTree(
 		scan, pred, aggWindowFor(shape),
-		groupBy, groupByAliases, attrsRebuild,
-		classicBucketSumAggs(s), phi, s, ctx,
+		userGroupBy, userAliases, attrsRebuild,
+		classicBucketMergeShaping(shape.classicFold, s), phi, s, ctx,
 	)
 }
 
 // buildHistogramRangeTree assembles the shared range-mode plan tree
 // for the classic-histogram quantile rewrites. The bare-selector and
-// aggregated paths pass distinct (lookback, groupBy, bucketAggs)
-// values; the resulting tree shape is otherwise identical.
+// aggregated paths pass distinct (lookback, groupBy, shaping) values;
+// the resulting tree shape is otherwise identical.
 //
 // Plan shape (in chsql output order):
 //
 //	Project [MetricName='', Attributes, anchor_ts AS TimeUnix, Value]
 //	  HistogramQuantile phi groupBy=[anchor_ts, Attributes]
-//	    Project [anchor_ts, <attrs-rebuilt>, BucketCounts, ExplicitBounds]
-//	      RangeBucketFanout groupBy=[<user-labels>] funcs=<bucketAggs>
+//	    <shaping reshape: one Project for the newest-row path, two for
+//	     the layout merge — see classicBucketShaping.reshape>
+//	      RangeBucketFanout groupBy=[<user-labels>] funcs=<shaping.aggs>
 //	        Filter(Scan, <matchers>)
 //
 // The RangeBucketFanout node replaces the O(rows × N) StepGrid CROSS
@@ -305,28 +304,23 @@ func buildHistogramRangeTree(
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	attrsRebuild chplan.Expr,
-	bucketAggs []chplan.AggFunc,
+	shaping classicBucketShaping,
 	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, bucketAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, shaping.aggs, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
 	// while preserving anchor_ts as a passthrough column so the
 	// downstream HistogramQuantile GroupBy can pick it up.
-	rebuilt := &chplan.Project{
-		Input: agg,
-		Projections: []chplan.Projection{
-			{Expr: anchorRef, Alias: histogramAnchorCol},
-			{Expr: attrsRebuild, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
-		},
-	}
+	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
+		{Expr: anchorRef, Alias: histogramAnchorCol},
+		{Expr: attrsRebuild, Alias: s.AttributesColumn},
+	}, s)
 
 	// HistogramQuantile emits one row per (anchor, series). The
 	// emitter's SELECT projects each GroupBy entry (anchor_ts +
@@ -334,11 +328,12 @@ func buildHistogramRangeTree(
 	// `Value`. The outer Project re-aliases anchor_ts → TimeUnix so the
 	// canonical Sample contract holds for the matrix pivot.
 	hq := &chplan.HistogramQuantile{
-		Input:                rebuilt,
-		Phi:                  phi.lit,
-		PhiExpr:              phi.expr,
-		BucketCountsColumn:   s.BucketCountsColumn,
-		ExplicitBoundsColumn: s.ExplicitBoundsColumn,
+		Input:                  rebuilt,
+		Phi:                    phi.lit,
+		PhiExpr:                phi.expr,
+		BucketCountsColumn:     s.BucketCountsColumn,
+		ExplicitBoundsColumn:   s.ExplicitBoundsColumn,
+		BucketCountsCumulative: cumulative,
 		GroupBy: []chplan.Expr{
 			anchorRef,
 			&chplan.ColumnRef{Name: s.AttributesColumn},

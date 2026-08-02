@@ -2,6 +2,7 @@ package promql_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,8 +113,11 @@ func TestLower_HistogramQuantile_Classic(t *testing.T) {
 //   - Drop `le` from the by-clause (cerberus's classic histograms carry
 //     the distribution in parallel arrays, not in per-bucket Attributes
 //     entries).
-//   - Aggregate via sumForEach(BucketCounts) + any(ExplicitBounds), so
-//     the bucket distribution is preserved while merging across series.
+//   - Aggregate via groupArray(ExplicitBounds) + groupArray(BucketCounts)
+//     so every contributing row's layout survives into the Projects that
+//     merge them onto the union of bounds — the bucket layout must never
+//     become a grouping key, or one requested series splits into one
+//     output series per layout.
 //   - Filter the Scan to the rate's time window.
 func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 	t.Parallel()
@@ -121,41 +125,76 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
+	// mergeAggs is the aggregate shape every classic range path emits —
+	// including a bare `rate(...)` with no aggregation wrapper, which
+	// still merges the layouts a single series shows across the window.
+	// Each row's bounds and counts are collected verbatim and merged by
+	// the Projects above, in the cumulative per-`le` domain.
+	mergeAggs := []string{"groupArray", "groupArray"}
+
 	cases := []struct {
-		name    string
-		query   string
-		wantPhi float64
-		wantAgg bool
+		name           string
+		query          string
+		wantPhi        float64
+		wantAgg        bool
+		wantAggFuncs   []string
+		wantCumulative bool
 	}{
 		{
-			name:    "sum by(le) over rate",
-			query:   `histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration[5m])))`,
-			wantPhi: 0.95,
-			wantAgg: true,
+			name:           "sum by(le) over rate",
+			query:          `histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration[5m])))`,
+			wantPhi:        0.95,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
 		},
 		{
-			name:    "sum by(le, job) over rate",
-			query:   `histogram_quantile(0.99, sum by(le, job) (rate(http_server_request_duration[5m])))`,
-			wantPhi: 0.99,
-			wantAgg: true,
+			name:           "sum by(le, job) over rate",
+			query:          `histogram_quantile(0.99, sum by(le, job) (rate(http_server_request_duration[5m])))`,
+			wantPhi:        0.99,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
 		},
 		{
-			name:    "sum without over rate",
-			query:   `histogram_quantile(0.5, sum without(instance) (rate(http_server_request_duration[5m])))`,
-			wantPhi: 0.5,
-			wantAgg: true,
+			name:           "sum without over rate",
+			query:          `histogram_quantile(0.5, sum without(instance) (rate(http_server_request_duration[5m])))`,
+			wantPhi:        0.5,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
 		},
 		{
-			name:    "bare rate (no sum wrapper)",
-			query:   `histogram_quantile(0.5, rate(http_server_request_duration[5m]))`,
-			wantPhi: 0.5,
-			wantAgg: true,
+			name:           "max by(le) over rate",
+			query:          `histogram_quantile(0.5, max by(le) (rate(http_server_request_duration[5m])))`,
+			wantPhi:        0.5,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
 		},
 		{
-			name:    "increase variant",
-			query:   `histogram_quantile(0.5, sum by(le) (increase(http_server_request_duration[10m])))`,
-			wantPhi: 0.5,
-			wantAgg: true,
+			name:           "count by(le) over rate",
+			query:          `histogram_quantile(0.5, count by(le) (rate(http_server_request_duration[5m])))`,
+			wantPhi:        0.5,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
+		},
+		{
+			name:           "bare rate (no sum wrapper)",
+			query:          `histogram_quantile(0.5, rate(http_server_request_duration[5m]))`,
+			wantPhi:        0.5,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
+		},
+		{
+			name:           "increase variant",
+			query:          `histogram_quantile(0.5, sum by(le) (increase(http_server_request_duration[10m])))`,
+			wantPhi:        0.5,
+			wantAgg:        true,
+			wantAggFuncs:   mergeAggs,
+			wantCumulative: true,
 		},
 	}
 	for _, tc := range cases {
@@ -182,9 +221,9 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 			}
 
 			// Walk the tree under HistogramQuantile.Input — must contain
-			// an Aggregate node with the `sumForEach` aggregator, the
-			// bucket-layout grouping key, and a Scan against the classic
-			// histogram table.
+			// an Aggregate node that collects each row's bucket layout
+			// and counts verbatim (`groupArray` over both arrays), and a
+			// Scan against the classic histogram table.
 			var foundAgg *chplan.Aggregate
 			var foundScan *chplan.Scan
 			chplan.Walk(hq.Input, func(n chplan.Node) bool {
@@ -210,22 +249,40 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 				t.Errorf("Scan.Table = %q, want %q", foundScan.Table, s.HistogramTable)
 			}
 
-			// Validate the aggregate functions: sumForEach(BucketCounts)
-			// is the only reducer. ExplicitBounds is NOT reduced — it is
-			// a grouping key, so every row folded into a group shares
-			// one bucket layout and position i of the summed counts
-			// indexes the same bound for every contributing row.
+			// Validate the aggregate functions and the grouping keys.
+			//
+			// The wrapped paths reduce nothing positionally: they
+			// collect each contributing row's layout and counts
+			// verbatim with groupArray, and the Projects above merge
+			// them onto the union of bounds in the CUMULATIVE per-`le`
+			// domain, which is where Prometheus itself aggregates.
+			// Positional reduction (the old sumForEach) is only equal to
+			// Prometheus when every row in the group shares one layout,
+			// so the layout MUST NOT appear as a grouping key — that
+			// would split one requested series into one output series
+			// per layout.
+			//
+			// The bare-selector path picks the newest row per group with
+			// argMax, so it has a single layout by construction and
+			// carries no merge.
 			if foundAgg != nil {
-				if len(foundAgg.AggFuncs) != 1 {
-					t.Errorf("Aggregate.AggFuncs = %d funcs, want 1", len(foundAgg.AggFuncs))
-				} else if foundAgg.AggFuncs[0].Name != "sumForEach" {
-					t.Errorf("AggFuncs[0].Name = %q, want sumForEach", foundAgg.AggFuncs[0].Name)
+				gotAggs := make([]string, 0, len(foundAgg.AggFuncs))
+				for _, f := range foundAgg.AggFuncs {
+					gotAggs = append(gotAggs, f.Name)
 				}
-				if len(foundAgg.GroupBy) == 0 {
-					t.Errorf("Aggregate.GroupBy is empty, want the %s layout key", s.ExplicitBoundsColumn)
-				} else if last, ok := foundAgg.GroupBy[len(foundAgg.GroupBy)-1].(*chplan.ColumnRef); !ok || last.Name != s.ExplicitBoundsColumn {
-					t.Errorf("Aggregate.GroupBy does not end in the %s layout key: %#v", s.ExplicitBoundsColumn, foundAgg.GroupBy)
+				if !slices.Equal(gotAggs, tc.wantAggFuncs) {
+					t.Errorf("Aggregate.AggFuncs names = %v, want %v", gotAggs, tc.wantAggFuncs)
 				}
+				for _, g := range foundAgg.GroupBy {
+					if ref, ok := g.(*chplan.ColumnRef); ok && ref.Name == s.ExplicitBoundsColumn {
+						t.Errorf("Aggregate.GroupBy contains the %s layout key: %#v — the layout must not leak into series identity",
+							s.ExplicitBoundsColumn, foundAgg.GroupBy)
+					}
+				}
+			}
+			if hq.BucketCountsCumulative != tc.wantCumulative {
+				t.Errorf("HistogramQuantile.BucketCountsCumulative = %v, want %v",
+					hq.BucketCountsCumulative, tc.wantCumulative)
 			}
 		})
 	}
@@ -236,8 +293,11 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 // classic-histogram path. The bucket distribution lives in the
 // parallel BucketCounts × ExplicitBounds arrays — there is no `le`
 // label per row to group on — so `sum by(le)` contributes no grouping
-// key of its own, and the only key left on the Aggregate is the
-// bucket-layout key the lowering always appends.
+// key of its own, and the Aggregate is left with NO grouping keys at
+// all: `sum by(le)` asks for exactly one output series, and one group
+// is what produces it. The empty-input case that a keyless GROUP BY
+// would otherwise synthesise is foreclosed by DropEmptyOnNoGroup —
+// pinned by TestHistogramQuantile_EmptyInput_DropsRow.
 func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	t.Parallel()
 
@@ -265,14 +325,12 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	if foundAgg == nil {
 		t.Fatalf("no Aggregate found")
 	}
-	if len(foundAgg.GroupBy) != 1 {
-		t.Fatalf("Aggregate.GroupBy = %d expressions, want 1 (le must be dropped, no other labels, leaving only the layout key)",
-			len(foundAgg.GroupBy))
+	if len(foundAgg.GroupBy) != 0 {
+		t.Fatalf("Aggregate.GroupBy = %#v, want no keys — `le` must be dropped, no other label was asked for, and the bucket layout must not leak into series identity",
+			foundAgg.GroupBy)
 	}
-	only, ok := foundAgg.GroupBy[0].(*chplan.ColumnRef)
-	if !ok || only.Name != s.ExplicitBoundsColumn {
-		t.Errorf("Aggregate.GroupBy[0] = %#v, want the %s layout key — anything else means `le` survived the by-clause",
-			foundAgg.GroupBy[0], s.ExplicitBoundsColumn)
+	if !foundAgg.DropEmptyOnNoGroup {
+		t.Errorf("Aggregate.DropEmptyOnNoGroup = false with an empty GroupBy — CH synthesises a 1-row-of-zeros result for a keyless aggregate over empty input, so histogram_quantile would emit a default row")
 	}
 }
 

@@ -3233,7 +3233,7 @@
     "fixture": "promql/histogram_quantile_agg_empty",
     "fan_factor": 0,
     "scan_rows": 0,
-    "peak_intermediate": 0,
+    "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3430,10 +3430,30 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/histogram_quantile_count_by_le",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_le_not_in_by",
     "fan_factor": 0,
     "scan_rows": 0,
     "peak_intermediate": 0,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_max_by_le",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -3651,6 +3671,16 @@
   },
   {
     "fixture": "promql/histogram_quantile_sum_by_le",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/histogram_quantile_sum_by_le_layout_change_midwindow",
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,

@@ -117,16 +117,18 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// upstream repair outputs (pinned by the
 	// histogram_quantile_classic_*_plateau fixtures).
 	//
-	// A future path that hands this node an ALREADY-cumulative or
-	// independently-derived per-`le` ladder (routing
-	// `histogram_quantile(phi, max by(le)(...))` through here, say, or a
-	// bucket fan-out pipeline) breaks that precondition and must apply
-	// Prometheus's repair envelope first — and must then read `target`
-	// below off the REPAIRED last cumulative entry, or target and ladder
-	// disagree exactly when the repair fires.
+	// h.BucketCountsCumulative is the path that breaks that precondition:
+	// the bucket-layout merge hands this node an ALREADY-cumulative,
+	// independently-derived per-`le` ladder (one rung per bound in the
+	// union of the group's layouts, folded across rows in the cumulative
+	// domain). There arrayCumSum must NOT run — the array is the ladder —
+	// and the producer owes Prometheus's ensureMonotonicAndIgnoreSmallDeltas
+	// repair before this node sees it (chplan.HistogramQuantile documents
+	// that debt). `total` below is then read off the ladder's top rung
+	// rather than summed, or target and ladder disagree exactly when the
+	// repair fires.
 	bcFloat := Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	lengthBC := Call("length", Col(bc))
-	arraySumBC := Call("arraySum", bcFloat)
 
 	// Coalesce buckets that share an upper bound, mirroring upstream's
 	// coalesceBuckets (promql/quantile.go), which runs before every
@@ -154,6 +156,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// coalesced arrays are element-wise identical to the raw ones and the
 	// quantile is unchanged.
 	rawCumSum := Call("arrayCumSum", bcFloat)
+	if h.BucketCountsCumulative {
+		rawCumSum = bcFloat
+	}
 	boundCount := Call("length", Col(eb))
 	cumCount := Call("length", bcFloat)
 	// Rungs the ladder keeps: the last index of every run of equal bounds,
@@ -182,6 +187,17 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	lengthEB := Call("length", coalescedEB)
 	arrayCumSumBC := coalescedCumSum
 
+	// observations is Prometheus's `observations` (quantile.go): the
+	// ladder's top rung. Per-bucket input reaches it by summing the array;
+	// cumulative input already carries it as the last coalesced entry, and
+	// summing there would total the ladder instead of reading it. Both
+	// forms are the same value in the per-bucket mode, so the sum form
+	// stays there and existing fixtures are byte-stable.
+	observations := Call("arraySum", bcFloat)
+	if h.BucketCountsCumulative {
+		observations = Subscript(arrayCumSumBC, Call("length", arrayCumSumBC))
+	}
+
 	// phi renders the phi parameter: the computed expression when PhiExpr
 	// is set, the inline float literal (query-shape param, mirrors
 	// holtWintersValueExpr's sf / tf) otherwise. Re-invoked at each phi
@@ -202,7 +218,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	posInf := verbatim("inf")
 	zeroF := verbatim("0.0")
 	highestBound := Subscript(coalescedEB, lengthEB) // coalesced ExplicitBounds' last entry
-	target := Paren(Mul(phi(), arraySumBC))          // (phi * arraySum(bc))
+	target := Paren(Mul(phi(), observations))        // (phi * observations)
 
 	// idx = arrayFirstIndex(c -> c >= target, cum). Computed phi:
 	// ClickHouse 24.8 rejects a scalar subquery anywhere in
@@ -244,7 +260,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// Interpolation:
 	//   bound_lo + (bound_hi - bound_lo) * (target - cum_lo) / (cum_hi - cum_lo)
 	// bound_hi = ExplicitBounds[idx]; cum_hi = cum[idx]; target = phi *
-	// arraySum(bc). The grouping parens match the legacy emitter exactly:
+	// observations. The grouping parens match the legacy emitter exactly:
 	//   (bound_lo + (bound_hi - bound_lo) * ((target) - cum_lo) / (cum_hi - cum_lo))
 	interp := Paren(
 		Add(
@@ -266,17 +282,17 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 
 	// Nested edge-case chain, outermost first:
 	//   if(length(bc) = 0, nan,
-	//      if(arraySum(bc) = 0, nan,
+	//      if(observations = 0, nan,
 	//         if(phi < 0, -inf,
 	//            if(phi > 1, inf, idxBranch))))
 	//
 	// Prometheus semantics (quantile.go:114-119): phi < 0 → -Inf, phi > 1
 	// → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
 	// fall through to idxBranch: phi == 0 → target 0 → idx 1 → lower edge
-	// 0.0; phi == 1 → target arraySum → idx == length(cum) → highest finite
+	// 0.0; phi == 1 → target observations → idx == length(cum) → highest finite
 	// bound. ClickHouse parses the bare `inf` / `-inf` tokens as Float64.
 	core := If(Eq(lengthBC, InlineLit(0)), nan,
-		If(Eq(arraySumBC, InlineLit(0)), nan,
+		If(Eq(observations, InlineLit(0)), nan,
 			If(Lt(phi(), InlineLit(0)), negInf,
 				If(Gt(phi(), InlineLit(1)), posInf, idxBranch))))
 
