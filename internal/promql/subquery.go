@@ -542,7 +542,15 @@ func lowerOuterRangeFnOverSubquery(
 		// of this guard lives in `lowerRangeVectorCall`.
 		rw.End = anchor.End
 		widenSubquerySpine(inner, anchor.End.Add(-sub.Range), anchor.End)
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, outer.Func.Name, "",
+		// The subquery spine groups by Attributes alone, so MetricName is
+		// already gone by the time this outer reducer runs — a preserving
+		// fn can only stamp the empty literal here. Widening the spine to
+		// carry it is issue #1602.
+		var nameExpr chplan.Expr
+		if rangeFnPreservesName(outer.Func.Name) {
+			nameExpr = &chplan.LitString{V: ""}
+		}
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr,
 			&chplan.ColumnRef{Name: s.ValueColumn}), nil
 	case rangeMode:
 		// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
