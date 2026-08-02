@@ -226,6 +226,81 @@ test('removing the acquisition removes the requirement, not the other way round'
 });
 
 // ---------------------------------------------------------------------------
+// R4 — a login step is necessary and NOT sufficient.
+//
+// Run 30701755787 (job 91375112426) logged in successfully:
+//
+//   13:50:32.0306552Z Logging into docker.io...
+//   13:50:32.3891751Z Login Succeeded!
+//
+// and was refused as UNAUTHENTICATED one second later:
+//
+//   13:50:33.1136472Z  clickhouse Pulling
+//   13:50:33.3467501Z  clickhouse Error toomanyrequests: You have reached your
+//                                  unauthenticated pull rate limit.
+//
+// `docker compose`'s own pull path does not carry the credentials the CLI wrote.
+// A gate that asked only "does this job have a login step?" would have passed
+// that job — a hollow green on the exact failure it is named after. So R4 asks
+// whether the acquisition actually RUNS on the mirror-first path.
+// ---------------------------------------------------------------------------
+
+// Replaces the harness call with a bare `compose up`, which is the pre-#1572
+// shape of the job that produced the run above: login, then straight to compose.
+const withoutTheComposePrePull = (text) =>
+  text.replace(
+    'run: ./compatibility/prometheus/scripts/run-compatibility.sh',
+    'run: docker compose -f docker-compose.yml up -d --build --wait clickhouse prometheus cerberus',
+  );
+
+test('R4 fires when a compose stack is materialised without a mirror-first pre-pull', () => {
+  const results = scanWith('compatibility.yml', withoutTheComposePrePull);
+  const v = findingsFor('compatibility.yml:prometheus', results);
+  const violations = violationsFor('compatibility.yml:prometheus', v);
+  assert.ok(
+    violations.some((m) => m.includes('without pre-pulling it through the shared mirror-first')),
+    `expected an R4 pre-pull violation, got ${JSON.stringify(violations)}`,
+  );
+  // And specifically NOT because the job is unauthenticated — it is. That is the
+  // whole point: the login rules are all satisfied here.
+  assert.ok(
+    !violations.some((m) => m.includes('no Docker Hub login') || m.includes('no registry login')),
+    'the doctored job still has both logins, so no login rule should fire',
+  );
+});
+
+test('R4 fires when a job acquires images off the shared policy entirely', () => {
+  const results = scanWith('compatibility.yml', withoutTheComposePrePull);
+  const violations = violationsFor(
+    'compatibility.yml:prometheus',
+    findingsFor('compatibility.yml:prometheus', results),
+  );
+  assert.ok(
+    violations.some((m) => m.includes('without going through the shared mirror-first policy')),
+    `expected an R4 off-policy violation, got ${JSON.stringify(violations)}`,
+  );
+});
+
+test('the job that writes the mirror is not required to read through it', () => {
+  // Circular otherwise: `imagetools create` POPULATES the mirror, so it cannot
+  // be served by it. The carve-out is the direction of the copy, not the job's
+  // name — which is what keeps it from becoming an exemption.
+  const f = findingsFor('mirror-images.yml:mirror', realScan());
+  assert.equal(f.viaSharedPolicy, false, 'the mirroring job does not pull through the mirror');
+  assert.ok(f.mirrorWrites > 0, 'its acquisitions are writes into the mirror');
+  assert.deepEqual(violationsFor('mirror-images.yml:mirror', f), []);
+
+  // But the carve-out is exactly as wide as the writes: give it one read that
+  // is not a write and R4 fires, so this cannot quietly excuse a real pull.
+  const withARead = { ...f, acquisitions: [...f.acquisitions, 'docker pull'] };
+  assert.ok(
+    violationsFor('mirror-images.yml:mirror', withARead).some((m) =>
+      m.includes('without going through the shared mirror-first policy'),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Logging in without `docker/login-action`.
 //
 // "Logs in" must not be read as "uses docker/login-action". PR #1586 replaces

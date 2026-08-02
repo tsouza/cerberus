@@ -59,7 +59,7 @@
 // any reference the resolver could not follow.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { basename, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -351,6 +351,21 @@ export function isDockerHubRef(ref) {
   return !(first.includes('.') || first.includes(':'));
 }
 
+// `docker compose`'s value-taking GLOBAL flags — the ones that may appear
+// before the verb and swallow the token after them.
+const composeValueFlags = new Set([
+  '-f',
+  '--file',
+  '-p',
+  '--project-name',
+  '--project-directory',
+  '--env-file',
+  '--profile',
+  '--parallel',
+  '--progress',
+  '--ansi',
+]);
+
 // `docker login`'s only value-taking flags. Needed because the registry is a
 // trailing POSITIONAL, so "the first token that is not a flag" picks up a flag's
 // value instead and reports a login to a registry named `tsouza`.
@@ -602,7 +617,19 @@ function arrayBinding(source, name) {
 
 // A `Findings` accumulator: what a job does, gathered across every hop.
 function newFindings() {
-  return { acquisitions: [], logins: [], viaSharedPolicy: false, refs: new Set(), unresolved: [] };
+  return {
+    acquisitions: [],
+    logins: [],
+    viaSharedPolicy: false,
+    refs: new Set(),
+    unresolved: [],
+    // R4's bookkeeping: which compose models the shared policy was applied to,
+    // which ones were materialised, and how many acquisitions were writes INTO
+    // the mirror rather than reads that the mirror could have served.
+    composePolicyFiles: new Set(),
+    composeMaterialised: [],
+    mirrorWrites: 0,
+  };
 }
 
 class Resolver {
@@ -739,9 +766,37 @@ class Resolver {
       return;
     }
     if (sub === 'compose') {
-      const verb = rest.slice(rest.indexOf('compose') + 1).find((t) => !t.startsWith('-'));
+      const after = rest.slice(rest.indexOf('compose') + 1);
+      // The verb sits after the global flags, and the value-taking ones must be
+      // stepped over: `docker compose -f x.yml up` otherwise reads `x.yml` as
+      // the verb, matches nothing, and the materialisation vanishes from the
+      // scan entirely.
+      let verb;
+      for (let i = 0; i < after.length; i++) {
+        if (composeValueFlags.has(after[i])) {
+          i++;
+          continue;
+        }
+        if (after[i].startsWith('-')) continue;
+        verb = after[i];
+        break;
+      }
       if (['up', 'pull', 'create', 'run', 'build'].includes(verb)) {
         findings.acquisitions.push(`docker compose ${verb}`);
+        // `-f` may repeat. No `-f` means compose's own default lookup in the
+        // working directory, recorded as "the job's default model" — the cwd is
+        // not tracked across a script's `cd`, so the models are matched by file
+        // name. Looser than a path comparison, and deliberately so: the failure
+        // that matters is a materialisation with NO pre-pull anywhere in the
+        // job, and a gate that fires on a path it merely failed to follow would
+        // earn itself an exemption.
+        const files = [];
+        for (let i = 0; i < after.length; i++) {
+          if ((after[i] === '-f' || after[i] === '--file') && after[i + 1] !== undefined) {
+            files.push(basename(unquote(expandVars(after[i + 1], scope) ?? after[i + 1])));
+          }
+        }
+        findings.composeMaterialised.push(files);
       }
       return;
     }
@@ -756,6 +811,11 @@ class Resolver {
       const verb = rest.slice(rest.indexOf('imagetools') + 1).find((t) => !t.startsWith('-'));
       if (['create', 'inspect'].includes(verb)) {
         findings.acquisitions.push(`docker buildx imagetools ${verb}`);
+        // A write INTO a registry, not a read the mirror could have served.
+        // R4 asks that reads route through the mirror; asking it of the job
+        // that POPULATES the mirror is circular, and this is the structural
+        // fact that says so rather than the job's name.
+        findings.mirrorWrites++;
         for (const t of rest.slice(rest.indexOf(verb) + 1)) this.noteRef(t, scope, findings);
       }
       return;
@@ -830,7 +890,15 @@ class Resolver {
       findings.acquisitions.push(`${script} (shared mirror-first policy)`);
       for (const ref of policyRefs(source)) this.noteRef(ref, scope, findings);
       // Refs handed to the script on argv, e.g. `pull-images.mjs golang:1.26`.
-      for (const t of rest.slice(scriptIdx + 1)) this.noteRef(t, scope, findings);
+      for (const t of rest.slice(scriptIdx + 1)) {
+        this.noteRef(t, scope, findings);
+        // A compose FILE handed to the shared policy is the pre-pull that puts
+        // that model's images in the daemon ahead of `up`. Recorded structurally
+        // — the policy was applied to this model — rather than by the name of
+        // the module that applied it.
+        const arg = unquote(expandVars(t, scope) ?? t);
+        if (/\.ya?ml$/.test(arg)) findings.composePolicyFiles.add(basename(arg));
+      }
     }
     const before = findings.acquisitions.length;
     for (const spawned of spawnedCommands(source)) {
@@ -967,6 +1035,35 @@ export function violationsFor(jobId, findings) {
         'the mirror is unreadable, so every acquisition silently falls back to Docker Hub',
     );
   }
+
+  // R4 — the acquisitions must run ON the authenticated, mirror-first path, not
+  // merely alongside a login step.
+  //
+  // A login step is necessary and NOT sufficient, and there is a run that proves
+  // it: 30701755787 logged in successfully and was refused as UNAUTHENTICATED
+  // one second later, because `docker compose`'s own pull path does not carry
+  // the credentials the CLI wrote. A gate that stopped at login-presence would
+  // have passed that job — a hollow green on the exact failure it is named
+  // after. So presence is asked above, and reachability is asked here.
+  for (const files of findings.composeMaterialised) {
+    const covered =
+      files.length === 0
+        ? findings.composePolicyFiles.size > 0
+        : files.every((f) => findings.composePolicyFiles.has(f));
+    if (covered) continue;
+    const which = files.length === 0 ? 'its compose model' : files.join(', ');
+    out.push(
+      `${jobId}: materialises ${which} without pre-pulling it through the shared mirror-first ` +
+        "policy — compose's own pull path carries neither the login nor the mirror, so those " +
+        'images are fetched anonymously from Docker Hub however the job is authenticated',
+    );
+  }
+  if (!findings.viaSharedPolicy && findings.acquisitions.length > findings.mirrorWrites) {
+    out.push(
+      `${jobId}: acquires images (${how}) without going through the shared mirror-first policy — ` +
+        'a login raises the quota it spends, the mirror is what stops it spending that quota at all',
+    );
+  }
   return out;
 }
 
@@ -1024,13 +1121,15 @@ function main() {
   for (const v of violations) error(v);
   if (unresolved.length > 0 || violations.length > 0) {
     error(
-      'every job that acquires an image must log in to the registries it acquires from. Add the ' +
-        'Docker Hub login (and the ghcr.io mirror login, when the job pulls through ' +
-        '.github/scripts/lib/registry.mjs) to the job above, ahead of its first acquisition.',
+      'every job that acquires an image must acquire it over the authenticated, mirror-first path. ' +
+        'Add the Docker Hub and ghcr.io logins to the job above ahead of its first acquisition, and ' +
+        'route the acquisition itself through .github/scripts/lib/registry.mjs — for a compose ' +
+        'stack that means pre-pulling the model with compose-pull-images.mjs before `up`, because ' +
+        "compose's own pull path carries neither the login nor the mirror.",
     );
     process.exit(1);
   }
-  notice(`${acquiring.length} image-acquiring jobs, all authenticated`);
+  notice(`${acquiring.length} image-acquiring jobs, all on the authenticated mirror-first path`);
   process.exit(0);
 }
 
