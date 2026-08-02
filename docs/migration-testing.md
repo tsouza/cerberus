@@ -1011,6 +1011,16 @@ the lane — `just migration-golden` rewrites them locally and refuses to run
 under CI, because a golden is a reviewed artifact rather than a workflow side
 effect.
 
+The Tier-0 explain reports record emitted SQL verbatim, so any change that
+moves a plan shape drifts them even when nothing under `test/e2e/migration/`
+was touched. `just update-golden` therefore chains `migration-golden` as a
+prior dependency, and its closing diff-stat covers
+`test/e2e/migration/archetypes/` alongside `test/spec/`: one command
+regenerates every fixture-derived artefact, and one review prompt shows all of
+it. Run `just migration-golden` directly when the migration corpus is the only
+thing that moved. `test/regression/update_golden_migration_chain_test.go` pins
+the chaining, its position in the dependency list, and the diff-stat's scope.
+
 Every scenario writes its `migrate` JSON outputs into a per-scenario evidence
 dir, uploaded via `actions/upload-artifact` under a per-archetype name (a static
 name collides across a matrix). On failure the runner also dumps
