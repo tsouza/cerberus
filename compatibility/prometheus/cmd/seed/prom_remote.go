@@ -147,6 +147,10 @@ var histogramFixtureSources = []histogramFixtureSource{
 // Attributes is the point of the resource arm: cerberus must project it out
 // of the resource layer, while the mirrored Prometheus series carries it as
 // an ordinary wire label.
+//
+// The SELECT sanitises every resource key; WHICH of them become wire labels
+// is decided in Go by the production predicate — see
+// [mirroredResourceLabels].
 const histogramFixtureSelect = `SELECT
         Attributes,
         mapFromArrays(
@@ -274,6 +278,29 @@ func histogramWireNames(base string, m schema.Metrics) (bucketName, countName, s
 	return bucketName, countName, sumName, nil
 }
 
+// mirroredResourceLabels folds the Prom-sanitized resource keys of one row
+// into its wire label set dst, promoting exactly the keys cerberus's
+// resource arm promotes.
+//
+// The filter is the production predicate
+// (promql.DedicatedResourceLabelExcluded), not a hardcoded key list: a
+// resource key already backed by a dedicated top-level column — today only
+// service.name → ServiceName — is never surfaced through the resource arm,
+// because the dedicated column owns it. The fixture deliberately leaves
+// ServiceName unpopulated (see insertFixture in main.go), so cerberus emits
+// no `service_name` label at all for these series. Folding
+// `service.name=demo` in here would manufacture a label on the REFERENCE
+// side that cerberus never emits, hard-diffing every histogram series for a
+// reason the mirror invented.
+func mirroredResourceLabels(m schema.Metrics, resourceLabels, dst map[string]string) {
+	for k, v := range resourceLabels {
+		if promql.DedicatedResourceLabelExcluded(m, k) {
+			continue
+		}
+		dst[k] = v
+	}
+}
+
 // readHistogramFixtureSeries mirrors one classic-histogram family. Each CH
 // row becomes one sample on each of the `_count` and `_sum` series plus one
 // sample on every `_bucket` series the row's boundary array names.
@@ -307,9 +334,7 @@ func readHistogramFixtureSeries(
 		// The resource layer is folded into the wire label set for every
 		// arm of the family, so `_bucket`, `_count` and `_sum` carry the
 		// same series identity cerberus projects for them.
-		for k, v := range resourceLabels {
-			attrs[k] = v
-		}
+		mirroredResourceLabels(m, resourceLabels, attrs)
 		if len(leLabels) != len(cumCounts) {
 			return nil, fmt.Errorf(
 				"histogram %q row at %d ms: %d bucket labels vs %d cumulative counts",
