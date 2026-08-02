@@ -291,6 +291,28 @@ search
 checkout
 
 -- name --
+spansets_and_unions_distinct_spans
+# Tempo evaluates `&&` per trace: both operands must be nonempty, then
+# their span sets are unioned. The arms are deliberately DISJOINT on
+# every checkout trace — the left one matches only the root GET span,
+# the right one only child zero — so each trace's spanset is exactly
+# two spans. An identity INNER JOIN on (TraceId, SpanId) would find no
+# span satisfying both arms and return an empty spanset, which `spss`
+# turns into a complete-set comparison the differ enforces per span.
+-- query --
+{ resource.service.name = "checkout" && span.http.method = "GET" } && { span.child.index = "0" }
+-- endpoint --
+search
+-- spss --
+20
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+checkout
+
+-- name --
 spansets_payments_spss_capped
 # 3-5 matched spans per trace against spss=1 — the cap truncates on
 # both sides, so the differ checks matched totals + kept-span counts

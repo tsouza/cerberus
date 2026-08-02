@@ -341,7 +341,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 | ---------- | ------------ |
 | prometheus | 738 / 738    |
 | loki       | 116 / 116    |
-| tempo      | 48 / 48      |
+| tempo      | 49 / 49      |
 
 The baseline records **full parity** for every head — the ratchet asserts
 `passed == total == cases.length`, so the file has no shape in which a

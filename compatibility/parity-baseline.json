@@ -869,8 +869,8 @@
       ]
     },
     "tempo": {
-      "passed": 48,
-      "total": 48,
+      "passed": 49,
+      "total": 49,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -904,6 +904,7 @@
         "search | set_or_two_services",
         "search | span_http_method_eq_get",
         "search | span_http_method_eq_nil",
+        "search | spansets_and_unions_distinct_spans",
         "search | spansets_drilldown_structure_tab",
         "search | spansets_payments_spss_capped",
         "search | spansets_resource_checkout_complete",

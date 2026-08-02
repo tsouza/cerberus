@@ -1,0 +1,29 @@
+-- query.traceql --
+{ name = "left" } && { name = "right" }
+-- args --
+[0] string = "left"
+[1] string = "right"
+-- sql --
+WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    SpanName String
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, SpanName) VALUES
+    ('trace-both', 'span-left', 'left'),
+    ('trace-both', 'span-right', 'right'),
+    ('trace-left-only', 'span-left-only', 'left'),
+    ('trace-right-only', 'span-right-only', 'right');
+-- expected_rows --
+[
+  ["trace-both", "span-left", "left"],
+  ["trace-both", "span-right", "right"]
+]
+-- chplan --
+SetOperation op=&&
+  Filter predicate=(SpanName = "left")
+    Scan(otel_traces)
+  Filter predicate=(SpanName = "right")
+    Scan(otel_traces)

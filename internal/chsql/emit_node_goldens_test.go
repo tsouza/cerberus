@@ -329,6 +329,9 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			t.Errorf("SetIntersect SQL missing fragment %q; got %q", frag, sql)
 		}
 	}
+	if strings.Contains(sql, "INNER JOIN") {
+		t.Errorf("SetIntersect must union distinct spans from matching traces, not intersect span identities: %q", sql)
+	}
 	if args != nil {
 		t.Errorf("Args = %v; want nil (no `?` in this shape)", args)
 	}
