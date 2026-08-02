@@ -51,6 +51,10 @@ var inventoryEntry = regexp.MustCompile(`(?m)^\s*'([^']+)',\s*$`)
 //   - a composite-action input `default:`, which is where the BuildKit
 //     bootstrap image is pinned.
 //
+// One shape is not here because one line does not carry it: a `FROM ${ARG}`
+// whose default is declared elsewhere in the file. `upstreamImageRefsInTree`
+// resolves that pair itself.
+//
 // Matching CONTEXTS rather than ref-shaped text is what keeps the scan honest.
 // This tree is full of `name:name` tokens that are not images — every PromQL
 // recording rule under test/e2e/migration/archetypes (`slo:http_error_budget`),
@@ -223,11 +227,30 @@ func upstreamImageRefsInTree(t *testing.T) map[string][]string {
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
+		// A Dockerfile's base image can reach its `FROM` through a build arg —
+		// `ARG GO_IMAGE=golang:1.26` + `FROM ${GO_IMAGE}`, the indirection that
+		// lets CI point the build at the mirror. The ARG default is the ref
+		// that gets resolved whenever the caller passes nothing, so it is an
+		// image reference in every sense this guard cares about. Only args a
+		// `FROM` in this same file actually substitutes count: an `ARG` is just
+		// a variable, and the rest of them are build tags and version strings.
+		baseImageArgs := map[string]bool{}
+		for _, m := range dockerfileFrom.FindAllStringSubmatch(string(src), -1) {
+			if name := dockerfileFromArg.FindStringSubmatch(m[1]); name != nil {
+				baseImageArgs[name[1]] = true
+			}
+		}
+
 		for _, line := range strings.Split(string(src), "\n") {
 			// Comments name images they do not pull — a bumped-from tag, an
 			// incident log, a worked example.
 			if isProse(line) {
 				continue
+			}
+			if m := dockerfileArgDecl.FindStringSubmatch(line); m != nil && baseImageArgs[m[1]] {
+				if dockerHubRef.MatchString(m[2]) && isDockerHubImageRef(m[2]) && !built[m[2]] {
+					refs[m[2]] = append(refs[m[2]], file)
+				}
 			}
 			for _, context := range imageRefContexts {
 				m := context.FindStringSubmatch(line)

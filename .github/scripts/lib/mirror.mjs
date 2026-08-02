@@ -115,13 +115,31 @@ export const mirroredImages = [
   // matters because the two acquisition shapes need different treatment: the
   // re-tag in `pullImageWithRetry` populates the HOST daemon, and the
   // `docker-container` BuildKit driver has its own image store that never
-  // consults it, so a `FROM` resolves against the registry regardless. This ref
-  // is mirrored so the copy exists; making the build CONSUME it means threading
-  // the ref through a build arg, which is #1576. It is the ref that opened the
-  // incident: `unexpected status from HEAD request …/library/golang/manifests/
-  // 1.26: 429` is what reddened `e2e` and `migration-e2e` on main.
+  // consults it, so a `FROM` resolves against the registry regardless. The
+  // build CONSUMES the mirrored copy by naming it in a build arg — see
+  // `buildBaseImageArgs` below. It is the ref that opened the incident:
+  // `unexpected status from HEAD request …/library/golang/manifests/1.26: 429`
+  // is what reddened `e2e` and `migration-e2e` on main.
   'golang:1.26',
 ];
+
+// buildBaseImageArgs — every build arg this tree's Dockerfiles use to name a
+// base image, paired with the upstream ref that arg defaults to. One entry per
+// `ARG <name>=<ref>` + `FROM ${<name>}` pair.
+//
+// The indirection exists because a host-side pre-pull cannot reach a `FROM`:
+// the `docker-container` BuildKit driver resolves it against the registry from
+// its own content store. Naming the ref is the only lever, so the ref has to be
+// substitutable — and substitutable only from the outside, because the DEFAULT
+// must stay the upstream ref. The mirror packages are private, so a Dockerfile
+// that defaulted to them would be unbuildable by anyone outside this repo.
+//
+// This table is the single place the arg name and its upstream ref are paired.
+// `buildBaseImageRef` reads it to decide what CI passes, and the regression pin
+// checks it against the Dockerfiles and against the inventory above, so an arg
+// renamed in one place and not the other fails rather than silently reverting
+// every build to Docker Hub.
+export const buildBaseImageArgs = Object.freeze({ GO_IMAGE: 'golang:1.26' });
 
 const inventory = new Set(mirroredImages);
 

@@ -50,6 +50,12 @@
 //   IMAGE_BUILD_RETRY_BACKOFF_SECONDS  (optional; default 10) linear backoff
 //                                      step — attempt N sleeps N × this many
 //                                      seconds.
+//   GO_IMAGE (and any other key of `lib/mirror.mjs`'s `buildBaseImageArgs`)
+//                                      (optional) the ref the build resolves
+//                                      that base image from. Left unset, this
+//                                      module resolves it mirror-first and
+//                                      exports it to the command it runs; set,
+//                                      it is passed through untouched.
 //
 // Exit: 0 on success; the command's own status when it failed for a reason
 // another attempt cannot clear — a real build error, or a registry rate-limit
@@ -65,7 +71,9 @@ import { join } from 'node:path';
 import process from 'node:process';
 
 import { error, log, notice } from './lib/gh.mjs';
+import { buildBaseImageArgs } from './lib/mirror.mjs';
 import {
+  buildBaseImageRef,
   isRegistryRateLimit,
   isTransientRegistryFailure,
   rateLimitDiagnosis,
@@ -117,6 +125,28 @@ if (command.length === 0) {
       '`node .github/scripts/build-with-registry-retry.mjs docker build -f Dockerfile.local -t cerberus:e2e .`',
   );
   process.exit(1);
+}
+
+// Point the build's base-image `FROM` refs at the mirror.
+//
+// This belongs here, and only here, for the same reason the retry does: this
+// module is the single command every build in the tree runs through, pinned by
+// `TestImageBuildingCommandsGoThroughTheRetryWrapper`. Setting the refs in the
+// workflows instead would be one edit per building job — eight of them today —
+// with nothing to notice when the ninth lane forgets, which is the per-leg
+// shape the wrapper exists to replace.
+//
+// A ref the caller set explicitly always wins: an operator debugging against a
+// particular toolchain image passes it, and the mirror does not overrule them.
+//
+// Both consumers read these from the environment rather than from an argv this
+// module rewrites. Compose interpolates `${GO_IMAGE:-golang:1.26}` in the
+// `build.args` of each service, and the Justfile's direct builds pass
+// `--build-arg GO_IMAGE` with no value, which is docker's own "take it from the
+// environment" form. Neither needs this module to know which build sites exist.
+for (const [argName, upstreamRef] of Object.entries(buildBaseImageArgs)) {
+  if ((process.env[argName] ?? '') !== '') continue;
+  process.env[argName] = buildBaseImageRef(upstreamRef);
 }
 
 const backoffStepSeconds = readBackoffStepSeconds('IMAGE_BUILD_RETRY_BACKOFF_SECONDS', defaultBackoffStepSeconds);

@@ -3,7 +3,11 @@
 # (test/e2e/migration/tiers/tier2-ruler/receiver/main.go). The binary imports
 # only the standard library, so building its one package pulls in none of the
 # module's external dependencies.
-FROM golang:1.26 AS build
+# Reached through a build arg so CI resolves the GHCR mirror rather than Docker
+# Hub; the default stays upstream because the mirror packages are private. See
+# Dockerfile.local for the full rationale.
+ARG GO_IMAGE=golang:1.26
+FROM ${GO_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY test/e2e/migration/tiers/tier2-ruler/receiver ./test/e2e/migration/tiers/tier2-ruler/receiver

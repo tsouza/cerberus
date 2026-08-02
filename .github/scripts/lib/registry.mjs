@@ -43,6 +43,11 @@
 //   pullImageWithRetry(image, options)     acquire one image into the local
 //                                          daemon under that policy, from the
 //                                          GHCR mirror when there is one.
+//   buildBaseImageRef(image)               the ref a BUILD should resolve image
+//                                          from — the mirrored copy when this
+//                                          runner can read it, else upstream.
+//                                          A `FROM` cannot be served from the
+//                                          daemon, so it needs the ref itself.
 //
 // The best answer to a quota is not to draw on it. `pullImageWithRetry` reaches
 // for `lib/mirror.mjs`'s GHCR copy first and re-tags it to the upstream name,
@@ -215,6 +220,42 @@ function acquireFromMirror(image) {
 
   log(`    ${image} acquired from the mirror`);
   return true;
+}
+
+// buildBaseImageRef — the ref a BUILD should resolve `image` from: the mirrored
+// copy when this runner can actually read it, the upstream ref when it cannot.
+//
+// This is the same mirror-first-with-fallback decision `acquireFromMirror`
+// makes, moved one layer out. It has to be a separate decision because the two
+// acquisition shapes land in different places: `acquireFromMirror` pulls into
+// the HOST daemon and re-tags, which a `FROM` under the `docker-container`
+// driver never consults. Only the ref BuildKit is given can steer that, so the
+// question here is not "can I pull this" but "will BuildKit resolve this", and
+// `imagetools inspect` asks exactly that — it reads the manifest through the
+// same registry path a `FROM` takes, without pulling any layers.
+//
+// A miss is a notice, not a failure, for the reason the mirror pull gives: the
+// upstream ref is perfectly reachable, so refusing to build over a stale or
+// unreadable mirror would fail a lane for no gain. It is also what keeps forks
+// working — a fork's runner authenticates to ghcr.io as itself and cannot read
+// this repo's private packages, so it probes, misses, and builds from Docker
+// Hub exactly as it did before the mirror existed.
+export function buildBaseImageRef(image) {
+  const mirror = mirroredRef(image);
+  if (mirror === null) return image;
+
+  const probe = capture('docker', ['buildx', 'imagetools', 'inspect', mirror]);
+  if (probe.status !== 0) {
+    notice(
+      `${mirror} is not resolvable from this runner, so the build resolves ${image} from Docker Hub. ` +
+        'That spends the anonymous quota this mirror exists to stop spending; `mirror-images.mjs` is ' +
+        `what fixes it.\n${probe.stderr.trim()}`,
+    );
+    return image;
+  }
+
+  log(`    builds will resolve ${image} as ${mirror}`);
+  return mirror;
 }
 
 // pullImageWithRetry — acquire one image into the local daemon under the policy
