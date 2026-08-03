@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { capture } from './lib/gh.mjs';
+import { assertSafeArg, capture } from './lib/gh.mjs';
 
 test('capture forwards the options it documents', () => {
   const res = capture('sh', ['-c', 'printf "%s" "$MARKER"'], {
@@ -50,4 +50,26 @@ test('capture reports an unspawnable command as a status, not a throw', () => {
   const res = capture('cerberus-no-such-binary-4f3a', []);
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /ENOENT|not found/i);
+});
+
+// assertSafeArg — the guard callers reading an env-var override (a package
+// path, a git ref) put between process.env and a capture()/exec() argument
+// (CodeQL js/indirect-command-line-injection). capture() never invokes a
+// shell, so a leading `-` being parsed as a FLAG by the invoked binary is the
+// risk this closes, not shell metacharacter injection.
+test('assertSafeArg passes through an ordinary value unchanged', () => {
+  assert.equal(assertSafeArg('./cmd/cerberus', 'PACKAGE'), './cmd/cerberus');
+  assert.equal(assertSafeArg('a1b2c3d4', 'REV'), 'a1b2c3d4');
+});
+
+test('assertSafeArg rejects a value that could be parsed as a flag', () => {
+  assert.throws(
+    () => assertSafeArg('--upload-pack=/malicious', 'REV'),
+    (err) => err instanceof TypeError && /starts with "-"/.test(err.message) && err.message.includes('REV'),
+  );
+  assert.throws(() => assertSafeArg('-x', 'PACKAGE'), TypeError);
+});
+
+test('assertSafeArg ignores non-string values (the common `undefined` no-override case)', () => {
+  assert.equal(assertSafeArg(undefined, 'REV'), undefined);
 });

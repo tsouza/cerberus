@@ -57,7 +57,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 
-import { capture, error as ghError, git, log, notice } from './lib/gh.mjs';
+import { assertSafeArg, capture, error as ghError, git, log, notice } from './lib/gh.mjs';
 import {
   CASK_REF,
   TAP_BREW_NAME,
@@ -183,7 +183,7 @@ function main() {
   tapGit(tapRepo, ['fetch', 'origin'], 'fetching the tap');
 
   const override = process.env.TAP_MIGRATION_LEGACY_REV?.trim();
-  let legacyRev = override;
+  let legacyRev = override ? assertSafeArg(override, 'TAP_MIGRATION_LEGACY_REV') : override;
   if (!legacyRev) {
     const deletion = tapGit(
       tapRepo,
