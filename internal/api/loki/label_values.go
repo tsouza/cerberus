@@ -12,6 +12,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // handleLabelValues implements GET /loki/api/v1/label/<name>/values.
@@ -51,7 +52,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki label values", "name", name, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki label values", "name", telemetry.SanitizeForLog(name), "sql", sqlStr, "args", args)
 
 	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {

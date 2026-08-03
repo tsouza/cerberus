@@ -9,6 +9,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // This file wires `| compare({...}, topN[, start, end])` into
@@ -314,7 +315,7 @@ func (h *Handler) execCompareRange(
 		return nil, nil, qerr
 	}
 	h.Logger.Debug("cerberus tempo metrics_query_range compare",
-		"traceql", q, "start", start, "end", end, "step", step,
+		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
 	series := postProcessCompare(res.Samples, cmp.TopN, compareAnchorGrid(start, end, step))

@@ -13,6 +13,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // defaultVolumeLimit mirrors Loki's documented default for
@@ -66,7 +67,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki index_volume", "logql", q, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki index_volume", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
 
 	rows, err := h.Client.QueryIndexVolume(r.Context(), sqlStr, args...)
 	if err != nil {

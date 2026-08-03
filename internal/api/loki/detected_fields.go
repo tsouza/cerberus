@@ -17,6 +17,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // defaultDetectedFieldsLineLimit caps the number of log rows the
@@ -143,7 +144,7 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki detected_fields", "logql", q, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki detected_fields", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
 
 	rows, err := h.Client.QueryDetectedFieldRows(r.Context(), sqlStr, args...)
 	if err != nil {

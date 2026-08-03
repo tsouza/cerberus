@@ -769,7 +769,7 @@ func (h *Handler) executeRangeStreaming(
 	if err != nil {
 		return engine.CursorResult{}, classifyEngineError(err)
 	}
-	h.Logger.Debug("cerberus query_range (stream)", "promql", query, "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus query_range (stream)", "promql", telemetry.SanitizeForLog(query), "sql", res.SQL, "args", res.Args)
 	return res, nil
 }
 
@@ -784,7 +784,7 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 	if err != nil {
 		return nil, nil, classifyEngineError(err)
 	}
-	h.Logger.Debug("cerberus query", "promql", query, "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus query", "promql", telemetry.SanitizeForLog(query), "sql", res.SQL, "args", res.Args)
 	// Engine times the execute stage uniformly; surface that to the
 	// per-request chMillisCounter so the X-Cerberus-CH-Millis header
 	// keeps reporting CH wall-clock. The middleware-driven counter is
