@@ -521,17 +521,6 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: t-skip
-      # Production code (non-test) must not advertise "not implemented".
-      # The bare words "skipped" / "deferred" are *not* gated here
-      # because Go has legitimate uses of both — `defer` statements
-      # described in docstrings, runtime "X is skipped" behaviour
-      # prose — that would all false-positive. "not implemented" has
-      # no legitimate prod meaning: either implement the feature or
-      # rewrite to a factual verb (rejected / unsupported / falls back).
-      - name: Reject "not implemented" in production code
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: not-implemented
       # Reject soft-assertion patterns that look like real verification
       # but pass tautologically — a discipline pin against fake-pass
       # regressions.

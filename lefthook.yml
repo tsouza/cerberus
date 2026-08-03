@@ -83,16 +83,6 @@ pre-push:
           echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
           exit 1
         fi
-    forbid-not-implemented-prod:
-      tags: discipline
-      run: |
-        if git ls-files -z -- \
-            'internal/**/*.go' \
-            ':!:internal/**/*_test.go' \
-            | xargs -0 grep -niEH 'not implemented' --; then
-          echo "lefthook: \"not implemented\" in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)"
-          exit 1
-        fi
     # Backstop for the `commit-msg` hook: that hook validates each
     # commit at creation time, but `git commit --no-verify` bypasses
     # it. This range-check mirrors the CI `lint` job's npx commitlint

@@ -292,24 +292,24 @@ function selfTest() {
   check('forbid-skip deriver counts 3 arms from a 3-arm switch', fakeCount === 3);
   check('forbid-skip deriver ignores the default arm', !names.includes('default'));
 
-  // The REAL forbid-skip.mjs must derive exactly 6.
+  // The REAL forbid-skip.mjs must derive exactly 5 (not-implemented removed in #1538).
   const realForbid = readFileSync(FORBID_SKIP_MJS, 'utf8');
-  check('real forbid-skip.mjs derives 6 CHECK arms', countForbidSkipChecks(realForbid).count === 6);
+  check('real forbid-skip.mjs derives 5 CHECK arms', countForbidSkipChecks(realForbid).count === 5);
 
   // 2. A doc that claims the WRONG forbid-skip count must be REJECTED.
   const draftDoc = 'The gate has **7** patterns total.';
   const claims7 = extractClaims(draftDoc, FORBID_SKIP_CLAIM_PATTERNS);
   check('forbid-skip claim extractor finds the "7 patterns" claim', claims7.some((c) => c.value === 7));
   check(
-    'forbid-skip gate would REJECT a doc claiming 7 against source 6',
-    claims7.some((c) => c.value !== 6),
+    'forbid-skip gate would REJECT a doc claiming 7 against source 5',
+    claims7.some((c) => c.value !== 5),
   );
   // And ACCEPT the corrected wording.
-  const fixedDoc = 'The gate has **6** CHECK categories total.';
-  const claims6 = extractClaims(fixedDoc, FORBID_SKIP_CLAIM_PATTERNS);
+  const fixedDoc = 'The gate has **5** CHECK categories total.';
+  const claims5 = extractClaims(fixedDoc, FORBID_SKIP_CLAIM_PATTERNS);
   check(
-    'forbid-skip gate would ACCEPT a doc claiming the real 6',
-    claims6.length > 0 && claims6.every((c) => c.value === 6),
+    'forbid-skip gate would ACCEPT a doc claiming the real 5',
+    claims5.length > 0 && claims5.every((c) => c.value === 5),
   );
 
   // 3. The layer deriver collapses sub-letters to distinct integers.

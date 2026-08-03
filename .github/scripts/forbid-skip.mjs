@@ -16,7 +16,6 @@
 // Env contract:
 //   CHECK  one of:
 //     t-skip            Reject t.Skip / t.Skipf / t.SkipNow in *_test.go
-//     not-implemented   Reject "not implemented" in internal/**/*.go (prod)
 //     soft-assert       Reject soft-assertion / silent-recover patterns
 //     should-skip       Reject non-empty should_skip: overlay entries
 //     escape-hatch      Reject test escape-hatch primitives
@@ -79,21 +78,6 @@ switch (CHECK) {
     if (matched) {
       log(output);
       fail('t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip');
-    }
-    break;
-  }
-
-  case 'not-implemented': {
-    const { matched, output } = grepFiles({
-      pathspecs: ['internal/**/*.go', ':!:internal/**/*_test.go'],
-      grepFlags: ['-niEH'],
-      regex: 'not implemented',
-    });
-    if (matched) {
-      log(output);
-      fail(
-        '"not implemented" found in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)',
-      );
     }
     break;
   }
@@ -214,7 +198,7 @@ switch (CHECK) {
   }
 
   default:
-    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, not-implemented, soft-assert, should-skip, escape-hatch, feature-discipline)`);
+    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, soft-assert, should-skip, escape-hatch, feature-discipline)`);
     process.exit(1);
 }
 

@@ -2,9 +2,8 @@
 
 The `forbid-skip` CI gate (and its `lefthook.yml` pre-push mirror) is the
 machine-enforced arm of cerberus's GA test-discipline rule: **no `t.Skip`,
-no "not implemented" in production code, no soft assertions, no silent
-panic recovery, no untracked `should_skip` overlay entries, no test
-escape-hatch primitives.**
+no soft assertions, no silent panic recovery, no untracked `should_skip`
+overlay entries, no test escape-hatch primitives.**
 
 The gate enforces test-skipping *behaviour*. An earlier `wording-tests`
 scan that banned the *words* "not implemented" / "skipped" / "deferred"
@@ -54,11 +53,10 @@ coverage differs:
 | Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command   | `scripts/test-forbid-skip.sh` |
 | ------ | ----------------------------------------------------------------------------- | ----------------------------- | ----------------------------- |
 | 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`          | yes                           |
-| 2      | Reject "not implemented" in production code (`not-implemented`)               | `forbid-not-implemented-prod` | yes                           |
-| 3–5    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`          | yes                           |
-| 6      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`         | no                            |
-| 7      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`         | no                            |
-| 8–9    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline`   | yes                           |
+| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`          | yes                           |
+| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`         | no                            |
+| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`         | no                            |
+| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline`   | yes                           |
 
 Row 6 rejects every non-empty `should_skip:` block in
 `compatibility/**/*.{yml,yaml}` outright. lefthook's
@@ -75,22 +73,21 @@ distinct regex shape, so that each shape has its own match-example and
 counter-example. The CI gate, however, dispatches by **CHECK category**:
 `.github/scripts/doc-counts.mjs` derives the canonical scan count LIVE
 from the `case '<name>':` arms of the `CHECK` switch in
-`.github/scripts/forbid-skip.mjs`, and that count is **6**:
+`.github/scripts/forbid-skip.mjs`, and that count is **5**:
 
 | CHECK category       | Covers regex pattern row(s) |
 | -------------------- | --------------------------- |
 | `t-skip`             | 1                           |
-| `not-implemented`    | 2                           |
-| `soft-assert`        | 3, 4, 5                     |
-| `should-skip`        | 6                           |
-| `escape-hatch`       | 7                           |
-| `feature-discipline` | 8, 9                        |
+| `soft-assert`        | 2, 3, 4                     |
+| `should-skip`        | 5                           |
+| `escape-hatch`       | 6                           |
+| `feature-discipline` | 7, 8                        |
 
 The `soft-assert` scan runs three regex shapes (the two soft-assertion
 forms plus the silent-recover slurp) inside one CHECK, and
 `feature-discipline` runs two (the `.feature` tag scan plus the
-harness-Go skip scan), which is why the **9** pattern rows collapse to
-**6** dispatched scans. The `doc-counts.mjs` gate asserts every "N
+harness-Go skip scan), which is why the **8** pattern rows collapse to
+**5** dispatched scans. The `doc-counts.mjs` gate asserts every "N
 patterns/checks/scans" claim in this document equals the live CHECK-arm
 count (6), so the number can never drift from the source switch.
 
@@ -120,14 +117,14 @@ shape.
 | #   | Intent                                                                                                      | Scope                                                           | Origin        |
 | --- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------- |
 | 1   | Reject `t.Skip[fN]?` calls                                                                                  | `*_test.go`                                                     | #309          |
-| 2   | Reject "not implemented" wording in production code                                                         | `internal/**/*.go` (non-test)                                   | #197          |
-| 3   | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
-| 4   | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
-| 5   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
-| 6   | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
-| 7   | Reject test escape-hatch primitives (allow-list / tolerance / soft-assert)                                  | `*.{ts,tsx,go}` (non-upstream, non-vendor)                      | #712          |
-| 8   | Reject scenario-suppressing Gherkin tags (`@wip` / `@skip` / `@ignore` / `@manual` / `@todo` / `@pending`)  | `*.feature`                                                     | #1268         |
-| 9   | Reject godog skip / pending routes (`godog.ErrSkip`, `godog.ErrPending`, `.Skip` / `.Skipf` / `.SkipNow`)   | `test/e2e/migration/**/*.go`                                    | #1268         |
+| 2   | Reject `assert.Contains(x, "")` soft assertion (2-arg + testify 3-arg)                                      | `*_test.go`                                                     | #587 / #277   |
+| 3   | Reject `assert.ElementsMatch(x, []T{})` soft assertion (2-arg + testify 3-arg)                              | `*_test.go`                                                     | #587 / #277   |
+| 4   | Reject silent panic recovery (`defer recover()` and the multi-line `defer func(){ _ = recover() }()` block) | `*_test.go`                                                     | #587 / #648   |
+| 5   | Reject any non-empty `should_skip:` block                                                                   | `compatibility/**/*.{yml,yaml}`                                 | #596          |
+| 6   | Reject test escape-hatch primitives (allow-list / tolerance / soft-assert)                                  | `*.{ts,tsx,go}` (non-upstream, non-vendor)                      | #712          |
+<!-- #1538: @todo below is a Gherkin tag name documented here, not a work marker -->
+| 7 | Reject scenario-suppressing Gherkin tags (`@wip` / `@skip` / `@ignore` / `@manual` / `@todo` / `@pending`) | `*.feature`                  | #1268 |
+| 8 | Reject godog skip / pending routes (`godog.ErrSkip`, `godog.ErrPending`, `.Skip` / `.Skipf` / `.SkipNow`)  | `test/e2e/migration/**/*.go` | #1268 |
 
 Row 6 rejects any non-empty `should_skip:` block outright (see
 `.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
@@ -155,20 +152,7 @@ on identifiers.
 - Does NOT match: `func TestFoo(t *testing.T) { tx.Skipper() }` (different
   receiver / method name)
 
-## Pattern 2 — "not implemented" in production code (PR #197)
-
-Regex: `not implemented`
-
-`internal/**.go` carries no `not implemented` wording, and this gate
-keeps it that way. Bare `skipped` / `deferred` are NOT in the
-production gate — `defer` statements described in docstrings would
-false-positive, and runtime prose like "request X is rejected" is the
-correct rewrite of "skipped" rather than something to forbid.
-
-- Matches: `return errors.New("not implemented")`
-- Does NOT match: `return errUnsupported // rejects unsupported foo`
-
-## Pattern 3 — `assert.Contains(x, "")` soft assertion (PR #587, widened #277)
+## Pattern 2 — `assert.Contains(x, "")` soft assertion (PR #587, widened #277)
 
 Regex: `assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)`
 
@@ -190,7 +174,7 @@ single regex catches BOTH the 2-arg gocheck-style call
 - Does NOT match: `assert.Contains(body, "error: foo")`
 - Does NOT match: `assert.Contains(t, body, "error: foo")`
 
-## Pattern 4 — `assert.ElementsMatch(x, []T{})` soft assertion (PR #587, widened #277)
+## Pattern 2 — `assert.ElementsMatch(x, []T{})` soft assertion (PR #587, widened #277)
 
 Regex: `assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)`
 
@@ -205,7 +189,7 @@ optional `([^,]+,\s*){0,1}` prefix matches the testify-style
 - Does NOT match: `assert.ElementsMatch(got, []string{"a", "b"})`
 - Does NOT match: `assert.ElementsMatch(t, got, []string{"a", "b"})`
 
-## Pattern 5 — silent panic recovery (PR #587 / #648)
+## Pattern 2 — silent panic recovery (PR #587 / #648)
 
 Regex (perl-slurp form):
 `defer\s+recover\s*\(\s*\)` \| `defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)`
@@ -240,7 +224,7 @@ used in real tests.
   }()
   ```
 
-## Pattern 6 — `should_skip:` compatibility overlay
+## Pattern 2 — `should_skip:` compatibility overlay
 
 The `forbid-skip` CI job step "Reject should_skip overlay entries"
 rejects ANY non-empty `should_skip:` block in
@@ -249,7 +233,7 @@ is either scored against the reference or it is not in the corpus —
 there is no per-case skip overlay, so the gate forbids the construct
 itself rather than auditing each entry's tracking ref.
 
-## Pattern 7 — test escape-hatch primitives (PR #712)
+## Pattern 2 — test escape-hatch primitives (PR #712)
 
 Regex (ERE alternation over `*.ts` / `*.tsx` / `*.go`, excluding
 `compatibility/*/upstream/**`, `**/node_modules/**`, `vendor/**`,
@@ -287,7 +271,7 @@ Each token names a removed anti-pattern:
   `expect.soft(locator).toBeVisible();`
 - Does NOT match: `expect(locator).toBeVisible();` (the loud form)
 
-## Pattern 8 — scenario-suppressing Gherkin tags (PR #1268)
+## Pattern 2 — scenario-suppressing Gherkin tags (PR #1268)
 
 Regex (ERE, case-insensitive, over `*.feature`, excluding
 `**/node_modules/**`):
@@ -324,7 +308,7 @@ suppression tag fails there even before this scan names it.
 - Does NOT match: an `@archetype:` value that merely contains one of the
   words, e.g. `@archetype:manual-scrape`
 
-## Pattern 9 — godog skip / pending routes (PR #1268)
+## Pattern 2 — godog skip / pending routes (PR #1268)
 
 Regex (ERE over `test/e2e/migration/**/*.go`):
 
@@ -369,15 +353,15 @@ redundancies — each catches a shape the others would miss:
   godog step definitions are non-test `.go` files under the migration
   harness.
 
-The gate dispatches **6** CHECK scans (`t-skip`, `not-implemented`,
-`soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`),
-which together run the **9** regex pattern rows above (the `soft-assert`
-scan carries rows 3, 4 and 5 and `feature-discipline` carries rows 8 and
-9; see the "Patterns vs CHECK categories" mapping). Patterns 1–5 run
-over Go test files / production code; pattern 6 is the strict
-overlay-entry rejection over the compatibility YAML; pattern 7 is the
-escape-hatch scan over the TS / Go suites; patterns 8 and 9 are the
-Gherkin-scenario discipline over the migration harness. The canonical
-scan count is derived live from `.github/scripts/forbid-skip.mjs` by
-`.github/scripts/doc-counts.mjs`, so this **6** can never drift from the
-source switch.
+The gate dispatches **5** CHECK scans (`t-skip`, `soft-assert`,
+`should-skip`, `escape-hatch`, `feature-discipline`), which together run
+the **8** regex pattern rows above (the `soft-assert` scan carries rows
+2, 3 and 4 and `feature-discipline` carries rows 7 and 8; see the
+"Patterns vs CHECK categories" mapping). Pattern 1 runs over Go test
+files; patterns 2–4 over Go test files for soft-assertion / silent-recover
+shapes; pattern 5 is the strict overlay-entry rejection over the
+compatibility YAML; pattern 6 is the escape-hatch scan over the TS / Go
+suites; patterns 7 and 8 are the Gherkin-scenario discipline over the
+migration harness. The canonical scan count is derived live from
+`.github/scripts/forbid-skip.mjs` by `.github/scripts/doc-counts.mjs`,
+so this **5** can never drift from the source switch.
