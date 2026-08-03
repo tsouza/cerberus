@@ -1,0 +1,50 @@
+name: chaos-not-applicable-rate
+
+# Scheduled drought detector for the chaos lane's silent not-applicable
+# outcomes.
+#
+# chaos-run.mjs's ch-network-partition and route-memo-activation scenarios
+# each have a legitimate not-applicable exit when their precondition doesn't
+# materialise this run (kube-router not enforcing NetworkPolicy; the pinned
+# query not crossing the memory cap). One not-applicable run is not a bug.
+# The risk this catches is the precondition permanently failing to
+# materialise, which would let the chaos lane report success forever while
+# exercising neither contract, indistinguishable from a green track record
+# earned honestly. See .github/scripts/chaos-not-applicable-rate.mjs's own
+# header for the full rationale.
+#
+# Deliberately NOT a PR check, same reasoning as release-gate-drift.yml: the
+# drift this detects accumulates from real-world conditions (a cluster image,
+# a live data volume) over many chaos-job runs, not from any single PR's
+# diff — gating PRs on it would red them for something they did not do.
+on:
+  schedule:
+    # Wednesdays 06:00 UTC — offset from release-gate-drift's Tuesday slot
+    # and the weekly link check, so scheduled reports land on different days.
+    - cron: '0 6 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: chaos-not-applicable-rate
+  cancel-in-progress: false
+
+jobs:
+  drought:
+    name: drought
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: drought self-test
+        run: node .github/scripts/chaos-not-applicable-rate.mjs --self-test
+
+      - name: Check the chaos lane's not-applicable rate for drought
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node .github/scripts/chaos-not-applicable-rate.mjs

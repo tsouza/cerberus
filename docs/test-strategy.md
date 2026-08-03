@@ -540,6 +540,16 @@ What it proves (the contracts, mapped to their landing PRs):
   cap this run, the scenario records not-applicable rather than a
   vacuous pass.
 
+Both not-applicable exits are individually legitimate — the precondition
+genuinely didn't materialise this run — but nothing about a single green run
+distinguishes that from the precondition having permanently stopped
+materialising, which would let the lane report success forever while
+exercising neither contract. `.github/scripts/chaos-not-applicable-rate.mjs`
+(weekly `chaos-not-applicable-rate.yml`, its own scheduled lane, never a PR
+check — same reasoning as `release-gate-drift.yml`) mines recent `chaos` job
+logs and fails if a scenario has recorded not-applicable in every sampled run;
+see that script's own header for the full design.
+
 Design notes (flake resistance): every recovery check polls to a
 **generous bounded deadline** (never asserts immediately after a fault);
 faults are one-shot + idempotent (`kubectl delete pod` / `apply`

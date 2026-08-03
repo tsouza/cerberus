@@ -902,6 +902,32 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     `CHAOS_MANIFESTS` (default `test/e2e/chaos/manifests`).
   - Exit: `0` all selected scenarios passed (or recorded not-applicable
     with a `::notice::`), `1` on any contract-assertion failure.
+- **`chaos-not-applicable-rate.mjs`** — `chaos-not-applicable-rate.yml`, the
+  weekly `drought` job. Drought detector for `chaos-run.mjs`'s not-applicable
+  outcomes (ch-network-partition, route-memo-activation): one not-applicable
+  run is legitimate (an environment/data precondition didn't materialise),
+  but the SAME precondition failing forever would let the lane report success
+  while exercising nothing, indistinguishable from a genuine green streak.
+  Discovers the scenario set by scanning `chaos-run.mjs`'s source for
+  `notApplicableMarker()` call sites (one registry, not a second
+  hand-maintained list), samples the last `CHAOS_RATE_WINDOW` completed
+  `chaos` job logs via the Actions API, and flags any scenario that executed
+  in at least `CHAOS_RATE_MIN_RUNS` of them and was not-applicable in ALL of
+  them. A run where the scenario has no trace at all (phase/scenario
+  selection skipped it) is excluded from that scenario's denominator, never
+  counted as a not-applicable sample. Pure exported
+  `scenariosWithNotApplicableBranch` / `scenarioOutcomeInLog` /
+  `droughtReport` plus a `--self-test` the job runs first, pinned against the
+  real `chaos-run.mjs` source so a rename of the marker call breaks loudly.
+  - Env: `GITHUB_TOKEN` (default token suffices — `actions:read`, not the
+    admin rights `release-gate-drift.mjs` needs), `GITHUB_REPOSITORY`,
+    `GITHUB_API_URL` (default `https://api.github.com`),
+    `CHAOS_RATE_WORKFLOW` (default `e2e.yml`), `CHAOS_RATE_JOB` (default
+    `chaos`), `CHAOS_RATE_WINDOW` (default 12 runs), `CHAOS_RATE_MIN_RUNS`
+    (default 5).
+  - Exit: `0` no scenario in drought (or too few sampled runs to judge any
+    of them), `1` a scenario was not-applicable in every sampled run it
+    executed in.
 - **`e2e-bwc-verify-placement.mjs`** — `e2e.yml`, the `bwc-minio` job
   (bundled-ClickHouse-on-object-storage lane), invoked via
   `just e2e-bwc-verify`. Asserts the bundled CH data tier physically lives on
