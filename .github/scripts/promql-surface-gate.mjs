@@ -86,7 +86,9 @@
 //
 // Imports only node: builtins + lib/gh.mjs (no npm deps, no setup-node).
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import process from 'node:process';
 import { error, notice, log, capture } from './lib/gh.mjs';
 import { pullImageWithRetry } from './lib/registry.mjs';
@@ -101,6 +103,7 @@ const REGENERATE = process.env.REGENERATE === '1';
 const KEEP_REF = process.env.KEEP_REF === '1';
 
 const REF_CONTAINER = 'cerberus-promql-surface-ref';
+let refCfgDir = null;
 // A fixed instant; the verdict is data-independent so the exact value is
 // irrelevant — it only needs to be a valid evaluation timestamp.
 const PROBE_TIME = '1700000000';
@@ -138,7 +141,8 @@ function startReference() {
     'scrape_configs: []',
     '',
   ].join('\n');
-  const cfgPath = '/tmp/promql-surface-ref.yml';
+  refCfgDir = mkdtempSync(join(tmpdir(), 'promql-surface-'));
+  const cfgPath = join(refCfgDir, 'ref.yml');
   writeFileSync(cfgPath, promYml);
   const run = capture('docker', [
     'run', '-d', '--name', REF_CONTAINER,
@@ -162,6 +166,10 @@ function teardown() {
     return;
   }
   capture('docker', ['rm', '-f', REF_CONTAINER]);
+  if (refCfgDir) {
+    rmSync(refCfgDir, { recursive: true, force: true });
+    refCfgDir = null;
+  }
 }
 
 async function waitReady() {
