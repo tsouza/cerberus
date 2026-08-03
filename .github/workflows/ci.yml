@@ -451,6 +451,19 @@ jobs:
       - name: release-gate-drift self-test (gate rot detector)
         run: node .github/scripts/release-gate-drift.mjs --self-test
 
+      # Same reasoning again: chaos-not-applicable-rate.yml is schedule-only,
+      # so its drought detector would otherwise go unexercised between weekly
+      # runs. The pure half — discovering the not-applicable scenario set
+      # from chaos-run.mjs's own source, classifying a run's outcome from its
+      # log text, and the drought threshold itself — runs here. Its negative
+      # controls matter most: a scenario absent from a run's log entirely
+      # must NOT count toward that scenario's denominator (or a lane that
+      # simply never selects the scenario would misreport as permanent
+      # drought), and a scenario that fires and FAILS still counts as
+      # exercised, not not-applicable.
+      - name: chaos-not-applicable-rate self-test (drought detector)
+        run: node .github/scripts/chaos-not-applicable-rate.mjs --self-test
+
       - name: brew-smoke self-test (cask-freshness guard)
         run: node --test .github/scripts/brew-smoke.test.mjs
 

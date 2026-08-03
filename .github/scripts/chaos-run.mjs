@@ -43,12 +43,38 @@
 //
 // Exit codes: 0 = every selected scenario passed (or was recorded
 // not-applicable with a ::notice::), 1 = any contract assertion failed.
+//
+// not-applicable outcomes (ch-network-partition, route-memo-activation) are
+// legitimately environment/data-dependent — see each scenario's own header
+// comment — so a single not-applicable run is not itself a bug. What IS a bug
+// is the precondition permanently failing to materialise, which would make
+// the lane report success forever while exercising nothing. Each
+// not-applicable notice() therefore carries the stable, greppable
+// `notApplicableMarker()` prefix; `chaos-not-applicable-rate.mjs` (a separate,
+// weekly-scheduled script — see its own header) mines recent chaos-job logs
+// for that marker and fails loudly if a scenario has recorded not-applicable
+// in EVERY sampled run. Adding a new not-applicable branch anywhere in this
+// file only needs to route through notApplicableMarker(); the rate script
+// discovers scenario names by scanning for that same call, so no second list
+// to keep in sync.
 
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
 
 // ---- env / constants -------------------------------------------------
+
+// NOT_APPLICABLE_TITLE tags every not-applicable notice() as a filterable
+// annotation; notApplicableMarker() is the stable, greppable message prefix
+// chaos-not-applicable-rate.mjs parses out of the job log. Keep the prefix
+// shape in sync with that script's own notApplicableMarkerRegex if it ever
+// changes — the two are deliberately not shared code (that script must be
+// able to parse OLD logs from before it existed, so it can't import a live
+// const from this file).
+const NOT_APPLICABLE_TITLE = 'chaos-not-applicable';
+function notApplicableMarker(scenario, reason) {
+  return `chaos-not-applicable: ${scenario} reason=${reason} —`;
+}
 
 const CERBERUS_URL = (process.env.CERBERUS_URL || 'http://localhost:8080').replace(/\/$/, '');
 const NS = process.env.CHAOS_NS || 'cerberus';
@@ -872,13 +898,15 @@ async function scenarioChNetworkPartition() {
     // Probe itself errored — treat as not-applicable, not a hard fail, so
     // an infra hiccup in the probe doesn't red the informational lane.
     notice(
-      'ch-network-partition: NetworkPolicy enforcement probe inconclusive — recording not-applicable; breaker contract is covered by ch-pod-kill.',
+      `${notApplicableMarker('ch-network-partition', 'probe-inconclusive')} NetworkPolicy enforcement probe inconclusive — breaker contract is covered by ch-pod-kill.`,
+      { title: NOT_APPLICABLE_TITLE },
     );
     return failures;
   }
   if (!enforced) {
     notice(
-      'ch-network-partition: kube-router is NOT enforcing NetworkPolicy in this k3d image — recording not-applicable; breaker contract is covered by ch-pod-kill.',
+      `${notApplicableMarker('ch-network-partition', 'netpol-not-enforced')} kube-router is NOT enforcing NetworkPolicy in this k3d image — breaker contract is covered by ch-pod-kill.`,
+      { title: NOT_APPLICABLE_TITLE },
     );
     return failures;
   }
@@ -1224,7 +1252,8 @@ async function scenarioRouteMemoActivation() {
     log('    cerberus_route_ab_success_total{cerberus_route_choice="b"} climbed — a real route-A resource failure was rescued by a real route-B dispatch');
   } else if (!sawMemoryLimit422) {
     notice(
-      'route-memo-activation: the pinned 24h/15s query never crossed CERBERUS_CH_QUERY_MAX_MEMORY this run (data-volume-dependent, same dual contract iterate-time-ranges.spec.ts documents) — recording not-applicable; the memo had no resource failure to rescue.',
+      `${notApplicableMarker('route-memo-activation', 'memory-cap-not-crossed')} the pinned 24h/15s query never crossed CERBERUS_CH_QUERY_MAX_MEMORY this run (data-volume-dependent, same dual contract iterate-time-ranges.spec.ts documents) — the memo had no resource failure to rescue.`,
+      { title: NOT_APPLICABLE_TITLE },
     );
     return failures;
   } else {
