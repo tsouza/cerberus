@@ -165,7 +165,7 @@ clickhouse:
     connMaxLifetime: ""
   # -- Inline password. Renders a chart-managed Secret. PREFER `existingSecret`
   # in production so the password never lands in values / release history.
-  password: ""
+  password: null
   # -- Name of a pre-existing Secret holding the ClickHouse password. Takes
   # precedence over `password` (no chart Secret is rendered).
   existingSecret: ""
