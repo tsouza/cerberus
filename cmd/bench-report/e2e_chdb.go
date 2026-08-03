@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
-	logqlsyntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
+	logqlsyntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"

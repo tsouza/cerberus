@@ -54,8 +54,14 @@ pre-push:
   commands:
     golangci-lint:
       tags: lint
+      # `just lint`, not a bare `golangci-lint run ./...`: one invocation
+      # analyses one build configuration, so the bare form skipped every
+      # tagged file — the `chdb` round-trip layer, the `agpl_oracle`
+      # differentials, the migration tiers — and reported clean over what was
+      # left. The recipe runs the tagged pass and the untagged one, which is
+      # what CI's lint job runs.
       run: |
-        golangci-lint run ./...
+        just lint
     # Workflow-file validation. GitHub rejects invalid workflow files
     # SERVER-side as zero-job "invalid workflow file" failure runs,
     # which silently prevents required pull_request checks from ever

@@ -42,9 +42,9 @@ import (
 	"time"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
+	prommodel "github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	prommodel "github.com/prometheus/prometheus/model/labels"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"

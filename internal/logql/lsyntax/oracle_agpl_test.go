@@ -178,7 +178,7 @@ func normalize(v reflect.Value) string {
 		return "nil"
 	}
 	switch v.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() {
 			return "nil"
 		}
@@ -291,7 +291,7 @@ func isLeafLabelType(name string) bool {
 func leafString(i interface{}) string {
 	rv := reflect.ValueOf(i)
 	name := rv.Type().Name()
-	if rv.Kind() == reflect.Ptr && rv.Elem().Kind() == reflect.Struct {
+	if rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
 		name = rv.Elem().Type().Name()
 	}
 	if name == "StringLabelFilter" || name == "LineFilterLabelFilter" {
@@ -305,7 +305,7 @@ func leafString(i interface{}) string {
 // embeddedMatcher returns the *labels.Matcher field embedded in a leaf
 // label-filter value, or nil.
 func embeddedMatcher(rv reflect.Value) *labels.Matcher {
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return nil
 		}

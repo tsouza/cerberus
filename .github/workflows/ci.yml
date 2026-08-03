@@ -230,12 +230,13 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: golangci-lint (Go + formatters)
+      - name: golangci-lint (tagged build configuration)
         # v7+ is required for golangci-lint v2; v6 caps at v1.
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
-          # Honours .golangci.yml; runs across the whole module.
+          # Honours .golangci.yml — including its `build-tags:` union, which is
+          # every tag in the tree. Runs across the whole module.
           args: ./...
           # Analyse cold. The action's analysis cache is a shared GitHub
           # Actions entry, and those entries are immutable: once a key holds
@@ -251,16 +252,24 @@ jobs:
           # a bad entry fails verification instead of being trusted.
           skip-cache: true
 
-      # The Tier-0 migration runner is `migration`-tagged, so neither the
-      # test job nor golangci-lint (which sets no build-tags) compiles it —
-      # a type error there would surface only on the scheduled migration
-      # lane. `go vet` with the tag type-checks the runner plus its step
-      # library on every PR: seconds, no Docker, no binary build.
-      - name: vet the migration harness (tagged runner)
-        run: go vet -tags=migration ./test/e2e/migration/...
+      # The union above excludes the files constrained the other way — the
+      # `!chdb` and `!chaos_sleep` stubs — so they get the plain build
+      # configuration here. `--build-tags` replaces the config's value rather
+      # than adding to it, and `cerberus_untagged_build` is a tag no file in
+      # the tree constrains on, so this pass sees the default build.
+      # test/regression/lint_build_tags_test.go holds the two passes, the tag
+      # union and the inert tag to what the tree's `//go:build` lines say.
+      - name: golangci-lint (untagged build configuration)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --build-tags cerberus_untagged_build ./...
+          skip-cache: true
 
-      # Vetting proves the runner compiles; it proves nothing about whether
-      # the committed explain goldens still describe what the emitter emits.
+      # The tagged lint pass above type-checks the `migration`-tagged Tier-0
+      # runner, which is what the `go vet -tags=migration` step that used to
+      # stand here did. Compiling it proves nothing about whether the committed
+      # explain goldens still describe what the emitter emits.
       # Those goldens are the migration lane's only assertion over generated
       # SQL, and the lane has no `pull_request:` trigger — so a change to a
       # query shape merged green and turned `main` red on the next push,
