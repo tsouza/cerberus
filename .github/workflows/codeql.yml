@@ -1,0 +1,108 @@
+name: CodeQL
+
+# CodeQL advanced-setup replacement for GitHub's code-scanning default setup.
+#
+# Default setup builds its analysis workflow server-side and dispatches it on
+# `push` and `pull_request` only. There is no mechanism to add `merge_group`
+# to a server-side workflow, so with default setup enabled the merge queue
+# stalls waiting for a CodeQL check-run that is never posted on the projected
+# trunk commit (see #1558).
+#
+# Advanced setup is a workflow file in the repository. It can carry any trigger,
+# including `merge_group`, which is exactly what the queue needs.
+#
+# MIGRATION NOTE: default setup and advanced setup cannot coexist — SARIF
+# uploads are rejected while default setup is configured. Default setup was
+# disabled via the GitHub API immediately before this workflow was merged:
+#   gh api --method PUT repos/tsouza/cerberus/code-scanning/default-setup \
+#     -f state=not-configured
+# Branch protection continues to require the context named `CodeQL` (the `name:`
+# of the umbrella job below), so no branch-protection edit is needed.
+#
+# REQUIRED CONTEXT: `CodeQL` — produced by the umbrella job below, which
+# depends on all per-language analyze jobs. Branch protection requires this
+# name; any rename here must be accompanied by an update to the required-checks
+# list (`gh api repos/tsouza/cerberus/branches/main/protection`).
+#
+# LANGUAGES: the same set default setup was scanning:
+#   go, javascript-typescript, actions, python
+# The `actions` language scans workflow YAML for injection vulnerabilities.
+# The `javascript-typescript` language covers the .github/scripts/*.mjs files.
+#
+# TEST REGRESSION PIN: test/regression/merge_queue_test.go previously recorded
+# `CodeQL` in `queueExternalContexts` because default setup produced it with no
+# workflow owner in this repo. That entry is deleted in this PR — `codeql.yml`
+# is now the owner, and the test asserts the workflow declares `merge_group`.
+
+on:
+  push:
+    branches: [main, 'release/*.x']
+  pull_request:
+  merge_group:
+  schedule:
+    # Weekly deep scan — outside the standard PR/push gates so the
+    # extended query suite runs without gating PRs on its extra latency.
+    - cron: '30 2 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  # Never cancel on merge_group: a cancelled check-run is treated as failed
+  # by GitHub, which would dequeue the PR. Safe on pull_request and push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript, actions, python]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        if: matrix.language == 'go'
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Default query suite mirrors what default setup was running.
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
+
+  # Umbrella job — produces the `CodeQL` check-run that branch protection
+  # requires. It passes only when every per-language analysis passes, so
+  # branch protection still blocks on all language analyses via this single
+  # required context name (matching what default setup produced).
+  CodeQL:
+    name: CodeQL
+    needs: analyze
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all analyses passed
+        run: |
+          if [ "${{ needs.analyze.result }}" != "success" ]; then
+            echo "::error::One or more CodeQL analyses failed or were skipped."
+            exit 1
+          fi
+          echo "All CodeQL analyses passed."
