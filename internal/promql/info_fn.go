@@ -59,6 +59,15 @@ var infoIdentityLabels = []string{"instance", "job"}
 // InfoJoin.DataLabels list). Those same non-`__name__` matchers also
 // decide whether a base sample that matches no info series survives at
 // all — see infoDropsUnmatched.
+//
+// A base series that is ITSELF an info series is never enriched. The
+// reference engine collects those into an `ignoreSeries` set (evalInfo)
+// and appends them to the output verbatim, ahead of the data-label and
+// drop logic (combineWithInfoVector) — so such a series is neither
+// enriched nor dropped, whatever the second argument says. Membership is
+// "the base series' `__name__` matches EVERY effective name matcher", the
+// same predicate that selects the info side. Cerberus splits the base
+// vector on that predicate: see infoIgnorePredicate.
 func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) < 1 || len(c.Args) > 2 {
 		return nil, fmt.Errorf("promql: info expects 1 or 2 arguments, got %d", len(c.Args))
@@ -85,18 +94,64 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	}
 	nameMatchers = effectiveInfoNameMatchers(nameMatchers)
 
+	// When the base vector pins its own metric name, ignore-set membership
+	// is decidable here and the split collapses to one of its two arms —
+	// keeping the common `info(up)` shape a plain join over an unfiltered
+	// base, and making `info(target_info)` the pass-through it is upstream.
+	if name, ok := staticBaseMetricName(c.Args[0]); ok {
+		if matchesEveryNameMatcher(nameMatchers, name) {
+			return base, nil
+		}
+		return lowerInfoJoin(base, nameMatchers, dataMatchers, s, ctx)
+	}
+
+	// Undecidable statically (the base selects several metric names, or is
+	// an expression rather than a selector) — split at query time.
+	join, err := lowerInfoJoin(
+		&chplan.Filter{Input: base, Predicate: infoEnrichablePredicate(nameMatchers, s)},
+		nameMatchers, dataMatchers, s, ctx,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ignored := &chplan.Filter{
+		// The arms are independent subtrees: chplan is rewritten in place,
+		// so the second arm gets its own copy of the base rather than an
+		// alias of the first arm's.
+		Input:     chplan.CloneNode(base),
+		Predicate: infoIgnorePredicate(nameMatchers, s),
+	}
+	// Both arms carry the canonical Sample quadruple in the same order —
+	// the shape InfoJoin's own base side already requires — so the
+	// positional UNION ALL lines up column for column. The Project on top
+	// states that shape rather than leaving it implicit: UNION ALL matches
+	// columns by POSITION, so a downstream consumer reading the union's
+	// output needs one named column list to read, not two arms to compare.
+	union := &chplan.UnionAll{Inputs: []chplan.Node{join, ignored}}
+	return &chplan.Project{
+		Input: union,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
+}
+
+// lowerInfoJoin builds the enrichment join over an already-lowered base
+// arm. Split out of lowerInfo so the ignore-set carve-out can feed it
+// either the whole base vector or just its enrichable arm.
+func lowerInfoJoin(input chplan.Node, nameMatchers, dataMatchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	infoNode, err := lowerInfoMetric(nameMatchers, dataMatchers, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	dataLabels := infoDataLabelNames(dataMatchers)
-
 	return &chplan.InfoJoin{
-		Input:            base,
+		Input:            input,
 		Info:             infoNode,
 		IdentityLabels:   slices.Clone(infoIdentityLabels),
-		DataLabels:       dataLabels,
+		DataLabels:       infoDataLabelNames(dataMatchers),
 		DropUnmatched:    infoDropsUnmatched(dataMatchers),
 		MergeInfoMetrics: !pinsSingleInfoMetric(nameMatchers),
 		MetricNameColumn: s.MetricNameColumn,
@@ -104,6 +159,89 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
 	}, nil
+}
+
+// staticBaseMetricName returns the single metric name the info() base
+// argument can produce, when the argument pins one. A VectorSelector
+// carries a non-empty Name exactly when a `__name__` equality matcher
+// pins it, so every series it yields has that name and ignore-set
+// membership is a compile-time answer. Anything else — a regex-named
+// selector, or a function/binary expression — reports false and takes the
+// query-time split.
+func staticBaseMetricName(e parser.Expr) (string, bool) {
+	sel, ok := e.(*parser.VectorSelector)
+	if !ok || sel.Name == "" {
+		return "", false
+	}
+	return sel.Name, true
+}
+
+// matchesEveryNameMatcher reports whether name satisfies all of the
+// effective `__name__` matchers — the reference engine's ignoreSeries
+// test (promql/info.go::evalInfo's `matchesAllMatchers` loop).
+func matchesEveryNameMatcher(nameMatchers []*labels.Matcher, name string) bool {
+	for _, m := range nameMatchers {
+		if !m.Matches(name) {
+			return false
+		}
+	}
+	return true
+}
+
+// infoIgnorePredicate renders the ignore-set test as a plan predicate
+// over the base side's metric-name column: an AND-fold of every effective
+// `__name__` matcher. effectiveInfoNameMatchers never returns an empty
+// set, so the fold always yields a predicate.
+func infoIgnorePredicate(nameMatchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
+	var pred chplan.Expr
+	for _, m := range nameMatchers {
+		pred = foldPredicate(pred, chplan.OpAnd, metricNamePredicate(m, s))
+	}
+	return pred
+}
+
+// infoEnrichablePredicate renders the complement of infoIgnorePredicate —
+// the base series that DO get enriched. It is built by inverting each
+// matcher and OR-folding rather than by wrapping the AND-fold in a NOT,
+// because chplan has no NOT expression: negating a matcher's TYPE yields
+// the exact complement of its predicate (an `=` becomes `!=`, and the
+// regex form's `single OR normalized` becomes `single AND normalized`),
+// so De Morgan holds term for term.
+func infoEnrichablePredicate(nameMatchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
+	var pred chplan.Expr
+	for _, m := range nameMatchers {
+		pred = foldPredicate(pred, chplan.OpOr, metricNamePredicate(invertMatcher(m), s))
+	}
+	return pred
+}
+
+// foldPredicate appends next to acc under op, treating a nil acc as "no
+// terms yet".
+func foldPredicate(acc chplan.Expr, op chplan.BinaryOp, next chplan.Expr) chplan.Expr {
+	if acc == nil {
+		return next
+	}
+	return &chplan.Binary{Op: op, Left: acc, Right: next}
+}
+
+// invertMatcher returns the matcher that matches exactly the label values
+// m rejects. The value is unchanged, so a regex that compiled for m
+// compiles here too.
+func invertMatcher(m *labels.Matcher) *labels.Matcher {
+	var inverted labels.MatchType
+	switch m.Type {
+	case labels.MatchEqual:
+		inverted = labels.MatchNotEqual
+	case labels.MatchNotEqual:
+		inverted = labels.MatchEqual
+	case labels.MatchRegexp:
+		inverted = labels.MatchNotRegexp
+	case labels.MatchNotRegexp:
+		inverted = labels.MatchRegexp
+	default:
+		panic(fmt.Sprintf("promql: unknown label match type %v", m.Type))
+	}
+	return labels.MustNewMatcher(inverted, m.Name, m.Value)
 }
 
 // effectiveInfoNameMatchers returns the `__name__` matcher set that

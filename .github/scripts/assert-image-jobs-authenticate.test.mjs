@@ -249,7 +249,7 @@ test('removing the acquisition removes the requirement, not the other way round'
 // shape of the job that produced the run above: login, then straight to compose.
 const withoutTheComposePrePull = (text) =>
   text.replace(
-    'run: ./compatibility/prometheus/scripts/run-compatibility.sh',
+    'run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh',
     'run: docker compose -f docker-compose.yml up -d --build --wait clickhouse prometheus cerberus',
   );
 

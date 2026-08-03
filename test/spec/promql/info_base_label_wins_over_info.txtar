@@ -1,5 +1,37 @@
+# Which side wins when the base series and its info companion carry the
+# SAME label with different values: the BASE does. The reference engine
+# skips any info label already present on the base
+# (promql/info.go::combineWithInfoVector checks `baseLabels` before
+# recording the label), so enrichment only ever GROWS a base series' label
+# set — it never rewrites a value the series already had.
+#
+# `up{job="api", version="base"}` already carries `version`, and its
+# `target_info` companion offers `version="1.2.3"`. The result must keep
+# `version="base"`.
+#
+# This is an execution-level pin for a decision that is otherwise
+# invisible: the emitter drops base-carried keys from the info-extras map
+# before merging, and `mapConcat` is later-key-wins with the base listed
+# last. Either mechanism alone would produce this answer, so both would
+# have to be inverted to break it — and a SQL-substring assertion would
+# not notice.
+
 -- query.promql --
 info(up)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api', 'version', 'base'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('job', 'api', 'version', '1.2.3', 'region', 'eu'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[
+  ["up", {"job": "api", "region": "eu", "version": "base"}, "2026-01-01T00:00:00Z", 1]
+]
 -- args --
 [0] string = "instance"
 [1] string = "job"
@@ -35,23 +67,6 @@ info(up)
 [31] string = "instance"
 [32] string = "job"
 [33] string = "job"
--- seed --
-CREATE TABLE otel_metrics_gauge (
-    MetricName String,
-    Attributes Map(String, String),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_gauge VALUES
-    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
-    ('up', map('job', 'db'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
-    ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
-    ('target_info', map('job', 'db', 'version', '4.5.6'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
--- expected_rows --
-[
-  ["up", {"job": "api", "version": "1.2.3"}, "2026-01-01T00:00:00Z", 1.0],
-  ["up", {"job": "db", "version": "4.5.6"}, "2026-01-01T00:00:00Z", 0.0]
-]
 -- chplan --
 InfoJoin identity=[instance, job]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]

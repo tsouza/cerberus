@@ -109,6 +109,13 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`).
   - Exit: `0` clean; `1` on a violation. ENFORCING (a violation fails CI) and a
     required status check on `main`.
+- **`forbid-sql-raw.mjs`** — `ci.yml`, the `forbid-skip` job step "Reject raw
+  SQL writes outside the chsql Frag layer". Scans `internal/chsql/**/*.go`
+  (excluding `builder.go` and test files) for `strings.Builder`, `sb.Write*`,
+  and `writeSQL(` usage. Fails on any match outside the two known-good emitter
+  files (`emit_node.go`, `emit.go`). See CLAUDE.md § "No raw SQL strings" and
+  #1441. No env inputs; always runs the full scan.
+  - Exit: `0` clean, `1` on any raw-write violation.
 - **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans;
   `compatibility.yml`, the cheap-first `gate`.
   - Env: `CHECK` is `all` (every scan, in registry order) or one of `t-skip`,

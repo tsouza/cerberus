@@ -239,6 +239,13 @@ func outOfRangePhiGuardExpr(phi, value chplan.Expr) chplan.Expr {
 	}
 }
 
+// quantileSentinelPhi is the in-domain phi substituted for an
+// out-of-domain one so the quantile machinery never sees a phi it would
+// reject. PromQL defines those shapes as constant NaN / ±Inf results, so
+// the sentinel's quantile is computed but always discarded by the
+// matching output guard — its value is arbitrary beyond being in [0, 1].
+const quantileSentinelPhi = 0.5
+
 // sanitizedPhiParamExpr clamps a computed phi into CH's accepted
 // quantile-parameter domain: `if(isNaN(phi) OR phi < 0 OR phi > 1,
 // 0.5, phi)`. CH's parameterised `quantile(phi)(...)` aggregate errors
@@ -258,6 +265,6 @@ func sanitizedPhiParamExpr(phi chplan.Expr) chplan.Expr {
 	}
 	return &chplan.FuncCall{
 		Name: "if",
-		Args: []chplan.Expr{outOfDomain, &chplan.LitFloat{V: 0.5}, phi},
+		Args: []chplan.Expr{outOfDomain, &chplan.LitFloat{V: quantileSentinelPhi}, phi},
 	}
 }

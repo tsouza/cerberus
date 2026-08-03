@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # LogQL compatibility harness entry point.
 #
-# Lifecycle (mirrors compatibility/prometheus/scripts/run-compatibility.sh):
+# Lifecycle (mirrors compatibility/prometheus/scripts/run-prometheus-compatibility.sh):
 #
 #   1. `docker compose up --wait` brings reference Loki + cerberus + CH up.
 #   2. The Go seeder pushes a deterministic fixture to both targets and
