@@ -251,6 +251,16 @@ deps:
     mayDependOn:
       - chplan
 
+  # qlcommon hosts lowering-layer helpers shared by the PromQL / LogQL
+  # heads. It depends on chplan because its job is to hand the heads
+  # ready-made chplan values (the label_replace replacement
+  # decomposition); the alternative is a parallel type per head plus a
+  # converter in each, which is the drift this edge exists to prevent.
+  # chplan is the foundation leaf, so there is no cycle.
+  qlcommon:
+    mayDependOn:
+      - chplan
+
   # chsql lowers plans to SQL. It needs chplan (to walk). schema is
   # available via commonComponents for column-name access. It must not
   # import QL parsers or handlers. spansscan is the shared, stdlib-only

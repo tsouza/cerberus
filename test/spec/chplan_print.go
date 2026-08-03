@@ -594,8 +594,9 @@ func printExpr(e chplan.Expr) string {
 	case *chplan.MapWithoutEmptyValues:
 		return fmt.Sprintf("mapWithoutEmpty(%s)", printExpr(v.Map))
 	case *chplan.LabelReplace:
-		return fmt.Sprintf("labelReplace(%s, dst=%q, replacement=%q, src=%q, regex=%q, emptyReplacement=%q)",
-			printExpr(v.Map), v.Dst, v.Replacement, v.Src, v.Regex, v.EmptyReplacement)
+		return fmt.Sprintf("labelReplace(%s, dst=%q, replacement=%q, src=%q, regex=%q, emptyReplacement=%q%s)",
+			printExpr(v.Map), v.Dst, v.Replacement, v.Src, v.Regex, v.EmptyReplacement,
+			printLabelReplaceSegments(v.Segments))
 	case *chplan.LabelJoin:
 		return fmt.Sprintf("labelJoin(%s, dst=%q, separator=%q, srcs=[%s])",
 			printExpr(v.Map), v.Dst, v.Separator, strings.Join(v.Srcs, ", "))
@@ -739,4 +740,24 @@ func formatGroupByEntry(expr, alias, display string) string {
 	default:
 		return fmt.Sprintf("%s AS %s|%s", expr, alias, display)
 	}
+}
+
+// printLabelReplaceSegments renders the replacement decomposition a
+// label_replace carries when its template references a capture group
+// above ClickHouse's `\9` substitution ceiling, and nothing at all
+// otherwise — so the fixtures that take the replaceRegexpOne path keep
+// their existing golden line unchanged.
+func printLabelReplaceSegments(segments []chplan.LabelReplaceSegment) string {
+	if len(segments) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		if seg.Group == chplan.NoCaptureGroup {
+			parts = append(parts, fmt.Sprintf("%q", seg.Literal))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("$%d", seg.Group))
+	}
+	return ", segments=[" + strings.Join(parts, ", ") + "]"
 }

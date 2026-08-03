@@ -138,21 +138,30 @@ func TestReplacementToCH(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReplacementToCH(%q, %q): unexpected error: %v", tc.in, tc.regex, err)
 			}
-			if got != tc.want {
+			if len(got.Segments) != 0 {
+				t.Fatalf("ReplacementToCH(%q, %q): want the replaceRegexpOne form, got segments %+v",
+					tc.in, tc.regex, got.Segments)
+			}
+			if got.Template != tc.want {
 				t.Fatalf("ReplacementToCH(%q, %q): got %q, want %q",
-					tc.in, tc.regex, got, tc.want)
+					tc.in, tc.regex, got.Template, tc.want)
 			}
 		})
 	}
 }
 
-// TestReplacementToCHRejectsInexpressibleBackrefs pins the two shapes
-// that Go's ExpandString resolves to a real capture but ClickHouse's
-// fixed `\N` substitution cannot reproduce. Both used to be emitted as
-// literal template text — a 200 carrying a label whose value was the
-// template rather than an expansion of it, which is the silently-wrong
-// output issue #1490 reported. Rejecting at lowering makes the failure
-// loud instead.
+// TestReplacementToCHRejectsInexpressibleBackrefs pins the one shape that
+// Go's ExpandString resolves to a real capture but no ClickHouse
+// expression can reproduce: a name several capture groups share.
+// ExpandString picks the first of them that TOOK PART in the row's match,
+// and participation is not observable from SQL — `extractGroups` reports a
+// group that did not participate and a group that matched the empty
+// string identically, as `”`.
+//
+// It used to be emitted as literal template text — a 200 carrying a label
+// whose value was the template rather than an expansion of it, which is
+// the silently-wrong output issue #1490 reported. Rejecting at lowering
+// makes the failure loud instead.
 func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 	t.Parallel()
 
@@ -162,12 +171,8 @@ func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 		regex    string
 		wantErrs []string
 	}{
-		// Group 10 exists in a 10-group regex, so ExpandString expands
-		// it; CH tops out at `\9`.
-		{"index_above_ch_ceiling", "$10", tenCaptureRegex, []string{"capture group 10", `\9`}},
-		{"braced_index_above_ch_ceiling", "${10}", tenCaptureRegex, []string{"capture group 10", `\9`}},
 		// Go permits several groups to share a name and picks the first
-		// that took part in the row's match; a build-time `\N` can't.
+		// that took part in the row's match; SQL cannot see which did.
 		{
 			"ambiguous_named_capture",
 			"$dup",
@@ -180,10 +185,10 @@ func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 			t.Parallel()
 			got, err := ReplacementToCH(tc.in, tc.regex)
 			if err == nil {
-				t.Fatalf("ReplacementToCH(%q, %q): want error, got %q", tc.in, tc.regex, got)
+				t.Fatalf("ReplacementToCH(%q, %q): want error, got %+v", tc.in, tc.regex, got)
 			}
-			if got != "" {
-				t.Fatalf("ReplacementToCH(%q, %q): want empty result alongside the error, got %q",
+			if got.Template != "" || got.Segments != nil {
+				t.Fatalf("ReplacementToCH(%q, %q): want a zero result alongside the error, got %+v",
 					tc.in, tc.regex, got)
 			}
 			for _, want := range tc.wantErrs {
@@ -205,8 +210,11 @@ func TestReplacementToCHIndexBelowCeilingSurvivesLargeRegex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplacementToCH($9, tenCaptureRegex): unexpected error: %v", err)
 	}
-	if want := `\9`; got != want {
-		t.Fatalf("ReplacementToCH($9, tenCaptureRegex): got %q, want %q", got, want)
+	if len(got.Segments) != 0 {
+		t.Fatalf("ReplacementToCH($9, tenCaptureRegex): want the replaceRegexpOne form, got segments %+v", got.Segments)
+	}
+	if want := `\9`; got.Template != want {
+		t.Fatalf("ReplacementToCH($9, tenCaptureRegex): got %q, want %q", got.Template, want)
 	}
 }
 
