@@ -178,6 +178,25 @@ jobs:
       - name: Run solver memory-apportionment differential (real ClickHouse)
         run: just solver-memory-apportion-integration
 
+      # Route B (the sharded-pushdown solver) has no lane that drives it
+      # against a real ClickHouse server through the real production
+      # emitter — every other route-B test either runs entirely on chDB
+      # (compatibility/prometheus-forced-route) or drives a fake emitter
+      # that returns identical hand-written SQL for every shard regardless
+      # of the input plan (solver-memory-apportion-integration, above,
+      # which proves a SETTING is honoured, not that a real plan's
+      # per-shard SQL is correct). A route-B-specific emit-type bug would
+      # therefore pass every existing gate and 502 on its first real
+      # sharded query — exactly the strict-scan blind spot this lane
+      # exists for, on the OOM-relief path that runs hardest when a
+      # deployment is already under memory pressure. This step answers the
+      # identical query_range request once via route A and once forced
+      # route B, both against the SAME real ClickHouse, and asserts the
+      # results are byte-identical. See
+      # internal/api/prom/handler_route_b_realch_integration_test.go.
+      - name: Run route-B real-CH result differential (real ClickHouse)
+        run: just route-b-differential-integration
+
       # Whether a pooled ClickHouse connection SURVIVES a cursor teardown is
       # observable only against a real driver + server: clickhouse-go releases a
       # connection when a query ends on a live context and destroys the socket

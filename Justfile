@@ -271,6 +271,22 @@ solver-memory-apportion-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
 
+# Run the route-B real-CH result differential: the IDENTICAL query_range
+# request answered through the REAL production PromQL lowering + emitter,
+# once with the solver disabled (route A) and once forced sharded (route B),
+# both against the SAME real ClickHouse (testcontainers-go). Asserts route B
+# genuinely fired (X-Cerberus-Route-Decision, K>=2 shards) and that its
+# decoded matrix result is byte-identical to route A's. Every other route-B
+# test either runs on chDB only or drives a fake emitter that returns
+# identical hand-written SQL for every shard regardless of the input plan —
+# this is the one lane that lowers a genuine query and strict-scans its real,
+# per-shard-sliced SQL. Requires Docker; gated behind the `integration` build
+# tag. See internal/api/prom/handler_route_b_realch_integration_test.go and
+# strict-scan.yml.
+route-b-differential-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -tags=integration -count=1 -run TestRouteB_MatchesRouteA_RealClickHouse ./internal/api/prom/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
