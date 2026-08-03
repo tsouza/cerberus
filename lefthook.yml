@@ -199,6 +199,15 @@ pre-push:
           exit 1
         fi
 
+    # Mirrors the CI typed-chsql-API discipline gate. Scans internal/chsql/
+    # (excluding builder.go and test files) for raw SQL token writes:
+    # strings.Builder, sb.Write*, writeSQL(. Every such site outside the
+    # known-good emit files (emit_node.go + emit.go) must be a typed Frag
+    # instead. See CLAUDE.md § "No raw SQL strings" and #1441.
+    forbid-sql-raw:
+      tags: discipline
+      run: node .github/scripts/forbid-sql-raw.mjs
+
 commit-msg:
   commands:
     commitlint:
