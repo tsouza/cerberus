@@ -916,21 +916,93 @@ func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	b.Arg(l.Src)
 	b.sb.WriteString("]), ")
 	b.Arg(l.EmptyReplacement)
-	b.sb.WriteString(", replaceRegexpOne(")
+	b.sb.WriteString(", ")
+	if err := b.labelReplaceSubstitution(l, anchored); err != nil {
+		return err
+	}
+	b.sb.WriteString("))), ")
+	if err := b.Expr(l.Map); err != nil {
+		return err
+	}
+	b.sb.WriteString("))")
+	return nil
+}
+
+// labelReplaceSubstitution renders the substituted value itself — the
+// branch taken when the regex matched and the source value is non-empty.
+//
+// Two forms, per chplan.LabelReplace: the `replaceRegexpOne` template,
+// and the `concat` over `extractGroups` that carries templates
+// referencing a capture group above CH's `\9` ceiling.
+func (b *Builder) labelReplaceSubstitution(l *chplan.LabelReplace, anchored string) error {
+	if len(l.Segments) == 0 {
+		b.sb.WriteString("replaceRegexpOne(")
+		if err := b.srcValue(l); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		b.Arg(anchored)
+		b.sb.WriteString(", ")
+		b.Arg(l.Replacement)
+		b.sb.WriteByte(')')
+		return nil
+	}
+	// `concat` needs at least one argument, and a decomposition is never
+	// empty when it exists — a template that produced no segments has an
+	// empty replacement and takes the template path above.
+	b.sb.WriteString("concat(")
+	for i, seg := range l.Segments {
+		if i > 0 {
+			b.sb.WriteString(", ")
+		}
+		if err := b.labelReplaceSegment(l, seg, anchored); err != nil {
+			return err
+		}
+	}
+	b.sb.WriteByte(')')
+	return nil
+}
+
+// labelReplaceSegment renders one decomposed replacement segment.
+//
+// A literal run binds as a parameter. A capture reference indexes
+// `extractGroups`, which returns every group as an `Array(String)` and so
+// has no substitution ceiling; out-of-range and no-match indexing both
+// yield the empty string, which is what Go's ExpandString substitutes for
+// a group that bound to nothing. The whole-match group is read off the
+// source value directly — the regex is anchored, so a match spans the
+// entire source string, and `extractGroups` numbers from the first real
+// group.
+func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelReplaceSegment, anchored string) error {
+	switch seg.Group {
+	case chplan.NoCaptureGroup:
+		b.Arg(seg.Literal)
+		return nil
+	case chplan.WholeMatchGroup:
+		return b.srcValue(l)
+	}
+	b.sb.WriteString("extractGroups(")
+	if err := b.srcValue(l); err != nil {
+		return err
+	}
+	b.sb.WriteString(", ")
+	b.Arg(anchored)
+	b.sb.WriteString(")[")
+	b.Arg(int64(seg.Group))
+	b.sb.WriteByte(']')
+	return nil
+}
+
+// srcValue renders the source label's value: `<map>[<src>]`. CH map
+// subscript of a missing key returns the empty string, which is how
+// PromQL reads an absent source label.
+func (b *Builder) srcValue(l *chplan.LabelReplace) error {
 	if err := b.Expr(l.Map); err != nil {
 		return err
 	}
 	b.sb.WriteByte('[')
 	b.Arg(l.Src)
-	b.sb.WriteString("], ")
-	b.Arg(anchored)
-	b.sb.WriteString(", ")
-	b.Arg(l.Replacement)
-	b.sb.WriteString(")))), ")
-	if err := b.Expr(l.Map); err != nil {
-		return err
-	}
-	b.sb.WriteString("))")
+	b.sb.WriteByte(']')
 	return nil
 }
 

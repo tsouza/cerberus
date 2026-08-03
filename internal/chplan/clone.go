@@ -318,6 +318,7 @@ func cloneExpr(e Expr) Expr {
 	case *LabelReplace:
 		c := *v
 		c.Map = cloneExpr(v.Map)
+		c.Segments = cloneLabelReplaceSegments(v.Segments)
 		return &c
 	case *Lambda:
 		return &Lambda{Params: cloneStrings(v.Params), Body: cloneExpr(v.Body)}
@@ -423,6 +424,18 @@ func cloneStrings(in []string) []string {
 		return nil
 	}
 	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+// cloneLabelReplaceSegments copies a replacement decomposition. The
+// elements are value types carrying no pointers, so a shallow copy of the
+// backing array is a deep copy of the slice.
+func cloneLabelReplaceSegments(in []LabelReplaceSegment) []LabelReplaceSegment {
+	if in == nil {
+		return nil
+	}
+	out := make([]LabelReplaceSegment, len(in))
 	copy(out, in)
 	return out
 }

@@ -11,26 +11,44 @@ import (
 )
 
 // TestLowerLabelReplace_RejectsInexpressibleBackref pins the head's
-// error path. `qlcommon.ReplacementToCH` refuses the handful of
-// replacement templates ClickHouse's fixed `\0`-`\9` substitution
-// cannot carry; lowering must surface that as a query error rather
-// than fall through and emit a plan whose destination label silently
-// holds the wrong text.
+// error path. `qlcommon.ReplacementToCH` refuses the one replacement
+// template no ClickHouse expression can carry — a capture-group NAME
+// several groups share, where Go picks the first group that took part in
+// the row's match and SQL cannot see which did. Lowering must surface
+// that as a query error rather than fall through and emit a plan whose
+// destination label silently holds the wrong text.
 func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	t.Parallel()
 
-	// Ten capture groups, so `$10` resolves to a group that exists and
-	// is above the `\9` ceiling.
-	const q = `label_replace(temperature, "service", "$10", "host", "(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)")`
+	const q = `label_replace(temperature, "service", "$dup", "host", "(?P<dup>a)|(?P<dup>b)")`
 
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(q)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if _, err := Lower(context.Background(), expr, schema.DefaultOTelMetrics()); err == nil {
-		t.Fatal("lowering accepted a replacement above ClickHouse's substitution ceiling; want an error")
+		t.Fatal("lowering accepted a capture-group name two groups share; want an error")
 	} else if !strings.Contains(err.Error(), "label_replace") {
 		t.Fatalf("error does not name the function that failed: %v", err)
+	}
+}
+
+// TestLowerLabelReplace_AcceptsBackrefAboveCHCeiling pins the shape this
+// head used to reject: reference Prometheus expands `$10` to the tenth
+// group, and cerberus now does too, by decomposing the template so the
+// emitter can index `extractGroups` instead of spelling a `\10` backref
+// ClickHouse has no slot for.
+func TestLowerLabelReplace_AcceptsBackrefAboveCHCeiling(t *testing.T) {
+	t.Parallel()
+
+	const q = `label_replace(temperature, "service", "$10", "host", "(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)")`
+
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(q)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Lower(context.Background(), expr, schema.DefaultOTelMetrics()); err != nil {
+		t.Fatalf("lowering rejected a backref above ClickHouse's substitution ceiling: %v", err)
 	}
 }
 

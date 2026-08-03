@@ -69,7 +69,7 @@
       "site": "internal/logql/label_fns.go:lowerLabelReplace#8cd9f67b",
       "message": "logql: label_replace: %w",
       "class": "rejection",
-      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$10\", \"src\", \"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\")"
+      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")"
     },
     {
       "head": "logql",
@@ -517,7 +517,7 @@
       "site": "internal/promql/label_fns.go:lowerLabelReplace#d11e3df4",
       "message": "promql: label_replace: %w",
       "class": "rejection",
-      "trigger_query": "label_replace(up, \"d\", \"$10\", \"src\", \"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\")"
+      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")"
     },
     {
       "head": "promql",
