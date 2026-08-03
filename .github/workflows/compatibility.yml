@@ -15,7 +15,7 @@ name: compatibility
 #   * actions/setup-go@v7           — `go run ./cmd/seed` + driver builds.
 #   * ./.github/actions/setup-buildx — buildkit-backed compose build, with
 #     the BuildKit bootstrap image acquired through a retry.
-#   * taiki-e/install-action@v2     — installs `just`.
+#   * taiki-e/install-action@v2.85.5     — installs `just`.
 #   * actions/upload-artifact@v7    — per-head report upload.
 #
 # Registry logins are deliberately NOT an Action: `docker/login-action` has no
@@ -258,7 +258,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
@@ -464,7 +464,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
