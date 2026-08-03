@@ -685,6 +685,18 @@ jobs:
       - name: Assert the compose pre-pull fetches only fetchable images
         run: node --test .github/scripts/compose-pull-images.test.mjs
 
+      # runTeed's argv handling — every image-building command in the tree runs
+      # through it (see the module's own header). Pins that an argv element
+      # shaped like a shell-metacharacter payload reaches the command as a
+      # single literal argument rather than as shell syntax: argv reaches bash
+      # purely as positional parameters ("$@"), never interpolated into the
+      # script text bash parses, so there is no quoting-correctness question
+      # for a future edit to get wrong. Also pins pipefail (the real command's
+      # exit status survives the `| tee` pipe) and the no-retry-on-a-genuine-
+      # failure contract.
+      - name: Assert build-with-registry-retry runs argv safely
+        run: node --test .github/scripts/build-with-registry-retry.test.mjs
+
       # The GHCR mirror's inventory→ref mapping. A mapping bug is INVISIBLE at
       # runtime: `mirroredRef` returning null is the documented miss path, so a
       # broken mapping degrades every consumer back to the anonymous Docker Hub

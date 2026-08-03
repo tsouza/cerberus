@@ -92,18 +92,27 @@ const signalledChildStatus = 1;
 // Conventional shell status for "command could not be executed at all".
 const notExecutableStatus = 127;
 
-function shellQuote(word) {
-  return `'${String(word).replaceAll("'", "'\\''")}'`;
-}
-
 // runTeed — run argv with the parent's stdio, while also capturing everything
 // it wrote. Both halves matter: a container build streams its only progress
 // output for minutes, so swallowing it until the command returns would make a
 // stuck build unreadable, and the retry decision needs the text. `tee` through
 // bash with pipefail is what gives both plus the command's own exit status.
+//
+// argv reaches bash purely as POSITIONAL PARAMETERS ("$@"), and the log path
+// purely as an env var ($BUILD_RETRY_LOG_PATH) — neither is ever interpolated
+// into the script TEXT bash parses. That is a stronger guarantee than
+// quoting argv into the script string (this file's previous approach, via a
+// hand-rolled shellQuote): there is no script text left for a malicious argv
+// element to escape out of, so the question "is the quoting correct" doesn't
+// arise at all. The literal `bash` after `-c '...'` fills bash's own $0 slot
+// (POSIX: the first word after the script is $0, not $1), so `"$@"` starts
+// at the real argv[0].
 function runTeed(argv, logPath) {
-  const script = `set -o pipefail; ${argv.map(shellQuote).join(' ')} 2>&1 | tee ${shellQuote(logPath)}`;
-  const res = spawnSync('bash', ['-c', script], { stdio: 'inherit' });
+  const script = 'set -o pipefail; "$@" 2>&1 | tee "$BUILD_RETRY_LOG_PATH"';
+  const res = spawnSync('bash', ['-c', script, 'bash', ...argv], {
+    stdio: 'inherit',
+    env: { ...process.env, BUILD_RETRY_LOG_PATH: logPath },
+  });
 
   if (res.error) {
     return { status: notExecutableStatus, output: String(res.error.message) };
