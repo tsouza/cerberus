@@ -121,7 +121,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
@@ -141,7 +141,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
@@ -362,7 +362,7 @@ jobs:
             --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
 
       - name: markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v24
+        uses: DavidAnson/markdownlint-cli2-action@v24.1.0
         with:
           globs: |
             **/*.md

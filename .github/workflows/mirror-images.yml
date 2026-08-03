@@ -61,7 +61,7 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Reading side. Authenticated, because copying the inventory is itself a
       # burst of manifest reads against Docker Hub — the anonymous per-IP bucket

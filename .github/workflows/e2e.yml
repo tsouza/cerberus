@@ -882,7 +882,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'test/e2e/playwright/package-lock.json'
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         if: env.RUN_SHARD == 'true'
         with:
           tool: just
@@ -1235,7 +1235,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
@@ -1370,7 +1370,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
@@ -1565,7 +1565,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: just
 
