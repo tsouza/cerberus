@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,27 +34,31 @@ import (
 // projected trunk.
 const mergeGroupTrigger = "merge_group"
 
+// queueRequiredContextsOutsideReleaseGate are contexts branch protection
+// requires on `main` that are absent from branchProtectionContexts because they
+// appear in neither RELEASE_REQUIRED_CHECKS nor RELEASE_INFORMATIONAL_CHECKS —
+// adding them to that list would fail the totality assertion in
+// release_required_checks_test.go. That omission is a real gap in the release
+// gate, tracked in #1463. The merge queue's requirement is independent of the
+// release gate's, so it is asserted over the full set either way.
+var queueRequiredContextsOutsideReleaseGate = []string{
+	"CodeQL",
+	"strict-scan",
+}
+
 // queueExternalContexts are required contexts posted by a GitHub app rather
 // than by a workflow in this repository, mapped to the producer.
 //
-// `CodeQL` comes from code-scanning DEFAULT setup, which builds its own
-// analysis workflow server-side and dispatches it on `push` and
-// `pull_request` only — there is no file here to add a trigger to, and no
-// setting that adds `merge_group`. It is therefore the one required context a
-// merge queue cannot satisfy: an entry waits for a `CodeQL` check-run that the
-// app never posts. Resolving it is a repository-settings decision (drop the
-// context from the required set, or migrate to ADVANCED setup — disable
-// default setup and land a `codeql.yml` carrying the trigger), not a code
-// change, so this pin records the constraint instead of asserting past it.
-// Tracked in #1558.
+// Previously `CodeQL` was listed here because code-scanning default setup
+// dispatches only on `push` and `pull_request`, making the merge queue stall
+// on an absent check-run. That entry was removed in #1558: default setup was
+// disabled and `.github/workflows/codeql.yml` now owns the `CodeQL` context
+// with a `merge_group:` trigger.
 //
 // The map is not a tolerance list: the test below asserts in BOTH directions.
-// An entry here must have no workflow owner, so the moment `CodeQL` becomes a
-// workflow in this repo the entry has to be deleted, and deleting it puts the
-// context straight back under the `merge_group` requirement.
-var queueExternalContexts = map[string]string{
-	"CodeQL": "code-scanning default setup (the github-advanced-security app)",
-}
+// An entry here must have no workflow owner, so any future context that is
+// exclusively app-produced must be listed here instead of getting a workflow.
+var queueExternalContexts = map[string]string{}
 
 // onDeclares reports whether a workflow's `on:` block names an event. All three
 // legal shapes are handled — a mapping (`on: {push: …}`), a sequence
@@ -83,8 +88,9 @@ func TestEveryRequiredContextPostsOnTheMergeGroup(t *testing.T) {
 	t.Parallel()
 
 	owners := workflowCheckOwners(t)
+	required := slices.Concat(branchProtectionContexts, queueRequiredContextsOutsideReleaseGate)
 
-	for _, ctx := range branchProtectionContexts {
+	for _, ctx := range required {
 		owner, ok := owners.lookup(ctx)
 
 		if producer, external := queueExternalContexts[ctx]; external {
