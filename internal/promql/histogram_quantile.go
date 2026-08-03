@@ -447,15 +447,18 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 // name + label matchers). `windowRange` is the `[range]` duration from
 // the wrapping `rate`/`increase` (zero if there's no range-vector
 // function — currently always set when this struct is built, but
-// kept explicit for clarity). `windowMinSamples` is that function's
-// "no sample emitted" floor — see histogramWindowMinSamples. `agg` carries
+// kept explicit for clarity). `agg` carries
 // the AggregateExpr metadata (Op, Grouping, Without) when a wrapping
 // aggregation is present; nil means "no aggregation wrap, just rate(...)".
 type histogramAggShape struct {
-	selector         *parser.VectorSelector
-	windowRange      time.Duration
-	windowMinSamples int
-	agg              *parser.AggregateExpr
+	selector    *parser.VectorSelector
+	windowRange time.Duration
+	// windowFn is the matched range-vector function name. It decides
+	// both how a series' in-window samples reduce to one value per `le`
+	// (histogramWindowFold) and how many samples that reduction needs
+	// before it emits anything (histogramWindowMinSamples).
+	windowFn string
+	agg      *parser.AggregateExpr
 	// classicFold is the per-`le` rung reduction the classic-histogram
 	// paths apply, resolved from `agg`'s operator (SUM when `agg` is
 	// nil — a bare `rate(...)` still folds every in-window row of a
@@ -474,6 +477,13 @@ func histogramWindowMinSamples(fn string) int {
 		return rateMinSamples
 	}
 	return stalenessMinSamples
+}
+
+// minSamples is the matched function's per-series "no sample emitted"
+// floor. Reference PromQL applies it to each SERIES independently, so the
+// per-series stage is the only place it can be enforced.
+func (shape histogramAggShape) minSamples() int {
+	return histogramWindowMinSamples(shape.windowFn)
 }
 
 // matchHistogramAggIdiom walks the expression tree looking for the
@@ -656,11 +666,11 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		return histogramAggShape{}, false
 	}
 	return histogramAggShape{
-		selector:         vs,
-		windowRange:      ms.Range,
-		windowMinSamples: histogramWindowMinSamples(call.Func.Name),
-		agg:              agg,
-		classicFold:      classicBucketLadderFold(foldOp),
+		selector:    vs,
+		windowRange: ms.Range,
+		windowFn:    call.Func.Name,
+		agg:         agg,
+		classicFold: classicBucketLadderFold(foldOp),
 	}, true
 }
 
@@ -739,15 +749,24 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 
-	// Build the Aggregate. GroupBy comes from the surrounding `sum`
-	// clause (dropping `le` from by-lists since OTel-CH classic
-	// histograms have no per-bucket rows). The bucket aggregates collect
-	// every row's layout + counts so the reshape can merge them across
-	// layouts — see classicBucketMergeShaping.
-	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	// Stage 1: reduce each SERIES' in-window samples to one row, applying
+	// the range-vector function's own reduction and its per-series sample
+	// floor. Without it the stage below would fold across time and series
+	// at once — see histogram_quantile_window.go.
+	perSeries := classicBucketWindowStage(input, shape, s)
+
+	// Stage 2: the user's aggregation across those per-series rows.
+	// GroupBy comes from the surrounding `sum` clause (dropping `le` from
+	// by-lists since OTel-CH classic histograms have no per-bucket rows).
+	// The bucket aggregates collect every row's layout + counts so the
+	// reshape can merge them across layouts — see
+	// classicBucketMergeShaping.
+	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(
+		shape.agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
+	)
 	shaping := classicBucketMergeShaping(shape.classicFold, s)
 	agg := &chplan.Aggregate{
-		Input:              input,
+		Input:              perSeries,
 		GroupBy:            userGroupBy,
 		GroupByAliases:     userAliases,
 		AggFuncs:           shaping.aggs,
@@ -949,15 +968,21 @@ func classicBucketUnionBoundsExpr() chplan.Expr {
 // The +Inf rung folds over every row unconditionally — the overflow
 // bucket exists in every layout, so `{le="+Inf"}` is reported by all of
 // them.
-func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
-	boundsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggBoundsListAlias})
-	countsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggCountsListAlias})
-
-	// One row's cumulative count at u: the sum of every bucket whose
-	// upper bound is <= u. BucketCounts runs one longer than
-	// ExplicitBounds (the +Inf overflow), so the pairing slices that
-	// trailing rung off — it belongs to no finite bound.
-	rowCumulativeAtBound := &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
+// classicBucketRowCumulativeExpr renders ONE row's cumulative count at
+// the union bound bound to paramUnionBound: the sum of every bucket whose
+// upper bound is <= it. The row's layout and counts are bound to
+// paramRowBounds / paramRowCounts by the caller's lambda.
+//
+// BucketCounts runs one element longer than ExplicitBounds (the trailing
+// +Inf overflow), so the pairing slices that rung off — it belongs to no
+// finite bound.
+//
+// Shared by both merge stages: the per-series window reduction and the
+// across-series aggregation read a row's cumulative count identically,
+// and the two would silently disagree about the +Inf slice if each kept
+// its own copy.
+func classicBucketRowCumulativeExpr() chplan.Expr {
+	return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
 		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramBucketBound, paramBucketCount},
@@ -967,8 +992,19 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 						Left:  &chplan.BareIdent{Name: paramBucketBound},
 						Right: &chplan.BareIdent{Name: paramUnionBound},
 					},
-					&chplan.BareIdent{Name: paramBucketCount},
-					&chplan.LitInt{V: 0},
+					// The ladder is a FLOAT domain throughout. Stored
+					// counts are unsigned, and the per-series stage
+					// differences its ladder into per-bucket counts, so
+					// leaving them unsigned makes a legitimate negative
+					// difference underflow — and makes CH infer a
+					// Variant(Int64, UInt64) that no array aggregate
+					// accepts. Prometheus's classic buckets are float
+					// samples anyway.
+					&chplan.FuncCall{
+						Name: "toFloat64",
+						Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketCount}},
+					},
+					&chplan.LitFloat{V: 0},
 				}},
 			},
 			&chplan.BareIdent{Name: paramRowBounds},
@@ -979,6 +1015,26 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 			}},
 		}},
 	}}
+}
+
+// classicBucketRowTotalExpr renders ONE row's +Inf rung — its total
+// observation count — from the row's counts array bound to
+// paramRowCounts. Float64 for the same reason
+// classicBucketRowCumulativeExpr is.
+func classicBucketRowTotalExpr() chplan.Expr {
+	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{
+		&chplan.FuncCall{
+			Name: "arraySum",
+			Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowCounts}},
+		},
+	}}
+}
+
+func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
+	boundsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggBoundsListAlias})
+	countsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggCountsListAlias})
+
+	rowCumulativeAtBound := classicBucketRowCumulativeExpr()
 
 	contributingRungs := &chplan.FuncCall{Name: "arrayFilter", Args: []chplan.Expr{
 		&chplan.Lambda{
@@ -1002,10 +1058,7 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 	infRungs := &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramRowCounts},
-			Body: &chplan.FuncCall{
-				Name: "arraySum",
-				Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowCounts}},
-			},
+			Body:   classicBucketRowTotalExpr(),
 		},
 		countsList,
 	}}
@@ -1063,15 +1116,26 @@ func classicBucketMonotonicLadderExpr() chplan.Expr {
 // wrote `rate(...)` with no `sum` wrapper) — still useful because the
 // rate's time window still applies.
 //
-// Every key here reads the raw histogram table column, so this is a
+// `identity` is the expression every key is derived from — the series'
+// Prometheus-visible label set. It is a parameter rather than a fixed
+// [histogramIdentityExpr] because this runs as the SECOND stage of the
+// classic-bucket lowering, over the per-series stage's output, where the
+// label set is the already-canonicalised Attributes COLUMN that stage
+// projected rather than the raw table columns it was built from. Passing
+// the raw-column expression there would reference columns the per-series
+// grouping has already consumed.
+//
+// When the caller does pass the raw-column expression, that is a
 // series-identity binding site: the whole-Map shapes go through
 // [canonicalGroupKeyExpr]. See its doc for why the histogram paths bind
-// their own keys instead of routing through the selector projection.
-func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.Expr, []string, chplan.Expr) {
+// their own keys instead of routing through the selector projection. A
+// key derived from an earlier stage's aliased output inherits that
+// canonicalisation and must not be re-wrapped.
+func histogramAggGroupBy(agg *parser.AggregateExpr, identity chplan.Expr, s schema.Metrics) ([]chplan.Expr, []string, chplan.Expr) {
 	if agg == nil {
 		// `histogram_quantile(phi, rate(metric[5m]))` — group by series
 		// identity so each series gets its own bucket-rate vector.
-		return []chplan.Expr{histogramIdentityExpr(s)},
+		return []chplan.Expr{identity},
 			[]string{"gkey_0"},
 			&chplan.ColumnRef{Name: "gkey_0"}
 	}
@@ -1083,13 +1147,13 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 		// Attributes map directly (CH rejects mapFilter with an empty
 		// IN list as a syntax error).
 		if len(agg.Grouping) == 0 {
-			return []chplan.Expr{histogramIdentityExpr(s)},
+			return []chplan.Expr{identity},
 				[]string{"gkey_0"},
 				&chplan.ColumnRef{Name: "gkey_0"}
 		}
 		return []chplan.Expr{
 				&chplan.MapWithoutKeys{
-					Map:  histogramIdentityExpr(s),
+					Map:  identity,
 					Keys: append([]string(nil), agg.Grouping...),
 				},
 			},
@@ -1110,7 +1174,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, s schema.Metrics) ([]chplan.
 	mapArgs := make([]chplan.Expr, 0, len(labels)*2)
 	for i, label := range labels {
 		alias := fmt.Sprintf("gkey_%d", i)
-		groupBy[i] = attributeLookupExpr(histogramIdentityExpr(s), label)
+		groupBy[i] = attributeLookupExpr(identity, label)
 		aliases[i] = alias
 		mapArgs = append(
 			mapArgs,
@@ -1302,7 +1366,11 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// The simple aggregates (min Scale, sum ZeroCount, max ZeroThreshold)
 	// land on the same aggregate so the wrapping Project can refer to
 	// them by alias.
-	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	// Single-stage: the native merge folds across time and series at
+	// once, so its keys bind straight to the raw table columns. Splitting
+	// it into a per-series stage the way the classic path now does is
+	// tracked in #1629.
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, histogramIdentityExpr(s), s)
 	aggFuncs := []chplan.AggFunc{
 		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
 		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},

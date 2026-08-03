@@ -315,22 +315,34 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	pj := plan.(*chplan.Project)
 	hq := pj.Input.(*chplan.HistogramQuantile)
 
-	var foundAgg *chplan.Aggregate
+	// The plan carries two collapses and they answer different
+	// questions, so the test names both rather than whichever the walk
+	// reaches first. Outermost is the AGGREGATION stage, which is what
+	// `sum by(le)` speaks to; innermost is the PER-SERIES stage, whose
+	// key must survive precisely so the rate floor has a series to be
+	// applied to (#1584).
+	var aggs []*chplan.Aggregate
 	chplan.Walk(hq.Input, func(n chplan.Node) bool {
 		if v, ok := n.(*chplan.Aggregate); ok {
-			foundAgg = v
+			aggs = append(aggs, v)
 		}
 		return true
 	})
-	if foundAgg == nil {
-		t.Fatalf("no Aggregate found")
+	if len(aggs) != 2 {
+		t.Fatalf("plan carries %d Aggregate node(s), want 2 — a per-series stage beneath the aggregation stage", len(aggs))
 	}
-	if len(foundAgg.GroupBy) != 0 {
-		t.Fatalf("Aggregate.GroupBy = %#v, want no keys — `le` must be dropped, no other label was asked for, and the bucket layout must not leak into series identity",
-			foundAgg.GroupBy)
+	aggregation, perSeries := aggs[0], aggs[1]
+
+	if len(aggregation.GroupBy) != 0 {
+		t.Fatalf("aggregation-stage GroupBy = %#v, want no keys — `le` must be dropped, no other label was asked for, and the bucket layout must not leak into series identity",
+			aggregation.GroupBy)
 	}
-	if !foundAgg.DropEmptyOnNoGroup {
-		t.Errorf("Aggregate.DropEmptyOnNoGroup = false with an empty GroupBy — CH synthesises a 1-row-of-zeros result for a keyless aggregate over empty input, so histogram_quantile would emit a default row")
+	if !aggregation.DropEmptyOnNoGroup {
+		t.Errorf("aggregation-stage DropEmptyOnNoGroup = false with an empty GroupBy — CH synthesises a 1-row-of-zeros result for a keyless aggregate over empty input, so histogram_quantile would emit a default row")
+	}
+	if len(perSeries.GroupBy) != 1 {
+		t.Fatalf("per-series-stage GroupBy = %#v, want exactly the series-identity key — without it the window reduction and its two-sample floor would span every series at once",
+			perSeries.GroupBy)
 	}
 }
 

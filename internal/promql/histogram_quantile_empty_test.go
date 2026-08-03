@@ -216,13 +216,19 @@ func TestHistogramQuantile_EmptyInput_DropsRow(t *testing.T) {
 // The two guard-free shapes are distinct and not interchangeable:
 //   - a user label survives the `le` drop (`sum by (le, job)`), so the
 //     Aggregate is keyed;
-//   - the query is a RANGE query, which collapses through
-//     [chplan.RangeBucketFanout] — keyed by (series, anchor) — instead
-//     of an Aggregate. `DropEmptyOnNoGroup` is an Aggregate-only
-//     concept, so the guard cannot arise there at all. Note the fanout's
-//     own `GroupBy` may legitimately be empty for `sum by (le)` (the
-//     anchor key is structural, not a `GroupBy` entry); that emptiness
-//     is #1584's subject and is deliberately not what this test reads.
+//   - the query is a RANGE query, whose per-series stage collapses
+//     through [chplan.RangeBucketFanout] — keyed by (series, anchor).
+//     `DropEmptyOnNoGroup` is an Aggregate-only concept, so no guard can
+//     arise from the fanout. The aggregation stage above it IS an
+//     Aggregate, but the anchor is one of its keys, so it is never
+//     keyless either.
+//
+// Every classic-bucket aggregated plan carries TWO collapses, and the
+// distinction is what the guard arity turns on: the per-series stage is
+// always keyed (by series identity, which is what gives the rate floor
+// something to count within — #1584), while only the aggregation stage
+// above it can go keyless, and only when the user's `by` list is empty
+// after `le` is dropped. Each case therefore declares both counts.
 func TestHistogramQuantile_EmptyGuardTracksGroupingKeyArity(t *testing.T) {
 	t.Parallel()
 
@@ -252,38 +258,48 @@ func TestHistogramQuantile_EmptyGuardTracksGroupingKeyArity(t *testing.T) {
 		// wantGuarded is how many Aggregates should be keyless, and
 		// therefore how many guards the SQL should carry.
 		wantGuarded int
+		// wantAggregates is how many Aggregate nodes the plan carries in
+		// total. Declaring it alongside wantGuarded is what keeps the
+		// guard count a claim about ARITY rather than about how many
+		// collapses happen to exist: a stage appearing or vanishing moves
+		// this number, not the guard number.
+		wantAggregates int
 		// why documents the arity, so a future failure reads as a
 		// semantic claim rather than as a number to re-baseline.
 		why string
 	}{
 		{
-			name:         "instant_sum_by_le_is_keyless",
-			query:        `histogram_quantile(0.9, sum by (le) (rate(http_server_request_duration_bucket[5m])))`,
-			wantCollapse: collapseAggregate,
-			wantGuarded:  1,
-			why:          "`le` is dropped (the distribution lives in the parallel arrays) and the layout is no longer a key, so nothing remains",
+			name:           "instant_sum_by_le_is_keyless",
+			query:          `histogram_quantile(0.9, sum by (le) (rate(http_server_request_duration_bucket[5m])))`,
+			wantCollapse:   collapseAggregate,
+			wantAggregates: 2,
+			wantGuarded:    1,
+			why:            "`le` is dropped (the distribution lives in the parallel arrays) and the layout is no longer a key, so nothing remains on the aggregation stage; the per-series stage below it stays keyed by series identity",
 		},
 		{
-			name:         "instant_max_by_le_is_keyless",
-			query:        `histogram_quantile(0.9, max by (le) (rate(http_server_request_duration_bucket[5m])))`,
-			wantCollapse: collapseAggregate,
-			wantGuarded:  1,
-			why:          "the non-sum rung fold takes the same keyless shape as sum",
+			name:           "instant_max_by_le_is_keyless",
+			query:          `histogram_quantile(0.9, max by (le) (rate(http_server_request_duration_bucket[5m])))`,
+			wantCollapse:   collapseAggregate,
+			wantAggregates: 2,
+			wantGuarded:    1,
+			why:            "the non-sum rung fold takes the same keyless shape as sum",
 		},
 		{
-			name:         "instant_sum_by_le_job_keeps_the_user_label",
-			query:        `histogram_quantile(0.9, sum by (le, job) (rate(http_server_request_duration_bucket[5m])))`,
-			wantCollapse: collapseAggregate,
-			wantGuarded:  0,
-			why:          "`job` survives the `le` drop, so the aggregate is keyed and CH emits no synthetic row",
+			name:           "instant_sum_by_le_job_keeps_the_user_label",
+			query:          `histogram_quantile(0.9, sum by (le, job) (rate(http_server_request_duration_bucket[5m])))`,
+			wantCollapse:   collapseAggregate,
+			wantAggregates: 2,
+			wantGuarded:    0,
+			why:            "`job` survives the `le` drop, so the aggregation stage is keyed and CH emits no synthetic row",
 		},
 		{
-			name:         "range_sum_by_le_collapses_through_the_fanout",
-			query:        `histogram_quantile(0.9, sum by (le) (rate(http_server_request_duration_bucket[5m])))`,
-			rangeQuery:   true,
-			wantCollapse: collapseRangeBucketFanout,
-			wantGuarded:  0,
-			why:          "the range path collapses through RangeBucketFanout, which has no Aggregate and therefore no keyless mode, so the Aggregate-only guard cannot apply at all",
+			name:           "range_sum_by_le_collapses_through_the_fanout",
+			query:          `histogram_quantile(0.9, sum by (le) (rate(http_server_request_duration_bucket[5m])))`,
+			rangeQuery:     true,
+			wantCollapse:   collapseRangeBucketFanout,
+			wantAggregates: 1,
+			wantGuarded:    0,
+			why:            "the per-series stage is the fanout, which has no keyless mode; the aggregation stage above it is an Aggregate but carries the anchor as a key, so neither can be guarded",
 		},
 	}
 
@@ -326,11 +342,12 @@ func TestHistogramQuantile_EmptyGuardTracksGroupingKeyArity(t *testing.T) {
 				if shape.rangeBucketFanouts == 0 {
 					t.Fatalf("plan for %q has no RangeBucketFanout node, want %s — the case's guard expectation is written against the other shape", tc.query, collapseRangeBucketFanout)
 				}
-				if shape.aggregates != 0 {
-					t.Fatalf("plan for %q carries %d Aggregate node(s) alongside the RangeBucketFanout; the range path is expected to collapse structurally, so a keyless Aggregate appearing here would silently change what the guard count means", tc.query, shape.aggregates)
-				}
 			default:
 				t.Fatalf("case %q declares no wantCollapse", tc.name)
+			}
+
+			if shape.aggregates != tc.wantAggregates {
+				t.Fatalf("plan for %q carries %d Aggregate node(s), want %d — a collapse stage appearing or vanishing changes what the guard count below means", tc.query, shape.aggregates, tc.wantAggregates)
 			}
 
 			gotGuarded := countGuardedAggregates(plan)
