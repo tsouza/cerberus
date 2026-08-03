@@ -1399,11 +1399,11 @@ compose-grafana-smoke:
 # Sets up the Docker Compose stack (reference Prom + cerberus + CH + seeder),
 # runs the upstream tester, writes compatibility/prometheus/report.json.
 compat-promql:
-    ./compatibility/prometheus/scripts/run-compatibility.sh
+    ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
 # Keep the compatibility stack running after the tester finishes (for debugging).
 compat-promql-keep:
-    COMPOSE_KEEP=1 ./compatibility/prometheus/scripts/run-compatibility.sh
+    COMPOSE_KEEP=1 ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
 # Tear down the compatibility stack manually.
 compat-promql-down:
