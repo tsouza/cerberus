@@ -31,7 +31,23 @@ import { error as ghError, notice as ghNotice } from './lib/gh.mjs';
 // braces for a notice that is worded without the link — matching more broadly
 // costs a false positive at worst, while matching too narrowly reproduces the
 // exact miss this gate exists to prevent.
-const DEPRECATION_MARKERS = [/goreleaser\.com\/deprecations/i, /\bDEPRECATED\b/, /\bphased out\b/i];
+//
+// Anchored to a real http(s):// URL (CodeQL js/regex/missing-regexp-anchor —
+// the unanchored form could match "goreleaser.com/deprecations" as a
+// substring of an unrelated domain, e.g. "evilgoreleaser.com/deprecations").
+// The optional `(?:[#?][^\s)]*)?` before the trailing boundary is load-
+// bearing, not decorative: every real advisory links its own per-feature
+// anchor (`.../deprecations#brews`, `.../deprecations#scoop`, ...), so a
+// naive `.../deprecations(?:$|[\s),.;:!?])` boundary — requiring whitespace
+// or closing punctuation IMMEDIATELY after "deprecations" — fails to match
+// the `#brews` fragment that always follows it in practice, silently
+// reintroducing the exact "matching too narrowly" miss the comment above
+// warns about. See the regression test below.
+const DEPRECATION_MARKERS = [
+  /(?:^|\s)https?:\/\/goreleaser\.com\/deprecations(?:[#?][^\s)]*)?(?:$|[\s),.;:!?])/i,
+  /\bDEPRECATED\b/,
+  /\bphased out\b/i,
+];
 
 // goreleaser prefixes each advisory line with a bullet; strip it so the error
 // reads as a sentence.
