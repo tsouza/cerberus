@@ -735,10 +735,13 @@ jobs:
   # k3d inventory being unbootstrapped — tracked as the explicit follow-up in
   # this lane's PR. This sharding is the safe coarse win that lands first.
   #
-  # k3d cost/flake: a cluster is heavy (~3-5min bring-up) and flaky
-  # (telemetrygen / otel-collector-gateway readiness BackOff). A matrix of N
-  # clusters multiplies BOTH, so the shard count is kept MODEST (3) — two smoke
-  # shards + one crawl shard. The partition + coverage assertion live in the
+  # k3d cost: a cluster is heavy (~3-5min bring-up), and a matrix of N clusters
+  # multiplies that cost, so the shard count is kept at 3 — two smoke shards +
+  # one crawl shard. The readiness BackOff flake cited here before #1529 was
+  # mitigated by the initContainers + wait-for-clickhouse gates in
+  # k3s/otel-collector.yaml and the nc-z gate in k3s/sample-app.yaml; 50
+  # consecutive clean runs confirmed the flake is gone, so the shard cap is
+  # now a cost decision only. The partition + coverage assertion live in the
   # single source of truth .github/scripts/dashboard-matrix.mjs — never
   # hand-listed in YAML, so a new spec that isn't sharded is a HARD failure
   # (verify step below), never a silent no-run.
