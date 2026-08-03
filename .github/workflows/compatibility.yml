@@ -177,30 +177,18 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # The five discipline scans (pure `git grep` / `perl`, no Go
-      # toolchain) — byte-identical to ci.yml's `forbid-skip` job. These
-      # run first because they are the cheapest and the most common
-      # cause of a red PR.
-      - name: Reject t.Skip in test files
+      # Every discipline scan (pure `git grep` / `perl`, no Go toolchain),
+      # run first because they are the cheapest and the most common cause
+      # of a red PR. `CHECK: all` iterates forbid-skip.mjs's own registry
+      # rather than re-listing the scans here: an enumerated copy of the
+      # set drifted from ci.yml in BOTH directions before this — it still
+      # named the `not-implemented` scan #1538 deleted (a hard error that
+      # failed `gate`, and with it every compatibility head) while never
+      # having gained `feature-discipline`. The registry is the one list.
+      - name: Reject every discipline-scan violation
         run: node .github/scripts/forbid-skip.mjs
         env:
-          CHECK: t-skip
-      - name: Reject "not implemented" in production code
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: not-implemented
-      - name: Reject soft-assertion / silent-recover patterns
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: soft-assert
-      - name: Reject should_skip overlay entries
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: should-skip
-      - name: Reject test escape-hatch patterns
-        run: node .github/scripts/forbid-skip.mjs
-        env:
-          CHECK: escape-hatch
+          CHECK: all
 
       # Compile sanity check. Far cheaper than `go test -race` (ci.yml's
       # `check`), but catches a non-building tree before the Docker heads
