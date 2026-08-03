@@ -137,16 +137,32 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, ResourceAttributes, TimeUn
 // namespace exists only in ResourceAttributes. The two prod rows have
 // distinct pod labels so grouping by namespace proves identity is projected
 // before the histogram aggregate, rather than merely copied after filtering.
+//
+// The two prod series (pod-a, pod-b) each get a zero-count BASELINE sample
+// one minute ahead of the real one. The "grouped" case below wraps the
+// selector in `rate(...[5m])`, and rate's two-sample floor (#1535/#1584)
+// needs two distinct in-window timestamps per series before it emits
+// anything at all — a single-sample series now correctly returns nothing,
+// where the pre-fix engine let it through. The baseline gives `rate` a
+// window to compute without changing what the real reading represents:
+// the window delta equals the real reading directly, since it started from
+// zero — the same pattern test/spec/promql's classic-bucket agg fixtures
+// use. staging/pod-c has no baseline because no query in this file wraps
+// it in a range-vector function; the bare / native cases below read the
+// newest sample per series regardless of how many rows exist.
 func histogramResourceAttrSeed(t *testing.T) string {
 	t.Helper()
 	ts := time.Now().UTC().Format("2006-01-02 15:04:05.000")
+	tsBaseline := time.Now().Add(-time.Minute).UTC().Format("2006-01-02 15:04:05.000")
 	return resourceAttrGaugeDDL + resourceAttrSumDDL + resourceAttrHistogramDDL + resourceAttrExpHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_histogram (MetricName, Attributes, ResourceAttributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds) VALUES
+    ('resource_latency_seconds', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-a'), toDateTime64('%[2]s', 9), 0, 0.0, [0, 0], [1.0]),
     ('resource_latency_seconds', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-a'), toDateTime64('%[1]s', 9), 6, 3.0, [2, 4], [1.0]),
+    ('resource_latency_seconds', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-b'), toDateTime64('%[2]s', 9), 0, 0.0, [0, 0], [1.0]),
     ('resource_latency_seconds', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-b'), toDateTime64('%[1]s', 9), 6, 3.0, [2, 4], [1.0]),
     ('resource_latency_seconds', map('route', '/admin'), map('k8s.namespace.name', 'staging', 'k8s.pod.name', 'pod-c'), toDateTime64('%[1]s', 9), 6, 3.0, [2, 4], [1.0]);
 INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, ResourceAttributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES
-    ('resource_latency_exp_hist', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-a'), toDateTime64('%[1]s', 9), 6, 3.0, 0, 0, 0, [6], 0, []);`, ts)
+    ('resource_latency_exp_hist', map('route', '/api'), map('k8s.namespace.name', 'prod', 'k8s.pod.name', 'pod-a'), toDateTime64('%[1]s', 9), 6, 3.0, 0, 0, 0, [6], 0, []);`, ts, tsBaseline)
 }
 
 // TestResourceAttrs_HistogramQuery_ChDB verifies the histogram-only lowering

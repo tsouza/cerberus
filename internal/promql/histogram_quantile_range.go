@@ -112,7 +112,7 @@ func aggWindowFor(shape histogramAggShape) histogramWindow {
 	return histogramWindow{
 		lookback:   shape.windowRange,
 		offset:     shape.selector.OriginalOffset,
-		minSamples: shape.windowMinSamples,
+		minSamples: shape.minSamples(),
 	}
 }
 
@@ -270,12 +270,49 @@ func lowerHistogramQuantileClassicAggRange(
 	// histogram_quantile.go.
 	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
-	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
-	return buildHistogramRangeTree(
+	// Stage 1: fan each sample over its anchors and reduce each
+	// (series, anchor) window to one row, applying the range-vector
+	// function's reduction and — through the fan-out's own MinSamples —
+	// its per-series sample floor. Keying the fan-out on series identity
+	// rather than the user's `by/without` labels is what gives that floor
+	// something to count within: under `sum by(le)` the user grouping is
+	// EMPTY, so the floor would otherwise ask whether the whole anchor
+	// held two scrapes instead of whether this series did.
+	fanout := buildHistogramBucketFanout(
 		scan, pred, aggWindowFor(shape),
-		userGroupBy, userAliases, attrsRebuild,
-		classicBucketMergeShaping(shape.classicFold, s), phi, s, ctx,
+		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
+		classicBucketWindowAggs(s), s, ctx,
 	)
+	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	perSeries := classicBucketWindowReshape(
+		fanout,
+		histogramWindowFold(shape.windowFn),
+		[]chplan.Projection{
+			{Expr: anchorRef, Alias: histogramAnchorCol},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+		},
+		s,
+	)
+
+	// Stage 2: the user's aggregation across those per-series rows,
+	// within each anchor.
+	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(
+		shape.agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
+	)
+	shaping := classicBucketMergeShaping(shape.classicFold, s)
+	collapse := &chplan.Aggregate{
+		Input:              perSeries,
+		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
+		GroupByAliases:     append([]string{histogramAnchorCol}, userAliases...),
+		AggFuncs:           shaping.aggs,
+		DropEmptyOnNoGroup: true,
+	}
+
+	rebuilt, cumulative := shaping.reshape(collapse, []chplan.Projection{
+		{Expr: anchorRef, Alias: histogramAnchorCol},
+		{Expr: attrsRebuild, Alias: s.AttributesColumn},
+	}, s)
+	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s)
 }
 
 // buildHistogramRangeTree assembles the shared range-mode plan tree
@@ -321,12 +358,31 @@ func buildHistogramRangeTree(
 		{Expr: anchorRef, Alias: histogramAnchorCol},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
+	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s)
+}
 
-	// HistogramQuantile emits one row per (anchor, series). The
-	// emitter's SELECT projects each GroupBy entry (anchor_ts +
-	// Attributes) then the per-row quantile-interpolation expression as
-	// `Value`. The outer Project re-aliases anchor_ts → TimeUnix so the
-	// canonical Sample contract holds for the matrix pivot.
+// histogramRangeQuantileTree caps a range-mode classic-histogram collapse
+// with the quantile interpolation and the Sample-row contract.
+//
+// `rebuilt` must already surface the histogram-row contract per (anchor,
+// series): anchor_ts + Attributes + BucketCounts + ExplicitBounds.
+// HistogramQuantile emits one row per (anchor, series) — the emitter's
+// SELECT projects each GroupBy entry then the per-row
+// quantile-interpolation expression as `Value` — and the outer Project
+// re-aliases anchor_ts → TimeUnix so the canonical Sample contract holds
+// for the matrix pivot.
+//
+// The bare and aggregated paths share this tail but not the collapse
+// beneath it: the bare path picks one newest row per (series, anchor),
+// while the aggregated path reduces each series' window and only then
+// folds across series.
+func histogramRangeQuantileTree(
+	rebuilt chplan.Node,
+	cumulative bool,
+	phi phiArg,
+	s schema.Metrics,
+) chplan.Node {
+	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 	hq := &chplan.HistogramQuantile{
 		Input:                  rebuilt,
 		Phi:                    phi.lit,
@@ -428,7 +484,8 @@ func lowerHistogramQuantileNativeAggRange(
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
-	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, s)
+	// Single-stage, like the instant native sibling — see #1629.
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, histogramIdentityExpr(s), s)
 
 	// Per-anchor merge aggregates: collect rows into groupArrays + simple
 	// reducers, matching the instant-mode aggregated path. The wrapping
