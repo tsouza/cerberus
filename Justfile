@@ -134,6 +134,15 @@ test-unit:
 vet-tagged:
     go vet -tags=migration_tier1 ./test/e2e/migration/...
     go vet -tags=migration_tier2 ./test/e2e/migration/...
+    go vet -tags=agpl_oracle ./internal/... ./test/agpl_oracle/...
+
+# Run the agpl_oracle differential oracle tests. These compare the in-house
+# LogQL and TraceQL parser reimplementations against the upstream AGPL
+# reference parsers (grafana/loki + grafana/tempo). Requires no CGO /
+# Docker / libchdb — just pure Go with the root-module deps.
+# Mirrors the `agpl-oracle` CI lane in .github/workflows/agpl-oracle.yml.
+test-agpl-oracle:
+    go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/...
 
 # Run the internal/schema/ddl integration tests against a real ClickHouse
 # container (spun up via testcontainers-go). Requires Docker. Gated behind
