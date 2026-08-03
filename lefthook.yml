@@ -2,8 +2,9 @@
 #
 #   pre-commit — fast formatters on staged files only (sub-second).
 #   pre-push   — heavier static checks (golangci-lint, markdown verify,
-#                forbid-skip discipline grep) that mirror what the
-#                `check` + `lint` + `forbid-skip` CI gates would run.
+#                forbid-skip discipline grep, repo-hygiene) that mirror
+#                what the `check` + `lint` + `forbid-skip` + `forbid-skip`
+#                (binary/root-allowlist) CI gates would run.
 #                Lives on push, not commit, so the inner-loop stays
 #                fast — one ~70s wait per push instead of per commit.
 #
@@ -45,8 +46,8 @@ pre-commit:
       run: |
         markdownlint-cli2 --fix {staged_files}
 
-# pre-push runs once per `git push`. The three commands mirror the
-# CI gates (check / lint / forbid-skip) so a push that would have
+# pre-push runs once per `git push`. The commands mirror the CI gates
+# (check / lint / forbid-skip / repo-hygiene) so a push that would have
 # failed CI fails locally first instead of round-tripping through
 # the runner. Set `LEFTHOOK=0` to bypass for WIP pushes.
 pre-push:
@@ -54,8 +55,14 @@ pre-push:
   commands:
     golangci-lint:
       tags: lint
+      # `just lint`, not a bare `golangci-lint run ./...`: one invocation
+      # analyses one build configuration, so the bare form skipped every
+      # tagged file — the `chdb` round-trip layer, the `agpl_oracle`
+      # differentials, the migration tiers — and reported clean over what was
+      # left. The recipe runs the tagged pass and the untagged one, which is
+      # what CI's lint job runs.
       run: |
-        golangci-lint run ./...
+        just lint
     # Workflow-file validation. GitHub rejects invalid workflow files
     # SERVER-side as zero-job "invalid workflow file" failure runs,
     # which silently prevents required pull_request checks from ever
@@ -81,16 +88,6 @@ pre-push:
             ':!:compatibility/*/upstream/**' \
             | xargs -0 grep -nE 't\.Skip[fN]?\(' --; then
           echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
-          exit 1
-        fi
-    forbid-not-implemented-prod:
-      tags: discipline
-      run: |
-        if git ls-files -z -- \
-            'internal/**/*.go' \
-            ':!:internal/**/*_test.go' \
-            | xargs -0 grep -niEH 'not implemented' --; then
-          echo "lefthook: \"not implemented\" in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)"
           exit 1
         fi
     # Backstop for the `commit-msg` hook: that hook validates each
@@ -207,6 +204,26 @@ pre-push:
     forbid-sql-raw:
       tags: discipline
       run: node .github/scripts/forbid-sql-raw.mjs
+    # Mirrors the CI `repo-hygiene` gate's two checks:
+    #   - binary:         rejects committed ELF/Mach-O/PE executables and
+    #                     other binary artefacts tracked in git
+    #   - root-allowlist: rejects stray files at the repo root that don't
+    #                     appear in the allowlist
+    # Both are fast (pure-JS, no network, no Go compile) and have caught
+    # real pushes (bench-report committed in PR #1613). The self-test
+    # that validates the detector logic is CI-only (it needs the git
+    # history to fabricate fake tracked blobs); the two functional scans
+    # run cleanly on a working tree.
+    repo-hygiene-binary:
+      tags: discipline
+      run: node .github/scripts/repo-hygiene.mjs
+      env:
+        CHECK: binary
+    repo-hygiene-root-allowlist:
+      tags: discipline
+      run: node .github/scripts/repo-hygiene.mjs
+      env:
+        CHECK: root-allowlist
 
 commit-msg:
   commands:

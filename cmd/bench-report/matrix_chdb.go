@@ -189,52 +189,66 @@ func measureMatrixCell(ctx context.Context, s *session, iters int, st matrixStra
 	cell.Routed = routed
 
 	if routed {
-		// Route B: run every shard's re-anchored plan sequentially, sum the
-		// walls, and take the worst shard's intermediate as the per-query
-		// memory driver (each shard is capped independently).
 		cell.K = dec.K
-		var sumWall time.Duration
-		var maxPairs int64
-		for _, sl := range dec.Slices {
-			sql, err := emitMatrix(ctx, sl.Plan, tsgrid)
-			if err != nil {
-				return matrixCell{}, fmt.Errorf("emit shard %d: %w", sl.Index, err)
-			}
-			w, err := s.bestWall(sql, iters)
-			if err != nil {
-				return matrixCell{}, fmt.Errorf("exec shard %d: %w", sl.Index, err)
-			}
-			sumWall += w
-			pairs, err := matrixIntermediate(s, sl.Start, sl.End, tsgrid)
-			if err != nil {
-				return matrixCell{}, fmt.Errorf("shard %d intermediate: %w", sl.Index, err)
-			}
-			if pairs > maxPairs {
-				maxPairs = pairs
-			}
-		}
-		cell.Wall = sumWall
-		cell.PeakRows = maxPairs
+		cell.Wall, cell.PeakRows, err = measureRoutedShards(ctx, s, iters, dec, tsgrid)
 	} else {
-		// Route A / single: one statement over the whole anchor grid.
-		sql, err := emitMatrix(ctx, plan, tsgrid)
-		if err != nil {
-			return matrixCell{}, fmt.Errorf("emit route A: %w", err)
-		}
-		w, err := s.bestWall(sql, iters)
-		if err != nil {
-			return matrixCell{}, fmt.Errorf("exec route A: %w", err)
-		}
-		cell.Wall = w
-		pairs, err := matrixIntermediate(s, matrixStart, matrixEnd, tsgrid)
-		if err != nil {
-			return matrixCell{}, fmt.Errorf("route-A intermediate: %w", err)
-		}
-		cell.PeakRows = pairs
+		cell.Wall, cell.PeakRows, err = measureSingleStatement(ctx, s, iters, plan, tsgrid)
+	}
+	if err != nil {
+		return matrixCell{}, err
 	}
 
 	cell.PeakMem = modeledBytes(cell.PeakRows)
 	return cell, nil
+}
+
+// measureRoutedShards times route B: every shard's re-anchored plan runs
+// sequentially, so the walls sum, while the worst shard's intermediate is the
+// per-query memory driver — each shard is capped independently.
+func measureRoutedShards(
+	ctx context.Context, s *session, iters int, dec *solver.Decision, tsgrid bool,
+) (time.Duration, int64, error) {
+	var sumWall time.Duration
+	var maxPairs int64
+	for _, sl := range dec.Slices {
+		sql, err := emitMatrix(ctx, sl.Plan, tsgrid)
+		if err != nil {
+			return 0, 0, fmt.Errorf("emit shard %d: %w", sl.Index, err)
+		}
+		w, err := s.bestWall(sql, iters)
+		if err != nil {
+			return 0, 0, fmt.Errorf("exec shard %d: %w", sl.Index, err)
+		}
+		sumWall += w
+		pairs, err := matrixIntermediate(s, sl.Start, sl.End, tsgrid)
+		if err != nil {
+			return 0, 0, fmt.Errorf("shard %d intermediate: %w", sl.Index, err)
+		}
+		if pairs > maxPairs {
+			maxPairs = pairs
+		}
+	}
+	return sumWall, maxPairs, nil
+}
+
+// measureSingleStatement times route A: one statement over the whole anchor
+// grid.
+func measureSingleStatement(
+	ctx context.Context, s *session, iters int, plan chplan.Node, tsgrid bool,
+) (time.Duration, int64, error) {
+	sql, err := emitMatrix(ctx, plan, tsgrid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("emit route A: %w", err)
+	}
+	w, err := s.bestWall(sql, iters)
+	if err != nil {
+		return 0, 0, fmt.Errorf("exec route A: %w", err)
+	}
+	pairs, err := matrixIntermediate(s, matrixStart, matrixEnd, tsgrid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("route-A intermediate: %w", err)
+	}
+	return w, pairs, nil
 }
 
 // lowerMatrixPlan lowers + optimizes the focus query for the given tsgrid

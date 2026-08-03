@@ -116,9 +116,13 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   files (`emit_node.go`, `emit.go`). See CLAUDE.md § "No raw SQL strings" and
   #1441. No env inputs; always runs the full scan.
   - Exit: `0` clean, `1` on any raw-write violation.
-- **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans.
-  - Env: `CHECK` is one of `t-skip`,
-    `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`.
+- **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans;
+  `compatibility.yml`, the cheap-first `gate`.
+  - Env: `CHECK` is `all` (every scan, in registry order) or one of `t-skip`,
+    `soft-assert`, `should-skip`, `escape-hatch`, `feature-discipline`. The
+    `CHECKS` registry in the script is the one list — `all` iterates it, and
+    `doc-counts.mjs` asserts every workflow `CHECK:` value names a live entry,
+    so a removed scan cannot leave a caller behind.
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
 - **`forbid-deferral.mjs`** — `forbid-deferral.yml`, its own workflow. The prose
   sibling of `forbid-skip`: where that one rejects a test that declines to
@@ -269,19 +273,24 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   they describe. It derives each count LIVE — NOT from a hardcoded literal
   (which would just relocate the staleness) — and asserts every matching
   prose claim equals it:
-  - **forbid-skip CHECK count** — parses the `case '<name>':` arms of the
-    `CHECK` switch in `forbid-skip.mjs` (today: 5 — `t-skip`,
-    `not-implemented`, `soft-assert`, `should-skip`, `escape-hatch`) and
-    asserts the "N checks / scans / CHECK categories" claims in
-    `docs/forbid-skip.md` match. The doc distinguishes the 7 regex pattern
-    ROWS from the 5 dispatched scans; the gate keys on the scan/check
-    vocabulary, never the ambiguous bare "patterns".
+  - **forbid-skip CHECK count** — parses the keys of the `CHECKS` registry in
+    `forbid-skip.mjs` (today: 5 — `t-skip`, `soft-assert`, `should-skip`,
+    `escape-hatch`, `feature-discipline`) and asserts the "N checks / scans /
+    CHECK categories" claims in `docs/forbid-skip.md` match. The doc
+    distinguishes the 7 regex pattern ROWS from the 5 dispatched scans; the
+    gate keys on the scan/check vocabulary, never the ambiguous bare
+    "patterns".
+  - **forbid-skip workflow callers** — parses every `CHECK:` value the
+    workflows hand `forbid-skip.mjs` and asserts each names a live registry
+    entry (or `all`). Not cosmetic: an unknown `CHECK` exits 1, and
+    `compatibility.yml`'s `gate` is `needs:` for all three required
+    compatibility heads, so one stale caller reds every PR in the repo.
   - **test-layer count** — counts the DISTINCT integer layer numbers across
-    the `### Layer N[sub]` headings in `docs/test-strategy.md` (1..13,
-    collapsing 2a/2b/6d/7b to their integer = 13) and asserts the
+    the `### Layer N[sub]` headings in `docs/test-strategy.md` (1..14,
+    collapsing 2a/2b/6d/7b to their integer = 14) and asserts the
     "N-layer test map" / "tested in N layers" claims in `CLAUDE.md`,
     `docs/test-strategy.md`, and `README.md` match.
-  - Counts are parsed from the actual structures (switch arms / markdown
+  - Counts are parsed from the actual structures (registry keys / markdown
     headings), never from a string match on the prose they validate, so a
     doc can only go green by matching reality.
   - **`--self-test`** is a meta-test that feeds the derivers / extractors

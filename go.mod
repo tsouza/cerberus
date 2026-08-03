@@ -7,7 +7,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/axiomhq/hyperloglog v0.2.6
-	github.com/buger/jsonparser v1.6.0
+	github.com/buger/jsonparser v1.6.1
 	github.com/chdb-io/chdb-go v1.12.0
 	github.com/cucumber/godog v0.15.1
 	github.com/cucumber/messages/go/v21 v21.0.1

@@ -227,19 +227,18 @@ func normalizeCacheSize(s string) string {
 	if s == "" {
 		return ""
 	}
+	const kibPerMiB = 1024
 	unit := s[len(s)-1]
-	numPart := s
+	numPart := strings.TrimSpace(s[:len(s)-1])
 	var kib int64
 	switch unit {
 	case 'K', 'k':
-		numPart = s[:len(s)-1]
-		if n, err := strconv.ParseInt(strings.TrimSpace(numPart), 10, 64); err == nil {
+		if n, err := strconv.ParseInt(numPart, 10, 64); err == nil {
 			kib = n
 		}
 	case 'M', 'm':
-		numPart = s[:len(s)-1]
-		if n, err := strconv.ParseInt(strings.TrimSpace(numPart), 10, 64); err == nil {
-			kib = n * 1024
+		if n, err := strconv.ParseInt(numPart, 10, 64); err == nil {
+			kib = n * kibPerMiB
 		}
 	default:
 		return s // unknown form — pass through untouched
@@ -247,8 +246,8 @@ func normalizeCacheSize(s string) string {
 	if kib == 0 {
 		return s
 	}
-	if kib%1024 == 0 {
-		return fmt.Sprintf("%d MiB", kib/1024)
+	if kib%kibPerMiB == 0 {
+		return fmt.Sprintf("%d MiB", kib/kibPerMiB)
 	}
 	return fmt.Sprintf("%d KiB", kib)
 }
@@ -316,13 +315,48 @@ func splitColon(line string) (key, val string, ok bool) {
 	return strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+1:]), true
 }
 
-// readTrim reads a whole small sysfs/proc file and trims trailing newline.
+// pseudoFSRoots are the only trees this reporter reads. Everything it wants
+// is host state the kernel publishes, so anything outside them is a bug in a
+// caller rather than a file worth opening.
+var pseudoFSRoots = []string{"/proc", "/sys"}
+
+// readTrim reads a whole small /proc or /sys file and trims surrounding
+// whitespace, returning "" for anything it cannot read.
+//
+// The read goes through os.Root rather than os.ReadFile so it is confined to
+// the pseudo-filesystem root the path names: the remainder is resolved inside
+// that tree, and a symlink pointing out of it fails instead of quietly
+// yielding some other file's contents. Several of the paths reaching here are
+// built from a `/sys/devices/system/cpu/…` glob, so the confinement is what
+// keeps a hostile sysfs entry from turning a cache-topology probe into a read
+// of arbitrary host state.
 func readTrim(path string) string {
-	b, err := os.ReadFile(path)
+	root, rel, ok := pseudoFSPath(path)
+	if !ok {
+		return ""
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return ""
+	}
+	defer r.Close()
+	b, err := r.ReadFile(rel)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// pseudoFSPath splits an absolute path into the pseudoFSRoots entry it lives
+// under and the remainder relative to it.
+func pseudoFSPath(path string) (root, rel string, ok bool) {
+	clean := filepath.Clean(path)
+	for _, r := range pseudoFSRoots {
+		if rest, under := strings.CutPrefix(clean, r+string(filepath.Separator)); under && rest != "" {
+			return r, rest, true
+		}
+	}
+	return "", "", false
 }
 
 // readUint reads a small file expected to hold a single unsigned integer.

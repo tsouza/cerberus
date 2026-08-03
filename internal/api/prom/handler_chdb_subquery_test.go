@@ -115,20 +115,20 @@ func TestQueryRange_SubqueryBareVector_ChDB(t *testing.T) {
 func escape(q string) string {
 	var b strings.Builder
 	for _, r := range q {
-		switch {
-		case r == ' ':
+		switch r {
+		case ' ':
 			b.WriteByte('+')
-		case r == '[':
+		case '[':
 			b.WriteString("%5B")
-		case r == ']':
+		case ']':
 			b.WriteString("%5D")
-		case r == ':':
+		case ':':
 			b.WriteString("%3A")
-		case r == '{':
+		case '{':
 			b.WriteString("%7B")
-		case r == '}':
+		case '}':
 			b.WriteString("%7D")
-		case r == '"':
+		case '"':
 			b.WriteString("%22")
 		default:
 			b.WriteRune(r)

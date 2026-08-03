@@ -14,9 +14,8 @@
 // in the same change — the self-test is the contract.
 //
 // Env contract:
-//   CHECK  one of:
+//   CHECK  `all` (run every scan below, in registry order), or one of:
 //     t-skip            Reject t.Skip / t.Skipf / t.SkipNow in *_test.go
-//     not-implemented   Reject "not implemented" in internal/**/*.go (prod)
 //     soft-assert       Reject soft-assertion / silent-recover patterns
 //     should-skip       Reject non-empty should_skip: overlay entries
 //     escape-hatch      Reject test escape-hatch primitives
@@ -69,8 +68,13 @@ function fail(message) {
   process.exit(1);
 }
 
-switch (CHECK) {
-  case 't-skip': {
+// CHECKS — the registry of discipline scans, keyed by $CHECK. This is the
+// single source of truth for the scan set: `all` iterates it, the unknown-CHECK
+// error enumerates it, and doc-counts.mjs derives both the doc-stated scan count
+// and the workflow-caller assertion from these keys. A scan added or removed
+// here therefore cannot leave a stale caller or a stale doc behind.
+const CHECKS = {
+  't-skip': () => {
     const { matched, output } = grepFiles({
       pathspecs: ['*_test.go', ':!:compatibility/*/upstream/**'],
       grepFlags: ['-nE'],
@@ -80,25 +84,9 @@ switch (CHECK) {
       log(output);
       fail('t.Skip / t.Skipf / t.SkipNow found in test files — fix the bug, do not skip');
     }
-    break;
-  }
+  },
 
-  case 'not-implemented': {
-    const { matched, output } = grepFiles({
-      pathspecs: ['internal/**/*.go', ':!:internal/**/*_test.go'],
-      grepFlags: ['-niEH'],
-      regex: 'not implemented',
-    });
-    if (matched) {
-      log(output);
-      fail(
-        '"not implemented" found in production code — implement the feature or rewrite to a factual verb (rejected / unsupported / falls back)',
-      );
-    }
-    break;
-  }
-
-  case 'soft-assert': {
+  'soft-assert': () => {
     let bad = false;
     const softAssert = grepFiles({
       pathspecs: ['*_test.go', ':!:compatibility/*/upstream/**'],
@@ -125,10 +113,9 @@ switch (CHECK) {
         'soft-assertion or silent-recover pattern found — replace assert.Contains(x, "") with the actual substring, replace assert.ElementsMatch(x, []T{}) with len(x) == 0, replace defer recover() / defer func(){_ = recover()}() with assert.Panics(t, func(){...}, "reason")',
       );
     }
-    break;
-  }
+  },
 
-  case 'should-skip': {
+  'should-skip': () => {
     const matches = perlSlurp({
       pathspecs: [
         'compatibility/**/*.yml',
@@ -144,10 +131,9 @@ switch (CHECK) {
         'non-empty should_skip overlay entry found. The consumer code was removed in the structural-cleanup PR; entries here are silently ignored. Fix the underlying bug instead of skipping the case.',
       );
     }
-    break;
-  }
+  },
 
-  case 'escape-hatch': {
+  'escape-hatch': () => {
     const { matched, output } = grepFiles({
       pathspecs: [
         '*.ts',
@@ -168,10 +154,9 @@ switch (CHECK) {
         'test escape-hatch pattern found. Every assertion must fail loud; never mask a failure with an allow-list / tolerance / soft-assert. Fix the bug at the source (cerberus code, seed, dashboard, panel).',
       );
     }
-    break;
-  }
+  },
 
-  case 'feature-discipline': {
+  'feature-discipline': () => {
     let bad = false;
     // A Cucumber runner's default is to report an unimplemented step as
     // *pending* and carry on — a skip wearing a hat. A scenario-suppressing
@@ -210,12 +195,27 @@ switch (CHECK) {
         'a scenario-suppressing tag or a godog skip/pending route was found. A scenario runs and asserts, or it is deleted — @wip / @skip / @ignore / @manual / @todo / @pending and godog.ErrSkip / godog.ErrPending / T(ctx).Skip are t.Skip wearing a hat. Fix the scenario or remove it.',
       );
     }
-    break;
-  }
+  },
+};
 
-  default:
-    error(`forbid-skip.mjs: unknown CHECK="${CHECK}" (expected one of: t-skip, not-implemented, soft-assert, should-skip, escape-hatch, feature-discipline)`);
-    process.exit(1);
+// `all` runs every registered scan in one invocation, in registry order. It is
+// for callers that want the whole discipline set without enumerating it (the
+// compatibility lane's cheap-first `gate`); ci.yml keeps one named step per scan
+// so a failure is identifiable from the job graph alone.
+const ALL = 'all';
+
+if (CHECK === ALL) {
+  for (const [name, scan] of Object.entries(CHECKS)) {
+    log(`forbid-skip: ${name}`);
+    scan();
+  }
+} else if (Object.hasOwn(CHECKS, CHECK)) {
+  CHECKS[CHECK]();
+} else {
+  error(
+    `forbid-skip.mjs: unknown CHECK="${CHECK}" (expected ${ALL}, or one of: ${Object.keys(CHECKS).join(', ')})`,
+  );
+  process.exit(1);
 }
 
 // Reached only on a clean scan. The original bash printed nothing on pass;

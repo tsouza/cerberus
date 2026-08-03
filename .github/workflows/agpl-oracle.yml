@@ -1,0 +1,133 @@
+name: agpl-oracle
+
+# Differential oracle lane for the in-house LogQL and TraceQL parser
+# reimplementations.
+#
+# Five test files in the root module carry `//go:build agpl_oracle` and
+# compare cerberus's own clean-room parsers against the upstream AGPL
+# reference parsers (grafana/loki/pkg/logql for LogQL; grafana/tempo/pkg/traceql
+# for TraceQL). These files are compiled and run by NO other lane — the default
+# `check` gate is CGO-free and passes no build tags beyond the defaults, so
+# without this workflow the oracle diffs are never exercised and a parser
+# regression can reach main undetected (see #1610 for the full evidence).
+#
+# Files covered:
+#   internal/api/loki/detected_extract_agpl_test.go
+#   internal/logql/logpattern/pattern_agpl_test.go
+#   internal/logql/jsonpath_agpl_test.go
+#   internal/logql/lsyntax/oracle_agpl_test.go
+#   test/agpl_oracle/oracle_test.go
+#
+# The tests do NOT require CGO, Docker, or libchdb — they are pure Go and
+# compile with a stock Go toolchain against the root-module deps.
+#
+# Required status check name: `agpl-oracle`
+# Required on: all PRs (docs-only PRs short-circuit to a green no-op so
+# the context always appears in the PR rollup without doing work).
+# Path note: the `changes` job shares the docs-only filter from ci.yml /
+# chdb.yml; see chdb.yml's matrix-expansion note for why the guard lives
+# on the STEPS rather than the job.
+#
+# Tag composition note: when #1520 lands and test/property/logql_test.go
+# acquires `//go:build chdb && agpl_oracle`, this lane will need to pass
+# BOTH tags and install libchdb.so. That change is tracked in #1520; until
+# then the lane is pure-Go and has no chdb dependency.
+#
+# Regression test: test/regression/agpl_oracle_tag_set_test.go asserts
+# that every `//go:build agpl_oracle` file in the root module is known to
+# this lane, so a new tagged file cannot arrive without a lane-coverage
+# update.
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'release/*.x']
+  workflow_dispatch:
+  schedule:
+    # nightly at 03:30 UTC (ahead of property at 03:45 and chdb at 04:00)
+    - cron: '30 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agpl-oracle-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Docs-only short-circuit — see chdb.yml for the full rationale. The
+  # `agpl-oracle` job uses per-step guards (not a job-level `if:`) so the
+  # required context is always published.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.markdown'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!CHANGELOG.md'
+              - '!.markdownlint*'
+              - '!CLAUDE.md'
+              - '!AGENTS.md'
+              - '!README*'
+
+      - id: compute
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # `agpl-oracle` compiles and runs the five `//go:build agpl_oracle` test
+  # files. A failure means the in-house parser has diverged from the AGPL
+  # reference in a way the test corpus exposes.
+  #
+  # The job also runs the regression test (test/regression) which includes
+  # agpl_oracle_tag_set_test.go — it asserts the set of tagged files matches
+  # what this lane covers, so a new oracle test file is caught immediately
+  # rather than silently running under no lane.
+  agpl-oracle:
+    name: agpl-oracle
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        if: needs.changes.outputs.docs_only != 'true'
+
+      - uses: actions/setup-go@v7
+        if: needs.changes.outputs.docs_only != 'true'
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run agpl_oracle differential oracle tests
+        if: needs.changes.outputs.docs_only != 'true'
+        run: go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/...
+
+      - name: Verify agpl_oracle tag set coverage (regression)
+        if: needs.changes.outputs.docs_only != 'true'
+        run: go test -run TestAGPLOracleTagSetCoverage -count=1 ./test/regression/...
+
+      - name: No-op (docs-only PR)
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "agpl-oracle is a green no-op on docs-only PRs."

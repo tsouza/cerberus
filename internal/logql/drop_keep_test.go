@@ -1,12 +1,9 @@
 package logql_test
 
 import (
-	"context"
+	"strings"
 	"testing"
 
-	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
-
-	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -73,27 +70,54 @@ func TestLowerDropKeep_NoSQLImpact(t *testing.T) {
 	}
 }
 
-// TestLowerDropKeep_OnAggregation pins that `| drop` and `| keep` are
-// also accepted in the metric form (e.g. `count_over_time({...} | drop
-// env [5m])`). The projection runs after rows return; it doesn't change
-// the SQL counting shape.
+// TestLowerDropKeep_OnAggregation is the metric-form counterpart of
+// TestLowerDropKeep_NoSQLImpact, and asserts the OPPOSITE: in a range
+// aggregation the projection is NOT post-fetch-only, because the series
+// identity it narrows is also the RangeWindow's grouping key.
+//
+// Two streams differing only in a label the query drops are one series
+// upstream. If the projection never reaches the GROUP BY, ClickHouse
+// aggregates them separately and the caller gets a split matrix whose
+// labels look plausible — the silently-wrong shape of issue #1491.
 func TestLowerDropKeep_OnAggregation(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
-	cases := []string{
-		`count_over_time({job="api"} | drop env [5m])`,
-		`rate({job="api"} | keep job, env [5m])`,
+	cases := []struct {
+		name string
+		// `with` carries the projection stage; `without` strips it.
+		// Unlike the log form, these must lower to DIFFERENT SQL.
+		with    string
+		without string
+	}{
+		{
+			name:    "drop bare name narrows the grouping key",
+			with:    `count_over_time({job="api"} | drop env [5m])`,
+			without: `count_over_time({job="api"} [5m])`,
+		},
+		{
+			name:    "drop matcher form narrows the grouping key",
+			with:    `count_over_time({job="api"} | drop env="prod" [5m])`,
+			without: `count_over_time({job="api"} [5m])`,
+		},
+		{
+			name:    "keep narrows the grouping key",
+			with:    `rate({job="api"} | keep job [5m])`,
+			without: `rate({job="api"} [5m])`,
+		},
 	}
-	for _, q := range cases {
-		t.Run(q, func(t *testing.T) {
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			expr, err := syntax.ParseExpr(q)
-			if err != nil {
-				t.Fatalf("ParseExpr: %v", err)
+			gotWith := emitSQL(t, tc.with, s)
+			gotWithout := emitSQL(t, tc.without, s)
+			if gotWith == gotWithout {
+				t.Errorf("projection stage left the SQL untouched, so it never reached the grouping key\nSQL: %s",
+					gotWith)
 			}
-			if _, err := logql.Lower(context.Background(), expr, s); err != nil {
-				t.Errorf("Lower(%q) unexpectedly failed: %v", q, err)
+			if !strings.Contains(gotWith, "mapFilter") {
+				t.Errorf("lowered SQL carries no mapFilter narrowing\nSQL: %s", gotWith)
 			}
 		})
 	}

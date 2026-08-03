@@ -114,66 +114,69 @@ expect_no_match "case1 tx.Skipper()"  "$RE1" "$tmpdir/case1_nomatch.txt"
 # ("not implemented" / "skipped" / "deferred") in *_test.go + *.txtar
 # rather than test-skipping behaviour. It false-positived on honest
 # descriptions of correct, version-gated code and caught nothing the
-# behavioural scans (t-skip / soft-assert / should-skip / escape-hatch /
-# not-implemented) miss. The check, its CI/lefthook steps, and this
-# self-test case were dropped together.
+# behavioural scans (t-skip / soft-assert / should-skip / escape-hatch)
+# miss. The check, its CI/lefthook steps, and this self-test case were
+# dropped together — see #1538.
+# --------------------------------------------------------------------
+
+# (former case 3 — "not implemented" in production code, PR #197)
+#
+# Removed in #1538: a prose/word scan over internal/**/*.go that
+# rejected the literal phrase "not implemented". Like wording-tests, it
+# policed vocabulary rather than behaviour: honest comments describing
+# correct runtime-gated paths (e.g. a CH function above the chDB floor
+# that is genuinely not implemented on the substrate) false-positived,
+# while a genuinely unimplemented path that returned a zero value or an
+# unreachable panic passed cleanly. CI/lefthook steps and this self-test
+# case were dropped together.
 # --------------------------------------------------------------------
 
 # --------------------------------------------------------------------
-# case 3 — "not implemented" in production code  (PR #197)
-# --------------------------------------------------------------------
-RE3='not implemented'
-printf 'return errors.New("not implemented")\n' >"$tmpdir/case3_match.txt"
-printf 'return errUnsupported // rejects unsupported foo\n' >"$tmpdir/case3_nomatch.txt"
-expect_match    "case3 not-implemented prod"  "$RE3" "$tmpdir/case3_match.txt"
-expect_no_match "case3 factual verb"          "$RE3" "$tmpdir/case3_nomatch.txt"
-
-# --------------------------------------------------------------------
-# case 4 — assert.Contains(x, "")  (PR #587, widened #277)
+# case 3 — assert.Contains(x, "")  (PR #587, widened #277)
 # --------------------------------------------------------------------
 # The optional `([^,]+,\s*){0,1}` prefix matches the testify
 # `t *testing.T` first arg when present, so the regex catches BOTH
 # the 2-arg gocheck-style call (`assert.Contains(haystack, "")`) and
 # the 3-arg testify call (`assert.Contains(t, haystack, "")`).
-RE4='assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)'
-printf 'assert.Contains(body, "")\n'              >"$tmpdir/case4_match.txt"
-printf 'assert.Contains(t, body, "")\n'           >"$tmpdir/case4_match_testify.txt"
-printf 'assert.Contains(body, "error: foo")\n'    >"$tmpdir/case4_nomatch.txt"
-printf 'assert.Contains(t, body, "error: foo")\n' >"$tmpdir/case4_nomatch_testify.txt"
-expect_match    "case4 empty-needle Contains (2-arg)"   "$RE4" "$tmpdir/case4_match.txt"
-expect_match    "case4 empty-needle Contains (3-arg)"   "$RE4" "$tmpdir/case4_match_testify.txt"
-expect_no_match "case4 real-needle Contains (2-arg)"    "$RE4" "$tmpdir/case4_nomatch.txt"
-expect_no_match "case4 real-needle Contains (3-arg)"    "$RE4" "$tmpdir/case4_nomatch_testify.txt"
+RE3='assert\.Contains\(([^,]+,\s*){0,1}[^,]+,\s*""\s*\)'
+printf 'assert.Contains(body, "")\n'              >"$tmpdir/case3_match.txt"
+printf 'assert.Contains(t, body, "")\n'           >"$tmpdir/case3_match_testify.txt"
+printf 'assert.Contains(body, "error: foo")\n'    >"$tmpdir/case3_nomatch.txt"
+printf 'assert.Contains(t, body, "error: foo")\n' >"$tmpdir/case3_nomatch_testify.txt"
+expect_match    "case3 empty-needle Contains (2-arg)"   "$RE3" "$tmpdir/case3_match.txt"
+expect_match    "case3 empty-needle Contains (3-arg)"   "$RE3" "$tmpdir/case3_match_testify.txt"
+expect_no_match "case3 real-needle Contains (2-arg)"    "$RE3" "$tmpdir/case3_nomatch.txt"
+expect_no_match "case3 real-needle Contains (3-arg)"    "$RE3" "$tmpdir/case3_nomatch_testify.txt"
 
 # --------------------------------------------------------------------
-# case 5 — assert.ElementsMatch(x, []T{})  (PR #587, widened #277)
+# case 3 — assert.ElementsMatch(x, []T{})  (PR #587, widened #277)
 # --------------------------------------------------------------------
-# Same optional-`t`-prefix widening as case4 — covers both 2-arg
+# Same optional-`t`-prefix widening as case3 — covers both 2-arg
 # gocheck-style and 3-arg testify shapes.
-RE5='assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)'
-printf 'assert.ElementsMatch(got, []string{})\n'           >"$tmpdir/case5_match.txt"
-printf 'assert.ElementsMatch(t, got, []string{})\n'        >"$tmpdir/case5_match_testify.txt"
-printf 'assert.ElementsMatch(got, []string{"a", "b"})\n'   >"$tmpdir/case5_nomatch.txt"
-printf 'assert.ElementsMatch(t, got, []string{"a", "b"})\n' >"$tmpdir/case5_nomatch_testify.txt"
-expect_match    "case5 empty-slice ElementsMatch (2-arg)" "$RE5" "$tmpdir/case5_match.txt"
-expect_match    "case5 empty-slice ElementsMatch (3-arg)" "$RE5" "$tmpdir/case5_match_testify.txt"
-expect_no_match "case5 populated ElementsMatch (2-arg)"   "$RE5" "$tmpdir/case5_nomatch.txt"
-expect_no_match "case5 populated ElementsMatch (3-arg)"   "$RE5" "$tmpdir/case5_nomatch_testify.txt"
+RE3='assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)'
+printf 'assert.ElementsMatch(got, []string{})\n'           >"$tmpdir/case3_match.txt"
+printf 'assert.ElementsMatch(t, got, []string{})\n'        >"$tmpdir/case3_match_testify.txt"
+printf 'assert.ElementsMatch(got, []string{"a", "b"})\n'   >"$tmpdir/case3_nomatch.txt"
+printf 'assert.ElementsMatch(t, got, []string{"a", "b"})\n' >"$tmpdir/case3_nomatch_testify.txt"
+expect_match    "case3 empty-slice ElementsMatch (2-arg)" "$RE3" "$tmpdir/case3_match.txt"
+expect_match    "case3 empty-slice ElementsMatch (3-arg)" "$RE3" "$tmpdir/case3_match_testify.txt"
+expect_no_match "case3 populated ElementsMatch (2-arg)"   "$RE3" "$tmpdir/case3_nomatch.txt"
+expect_no_match "case3 populated ElementsMatch (3-arg)"   "$RE3" "$tmpdir/case3_nomatch_testify.txt"
 
 # --------------------------------------------------------------------
-# case 6 — silent panic recovery, both shapes  (PR #587 / #648)
+# case 3 — silent panic recovery, both shapes  (PR #587 / #648)
 # --------------------------------------------------------------------
-RE6='defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)'
+RE3='defer\s+recover\s*\(\s*\)|defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)'
 # 6a — bare `defer recover()`
 printf 'defer recover()\n' >"$tmpdir/case6a_match.txt"
-expect_match_perl "case6a bare-defer-recover" "$RE6" "$tmpdir/case6a_match.txt"
+expect_match_perl "case6a bare-defer-recover" "$RE3" "$tmpdir/case6a_match.txt"
 # 6b — multi-line `defer func() { _ = recover() }()`
 {
   printf 'defer func() {\n'
   printf '  _ = recover()\n'
   printf '}()\n'
 } >"$tmpdir/case6b_match.txt"
-expect_match_perl "case6b multi-line silent recover" "$RE6" "$tmpdir/case6b_match.txt"
+expect_match_perl "case6b multi-line silent recover" "$RE3" "$tmpdir/case6b_match.txt"
 # 6c — asserted-panic form MUST NOT match
 {
   printf 'defer func() {\n'
@@ -181,7 +184,7 @@ expect_match_perl "case6b multi-line silent recover" "$RE6" "$tmpdir/case6b_matc
   printf '  if r == nil { t.Fatal("expected panic") }\n'
   printf '}()\n'
 } >"$tmpdir/case6c_nomatch.txt"
-expect_no_match_perl "case6c asserted-panic form" "$RE6" "$tmpdir/case6c_nomatch.txt"
+expect_no_match_perl "case6c asserted-panic form" "$RE3" "$tmpdir/case6c_nomatch.txt"
 
 # --------------------------------------------------------------------
 # (former case 7 — should_skip overlay tracking-ref guard, PR #596)
@@ -196,49 +199,49 @@ expect_no_match_perl "case6c asserted-panic form" "$RE6" "$tmpdir/case6c_nomatch
 # --------------------------------------------------------------------
 
 # --------------------------------------------------------------------
-# case 8 — scenario-suppressing Gherkin tags  (PR #1268)
+# case 3 — scenario-suppressing Gherkin tags  (PR #1268)
 # --------------------------------------------------------------------
 # The Layer-14 migration scenarios are `.feature` files driven by godog.
 # A `@wip`-style tag filters a Scenario out of the run while the lane
 # still reports green — t.Skip wearing a hat, one directory over.
-RE8='(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)'
-printf '@MIG-04 @tier0 @wip\n'                       >"$tmpdir/case8_match.txt"
-printf '@skip\n'                                     >"$tmpdir/case8_match_bare.txt"
-printf '@MIG-01 @tier0 @archetype:already-otel\n'    >"$tmpdir/case8_nomatch.txt"
-printf '@MIG-01 @tier0 @archetype:manual-scrape\n'   >"$tmpdir/case8_nomatch_embedded.txt"
-expect_match    "case8 @wip suffix tag"        "$RE8" "$tmpdir/case8_match.txt"
-expect_match    "case8 bare @skip tag"         "$RE8" "$tmpdir/case8_match_bare.txt"
-expect_no_match "case8 real tag line"          "$RE8" "$tmpdir/case8_nomatch.txt"
-expect_no_match "case8 archetype containing a banned word" "$RE8" "$tmpdir/case8_nomatch_embedded.txt"
+RE3='(^|[ \t])@(wip|skip|ignore|manual|todo|pending)([ \t]|$)'  # todo here is a Gherkin tag name, not a work marker (#1538)
+printf '@MIG-04 @tier0 @wip\n'                       >"$tmpdir/case3_match.txt"
+printf '@skip\n'                                     >"$tmpdir/case3_match_bare.txt"
+printf '@MIG-01 @tier0 @archetype:already-otel\n'    >"$tmpdir/case3_nomatch.txt"
+printf '@MIG-01 @tier0 @archetype:manual-scrape\n'   >"$tmpdir/case3_nomatch_embedded.txt"
+expect_match    "case3 @wip suffix tag"        "$RE3" "$tmpdir/case3_match.txt"
+expect_match    "case3 bare @skip tag"         "$RE3" "$tmpdir/case3_match_bare.txt"
+expect_no_match "case3 real tag line"          "$RE3" "$tmpdir/case3_nomatch.txt"
+expect_no_match "case3 archetype containing a banned word" "$RE3" "$tmpdir/case3_nomatch_embedded.txt"
 
 # The forbid-skip.mjs invocation of RE8 runs `grep -i`: the tag vocabulary is
 # closed and fixed-case, so a wrongly-cased suppression tag — including one
 # placed on a Scenario Outline's Examples block, which is legal Gherkin — must
 # not merge clean just because nobody typed it in lowercase.
-printf '@WIP\n'                                      >"$tmpdir/case8_match_upper.txt"
-printf '    @Skip\n'                                 >"$tmpdir/case8_match_examples.txt"
-expect_match_ci "case8 uppercase @WIP"                    "$RE8" "$tmpdir/case8_match_upper.txt"
-expect_match_ci "case8 mixed-case @Skip on an Examples line" "$RE8" "$tmpdir/case8_match_examples.txt"
+printf '@WIP\n'                                      >"$tmpdir/case3_match_upper.txt"
+printf '    @Skip\n'                                 >"$tmpdir/case3_match_examples.txt"
+expect_match_ci "case3 uppercase @WIP"                    "$RE3" "$tmpdir/case3_match_upper.txt"
+expect_match_ci "case3 mixed-case @Skip on an Examples line" "$RE3" "$tmpdir/case3_match_examples.txt"
 
 # --------------------------------------------------------------------
-# case 9 — godog skip / pending routes  (PR #1268)
+# case 3 — godog skip / pending routes  (PR #1268)
 # --------------------------------------------------------------------
 # godog step definitions live in NON-test .go files, so case 1's
 # `*_test.go` scope cannot see them. The receiver is unanchored so
 # binding godog.T(ctx) to a local first does not evade the scan.
-RE9='godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\('
-printf 'return godog.ErrSkip\n'                              >"$tmpdir/case9_match_errskip.txt"
-printf 'return godog.ErrPending\n'                           >"$tmpdir/case9_match_errpending.txt"
-printf 'godog.T(ctx).Skipf("no fixture for %%s", archetype)\n' >"$tmpdir/case9_match_skipf.txt"
-printf 't := godog.T(ctx)\nt.SkipNow()\n'                    >"$tmpdir/case9_match_local.txt"
-printf 'w.Skipped = corpus.Skipped\n'                        >"$tmpdir/case9_nomatch_field.txt"
-printf 'return fmt.Errorf("the harvester dropped %%d inputs", n)\n' >"$tmpdir/case9_nomatch_plain.txt"
-expect_match    "case9 godog.ErrSkip"        "$RE9" "$tmpdir/case9_match_errskip.txt"
-expect_match    "case9 godog.ErrPending"     "$RE9" "$tmpdir/case9_match_errpending.txt"
-expect_match    "case9 T(ctx).Skipf"         "$RE9" "$tmpdir/case9_match_skipf.txt"
-expect_match    "case9 local receiver SkipNow" "$RE9" "$tmpdir/case9_match_local.txt"
-expect_no_match "case9 Skipped field access" "$RE9" "$tmpdir/case9_nomatch_field.txt"
-expect_no_match "case9 ordinary error return" "$RE9" "$tmpdir/case9_nomatch_plain.txt"
+RE3='godog\.(ErrSkip|ErrPending)|\.Skip(f|Now)?\('
+printf 'return godog.ErrSkip\n'                              >"$tmpdir/case3_match_errskip.txt"
+printf 'return godog.ErrPending\n'                           >"$tmpdir/case3_match_errpending.txt"
+printf 'godog.T(ctx).Skipf("no fixture for %%s", archetype)\n' >"$tmpdir/case3_match_skipf.txt"
+printf 't := godog.T(ctx)\nt.SkipNow()\n'                    >"$tmpdir/case3_match_local.txt"
+printf 'w.Skipped = corpus.Skipped\n'                        >"$tmpdir/case3_nomatch_field.txt"
+printf 'return fmt.Errorf("the harvester dropped %%d inputs", n)\n' >"$tmpdir/case3_nomatch_plain.txt"
+expect_match    "case3 godog.ErrSkip"        "$RE3" "$tmpdir/case3_match_errskip.txt"
+expect_match    "case3 godog.ErrPending"     "$RE3" "$tmpdir/case3_match_errpending.txt"
+expect_match    "case3 T(ctx).Skipf"         "$RE3" "$tmpdir/case3_match_skipf.txt"
+expect_match    "case3 local receiver SkipNow" "$RE3" "$tmpdir/case3_match_local.txt"
+expect_no_match "case3 Skipped field access" "$RE3" "$tmpdir/case3_nomatch_field.txt"
+expect_no_match "case3 ordinary error return" "$RE3" "$tmpdir/case3_nomatch_plain.txt"
 
 # --------------------------------------------------------------------
 # summary
