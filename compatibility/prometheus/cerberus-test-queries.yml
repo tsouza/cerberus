@@ -257,6 +257,12 @@ test_cases:
   - query: 'label_replace(demo_num_cpus, "job", "destination-value-$1", "instance", "host:(.*)")'
     # label_replace works with multiple capture groups.
   - query: 'label_replace(demo_num_cpus, "job", "$1-$2", "instance", "local(.*):(.*)")'
+    # label_replace resolves `$10` as capture group TEN, not group one followed
+    # by a literal `0`: Go's Regexp.ExpandString consumes the longest run of
+    # name characters after the `$`. ClickHouse's own regex substitution tops
+    # out at `\9`, so a backref above that ceiling has to be expanded by
+    # cerberus rather than handed to the engine.
+  - query: 'label_replace(demo_num_cpus, "job", "group10-$10", "instance", "(.)(.)(.)(.)(.)(.)(.)(.)(.)(.).*")'
     # label_replace does not overwrite the destination label if the source label does not exist.
   - query: 'label_replace(demo_num_cpus, "job", "value-$1", "nonexistent-src", "source-value-(.*)")'
     # label_replace overwrites the destination label if the source label is empty, but matched.

@@ -41,6 +41,17 @@ package chplan
 // `qlcommon.EmptyCapturesReplacement`); it works around CH ≤ 24.8's
 // `replaceRegexpOne(”, '^(.*)$', 'value-\1')` returning `""` instead
 // of the spec-correct `"value-"`.
+// A replacement template that references a capture group above CH's `\9`
+// substitution ceiling cannot be spelled as a `replaceRegexpOne`
+// template at all. Such a template is carried as `Segments` instead, and
+// the emitter builds the value by concatenation:
+//
+//	concat(<literal>, extractGroups(<map>[<src>], '^<regex>$')[<n>], …)
+//
+// `extractGroups` returns every capture group as an `Array(String)`, so an
+// arbitrary group index is an ordinary array subscript and the ceiling
+// disappears. `Segments` and `Replacement` are alternatives: exactly one
+// of them describes the value.
 type LabelReplace struct {
 	Map              Expr
 	Dst              string
@@ -48,6 +59,35 @@ type LabelReplace struct {
 	Src              string
 	Regex            string
 	EmptyReplacement string
+	// Segments, when non-empty, replaces Replacement as the description
+	// of the substituted value. See LabelReplaceSegment.
+	Segments []LabelReplaceSegment
+}
+
+// NoCaptureGroup marks a [LabelReplaceSegment] that carries literal text
+// rather than a capture-group reference.
+const NoCaptureGroup = -1
+
+// WholeMatchGroup is the capture-group index of the whole match — Go's
+// `$0`. The emitter reads it off the source value directly rather than
+// from `extractGroups`, which numbers from the first real group: the
+// regex is anchored, so a match spans the entire source string.
+const WholeMatchGroup = 0
+
+// LabelReplaceSegment is one piece of a decomposed replacement template:
+// either a run of literal text or a reference to one capture group.
+type LabelReplaceSegment struct {
+	// Literal is the text this segment contributes when Group is
+	// [NoCaptureGroup].
+	Literal string
+	// Group is the capture-group index to substitute, or [NoCaptureGroup]
+	// when this segment is literal text.
+	Group int
+}
+
+// Equal reports whether two segments describe the same contribution.
+func (s LabelReplaceSegment) Equal(o LabelReplaceSegment) bool {
+	return s.Literal == o.Literal && s.Group == o.Group
 }
 
 func (*LabelReplace) exprNode() {}
@@ -56,6 +96,14 @@ func (l *LabelReplace) Equal(other Expr) bool {
 	o, ok := other.(*LabelReplace)
 	if !ok {
 		return false
+	}
+	if len(l.Segments) != len(o.Segments) {
+		return false
+	}
+	for i := range l.Segments {
+		if !l.Segments[i].Equal(o.Segments[i]) {
+			return false
+		}
 	}
 	return l.Dst == o.Dst &&
 		l.Replacement == o.Replacement &&

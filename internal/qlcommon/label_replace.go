@@ -12,13 +12,17 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // maxCHBackref is the highest capture-group index ClickHouse's
 // `replaceRegexpOne` substitution syntax can address: `\0` (the whole
 // match) through `\9`. Go's replacement templates have no such ceiling,
-// so a reference above this is the one shape the translation below
-// cannot express and rejects instead.
+// so a reference above this is the one shape the `replaceRegexpOne` form
+// cannot express — [ReplacementSegments] expresses it instead, by
+// decomposing the template so the emitter can index `extractGroups`,
+// which has no ceiling.
 const maxCHBackref = 9
 
 // unresolvedGroup is the capture-group index reported for a reference
@@ -60,19 +64,23 @@ const unresolvedGroup = -1
 //     spliced in below.
 //   - `$$` → `$` (literal dollar).
 //   - `$N` / `${N}` for ANY index N — including multi-digit `$10` —
-//     → `\N`, provided the regex has at least N capture groups.
-//   - `$name` / `${name}` → `\N` for the index of the capture group
-//     that carries that name.
+//     resolves to capture group N, provided the regex has at least N
+//     capture groups. Groups up to 9 render as `\N`; a higher one takes
+//     the Segments form described below.
+//   - `$name` / `${name}` → the index of the capture group that carries
+//     that name.
 //   - A reference that binds to nothing — an index past the regex's
 //     group count, or a name no group carries — expands to the empty
 //     string, exactly as ExpandString does.
 //   - A `$` that starts no reference at all (end of string, `$-`,
 //     `${unclosed`) is emitted verbatim, again as ExpandString does.
 //
-// The single shape with no faithful translation is a reference to a
-// capture group that EXISTS but sits above CH's `\9` substitution
-// ceiling; that returns an error so the query is rejected loudly rather
-// than answered with a wrong label.
+// A reference to a capture group above CH's `\9` substitution ceiling is
+// expressible, just not as a `replaceRegexpOne` template: the result
+// carries [CHReplacement.Segments] instead, which the emitter renders as
+// a `concat` of literal runs and `extractGroups` subscripts. The single
+// shape with no faithful translation at all is a reference to a name
+// several capture groups share — see [captureGroups.resolve].
 //
 // regex is the regex string the replacement is applied against; it is
 // compiled to resolve capture-group names and to count groups so
@@ -85,11 +93,60 @@ const unresolvedGroup = -1
 // the (unreachable) hot path and unblocks the SQL parser on the
 // (very-much-reachable) cold path where the regex doesn't match
 // anything.
-func ReplacementToCH(repl, regex string) (string, error) {
+func ReplacementToCH(repl, regex string) (CHReplacement, error) {
+	segments, err := ReplacementSegments(repl, regex)
+	if err != nil {
+		return CHReplacement{}, err
+	}
+	for _, seg := range segments {
+		if seg.Group > maxCHBackref {
+			return CHReplacement{Segments: segments}, nil
+		}
+	}
+	return CHReplacement{Template: renderCHTemplate(segments)}, nil
+}
+
+// CHReplacement is the ClickHouse-side form of a Go replacement template.
+// Exactly one of its fields describes the substituted value: Template
+// when every referenced capture group fits CH's `\0`–`\9` substitution
+// syntax, Segments when one does not.
+type CHReplacement struct {
+	// Template is the `replaceRegexpOne` substitution string.
+	Template string
+	// Segments is the literal-run / capture-group decomposition the
+	// emitter renders as a `concat` over `extractGroups`. A segment's
+	// Literal is the DECODED text — `$$` has already collapsed to `$`,
+	// and a backslash is a real backslash — so each output form applies
+	// whatever escaping its own syntax needs.
+	Segments []chplan.LabelReplaceSegment
+}
+
+// ReplacementSegments splits a Go replacement template into the
+// alternating literal runs and capture-group references that make it up,
+// resolving each reference against regex's capture-group metadata.
+//
+// This is the single walk of the template that both output forms are
+// derived from: [renderCHTemplate] folds it back into a
+// `replaceRegexpOne` substitution string, and the emitter renders it as a
+// `concat` when a referenced group sits above CH's ceiling. Deriving both
+// from one decomposition is what keeps them from drifting apart.
+//
+// References that bind to nothing — an index past the regex's group
+// count, a name no group carries — contribute nothing at all, exactly as
+// Go's `ExpandString` substitutes the empty string for them.
+func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, error) {
 	groups := newCaptureGroups(regex)
 
-	var b strings.Builder
-	b.Grow(len(repl))
+	var segments []chplan.LabelReplaceSegment
+	var literal strings.Builder
+	flush := func() {
+		if literal.Len() == 0 {
+			return
+		}
+		segments = append(segments, chplan.LabelReplaceSegment{Literal: literal.String(), Group: chplan.NoCaptureGroup})
+		literal.Reset()
+	}
+
 	// Step-based loop: each branch returns the number of input bytes it
 	// consumed via `step`, and the for-iterator advances `i` by that
 	// amount. Phrasing the loop this way (rather than using `continue` /
@@ -101,13 +158,44 @@ func ReplacementToCH(repl, regex string) (string, error) {
 	// #499 (the mutant-kill tests) and the follow-up PR that landed this
 	// refactor for the full diagnosis.
 	for i := 0; i < len(repl); {
-		step, err := replacementStep(&b, repl, i, groups)
+		idx, step, err := replacementStep(&literal, repl, i, groups)
 		if err != nil {
-			return "", err
+			return nil, err
+		}
+		if idx != unresolvedGroup {
+			flush()
+			segments = append(segments, chplan.LabelReplaceSegment{Group: idx})
 		}
 		i += step
 	}
-	return b.String(), nil
+	flush()
+	return segments, nil
+}
+
+// renderCHTemplate folds a decomposition back into a `replaceRegexpOne`
+// substitution string. Every literal backslash is doubled so CH reads it
+// as a literal rather than as the start of one of the `\N` backrefs
+// spliced in alongside it; every capture reference becomes `\N`.
+//
+// Callers must have checked that no segment's group exceeds
+// [maxCHBackref] — `\10` would be read by CH as group 1 followed by a
+// literal `0`.
+func renderCHTemplate(segments []chplan.LabelReplaceSegment) string {
+	var b strings.Builder
+	for _, seg := range segments {
+		if seg.Group != chplan.NoCaptureGroup {
+			b.WriteByte('\\')
+			b.WriteString(strconv.Itoa(seg.Group))
+			continue
+		}
+		for i := 0; i < len(seg.Literal); i++ {
+			if seg.Literal[i] == '\\' {
+				b.WriteByte('\\')
+			}
+			b.WriteByte(seg.Literal[i])
+		}
+	}
+	return b.String()
 }
 
 // captureGroups resolves a replacement template's `$N` / `$name`
@@ -148,8 +236,12 @@ func newCaptureGroups(regex string) captureGroups {
 }
 
 // resolve maps one extracted reference to its capture-group index, or
-// [unresolvedGroup] when the reference binds to nothing. It errors on
-// the references CH's fixed `\N` substitution cannot express.
+// [unresolvedGroup] when the reference binds to nothing. It errors on the
+// one reference shape no ClickHouse form can express.
+//
+// A group index above CH's `\9` ceiling is NOT such a shape: it is
+// returned like any other, and [ReplacementToCH] switches the whole
+// template to the ceiling-free `extractGroups` decomposition.
 func (g captureGroups) resolve(ref templateRef) (int, error) {
 	idx := unresolvedGroup
 	switch carriers := g.byName[ref.name]; {
@@ -161,76 +253,71 @@ func (g captureGroups) resolve(ref templateRef) (int, error) {
 		}
 	case len(carriers) > 1:
 		// Go's regexp permits several groups to share one name, and
-		// ExpandString then picks the first of them that TOOK PART in
-		// the row's match. That choice varies row by row; a CH `\N`
-		// backref is fixed when the SQL is built and cannot follow it.
+		// ExpandString then picks the first of them that TOOK PART in the
+		// row's match. Participation is not observable from SQL:
+		// `extractGroups` reports a group that did not participate and a
+		// group that matched the empty string identically, as `''`
+		// (verified against ClickHouse: `extractGroups('b', '^(a)|(b)$')`
+		// → `['', 'b']`, and `extractGroups('', '^(x?)$')` → `['']`). With
+		// the two indistinguishable there is no expression that reproduces
+		// Go's choice, so this stays a rejection.
 		return 0, fmt.Errorf(
 			"references capture-group name %q, which %d capture groups share — "+
-				"ClickHouse's `\\N` substitution cannot pick between them per row",
+				"which one contributes depends on the per-row match, "+
+				"and ClickHouse cannot observe which groups took part",
 			ref.name, len(carriers),
 		)
 	case len(carriers) == 1:
 		idx = carriers[0]
 	}
-	if idx > maxCHBackref {
-		return 0, fmt.Errorf(
-			"references capture group %d, above ClickHouse's `\\%d` substitution ceiling",
-			idx, maxCHBackref,
-		)
-	}
 	return idx, nil
 }
 
-// replacementStep handles a single dispatch step of ReplacementToCH at
-// offset `i` of `repl`. It writes the translated bytes to `b` and
-// returns the number of input bytes it consumed (always >= 1 on the
-// success path, so the outer loop always makes progress).
+// replacementStep handles a single dispatch step of
+// [ReplacementSegments] at offset `i` of `repl`. Literal text is appended
+// to `b`; a resolved capture reference is returned as its group index
+// (and [unresolvedGroup] otherwise, which covers both "this step was
+// literal text" and "this reference binds to nothing"). The second return
+// is the number of input bytes consumed — always >= 1 on the success
+// path, so the outer loop always makes progress.
 //
 // Splitting this out of the loop body keeps the per-iteration consumed
 // count observable in the caller's iterator clause, so the gremlins
 // INVERT_LOOPCTRL operator can't swap `continue` ↔ `break` and produce
 // an equivalent mutant — the dispatch keywords don't live in a `for`
 // scope at all here.
-func replacementStep(b *strings.Builder, repl string, i int, groups captureGroups) (int, error) {
+func replacementStep(b *strings.Builder, repl string, i int, groups captureGroups) (int, int, error) {
 	c := repl[i]
 	if c != '$' {
-		if c == '\\' {
-			// Double the literal backslash so CH reads it as a literal
-			// rather than as the start of a `\N` backref.
-			b.WriteString(`\\`)
-			return 1, nil
-		}
+		// Backslashes are kept verbatim here; each output form escapes
+		// them the way its own syntax requires.
 		b.WriteByte(c)
-		return 1, nil
+		return unresolvedGroup, 1, nil
 	}
 	// Lone `$` at end of string — ExpandString emits it verbatim.
 	if i+1 >= len(repl) {
 		b.WriteByte('$')
-		return 1, nil
+		return unresolvedGroup, 1, nil
 	}
 	if repl[i+1] == '$' {
 		// `$$` → literal `$`.
 		b.WriteByte('$')
-		return 2, nil
+		return unresolvedGroup, 2, nil
 	}
 	ref, ok := extractRef(repl[i+1:])
 	if !ok {
 		// Not a reference at all (`$-`, `${unclosed`) — ExpandString
 		// emits the `$` verbatim and resumes at the next byte.
 		b.WriteByte('$')
-		return 1, nil
+		return unresolvedGroup, 1, nil
 	}
 	idx, err := groups.resolve(ref)
 	if err != nil {
-		return 0, fmt.Errorf("replacement %q %w", repl, err)
-	}
-	if idx != unresolvedGroup {
-		b.WriteByte('\\')
-		b.WriteString(strconv.Itoa(idx))
+		return 0, 0, fmt.Errorf("replacement %q %w", repl, err)
 	}
 	// An unresolved reference binds to nothing; ExpandString substitutes
-	// the empty string for it, so there is nothing to write.
-	return 1 + ref.width, nil
+	// the empty string for it, so it contributes no segment either.
+	return idx, 1 + ref.width, nil
 }
 
 // templateRef is one `$…` reference split off the front of a Go
