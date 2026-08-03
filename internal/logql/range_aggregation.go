@@ -153,6 +153,13 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		// since RA is a plain column reference.
 		identityBase = &chplan.MapWithoutKeys{Map: labelsExpr, Keys: []string{e.Left.Unwrap.Identifier}}
 	}
+	// `| drop` / `| keep` narrow the series identity before it becomes a
+	// grouping key. On a log query the same projection runs post-fetch in
+	// Go; on a metric query it has to happen here, or two streams that
+	// differ only in a dropped label stay separate groups and the caller
+	// gets a split matrix Loki would have merged (issue #1491).
+	identityBase = narrowIdentityByProjection(identityBase, e.Left.Left)
+
 	// The grouping key is computed AGAINST identityBase — the full
 	// series identity (parser-merged labels minus the unwrap target
 	// when applicable) — not against the raw ResourceAttributes column.

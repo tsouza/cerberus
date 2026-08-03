@@ -129,6 +129,7 @@ test('the logql legs partition the package by exclude_files, one leg per file', 
   assert.deepEqual(names(select(['internal/logql/range_aggregation.go'])), ['phase4-logql-aggregation']);
   assert.deepEqual(names(select(['internal/logql/dotted_labels.go'])), ['phase4-logql-other-a']);
   // The catch-all leg owns everything no sibling names.
+  assert.deepEqual(names(select(['internal/logql/drop_keep.go'])), ['phase4-logql-other-b']);
   assert.deepEqual(names(select(['internal/logql/variants.go'])), ['phase4-logql-other-b']);
   assert.deepEqual(names(select(['internal/logql/logpattern/parse.go'])), ['phase4-logql-other-b']);
 });
