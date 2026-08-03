@@ -7,15 +7,14 @@
 // so a count can never silently drift. It is assert-from-source, NOT a pinned
 // literal (which would just relocate the staleness into a second place).
 //
-// Three assertions:
+// Four assertions:
 //
 //   1. forbid-skip CHECK count — the canonical number of discipline scans is
-//      the number of `case '<name>':` arms actually dispatched by the CHECK
-//      switch in .github/scripts/forbid-skip.mjs (today: t-skip,
-//      not-implemented, soft-assert, should-skip, escape-hatch,
-//      feature-discipline = 6). The gate
+//      the number of entries in the CHECKS registry in
+//      .github/scripts/forbid-skip.mjs (today: t-skip, soft-assert,
+//      should-skip, escape-hatch, feature-discipline = 5). The gate
 //      asserts every "N ... checks/scans/patterns" claim in
-//      docs/forbid-skip.md matches that live arm count.
+//      docs/forbid-skip.md matches that live registry size.
 //
 //   2. test-layer count — the canonical number of test layers is the count of
 //      DISTINCT integer layer numbers across the `### Layer N` subsection
@@ -32,6 +31,12 @@
 //      exactly one floor per head and that each matches the baseline, so
 //      bumping a floor cannot leave the explanation behind.
 //
+//   4. forbid-skip workflow callers — every `CHECK:` value any workflow hands
+//      forbid-skip.mjs must name a live registry entry (or `all`). A stale
+//      caller is not cosmetic drift: the invocation exits 1, and since the
+//      compatibility lane's `gate` is `needs:` for all three required
+//      compatibility heads, it reds every PR in the repository until fixed.
+//
 // Robustness: each count is parsed from the actual structure (switch arms /
 // markdown headings), never from a string match on the prose it validates, so
 // a doc edit can only make the gate go green by matching reality.
@@ -45,7 +50,7 @@
 // Exit codes: 0 = every doc count matches source, 1 = a drift was found (or a
 // self-test that should have failed did not).
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
@@ -61,22 +66,50 @@ const CLAUDE_DOC = join(REPO, 'CLAUDE.md');
 const README_DOC = join(REPO, 'README.md');
 const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
 const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline.json');
+const WORKFLOWS_DIR = join(REPO, '.github', 'workflows');
+
+// The dispatch mode that runs every registered scan; a legal CHECK value that is
+// deliberately not a registry entry. Mirrors `ALL` in forbid-skip.mjs.
+const FORBID_SKIP_ALL_MODE = 'all';
 
 // --- source-count derivations (the "from source" half) ---------------------
 
 // countForbidSkipChecks — the live number of discipline scans is the number of
-// `case '<name>':` arms in forbid-skip.mjs's CHECK switch. We parse the case
-// labels (not a hardcoded list) so adding/removing a scan moves the count
-// automatically. The trailing `default:` arm is the error path, not a scan.
+// entries in forbid-skip.mjs's CHECKS registry. We parse the registry keys (not
+// a hardcoded list) so adding/removing a scan moves the count automatically.
+// `all` is a dispatch mode over the registry, not an entry in it, so it does not
+// count.
 export function countForbidSkipChecks(src) {
   const names = [];
-  // Match `case 'name': {` — single-quoted string label arms only.
-  const re = /\bcase\s+'([a-z][a-z0-9-]*)'\s*:/g;
+  // Match a registry entry — `  'name': () => {` at the object's own indent.
+  const re = /^ {2}'([a-z][a-z0-9-]*)':\s*\(\)\s*=>\s*\{/gm;
   let m;
   while ((m = re.exec(src)) !== null) {
     names.push(m[1]);
   }
   return { count: names.length, names };
+}
+
+// forbidSkipCallers — every `CHECK: <value>` a workflow hands forbid-skip.mjs.
+// A caller naming a scan the registry does not define is a HARD error at runtime
+// (`unknown CHECK`), and because the compatibility lane's `gate` is `needs:` for
+// all three required compatibility heads, one stale caller reds every PR in the
+// repository. That is exactly how #1538's scan removal shipped: ci.yml dropped
+// its step, compatibility.yml kept a copy. Parsing the callers back out of the
+// YAML closes the loop — a removed scan now fails HERE, on the PR that removes
+// it, naming the file still asking for it.
+export function forbidSkipCallers(workflows) {
+  const callers = [];
+  // A `run: node .github/scripts/forbid-skip.mjs` step followed by its `env:`
+  // block; the CHECK value is the next `CHECK:` within that step.
+  const re = /forbid-skip\.mjs[^\n]*\n(?:[^\n]*\n){0,3}?\s*CHECK:\s*([a-z][a-z0-9-]*)/g;
+  for (const { path, name, src } of workflows) {
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      callers.push({ check: m[1], path, name });
+    }
+  }
+  return callers;
 }
 
 // countTestLayers — the live number of test layers is the count of DISTINCT
@@ -224,6 +257,47 @@ function assertParityFloors() {
   return ok;
 }
 
+// assertForbidSkipCallers checks every workflow `CHECK:` value against the live
+// registry. `all` is the dispatch-over-the-registry mode, so it is always valid;
+// anything else must name a registered scan.
+// `report` is the failure sink — the real run annotates via `error()`, the
+// self-test passes a no-op so proving the gate REJECTS a stale caller does not
+// post an ::error:: annotation on an otherwise-green job.
+export function assertForbidSkipCallers(names, callers, report = error) {
+  const known = new Set([...names, FORBID_SKIP_ALL_MODE]);
+  let ok = true;
+  for (const { check, name } of callers) {
+    if (!known.has(check)) {
+      report(
+        `forbid-skip-callers: ${name} passes CHECK="${check}", which forbid-skip.mjs ` +
+          `does not define (live scans: ${names.join(', ')}; plus "${FORBID_SKIP_ALL_MODE}"). ` +
+          `That invocation exits 1 at runtime — remove the step or point it at a live scan`,
+        { file: name },
+      );
+      ok = false;
+    }
+  }
+  if (callers.length === 0) {
+    report(
+      'forbid-skip-callers: found ZERO forbid-skip.mjs invocations across ' +
+        '.github/workflows — the discipline gate is not wired into CI at all',
+    );
+    ok = false;
+  }
+  return ok;
+}
+
+function readWorkflows() {
+  return readdirSync(WORKFLOWS_DIR)
+    .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
+    .sort()
+    .map((f) => ({
+      path: join(WORKFLOWS_DIR, f),
+      name: `.github/workflows/${f}`,
+      src: readFileSync(join(WORKFLOWS_DIR, f), 'utf8'),
+    }));
+}
+
 function runAssertions() {
   const forbidSrc = readFileSync(FORBID_SKIP_MJS, 'utf8');
   const { count: fsCount, names: fsNames } = countForbidSkipChecks(forbidSrc);
@@ -253,10 +327,18 @@ function runAssertions() {
 
   const parityOk = assertParityFloors();
 
-  if (forbidOk && layerOk && parityOk) {
+  const callers = forbidSkipCallers(readWorkflows());
+  log(
+    `forbid-skip workflow callers (live): ${callers.length} ` +
+      `[${callers.map((c) => `${c.name}:${c.check}`).join(', ')}]`,
+  );
+  const callersOk = assertForbidSkipCallers(fsNames, callers);
+
+  if (forbidOk && layerOk && parityOk && callersOk) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
-        `(forbid-skip=${fsCount}, test-layers=${layerCount}, parity floors match the baseline)`,
+        `(forbid-skip=${fsCount}, test-layers=${layerCount}, parity floors match the baseline, ` +
+        `${callers.length} workflow CHECK callers all name a live scan)`,
     );
     return 0;
   }
@@ -279,22 +361,56 @@ function selfTest() {
     }
   };
 
-  // 1. The deriver counts real switch arms, not the default error path.
+  // 1. The deriver counts real registry entries, not the dispatch machinery.
   const fakeForbid = [
-    'switch (CHECK) {',
-    "  case 'a': { break; }",
-    "  case 'b': { break; }",
-    "  case 'c': { break; }",
-    '  default: process.exit(1);',
-    '}',
+    'const CHECKS = {',
+    "  'a': () => { fail('a'); },",
+    "  'b': () => { fail('b'); },",
+    "  'c': () => { fail('c'); },",
+    '};',
+    "if (CHECK === ALL) { for (const [name, scan] of Object.entries(CHECKS)) { scan(); } }",
+    "else if (Object.hasOwn(CHECKS, CHECK)) { CHECKS[CHECK](); }",
   ].join('\n');
   const { count: fakeCount, names } = countForbidSkipChecks(fakeForbid);
-  check('forbid-skip deriver counts 3 arms from a 3-arm switch', fakeCount === 3);
-  check('forbid-skip deriver ignores the default arm', !names.includes('default'));
+  check('forbid-skip deriver counts 3 entries from a 3-entry registry', fakeCount === 3);
+  check('forbid-skip deriver ignores the all-mode dispatch', !names.includes(FORBID_SKIP_ALL_MODE));
 
   // The REAL forbid-skip.mjs must derive exactly 5 (not-implemented removed in #1538).
   const realForbid = readFileSync(FORBID_SKIP_MJS, 'utf8');
-  check('real forbid-skip.mjs derives 5 CHECK arms', countForbidSkipChecks(realForbid).count === 5);
+  check('real forbid-skip.mjs derives 5 CHECK scans', countForbidSkipChecks(realForbid).count === 5);
+
+  // 1b. A workflow caller naming a scan the registry does not define must be
+  // REJECTED — the #1538 failure mode, where compatibility.yml kept asking for
+  // a deleted scan and reded every PR's compatibility heads.
+  const staleWorkflow = [
+    {
+      path: 'fake',
+      name: '.github/workflows/fake.yml',
+      src: [
+        '      - name: Reject a deleted scan',
+        '        run: node .github/scripts/forbid-skip.mjs',
+        '        env:',
+        '          CHECK: not-implemented',
+      ].join('\n'),
+    },
+  ];
+  const staleCallers = forbidSkipCallers(staleWorkflow);
+  check(
+    'caller parser extracts CHECK from a workflow step',
+    staleCallers.length === 1 && staleCallers[0].check === 'not-implemented',
+  );
+  check(
+    'caller gate would REJECT a workflow asking for a deleted scan',
+    !assertForbidSkipCallers(['t-skip', 'soft-assert'], staleCallers, () => {}),
+  );
+  check(
+    'caller gate ACCEPTS the all-mode dispatch value',
+    assertForbidSkipCallers(
+      ['t-skip'],
+      [{ check: FORBID_SKIP_ALL_MODE, name: 'fake.yml' }],
+      () => {},
+    ),
+  );
 
   // 2. A doc that claims the WRONG forbid-skip count must be REJECTED.
   const draftDoc = 'The gate has **7** patterns total.';
