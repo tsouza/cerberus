@@ -2170,6 +2170,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "info_base_label_wins_over_info",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "info_data_label_matcher_drops_unmatched",
     "routed": false,
     "k": 0,
@@ -2177,6 +2187,36 @@
     "n_anchors": 241,
     "fanout": 20,
     "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "info_ignore_split_unpinned_base",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "15m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "info_ignores_base_info_series",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "info_ignores_base_info_series_multi_metric",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
     "outer_range": "1h0m0s"
   },
   {

@@ -22,6 +22,7 @@ import (
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
@@ -1015,6 +1016,20 @@ func classifyEngineError(err error) error {
 			return &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 		case "lower":
 			return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+		}
+	}
+	// A `throwIf` the emitter planted deliberately is a fault in the
+	// QUERY, not in the backend. info()'s conflicting-label abort is the
+	// reference engine's own execution error, so it lands where upstream
+	// puts it — 422 errorType=execution — rather than in the 502 bucket
+	// every other ClickHouse execute failure falls into. The message is
+	// restated rather than forwarded so the client reads the PromQL-level
+	// reason instead of a ClickHouse stack frame.
+	if chsql.IsInfoConflictingLabelError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.InfoConflictingLabelMessage),
+			Status: http.StatusUnprocessableEntity,
 		}
 	}
 	msg := err.Error()
