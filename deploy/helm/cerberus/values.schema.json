@@ -59,8 +59,8 @@
             "connMaxLifetime": { "type": "string" }
           }
         },
-        "password": { "type": "string" },
-        "existingSecret": { "type": "string" },
+        "password": { "type": ["string", "null"] },
+        "existingSecret": { "type": ["string", "null"] },
         "passwordKey": { "type": "string" },
         "tls": {
           "type": "object",
