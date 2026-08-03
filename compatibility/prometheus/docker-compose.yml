@@ -8,11 +8,11 @@
 #
 # Seeding is no longer a compose service — the fixture is loaded by
 # `go run ./compatibility/prometheus/cmd/seed/` invoked from
-# scripts/run-compatibility.sh. The seeder reuses internal/schema/ddl so
+# scripts/run-prometheus-compatibility.sh. The seeder reuses internal/schema/ddl so
 # the harness schema can't drift from cerberus's own DDL.
 #
 # Usage:
-#   ./scripts/run-compatibility.sh
+#   ./scripts/run-prometheus-compatibility.sh
 # or:
 #   docker compose up --wait
 #   go run ./compatibility/prometheus/cmd/seed/
@@ -21,7 +21,7 @@
 
 # Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,
 # so two checkouts don't share one stack. See scripts/compose-project-suffix.sh.
-name: cerberus-compatibility${COMPOSE_PROJECT_SUFFIX:-}
+name: cerberus-prometheus-compatibility${COMPOSE_PROJECT_SUFFIX:-}
 
 services:
   clickhouse:

@@ -235,7 +235,7 @@ jobs:
           fetch-depth: 0
 
       # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
-      # run-compatibility.sh does `docker compose up -d --build` for CH +
+      # run-prometheus-compatibility.sh does `docker compose up -d --build` for CH +
       # reference Prometheus + a freshly-built cerberus. The build layers +
       # CH data exhaust bone-stock ubuntu-latest's ~14 GB free root fs,
       # surfacing as "no space left on device" / unhealthy-container compose
@@ -299,7 +299,7 @@ jobs:
           # compatibility/prometheus/cmd/seed/main.go).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-        run: ./compatibility/prometheus/scripts/run-compatibility.sh
+        run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
       - name: Summarise report
         if: always()
@@ -492,7 +492,7 @@ jobs:
         id: compat
         # CERBERUS_EVAL_ROUTE=sharded is interpolated into the cerberus
         # container's environment by docker-compose.yml; FAIL_ON_DIFF=1
-        # makes run-compatibility.sh re-raise ANY parity diff. Same seed
+        # makes run-prometheus-compatibility.sh re-raise ANY parity diff. Same seed
         # window + tester knobs as the standard prometheus job so the only
         # variable under test is the routing mode.
         env:
@@ -500,7 +500,7 @@ jobs:
           TESTER_RANGE: "3600"
           CERBERUS_EVAL_ROUTE: "sharded"
           FAIL_ON_DIFF: "1"
-        run: ./compatibility/prometheus/scripts/run-compatibility.sh
+        run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
       - name: Summarise report
         if: always()
