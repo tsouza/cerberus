@@ -71,3 +71,26 @@ test('a link to the deprecations page in ordinary prose is not a false negative 
   // cost of being wrong is a visible red rather than a silent pass.
   assert.equal(deprecationsIn('  • see https://goreleaser.com/deprecations for details').length, 1);
 });
+
+test('a per-feature deprecations anchor is matched by the URL marker ALONE', () => {
+  // Every other case in this file pairs the real `#<feature>`-anchored URL
+  // goreleaser actually emits with "phased out" or "DEPRECATED" wording on
+  // the same line, so a URL-marker regression that stops matching
+  // `.../deprecations#brews` (anything requiring whitespace or closing
+  // punctuation immediately after "deprecations", which the fragment
+  // preempts) would still pass every one of them via the OTHER marker,
+  // masking exactly the class of miss this gate exists to catch. This line
+  // carries neither wording, so only the URL regex can detect it.
+  const line = '  • see https://goreleaser.com/deprecations#brews for more info';
+  assert.equal(deprecationsIn(line).length, 1, `URL-only marker did not match a real fragment-anchored URL: ${line}`);
+});
+
+test('the URL marker requires an actual http(s) scheme, not a bare-domain substring', () => {
+  // CodeQL js/regex/missing-regexp-anchor: the unanchored form matched
+  // "goreleaser.com/deprecations" as a substring of ANY string containing
+  // it, including a different domain like "evilgoreleaser.com/deprecations"
+  // or a path fragment with no scheme at all. Requiring the scheme + a
+  // word-boundary-ish start is the actual fix; this line has neither the
+  // scheme nor the other two wordings, so it must NOT match.
+  assert.deepEqual(deprecationsIn('  • see evilgoreleaser.com/deprecations for unrelated details'), []);
+});
