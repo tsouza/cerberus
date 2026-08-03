@@ -28,7 +28,7 @@
 # fix at the source.
 #
 # Usage:
-#   ./compatibility/prometheus/scripts/run-compatibility.sh        full lifecycle
+#   ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh        full lifecycle
 #   COMPOSE_KEEP=1 ./...                                 leave stack up after run
 #
 # Env:

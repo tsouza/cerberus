@@ -119,12 +119,12 @@ type phiArg struct {
 //
 //   - Filter the histogram-table Scan to the rate's time window.
 //
-//   - `sumForEach(BucketCounts)` element-wise across rows in the user's
-//     by/without group (the `le` label is implicit in the array
-//     position and is dropped from the by-clause silently).
-//
-//   - `any(ExplicitBounds)` — picking one representative bounds array
-//     (every row of the same metric in OTel-CH carries the same bounds).
+//   - Collect every in-window row's `ExplicitBounds` × `BucketCounts`
+//     pair per by/without group (the `le` label is implicit in the array
+//     position and is dropped from the by-clause silently), then merge
+//     them over the UNION of their bounds in the cumulative per-`le`
+//     domain, reducing each rung with the aggregation's fold — see
+//     classicBucketMergedLadderExpr and classicBucketLadderFold.
 //
 // The native (exp-histogram) path requires a bare VectorSelector; the
 // `rate(...)`-wrapped idiom is not modelled on the native side.
@@ -171,7 +171,18 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// shapes whose underlying terminal is a bare VectorSelector; anything
 	// else falls through to today's bare-selector path (which still emits
 	// the existing error message if the shape isn't recognised).
-	if shape, ok := matchHistogramAggIdiom(c.Args[1]); ok && histogramAggShapeLowerable(shape, s) {
+	shape, matched := matchHistogramAggIdiom(c.Args[1])
+	if matched {
+		// The per-`le` rung fold is resolved here rather than in the
+		// matcher because `quantile`'s parameter may be a computed
+		// scalar, which needs the schema + lowering context.
+		fold, err := classicBucketLadderFold(shape.agg, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		shape.classicFold = fold
+	}
+	if matched && histogramAggShapeLowerable(shape, s) {
 		if s.IsExpHistogramMetric(shape.selector.Name) {
 			// Range mode: fan the exp-histogram merge + quantile
 			// interpolation across the request's step grid, or — under an
@@ -460,10 +471,12 @@ type histogramAggShape struct {
 	windowFn string
 	agg      *parser.AggregateExpr
 	// classicFold is the per-`le` rung reduction the classic-histogram
-	// paths apply, resolved from `agg`'s operator (SUM when `agg` is
-	// nil — a bare `rate(...)` still folds every in-window row of a
-	// series into one ladder). nil means no classic lowering exists for
-	// that operator; see classicBucketLadderFold.
+	// paths apply, resolved from `agg` by classicBucketLadderFold (SUM
+	// when `agg` is nil — a bare `rate(...)` still folds every in-window
+	// row of a series into one ladder). nil means no classic lowering
+	// exists for that operator. The matcher leaves this unset; the
+	// dispatcher fills it, because resolving `quantile`'s parameter needs
+	// the schema + lowering context the matcher does not have.
 	classicFold classicBucketRungFold
 }
 
@@ -501,18 +514,19 @@ func (shape histogramAggShape) minSamples() int {
 //   - sum without(...) (rate(metric_bucket[5m]))
 //   - avg without(...) (increase(metric_bucket[5m]))
 //
-//   - min / max / count / group / stddev / stdvar in place of sum / avg
-//     (classic histograms only — see classicBucketLadderFold)
+//   - min / max / count / group / stddev / stdvar / quantile in place of
+//     sum / avg (classic histograms only — see classicBucketLadderFold)
 //
 // Anything else returns ok=false and the caller falls through to the
-// bare-selector path. Specifically rejected: PARAMETERISED aggregations
-// (`topk` / `bottomk` / `quantile` / `count_values`), which select or
-// re-label series rather than reduce each group to one value and so have
-// no per-`le` rung reduction; range-vector functions other than rate /
-// increase / sum_over_time; deeper nestings (e.g. `sum(sum(...))`).
+// bare-selector path: range-vector functions other than rate / increase /
+// sum_over_time, and deeper nestings (e.g. `sum(sum(...))`).
 //
-// A matched shape still has to be LOWERABLE for the metric's histogram
-// flavour — see histogramAggShapeLowerable, which the dispatcher applies.
+// WHICH aggregation operators lower is deliberately not decided here.
+// The matcher captures any aggregation wrapper; classicBucketLadderFold
+// answers whether that operator has a per-`le` rung reduction, and
+// histogramAggShapeLowerable combines that with the metric's histogram
+// flavour. Keeping the operator table in one place is what let `quantile`
+// join the set without a second gate to update.
 
 // classicBucketRungFold reduces one `le` rung's per-row cumulative counts
 // into the group's rung for that bound. `rungs` is an Array expression
@@ -538,12 +552,19 @@ const promGroupSampleValue = 1.0
 // domain has no such restriction because the ladder is built BEFORE the
 // reduction. See classicBucketMergedLadderExpr for that construction.
 //
-// Absent by construction: `topk` / `bottomk` / `quantile` /
-// `count_values` all carry a parameter and are rejected in
-// matchHistogramAggIdiom — they select series or mint labels rather than
-// reduce a group to one value per rung, so no entry here could express
-// them.
-func classicBucketLadderFold(op parser.ItemType) classicBucketRungFold {
+// `quantile(phi, ...)` is the one PARAMETERISED aggregation with an
+// entry: it reduces each `le` group to a single value exactly as `min` /
+// `stddev` do, so it folds a rung like any other reducer — see
+// promQuantileRungFold. The other three (`topk` / `bottomk` /
+// `count_values`) have no entry because they are not reductions at all:
+// `topk` / `bottomk` SELECT a subset of the input series and keep their
+// full label sets, and `count_values` MINTS a label whose values are
+// sample values. Neither collapses an `le` group to one value per rung,
+// so no fold could express them; they are tracked in #1626.
+//
+// A nil result means "no classic lowering for this operator", which
+// histogramAggShapeLowerable turns into the empty fold.
+func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (classicBucketRungFold, error) {
 	arrayFold := func(name string) classicBucketRungFold {
 		return func(rungs chplan.Expr) chplan.Expr {
 			return &chplan.FuncCall{Name: name, Args: []chplan.Expr{rungs}}
@@ -557,32 +578,175 @@ func classicBucketLadderFold(op parser.ItemType) classicBucketRungFold {
 			}
 		}
 	}
-	switch op {
+	if agg == nil {
+		// A bare `rate(...)` with no aggregation wrapper still folds every
+		// in-window row of a series into one ladder, and summing is what
+		// that window collapse means.
+		return arrayFold("arraySum"), nil
+	}
+	switch agg.Op {
 	case parser.SUM:
-		return arrayFold("arraySum")
+		return arrayFold("arraySum"), nil
 	case parser.AVG:
-		return arrayFold("arrayAvg")
+		return arrayFold("arrayAvg"), nil
 	case parser.MIN:
-		return arrayFold("arrayMin")
+		return arrayFold("arrayMin"), nil
 	case parser.MAX:
-		return arrayFold("arrayMax")
+		return arrayFold("arrayMax"), nil
 	case parser.COUNT:
 		// Prom's `count` is the number of contributing series at that
 		// `le`; here it is the number of contributing ROWS, the same
 		// window model every other fold on this path uses.
-		return arrayFold("length")
+		return arrayFold("length"), nil
 	case parser.GROUP:
 		return func(chplan.Expr) chplan.Expr {
 			return &chplan.LitFloat{V: promGroupSampleValue}
-		}
+		}, nil
 	case parser.STDDEV:
 		// Prom's stddev / stdvar are POPULATION statistics over the
 		// group's samples (promql/engine.go), so stddevPop / varPop.
-		return reduceFold("stddevPop")
+		return reduceFold("stddevPop"), nil
 	case parser.STDVAR:
-		return reduceFold("varPop")
+		return reduceFold("varPop"), nil
+	case parser.QUANTILE:
+		phi, err := lowerQuantileParamArg(agg.Param, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return promQuantileRungFold(phi), nil
 	}
-	return nil
+	return nil, nil
+}
+
+// lowerQuantileParamArg resolves `quantile(<param>, ...)`'s scalar
+// parameter into the plan expression the rung fold interpolates with:
+// a folded literal for the common `quantile(0.9, ...)` form, otherwise
+// the scalar-subquery expression lowerScalarArg builds for a computed
+// parameter (`quantile(scalar(x), ...)`). Mirrors how the phi argument of
+// histogram_quantile itself is resolved — see phiArg.
+func lowerQuantileParamArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr, error) {
+	if lit, ok := tryScalarLiteral(e); ok {
+		return &chplan.LitFloat{V: lit}, nil
+	}
+	return lowerScalarArg(e, s, ctx)
+}
+
+// promQuantileRungFold folds one `le` rung with PromQL's `quantile`
+// aggregation — a transcription of prometheus/promql/quantile.go's
+// `quantile()` helper, which is exact linear interpolation between the
+// two order statistics straddling `phi * (n - 1)`:
+//
+//	sort(rungs); rank := phi * (n - 1)
+//	lo := floor(rank); hi := min(n - 1, lo + 1); w := rank - lo
+//	rungs[lo] * (1 - w) + rungs[hi] * w
+//
+// Transcribed rather than delegated to ClickHouse's `quantile(phi)`
+// aggregate because that one is an APPROXIMATE reservoir-sampling
+// estimator (non-deterministic above 8192 samples), while this fold's
+// result feeds bucket interpolation that reads the RATIOS between rungs —
+// so an estimator's error moves the answer. The arithmetic here is
+// exact for any rung count.
+//
+// A rung array is never empty (a union bound exists because at least one
+// row's layout carries it, and the +Inf rung folds over every row), so
+// upstream's `len(values) == 0 → NaN` guard has no reachable counterpart.
+// An out-of-domain phi is not interpolated at all: PromQL replaces the
+// aggregation's value with NaN / ±Inf, so every rung of the ladder
+// carries that constant. A literal phi resolves that at lowering time; a
+// computed one resolves it at runtime, pairing the sentinel-clamped
+// parameter with the matching output guard exactly as the generic
+// `quantile` aggregation lowering does.
+func promQuantileRungFold(phi chplan.Expr) classicBucketRungFold {
+	if lit, ok := phi.(*chplan.LitFloat); ok {
+		if infValue, outOfRange := outOfRangePhiInf(lit.V); outOfRange {
+			return func(chplan.Expr) chplan.Expr {
+				return &chplan.LitFloat{V: infValue}
+			}
+		}
+		return promQuantileInterpolateFold(phi)
+	}
+	return func(rungs chplan.Expr) chplan.Expr {
+		return outOfRangePhiGuardExpr(
+			phi,
+			promQuantileInterpolateFold(sanitizedPhiParamExpr(phi))(rungs),
+		)
+	}
+}
+
+// promQuantileInterpolateFold is the interpolation itself, for a phi
+// already known to be in [0, 1].
+func promQuantileInterpolateFold(phi chplan.Expr) classicBucketRungFold {
+	return func(rungs chplan.Expr) chplan.Expr {
+		sorted := chplan.Expr(&chplan.BareIdent{Name: paramSortedRungs})
+		rank := chplan.Expr(&chplan.BareIdent{Name: paramQuantileRank})
+		lastIdx := subExpr(toFloat64Expr(&chplan.FuncCall{
+			Name: "length", Args: []chplan.Expr{sorted},
+		}), &chplan.LitInt{V: 1})
+
+		lo := &chplan.FuncCall{Name: "floor", Args: []chplan.Expr{rank}}
+		hi := &chplan.FuncCall{Name: "least", Args: []chplan.Expr{
+			lastIdx, addExpr(lo, &chplan.LitInt{V: 1}),
+		}}
+		weight := subExpr(rank, lo)
+
+		interpolated := addExpr(
+			mulExpr(rungAt(sorted, lo), subExpr(&chplan.LitInt{V: 1}, weight)),
+			mulExpr(rungAt(sorted, hi), weight),
+		)
+
+		// `phi` is bound once inside the rank, and the sorted array once
+		// by the outer binding, so neither the (possibly subquery-valued)
+		// parameter nor the rung array is re-evaluated per reference.
+		return bindOnce(
+			paramSortedRungs,
+			&chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{rungs}},
+			bindOnce(paramQuantileRank, mulExpr(phi, lastIdx), interpolated),
+		)
+	}
+}
+
+// rungAt indexes a sorted rung array by a zero-based float position,
+// converting to ClickHouse's one-based integer subscript.
+func rungAt(sorted, idx chplan.Expr) chplan.Expr {
+	return &chplan.Subscript{
+		Container: sorted,
+		Key: addExpr(
+			&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{idx}},
+			&chplan.LitInt{V: 1},
+		),
+	}
+}
+
+// bindOnce binds `value` to the lambda parameter `name` for the duration
+// of `body`, so a sub-expression referenced several times is evaluated
+// once. ClickHouse has no `let`, and repeating a rung array (itself an
+// arrayFilter over an arrayMap) per reference would both bloat the SQL
+// and re-run the filter — `arrayMap(<name> -> body, array(value))[1]` is
+// the single-element-array idiom that stands in for one.
+func bindOnce(name string, value, body chplan.Expr) chplan.Expr {
+	return &chplan.Subscript{
+		Container: &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{name}, Body: body},
+			&chplan.FuncCall{Name: "array", Args: []chplan.Expr{value}},
+		}},
+		Key: &chplan.LitInt{V: 1},
+	}
+}
+
+func addExpr(l, r chplan.Expr) chplan.Expr {
+	return &chplan.Binary{Op: chplan.OpAdd, Left: l, Right: r}
+}
+
+func subExpr(l, r chplan.Expr) chplan.Expr {
+	return &chplan.Binary{Op: chplan.OpSub, Left: l, Right: r}
+}
+
+func mulExpr(l, r chplan.Expr) chplan.Expr {
+	return &chplan.Binary{Op: chplan.OpMul, Left: l, Right: r}
+}
+
+func toFloat64Expr(e chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{e}}
 }
 
 // expHistogramAggOpIsMergeable reports whether a PromQL aggregation over
@@ -610,26 +774,12 @@ func histogramAggShapeLowerable(shape histogramAggShape, s schema.Metrics) bool 
 func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 	e = peelWrappers(e)
 
-	// Try an outer aggregation wrapper.
+	// Try an outer aggregation wrapper. Which operators actually have a
+	// classic-histogram lowering is decided by classicBucketLadderFold,
+	// not here — this walker only captures the shape.
 	var agg *parser.AggregateExpr
-	// A bare `rate(...)` with no aggregation wrapper still folds every
-	// in-window row of a series into one ladder, and summing is what that
-	// window collapse means — so the fold defaults to SUM.
-	foldOp := parser.ItemType(parser.SUM)
 	if a, ok := e.(*parser.AggregateExpr); ok {
-		if a.Param != nil {
-			// Parameterised aggregation (`quantile` / `topk` /
-			// `bottomk` / `count_values`). `quantile` is a genuine
-			// per-group reducer and would fit the rung fold below;
-			// `topk` / `bottomk` are selectors that keep their input
-			// series' full label sets, and `count_values` mints a new
-			// label — neither collapses an `le` group to one value, so
-			// the fold has no shape for them. All four are tracked in
-			// #1590.
-			return histogramAggShape{}, false
-		}
 		agg = a
-		foldOp = a.Op
 		e = peelWrappers(a.Expr)
 	}
 
@@ -670,7 +820,6 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 		windowRange: ms.Range,
 		windowFn:    call.Func.Name,
 		agg:         agg,
-		classicFold: classicBucketLadderFold(foldOp),
 	}, true
 }
 
@@ -837,6 +986,11 @@ const (
 	paramRowCum      = "v"
 	paramRowLayout   = "pbs"
 	paramLadderIdx   = "i"
+	// paramSortedRungs / paramQuantileRank are promQuantileRungFold's
+	// single-evaluation bindings: one rung group sorted ascending, and
+	// the interpolation rank `phi * (n - 1)` over it.
+	paramSortedRungs  = "qs"
+	paramQuantileRank = "qr"
 )
 
 // classicBucketShaping bundles a classic-histogram group's bucket

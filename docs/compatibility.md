@@ -293,7 +293,7 @@ protecting.
 
 The `compatibility/prometheus-forced-route` lane additionally
 **hard-fails on any parity diff** (`FAIL_ON_DIFF=1` in
-`run-compatibility.sh`) as the corpus-wide proof that the sharded solver
+`run-prometheus-compatibility.sh`) as the corpus-wide proof that the sharded solver
 route is byte-identical to reference Prometheus; it is a required check, so
 every non-docs-only PR is gated on the full forced-route corpus run.
 

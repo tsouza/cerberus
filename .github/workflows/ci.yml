@@ -798,6 +798,15 @@ jobs:
       - name: Assert the parity baseline updater writes a gateable roster
         run: node --test .github/scripts/compat-baseline-sync.test.mjs
 
+      # Discipline gate for the typed chsql API rule: no raw SQL token writes
+      # outside the Frag-constructor layer in builder.go. Automated enforcement
+      # of the "CI can't catch this" manual-grep in CLAUDE.md — it CAN catch
+      # the token-writing primitives (strings.Builder, sb.Write*, writeSQL);
+      # only the semantic shape (whether a valid Frag could replace the write)
+      # requires reviewer judgement. See #1441.
+      - name: Reject raw SQL writes outside the chsql Frag layer
+        run: node .github/scripts/forbid-sql-raw.mjs
+
   # `forbid-deferral` used to live here. It moved to its own workflow file,
   # `.github/workflows/forbid-deferral.yml`, because one of its three surfaces
   # is the PR DESCRIPTION and this workflow's bare `pull_request:` trigger does
