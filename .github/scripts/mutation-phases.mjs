@@ -169,7 +169,7 @@ export const PHASES = [
     // Mutate only lower.go (~50 KB, the package's largest source file).
     // Excludes every other logql source plus the lsyntax subtree.
     exclude_files:
-      '^lsyntax/|(binary|detected_level|dotted_labels|drop_keep|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
+      '^lsyntax/|^(binary|detected_level|dotted_labels|drop_keep|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
   },
   {
     phase: 'phase4-logql-aggregation',
@@ -178,7 +178,7 @@ export const PHASES = [
     workers: SERIAL_WORKERS,
     // Mutate range_aggregation.go + vector_aggregation.go + lang.go (~54 KB).
     exclude_files:
-      '^lsyntax/|(binary|detected_level|dotted_labels|drop_keep|literal|label_fns|top_level_columns|lower)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
+      '^lsyntax/|^(binary|detected_level|dotted_labels|drop_keep|literal|label_fns|top_level_columns|lower)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
   },
   {
     phase: 'phase4-logql-other-a',
@@ -187,7 +187,7 @@ export const PHASES = [
     workers: SERIAL_WORKERS,
     // Mutate binary.go + detected_level.go + dotted_labels.go (~21 KB).
     exclude_files:
-      '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|drop_keep|literal|label_fns|top_level_columns)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
+      '^lsyntax/|^(lower|range_aggregation|vector_aggregation|lang|drop_keep|literal|label_fns|top_level_columns)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
   },
   {
     phase: 'phase4-logql-other-b',
@@ -201,7 +201,7 @@ export const PHASES = [
     // edit here — it is picked up automatically, which is why this leg keeps no
     // positive file list to fall out of sync.
     exclude_files:
-      '^lsyntax/|(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\\.go$',
+      '^lsyntax/|^(lower|range_aggregation|vector_aggregation|lang|binary|detected_level|dotted_labels)\\.go$',
   },
   {
     phase: 'phase4-logql-parser',
