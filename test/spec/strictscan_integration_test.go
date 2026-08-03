@@ -54,11 +54,10 @@
 // lane has no round-trip fixtures. Args are taken verbatim from each fixture's
 // `-- args --` block, so no synthetic placeholder binding is needed.
 //
-// Gated by the `integration` build tag (Docker required); INFORMATIONAL — wired
-// on pull_request + push but NOT a required status check (see
-// .github/workflows/strict-scan.yml). Promote to required once it has a green
-// track record, the same playbook the compatibility + schema-integration gates
-// used.
+// Gated by the `integration` build tag (Docker required). A REQUIRED status
+// check on `main` (see .github/workflows/strict-scan.yml) — promoted after
+// establishing a green track record, the same playbook the compatibility +
+// schema-integration gates used.
 package spec_test
 
 import (
