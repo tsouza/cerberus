@@ -660,6 +660,16 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "logql/label_replace_backref_above_ch_ceiling",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "logql/label_replace_basic",
     "fan_factor": 1,
     "scan_rows": 3,
@@ -4051,6 +4061,16 @@
   },
   {
     "fixture": "promql/label_join_with_separator",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/label_replace_backref_above_ch_ceiling",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
