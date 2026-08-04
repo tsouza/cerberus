@@ -72,19 +72,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
-	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chsql"
-	"github.com/tsouza/cerberus/internal/schema"
-	traceqllower "github.com/tsouza/cerberus/internal/traceql"
-	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
 	"github.com/tsouza/cerberus/test/spec"
 )
 
@@ -240,14 +234,6 @@ func runStrictScanCase(ctx context.Context, t *testing.T, client *chclient.Clien
 	return caseRan
 }
 
-// traceqlSearchExplainStep is passed to tempo.NewExplainLang but never
-// actually exercised: traceqlWrapForStrictScan only calls lang.Parse for
-// fixtures whose query is NOT a metrics pipeline, so explainLang.Parse always
-// takes its non-metrics branch, which ignores step. Kept a nonzero,
-// human-legible value only to satisfy NewExplainLang's documented "must be
-// > 0" contract defensively.
-const traceqlSearchExplainStep = time.Minute
-
 // traceqlWrapForStrictScan reconstructs the wrap-projected SQL production
 // actually sends to ClickHouse for a TraceQL round-trip fixture's
 // search-shaped plan, and substitutes it into rt in place (rt.SQL, rt.Args) —
@@ -261,75 +247,25 @@ const traceqlSearchExplainStep = time.Minute
 // silently skipping the whole differential for this shape) or, worse, would
 // strict-scan SQL nobody sends.
 //
-// Reconstruction mirrors /api/search's own Lang exactly: tempo.NewExplainLang
-// embeds the SAME unexported traceqlLang the handler drives (see
-// internal/api/tempo/explain.go's doc comment), so Parse + ProjectSamples
-// here are byte-for-byte what engine.QueryPlan would run for this query.
-//
-// Metrics-pipeline queries (`| rate()`, `| count_over_time() by (...)`, …)
-// are left untouched — rt is not modified — because they never reach
-// traceqlLang in production: /api/metrics/query_range routes them through
-// the entirely separate metricsLang (internal/api/tempo/metrics_query_range.go),
-// whose own hand-rolled wrap this fixture corpus does not represent even
-// after reconstruction. Wrapping them via wrapWithSampleProjection's
-// isAggregateShape branch here would exercise a plan/wrap combination no
-// real request ever produces; they keep going through runStrictScanCase with
-// their original (pre-wrap) SQL, which — as today — gets classified
-// caseNonMatrix.
+// The reconstruction itself lives in the build-tag-free
+// spec.ReconstructTraceQLSearchWrap, shared with the chDB round-trip lane's
+// RunRoundTrip (issue #1653) so there is exactly one wrap-reconstruction
+// path for both consumers. Metrics-pipeline queries (`| rate()`,
+// `| count_over_time() by (...)`, …) are left untouched — rt is not
+// modified — because they never reach traceqlLang in production (see
+// spec.ReconstructTraceQLSearchWrap's doc comment); they keep going through
+// runStrictScanCase with their original (pre-wrap) SQL, which — as today —
+// gets classified caseNonMatrix.
 func traceqlWrapForStrictScan(t *testing.T, c *spec.Case, rt *spec.RoundTripSections) {
 	t.Helper()
 
-	query, hasQuery := c.Section("query.traceql")
-	if !hasQuery {
-		t.Fatalf("fixture %s: traceql round-trip fixture missing query.traceql section", c.Name)
-	}
-	query = strings.TrimSpace(query)
-
-	expr, err := traceqlast.Parse(query)
+	sqlStr, args, ok, err := spec.ReconstructTraceQLSearchWrap(c)
 	if err != nil {
-		t.Fatalf("fixture %s: traceql parse: %v", c.Name, err)
+		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
-	if expr.MetricsPipeline != nil || expr.MetricsSecondStage != nil {
+	if !ok {
 		return
 	}
-
-	// Thread the fixture's optional search_limit / search_window sections
-	// the same way internal/traceql/lower_test.go does, so the reconstructed
-	// plan pins the same bounded-scan shape the fixture's `-- chplan --` /
-	// `-- sql --` sections were generated (and are still checked) against.
-	ctx := context.Background()
-	if v, hasLimit := c.Section("search_limit"); hasLimit {
-		n, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			t.Fatalf("fixture %s: bad search_limit %q: %v", c.Name, v, err)
-		}
-		ctx = traceqllower.WithSearchTraceLimit(ctx, n)
-	}
-	if v, hasWindow := c.Section("search_window"); hasWindow {
-		fields := strings.Fields(v)
-		if len(fields) != 2 {
-			t.Fatalf("fixture %s: search_window wants two Unix-second bounds, got %q", c.Name, v)
-		}
-		startSec, err1 := strconv.ParseInt(fields[0], 10, 64)
-		endSec, err2 := strconv.ParseInt(fields[1], 10, 64)
-		if err1 != nil || err2 != nil {
-			t.Fatalf("fixture %s: bad search_window %q", c.Name, v)
-		}
-		ctx = traceqllower.WithSearchWindow(ctx, time.Unix(startSec, 0).UTC(), time.Unix(endSec, 0).UTC())
-	}
-
-	lang := tempo.NewExplainLang(schema.DefaultOTelTraces(), traceqlSearchExplainStep)
-	plan, meta, err := lang.Parse(ctx, query)
-	if err != nil {
-		t.Fatalf("fixture %s: traceql lower (wrap reconstruction): %v", c.Name, err)
-	}
-	wrapped := lang.ProjectSamples(plan, meta)
-
-	sqlStr, args, err := chsql.Emit(context.Background(), wrapped)
-	if err != nil {
-		t.Fatalf("fixture %s: chsql.Emit(wrapped): %v", c.Name, err)
-	}
-
 	rt.SQL = sqlStr
 	rt.Args = args
 }

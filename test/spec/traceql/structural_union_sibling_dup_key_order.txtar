@@ -32,8 +32,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName, ResourceAttrib
     ('t1', 's3', 's1', 'b',      map('job', 'api', 'dc', 'eu'));
 -- expected_rows --
 [
-  ["t1", "s2", "s1", "a", 0, 0, {"dc": "eu", "job": "api"}, {}, "", "", "", "", ""],
-  ["t1", "s3", "s1", "b", 0, 0, {"dc": "eu", "job": "api"}, {}, "", "", "", "", ""]
+  ["a", {"__cerberus_parentSpanID": "s1", "__cerberus_spanID": "s2", "__cerberus_traceID": "t1", "dc": "eu", "job": "api"}, "1970-01-01T00:00:00Z", 0],
+  ["b", {"__cerberus_parentSpanID": "s1", "__cerberus_spanID": "s3", "__cerberus_traceID": "t1", "dc": "eu", "job": "api"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- args --
 [0] string = "a"

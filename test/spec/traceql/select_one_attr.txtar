@@ -19,7 +19,7 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('http.method', 'POST'), map('service.name', 'backend'));
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "GET"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_sel_str_http.method": "GET", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Project [TraceId, SpanId, Timestamp, SpanAttributes["http.method"] AS http.method]

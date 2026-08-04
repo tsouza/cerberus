@@ -15,8 +15,8 @@ INSERT INTO otel_traces (SpanId) VALUES
     ('cccc');
 -- expected_rows --
 [
-  ["aaaa"],
-  ["cccc"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": "", "service.name": "checkout"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": "", "service.name": "checkout"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=mapContains(ResourceAttributes, "service.name")

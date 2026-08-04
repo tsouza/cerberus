@@ -55,10 +55,10 @@ INSERT INTO otel_traces VALUES
     ('d0000000000000000000000000000001', '4000000000000002', '4000000000000001', 'child', 'Server', 50, toDateTime64('2026-01-01 00:00:03.000000002', 9), 'Unset', '', '', '', map(), map());
 -- expected_rows --
 [
-  ["c0000000000000000000000000000001", "3000000000000001", "2026-01-01T00:00:02.000000001Z", -1, 1, 4],
-  ["c0000000000000000000000000000001", "3000000000000002", "2026-01-01T00:00:02.000000002Z", 1, 2, 3],
-  ["d0000000000000000000000000000001", "4000000000000001", "2026-01-01T00:00:03.000000001Z", -1, 1, 4],
-  ["d0000000000000000000000000000001", "4000000000000002", "2026-01-01T00:00:03.000000002Z", 1, 2, 3]
+  ["child", {"__cerberus_parentSpanID": "3000000000000001", "__cerberus_sel_int_nestedSetLeft": "2", "__cerberus_sel_int_nestedSetParent": "1", "__cerberus_sel_int_nestedSetRight": "3", "__cerberus_spanID": "3000000000000002", "__cerberus_traceID": "c0000000000000000000000000000001"}, "2026-01-01T00:00:02.000000002Z", 50],
+  ["child", {"__cerberus_parentSpanID": "4000000000000001", "__cerberus_sel_int_nestedSetLeft": "2", "__cerberus_sel_int_nestedSetParent": "1", "__cerberus_sel_int_nestedSetRight": "3", "__cerberus_spanID": "4000000000000002", "__cerberus_traceID": "d0000000000000000000000000000001"}, "2026-01-01T00:00:03.000000002Z", 50],
+  ["root", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetLeft": "1", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_sel_int_nestedSetRight": "4", "__cerberus_spanID": "3000000000000001", "__cerberus_traceID": "c0000000000000000000000000000001"}, "2026-01-01T00:00:02.000000001Z", 100],
+  ["root", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetLeft": "1", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_sel_int_nestedSetRight": "4", "__cerberus_spanID": "4000000000000001", "__cerberus_traceID": "d0000000000000000000000000000001"}, "2026-01-01T00:00:03.000000001Z", 100]
 ]
 -- args --
 [0] string = ""

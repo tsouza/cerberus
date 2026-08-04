@@ -50,7 +50,7 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000001', '1000000000000004', '1000000000000003', 'db', 'Client', 300, toDateTime64('2026-01-01 00:00:00.000000004', 9), 'Unset', '', '', '', map(), map('service.name', 'db'));
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "1000000000000003", "2026-01-01T00:00:00.000000003Z", 1, 4, 7]
+  ["checkout", {"__cerberus_parentSpanID": "1000000000000001", "__cerberus_sel_int_nestedSetLeft": "4", "__cerberus_sel_int_nestedSetParent": "1", "__cerberus_sel_int_nestedSetRight": "7", "__cerberus_spanID": "1000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "checkout"}, "2026-01-01T00:00:00.000000003Z", 700]
 ]
 -- chplan --
 Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __cerberus_ns_left AS nestedSetLeft, __cerberus_ns_right AS nestedSetRight]

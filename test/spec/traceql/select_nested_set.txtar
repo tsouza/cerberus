@@ -43,9 +43,9 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000002', '2000000000000003', '2000000000000002', toDateTime64('2026-01-01 00:00:01.000000003', 9));
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "1000000000000001", "2026-01-01T00:00:00.000000001Z", -1, 1, 8],
-  ["a0000000000000000000000000000002", "2000000000000001", "2026-01-01T00:00:01.000000001Z", -1, 1, 2],
-  ["a0000000000000000000000000000002", "2000000000000002", "2026-01-01T00:00:01.000000002Z", -1, 3, 6]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetLeft": "1", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_sel_int_nestedSetRight": "2", "__cerberus_spanID": "2000000000000001", "__cerberus_traceID": "a0000000000000000000000000000002"}, "2026-01-01T00:00:01.000000001Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetLeft": "1", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_sel_int_nestedSetRight": "8", "__cerberus_spanID": "1000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2026-01-01T00:00:00.000000001Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetLeft": "3", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_sel_int_nestedSetRight": "6", "__cerberus_spanID": "2000000000000002", "__cerberus_traceID": "a0000000000000000000000000000002"}, "2026-01-01T00:00:01.000000002Z", 0]
 ]
 -- chplan --
 Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __cerberus_ns_left AS nestedSetLeft, __cerberus_ns_right AS nestedSetRight]

@@ -39,7 +39,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, _svc) VALUES
     ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', 'b');
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000003", "0000000000000002", "", 0, 0, {"service.name": "c"}, {}, "", "", "", "", ""]
+  ["", {"__cerberus_parentSpanID": "0000000000000002", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "c"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 StructuralJoin op=>> maxDepth=128

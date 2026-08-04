@@ -27,5 +27,5 @@ Filter predicate=(Value > 1000)
 SELECT * FROM (SELECT `TraceId` AS `TraceId`, sum(toFloat64OrZero(`SpanAttributes`[?])) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 [
-  ["t1", 1500, "span", {"service.name": "x"}, "2024-01-01T00:00:00Z", 1704067200000000000, 1704067202030000000]
+  ["span", {"__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "x"}, "2024-01-01T00:00:00Z", 1500]
 ]
