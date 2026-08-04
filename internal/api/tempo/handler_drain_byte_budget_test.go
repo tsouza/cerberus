@@ -40,7 +40,9 @@ func TestSearch_AttachesByteBudget_NoBypass(t *testing.T) {
 // TestSearch_DrainByteBudget422 — when the wide-projection byte budget aborts the
 // span drain, the Tempo HTTP head must answer 422 (a resource rejection peer to
 // the sample budget), never a 5xx. The charge itself is proven on the production
-// rowsCursor in chclient; this pins the handler's error classification.
+// rowsCursor and columnarCursor decode paths in chclient
+// (drain_byte_budget_cursor_test.go, columnar_drain_byte_budget_test.go); this
+// pins the handler's error classification.
 func TestSearch_DrainByteBudget422(t *testing.T) {
 	t.Parallel()
 

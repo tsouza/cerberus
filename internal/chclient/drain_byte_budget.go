@@ -120,6 +120,28 @@ func (b *DrainByteBudget) Peak() int64 {
 	return b.peak.Load()
 }
 
+// SumWideProjectionBytes charges each of labelSets against a fresh,
+// effectively-unlimited budget and returns the resulting Peak — i.e. the
+// SAME per-map cost formula the production rowsCursor / columnarCursor
+// decode paths charge (labelMapBytes), applied to caller-supplied label
+// sets rather than a live decode. Exported so out-of-package corpus-floor
+// checks (e.g. compatibility/tempo's fixture-derived measurement) can
+// grade real data against the production accounting without duplicating
+// its arithmetic — the whole point of grounding a ceiling in measurement
+// is that the measurement uses the exact formula the ceiling enforces.
+func SumWideProjectionBytes(labelSets []map[string]string) int64 {
+	b := NewDrainByteBudget(unlimitedMeasurementBudget)
+	for _, m := range labelSets {
+		b.consume(labelMapBytes(m))
+	}
+	return b.Peak()
+}
+
+// unlimitedMeasurementBudget is the ceiling SumWideProjectionBytes measures
+// against — large enough that no realistic corpus trips it (the budget
+// exists only to drive consume's peak-tracking, never to reject).
+const unlimitedMeasurementBudget = 1 << 62
+
 // Limit returns the configured ceiling (0 on a nil budget), carried so the
 // over-budget error names the cap rather than the residual.
 func (b *DrainByteBudget) Limit() int64 {
