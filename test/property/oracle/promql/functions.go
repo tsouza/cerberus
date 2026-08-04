@@ -27,11 +27,28 @@ import (
 //   - resets(m[range])            — count of counter resets in window
 //   - stddev_over_time(m[range])  — population stddev of window samples
 //   - stdvar_over_time(m[range])  — population variance of window samples
+//   - deriv(m[range])             — per-series linear regression slope
+//   - predict_linear(m[range], t) — linear regression projected t
+//     seconds past the eval timestamp
+//   - double_exponential_smoothing(m[range], sf, tf) — iterative
+//     smoothing over the window's raw samples (the PromQL 3.x rename of
+//     holt_winters)
+//   - quantile_over_time(phi, m[range]) — per-series quantile
+//     interpolation over the window's raw sample values
+//
+// The last four have argument shapes evalRangeFunction's generic
+// single-matrix-arg path doesn't fit (extra scalar args, and
+// quantile_over_time's matrix arg comes second, not first) — they're
+// dispatched to evalTrendFunction below.
 //
 // Anything else returns an error so the caller can surface it.
 func (e *Evaluator) evalRangeFunction(c *parser.Call, evalTsMs int64) ([]VectorRow, error) {
 	if len(c.Args) == 0 {
 		return nil, fmt.Errorf("oracle: %s requires a range-vector arg", c.Func.Name)
+	}
+	switch c.Func.Name {
+	case "deriv", "predict_linear", "double_exponential_smoothing", "quantile_over_time":
+		return e.evalTrendFunction(c, evalTsMs)
 	}
 	ms, ok := c.Args[0].(*parser.MatrixSelector)
 	if !ok {
@@ -112,6 +129,217 @@ func applyRangeFn(name string, samples []Sample, rangeMs, effectiveTs int64) (fl
 	}
 	return 0, false
 }
+
+// evalTrendFunction handles the four range-vector functions whose
+// argument shape doesn't fit evalRangeFunction's generic single-matrix
+// path: predict_linear and quantile_over_time each take one extra
+// scalar, double_exponential_smoothing takes two, and
+// quantile_over_time's matrix arg is the SECOND argument rather than
+// the first (see prometheus/promql/parser/functions.go's ArgTypes
+// tables). Every scalar arg is evaluated once via e.evalAny — reusing
+// the general AST evaluator (rather than requiring parser.NumberLiteral
+// like the topk/bottomk aggregator params do) costs nothing here and
+// naturally handles e.g. `predict_linear(v[5m], 60*60)`.
+func (e *Evaluator) evalTrendFunction(c *parser.Call, evalTsMs int64) ([]VectorRow, error) {
+	name := c.Func.Name
+	matrixIdx := 0
+	if name == "quantile_over_time" {
+		matrixIdx = 1
+	}
+	if len(c.Args) <= matrixIdx {
+		return nil, fmt.Errorf("oracle: %s requires a range-vector arg", name)
+	}
+	ms, ok := c.Args[matrixIdx].(*parser.MatrixSelector)
+	if !ok {
+		return nil, fmt.Errorf("oracle: %s argument must be a matrix selector, got %T", name, c.Args[matrixIdx])
+	}
+	ranges := e.evalMatrixSelector(ms, evalTsMs)
+
+	scalars := make([]float64, 0, len(c.Args)-1)
+	for i, a := range c.Args {
+		if i == matrixIdx {
+			continue
+		}
+		v, err := e.evalAny(a, evalTsMs)
+		if err != nil {
+			return nil, err
+		}
+		if v.Kind != kindScalar {
+			return nil, fmt.Errorf("oracle: %s arg %d must be scalar, got kind=%d", name, i, v.Kind)
+		}
+		scalars = append(scalars, v.Scalar)
+	}
+
+	out := make([]VectorRow, 0, len(ranges))
+	for _, r := range ranges {
+		v, ok, err := applyTrendFn(name, r.Samples, evalTsMs, scalars)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, VectorRow{
+			Labels: DropLabel(r.Labels, MetricNameLabel),
+			T:      evalTsMs,
+			V:      v,
+		})
+	}
+	sortVectorRows(out)
+	return out, nil
+}
+
+// applyTrendFn computes one series' output value for the trend-function
+// family. Returns (value, true, nil) on success, (0, false, nil) when
+// the function's output is undefined for this window (matching Prom's
+// silent row-drop for <2 samples), or a non-nil error when Prom itself
+// would refuse the query (double_exponential_smoothing's out-of-range sf
+// / tf, which upstream implements as a panic that surfaces as a query
+// execution error — both sides erroring is agreement per Evaluate's
+// both-erroring convention).
+func applyTrendFn(name string, samples []Sample, evalTsMs int64, scalars []float64) (float64, bool, error) {
+	switch name {
+	case "deriv":
+		if len(samples) < 2 {
+			return 0, false, nil
+		}
+		// Prom passes the window's first sample timestamp as the
+		// regression's x=0 anchor "to avoid floating point accuracy
+		// issues" (see prometheus/promql/functions.go::funcDeriv) —
+		// the fitted slope itself is anchor-invariant, only the
+		// numerical conditioning changes.
+		slope, _ := linearRegression(samples, samples[0].T)
+		return slope, true, nil
+	case "predict_linear":
+		if len(samples) < 2 {
+			return 0, false, nil
+		}
+		if len(scalars) != 1 {
+			return 0, false, fmt.Errorf("oracle: predict_linear requires 1 scalar arg, got %d", len(scalars))
+		}
+		duration := scalars[0]
+		// Prom anchors the regression at the eval timestamp (enh.Ts)
+		// so `intercept` is directly the fitted value AT the eval ts;
+		// projecting `duration` seconds forward is then just
+		// slope*duration added on top.
+		slope, intercept := linearRegression(samples, evalTsMs)
+		return slope*duration + intercept, true, nil
+	case "double_exponential_smoothing":
+		if len(scalars) != 2 {
+			return 0, false, fmt.Errorf("oracle: double_exponential_smoothing requires 2 scalar args, got %d", len(scalars))
+		}
+		sf, tf := scalars[0], scalars[1]
+		if sf <= 0 || sf >= 1 {
+			return 0, false, fmt.Errorf("oracle: double_exponential_smoothing: invalid smoothing factor, expected 0 < sf < 1, got %v", sf)
+		}
+		if tf <= 0 || tf >= 1 {
+			return 0, false, fmt.Errorf("oracle: double_exponential_smoothing: invalid trend factor, expected 0 < tf < 1, got %v", tf)
+		}
+		if len(samples) < 2 {
+			return 0, false, nil
+		}
+		return doubleExponentialSmoothing(samples, sf, tf), true, nil
+	case "quantile_over_time":
+		if len(scalars) != 1 {
+			return 0, false, fmt.Errorf("oracle: quantile_over_time requires 1 scalar arg, got %d", len(scalars))
+		}
+		if len(samples) == 0 {
+			return 0, false, nil
+		}
+		values := make([]float64, len(samples))
+		for i, s := range samples {
+			values[i] = s.V
+		}
+		return quantileInterpolate(scalars[0], values), true, nil
+	}
+	return 0, false, fmt.Errorf("oracle: unsupported trend function %q", name)
+}
+
+// linearRegression implements Prometheus's ordinary-least-squares fit
+// over a series' window samples (promql/functions.go::linearRegression),
+// shared by deriv and predict_linear. interceptTimeMs anchors x=0
+// (deriv passes the window's first sample time, predict_linear passes
+// the eval timestamp) — this only affects numerical conditioning, never
+// the fitted line itself, since both the slope and predict_linear's
+// slope*duration+intercept are anchor-invariant.
+//
+// Special case mirrored from upstream: when every sample shares the
+// same value, the fit is degenerate (the y variance is zero) and Prom
+// short-circuits to slope=0, intercept=that value — or slope=NaN,
+// intercept=NaN if the constant value is +-Inf, since a regression
+// through infinite points is undefined. A plain (non-Kahan) summation
+// is used for the rest, matching this package's established precedent
+// (see varianceOverTime's comment) — the dataset's value magnitudes
+// never approach the range where the numerical difference would exceed
+// the comparator's tolerance.
+func linearRegression(samples []Sample, interceptTimeMs int64) (slope, intercept float64) {
+	first := samples[0].V
+	constY := true
+	for _, s := range samples[1:] {
+		if s.V != first {
+			constY = false
+			break
+		}
+	}
+	if constY {
+		if math.IsInf(first, 0) {
+			return math.NaN(), math.NaN()
+		}
+		return 0, first
+	}
+
+	var n, sumX, sumY, sumXY, sumX2 float64
+	for _, s := range samples {
+		x := float64(s.T-interceptTimeMs) / float64(millisPerSecond)
+		n++
+		sumX += x
+		sumY += s.V
+		sumXY += x * s.V
+		sumX2 += x * x
+	}
+
+	covXY := sumXY - sumX*sumY/n
+	varX := sumX2 - sumX*sumX/n
+
+	slope = covXY / varX
+	intercept = sumY/n - slope*sumX/n
+	return slope, intercept
+}
+
+// doubleExponentialSmoothing implements Prometheus's
+// double_exponential_smoothing (promql/functions.go::
+// funcDoubleExponentialSmoothing + calcTrendValue), the PromQL 3.x
+// rename of holt_winters. Callers must have already validated
+// 0 < sf < 1 and 0 < tf < 1, and that len(samples) >= 2.
+func doubleExponentialSmoothing(samples []Sample, sf, tf float64) float64 {
+	s1 := samples[0].V
+	b := samples[1].V - samples[0].V
+	var s0 float64
+
+	for i := 1; i < len(samples); i++ {
+		x := sf * samples[i].V
+		b = calcTrendValue(i-1, tf, s0, s1, b)
+		y := (1 - sf) * (s1 + b)
+		s0, s1 = s1, x+y
+	}
+	return s1
+}
+
+// calcTrendValue mirrors Prom's promql/functions.go::calcTrendValue —
+// the trend component's update rule inside
+// double_exponential_smoothing's iteration.
+func calcTrendValue(i int, tf, s0, s1, b float64) float64 {
+	if i == 0 {
+		return b
+	}
+	x := tf * (s1 - s0)
+	y := (1 - tf) * b
+	return x + y
+}
+
+// millisPerSecond converts a millisecond timestamp delta into seconds
+// for linearRegression's x axis, matching Prom's own `/1e3`.
+const millisPerSecond = 1000
 
 // changesOverTime counts the number of value changes between
 // consecutive samples in window order, matching Prom's funcChanges for
@@ -320,7 +548,9 @@ func isRangeFunctionName(name string) bool {
 		"sum_over_time", "avg_over_time",
 		"min_over_time", "max_over_time", "count_over_time",
 		"last_over_time", "changes", "resets",
-		"stddev_over_time", "stdvar_over_time":
+		"stddev_over_time", "stdvar_over_time",
+		"deriv", "predict_linear", "double_exponential_smoothing",
+		"quantile_over_time":
 		return true
 	}
 	return false
