@@ -223,13 +223,19 @@ func orderByReferencesMapSubscript(orderBy string) bool {
 // (<right>) AS R ON …`, whose columns come from the FIRST subquery —
 // the same one this function already borrows from), and the inner
 // subquery starts with `SELECT ` (case-insensitive). Anything else
-// passes through. The inner subquery's projections are re-rendered as
+// passes through. tableCols is the fixture's own seed DDL (see
+// [seedTableColumns]) — a lower-cased table name -> declared column
+// names in CREATE TABLE order — the fallback catalog [expandQualifiedStar]
+// consults when the inner relation is a bare table scan with no
+// projection list of its own to borrow from (#1431). May be nil, in
+// which case that shape still bails as before. The inner subquery's
+// projections are re-rendered as
 // their aliases (preferring explicit `AS <alias>` over the implicit
 // form), re-qualified with the star's own table alias so the JOIN
 // shape stays unambiguous, which lets the outer SELECT name the
 // columns and the Map-wrap pass do its work without touching the inner
 // shape.
-func expandStarProjection(query string) string {
+func expandStarProjection(query string, tableCols map[string][]string) string {
 	// A `WITH <cte> AS (...) SELECT …` head (the vector-set-op CSE CTE,
 	// or the structural-join WITH RECURSIVE closure) precedes the outer
 	// SELECT — peel it so the projection split sees the real outer
@@ -238,9 +244,9 @@ func expandStarProjection(query string) string {
 	// the outer projection needs the toJSONString wrap.
 	withHead, body := stripWithHead(query)
 	if withHead != "" {
-		return withHead + expandStarProjectionWithCTEs(body, withHead)
+		return withHead + expandStarProjectionWithCTEs(body, withHead, tableCols)
 	}
-	return expandStarProjectionWithCTEs(query, "")
+	return expandStarProjectionWithCTEs(query, "", tableCols)
 }
 
 // expandStarProjectionWithCTEs is [expandStarProjection] with the
@@ -253,18 +259,18 @@ func expandStarProjection(query string) string {
 // therefore peels the union to its first branch and, when that branch is
 // `SELECT * FROM <cte-ident>`, resolves the identifier back to its CTE
 // body in `withHead`. Everything else is delegated unchanged.
-func expandStarProjectionWithCTEs(query, withHead string) string {
+func expandStarProjectionWithCTEs(query, withHead string, tableCols map[string][]string) string {
 	head, tail := splitOuterSelect(query)
 	if head == "" {
 		return query
 	}
 	star := strings.TrimSpace(head)
 	if star != "*" {
-		return expandQualifiedStar(query)
+		return expandQualifiedStar(query, tableCols)
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
 	if !strings.HasPrefix(rest, "(") {
-		return expandQualifiedStar(query)
+		return expandQualifiedStar(query, tableCols)
 	}
 	depth, end := 0, -1
 	for i := 0; i < len(rest) && end < 0; i++ {
@@ -279,16 +285,16 @@ func expandStarProjectionWithCTEs(query, withHead string) string {
 		}
 	}
 	if end < 0 {
-		return expandQualifiedStar(query)
+		return expandQualifiedStar(query, tableCols)
 	}
 	inner := strings.TrimSpace(rest[1:end])
 	// Peel a parenthesised UNION down to its leading branch, then
 	// resolve a bare-CTE-reference branch (`SELECT * FROM <ident>`)
 	// against the WITH head so the column names come from the CTE body.
 	branch := peelUnionPrefix(inner)
-	names := cteBranchAliases(branch, withHead)
+	names := cteBranchAliases(branch, withHead, tableCols)
 	if len(names) == 0 {
-		return expandQualifiedStar(query)
+		return expandQualifiedStar(query, tableCols)
 	}
 	quoted := make([]string, len(names))
 	for i, n := range names {
@@ -302,7 +308,7 @@ func expandStarProjectionWithCTEs(query, withHead string) string {
 // in withHead and borrowing its body's projection aliases. Returns nil
 // for any shape it cannot canonically enumerate, so the caller falls
 // back to the conservative [expandStarProjection] path.
-func cteBranchAliases(branch, withHead string) []string {
+func cteBranchAliases(branch, withHead string, tableCols map[string][]string) []string {
 	bHead, bTail := splitOuterSelect(branch)
 	if strings.TrimSpace(bHead) != "*" {
 		return nil
@@ -320,7 +326,7 @@ func cteBranchAliases(branch, withHead string) []string {
 	// The CTE body is itself a `SELECT * FROM (SELECT <aliased projs>…)`
 	// shape with no further WITH head; reuse the CTE-unaware star
 	// expander for name discovery only.
-	expanded := expandQualifiedStar(body)
+	expanded := expandQualifiedStar(body, tableCols)
 	eHead, _ := splitOuterSelect(expanded)
 	if eHead == "" || strings.TrimSpace(eHead) == "*" {
 		return nil
@@ -374,7 +380,7 @@ func cteBody(withHead, name string) string {
 // [rewriteMapProjections] can wrap Map columns. It is the fallback path
 // [expandStarProjectionWithCTEs] delegates to whenever the outer FROM is
 // a borrowable subquery rather than a CTE-referencing UNION.
-func expandQualifiedStar(query string) string {
+func expandQualifiedStar(query string, tableCols map[string][]string) string {
 	head, tail := splitOuterSelect(query)
 	if head == "" {
 		return query
@@ -427,9 +433,28 @@ func expandQualifiedStar(query string) string {
 	// WHERE …` inside the JOIN arm). Expand it recursively for NAME
 	// DISCOVERY only — the rewritten inner is never spliced back, tail
 	// keeps the original subquery verbatim.
-	inner = expandStarProjection(inner)
-	innerHead, _ := splitOuterSelect(inner)
+	inner = expandStarProjection(inner, tableCols)
+	innerHead, innerTail := splitOuterSelect(inner)
 	if innerHead == "" {
+		return query
+	}
+	// The inner relation may itself be a BARE TABLE SCAN (`SELECT *
+	// FROM <table> ...`, no subquery) rather than a subquery with its
+	// own projection list to borrow from — exactly the shape
+	// emitSearchTraceLimit's drain produces (`SELECT s.* FROM (SELECT *
+	// FROM otel_traces ...) AS s ...`). The recursive expandStarProjection
+	// call above cannot rewrite that inner star (there is no nested
+	// subquery to name-discover against), so it comes back unchanged and
+	// innerHead is still the literal "*". Resolve the table's own column
+	// list from the fixture's seed DDL instead of bailing (#1431).
+	if strings.TrimSpace(innerHead) == "*" {
+		if names, ok := bareTableColumns(innerTail, tableCols); ok {
+			aliases := make([]string, len(names))
+			for i, n := range names {
+				aliases[i] = qual + "`" + n + "`"
+			}
+			return "SELECT " + strings.Join(aliases, ", ") + tail
+		}
 		return query
 	}
 	innerProjs := splitProjections(innerHead)
@@ -450,6 +475,96 @@ func expandQualifiedStar(query string) string {
 		aliases = append(aliases, qual+"`"+alias+"`")
 	}
 	return "SELECT " + strings.Join(aliases, ", ") + tail
+}
+
+// bareTableColumns resolves the column list for a bare `SELECT * FROM
+// <table> ...` inner relation — no subquery, so there is no projection
+// list [expandQualifiedStar] can borrow names from — by looking <table>
+// up in tableCols, the fixture's own seed DDL parsed by
+// [seedTableColumns]. Returns (nil, false) when tableCols is empty, the
+// FROM target isn't a single bare (optionally backtick-quoted)
+// identifier, or that identifier has no known column list — any of
+// which sends the caller back to the original conservative bail.
+func bareTableColumns(innerTail string, tableCols map[string][]string) ([]string, bool) {
+	if len(tableCols) == 0 {
+		return nil, false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(innerTail, " FROM "))
+	table := firstToken(rest)
+	table = strings.TrimSuffix(strings.TrimPrefix(table, "`"), "`")
+	if table == "" {
+		return nil, false
+	}
+	names, ok := tableCols[strings.ToLower(table)]
+	if !ok || len(names) == 0 {
+		return nil, false
+	}
+	return names, true
+}
+
+// seedTableColumns parses a fixture's `-- seed --` script and returns a
+// map from lower-cased table name to its declared column names, in
+// CREATE TABLE order. It is the authoritative catalog
+// [expandQualifiedStar] falls back to (via [bareTableColumns]) when the
+// star's inner relation is a bare table scan rather than a subquery
+// with a borrowable projection list — the DDL is the only place those
+// names exist (#1431). Statements other than a `CREATE [OR REPLACE |
+// TEMPORARY] TABLE [IF NOT EXISTS] <name> (...)` are ignored; a table
+// with zero recognisable column definitions is omitted rather than
+// mapped to an empty slice, so a lookup miss and an empty declaration
+// both read as "unknown" to callers.
+//
+// MATERIALIZED and ALIAS columns are excluded from the list: a plain
+// `SELECT *` never projects them (that is ClickHouse's own semantics,
+// not a rewriter choice), so including one would hand
+// [expandQualifiedStar] a column name the real query never returns —
+// exactly the shape that broke the spanset_pipeline_intersect fixture
+// (its MATERIALIZED SpanAttributes) during development of this fix.
+func seedTableColumns(seed string) map[string][]string {
+	cols := map[string][]string{}
+	for _, stmt := range splitStatements(seed) {
+		trimmed := stripLeadingNoise(stmt)
+		rest, ok := createTableTail(trimmed)
+		if !ok {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
+		open := strings.IndexByte(stmt, '(')
+		if open < 0 {
+			continue
+		}
+		closeParen := matchParen(stmt, open)
+		if closeParen < 0 {
+			continue
+		}
+		defs := splitTopLevelCommas(stmt[open+1 : closeParen])
+		names := make([]string, 0, len(defs))
+		for _, d := range defs {
+			d = strings.TrimSpace(d)
+			cn := firstToken(d)
+			if cn == "" || isGeneratedColumnDef(d) {
+				continue
+			}
+			names = append(names, cn)
+		}
+		if len(names) > 0 {
+			cols[name] = names
+		}
+	}
+	return cols
+}
+
+// isGeneratedColumnDef reports whether a CREATE TABLE column definition
+// declares a MATERIALIZED or ALIAS column — the two ClickHouse column
+// kinds a bare `SELECT *` omits from its result set (DEFAULT columns,
+// by contrast, ARE included). Matched the same way
+// normalizeTracesColumnDef locates `MATERIALIZED`: a space-delimited
+// token search, which is safe here because both keywords only ever
+// appear as the modifier between a column's type and its generating
+// expression, never as (part of) a bare identifier or type name.
+func isGeneratedColumnDef(def string) bool {
+	upper := " " + strings.ToUpper(def) + " "
+	return strings.Contains(upper, " MATERIALIZED ") || strings.Contains(upper, " ALIAS ")
 }
 
 // rewriteMapProjections wraps any top-level SELECT projection whose
@@ -952,7 +1067,7 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	// the args side is global, and ordering them this way keeps the
 	// argIdx accounting in substituteNow64 simple.
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
-	query = expandStarProjection(query)
+	query = expandStarProjection(query, seedTableColumns(rt.Seed))
 	query = rewriteMapProjections(query)
 	query = nestMapOrderBy(query)
 	colCount := extractProjectionCount(query)

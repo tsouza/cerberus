@@ -1,0 +1,47 @@
+emitSearchTraceLimit renders the drain as `SELECT s.* FROM (<input>) AS s
+WHERE TraceId IN (...)`. When the query has no `select(...)` clause the
+`<input>` is a bare `Filter -> Scan` — it lowers straight to `SELECT *
+FROM otel_traces WHERE ...`, with no named projection list of its own.
+
+That is the shape the round-trip harness's expandQualifiedStar could not
+canonically enumerate (#1431): the outer star's inner relation is a bare
+table scan, not a subquery with a projection list to borrow column names
+from, so the rewriter used to bail and the seed's ResourceAttributes Map
+column rode through the outer `s.*` unwrapped — chdb-go's parquet driver
+then panics with `could not cast to type: MAP`. #1428 sidestepped this by
+matching on the `name` intrinsic so its seed carried no Map column at
+all, leaving the search head's Map-valued output unexercised by any
+round-trip. This fixture matches on a RESOURCE ATTRIBUTE instead, so the
+seed's ResourceAttributes column is a real Map that the round-trip must
+carry through toJSONString(...) successfully.
+
+-- search_limit --
+1
+-- query.traceql --
+{ resource.service.name = "frontend" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanName String,
+    ResourceAttributes Map(String, String)
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces VALUES
+    ('0000000000000000000000000000aa01', '0000000000000011', toDateTime64('2026-01-01 00:00:10', 9), 'checkout', map('service.name', 'frontend')),
+    ('0000000000000000000000000000bb02', '0000000000000021', toDateTime64('2026-01-01 00:00:20', 9), 'checkout', map('service.name', 'backend'));
+-- expected_rows --
+[
+  ["0000000000000000000000000000aa01", "0000000000000011", "2026-01-01T00:00:10Z", "checkout", {"service.name": "frontend"}]
+]
+-- args --
+[0] string = "service.name"
+[1] string = "frontend"
+[2] string = "service.name"
+[3] string = "frontend"
+-- chplan --
+SearchTraceLimit traceLimit=1
+  Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+    Scan(otel_traces)
+-- sql --
+SELECT s.* FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS s WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 1)

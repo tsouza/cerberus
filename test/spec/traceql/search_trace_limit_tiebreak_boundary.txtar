@@ -22,9 +22,15 @@ on the other side of the boundary too, and ranking ASC instead of DESC drops
 the newest trace.
 
 The matcher is the `name` intrinsic rather than a resource attribute so the
-seed carries no Map column: the emitted drain is `SELECT s.*`, and the
-round-trip harness cannot enumerate a bare `SELECT * FROM <table>` to wrap a
-Map in toJSONString.
+seed carries no Map column — this fixture's purpose is pinning the TraceId
+tie-break order, and staying Map-free keeps it that way rather than also
+depending on the Map round-trip. That combination WAS a forced choice: the
+round-trip harness could not enumerate a bare `SELECT * FROM <table>` to wrap
+a Map in toJSONString, so no fixture of this drain shape could assert on a
+Map column at all. Resolved in this change (#1431) — expandQualifiedStar now
+falls back to the fixture's own seed DDL for a bare table scan's column list,
+and search_trace_limit_bare_table_map_column.txtar exercises the Map-bearing
+case directly.
 
 -- search_limit --
 2

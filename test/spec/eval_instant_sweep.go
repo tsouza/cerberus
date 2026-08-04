@@ -174,10 +174,14 @@ var sweepServerNow = time.Date(2027, 6, 16, 12, 0, 0, 0, time.UTC)
 // The query goes through the same Map-projection rewrite pipeline
 // (`expandStarProjection` → `rewriteMapProjections` → `nestMapOrderBy`)
 // the round-trip lane uses, so the Map column scans the same way here.
+// The sweep's PromQL lowering always wraps its scan in a named `Project`
+// (never a bare `SELECT s.* FROM (SELECT * FROM <table>)` drain), so it
+// passes a nil column map: [expandQualifiedStar]'s seed-DDL fallback for
+// a bare table scan is not needed here.
 func runInstant(t *testing.T, db *sql.DB, sqlText string, args []any, T time.Time) evalInstantResult {
 	t.Helper()
 	query, queryArgs := substituteNow64At(sqlText, args, chNow64Literal(sweepServerNow))
-	query = expandStarProjection(query)
+	query = expandStarProjection(query, nil)
 	query = rewriteMapProjections(query)
 	query = nestMapOrderBy(query)
 
