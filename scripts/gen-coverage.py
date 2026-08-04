@@ -126,7 +126,8 @@ def render_head(head, entries):
 
 
 def build():
-    inv = json.load(open(INVENTORY))
+    with open(INVENTORY) as f:
+        inv = json.load(f)
     e = inv["entries"]
     blocks = []
     for head, label in [("promql", "PromQL"), ("logql", "LogQL"),
@@ -139,12 +140,14 @@ def build():
 
 def main():
     body = build()
-    doc = open(DOC).read()
+    with open(DOC) as f:
+        doc = f.read()
     new = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END),
                  BEGIN + "\n\n" + body + "\n" + END, doc, flags=re.S)
     if "--check" in sys.argv:
         sys.exit(0 if new == doc else 1)
-    open(DOC, "w").write(new)
+    with open(DOC, "w") as f:
+        f.write(new)
 
 
 if __name__ == "__main__":

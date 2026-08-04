@@ -21,7 +21,6 @@ import {
   collectViolations,
   SHARDS,
   buildMatrix,
-  SMOKE_MODES,
   MODE_MONOLITH,
   MODE_SPLIT,
   SPLIT_ONLY_SPECS,
