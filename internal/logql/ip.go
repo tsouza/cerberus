@@ -3,6 +3,7 @@ package logql
 import (
 	"fmt"
 	"net/netip"
+	"regexp"
 
 	"go4.org/netipx"
 
@@ -98,6 +99,45 @@ const (
 	ipv4CandidateRegex = "[0-9.]+"
 	ipv6CandidateRegex = "[0-9a-fA-F:.]+"
 )
+
+var (
+	ipv4CandidateRe = regexp.MustCompile(ipv4CandidateRegex)
+	ipv6CandidateRe = regexp.MustCompile(ipv6CandidateRegex)
+)
+
+// MatchesIPPattern reports whether subject — typically a label value —
+// contains an IP-shaped substring inside pattern's match set. It is
+// the Go-native counterpart to [ipSubjectMatchExpr]'s SQL rendering,
+// for label filters that can't be resolved by SQL: a `| addr =
+// ip("...")` filter following a `| unpack` / `| pattern` stage (see
+// internal/api/loki/post_process.go's newLabelFilterStep and
+// internal/logql/lower.go's dynamicLabels gate), whose subject label
+// only exists once that stage's Go-side extraction has run. Candidate
+// extraction and containment testing mirror the SQL rendering's
+// documented semantics (see the package doc comment above): a
+// candidate is a maximal run over the pattern-family's charset, parsed
+// with netip.ParseAddr and tested for containment in [Lo, Hi]. An
+// invalid pattern returns the same error [parseIPPattern] would.
+func MatchesIPPattern(subject, pattern string) (bool, error) {
+	r, err := parseIPPattern(pattern)
+	if err != nil {
+		return false, err
+	}
+	re := ipv4CandidateRe
+	if r.V6 {
+		re = ipv6CandidateRe
+	}
+	for _, cand := range re.FindAllString(subject, -1) {
+		addr, err := netip.ParseAddr(cand)
+		if err != nil || addr.Is6() != r.V6 {
+			continue
+		}
+		if addr.Compare(r.Lo) >= 0 && addr.Compare(r.Hi) <= 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // ipSubjectMatchExpr renders the "subject contains an IP inside the
 // pattern's match set" predicate over an arbitrary string expression.

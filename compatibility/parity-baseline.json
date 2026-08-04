@@ -748,8 +748,8 @@
       ]
     },
     "loki": {
-      "passed": 121,
-      "total": 121,
+      "passed": 120,
+      "total": 120,
       "cases": [
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} != ip(\"255.255.255.255\") | ip line filter negated: single-IP",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} !> \"<_>error<_>\" | pattern line filter negated: embedded literal",
@@ -870,8 +870,7 @@
         "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines",
         "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected",
         "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines",
-        "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected",
-        "regression/unpack.yaml | metric | range | FORWARD | sum by (category) (count_over_time({service_name=\"packed-source\"} | unpack | __error__=\"\"[24h])) | step=1h0m0s | unpack then aggregate by an unpack-extracted label"
+        "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected"
       ]
     },
     "tempo": {

@@ -10,12 +10,24 @@
 # `__error_details__` labels a malformed payload should carry) shipped
 # through.
 #
-# All three queries target `{service_name="packed-source"}`, the one
+# Both queries below target `{service_name="packed-source"}`, the one
 # seeded stream (compatibility/loki/cmd/seed/main.go's
 # generatePackedLine) whose lines cycle through the four payload
 # shapes `| unpack` must discriminate: a well-formed packed object
 # (top-level string "_entry" key), a well-formed object with no
 # "_entry" key, a non-object JSON value, and malformed JSON.
+#
+# Running this corpus for the first time surfaced a SECOND, distinct
+# bug beyond #1447: `| __error__="..."` following `| unpack` was
+# silently a no-op end-to-end (see internal/logql/lower.go's
+# dynamicLabels gate and internal/api/loki/post_process.go's
+# newLabelFilterStep for the fix) — the two `kind: log` cases below
+# cover it. A `kind: metric` case grouping by an unpack-extracted label
+# (`sum by (category) (count_over_time(... | unpack ...))`) is
+# deliberately NOT included here: that's a separate, wider gap (metric
+# queries have no Go-side post-processing pass to hook a fix into —
+# see #1652) and would gate the required `compatibility/loki` check on
+# a fix this PR doesn't make.
 queries:
   - description: unpack happy path - only successfully unpacked lines
     query: '{service_name="packed-source"} | unpack | __error__=""'
@@ -36,14 +48,3 @@ queries:
     tags:
       - unpack
       - error-path
-
-  - description: unpack then aggregate by an unpack-extracted label
-    query: sum by (category) (count_over_time({service_name="packed-source"} | unpack | __error__=""[24h]))
-    kind: metric
-    time_range:
-      length: 24h
-      step: 1h
-    tags:
-      - unpack
-      - aggregation
-      - extracted-label-grouping

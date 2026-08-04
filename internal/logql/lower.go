@@ -246,13 +246,43 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 		inner = f.Input
 	}
 	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	// dynamicLabels becomes true once a `| unpack` / `| pattern` stage
+	// runs — both extract labels in Go after the rows return (see
+	// unpackStep / newPatternStep in internal/api/loki/post_process.go)
+	// rather than folding into labelsExpr the way `| json` / `| logfmt`
+	// / `| regexp` do. A downstream *syntax.LabelFilterExpr still gets
+	// SQL lowering — for an ordinary label name that's a deliberate,
+	// pinned fallback (structuredOrStreamLookup: check the structured-
+	// metadata / stream-label columns as a best-effort pre-filter,
+	// since a query-time JSON payload's fields aren't knowable at
+	// lowering time). But the fallback is actively WRONG for the
+	// `__error__` / `__error_details__` family specifically: those
+	// keys only ever exist as unpack's own error markers (see
+	// unpackStep) — they're never legitimately present in
+	// LogAttributes/ResourceAttributes — so the fallback's SQL
+	// predicate degenerates to a silent no-op: `__error__=""` matches
+	// EVERY row (the key is simply absent from both columns) and
+	// `__error__="JSONParserErr"` matches NONE, incorrectly excluding
+	// rows before postProcessExtract's Go-side unpackStep ever runs
+	// (see #1611's compat corpus, which caught this via a real
+	// differential run). Skip SQL lowering for just that family;
+	// [newLabelFilterStep] applies the same LabelFilterer in Go once
+	// the dynamic stage's transform has actually computed the row's
+	// true `__error__` / `__error_details__` labels.
+	dynamicLabels := false
 	for _, stage := range e.MultiStages {
+		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {
+			continue
+		}
 		next, newLabels, err := lowerStage(stage, s, labelsExpr)
 		if err != nil {
 			return nil, nil, err
 		}
 		if newLabels != nil {
 			labelsExpr = newLabels
+		}
+		if isDynamicLabelStage(stage) {
+			dynamicLabels = true
 		}
 		// Post-fetch stages (`| line_format`, `| decolorize`) return a
 		// nil predicate — they're applied in Go after the rows return,
@@ -270,6 +300,47 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 		return inner, labelsExpr, nil
 	}
 	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
+}
+
+// isDynamicLabelStage reports whether stage is a `| unpack` / `|
+// pattern` parser stage — see [lowerPipelineWithLabels]'s dynamicLabels
+// gate.
+func isDynamicLabelStage(stage syntax.StageExpr) bool {
+	lp, ok := stage.(*syntax.LineParserExpr)
+	if !ok {
+		return false
+	}
+	switch lp.Op {
+	case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
+		return true
+	}
+	return false
+}
+
+// FiltersErrorLabel reports whether lf tests the `__error__` /
+// `__error_details__` label anywhere in its tree (walking
+// BinaryLabelFilter's and/or composition) — see
+// [lowerPipelineWithLabels]'s dynamicLabels gate, which only skips SQL
+// lowering for this family, not for arbitrary label names. Exported so
+// internal/api/loki's postProcessExtract can apply the exact same gate
+// when deciding which post-`| unpack` / `| pattern` label filters need
+// a Go-side re-evaluation (see post_process.go's newLabelFilterStep).
+func FiltersErrorLabel(lf syntax.LabelFilterer) bool {
+	switch f := lf.(type) {
+	case *syntax.StringLabelFilter:
+		return f.Name == syntax.ErrorLabel || f.Name == syntax.ErrorDetailsLabel
+	case *syntax.BinaryLabelFilter:
+		return FiltersErrorLabel(f.Left) || FiltersErrorLabel(f.Right)
+	case *syntax.NumericLabelFilter:
+		return f.Name == syntax.ErrorLabel || f.Name == syntax.ErrorDetailsLabel
+	case *syntax.DurationLabelFilter:
+		return f.Name == syntax.ErrorLabel || f.Name == syntax.ErrorDetailsLabel
+	case *syntax.BytesLabelFilter:
+		return f.Name == syntax.ErrorLabel || f.Name == syntax.ErrorDetailsLabel
+	case *syntax.IPLabelFilter:
+		return f.Label == syntax.ErrorLabel || f.Label == syntax.ErrorDetailsLabel
+	}
+	return false
 }
 
 // PipelineLabelsExpr re-walks the parsed LogQL expression and returns the

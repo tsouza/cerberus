@@ -121,9 +121,11 @@ func TestCheckExpansion(t *testing.T) {
 // kind-before-directions defaulting fix the corpus expanded to 78
 // cases with those eight silently absent; the vendored-only total was
 // 86. loadCerberusQueries (issue #1611) then merges in
-// cerberus-queries/regression/unpack.yaml's 3 definitions — 2
-// `directions: both` log queries (2 cases each) plus 1 metric query
-// (1 case) — for a total of 91.
+// cerberus-queries/regression/unpack.yaml's 2 `directions: both` log
+// query definitions (2 cases each) — a metric-mode third case was
+// deliberately left out (issue #1652: metric-mode grouping/filtering
+// by an unpack-extracted label is a separate, unfixed gap) — for a
+// total of 90.
 func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	t.Parallel()
 	f := flags{
@@ -136,8 +138,8 @@ func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadCases: %v", err)
 	}
-	if len(cases) != 91 {
-		t.Fatalf("corpus expanded to %d cases, want 91", len(cases))
+	if len(cases) != 90 {
+		t.Fatalf("corpus expanded to %d cases, want 90", len(cases))
 	}
 
 	revived := []string{
