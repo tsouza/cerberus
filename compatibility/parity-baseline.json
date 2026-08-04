@@ -748,9 +748,11 @@
       ]
     },
     "loki": {
-      "passed": 124,
-      "total": 124,
+      "passed": 126,
+      "total": 126,
       "cases": [
+        "cerberus/status-parity | status_parity | range | n/a |  | missing query parameter on /query_range",
+        "cerberus/status-parity | status_parity | range | n/a | { | syntactically invalid LogQL (unbalanced selector) on /query_range",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} != ip(\"255.255.255.255\") | ip line filter negated: single-IP",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} !> \"<_>error<_>\" | pattern line filter negated: embedded literal",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | json | client_ip != ip(\"10.0.0.0/8\") | ip label filter negated: CIDR over client_ip",
@@ -878,8 +880,8 @@
       ]
     },
     "tempo": {
-      "passed": 61,
-      "total": 61,
+      "passed": 62,
+      "total": 62,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -939,6 +941,7 @@
         "tags_v1 | tags_v1_all",
         "tags_v2 | tags_v2_intrinsic",
         "tags_v2 | tags_v2_resource",
+        "tags_v2 | tags_v2_scope_all_rejected",
         "tags_v2 | tags_v2_span",
         "traces | trace_by_id_first_checkout",
         "traces_v2 | trace_by_id_v2_first_checkout"

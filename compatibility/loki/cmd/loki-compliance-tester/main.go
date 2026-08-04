@@ -196,6 +196,14 @@ func run() error {
 		// first/last_over_time, absent_over_time, topk/bottomk,
 		// sort/sort_desc. See burndown_value_parity.go.
 		results = append(results, compareBurndownValueParity(httpClient, f, metadata)...)
+
+		// Status-parity differential pass (range lane only — the
+		// endpoint distinction doesn't apply, this pass just needs to
+		// run once): a fixed set of requests both backends must REJECT
+		// with the same status, closing the same blind spot #1487 /
+		// #1435 / #1593 / #1484 / #1626 describe on the Tempo side. See
+		// status_parity.go.
+		results = append(results, compareStatusParityAll(httpClient, f)...)
 	}
 
 	report := Report{

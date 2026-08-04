@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -299,5 +300,68 @@ func TestBuildURL_MetricsInstant(t *testing.T) {
 	}
 	if strings.Contains(u, "step=") {
 		t.Fatalf("instant endpoint must not carry step: %s", u)
+	}
+}
+
+func TestDiffStatusParityCase_BothMatchExpectation_Passes(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "bad_scope", ExpectedStatus: 400}
+	res := diffStatusParityCase(tc, 400, 400, nil, nil)
+	if !res.passed() {
+		t.Fatalf("expected passed()==true, got HardError=%q Assertions=%v Diff=%+v", res.HardError, res.Assertions, res.Diff)
+	}
+	if len(res.Assertions) != 0 {
+		t.Fatalf("expected no assertions, got %v", res.Assertions)
+	}
+}
+
+// TestDiffStatusParityCase_MismatchCaught proves the axis is non-vacuous:
+// a corpus case declaring expect_status must actually FAIL when either
+// backend's real status diverges from the declaration, not just when
+// the harness happens to agree with itself.
+func TestDiffStatusParityCase_MismatchCaught(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name               string
+		tempoStatus        int
+		cerbStatus         int
+		wantAssertionCount int
+	}{
+		{"tempo answers 200 instead of the declared 400", 200, 400, 1},
+		{"cerberus answers 200 instead of the declared 400", 400, 200, 1},
+		{"both sides diverge from the declaration", 500, 200, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			tc := CorpusCase{Name: "bad_scope", ExpectedStatus: 400}
+			res := diffStatusParityCase(tc, c.tempoStatus, c.cerbStatus, nil, nil)
+			if res.passed() {
+				t.Fatalf("expected passed()==false for tempo=%d cerberus=%d expect=400", c.tempoStatus, c.cerbStatus)
+			}
+			if res.HardError != "" {
+				t.Fatalf("a status mismatch is a real outcome, not a hard error; got HardError=%q", res.HardError)
+			}
+			if len(res.Assertions) != c.wantAssertionCount {
+				t.Fatalf("Assertions = %v, want %d entries", res.Assertions, c.wantAssertionCount)
+			}
+			for _, a := range res.Assertions {
+				if a.Kind != "status_mismatch" {
+					t.Errorf("assertion Kind = %q, want status_mismatch", a.Kind)
+				}
+			}
+		})
+	}
+}
+
+func TestDiffStatusParityCase_NoResponseIsHardError(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "bad_scope", ExpectedStatus: 400}
+	res := diffStatusParityCase(tc, 0, 400, errors.New("dial tcp: connection refused"), nil)
+	if res.HardError == "" {
+		t.Fatal("a zero status (no response at all) must hard-error rather than being graded as a mismatch")
+	}
+	if res.passed() {
+		t.Fatal("a hard error must never pass")
 	}
 }

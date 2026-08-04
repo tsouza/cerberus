@@ -692,6 +692,26 @@ kind
 intrinsic
 
 -- name --
+tags_v2_scope_all_rejected
+-- endpoint --
+tags_v2
+-- scope --
+all
+# Status-parity axis (see diff.go's package doc + corpus.go's
+# -- expect_status -- documentation). "all" is deliberately not a
+# valid scope on either backend: upstream's traceql.AttributeScopeFromString
+# folds it to AttributeScopeUnknown, and internal/api/tempo/search_tags.go's
+# parseTagScope rejects it the same way on purpose (see the comment on
+# parseTagScope — cerberus intentionally does NOT accept "all" so it
+# doesn't train clients into a shape real Tempo 400s). Both backends
+# reject with "invalid scope: all", so this proves the axis end-to-end
+# without touching the OPEN scope-widening bug (#1593, which is about
+# scope values upstream *accepts* and cerberus currently rejects —
+# the opposite direction from this case).
+-- expect_status --
+400
+
+-- name --
 tag_values_v1_service_name
 -- endpoint --
 tag_values_v1

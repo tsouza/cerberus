@@ -196,19 +196,39 @@ func runDiffGRPC(args []string) error {
 	}
 
 	var results []CaseResult
-	var skipped []CorpusCase
+	var skippedNoRPC []CorpusCase
+	var skippedStatusParity []CorpusCase
 	for _, tc := range cases {
 		tc := tc
-		if !grpcSupportsEndpoint(tc.Endpoint) {
-			skipped = append(skipped, tc)
+		switch {
+		case !grpcSupportsEndpoint(tc.Endpoint):
+			skippedNoRPC = append(skippedNoRPC, tc)
+			continue
+		case tc.ExpectedStatus != 0:
+			// The status-parity axis (-- expect_status --, diff.go's
+			// diffStatusParityCase) compares HTTP status ints. gRPC
+			// surfaces failures as codes.Code via status.FromError — a
+			// different domain with no canonical mapping — and
+			// diffCaseGRPC treats any non-nil RPC error as an
+			// unconditional HardError, so running an ExpectedStatus case
+			// through this transport unmodified would silently mis-grade
+			// it. Tracked as a distinct gRPC-side axis in #1714; until
+			// that lands, these cases are HTTP-transport-only, reported
+			// here rather than dropped.
+			skippedStatusParity = append(skippedStatusParity, tc)
 			continue
 		}
 		logger.Info("diffing case (grpc)", "name", tc.Name, "endpoint", tc.Endpoint)
 		results = append(results, diffCaseGRPC(ctx, tempoClient, cerbClient, tc, opts))
 	}
-	logger.Info("grpc corpus filtered", "ran", len(results), "skipped_no_grpc_rpc", len(skipped))
+	logger.Info(
+		"grpc corpus filtered",
+		"ran", len(results),
+		"skipped_no_grpc_rpc", len(skippedNoRPC),
+		"skipped_status_parity", len(skippedStatusParity),
+	)
 
-	if err := writeReportGRPC(*reportPath, results, skipped); err != nil {
+	if err := writeReportGRPC(*reportPath, results, skippedNoRPC, skippedStatusParity); err != nil {
 		return fmt.Errorf("write grpc report: %w", err)
 	}
 	logger.Info("wrote grpc markdown report", "path", *reportPath)
@@ -228,7 +248,8 @@ func runDiffGRPC(args []string) error {
 		"total", total,
 		"percent", s.Percent,
 		"color", s.Color,
-		"skipped_no_grpc_rpc", len(skipped),
+		"skipped_no_grpc_rpc", len(skippedNoRPC),
+		"skipped_status_parity", len(skippedStatusParity),
 	)
 	return nil
 }
@@ -568,14 +589,16 @@ func metricsSeriesFromProtoRange(ts *tempopb.TimeSeries) MetricsSeriesEntry {
 
 // writeReportGRPC renders the gRPC transport's markdown report: the
 // shared per-case body (writeReport / renderReport, diff.go) for every
-// case that ran, plus an explicit "skipped" section for corpus cases
-// with no StreamingQuerier RPC counterpart — documented, not silently
-// dropped.
-func writeReportGRPC(path string, results []CaseResult, skipped []CorpusCase) error {
+// case that ran, plus explicit "skipped" sections for corpus cases this
+// transport genuinely can't run — documented, not silently dropped.
+// skippedNoRPC is endpoints with no StreamingQuerier RPC counterpart at
+// all (traces/traces_v2); skippedStatusParity is expect_status cases
+// this transport doesn't yet grade (tracked in #1714).
+func writeReportGRPC(path string, results []CaseResult, skippedNoRPC, skippedStatusParity []CorpusCase) error {
 	if err := writeReport(path, grpcReportTitle, grpcStatusLabel, results); err != nil {
 		return err
 	}
-	if len(skipped) == 0 {
+	if len(skippedNoRPC) == 0 && len(skippedStatusParity) == 0 {
 		return nil
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: report path is a trusted CLI argument, same as writeReport's os.Create
@@ -583,30 +606,52 @@ func writeReportGRPC(path string, results []CaseResult, skipped []CorpusCase) er
 		return fmt.Errorf("reopen report for skipped-section append: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	return renderSkippedSection(f, skipped)
+	if len(skippedNoRPC) > 0 {
+		if err := renderSkippedSection(
+			f, skippedNoRPC,
+			"## Skipped — no StreamingQuerier RPC for this endpoint",
+			"tempopb.StreamingQuerier exposes 7 RPCs (Search, SearchTags[V2], "+
+				"SearchTagValues[V2], MetricsQueryRange, MetricsQueryInstant) — "+
+				"there is no trace-by-id or search/recent RPC on either reference "+
+				"Tempo or cerberus. The %d case(s) below are genuinely inapplicable "+
+				"to this transport and are excluded from the score denominator "+
+				"rather than counted as failures:\n\n",
+		); err != nil {
+			return err
+		}
+	}
+	if len(skippedStatusParity) > 0 {
+		if err := renderSkippedSection(
+			f, skippedStatusParity,
+			"## Skipped — expect_status axis not yet implemented for gRPC",
+			"These corpus cases carry -- expect_status --, a rejection-parity "+
+				"axis compared against the HTTP status int (diff.go's "+
+				"diffStatusParityCase). gRPC surfaces failures as "+
+				"codes.Code via status.FromError, a different domain with no "+
+				"canonical mapping to HTTP status, and this transport doesn't "+
+				"grade that yet (tracked in #1714). The %d case(s) below are "+
+				"excluded from the score denominator rather than counted as "+
+				"failures:\n\n",
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// renderSkippedSection appends the "no gRPC RPC" section, sorted by case
-// name for reproducibility across runs.
-func renderSkippedSection(w io.Writer, skipped []CorpusCase) error {
+// renderSkippedSection appends a documented "skipped, and why" section,
+// sorted by case name for reproducibility across runs.
+func renderSkippedSection(w io.Writer, skipped []CorpusCase, heading, explanation string) error {
 	sorted := append([]CorpusCase(nil), skipped...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
-	if _, err := fmt.Fprintln(w, "## Skipped — no StreamingQuerier RPC for this endpoint"); err != nil {
+	if _, err := fmt.Fprintln(w, heading); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(w); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(
-		w,
-		"tempopb.StreamingQuerier exposes 7 RPCs (Search, SearchTags[V2], "+
-			"SearchTagValues[V2], MetricsQueryRange, MetricsQueryInstant) — "+
-			"there is no trace-by-id or search/recent RPC on either reference "+
-			"Tempo or cerberus. The %d case(s) below are genuinely inapplicable "+
-			"to this transport and are excluded from the score denominator "+
-			"rather than counted as failures:\n\n", len(sorted),
-	); err != nil {
+	if _, err := fmt.Fprintf(w, explanation, len(sorted)); err != nil {
 		return err
 	}
 	for _, tc := range sorted {
