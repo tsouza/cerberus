@@ -127,7 +127,7 @@ var (
 // same `{name:Type}` parameter binding already used by
 // compatibility/prometheus/cmd/seed/main.go.
 const (
-	deleteStaleMetricsGaugeSQL = `DELETE FROM otel_metrics_gauge
+	deleteStaleMetricsGaugeSQL = `ALTER TABLE otel_metrics_gauge DELETE
 WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -135,7 +135,7 @@ WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multila
     WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
   )`
 
-	deleteStaleMetricsSumSQL = `DELETE FROM otel_metrics_sum
+	deleteStaleMetricsSumSQL = `ALTER TABLE otel_metrics_sum DELETE
 WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -143,7 +143,7 @@ WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_
     WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
   )`
 
-	deleteStaleMetricsHistogramSQL = `DELETE FROM otel_metrics_histogram
+	deleteStaleMetricsHistogramSQL = `ALTER TABLE otel_metrics_histogram DELETE
 WHERE MetricName = 'http_server_request_duration'
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -151,7 +151,7 @@ WHERE MetricName = 'http_server_request_duration'
     WHERE MetricName = 'http_server_request_duration'
   )`
 
-	deleteStaleMetricsExpHistSQL = `DELETE FROM otel_metrics_exponential_histogram
+	deleteStaleMetricsExpHistSQL = `ALTER TABLE otel_metrics_exponential_histogram DELETE
 WHERE MetricName = 'showcase_latency_exp_hist'
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -159,7 +159,7 @@ WHERE MetricName = 'showcase_latency_exp_hist'
     WHERE MetricName = 'showcase_latency_exp_hist'
   )`
 
-	deleteStaleLogsSQL = `DELETE FROM otel_logs
+	deleteStaleLogsSQL = `ALTER TABLE otel_logs DELETE
 WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -167,7 +167,7 @@ WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'pain
     WHERE ServiceName IN ('api', 'frontend', 'db', 'gateway', 'shop', 'proxy', 'painter', 'packer')
   )`
 
-	deleteStaleBaseTracesSQL = `DELETE FROM otel_traces
+	deleteStaleBaseTracesSQL = `ALTER TABLE otel_traces DELETE
 WHERE TraceId LIKE 'a00000000000000000000000000000%'
   AND Timestamp < (
     SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
@@ -176,11 +176,64 @@ WHERE TraceId LIKE 'a00000000000000000000000000000%'
   )`
 )
 
+// Every DELETE below is written as `ALTER TABLE ... DELETE WHERE ...` (a
+// classic, heavyweight mutation that rewrites affected parts — including
+// their projections) rather than the newer lightweight `DELETE FROM ...
+// WHERE ...` syntax. Whether a target table carries a projection is an
+// environment property, not something this file controls: the plain
+// docker-compose ClickHouse gets its schema from the OTel Collector's own
+// clickhouseexporter DDL (CERBERUS_AUTO_CREATE_SCHEMA=false, see main.go's
+// package doc comment), which defines no projections, while the k3d/bundled
+// deployment gets its schema from cerberus's OWN auto-create hook
+// (CERBERUS_AUTO_CREATE_SCHEMA defaults true under `clickhouse.bundled`,
+// see deploy/helm/cerberus/values.yaml's `autoCreate.schema`), which adds
+// the curated proj_series/proj_metric_metadata aggregating projections to
+// otel_metrics_gauge/_sum/_histogram (internal/schema/ddl's
+// metricCatalogProjections) — the exact three tables issue #1527's
+// follow-up regression broke on push-to-main's bwc-minio/chaos/
+// dashboard-shard jobs (run 30919284059): a lightweight DELETE unconditionally
+// throws code 344 the moment its target table has any projection.
+//
+// The obvious-looking alternative — keep `DELETE FROM` and pin the
+// `lightweight_mutation_projection_mode` setting to `rebuild` on the query —
+// does NOT work on either ClickHouse version cerberus actually runs
+// (25.8, the `clickhouse.bundled` default in deploy/helm/cerberus/values.yaml,
+// and 26.6, docker-compose.yml's pin): that setting was made a no-op
+// ("Obsolete setting, does nothing", confirmed live against both versions'
+// system.settings) once ClickHouse hard-disabled lightweight deletes against
+// projected tables outright. `ALTER TABLE ... DELETE` was verified live
+// against both versions instead: it deletes cleanly whether or not the
+// table carries a projection, and re-running the same statement against a
+// projection-free table (the docker-compose shape) is unaffected — so this
+// is not a k3d-only special case, it is the version of DELETE that works
+// everywhere.
+//
+// mutationsSyncLocal (`mutations_sync=1`) keeps the call synchronous on the
+// node the seeder is connected to, matching every caller's existing
+// assumption that the DELETE has taken effect before the function returns
+// (deleteStaleMetrics/-Logs/-BaseTraces are called right after their
+// family's INSERTs specifically so readers never observe an empty or
+// partially-deleted window — an async mutation would reopen exactly the
+// race those callers already guard against).
+const mutationsSyncLocal = 1
+
+// staleDeleteContext scopes a stale-row ALTER TABLE ... DELETE to
+// mutationsSyncLocal. Applied uniformly to every DELETE in this file — not
+// just the three tables known to carry projections in the bundled/k3d
+// schema today — so this whole class of statement stays synchronous
+// regardless of which table a future fixture family adds a DELETE for.
+func staleDeleteContext(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"mutations_sync": mutationsSyncLocal,
+	}))
+}
+
 // deleteStaleMetrics prunes previous-tick rows from every metrics table
 // insertMetrics writes to. Called after all of insertMetrics' INSERTs
 // have landed, so — like deleteStaleShowcaseTracesSQL — readers never
 // observe an empty or partially-deleted window.
 func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
+	ctx = staleDeleteContext(ctx)
 	if err := conn.Exec(ctx, deleteStaleMetricsGaugeSQL,
 		clickhouse.Named("margin", marginSeconds(metricsNarrowStaleMargin))); err != nil {
 		return fmt.Errorf("gauge-shaped metrics stale delete: %w", err)
@@ -206,7 +259,7 @@ func deleteStaleMetrics(ctx context.Context, conn driver.Conn) error {
 // them). Called after both insertLogsSQL and insertShowcaseLogQLLogs
 // have landed.
 func deleteStaleLogs(ctx context.Context, conn driver.Conn) error {
-	if err := conn.Exec(ctx, deleteStaleLogsSQL,
+	if err := conn.Exec(staleDeleteContext(ctx), deleteStaleLogsSQL,
 		clickhouse.Named("margin", marginSeconds(logsStaleMargin))); err != nil {
 		return fmt.Errorf("logs stale delete: %w", err)
 	}
@@ -219,7 +272,7 @@ func deleteStaleLogs(ctx context.Context, conn driver.Conn) error {
 // scoped separately so the two margins, sized for very different
 // windows, never interact).
 func deleteStaleBaseTraces(ctx context.Context, conn driver.Conn) error {
-	if err := conn.Exec(ctx, deleteStaleBaseTracesSQL,
+	if err := conn.Exec(staleDeleteContext(ctx), deleteStaleBaseTracesSQL,
 		clickhouse.Named("margin", marginSeconds(tracesStaleMargin))); err != nil {
 		return fmt.Errorf("base traces stale delete: %w", err)
 	}
