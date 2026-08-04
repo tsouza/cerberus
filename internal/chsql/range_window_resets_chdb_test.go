@@ -50,6 +50,13 @@ import (
 // resetsSeed mirrors the production OTel-CH default schema. Two job series: api
 // is a sawtooth counter (multiple resets), web is monotonic (zero resets), so
 // the per-series count differs and a 0-count series is exercised.
+//
+// Three further series (#1707) mirror the changes sibling test's NaN/
+// single-sample-window coverage extension:
+//   - job 'nan': every sample in the window is NaN.
+//   - job 'nan-mixed': NaN and finite samples alternate, including a genuine
+//     counter reset (8.0 -> 2.0) adjacent to a NaN run.
+//   - job 'single': exactly one sample lands inside the 5-minute seed span.
 var resetsSeed = metricsSeedDDL("otel_metrics_sum") + `
 INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
@@ -63,7 +70,20 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
     ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
     ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
-    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0),
+    ('http_requests_total', map('job', 'nan'), toDateTime64('2026-01-01 00:00:00', 9), nan),
+    ('http_requests_total', map('job', 'nan'), toDateTime64('2026-01-01 00:01:00', 9), nan),
+    ('http_requests_total', map('job', 'nan'), toDateTime64('2026-01-01 00:02:00', 9), nan),
+    ('http_requests_total', map('job', 'nan'), toDateTime64('2026-01-01 00:03:00', 9), nan),
+    ('http_requests_total', map('job', 'nan'), toDateTime64('2026-01-01 00:04:00', 9), nan),
+    ('http_requests_total', map('job', 'nan'), toDateTime64('2026-01-01 00:05:00', 9), nan),
+    ('http_requests_total', map('job', 'nan-mixed'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('http_requests_total', map('job', 'nan-mixed'), toDateTime64('2026-01-01 00:01:00', 9), nan),
+    ('http_requests_total', map('job', 'nan-mixed'), toDateTime64('2026-01-01 00:02:00', 9), 8.0),
+    ('http_requests_total', map('job', 'nan-mixed'), toDateTime64('2026-01-01 00:03:00', 9), 2.0),
+    ('http_requests_total', map('job', 'nan-mixed'), toDateTime64('2026-01-01 00:04:00', 9), nan),
+    ('http_requests_total', map('job', 'nan-mixed'), toDateTime64('2026-01-01 00:05:00', 9), 5.0),
+    ('http_requests_total', map('job', 'single'), toDateTime64('2026-01-01 00:03:00', 9), 4.0);
 `
 
 // resetsQuery wraps the resets() matrix fn in a transparent `sum by`, so the
