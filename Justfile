@@ -1207,10 +1207,20 @@ e2e-wait-otel:
         echo "==> timeout waiting for OTel data / metric history span"; \
         exit 1
 
-# Run Go E2E HTTP tests against the deployed stack.
+# Run Go E2E HTTP tests against the deployed stack. CH_ADDR/CH_DATABASE/
+# CH_USERNAME/CH_PASSWORD point at the same port-forward `e2e-seed-rolling`
+# already opened on 19000 — test/e2e/seed/cmd/seed/reseed_stability_test.go
+# (issue #1527's row-count-stability assertion, living next to the
+# re-seeder it tests) dials ClickHouse directly to drive its own seedAll
+# ticks; every other Go E2E test only talks to CERBERUS_URL and ignores
+# these.
 e2e-run:
     @echo "==> running Go E2E tests"
-    go test -tags=e2e ./test/e2e/...
+    CH_ADDR=127.0.0.1:19000 \
+        CH_DATABASE=otel \
+        CH_USERNAME=cerberus \
+        CH_PASSWORD=cerberus \
+        go test -tags=e2e ./test/e2e/...
 
 # A godog suite driving `cerberus migrate` over committed fixtures — no
 # Docker, no backend, seconds.
