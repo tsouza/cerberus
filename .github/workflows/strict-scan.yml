@@ -168,6 +168,23 @@ jobs:
       - name: Run TraceQL spans-scan resource-bound differential (real ClickHouse)
         run: just traces-scan-bound-integration
 
+      # The Tempo HTTP traces-scan WINDOW invariant (#1154's follow-up,
+      # tracked as an orphaned test by #1509): `TraceId IN (<seed>)` membership
+      # prunes NO partitions on its own (otel_traces is PARTITION BY
+      # toDate(Timestamp)), so the recursive numbering / structural closures
+      # and the compare root-lookup rely on the request-window predicate
+      # sitting DIRECTLY on the physical scan to prune. This step drives the
+      # real /api/search + /api/metrics/query_range handlers against a real
+      # ClickHouse seeded with a dataset that is small inside the request
+      # window but large across out-of-window partitions, under a session
+      # memory cap, and asserts each drilldown query both completes (no
+      # ClickHouse memory error 241) and reads strictly fewer rows than the
+      # whole table. The test existed fully written but was wired into no CI
+      # lane before #1509. See
+      # internal/api/tempo/traces_scan_window_integration_test.go.
+      - name: Run Tempo traces-scan WINDOW differential (real ClickHouse)
+        run: just traces-scan-window-integration
+
       # The failure-driven route memo's mandatory per-shard memory
       # apportionment (Executor.runShard) stamps a max_memory_usage override
       # via chclient.WithQuerySetting. chDB is known-lenient about settings
