@@ -19,3 +19,14 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	// the chdb build tag.
 	_ = c
 }
+
+// RunRoundTripSQL is a no-op when the `chdb` build tag is not set. The
+// real implementation lives in runner_chdb.go.
+func RunRoundTripSQL(t *testing.T, c *Case, sql string, args []any) {
+	t.Helper()
+	// Intentionally empty — seed: / expected_rows: are inert without
+	// the chdb build tag.
+	_ = c
+	_ = sql
+	_ = args
+}

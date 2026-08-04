@@ -82,8 +82,19 @@ func TestLower(t *testing.T) {
 		// Every real lowered plan must pass the fail-closed
 		// scan-time-bound invariant (see AssertScanTimeBoundAccepts):
 		// the LogQL unwrap / *_over_time leaves are instant
-		// windowed-array leaves too.
-		spec.AssertScanTimeBoundAccepts(t, plan)
+		// windowed-array leaves too. AssertScanTimeBoundAccepts also
+		// returns the OPTIMIZED plan — production always runs the
+		// optimizer before chsql.Emit (see internal/engine/engine.go)
+		// — so re-emitting it and round-tripping against chDB below
+		// is the post-optimizer half of the golden coverage the
+		// pre-optimizer sql/args/chplan sections above already
+		// provide (issue #1700).
+		optimized := spec.AssertScanTimeBoundAccepts(t, plan)
+		optSQL, optArgs, err := chsql.Emit(context.Background(), optimized)
+		if err != nil {
+			t.Fatalf("Emit(optimized plan): %v", err)
+		}
+		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 	})
 }
 

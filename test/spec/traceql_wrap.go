@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 	traceqllower "github.com/tsouza/cerberus/internal/traceql"
@@ -66,51 +67,67 @@ const traceqlWrapExplainStep = time.Minute
 // ProjectSamples here are byte-for-byte what engine.QueryPlan would run for
 // this query.
 func ReconstructTraceQLSearchWrap(c *Case) (sqlStr string, args []any, ok bool, err error) {
+	plan, ok, err := ReconstructTraceQLSearchWrapPlan(c)
+	if err != nil || !ok {
+		return "", nil, ok, err
+	}
+	sqlStr, args, err = chsql.Emit(context.Background(), plan)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("chsql.Emit(wrapped): %w", err)
+	}
+	return sqlStr, args, true, nil
+}
+
+// ReconstructTraceQLSearchWrapPlan is [ReconstructTraceQLSearchWrap]'s
+// plan-level twin: it returns the WRAPPED, pre-optimizer chplan.Node
+// instead of already-emitted SQL, so a caller can run its own optimizer
+// pass before emitting — see internal/traceql/lower_test.go's post-
+// optimizer round-trip check (issue #1700), which needs the wrapped shape
+// production actually optimizes for search-shaped queries, not the raw
+// pre-wrap plan its own `-- chplan --` / `-- sql --` golden sections
+// capture. ok/err follow the exact same contract as
+// ReconstructTraceQLSearchWrap; see that function's doc comment for the
+// two "leave the fixture's original plan untouched" cases.
+func ReconstructTraceQLSearchWrapPlan(c *Case) (plan chplan.Node, ok bool, err error) {
 	query, hasQuery := c.Section("query.traceql")
 	if !hasQuery {
-		return "", nil, false, nil
+		return nil, false, nil
 	}
 	query = strings.TrimSpace(query)
 
 	expr, err := traceqlast.Parse(query)
 	if err != nil {
-		return "", nil, false, fmt.Errorf("traceql parse: %w", err)
+		return nil, false, fmt.Errorf("traceql parse: %w", err)
 	}
 	if expr.MetricsPipeline != nil || expr.MetricsSecondStage != nil {
-		return "", nil, false, nil
+		return nil, false, nil
 	}
 
 	ctx := context.Background()
 	if v, hasLimit := c.Section("search_limit"); hasLimit {
 		n, perr := strconv.Atoi(strings.TrimSpace(v))
 		if perr != nil {
-			return "", nil, false, fmt.Errorf("bad search_limit %q: %w", v, perr)
+			return nil, false, fmt.Errorf("bad search_limit %q: %w", v, perr)
 		}
 		ctx = traceqllower.WithSearchTraceLimit(ctx, n)
 	}
 	if v, hasWindow := c.Section("search_window"); hasWindow {
 		fields := strings.Fields(v)
 		if len(fields) != 2 {
-			return "", nil, false, fmt.Errorf("search_window wants two Unix-second bounds, got %q", v)
+			return nil, false, fmt.Errorf("search_window wants two Unix-second bounds, got %q", v)
 		}
 		startSec, err1 := strconv.ParseInt(fields[0], 10, 64)
 		endSec, err2 := strconv.ParseInt(fields[1], 10, 64)
 		if err1 != nil || err2 != nil {
-			return "", nil, false, fmt.Errorf("bad search_window %q", v)
+			return nil, false, fmt.Errorf("bad search_window %q", v)
 		}
 		ctx = traceqllower.WithSearchWindow(ctx, time.Unix(startSec, 0).UTC(), time.Unix(endSec, 0).UTC())
 	}
 
 	lang := tempo.NewExplainLang(schema.DefaultOTelTraces(), traceqlWrapExplainStep)
-	plan, meta, err := lang.Parse(ctx, query)
+	rawPlan, meta, err := lang.Parse(ctx, query)
 	if err != nil {
-		return "", nil, false, fmt.Errorf("traceql lower (wrap reconstruction): %w", err)
+		return nil, false, fmt.Errorf("traceql lower (wrap reconstruction): %w", err)
 	}
-	wrapped := lang.ProjectSamples(plan, meta)
-
-	sqlStr, args, err = chsql.Emit(context.Background(), wrapped)
-	if err != nil {
-		return "", nil, false, fmt.Errorf("chsql.Emit(wrapped): %w", err)
-	}
-	return sqlStr, args, true, nil
+	return lang.ProjectSamples(rawPlan, meta), true, nil
 }
