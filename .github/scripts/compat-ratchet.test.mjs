@@ -263,7 +263,7 @@ test('verdicts partitions every movement into exactly one bucket', () => {
 test('the committed baseline is a roster the ratchet can gate on', () => {
   const baseline = JSON.parse(readFileSync(REAL_BASELINE, 'utf8'));
   const heads = Object.keys(baseline.heads ?? {});
-  assert.deepEqual(heads.sort(), ['loki', 'prometheus', 'tempo']);
+  assert.deepEqual(heads.sort(), ['loki', 'prometheus', 'tempo', 'tempo-grpc']);
   for (const head of heads) {
     const { err, ids } = baselineRoster(baseline.heads[head], head);
     assert.equal(err, undefined, `heads.${head} is not gateable: ${err}`);

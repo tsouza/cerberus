@@ -21,9 +21,12 @@
 // accident of the current numbers — a diff against a reference backend
 // is a bug to fix at the source, so there is no shape in this file that
 // can record a divergence as acceptable. The floors are prometheus
-// 739/739, loki 120/120, tempo 49/49; doc-counts.mjs asserts those
-// three numbers against compatibility/parity-baseline.json, so a corpus
-// change cannot leave this comment behind.
+// 739/739, loki 124/124, tempo 49/49, tempo-grpc 47/47; doc-counts.mjs
+// asserts those numbers against compatibility/parity-baseline.json, so
+// a corpus change cannot leave this comment behind. tempo-grpc's floor
+// is 2 below tempo's: traces / traces_v2 have no StreamingQuerier RPC
+// (see compatibility/tempo/driver/grpc_diff.go), so those 2 corpus
+// cases never enter its roster.
 //
 // This is NOT an allow-list. An allow-list names the cases you are
 // permitted to fail; the roster names the cases that must pass, and
@@ -69,9 +72,9 @@
 // committed list cannot drift from what the harness actually ran.
 //
 // Env contract:
-//   HEAD      head name: prometheus | loki | tempo (selects the baseline
-//             entry, must match the cases file's own head field, and
-//             labels the messages).
+//   HEAD      head name: prometheus | loki | tempo | tempo-grpc (selects
+//             the baseline entry, must match the cases file's own head
+//             field, and labels the messages).
 //   SCORE     path to that head's compat-score.json (the run's score).
 //   CASES     path to that head's compat-cases.json (the run's per-case
 //             roster).

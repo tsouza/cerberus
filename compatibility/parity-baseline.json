@@ -1,5 +1,5 @@
 {
-  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-cases.json against the matching entry here and FAIL the job on any parity movement this file does not already record: a recorded case that now diverges, a recorded case that stopped running, a new case that diverges on arrival, or a new case that passes but is not yet recorded. See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
+  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-cases.json against the matching entry here and FAIL the job on any parity movement this file does not already record: a recorded case that now diverges, a recorded case that stopped running, a new case that diverges on arrival, or a new case that passes but is not yet recorded. heads.tempo-grpc is the same gate for the compatibility/tempo job's gRPC/h2c StreamingQuerier transport (compatibility/tempo/driver/grpc_diff.go, #1453) — a second differential arm of the SAME required check, not a separate one; its roster excludes traces/traces_v2 (no gRPC RPC exists for trace-by-id). See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
@@ -748,8 +748,8 @@
       ]
     },
     "loki": {
-      "passed": 120,
-      "total": 120,
+      "passed": 124,
+      "total": 124,
       "cases": [
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} != ip(\"255.255.255.255\") | ip line filter negated: single-IP",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} !> \"<_>error<_>\" | pattern line filter negated: embedded literal",
@@ -863,6 +863,10 @@
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | unwrap bytes [5m])) | step=1m0s | Bytes conversion with sum",
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Duration seconds with sum over time",
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | size != \"\" | unwrap size [5m])) | step=1m0s | Logfmt size unwrap",
+        "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
+        "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {service_name=\"metadata-probe\"} | request_id=\"\" | generic structured-metadata label filter - absent resolves to empty string",
+        "regression/structured-metadata-generic.yaml | log | range | FORWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
+        "regression/structured-metadata-generic.yaml | metric | range | FORWARD | sum by (request_id) (count_over_time({service_name=\"metadata-probe\"}[24h])) | step=1h0m0s | metric query grouped by a generic, unconstrained-value-domain structured-metadata key",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} |~ \"error|exception\" | detected_level=\"error\" | Combined line and metadata filter",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_level=~\"error|warn\" |~ \"(?i)refused\" | Drilldown with error/warn level and refused search",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_level=\"error\" |~ \"(?i)failed\" | Drilldown with failed search and error level",
@@ -926,6 +930,59 @@
         "tags_v2 | tags_v2_span",
         "traces | trace_by_id_first_checkout",
         "traces_v2 | trace_by_id_v2_first_checkout"
+      ]
+    },
+    "tempo-grpc": {
+      "passed": 47,
+      "total": 47,
+      "cases": [
+        "metrics_instant | metrics_avg_over_time_instant",
+        "metrics_instant | metrics_count_over_time_instant",
+        "metrics_instant | metrics_rate_instant",
+        "metrics_range | drilldown_breakdown_kind_not_nil",
+        "metrics_range | metrics_compare_status_error",
+        "metrics_range | metrics_count_over_time_groupby_service",
+        "metrics_range | metrics_histogram_over_time_duration",
+        "metrics_range | metrics_quantile_over_time_p95",
+        "metrics_range | metrics_rate_by_kind_all_spans",
+        "metrics_range | metrics_rate_no_groupby",
+        "search | ancestor_op_consumer_under_payments",
+        "search | avg_duration_per_trace_status_ok",
+        "search | count_spans_per_trace",
+        "search | descendant_op_payments_to_consumer",
+        "search | direct_child_op_client_under_checkout",
+        "search | direct_parent_op_checkout_to_child",
+        "search | duration_gt_100ms",
+        "search | duration_lt_300ms",
+        "search | kind_eq_server",
+        "search | kind_not_nil",
+        "search | kind_not_nil_unspecified_carrier",
+        "search | name_not_nil",
+        "search | resource_deployment_env_eq_compat_test",
+        "search | resource_deployment_env_not_nil",
+        "search | resource_service_name_eq_checkout",
+        "search | resource_service_name_neq_checkout",
+        "search | resource_service_name_regex_shipping",
+        "search | set_and_checkout_and_status_error",
+        "search | set_or_two_kinds",
+        "search | set_or_two_services",
+        "search | span_http_method_eq_get",
+        "search | span_http_method_eq_nil",
+        "search | spansets_and_unions_distinct_spans",
+        "search | spansets_drilldown_structure_tab",
+        "search | spansets_payments_spss_capped",
+        "search | spansets_resource_checkout_complete",
+        "search | spansets_select_nested_set",
+        "search | status_eq_error",
+        "search | status_not_nil",
+        "tag_values_v1 | tag_values_v1_service_name",
+        "tag_values_v2 | tag_values_v2_deployment_env",
+        "tag_values_v2 | tag_values_v2_service_name",
+        "tag_values_v2 | tag_values_v2_unknown_tag_empty",
+        "tags_v1 | tags_v1_all",
+        "tags_v2 | tags_v2_intrinsic",
+        "tags_v2 | tags_v2_resource",
+        "tags_v2 | tags_v2_span"
       ]
     }
   }

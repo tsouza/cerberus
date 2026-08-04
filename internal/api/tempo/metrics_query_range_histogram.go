@@ -8,8 +8,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/engine"
-	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // This file wires `| histogram_over_time(<attr>)` into
@@ -110,7 +108,12 @@ func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOv
 
 // serveMetricsQueryRangeHistogram runs the matrix-shape pipeline for a
 // lowered histogram_over_time plan and writes the Tempo
-// series-of-samples envelope.
+// series-of-samples envelope. Thin HTTP wrapper around
+// execMetricsRangeHistogram (metrics_exec.go) — the transport-agnostic
+// compute core the gRPC MetricsQueryRange RPC (grpc_exports.go) also
+// calls, so `| histogram_over_time(...)` behaves identically on both
+// surfaces. See metrics_exec.go's file-level comment for why this split
+// exists (#1577's drift class).
 func (h *Handler) serveMetricsQueryRangeHistogram(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -120,32 +123,12 @@ func (h *Handler) serveMetricsQueryRangeHistogram(
 	start, end time.Time,
 	step time.Duration,
 ) {
-	rw := &chplan.RangeWindow{
-		Input:           plan,
-		Range:           step,
-		Step:            step,
-		Start:           start,
-		End:             end,
-		TimestampColumn: h.Schema.TimestampColumn,
-	}
-	wrapped := wrapHistogramForSample(rw, hist)
-
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
-		IsMetric:      true,
-		ResponseShape: "tempo-metrics-matrix",
-	})
+	series, headers, qerr := h.execMetricsRangeHistogram(ctx, q, plan, hist, start, end, step)
 	if qerr != nil {
 		writeError(w, httpErrStatus(qerr), "", "", qerr)
 		return
 	}
-	h.Logger.Debug("cerberus tempo metrics_query_range histogram",
-		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
-
-	normalizeHistogramBucketLabels(res.Samples)
-	series := toMetricsSeriesWithNames(res.Samples, histogramLabelNames(hist))
-
-	writeEngineHeaders(w, res.Headers)
+	writeEngineHeaders(w, headers)
 	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
 		Series: series,
 	})
