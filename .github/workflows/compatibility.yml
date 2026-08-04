@@ -639,10 +639,29 @@ jobs:
         # CH_IMAGE pins the compose ClickHouse service to the declared
         # floor; everything else matches compatibility/prometheus exactly
         # so the only variable under test is the server version.
+        #
+        # TESTER_QUERY_PARALLELISM=2: below the ts_grid_* / native-rate
+        # floor (25.9, #1500) the fallback SQL does real per-row
+        # rate/quantile/reset aggregation, which is genuinely slower than
+        # the native-function path every other lane exercises. The
+        # upstream tester hardcodes a 10s deadline per comparison
+        # (upstream/promql/comparer/comparer.go) with no flag to raise
+        # it, so at its default -query-parallelism=20 enough
+        # genuinely-slower floor queries queue behind each other that
+        # some miss that shared deadline on pure contention, not a real
+        # divergence (report.json shows empty diffs, just "context
+        # deadline exceeded"). Measured directly against this same image
+        # under a 2-vCPU cap (this runner class): every affected query
+        # answers in under 3s alone; concurrency 20 reproduces >10s
+        # response times, concurrency 2 stays under ~4s with comfortable
+        # margin. Lowering parallelism is the honest fix — it changes
+        # only how much load the floor lane offers at once, not which
+        # SQL cerberus emits or what the ratchet compares.
         env:
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
           CH_IMAGE: "clickhouse/clickhouse-server:24.8"
+          TESTER_QUERY_PARALLELISM: "2"
         run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
       - name: Summarise report
