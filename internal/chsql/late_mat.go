@@ -1,6 +1,8 @@
 package chsql
 
 import (
+	"context"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -57,13 +59,72 @@ type lateMatShape struct {
 // late materialisation.
 //
 // The registry is populated from the default OTel-CH schema at package
-// init time. Custom-schema deployments overriding table names via
-// Config bypass the rewrite — the registry keys on the default table
-// names. The seed value here is the OTel default plus a small
-// indirection layer.
+// init time, so it only ever matches the OTel DEFAULT table names. Callers
+// that know the request's actually-resolved table (a possibly-overridden
+// schema.Logs.LogsTable / schema.Traces.SpansTable) should prefer
+// (*emitter).resolveLateMatShape below, which checks the ctx-threaded shape
+// first and falls back to this static map — see #1703 / WithLateMatShape.
 func lateMatShapeFor(table string) (lateMatShape, bool) {
 	s, ok := lateMatShapes[table]
 	return s, ok
+}
+
+// resolveLateMatShape resolves table's late-mat shape, preferring the
+// request-scoped shape threaded via chsql.WithLateMatShape (the resolved
+// schema.Logs / schema.Traces this request's Lang actually uses — correct
+// even when CERBERUS_SCHEMA_LOGS_TABLE / CERBERUS_SCHEMA_TRACES_TABLE
+// renames the table) and falling back to the default-OTel-name-keyed static
+// registry above. The fallback means a caller that hasn't threaded
+// WithLateMatShape (the spec/golden lane, or any as-yet-unmigrated caller)
+// keeps its pre-#1703 behaviour unchanged — this only ever ADDS a match, it
+// never removes one.
+func (e *emitter) resolveLateMatShape(table string) (lateMatShape, bool) {
+	if e.ctxLateMatTable != "" && e.ctxLateMatTable == table {
+		return e.ctxLateMatShape, true
+	}
+	return lateMatShapeFor(table)
+}
+
+// lateMatShapeCtxKey is the unexported context key carrying the
+// request-resolved late-materialisation (table, wide, rowKey) triple.
+type lateMatShapeCtxKey struct{}
+
+// lateMatCtxShape is the value stored under lateMatShapeCtxKey.
+type lateMatCtxShape struct {
+	table  string
+	wide   []string
+	rowKey []string
+}
+
+// WithLateMatShape returns ctx carrying the resolved (table, wide-columns,
+// row-key) triple for the ONE table this request's plan may scan under late
+// materialisation — mirrors WithSpansTable (scan_resource_bound.go). The
+// engine threads this from the request's own Lang (internal/engine/engine.go's
+// lateMatTabler duck-type), which derives it from the resolved schema.Logs /
+// schema.Traces value rather than the OTel default, fixing #1703: a
+// deployment overriding LogsTable / SpansTable via CERBERUS_SCHEMA_LOGS_TABLE
+// / CERBERUS_SCHEMA_TRACES_TABLE previously never matched the default-keyed
+// static registry and silently lost the late-materialisation rewrite.
+//
+// table/wide/rowKey mirrors registerLateMatShape's own gate: any half being
+// empty means the shape can never legitimately match (no row key to JOIN on,
+// or no wide column to defer), so it is dropped rather than wedging an
+// unusable entry into the context.
+func WithLateMatShape(ctx context.Context, table string, wide, rowKey []string) context.Context {
+	if table == "" || len(wide) == 0 || len(rowKey) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, lateMatShapeCtxKey{}, lateMatCtxShape{table: table, wide: wide, rowKey: rowKey})
+}
+
+// lateMatShapeFromCtx recovers the triple set by WithLateMatShape, or
+// ("", zero, false) when the caller never threaded one.
+func lateMatShapeFromCtx(ctx context.Context) (table string, shape lateMatShape, ok bool) {
+	v, vok := ctx.Value(lateMatShapeCtxKey{}).(lateMatCtxShape)
+	if !vok {
+		return "", lateMatShape{}, false
+	}
+	return v.table, lateMatShape{wide: v.wide, rowKey: v.rowKey}, true
 }
 
 // lateMatShapes seeds the registry from schema defaults. Mutating the
@@ -136,7 +197,12 @@ type lateMatMatch struct {
 //
 // A miss on any condition returns (nil, false) and the caller falls
 // through to the canonical single-SELECT emission path.
-func isLateMatCandidate(p chplan.Node) (*lateMatMatch, bool) {
+//
+// A method on *emitter (rather than a package-level function) so it can
+// resolve the Scan's table via (*emitter).resolveLateMatShape, which
+// prefers the request's ctx-threaded, possibly-overridden table shape over
+// the default-OTel-name-keyed static registry — see #1703.
+func (e *emitter) isLateMatCandidate(p chplan.Node) (*lateMatMatch, bool) {
 	proj, ok := p.(*chplan.Project)
 	if !ok || len(proj.Projections) == 0 {
 		return nil, false
@@ -164,7 +230,7 @@ func isLateMatCandidate(p chplan.Node) (*lateMatMatch, bool) {
 		return nil, false
 	}
 
-	shape, ok := lateMatShapeFor(scan.Table)
+	shape, ok := e.resolveLateMatShape(scan.Table)
 	if !ok {
 		return nil, false
 	}

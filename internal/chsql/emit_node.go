@@ -445,7 +445,7 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 	// references a wide column, emit the two-stage rewrite (inner thin
 	// SELECT + JOIN back for wide columns) instead of the canonical
 	// single-SELECT shape. See late_mat.go for the gate + emission.
-	if m, ok := isLateMatCandidate(p); ok {
+	if m, ok := e.isLateMatCandidate(p); ok {
 		return e.emitLateMat(m)
 	}
 

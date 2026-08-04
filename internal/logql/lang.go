@@ -69,6 +69,16 @@ const (
 // onto progress-context keys and trace attributes.
 func (l *Lang) Name() string { return telemetry.QLLogQL }
 
+// LateMatShape implements internal/engine's lateMatTabler, returning this
+// request's actually-resolved logs table plus its wide/row-key columns.
+// The engine threads this onto the emit context (chsql.WithLateMatShape)
+// so chsql's late-materialisation gate matches even when LogsTable has
+// been overridden away from the OTel default (CERBERUS_SCHEMA_LOGS_TABLE
+// or the equivalent config key) — see #1703.
+func (l *Lang) LateMatShape() (table string, wide, rowKey []string) {
+	return l.Schema.LogsTable, l.Schema.WideColumns, l.Schema.RowKey
+}
+
 // Parse runs the LogQL parser, lowers the AST, and returns the plan
 // plus engine.Meta. Parser failures map to 400 bad_data; lowering
 // failures (e.g. unsupported `| json` stage in the M3 window) map to
