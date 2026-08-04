@@ -248,7 +248,14 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   tag rather than the chDB substrate, and that the quickstart is new enough for
   every optimization it enables (floors derived from
   `internal/chopt/registry.go`, not duplicated). See
-  `docs/optimization-rules.md` (Rule 1, step 4).
+  `docs/optimization-rules.md` (Rule 1, step 4). One lane is a deliberate
+  exception to "every compatibility image == `chdb_substrate`":
+  `compatibility/prometheus/docker-compose.yml` parametrises its ClickHouse
+  tag as `${CH_IMAGE:-clickhouse/clickhouse-server:<chdb_substrate>}` so
+  `compatibility.yml`'s `prometheus-floor` job (#1500) can override it to run
+  the same corpus against `min_clickhouse` instead — check (f) reads that
+  job's `CH_IMAGE` and asserts it equals `min_clickhouse`, keeping the
+  exception itself under the same sync discipline as everything else.
   - Args: `--self-test` pins the parse / compare / drift-detection logic
     (run as a CI step before the gate); no args runs the gate over the tree.
   - Exit: `0` consistent (or self-test green), `1` on any drift.

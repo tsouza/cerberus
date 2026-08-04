@@ -8,6 +8,9 @@
 //   - internal/config/config.go (comment) the chDB substrate version
 //   - test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
 //                                         the migration lane's deployment-surface tag
+//   - .github/workflows/compatibility.yml the prometheus-floor lane's CH_IMAGE
+//                                         override (the ONE lane that deliberately
+//                                         runs BELOW chdb_substrate — see (f))
 //
 // and the quickstart MUST be new enough to actually demo every optimization
 // it enables. This script reads versions.yaml as the SoT and asserts:
@@ -17,7 +20,11 @@
 //   (b) preflight minCHBase == min_clickhouse, and minCHNativeRate
 //       == min_native_rate (the two preflight floors are the SoT mirror).
 //   (c) the chDB substrate (the compatibility prometheus/loki/tempo image
-//       tags) == chdb_substrate.
+//       tags) == chdb_substrate. compatibility/prometheus/docker-compose.yml
+//       parametrises its tag via `${CH_IMAGE:-clickhouse/clickhouse-server:X}`
+//       so the floor lane (f) can override it at run time; this check reads
+//       the `:-` DEFAULT, which is the honest "what does this file pin"
+//       answer for every trigger that doesn't set CH_IMAGE.
 //   (d) THE CRITICAL ONE: quickstart_clickhouse >= the highest version floor
 //       among the features the quickstart's CERBERUS_CH_OPTIMIZATIONS enables.
 //       The per-feature floors are NOT duplicated here - they are read from
@@ -28,6 +35,16 @@
 //       compatibility harnesses run on; quickstart_clickhouse is the
 //       deployment surface operators run. The migration lane models the
 //       operator deployment, so it tracks the quickstart pin.
+//   (f) compatibility.yml's `prometheus-floor` job's CH_IMAGE == min_clickhouse.
+//       That job (see #1500) exists specifically to run the prometheus
+//       differential corpus against cerberus's declared floor instead of
+//       chdb_substrate, forcing internal/chopt's auto-picker to resolve every
+//       above-floor feature OFF. If minCHBase moves without moving this job's
+//       CH_IMAGE (or vice versa), the floor lane silently stops testing the
+//       floor it claims to — (f) is what makes checks (b) and (c)'s
+//       DELIBERATE exception (this one lane, and only this lane, runs below
+//       chdb_substrate) a tracked invariant instead of an unenforced escape
+//       hatch from (c).
 //
 // No version floor is re-pinned here; floor data is derived from the registry.
 // When a future optimization raises the floor above the quickstart, (d) fails
@@ -106,9 +123,39 @@ function parseVersionsYaml(text) {
   return out;
 }
 
-// The quickstart image tag from `image: clickhouse/clickhouse-server:<tag>`.
+// The compose image tag, from either the literal form
+// `image: clickhouse/clickhouse-server:<tag>` or the parametrised form
+// `image: ${VAR:-clickhouse/clickhouse-server:<tag>}` (used by
+// compatibility/prometheus/docker-compose.yml so the prometheus-floor CI job
+// can override the tag at run time — see #1500). Either way this returns
+// what the file itself PINS: the literal tag, or the `:-` default.
 function readComposeCHTag(text) {
-  const m = /image:\s*clickhouse\/clickhouse-server:(\S+)/.exec(text);
+  const literal = /image:\s*clickhouse\/clickhouse-server:(\S+)/.exec(text);
+  if (literal) return literal[1];
+  const interpolated = /image:\s*\$\{[A-Za-z_][A-Za-z0-9_]*:-clickhouse\/clickhouse-server:([^}]+)\}/.exec(text);
+  return interpolated ? interpolated[1] : null;
+}
+
+// extractJobBlock pulls one top-level GitHub Actions job's raw text out of a
+// workflow file, bounded by the next 2-space-indented `key:` line (or EOF).
+// Not a full YAML parser — cerberus's workflows use consistent 2-space job
+// indentation under `jobs:`, and the self-test pins this against a synthetic
+// fixture. Returns null when the job name isn't found.
+function extractJobBlock(text, jobName) {
+  const re = new RegExp(`\\n  ${jobName}:\\n([\\s\\S]*?)(?=\\n  [A-Za-z0-9_-]+:\\n|$)`);
+  const m = re.exec(text);
+  return m ? m[1] : null;
+}
+
+// The compatibility/prometheus-floor job's CH_IMAGE override — the tag it
+// pins the floor lane's compose ClickHouse service to. Scoped to the job's
+// own block (rather than a blind file-wide grep) so a future unrelated
+// CH_IMAGE use elsewhere in compatibility.yml can't be mistaken for the
+// floor lane's pin.
+function readFloorJobCHImage(text) {
+  const block = extractJobBlock(text, 'prometheus-floor');
+  if (!block) return null;
+  const m = /CH_IMAGE:\s*"clickhouse\/clickhouse-server:([^"]+)"/.exec(block);
   return m ? m[1] : null;
 }
 
@@ -269,6 +316,21 @@ export function runChecks(sources) {
     notes.push(`(e) migration tier-1 image == quickstart ${vstr(quickstart)}`);
   }
 
+  // (f) the prometheus-floor lane's CH_IMAGE == min_clickhouse. This is the
+  // ONE lane that deliberately runs below chdb_substrate (see #1500); this
+  // check is what keeps that exception honest instead of an unenforced
+  // drift point once (c) stopped being able to see it.
+  const floorImage = parseVersion(readFloorJobCHImage(sources.compatibilityWorkflow));
+  if (!floorImage) {
+    failures.push("compatibility.yml: could not read the prometheus-floor job's CH_IMAGE");
+  } else if (minCH && !sameMM(floorImage, minCH)) {
+    failures.push(
+      `(f) compatibility.yml prometheus-floor CH_IMAGE ${vstr(floorImage)} != versions.yaml min_clickhouse ${vstr(minCH)}`,
+    );
+  } else if (minCH) {
+    notes.push(`(f) prometheus-floor CH_IMAGE == min_clickhouse ${vstr(minCH)}`);
+  }
+
   return { failures, notes };
 }
 
@@ -289,6 +351,7 @@ function loadSources() {
       'compatibility/tempo/docker-compose.yml': readFile('compatibility/tempo/docker-compose.yml'),
     },
     migrationTier1: readFile('test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml'),
+    compatibilityWorkflow: readFile('.github/workflows/compatibility.yml'),
   };
 }
 
@@ -344,6 +407,43 @@ var registry = []Feature{
   ok('registry condition_cache floor 25.3', floors['condition_cache']?.minor === 3);
   ok('registry columnar_result_decode AlwaysAvailable -> null floor', floors['columnar_result_decode'] === null);
 
+  // --- unit: readComposeCHTag handles both the literal and the
+  // parametrised-default forms (the floor lane needs the latter) ---
+  ok(
+    'readComposeCHTag literal',
+    readComposeCHTag('image: clickhouse/clickhouse-server:26.5\n') === '26.5',
+  );
+  ok(
+    'readComposeCHTag interpolated default',
+    readComposeCHTag('image: ${CH_IMAGE:-clickhouse/clickhouse-server:26.5}\n') === '26.5',
+  );
+  ok('readComposeCHTag no image -> null', readComposeCHTag('services:\n  foo:\n') === null);
+
+  // --- unit: extractJobBlock / readFloorJobCHImage ---
+  const fakeWorkflow = [
+    'jobs:',
+    '  prometheus:',
+    '    steps:',
+    '      - run: echo not-the-floor-job',
+    '  prometheus-floor:',
+    '    steps:',
+    '      - run: |',
+    '          echo hi',
+    '        env:',
+    '          CH_IMAGE: "clickhouse/clickhouse-server:24.8"',
+    '  promql-surface:',
+    '    steps:',
+    '      - run: echo unrelated',
+    '',
+  ].join('\n');
+  ok('extractJobBlock finds the named job', extractJobBlock(fakeWorkflow, 'prometheus-floor')?.includes('CH_IMAGE'));
+  ok(
+    "extractJobBlock doesn't bleed into the next job",
+    !extractJobBlock(fakeWorkflow, 'prometheus-floor')?.includes('promql-surface'),
+  );
+  ok('readFloorJobCHImage reads the pinned tag', readFloorJobCHImage(fakeWorkflow) === '24.8');
+  ok('readFloorJobCHImage missing job -> null', readFloorJobCHImage('jobs:\n  other:\n    steps: []\n') === null);
+
   // --- integration: a consistent fixture set passes with zero failures ---
   const goodSources = {
     versionsYaml:
@@ -354,13 +454,18 @@ var registry = []Feature{
       'var minCHBase = chopt.Version{Major: 24, Minor: 8}\nvar minCHNativeRate = chopt.Version{Major: 25, Minor: 6}\n',
     registry: fakeRegistry,
     compatibility: {
-      'compatibility/prometheus/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
+      // Prometheus uses the real parametrised-default form (the floor lane
+      // overrides CH_IMAGE at run time); loki/tempo stay literal — both
+      // forms of readComposeCHTag are exercised by this one fixture set.
+      'compatibility/prometheus/docker-compose.yml': 'image: ${CH_IMAGE:-clickhouse/clickhouse-server:25.8}\n',
       'compatibility/loki/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
       'compatibility/tempo/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
     },
     // The migration tier-1 stack tracks the quickstart tag (26.5 here), NOT
     // the 25.8 chDB substrate the compatibility lanes pin.
     migrationTier1: 'image: clickhouse/clickhouse-server:26.5\n',
+    compatibilityWorkflow:
+      'jobs:\n  prometheus-floor:\n    steps:\n      - run: echo seed\n        env:\n          CH_IMAGE: "clickhouse/clickhouse-server:24.8"\n',
   };
   ok('consistent fixtures => no failures', runChecks(goodSources).failures.length === 0);
 
@@ -409,6 +514,19 @@ var registry = []Feature{
     '(e) migration tier-1 pinned to the chDB substrate instead of the quickstart is caught',
     // 25.8 is chdb_substrate in the fixture - the exact wrong-role mistake (e) exists to reject.
     drift((s) => (s.migrationTier1 = 'image: clickhouse/clickhouse-server:25.8\n')).some((f) => f.startsWith('(e)')),
+  );
+  ok(
+    '(f) prometheus-floor CH_IMAGE drifting from min_clickhouse is caught',
+    // The floor lane's CH_IMAGE moved to 24.12 but min_clickhouse stayed 24.8.
+    drift((s) => (s.compatibilityWorkflow = s.compatibilityWorkflow.replace('24.8', '24.12'))).some((f) =>
+      f.startsWith('(f)'),
+    ),
+  );
+  ok(
+    "(f) missing prometheus-floor job is caught",
+    drift((s) => (s.compatibilityWorkflow = 'jobs:\n  other-job:\n    steps: []\n')).some(
+      (f) => f.includes('prometheus-floor'),
+    ),
   );
 
   if (fails.length > 0) {

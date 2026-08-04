@@ -75,11 +75,19 @@ import (
 // track feature availability, which lands at minor-version granularity.
 
 // minCHBase is the supported / CI-tested ClickHouse floor — the version
-// README and docs state as the minimum. The differential compatibility
-// suite (the source of truth for all three heads) runs ClickHouse 24.8
-// and is green, so the SQL cerberus emits is exercised end-to-end against
-// this floor; the 24.8 empty-input / parse-unit / filter-path workarounds
-// are all emitted unconditionally.
+// README and docs state as the minimum. The three required compatibility/*
+// heads (the source of truth for all three heads' PARITY) run ClickHouse
+// 26.5, same as chDB; every feature above this floor is gated behind
+// internal/chopt's registry (auto-selected only once the probed server
+// satisfies the feature's own MinVersion), so those substrates always take
+// the newest eligible branch and never exercise the 24.8-safe fallback SQL
+// those gates protect. compatibility/prometheus-floor (see #1500) closes
+// that gap: it runs the SAME prometheus corpus against
+// clickhouse/clickhouse-server:24.8, forcing the auto-picker to resolve
+// every >24.8 feature to OFF and executing the fallback branches — the
+// empty-input / parse-unit / filter-path workarounds, the row-path
+// rate/increase/changes/resets/deriv/predict_linear fan-outs — end to end
+// against reference Prometheus.
 var minCHBase = chopt.Version{Major: 24, Minor: 8}
 
 // minCHNativeRate is the ClickHouse floor at which the native
