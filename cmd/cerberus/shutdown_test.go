@@ -15,6 +15,13 @@ type recorder struct {
 }
 
 func (r *recorder) steps3(httpErr, otlpErr error) shutdownSteps {
+	return r.steps4(httpErr, otlpErr, nil)
+}
+
+// steps4 is steps3 plus a chErr for the ClickHouse client Close() step, for
+// tests that need to control (or observe) that step independently of the
+// OTLP flush.
+func (r *recorder) steps4(httpErr, otlpErr, chErr error) shutdownSteps {
 	return shutdownSteps{
 		drainHTTP: func(context.Context) error {
 			r.steps = append(r.steps, "http")
@@ -27,6 +34,10 @@ func (r *recorder) steps3(httpErr, otlpErr error) shutdownSteps {
 		flushOTLP: func(context.Context) error {
 			r.steps = append(r.steps, "otlp")
 			return otlpErr
+		},
+		closeCH: func() error {
+			r.steps = append(r.steps, "ch")
+			return chErr
 		},
 	}
 }
@@ -47,7 +58,7 @@ func TestShutdown_RunsTheTailWhenTheHTTPDrainFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "graceful shutdown") {
 		t.Errorf("shutdown err = %q, want it to name the failing stage", err)
 	}
-	want := []string{"http", "grpc", "otlp"}
+	want := []string{"http", "grpc", "otlp", "ch"}
 	if got := strings.Join(r.steps, ","); got != strings.Join(want, ",") {
 		t.Fatalf("steps run = [%s], want [%s] — the tail must run even when the drain fails", got, strings.Join(want, ","))
 	}
@@ -70,7 +81,7 @@ func TestShutdown_HappyPathDrainsGracefullyInOrder(t *testing.T) {
 	if err := shutdown(context.Background(), r.steps3(nil, nil), discardLogger()); err != nil {
 		t.Fatalf("shutdown err = %v, want nil", err)
 	}
-	if got, want := strings.Join(r.steps, ","), "http,grpc,otlp"; got != want {
+	if got, want := strings.Join(r.steps, ","), "http,grpc,otlp,ch"; got != want {
 		t.Fatalf("steps run = [%s], want [%s]", got, want)
 	}
 	if !r.gracefulGRPC {
@@ -94,11 +105,58 @@ func TestShutdown_SkipsTheGRPCStopWhenNoServerWasBuilt(t *testing.T) {
 	steps := shutdownSteps{
 		drainHTTP: func(context.Context) error { return nil },
 		flushOTLP: func(context.Context) error { flushed = true; return nil },
+		closeCH:   func() error { return nil },
 	}
 	if err := shutdown(context.Background(), steps, discardLogger()); err != nil {
 		t.Fatalf("shutdown err = %v, want nil", err)
 	}
 	if !flushed {
 		t.Error("telemetry was not flushed when the tempo head is disabled")
+	}
+}
+
+// The gap #1433 filed: run()'s ClickHouse client Close() ran only inside an
+// unasserted `defer` in main.go, so nothing exercised it on the process's own
+// graceful-exit path. closeCH being wired into shutdownSteps and called by
+// shutdown() is what makes that call reachable from a test at all.
+func TestShutdown_ClosesTheClickHouseClient(t *testing.T) {
+	r := &recorder{}
+	if err := shutdown(context.Background(), r.steps4(nil, nil, nil), discardLogger()); err != nil {
+		t.Fatalf("shutdown err = %v, want nil", err)
+	}
+	want := []string{"http", "grpc", "otlp", "ch"}
+	if got := strings.Join(r.steps, ","); got != strings.Join(want, ",") {
+		t.Fatalf("steps run = [%s], want [%s] — ClickHouse must close LAST, once the HTTP drain guarantees no in-flight query still needs it", got, strings.Join(want, ","))
+	}
+}
+
+// The CH client Close() runs even when the HTTP drain already failed — mirrors
+// TestShutdown_RunsTheTailWhenTheHTTPDrainFails but asserts the "ch" step
+// specifically, since that is the exact gap #1433 named.
+func TestShutdown_ClosesTheClickHouseClientEvenWhenAnEarlierStepFails(t *testing.T) {
+	r := &recorder{}
+	_ = shutdown(context.Background(), r.steps4(errors.New("http drain failed"), errors.New("otlp flush failed"), nil), discardLogger())
+	if got, want := strings.Join(r.steps, ","), "http,grpc,otlp,ch"; got != want {
+		t.Fatalf("steps run = [%s], want [%s] — the CH close must still run after earlier failures", got, want)
+	}
+}
+
+// A ClickHouse close failure is logged, mirroring run()'s own discard
+// (`_ = client.Close()`): it is not promoted to the process's exit status, and
+// it must not mask an earlier, more actionable HTTP-drain failure that shutdown
+// already captured in firstErr.
+func TestShutdown_ClickHouseCloseErrorIsNotFatalAndDoesNotMaskAnEarlierError(t *testing.T) {
+	r := &recorder{}
+	closeErr := errors.New("clickhouse: connection already closed")
+
+	err := shutdown(context.Background(), r.steps4(nil, nil, closeErr), discardLogger())
+	if err != nil {
+		t.Fatalf("shutdown err = %v, want nil — a CH close failure must not fail the process exit", err)
+	}
+
+	drainErr := errors.New("deadline exceeded draining connections")
+	err = shutdown(context.Background(), r.steps4(drainErr, nil, closeErr), discardLogger())
+	if !errors.Is(err, drainErr) {
+		t.Fatalf("shutdown err = %v, want it to still wrap the earlier drain error %v, not the later CH close error", err, drainErr)
 	}
 }

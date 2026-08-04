@@ -311,6 +311,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("configure clickhouse client: %w", err)
 	}
+	// Safety net for every early-return path below (schema boot, requirements
+	// check, head mounting, …) that exits before the shutdownSteps below are
+	// ever built. The graceful-shutdown path closes the client explicitly, via
+	// steps.closeCH; Client.Close is documented idempotent, so this defer
+	// firing again afterward is a deliberate no-op, not a double-close bug.
 	defer func() {
 		_ = client.Close()
 	}()
@@ -473,6 +478,7 @@ func run() error {
 	steps := shutdownSteps{
 		drainHTTP: srv.Shutdown,
 		flushOTLP: providers.Shutdown,
+		closeCH:   client.Close,
 	}
 	// nil when the tempo head is disabled — no gRPC server was built.
 	if grpcServer != nil {
@@ -491,7 +497,7 @@ func run() error {
 	return nil
 }
 
-// shutdownSteps is the teardown surface run() owns, narrowed to the three calls
+// shutdownSteps is the teardown surface run() owns, narrowed to the four calls
 // whose ORDER and whose run-even-on-failure contract are the thing worth
 // asserting. Extracting it is what makes that contract reachable from a test at
 // all: run() itself needs a listener, a ClickHouse pool and a signal.
@@ -500,10 +506,20 @@ func run() error {
 // drain may block: GracefulStop takes no context and waits for every active RPC
 // to return, so calling it after the HTTP drain has already blown its deadline
 // would inherit that hang with nothing left to bound it.
+//
+// closeCH is run() 's client.Close, which run() ALSO defers unconditionally so
+// every early-return path (config load, schema boot, requirements check — all
+// before this steps struct is ever built) still tears the pool down. Routing it
+// through this struct too is safe rather than a double-teardown risk because
+// Client.Close is documented idempotent (internal/chclient/client.go): the
+// recovery-loop stop and the pool close both guard against a second call. This
+// is the one path that lets a test observe the CLOSE HAPPENING on the graceful
+// exit, not just on process teardown the test can't drive.
 type shutdownSteps struct {
 	drainHTTP func(context.Context) error
 	stopGRPC  func(graceful bool)
 	flushOTLP func(context.Context) error
+	closeCH   func() error
 }
 
 // shutdown tears the process down in dependency order and runs EVERY step even
@@ -511,13 +527,15 @@ type shutdownSteps struct {
 //
 // The order is a dependency chain: the HTTP drain closes the HTTP/2 transports
 // the gRPC streams ride on, so the gRPC drain after it is a no-op on the happy
-// path; the telemetry flush is last because the two steps before it emit the
-// spans and metrics it is flushing.
+// path; the telemetry flush comes next because the two steps before it emit the
+// spans and metrics it is flushing; the ClickHouse client closes LAST because
+// the HTTP drain is what guarantees no in-flight query is still using it.
 //
 // Running the tail unconditionally is the whole point. Returning at the first
 // error would drop exactly the telemetry that describes the failed shutdown —
 // the one teardown an operator actually needs to see — and would leave the gRPC
-// listener holding its sockets until the process image went away.
+// listener holding its sockets, or the ClickHouse pool holding its connections,
+// until the process image went away.
 func shutdown(ctx context.Context, steps shutdownSteps, logger *slog.Logger) error {
 	var firstErr error
 	drained := true
@@ -532,6 +550,12 @@ func shutdown(ctx context.Context, steps shutdownSteps, logger *slog.Logger) err
 	// Noop when telemetry was disabled (Endpoint == "").
 	if err := steps.flushOTLP(ctx); err != nil {
 		logger.Warn("telemetry shutdown returned error", "err", err)
+	}
+	// Mirrors run()'s outer `_ = client.Close()` discard: a close failure here
+	// is logged, never promoted to the process's exit status, and never masks
+	// an earlier, more actionable failure already captured in firstErr.
+	if err := steps.closeCH(); err != nil {
+		logger.Warn("clickhouse client close returned error", "err", err)
 	}
 	return firstErr
 }
