@@ -557,6 +557,174 @@ jobs:
           echo "::error title=compatibility/prometheus-forced-route failed::forced-route harness exited non-zero — route B (CERBERUS_EVAL_ROUTE=sharded) diverged from reference Prometheus, OR an infra failure occurred. See the harness log + the uploaded compatibility-prometheus-forced-route-report artifact"
           exit 1
 
+  prometheus-floor:
+    # Floor-pinned proof job for #1500: internal/preflight/preflight.go's
+    # minCHBase declares ClickHouse 24.8 as cerberus's supported floor, but
+    # every other lane (this workflow's three heads, chDB) runs 26.5+ — so
+    # every version-gated fallback branch (internal/chopt's registry: the
+    # ts_grid_range/resample/changes/resets/deriv/predict_linear family,
+    # each auto-selected only >= 25.9; condition_cache >= 25.3) was PICKED
+    # BY DEFAULT on every substrate that ever ran, and the 24.8-safe
+    # fallback SQL those branches exist to protect was never executed
+    # against a real 24.8 server. This job runs the SAME prometheus
+    # differential harness + corpus as compatibility/prometheus, but with
+    # CH_IMAGE=clickhouse/clickhouse-server:24.8 (docker-compose.yml
+    # interpolates it), so the auto-picker probes a genuine 24.8 server,
+    # resolves every >24.8 feature to OFF, and the fallback branches are
+    # the ones that execute end to end against reference Prometheus.
+    #
+    # It reuses compat-ratchet.mjs against the SAME
+    # compatibility/parity-baseline.json prometheus roster as the standard
+    # job: cerberus's SQL is meant to be RESULT-EQUIVALENT regardless of
+    # which ClickHouse minor line executes it, so the floor run passing the
+    # identical case roster is the actual proof the floor is honest. A case
+    # that regresses, vanishes, or arrives failing here — but not on the
+    # 26.5 lane — is a genuine floor-specific correctness bug, not a
+    # baseline-drift false positive, because the two runs are graded
+    # against the one committed roster.
+    #
+    # This is a NORMAL CI job (not a branch-protection-required check) until
+    # it has soaked on main, same posture compatibility/promql-surface and
+    # schema-integration.yml's schema-ddl lane started from.
+    name: compatibility/prometheus-floor
+    needs: [changes, gate]
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # ---- free runner disk BEFORE the compose stack boots (infra-flake fix) ----
+      # Same compose stack + same DiskPressure risk as compatibility/prometheus.
+      - name: Disk free (before reclaim)
+        run: df -h
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+        with:
+          docker-images: false
+          large-packages: false
+          tool-cache: false
+      - name: Disk free (after reclaim)
+        run: df -h
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+        with:
+          tool: just
+
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+        run: node .github/scripts/registry-login.mjs
+
+      - name: Log in to the image mirror (GHCR)
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      - name: Run floor-pinned compatibility harness
+        id: compat
+        # CH_IMAGE pins the compose ClickHouse service to the declared
+        # floor; everything else matches compatibility/prometheus exactly
+        # so the only variable under test is the server version.
+        env:
+          TESTER_END_TIME: "2026-05-11T01:00:00Z"
+          TESTER_RANGE: "3600"
+          CH_IMAGE: "clickhouse/clickhouse-server:24.8"
+        run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
+
+      - name: Summarise report
+        if: always()
+        run: |
+          if [ -f compatibility/prometheus/report.json ]; then
+            jq '{
+              total: ([.results[]?] | length),
+              passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
+              diffs: ([.results[]? | select((.diff // "") != "")] | length),
+              unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
+            }' compatibility/prometheus/report.json
+          else
+            echo "no report produced (harness step likely failed before tester ran)"
+          fi
+
+      - name: Append score to step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          score="compatibility/prometheus/compat-score.json"
+          if [ -f "$score" ]; then
+            percent=$(jq -r .percent "$score")
+            passed=$(jq -r .passed "$score")
+            total=$(jq -r .total "$score")
+            {
+              echo "### compatibility/prometheus-floor (ClickHouse 24.8)"
+              echo ""
+              echo "| head | passed/total | percent |"
+              echo "|------|--------------|---------|"
+              echo "| prometheus (floor) | ${passed}/${total} | ${percent}% |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no compat-score.json produced (harness step likely failed before scorer ran)"
+          fi
+
+      - name: Parity-regression ratchet (vs the same 26.5-lane baseline)
+        # Gates on case IDENTITY against compatibility/parity-baseline.json's
+        # `prometheus` roster — the same file/head compatibility/prometheus
+        # gates on. A floor-specific divergence surfaces here as REGRESSED /
+        # ARRIVED-FAILING; see compat-ratchet.mjs's header for the verdict
+        # table. Runs only when the harness itself succeeded.
+        if: steps.compat.outcome == 'success'
+        run: node .github/scripts/compat-ratchet.mjs
+        env:
+          HEAD: prometheus
+          SCORE: compatibility/prometheus/compat-score.json
+          CASES: compatibility/prometheus/compat-cases.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compatibility-prometheus-floor-report
+          path: |
+            compatibility/prometheus/report.json
+            compatibility/prometheus/compat-score.json
+            compatibility/prometheus/compat-cases.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Disk-pressure self-diagnosis on failure
+        if: failure()
+        run: |
+          echo "=== disk usage (DiskPressure self-diagnosis) ==="
+          df -h
+          avail_kb=$(df -P / | awk 'NR==2 {print $4}')
+          if [ "${avail_kb:-0}" -lt 2097152 ]; then
+            echo "::notice::infra: DiskPressure/ephemeral-storage eviction likely (< 2 GB free on / after the run) — this is an infra flake, safe to re-run on a fresh runner"
+          fi
+
+      - name: Fail job if compatibility step failed
+        # Mirrors compatibility/prometheus: only re-raises the HARNESS
+        # step's own failure (a hard infra break — compose-up, missing
+        # report.json). A ratchet verdict is a separate, non-`always()`
+        # step that already reddens the job on its own, with its own
+        # ::error annotation from compat-ratchet.mjs.
+        if: always() && steps.compat.outcome == 'failure'
+        run: |
+          echo "::error title=compatibility/prometheus-floor failed::floor harness (ClickHouse 24.8) exited non-zero — an infra failure or a hard SQL rejection against the floor server. See the harness log + the uploaded compatibility-prometheus-floor-report artifact"
+          exit 1
+
   promql-surface:
     # Reference-backed full-surface PromQL rejection-completeness gate (#106).
     #
