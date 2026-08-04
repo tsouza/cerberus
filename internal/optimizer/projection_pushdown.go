@@ -74,7 +74,13 @@ import (
 //     TraceQL metrics-pipeline aggregate (`rate()` / `*_over_time()`).
 //     Its child slot is named Inner, not Input. Narrows the Scan to the
 //     union of the GroupBy key refs and Attr (nil for rate /
-//     count_over_time).
+//     count_over_time). When this MetricsAggregate is itself wrapped by a
+//     RangeWindow (the matrix path, `RangeWindow(MetricsAggregate(...))`),
+//     a companion case on the RangeWindow arm — reached after this one,
+//     since the walk is bottom-up — widens the Scan this shape narrowed to
+//     also include the RangeWindow's own TimestampColumn, which
+//     emitRangeWindowMetrics reads directly off the same Scan for
+//     time-bucketing. See applyRangeWindowOverMetricsAggregate.
 //  9. `HistogramQuantile(Scan)` / `HistogramQuantile(Filter(Scan))` — the
 //     classic-histogram quantile interpolation. Narrows the Scan to
 //     BucketCountsColumn, ExplicitBoundsColumn, plus the GroupBy refs.
@@ -112,6 +118,9 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 	case *chplan.Aggregate:
 		return applyStageScan(node, node.Input, aggregateColumns(node))
 	case *chplan.RangeWindow:
+		if ma, ok := node.Input.(*chplan.MetricsAggregate); ok {
+			return applyRangeWindowOverMetricsAggregate(node, ma)
+		}
 		return applyStageScan(node, node.Input, rangeWindowColumns(node))
 	case *chplan.RangeWindowNative:
 		return applyStageScan(node, node.Input, nativeRangeWindowColumns(node))
@@ -249,10 +258,11 @@ func aggregateColumns(a *chplan.Aggregate) []string {
 // column refs walked out of GroupBy and ScalarExprs.
 //
 // Only the row-shape (PromQL / LogQL) RangeWindow over Scan / Filter(Scan)
-// reaches this: applyStageScan bails on a MetricsAggregate input before we
-// get here, so the TraceQL matrix mode (which ignores ValueColumn and
-// reads the per-span Timestamp off its MetricsAggregate.Inner) is never
-// narrowed by this path.
+// reaches this: the Apply switch routes a RangeWindow whose Input is a
+// *chplan.MetricsAggregate — the TraceQL matrix mode, which ignores
+// ValueColumn and reads the per-span Timestamp off its MetricsAggregate.Inner
+// — to applyRangeWindowOverMetricsAggregate instead, since that shape needs
+// to WIDEN an already-narrowed Scan rather than narrow one directly.
 func rangeWindowColumns(r *chplan.RangeWindow) []string {
 	seen := map[string]struct{}{}
 	if r.TimestampColumn != "" {
@@ -269,6 +279,84 @@ func rangeWindowColumns(r *chplan.RangeWindow) []string {
 		walkExpr(s, collect)
 	}
 	return sortedColumnSet(seen)
+}
+
+// applyRangeWindowOverMetricsAggregate handles the TraceQL matrix shape
+// `RangeWindow(MetricsAggregate(Scan))` / `RangeWindow(MetricsAggregate(Filter(Scan)))`.
+// applyStageScan's own RangeWindow case never reaches this shape (its inner
+// switch only matches Scan / Filter(Scan) directly), so by design it is the
+// MetricsAggregate arm — firing first, since applyToTree walks bottom-up —
+// that narrows the Scan beneath ma. But metricsAggregateColumns only
+// enumerates the columns MetricsAggregate's OWN emit reads (GroupBy + Attr);
+// per MetricsAggregate's doc comment, emitRangeWindowMetrics additionally
+// reads the wrapping RangeWindow's OWN TimestampColumn slot directly off
+// that same underlying Scan for time-bucketing. A MetricsAggregate node
+// carries no reference to its parent, so the MetricsAggregate arm cannot
+// know about this requirement — only the RangeWindow arm, which sees the
+// already-rewritten (possibly already-narrowed) MetricsAggregate as its
+// Input, can supply it.
+//
+// This widens the already-narrowed inner Scan by unioning in
+// r.TimestampColumn whenever it is missing. It deliberately does NOT use
+// applyStageScan/cloneStageOverInput: those assume the stage sits directly
+// over Scan/Filter(Scan) and bail on any other input shape (including
+// MetricsAggregate) by construction — this is a distinct shape needing a
+// widen instead of a first narrow.
+func applyRangeWindowOverMetricsAggregate(r *chplan.RangeWindow, ma *chplan.MetricsAggregate) (chplan.Node, bool) {
+	if r.TimestampColumn == "" {
+		return r, false
+	}
+	switch inner := ma.Inner.(type) {
+	case *chplan.Scan:
+		widened, ok := widenScanColumns(inner, r.TimestampColumn)
+		if !ok {
+			return r, false
+		}
+		newMA := *ma
+		newMA.Inner = widened
+		newR := *r
+		newR.Input = &newMA
+		return &newR, true
+	case *chplan.Filter:
+		scan, ok := inner.Input.(*chplan.Scan)
+		if !ok {
+			return r, false
+		}
+		widened, ok := widenScanColumns(scan, r.TimestampColumn)
+		if !ok {
+			return r, false
+		}
+		newFilter := *inner
+		newFilter.Input = widened
+		newMA := *ma
+		newMA.Inner = &newFilter
+		newR := *r
+		newR.Input = &newMA
+		return &newR, true
+	default:
+		return r, false
+	}
+}
+
+// widenScanColumns unions extraCol into scan.Columns, returning the widened
+// clone + true when it made a difference. It reports (nil, false) — no
+// widening needed — in two cases: scan.Columns is still empty (SELECT *
+// trivially already carries extraCol; narrowing it to just extraCol here
+// would be a REGRESSION, pre-empting whatever set the eventual narrowing
+// arm was going to apply), or extraCol is already present in the narrowed
+// set (idempotence: a second FixedPoint iteration over an already-widened
+// tree must report no change).
+func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
+	if len(scan.Columns) == 0 {
+		return nil, false
+	}
+	widened := unionSortedColumns(scan.Columns, []string{extraCol})
+	if len(widened) == len(scan.Columns) {
+		return nil, false
+	}
+	newScan := *scan
+	newScan.Columns = widened
+	return &newScan, true
 }
 
 // nativeRangeWindowColumns returns the sorted, deduped set of base columns
@@ -391,7 +479,10 @@ func rangeLWRColumns(r *chplan.RangeLWR) []string {
 // a MetricsAggregate's own emit reads off its Inner input: the GroupBy
 // key expressions plus Attr (the *_over_time / quantile_over_time operand;
 // nil for rate / count_over_time). TimestampColumn is read off a WRAPPING
-// RangeWindow's own slot when one is present, not off this node.
+// RangeWindow's own slot when one is present, not off this node — a
+// MetricsAggregate node has no parent pointer, so this function cannot
+// enumerate it; applyRangeWindowOverMetricsAggregate widens the Scan this
+// rule narrows to include it once the RangeWindow's own Apply case runs.
 func metricsAggregateColumns(m *chplan.MetricsAggregate) []string {
 	seen := map[string]struct{}{}
 	collect := collectColumn(seen)
