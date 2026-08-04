@@ -7,6 +7,21 @@
 # The three metrics_instant cases activated alongside the cerberus
 # /api/metrics/query handler (see internal/api/tempo/metrics_query_instant.go).
 #
+# 4 cases mined from upstream in #1709 diverged from reference Tempo on
+# arrival and are held OUT of this corpus per driver/corpus.go's "no
+# opt-out marker, a case that can't run is removed" contract (real
+# divergences never enter the baseline). Each is a filed bug, re-added
+# by the PR that closes it:
+#   * scoped_trace_root_service, scoped_trace_root_name_regex,
+#     scoped_trace_duration_gt — cerberus folds trace:rootService /
+#     trace:rootName / trace:duration comparisons to constant-false
+#     instead of computing real answers (#1711).
+#   * negated_kind_not_client — reference Tempo returns empty for any
+#     top-level `!(<comparison>)` spanset filter regardless of the
+#     inner comparison's selectivity; cerberus computes the logically
+#     correct (non-empty) answer instead of matching that behaviour
+#     bit-for-bit (#1712).
+#
 # The shadow test runs the SAME 20 search categories against a fake
 # in-process span set; this corpus runs the SAME categories against
 # real Tempo + real cerberus, fed by harness/.../driver/seeder.go's
@@ -977,44 +992,6 @@ scoped_span_parent_id_not_nil
 search
 
 -- name --
-scoped_trace_root_service
-# TestScopedIntrinsics: `trace:rootService`. Fixture seeds 4 services,
-# 25 traces each — checkout gets exactly 25 of the 100 total traces.
--- query --
-{ trace:rootService = "checkout" }
--- endpoint --
-search
--- expected_min_traces --
-1
--- expected_max_traces --
-500
-
--- name --
-scoped_trace_root_name_regex
-# TestScopedIntrinsics: `trace:rootName`, same checkout-service subset
-# as scoped_trace_root_service.
--- query --
-{ trace:rootName =~ "GET /api/checkout/.*" }
--- endpoint --
-search
--- expected_min_traces --
-1
--- expected_max_traces --
-500
-
--- name --
-scoped_trace_duration_gt
-# TestScopedIntrinsics: `trace:duration`.
--- query --
-{ trace:duration > 100ms }
--- endpoint --
-search
--- expected_min_traces --
-1
--- expected_max_traces --
-500
-
--- name --
 scoped_instrumentation_name
 # TestScopedIntrinsics: `instrumentation:name`. Every span in the
 # fixture shares the same InstrumentationScope
@@ -1072,20 +1049,6 @@ const_boolean_true_matches_all
 # upstream's engine tests do.
 -- query --
 { ("foo" != "bar") && !("foo" = "bar") }
--- endpoint --
-search
--- expected_min_traces --
-1
--- expected_max_traces --
-500
-
--- name --
-negated_kind_not_client
-# TestBinOp / TestSpansetFilter_matches negation coverage: `!(kind =
-# client)` should match the large majority of spans (only client-kind
-# children excluded).
--- query --
-{ !(kind = client) }
 -- endpoint --
 search
 -- expected_min_traces --
