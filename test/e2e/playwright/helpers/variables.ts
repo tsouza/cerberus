@@ -46,6 +46,13 @@ export type VariableJSON = {
   type?: string;
   query?: unknown;
   datasource?: { type?: string; uid?: string } | string | null;
+  /**
+   * Grafana's persisted "currently selected" value — what a fresh
+   * page load substitutes into `$name` / `${name}` / `[[name]]`
+   * tokens before the panel's expr is fired. Multi-value variables
+   * persist an array; single-value ones persist a bare string.
+   */
+  current?: { value?: string | string[] };
   /** cerberus contract block: { expectOptions: string[] }. */
   cerberus?: unknown;
 };
@@ -125,6 +132,61 @@ export function checkVariableOptions(
     return ['variable resolved zero options (a blank dropdown is always a bug)'];
   }
   return [];
+}
+
+// ---------------------------------------------------------------------------
+// Variable substitution (pure) — the probe-side half of what Grafana does
+// client-side on page load: replace $name / ${name} / [[name]] tokens in a
+// panel expr with the variable's persisted `current.value` before the
+// expression is fired at the datasource proxy. Multi-value variables
+// substitute their first selected value — the probe fires one representative
+// query per target, same as every other target here; it does not attempt to
+// reproduce Grafana's multi-value repeat-panel behaviour.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a variable's persisted "currently selected" value. Returns null
+ * when the variable carries no resolvable current value (absent `current`,
+ * an empty string, or an empty array) — callers leave the token
+ * unsubstituted in that case rather than guessing.
+ */
+export function resolveCurrentVariableValue(
+  variable: VariableJSON,
+): string | null {
+  const value = variable.current?.value;
+  if (typeof value === 'string') return value !== '' ? value : null;
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'string') {
+    return value[0];
+  }
+  return null;
+}
+
+/**
+ * Substitute every declared variable's current value into `expr`,
+ * recognising Grafana's three token spellings: `$name`, `${name}`, and
+ * `[[name]]`. Variables without a name or a resolvable current value are
+ * skipped — their tokens (if any) pass through unresolved, which is exactly
+ * what a misconfigured dashboard would send Grafana too, so the probe stays
+ * honest about what's actually wired.
+ */
+export function substituteVariables(
+  expr: string,
+  variables: VariableJSON[],
+): string {
+  let out = expr;
+  for (const variable of variables) {
+    const name = variable.name;
+    if (!name) continue;
+    const value = resolveCurrentVariableValue(variable);
+    if (value === null) continue;
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const token = new RegExp(
+      `\\$\\{${escapedName}\\}|\\$${escapedName}\\b|\\[\\[${escapedName}\\]\\]`,
+      'g',
+    );
+    out = out.replace(token, value);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

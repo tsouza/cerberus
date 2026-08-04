@@ -7692,6 +7692,100 @@
         "expect": "nonempty",
         "why": "Cerberus implements this construct (lowering + chsql reducer, reference-exact against the flag-enabled reference Prometheus). Previously a parity-rejection pin in the collapsed rejection row \u2014 the maintainer flipped first_over_time / double_exponential_smoothing from gated to supported, so the contract was upgraded to a live nonempty result and the panel moved into the over-time showcase row."
       }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "Template-variable demo: $job is a static custom dashboard variable (options api|db, matching this dashboard's deterministic job label set) that filters up{} directly. Exercises Grafana's own client-side $job substitution on render plus the e2e sweep's buildProbeURL/substituteVariables wiring, which resolves the same token before firing the API-layer probe.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 229
+      },
+      "id": 121,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "up{job=\"$job\"}",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "up{job=\"$job\"} (template variable)",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "nonempty",
+        "why": "$job's current value (api) is a deterministic label this dashboard's up{job=\"api\"} panels already assert nonempty against \u2014 filtering by the variable must return the same live series."
+      }
     }
   ],
   "schemaVersion": 39,
@@ -7701,7 +7795,35 @@
     "promql"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "text": "api",
+          "value": "api"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Job",
+        "multi": false,
+        "name": "job",
+        "options": [
+          {
+            "selected": true,
+            "text": "api",
+            "value": "api"
+          },
+          {
+            "selected": false,
+            "text": "db",
+            "value": "db"
+          }
+        ],
+        "query": "api,db",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
   },
   "time": {
     "from": "now-15m",
