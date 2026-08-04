@@ -14,11 +14,18 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // NestedSetAnnotate's TraceLimit > 0 and pushes a matching BoundedTraceScope
 // onto the row-source leaves IN LOCK-STEP (both under the same
 // inputGuaranteesRootInResult precondition). If a NestedSetAnnotate reaches the
-// optimizer with TraceLimit > 0 but no BoundedTraceScope on its input, the two
-// bounds drifted apart — the numbering scope would be bounded while the row
-// source is not (or vice versa), stranding kept rows at the 0/0/0 LEFT-JOIN
-// default and unbounding the structural closures. That is a real bug, so the
-// rule fails closed.
+// optimizer with TraceLimit > 0 but no trace-id-set witness of matching
+// cardinality on its input, the two bounds drifted apart — the numbering
+// scope would be bounded while the row source is not (or vice versa),
+// stranding kept rows at the 0/0/0 LEFT-JOIN default and unbounding the
+// structural closures. That is a real bug, so the rule fails closed.
+//
+// The accepted witness set matches chplan.SpansScanResourceBound's form-b
+// classification exactly (chplan.TraceIDSetCardinality): a BoundedTraceScope
+// subquery, OR a literal InList over TraceId whose length equals TraceLimit —
+// the shape a resolve-in-Go-and-splice-literals rewrite of the subquery
+// produces (#1702). A drifted witness (wrong cardinality, or a shape neither
+// classifier recognizes) still fails closed.
 //
 // It mutates nothing (trivially idempotent) and reads no ctx / schema. The
 // TraceLimit == 0 numbering shapes (single-trace /traces/{id}, non-search
@@ -35,16 +42,23 @@ func (RequireScanResourceBound) Apply(n chplan.Node) (chplan.Node, bool) {
 	if !ok || nsa.TraceLimit <= 0 {
 		return n, false
 	}
-	if !inputCarriesBoundedTraceScope(nsa.Input, nsa.TraceLimit) {
+	cols := chplan.ScanBoundCols{TraceID: nsa.TraceIDColumn}
+	if !inputCarriesBoundedTraceIDSet(nsa.Input, cols, nsa.TraceLimit) {
 		panic(&chplan.ScanResourceBoundViolation{Table: nsa.SpansTable})
 	}
 	return n, false
 }
 
-// inputCarriesBoundedTraceScope reports whether the numbering walk's row source
-// carries a BoundedTraceScope conjunct with the same TraceLimit — the lock-step
-// partner of NestedSetAnnotate.TraceLimit.
-func inputCarriesBoundedTraceScope(input chplan.Node, limit int64) bool {
+// inputCarriesBoundedTraceIDSet reports whether the numbering walk's row
+// source carries a trace-id-set witness whose cardinality matches limit — the
+// lock-step partner of NestedSetAnnotate.TraceLimit. It reads off
+// chplan.TraceIDSetCardinality, the SAME classification the emit-chokepoint
+// invariant (chplan.SpansScanResourceBound) uses for form-b, so a literal
+// InList (e.g. the resolve-in-Go-and-splice-literals rewrite of a
+// BoundedTraceScope subquery) counts as a witness here identically to how it
+// already counts at the chokepoint — restated per #1702 rather than the
+// previous bespoke BoundedTraceScope-only walk.
+func inputCarriesBoundedTraceIDSet(input chplan.Node, cols chplan.ScanBoundCols, limit int64) bool {
 	found := false
 	chplan.Walk(input, func(node chplan.Node) bool {
 		f, ok := node.(*chplan.Filter)
@@ -52,7 +66,7 @@ func inputCarriesBoundedTraceScope(input chplan.Node, limit int64) bool {
 			return true
 		}
 		chplan.InspectExpr(f.Predicate, func(e chplan.Expr) bool {
-			if bts, ok := e.(*chplan.BoundedTraceScope); ok && bts.TraceLimit == limit {
+			if card, ok := chplan.TraceIDSetCardinality(e, cols); ok && card == limit {
 				found = true
 			}
 			return true
