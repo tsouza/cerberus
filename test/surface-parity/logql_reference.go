@@ -35,6 +35,14 @@ func loadLogQLReferenceVerdicts() (*logqlReferenceVerdicts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s (regenerate via 'go test -tags agpl_oracle -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/'): %w", logqlReferenceVerdictsPath, err)
 	}
+	return parseLogQLReferenceVerdicts(raw)
+}
+
+// parseLogQLReferenceVerdicts decodes + validates the artifact bytes,
+// split out from loadLogQLReferenceVerdicts so the malformed-JSON and
+// empty-verdicts error paths are unit-testable without touching the
+// filesystem.
+func parseLogQLReferenceVerdicts(raw []byte) (*logqlReferenceVerdicts, error) {
 	var rv logqlReferenceVerdicts
 	if err := json.Unmarshal(raw, &rv); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", logqlReferenceVerdictsPath, err)
