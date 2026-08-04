@@ -37,6 +37,14 @@ func loadTraceQLReferenceVerdicts() (*traceqlReferenceVerdicts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s (regenerate via 'go test -tags agpl_oracle -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/'): %w", traceqlReferenceVerdictsPath, err)
 	}
+	return parseTraceQLReferenceVerdicts(raw)
+}
+
+// parseTraceQLReferenceVerdicts decodes + validates the artifact bytes,
+// split out from loadTraceQLReferenceVerdicts so the malformed-JSON and
+// empty-verdicts error paths are unit-testable without touching the
+// filesystem.
+func parseTraceQLReferenceVerdicts(raw []byte) (*traceqlReferenceVerdicts, error) {
 	var rv traceqlReferenceVerdicts
 	if err := json.Unmarshal(raw, &rv); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", traceqlReferenceVerdictsPath, err)
