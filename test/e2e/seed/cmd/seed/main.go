@@ -51,6 +51,14 @@
 // drops that to ±5 min: any query at `t = seed + N min` sees a fresh
 // re-anchored window centered on `seed + N min - δ` where δ ≤ 30 s.
 //
+// Every family the rolling re-seeder re-inserts also carries a bounded
+// stale-row DELETE (stale.go) run right after that family's INSERT, so a
+// long-lived stack doesn't accumulate one full copy of every fixture per
+// tick indefinitely (issue #1527). See stale.go's package doc comment
+// for the shape (mirrored from showcase_traceql.go's
+// deleteStaleShowcaseTracesSQL, the original instance of this pattern)
+// and the margin derivation.
+//
 // SIGTERM / SIGINT triggers a clean shutdown — the Playwright fixture
 // (or `just e2e-down`) signals teardown and the goroutine exits before
 // the connection closes.
@@ -626,7 +634,10 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	if err := conn.Exec(ctx, insertShowcaseExpHistSQL); err != nil {
 		return fmt.Errorf("showcase exp histogram: %w", err)
 	}
-	return nil
+	// Stale-row cleanup runs after every INSERT above has landed — see
+	// stale.go's package doc comment for why (mirrors
+	// deleteStaleShowcaseTracesSQL's insert-before-delete ordering).
+	return deleteStaleMetrics(ctx, conn)
 }
 
 // insertLogs inserts 40 log records across 3 services spanning a 10-minute
@@ -645,7 +656,12 @@ func insertLogs(ctx context.Context, conn driver.Conn) error {
 	// Showcase-LogQL streams (gateway / shop / proxy / painter /
 	// packer) — see showcase_logql.go for the per-stream shapes the
 	// showcase-logql dashboard's parser / filter / unwrap panels need.
-	return insertShowcaseLogQLLogs(ctx, conn)
+	if err := insertShowcaseLogQLLogs(ctx, conn); err != nil {
+		return err
+	}
+	// Stale-row cleanup runs after every stream above has landed — see
+	// stale.go's package doc comment.
+	return deleteStaleLogs(ctx, conn)
 }
 
 // insertTraces inserts 3 traces with mixed services + durations — preserved
@@ -655,7 +671,13 @@ func insertLogs(ctx context.Context, conn driver.Conn) error {
 // Trace 2 (a0...002): frontend → api → db     (spans 0003 + 0004 + 0005)
 // Trace 3 (a0...003): api → db                (spans 0006 + 0007)
 func insertTraces(ctx context.Context, conn driver.Conn) error {
-	return conn.Exec(ctx, insertTracesSQL)
+	if err := conn.Exec(ctx, insertTracesSQL); err != nil {
+		return err
+	}
+	// Stale-row cleanup runs after the INSERT above has landed — see
+	// stale.go's package doc comment. Scoped to the a0... range only;
+	// the b0... showcase traces have their own DELETE (showcase_traceql.go).
+	return deleteStaleBaseTraces(ctx, conn)
 }
 
 // verifyRowcounts mirrors the per-table `count()` UNION that the previous
