@@ -131,7 +131,7 @@ test('Tempo streaming search exercises the gRPC/h2c StreamingQuerier listener', 
   await page.waitForLoadState('networkidle');
 
   const deadline = Date.now() + GRPC_METRIC_POLL_DEADLINE_MS;
-  let latest = baseline;
+  let latest: number;
   for (;;) {
     latest = await queryInstantSum(request, grpcDurationCountMetric);
     if (latest > baseline) break;
