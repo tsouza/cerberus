@@ -824,9 +824,43 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	stamp := float64(ts.UnixMilli()) / msToSeconds
 	for _, l := range bySeries {
 		out = append(out, VectorSample{
-			Metric: format.NormalizeLabelMap(l.labels),
+			Metric: format.NormalizeLabelMap(dropEmptyLabelValues(l.labels)),
 			Value:  [2]any{stamp, strconv.FormatFloat(l.value, 'f', -1, 64)},
 		})
+	}
+	return out
+}
+
+// dropEmptyLabelValues returns a copy of `in` with every empty-valued
+// entry removed — the metric/vector-result twin of [normalizeMetadata]'s
+// same rule for per-line structured metadata. A `by (<generic structured
+// metadata key>)` grouping resolves an ABSENT key to the empty string
+// (see structuredOrStreamLookup in internal/logql), which is the correct
+// internal group-key value (it collapses every "key not present" row
+// into one group), but reference Loki's LabelsBuilder never MATERIALISES
+// an empty-value label into a series' output label set — a group with no
+// value for that key comes back with the key entirely absent, not
+// present with value "". Without this the `metric` field for that group
+// diverges from reference Loki byte-for-byte even though the grouping
+// itself (series count / membership) already agrees — see issue #1498,
+// which found generic structured metadata had zero differential
+// coverage and surfaced this on arrival.
+//
+// Scoped to the metric-result callers (toVector / toMatrixStepGrid):
+// stream (log-query) labels come from ResourceAttributes, which the
+// OTel-CH schema never populates with a genuinely empty value, so
+// toStreams' `format.NormalizeLabelMap(a.labels)` is left alone rather
+// than widening this rule to a path it was never observed to affect.
+func dropEmptyLabelValues(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if v == "" {
+			continue
+		}
+		out[k] = v
 	}
 	return out
 }
@@ -878,7 +912,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 
 	out := make([]MatrixSample, 0, len(bySeries))
 	for _, st := range bySeries {
-		ms := MatrixSample{Metric: format.NormalizeLabelMap(st.labels)}
+		ms := MatrixSample{Metric: format.NormalizeLabelMap(dropEmptyLabelValues(st.labels))}
 		for _, r := range st.rows {
 			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
 				continue

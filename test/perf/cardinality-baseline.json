@@ -5730,6 +5730,26 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "promql/subquery_over_quantile_phi_above_one",
+    "fan_factor": 1.3333333333333333,
+    "scan_rows": 6,
+    "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "promql/subquery_over_quantile_phi_negative",
+    "fan_factor": 1.3333333333333333,
+    "scan_rows": 6,
+    "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/subquery_over_rate",
     "fan_factor": 1,
     "scan_rows": 2,
