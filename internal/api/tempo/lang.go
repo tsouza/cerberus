@@ -64,6 +64,16 @@ func (l *traceqlLang) Name() string { return telemetry.QLTraceQL }
 // is resource-bounded.
 func (l *traceqlLang) SpansTable() string { return l.schema.SpansTable }
 
+// LateMatShape implements internal/engine's lateMatTabler, returning this
+// request's actually-resolved spans table plus its wide/row-key columns.
+// The engine threads this onto the emit context (chsql.WithLateMatShape)
+// so chsql's late-materialisation gate matches even when SpansTable has
+// been overridden away from the OTel default (CERBERUS_SCHEMA_TRACES_TABLE
+// or the equivalent config key) — see #1703.
+func (l *traceqlLang) LateMatShape() (table string, wide, rowKey []string) {
+	return l.schema.SpansTable, l.schema.WideColumns, l.schema.RowKey
+}
+
 func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
 	// Parse pipeline-stage stopwatch — mirrors the inlined handler so
 	// cerberus.queries.parse_duration_ms keeps its per-head label.
