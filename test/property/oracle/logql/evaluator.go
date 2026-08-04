@@ -1,3 +1,15 @@
+//go:build agpl_oracle
+
+// This file (and its sibling line_filters.go) are the ONLY files in
+// this package that import AGPL grafana/loki packages — Evaluate below
+// parses via Loki's own syntax.ParseExpr and constructs loglib leaf
+// values so the AST shape and line-filter/pattern semantics match what
+// cerberus's pipeline sees. Gated behind the `agpl_oracle` build tag so
+// neither the production build nor the default test run links them;
+// test/property/logql_test.go (the sole importer) carries the matching
+// `//go:build chdb && agpl_oracle` constraint. Run explicitly with:
+//
+//	go test -tags "chdb agpl_oracle" ./test/property/...
 package logql
 
 import (

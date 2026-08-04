@@ -16,11 +16,11 @@ import (
 //
 // The test does NOT run the tagged files itself (it carries no agpl_oracle tag)
 // — it only verifies coverage. The agpl-oracle workflow runs
-// `go test -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/...`,
-// which covers every file in the set below. If you add a new //go:build
-// agpl_oracle file outside those scopes, add the package path to
-// agplOracleLaneScopes below AND extend the workflow's `go test` invocation to
-// include it.
+// `go test -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/...
+// ./test/surface-parity/... ./test/property/...`, which covers every file in
+// the set below. If you add a new //go:build agpl_oracle file outside those
+// scopes, add the package path to agplOracleLaneScopes below AND extend the
+// workflow's `go test` invocation to include it.
 func TestAGPLOracleTagSetCoverage(t *testing.T) {
 	// Resolve to an absolute path so filepath.Base of the root isn't "..".
 	absRoot, err := filepath.Abs(repoRoot)
@@ -34,6 +34,8 @@ func TestAGPLOracleTagSetCoverage(t *testing.T) {
 	agplOracleLaneScopes := []string{
 		"internal/",
 		"test/agpl_oracle/",
+		"test/surface-parity/",
+		"test/property/",
 	}
 
 	tagged := findAGPLOracleFiles(t, absRoot)

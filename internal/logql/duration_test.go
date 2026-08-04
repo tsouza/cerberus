@@ -7,9 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
-
 	"github.com/tsouza/cerberus/internal/chplan"
+	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -177,7 +176,7 @@ func TestDurationLabelFilterExpr_ReferenceSemantics(t *testing.T) {
 	if !ok || errMap.Name != "map" {
 		t.Fatalf("marks branch then-arm = %T; want map(...)", branch.Args[1])
 	}
-	wantKeys := []string{logqlmodel.ErrorLabel, errLabelFilterKind, logqlmodel.ErrorDetailsLabel}
+	wantKeys := []string{syntax.ErrorLabel, errLabelFilterKind, syntax.ErrorDetailsLabel}
 	for i, want := range wantKeys {
 		lit, ok := errMap.Args[i].(*chplan.LitString)
 		if !ok || lit.V != want {

@@ -1,12 +1,15 @@
 name: agpl-oracle
 
 # Differential oracle lane for the in-house LogQL and TraceQL parser
-# reimplementations.
+# reimplementations, plus the drift-check regeneration tests for the
+# surface-parity package's pinned reference-verdict artifacts.
 #
-# Five test files in the root module carry `//go:build agpl_oracle` and
+# The test files in the root module that carry `//go:build agpl_oracle`
 # compare cerberus's own clean-room parsers against the upstream AGPL
 # reference parsers (grafana/loki/pkg/logql for LogQL; grafana/tempo/pkg/traceql
-# for TraceQL). These files are compiled and run by NO other lane — the default
+# for TraceQL). These files are compiled and run by NO other lane (except
+# test/property/oracle/logql, additionally exercised — under BOTH `chdb` and
+# `agpl_oracle` — by property.yml's LogQL property test) — the default
 # `check` gate is CGO-free and passes no build tags beyond the defaults, so
 # without this workflow the oracle diffs are never exercised and a parser
 # regression can reach main undetected (see #1610 for the full evidence).
@@ -15,11 +18,19 @@ name: agpl-oracle
 #   internal/api/loki/detected_extract_agpl_test.go
 #   internal/logql/logpattern/pattern_agpl_test.go
 #   internal/logql/jsonpath_agpl_test.go
+#   internal/logql/parse_permissive_agpl_test.go
 #   internal/logql/lsyntax/oracle_agpl_test.go
 #   test/agpl_oracle/oracle_test.go
+#   test/surface-parity/logql_reference_agpl_test.go
+#   test/surface-parity/traceql_reference_agpl_test.go
+#   test/property/oracle/logql/evaluator.go
+#   test/property/oracle/logql/line_filters.go
 #
 # The tests do NOT require CGO, Docker, or libchdb — they are pure Go and
-# compile with a stock Go toolchain against the root-module deps.
+# compile with a stock Go toolchain against the root-module deps. (The last
+# two files above additionally need libchdb.so to run their real assertions
+# via test/property/logql_test.go, but compile cleanly here without it —
+# see the tag composition note below.)
 #
 # Required status check name: `agpl-oracle`
 # Required on: all PRs (docs-only PRs short-circuit to a green no-op so
@@ -28,10 +39,25 @@ name: agpl-oracle
 # chdb.yml; see chdb.yml's matrix-expansion note for why the guard lives
 # on the STEPS rather than the job.
 #
-# Tag composition note: when #1520 lands and test/property/logql_test.go
-# acquires `//go:build chdb && agpl_oracle`, this lane will need to pass
-# BOTH tags and install libchdb.so. That change is tracked in #1520; until
-# then the lane is pure-Go and has no chdb dependency.
+# Tag composition note (#1520): test/property/logql_test.go carries the
+# synthetic single-term tag `//go:build chdb_agpl_oracle` (every
+# //go:build constraint in this tree is a single term — see
+# test/regression/lint_build_tags_test.go — so it can't spell
+# `chdb && agpl_oracle` directly). This lane passes `-tags agpl_oracle`
+# only (neither `chdb` nor `chdb_agpl_oracle`, no libchdb.so) so that
+# file compiles OUT here — its real exercise happens in property.yml,
+# which passes `-tags chdb,agpl_oracle,chdb_agpl_oracle` and installs
+# libchdb.so. This lane still compiles the sibling
+# test/property/oracle/logql package (evaluator.go / line_filters.go),
+# proving the agpl_oracle-tagged code itself builds, without taking on a
+# chdb dependency this lane doesn't otherwise need.
+#
+# test/surface-parity/logql.go and traceql.go read pinned reference-verdict
+# artifacts (logql-reference-verdicts.json / traceql-reference-verdicts.json)
+# instead of calling the AGPL parsers live, so the default `check` gate
+# stays AGPL-free. The agpl_oracle-tagged *_reference_agpl_test.go files in
+# that package re-probe the live reference and fail on drift; regenerate via
+# `CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1` / `CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1`.
 #
 # Regression test: test/regression/agpl_oracle_tag_set_test.go asserts
 # that every `//go:build agpl_oracle` file in the root module is known to
@@ -97,9 +123,10 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # `agpl-oracle` compiles and runs the five `//go:build agpl_oracle` test
+  # `agpl-oracle` compiles and runs the `//go:build agpl_oracle` test
   # files. A failure means the in-house parser has diverged from the AGPL
-  # reference in a way the test corpus exposes.
+  # reference in a way the test corpus exposes, or a pinned reference-verdict
+  # artifact under test/surface-parity has drifted from the live parser.
   #
   # The job also runs the regression test (test/regression) which includes
   # agpl_oracle_tag_set_test.go — it asserts the set of tagged files matches
@@ -122,7 +149,7 @@ jobs:
 
       - name: Run agpl_oracle differential oracle tests
         if: needs.changes.outputs.docs_only != 'true'
-        run: go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/...
+        run: go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/... ./test/surface-parity/... ./test/property/...
 
       - name: Verify agpl_oracle tag set coverage (regression)
         if: needs.changes.outputs.docs_only != 'true'

@@ -40,8 +40,18 @@ name: property
 #
 #   go test -tags chdb -run TestPromQL_Property              -rapid.seed=<N> ./test/property/...
 #   go test -tags chdb -run TestPromQL_InstantWindowSweep     -rapid.seed=<N> ./test/property/...
-#   go test -tags chdb -run TestLogQL_Property               -rapid.seed=<N> ./test/property/...
+#   go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run TestLogQL_Property -rapid.seed=<N> ./test/property/...
 #   go test -tags chdb -run TestTraceQL_Property             -rapid.seed=<N> ./test/property/...
+#
+# TestLogQL_Property needs `agpl_oracle` and `chdb_agpl_oracle` alongside
+# `chdb`: its from-scratch oracle (test/property/oracle/logql) imports
+# Loki's AGPL syntax + log packages, gated behind `agpl_oracle` so the
+# default build and `go test ./...` stay AGPL-free (#1520), and
+# logql_test.go itself carries the synthetic single-term tag
+# `chdb_agpl_oracle` (every //go:build constraint in this tree must be a
+# single term — see test/regression/lint_build_tags_test.go — so it can't
+# spell `chdb && agpl_oracle` directly). The step below passes all three
+# tags for every property test in one invocation.
 
 on:
   pull_request:
@@ -113,9 +123,13 @@ jobs:
 
       - name: Run property tests (rapid N=500)
         if: env.RUN_HEAVY == 'true'
-        # `-tags chdb` enables the chdb-tagged property entry points;
-        # `-rapid.checks=500` widens beyond rapid's default of 100;
-        # `-rapid.shrinktime=5m` lets the shrinker work on a failing
+        # `-tags chdb,agpl_oracle,chdb_agpl_oracle` enables the chdb-tagged
+        # property entry points AND the LogQL property test's from-scratch
+        # oracle (which additionally needs `agpl_oracle`) AND
+        # logql_test.go itself (gated by the synthetic single-term
+        # `chdb_agpl_oracle` tag — see the tag composition note above and
+        # #1520); `-rapid.checks=500` widens beyond rapid's default of
+        # 100; `-rapid.shrinktime=5m` lets the shrinker work on a failing
         # draw before the test gives up.
         # `-v` surfaces the rapid seed in the workflow log so a failure
         # is reproducible with `-rapid.seed=<N>`.
@@ -129,7 +143,7 @@ jobs:
         # Go files and aborts with `FAIL . [setup failed]`.
         run: |
           go test \
-            -tags chdb \
+            -tags chdb,agpl_oracle,chdb_agpl_oracle \
             -count=1 \
             -v \
             -timeout=20m \

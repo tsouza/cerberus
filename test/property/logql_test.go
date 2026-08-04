@@ -1,6 +1,20 @@
-//go:build chdb
+//go:build chdb_agpl_oracle
 
 // Property test for the LogQL pipeline.
+//
+// This file needs BOTH the `chdb`-backed test framework (chdb.go) and the
+// `agpl_oracle`-gated from-scratch oracle (test/property/oracle/logql
+// imports Loki's AGPL syntax + log packages — see that package's doc
+// comment), but every `//go:build` constraint in this tree must be a
+// single term (test/regression/lint_build_tags_test.go pins the
+// two-pass lint scheme that invariant makes possible), so a compound
+// `chdb && agpl_oracle` expression isn't available here. `chdb_agpl_oracle`
+// is a synthetic single-term tag — the same pattern as the Justfile's
+// LINT_UNTAGGED_BUILD — that CI sets ALONGSIDE `chdb` and `agpl_oracle`
+// (never alone) so this file, chdb.go, and the oracle package all compile
+// in together. Run with:
+//
+//	go test -tags "chdb,agpl_oracle,chdb_agpl_oracle" ./test/property/...
 //
 // On every iteration:
 //
