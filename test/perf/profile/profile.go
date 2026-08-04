@@ -75,10 +75,37 @@ type Record struct {
 	PeakIntermediate int64 `json:"peak_intermediate"`
 
 	// FanFactor is PeakIntermediate / ScanRows (1.0 when nothing fans
-	// out; >1 when an intermediate stage widened the row set). The
-	// headline number the nightly lane ranks on. 0 when ScanRows is 0
-	// (no leaf rows — an empty-seed or all-filtered fixture).
-	FanFactor float64 `json:"fan_factor"`
+	// out; >1 when an intermediate stage widened the row set; 0 when
+	// ScanRows is 0 — an empty-seed or all-filtered fixture, where every
+	// level WAS measured and they all counted zero rows, a degenerate
+	// ratio rather than an opaque one). The headline number the nightly
+	// lane ranks on. nil (JSON null) — NEVER a fabricated 1.00 —
+	// whenever [UncountableLevels] is nonzero: at least one pipeline
+	// stage was opaque to the per-level count() decomposition (a CTE
+	// reference, a pre-rendered subquery splice, or a RECURSIVE CTE
+	// step), so PeakIntermediate does not actually reflect the widest
+	// the row set gets anywhere in the pipeline. A 1.00 in that state
+	// reads as "no fan-out" on exactly the shapes most likely to hide
+	// one — see issue #1519, where emitSetOperation's `&&` CTE arms
+	// measured fan_factor=1.00 while costing 4 leaf reads.
+	FanFactor *float64 `json:"fan_factor"`
+
+	// UncountableLevels is the number of pipeline stages the profiler
+	// could not see through: a WITH-prefixed subquery (CTE reference /
+	// pre-rendered subquery splice) the leftmost-descent decomposition
+	// refused to enter because its body's names are only in scope at its
+	// own level, a RECURSIVE CTE step (detected structurally via EXPLAIN
+	// PLAN, wherever in the plan it sits), or a level whose isolated
+	// count() outright failed. Nonzero forces [FanFactor] to nil — see
+	// that field's doc. Zero means every level the decomposition visited
+	// was measured, so FanFactor (when ScanRows > 0) is trustworthy.
+	UncountableLevels int `json:"uncountable_levels"`
+
+	// UncountableReasons is one human-readable line per event counted in
+	// UncountableLevels, naming the depth (where applicable) and why it
+	// was opaque. Kept for debugging an unmeasured fixture — parallel to
+	// Levels but for the stages excluded from it.
+	UncountableReasons []string `json:"uncountable_reasons,omitempty"`
 
 	// ResultRows is count() of the full outer query — the rows the
 	// fixture's SQL ultimately returns.
@@ -259,7 +286,17 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 	}
 
 	// Per-level count() decomposition over FROM-source subqueries.
-	levels := fromSourceLevels(query)
+	// levelsWithReasons additionally reports every point the descent
+	// stopped on a non-recursive WITH-prefixed subquery it could not see
+	// through — see that function's doc for why a RECURSIVE CTE is
+	// handled separately, below, from the structural EXPLAIN flag
+	// instead.
+	levels, descentReasons := levelsWithReasons(query)
+	rec.UncountableReasons = append(rec.UncountableReasons, descentReasons...)
+	if rec.HasRecursiveCTE {
+		rec.UncountableReasons = append(rec.UncountableReasons, recursiveCTEUncountableReason)
+	}
+
 	rec.Levels = make([]LevelCount, 0, len(levels))
 	var peak int64
 	var peakBytes uint64
@@ -267,9 +304,14 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 		c, br, err := p.scalarCount(lvl)
 		if err != nil {
 			// A level that can't be counted in isolation (e.g. it
-			// references a CTE defined only at the outer level) is
-			// excluded — the outer-query count at depth 0 still anchors
-			// the result, and the leaf scan still anchors scan_rows.
+			// references a name only in scope at an outer level) is
+			// excluded from Levels AND recorded as uncountable — the
+			// outer-query count at depth 0 still anchors the result, and
+			// the leaf scan still anchors scan_rows, but this pipeline
+			// stage's contribution to PeakIntermediate is unknown rather
+			// than silently treated as zero.
+			rec.UncountableReasons = append(rec.UncountableReasons,
+				fmt.Sprintf("depth %d: count() failed in isolation: %v", depth, err))
 			continue
 		}
 		rec.Levels = append(rec.Levels, LevelCount{Depth: depth, Count: c})
@@ -289,8 +331,22 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 		rec.ScanRows = rec.Levels[len(rec.Levels)-1].Count
 		rec.ResultRows = rec.Levels[0].Count
 	}
-	if rec.ScanRows > 0 {
-		rec.FanFactor = float64(rec.PeakIntermediate) / float64(rec.ScanRows)
+
+	rec.UncountableLevels = len(rec.UncountableReasons)
+	// FanFactor stays nil whenever any level was opaque: a fabricated
+	// 1.00 computed from a partial decomposition is worse than an
+	// admitted unknown. See the field doc + issue #1519 part 2. This is
+	// orthogonal to the ScanRows == 0 case (an empty-result fixture, e.g.
+	// an `absent_over_time` guard with no matching series): that ratio is
+	// mathematically degenerate rather than opaque — every level WAS
+	// measured, they just all counted zero rows — so it is still reported
+	// as a measured 0, matching the pre-#1519p2 convention.
+	if rec.UncountableLevels == 0 {
+		var ff float64
+		if rec.ScanRows > 0 {
+			ff = float64(rec.PeakIntermediate) / float64(rec.ScanRows)
+		}
+		rec.FanFactor = &ff
 	}
 
 	// max_recursion_depth: for a recursive CTE the closure size is the
@@ -328,11 +384,18 @@ func parseSingleCount(jsonBody string) (int64, error) {
 
 // SortByFanFactor orders records descending by FanFactor (then by
 // PeakIntermediate, then fixture name) so the nightly step-summary lists
-// the worst fan-outs first.
+// the worst fan-outs first. A nil FanFactor (unmeasured — see that
+// field's doc) sorts before every measured value: an unknown fan-out is
+// at least as much of a risk signal as a known-bad one, so it must not
+// silently sink to the bottom of the list.
 func SortByFanFactor(recs []Record) {
 	sort.Slice(recs, func(i, j int) bool {
-		if recs[i].FanFactor != recs[j].FanFactor {
-			return recs[i].FanFactor > recs[j].FanFactor
+		fi, fj := recs[i].FanFactor, recs[j].FanFactor
+		if (fi == nil) != (fj == nil) {
+			return fi == nil
+		}
+		if fi != nil && fj != nil && *fi != *fj {
+			return *fi > *fj
 		}
 		if recs[i].PeakIntermediate != recs[j].PeakIntermediate {
 			return recs[i].PeakIntermediate > recs[j].PeakIntermediate

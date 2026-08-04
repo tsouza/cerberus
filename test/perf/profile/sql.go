@@ -63,16 +63,67 @@ func planHasRecursiveCTE(plan string) bool {
 // intermediate cardinality. Keeping the decomposition in ONE place means
 // the corpus ratchet and the scale-wall pin agree on what "a pipeline
 // level" is by construction.
-func FromSourceLevels(query string) []string { return fromSourceLevels(query) }
+//
+// This wrapper deliberately drops the uncountable-level reasons
+// [levelsWithReasons] also returns: FromSourceLevels' only caller
+// (test/perf's scale-wall pin) already tolerates an individual level
+// failing to count in isolation (see its own comment at the call site),
+// so it has no honesty gap to plug the way [Record.FanFactor] does — see
+// issue #1519 part 2.
+func FromSourceLevels(query string) []string {
+	levels, _ := levelsWithReasons(query)
+	return levels
+}
 
+// fromSourceLevels is the levels-only view of [levelsWithReasons], kept
+// for callers (and tests) that only need the descent, not why it stopped.
 func fromSourceLevels(query string) []string {
+	levels, _ := levelsWithReasons(query)
+	return levels
+}
+
+// levelsWithReasons walks the same leftmost FROM-source chain
+// [fromSourceLevels] documents, and ADDITIONALLY reports, as
+// uncountableReasons, every point where the descent had to stop because
+// the next level is a WITH-prefixed (CTE) subquery whose body references
+// names only in scope at its own level — the profiler cannot run
+// `count() FROM (<that level>)` standalone, so its contribution to
+// PeakIntermediate is invisible.
+//
+// A RECURSIVE CTE (`WITH RECURSIVE ...`) is deliberately EXCLUDED from
+// the reasons returned here, even though it also stops the descent: its
+// closure can sit anywhere in the plan — the leftmost chain this function
+// walks, or a JOIN's right-hand branch this function (by design, see the
+// package doc) never visits at all, as `nested_set_left_position` and
+// `structural_not_ancestor` demonstrate: the recursive CTE lives inside a
+// JOIN RHS, so this descent never even reaches it. [ProfileFixture] gets
+// full, structural coverage of recursion (leftmost-chain OR join-branch)
+// from EXPLAIN PLAN's HasRecursiveCTE flag instead, and adds exactly one
+// "recursive_cte_step" reason from that flag — reporting it again here,
+// only for the fraction of cases the leftmost chain happens to pass
+// through, would both double-count some fixtures and miss others.
+//
+// The non-recursive case (a plain `WITH c AS (...) SELECT ...` CTE, e.g.
+// emitSetOperation's `&&` arms in internal/chsql/set_op.go) has no such
+// structural EXPLAIN signal, so it is reported here — this is the
+// "CTE reference" / "pre-rendered subquery splice" category from issue
+// #1519: the CTE body is exactly the pre-rendered SQL text
+// [subqueryFrag]-family emitters splice into a WITH clause, and once
+// spliced there this function cannot see through it.
+func levelsWithReasons(query string) ([]string, []string) {
 	query = strings.TrimSpace(query)
 	levels := []string{query}
 
-	// WITH-prefixed queries: keep depth 0 only. Descending into CTE
-	// bodies would reference out-of-scope CTE names.
+	// A RECURSIVE top-level query: 1 level, no reason (see doc above —
+	// ProfileFixture's HasRecursiveCTE-driven reason covers it).
+	if hasWithRecursivePrefix(query) {
+		return levels, nil
+	}
+	// A non-recursive WITH-prefixed top-level query: 1 level, and a
+	// reason — descending into the CTE bodies would reference
+	// out-of-scope CTE names.
 	if hasWithPrefix(query) {
-		return levels
+		return levels, []string{uncountableCTEReason(0)}
 	}
 
 	cur := query
@@ -86,21 +137,50 @@ func fromSourceLevels(query string) []string {
 		if inner == "" || strings.EqualFold(inner, cur) {
 			break
 		}
-		// A CTE-prefixed inner level can't be counted standalone; stop
-		// descending (its references are out of scope).
-		if hasWithPrefix(inner) {
+		if hasWithRecursivePrefix(inner) {
+			// Same rationale as the top-level case: no reason here, the
+			// HasRecursiveCTE flag covers it exactly once.
 			break
+		}
+		if hasWithPrefix(inner) {
+			return levels, []string{uncountableCTEReason(len(levels))}
 		}
 		levels = append(levels, inner)
 		cur = inner
 	}
-	return levels
+	return levels, nil
 }
 
+// uncountableCTEReason renders the human-readable line recorded in
+// [Record.UncountableReasons] when the descent stops on a non-recursive
+// WITH-prefixed subquery at the given depth.
+func uncountableCTEReason(depth int) string {
+	return fmt.Sprintf(
+		"depth %d: WITH-prefixed subquery (CTE reference / pre-rendered subquery splice) not descended — "+
+			"its body's inner row counts are out of scope to measure standalone", depth,
+	)
+}
+
+// recursiveCTEUncountableReason is the single reason [ProfileFixture]
+// records, once, whenever EXPLAIN PLAN reports a recursive CTE step
+// anywhere in the plan (leftmost chain or a JOIN branch) — see
+// [levelsWithReasons]' doc for why this is a structural (EXPLAIN-driven)
+// signal rather than one derived from the leftmost descent.
+const recursiveCTEUncountableReason = "recursive_cte_step: EXPLAIN plan reports a recursive CTE " +
+	"(ReadFromRecursiveCTEStep); the per-level count() decomposition cannot see the closure's own " +
+	"internal peak size, only whatever row count reaches the level that embeds it"
+
 // hasWithPrefix reports whether query begins with a `WITH ` keyword
-// (case-insensitive), i.e. carries a leading CTE chain.
+// (case-insensitive), i.e. carries a leading CTE chain (recursive or
+// not).
 func hasWithPrefix(query string) bool {
 	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(query)), "WITH ")
+}
+
+// hasWithRecursivePrefix reports whether query begins with `WITH
+// RECURSIVE ` — the RECURSIVE-step subset of [hasWithPrefix].
+func hasWithRecursivePrefix(query string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(query)), "WITH RECURSIVE ")
 }
 
 // leftmostFromSubquery extracts the parenthesised subquery that is the

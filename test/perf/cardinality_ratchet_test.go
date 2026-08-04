@@ -67,6 +67,39 @@
 // so the fan_factor ceiling already pins peak_intermediate's bad direction and
 // a second rule would only forbid improvements.
 //
+// # fan_factor can be unmeasured — null never silently passes (#1519 part 2)
+//
+// profile.Record.FanFactor is a *float64: it is nil whenever the profiler's
+// leftmost-descent decomposition could not see through every pipeline stage —
+// a non-recursive WITH-prefixed level (a CTE reference or a pre-rendered
+// subquery splice; the ONLY current example is internal/chsql/set_op.go's `&&`
+// SetIntersect) or a RECURSIVE CTE step (detected structurally via EXPLAIN
+// PLAN's ReadFromRecursiveCTEStep, wherever in the plan it sits). Before this
+// was fixed, exactly those shapes silently flattened to fan_factor = 1.00 —
+// the profiler reported "no fan-out" precisely on the constructs it exists to
+// catch. A fabricated 1.00 is worse than an admitted unknown, so the profiler
+// now emits null instead.
+//
+// The baseline mirrors that nullability: baselineEntry.FanFactor is also
+// *float64, and a committed null is the explicit, reviewed acknowledgment
+// that a maintainer ran `just update-cardinality-baseline` and confirmed the
+// fixture's fan-out is genuinely uncountable with today's decomposition —
+// not an absence of data. The ratchet is null-aware, not null-blind:
+//
+//   - current null, baseline null: OK — already honestly acknowledged.
+//   - current null, baseline measured: FAIL — a fixture that used to be
+//     measurable stopped being measurable, which is either a profiler
+//     regression or a new construct the decomposition can't see through;
+//     either way it needs a human to look and re-baseline on purpose.
+//   - current measured, baseline null: OK, always — the fixture became
+//     measurable, which is strictly an improvement in what the gate can see.
+//   - both measured: the existing epsilon regression check below.
+//
+// This is a deliberate, maintainer-authorised asymmetry: null is NOT treated
+// as "pass" and it is NOT treated as "always fail" — it must match what the
+// committed baseline already says, the same discipline this file already
+// applies to every other structural field.
+//
 // # Metadata-endpoint fixtures (#1530)
 //
 // Three rows — metadata/series_no_bounds, metadata/labels_no_bounds,
@@ -122,22 +155,46 @@ const updateEnv = "UPDATE_CARDINALITY_BASELINE"
 
 // baselineEntry is the deterministic, structural subset of profile.Record the
 // ratchet compares + commits. See the file doc for why the noisy fields are
-// dropped.
+// dropped, and for the null/unmeasured fan_factor semantics.
 type baselineEntry struct {
-	Fixture           string  `json:"fixture"`
-	FanFactor         float64 `json:"fan_factor"`
-	ScanRows          int64   `json:"scan_rows"`
-	PeakIntermediate  int64   `json:"peak_intermediate"`
-	HasCrossJoin      bool    `json:"has_cross_join"`
-	HasArrayJoin      bool    `json:"has_array_join"`
-	HasRecursiveCTE   bool    `json:"has_recursive_cte"`
-	MaxRecursionDepth int64   `json:"max_recursion_depth"`
+	Fixture string `json:"fixture"`
+	// FanFactor is nil exactly when the fixture is unmeasured — see the
+	// file doc's "fan_factor can be unmeasured" section. A committed nil
+	// is the explicit, reviewed acknowledgment that this fixture's true
+	// fan-out is not currently countable, not a hole in the data.
+	FanFactor         *float64 `json:"fan_factor"`
+	ScanRows          int64    `json:"scan_rows"`
+	PeakIntermediate  int64    `json:"peak_intermediate"`
+	HasCrossJoin      bool     `json:"has_cross_join"`
+	HasArrayJoin      bool     `json:"has_array_join"`
+	HasRecursiveCTE   bool     `json:"has_recursive_cte"`
+	MaxRecursionDepth int64    `json:"max_recursion_depth"`
+	// UncountableLevels is diagnostic-only, mirroring profile.Record —
+	// carried through so a reviewer can see WHY a fixture is unmeasured
+	// without re-running the profiler. Never compared by the ratchet: it
+	// is a symptom count, not a budget, and it is only meaningful when
+	// FanFactor is nil. No `omitempty`: the baseline file's structural
+	// guard (.github/scripts/generated-baseline-structural-guard.mjs)
+	// requires every record to carry the same field set, so a
+	// zero-valued 0 must serialize explicitly rather than vanish —
+	// otherwise measured and unmeasured records blend into two
+	// distinct key sets and the guard's self-test fails the build.
+	UncountableLevels int `json:"uncountable_levels"`
 }
 
 // fanFactorEpsilon absorbs float representation noise in the
 // peak_intermediate/scan_rows ratio so an exactly-equal fan_factor never
 // trips the ceiling.
 const fanFactorEpsilon = 1e-6
+
+// fmtFanFactor renders a nullable fan_factor for error messages — nil
+// (unmeasured) is spelled out rather than collapsed to a fabricated number.
+func fmtFanFactor(f *float64) string {
+	if f == nil {
+		return "unmeasured"
+	}
+	return fmt.Sprintf("%.2f", *f)
+}
 
 func toEntry(r profile.Record) baselineEntry {
 	return baselineEntry{
@@ -149,6 +206,7 @@ func toEntry(r profile.Record) baselineEntry {
 		HasArrayJoin:      r.HasArrayJoin,
 		HasRecursiveCTE:   r.HasRecursiveCTE,
 		MaxRecursionDepth: r.MaxRecursionDepth,
+		UncountableLevels: r.UncountableLevels,
 	}
 }
 
@@ -223,9 +281,11 @@ func TestCardinalityRatchet(t *testing.T) {
 	sort.Strings(removed)
 	for _, id := range added {
 		c := current[id]
-		t.Errorf("new fixture %q not in cardinality baseline (fan_factor=%.2f, cross_join=%v, "+
-			"recursive_cte=%v, max_depth=%d) — run `just update-cardinality-baseline` to record it",
-			id, c.FanFactor, c.HasCrossJoin, c.HasRecursiveCTE, c.MaxRecursionDepth)
+		t.Errorf("new fixture %q not in cardinality baseline (fan_factor=%s, cross_join=%v, "+
+			"recursive_cte=%v, max_depth=%d) — run `just update-cardinality-baseline` to record it. "+
+			"If fan_factor is \"unmeasured\", that is the honest state to commit — do not treat it as a "+
+			"reason to defer recording the fixture.",
+			id, fmtFanFactor(c.FanFactor), c.HasCrossJoin, c.HasRecursiveCTE, c.MaxRecursionDepth)
 	}
 	for _, id := range removed {
 		t.Errorf("baseline fixture %q no longer in the corpus — run `just update-cardinality-baseline` "+
@@ -242,11 +302,33 @@ func TestCardinalityRatchet(t *testing.T) {
 	sort.Strings(matched)
 	for _, id := range matched {
 		cur, base := current[id], baseline[id]
-		if cur.FanFactor > base.FanFactor+fanFactorEpsilon {
-			t.Errorf("%s: fan_factor regressed UPWARD %.2f → %.2f (peak_intermediate %d→%d at scan_rows %d). "+
-				"A query that fanned out N× now fans out more — root-cause the new intermediate blow-up; "+
-				"only run `just update-cardinality-baseline` if the increase is genuinely intended.",
-				id, base.FanFactor, cur.FanFactor, base.PeakIntermediate, cur.PeakIntermediate, cur.ScanRows)
+		// fan_factor is null-aware: see the file doc's "fan_factor can be
+		// unmeasured" section for the four-way truth table this implements.
+		// This is a pre-authorised maintainer decision — null must never
+		// silently pass, and it must never be blanket-failed either; it is
+		// compared against what the committed baseline already says.
+		switch {
+		case cur.FanFactor == nil && base.FanFactor == nil:
+			// Both unmeasured — already honestly acknowledged in the
+			// committed baseline. Nothing to check.
+		case cur.FanFactor == nil && base.FanFactor != nil:
+			t.Errorf("%s: fan_factor is now unmeasured (uncountable_levels=%d) but the baseline recorded a "+
+				"measured value of %s. A null fan_factor must never silently pass a fixture that used to be "+
+				"measured — either the profiler regressed (it can no longer see through a level it used to), "+
+				"or the fixture's SQL changed shape to one the decomposition can't see through. If the "+
+				"decomposition is correct and the fan-out is genuinely uncountable now, run "+
+				"`just update-cardinality-baseline` to record that explicitly; do not let this pass silently.",
+				id, cur.UncountableLevels, fmtFanFactor(base.FanFactor))
+		case cur.FanFactor != nil && base.FanFactor == nil:
+			// Became measurable — strictly an improvement in what the gate
+			// can see. Always allowed, no baseline update required.
+		default:
+			if *cur.FanFactor > *base.FanFactor+fanFactorEpsilon {
+				t.Errorf("%s: fan_factor regressed UPWARD %.2f → %.2f (peak_intermediate %d→%d at scan_rows %d). "+
+					"A query that fanned out N× now fans out more — root-cause the new intermediate blow-up; "+
+					"only run `just update-cardinality-baseline` if the increase is genuinely intended.",
+					id, *base.FanFactor, *cur.FanFactor, base.PeakIntermediate, cur.PeakIntermediate, cur.ScanRows)
+			}
 		}
 		if cur.ScanRows != base.ScanRows {
 			t.Errorf("%s: scan_rows drifted %d → %d. The leaf scan row count is a pure function of the "+

@@ -62,15 +62,20 @@ func main() {
 		printTopTable(os.Stderr, recs, *top)
 	}
 
-	// Summary line: total fixtures, how many had errors.
-	var nErr int
+	// Summary line: total fixtures, how many had errors, how many are
+	// unmeasured (fan_factor nil — see [profile.Record.FanFactor]).
+	var nErr, nUnmeasured int
 	var maxFan float64
 	for _, r := range recs {
 		if r.Err != "" {
 			nErr++
 		}
-		if r.FanFactor > maxFan {
-			maxFan = r.FanFactor
+		if r.FanFactor == nil {
+			nUnmeasured++
+			continue
+		}
+		if *r.FanFactor > maxFan {
+			maxFan = *r.FanFactor
 		}
 	}
 
@@ -79,13 +84,13 @@ func main() {
 		if n <= 0 {
 			n = 25
 		}
-		if err := writeMarkdown(*mdPath, recs, n, len(recs), nErr, maxFan); err != nil {
+		if err := writeMarkdown(*mdPath, recs, n, len(recs), nErr, nUnmeasured, maxFan); err != nil {
 			fmt.Fprintf(os.Stderr, "perf-profile: write markdown summary: %v\n", err)
 			os.Exit(1)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "perf-profile: profiled %d fixtures (%d with errors), max fan_factor = %.2f\n",
-		len(recs), nErr, maxFan)
+	fmt.Fprintf(os.Stderr, "perf-profile: profiled %d fixtures (%d with errors, %d unmeasured), max fan_factor = %.2f\n",
+		len(recs), nErr, nUnmeasured, maxFan)
 
 	if *failOver > 0 && maxFan > *failOver {
 		fmt.Fprintf(os.Stderr, "perf-profile: FAIL — max fan_factor %.2f exceeds threshold %.2f\n", maxFan, *failOver)
@@ -111,25 +116,27 @@ func writeJSON(outPath string, recs []profile.Record) error {
 // writeMarkdown appends a GitHub-flavoured markdown table of the top-n
 // fan_factor fixtures plus a one-line corpus summary to mdPath (opened
 // in append mode so it can target $GITHUB_STEP_SUMMARY directly).
-func writeMarkdown(mdPath string, recs []profile.Record, n, total, nErr int, maxFan float64) error {
+func writeMarkdown(mdPath string, recs []profile.Record, n, total, nErr, nUnmeasured int, maxFan float64) error {
 	if n > len(recs) {
 		n = len(recs)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "## perf-profile (corpus fan-out)\n\n")
-	fmt.Fprintf(&b, "Profiled **%d** executable fixtures (%d with errors). Max fan_factor: **%.2f**.\n\n",
-		total, nErr, maxFan)
+	fmt.Fprintf(&b, "Profiled **%d** executable fixtures (%d with errors, %d unmeasured). Max fan_factor: **%.2f**.\n\n",
+		total, nErr, nUnmeasured, maxFan)
 	fmt.Fprintf(&b, "### top %d fixtures by fan_factor\n\n", n)
 	b.WriteString("| fixture | fan_factor | scan_rows | peak_intermediate | result_rows | cross_join | array_join | recursive_cte |\n")
 	b.WriteString("| --- | ---: | ---: | ---: | ---: | :---: | :---: | :---: |\n")
 	for i := 0; i < n; i++ {
 		r := recs[i]
-		fmt.Fprintf(&b, "| `%s` | %.2f | %d | %d | %d | %s | %s | %s |\n",
-			r.Fixture, r.FanFactor, r.ScanRows, r.PeakIntermediate, r.ResultRows,
+		fmt.Fprintf(&b, "| `%s` | %s | %d | %d | %d | %s | %s | %s |\n",
+			r.Fixture, fanFactorLabel(r.FanFactor), r.ScanRows, r.PeakIntermediate, r.ResultRows,
 			mdYesNo(r.HasCrossJoin), mdYesNo(r.HasArrayJoin), mdYesNo(r.HasRecursiveCTE))
 	}
 	b.WriteString("\n_fan_factor = peak intermediate cardinality / leaf scan rows. " +
-		"Fixtures are small golden seeds, so absolute counts are tiny; the ratio is the fan-out signal._\n\n")
+		"Fixtures are small golden seeds, so absolute counts are tiny; the ratio is the fan-out signal. " +
+		"`unmeasured` means the profiler could not see through every pipeline stage (a CTE reference or a " +
+		"recursive CTE step) — see [profile.Record.FanFactor]._\n\n")
 
 	f, err := os.OpenFile(mdPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // step-summary path
 	if err != nil {
@@ -138,6 +145,16 @@ func writeMarkdown(mdPath string, recs []profile.Record, n, total, nErr int, max
 	defer func() { _ = f.Close() }()
 	_, werr := f.WriteString(b.String())
 	return werr
+}
+
+// fanFactorLabel renders a nullable fan_factor for the human-facing
+// summary tables — nil (unmeasured) is spelled out rather than
+// collapsed to a fabricated number.
+func fanFactorLabel(f *float64) string {
+	if f == nil {
+		return "unmeasured"
+	}
+	return fmt.Sprintf("%.2f", *f)
 }
 
 func mdYesNo(v bool) string {
@@ -159,8 +176,8 @@ func printTopTable(w *os.File, recs []profile.Record, n int) {
 		"fixture", "fan_factor", "scan_rows", "peak_inter", "xjoin", "ajoin", "rcte")
 	for i := 0; i < n; i++ {
 		r := recs[i]
-		fmt.Fprintf(w, "%-48s %10.2f %12d %12d %6s %6s %6s\n",
-			truncate(r.Fixture, 48), r.FanFactor, r.ScanRows, r.PeakIntermediate,
+		fmt.Fprintf(w, "%-48s %10s %12d %12d %6s %6s %6s\n",
+			truncate(r.Fixture, 48), fanFactorLabel(r.FanFactor), r.ScanRows, r.PeakIntermediate,
 			yesno(r.HasCrossJoin), yesno(r.HasArrayJoin), yesno(r.HasRecursiveCTE))
 	}
 }
