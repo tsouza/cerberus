@@ -888,14 +888,14 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'test/e2e/playwright/package-lock.json'
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         if: env.RUN_SHARD == 'true'
         with:
           tool: just
 
       # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
       # the published chart), so the runner needs helm.
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         if: env.RUN_SHARD == 'true'
         with:
           version: v3.21.1
@@ -1241,7 +1241,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
@@ -1376,13 +1376,13 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
       # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
       # the published chart), so the runner needs helm.
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.21.1
 
@@ -1571,14 +1571,14 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
       # chart in `just e2e-bwc-up` (dogfooding the chart), so the runner needs
       # helm.
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.21.1
 

@@ -107,7 +107,7 @@ jobs:
         run: node .github/scripts/chart-publish.mjs --self-test
 
       # helm is needed for the chart gate's `helm show chart oci://…` probe.
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.21.1
 
@@ -327,7 +327,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
 
       - name: Log in to GHCR
         env:
@@ -408,7 +408,7 @@ jobs:
           echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST=${is_latest}"
 
       - id: goreleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7
         with:
           distribution: goreleaser
           version: '~> v2'
@@ -514,7 +514,7 @@ jobs:
       # Mirror README.md to the Docker Hub repo overview. Non-fatal: a stale
       # overview page must never turn an otherwise-published release red.
       - name: Sync Docker Hub overview
-        uses: peter-evans/dockerhub-description@v5
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa  # v5
         continue-on-error: true
         with:
           username: tsouza
@@ -707,15 +707,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.21.1
 
       # cosign-installer publishes NO moving v4 major tag (only v3 floats); pin
       # the exact latest v4 patch or the job fails resolving the action.
-      - uses: sigstore/cosign-installer@v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
-      - uses: oras-project/setup-oras@v2
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2
 
       - name: Log in to GHCR
         env:

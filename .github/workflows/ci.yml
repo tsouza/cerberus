@@ -50,7 +50,7 @@ jobs:
 
       - id: filter
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706  # v4
         with:
           # `every` makes the negation patterns subtractive: a file is
           # in `code` iff it matches `**` AND does NOT match any of the
@@ -121,7 +121,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
@@ -141,7 +141,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
@@ -232,7 +232,7 @@ jobs:
 
       - name: golangci-lint (tagged build configuration)
         # v7+ is required for golangci-lint v2; v6 caps at v1.
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9
         with:
           version: v2.12.2
           # Honours .golangci.yml — including its `build-tags:` union, which is
@@ -260,7 +260,7 @@ jobs:
       # test/regression/lint_build_tags_test.go holds the two passes, the tag
       # union and the inert tag to what the tree's `//go:build` lines say.
       - name: golangci-lint (untagged build configuration)
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9
         with:
           version: v2.12.2
           args: --build-tags cerberus_untagged_build ./...
@@ -371,7 +371,7 @@ jobs:
             --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
 
       - name: markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v24.1.0
+        uses: DavidAnson/markdownlint-cli2-action@6bf21b07787794f89a243495939cd651942aeabe  # v24.1.0
         with:
           globs: |
             **/*.md
@@ -486,7 +486,7 @@ jobs:
         run: node --test .github/scripts/goreleaser-deprecations.test.mjs
 
       - name: install goreleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7
         with:
           distribution: goreleaser
           version: '~> v2'

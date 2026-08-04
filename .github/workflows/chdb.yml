@@ -92,7 +92,7 @@ jobs:
 
       - id: filter
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706  # v4
         with:
           # See ci.yml for why `every` is required (the `**` baseline
           # plus negation patterns would otherwise always be true).
@@ -162,7 +162,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
@@ -200,7 +200,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
@@ -255,7 +255,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         if: needs.changes.outputs.docs_only != 'true'
         with:
           tool: just
@@ -323,7 +323,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
@@ -365,7 +365,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: just
 
