@@ -359,7 +359,7 @@ function selfTest() {
 
   // The fixture itself: its command line must carry no phrase the classifier
   // recognises, or the two assertions above would pass on `message` alone.
-  const [file, args] = failingProbe(NOT_FOUND_STDERR)('probe-self-test')
+  const [file, args] = failingProbe(NOT_FOUND_STDERR)()
   check(
     classifyProbeFailure({ stderr: null, message: `Command failed: ${file} ${args.join(' ')}` }) === 'unknown',
     'the probe fixture reaches the classifier on stderr only, never through the quoted command line',
