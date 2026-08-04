@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	messages "github.com/cucumber/messages/go/v21"
+	messages "github.com/cucumber/messages/go/v34"
 )
 
 // archetypeTagPrefix marks a scenario tag naming an archetype fixture directory
