@@ -123,10 +123,16 @@ func TestDefault_AcceptsBoundedInstantLeaf(t *testing.T) {
 
 // TestRequireScanTimeBound_IgnoresNonInstantLeaves proves scope honesty: the
 // invariant fires ONLY for instant windowed-array leaves. The matrix
-// (OuterRange > 0) and MetricsAggregate-input shapes carry their own emit-time
-// bound (maybePushInnerScanTimeBounds) and are NOT instant windowed-array
-// leaves, so RequireScanTimeBound must accept them even with the flag unset —
-// it must never demand an IR flag for a path whose bound it does not govern.
+// (OuterRange > 0) and the three metrics-emitter Input node kinds
+// (chplan.IsInstantWindowedLeaf's own type switch — MetricsAggregate,
+// MetricsHistogramOverTime, MetricsCompare) carry their own emit-time bound
+// (maybePushInnerScanTimeBounds) and are NOT instant windowed-array leaves, so
+// RequireScanTimeBound must accept them even with the flag unset — it must
+// never demand an IR flag for a path whose bound it does not govern. Every
+// case here mirrors one arm of that type switch; dropping any one of the three
+// Input kinds from IsInstantWindowedLeaf would make its own case's
+// self-check (`chplan.IsInstantWindowedLeaf(rw)`) fail loudly rather than let
+// RequireScanTimeBound silently start rejecting the shape.
 func TestRequireScanTimeBound_IgnoresNonInstantLeaves(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +153,25 @@ func TestRequireScanTimeBound_IgnoresNonInstantLeaves(t *testing.T) {
 		"metrics-aggregate": &chplan.RangeWindow{
 			Func:            "rate",
 			Input:           &chplan.MetricsAggregate{},
+			Range:           5 * time.Minute,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+		},
+		// MetricsHistogramOverTime input: the TraceQL histogram-over-time
+		// matrix path, same emit-time-bounded family as MetricsAggregate —
+		// a distinct node kind in IsInstantWindowedLeaf's type switch.
+		"metrics-histogram-over-time": &chplan.RangeWindow{
+			Func:            "rate",
+			Input:           &chplan.MetricsHistogramOverTime{},
+			Range:           5 * time.Minute,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+		},
+		// MetricsCompare input: the TraceQL compare() matrix path, the third
+		// and last excluded node kind in the type switch.
+		"metrics-compare": &chplan.RangeWindow{
+			Func:            "rate",
+			Input:           &chplan.MetricsCompare{},
 			Range:           5 * time.Minute,
 			TimestampColumn: "TimeUnix",
 			ValueColumn:     "Value",
