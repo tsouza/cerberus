@@ -1,0 +1,57 @@
+emitSearchTraceLimit's top-N subquery ranks matching traces and LIMITs the
+ranking to `TraceLimit`. This fixture covers issue #1451's residual "limit
+larger than the result set" case: `search_limit` set well above the number of
+traces that actually match, so the `LIMIT` clause in the inner ranking
+subquery never binds and every matching trace's spans must survive the outer
+`WHERE TraceId IN (...)` drain unabridged — no truncation, no error from the
+CH-side LIMIT exceeding the candidate set.
+
+The seed carries three traces, but only two match the `name = "checkout"`
+predicate:
+
+  - `0000…aa01` — two `checkout` spans, at 00:00:10 and 00:00:15.
+  - `0000…bb02` — one `checkout` span, at 00:00:20.
+  - `0000…cc03` — one `other` span, at 00:00:25 — does NOT match.
+
+`search_limit: 5` exceeds the 2 matching traces by a wide margin. Expected
+output is all three `checkout` spans (`aa01` ×2 + `bb02` ×1); `cc03` is
+excluded by the FILTER predicate, not by the limit, confirming the two stay
+independent even when the limit has plenty of headroom to spare.
+
+-- search_limit --
+5
+-- search_window --
+1767225600 1767225660
+-- query.traceql --
+{ name = "checkout" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanName String
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces VALUES
+    ('0000000000000000000000000000aa01', '0000000000000011', toDateTime64('2026-01-01 00:00:10', 9), 'checkout'),
+    ('0000000000000000000000000000aa01', '0000000000000012', toDateTime64('2026-01-01 00:00:15', 9), 'checkout'),
+    ('0000000000000000000000000000bb02', '0000000000000021', toDateTime64('2026-01-01 00:00:20', 9), 'checkout'),
+    ('0000000000000000000000000000cc03', '0000000000000031', toDateTime64('2026-01-01 00:00:25', 9), 'other');
+-- expected_rows --
+[
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "0000000000000000000000000000aa01"}, "2026-01-01T00:00:10Z", 0],
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000012", "__cerberus_traceID": "0000000000000000000000000000aa01"}, "2026-01-01T00:00:15Z", 0],
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000021", "__cerberus_traceID": "0000000000000000000000000000bb02"}, "2026-01-01T00:00:20Z", 0]
+]
+-- args --
+[0] string = "checkout"
+[1] int64 = 1767225600000000000
+[2] int64 = 1767225660000000000
+[3] string = "checkout"
+[4] int64 = 1767225600000000000
+[5] int64 = 1767225660000000000
+-- chplan --
+SearchTraceLimit traceLimit=5
+  Filter predicate=(((SpanName = "checkout") AND (Timestamp >= fromUnixTimestamp64Nano(1767225600000000000))) AND (Timestamp <= fromUnixTimestamp64Nano(1767225660000000000)))
+    Scan(otel_traces)
+-- sql --
+SELECT s.* FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 5)

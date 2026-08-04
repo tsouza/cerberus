@@ -1,0 +1,54 @@
+emitSearchTraceLimit ranks traces by `min(Timestamp) DESC, TraceId ASC` and
+keeps the first N. #1428 / search_trace_limit_tiebreak_boundary.txtar pins the
+TraceId tie-break at an exact boundary tie. This fixture is the complementary
+shape: three traces with three *distinct* start times, so the sort key alone
+decides the outcome and the TraceId leg never gets consulted at all — a plain
+"newest N wins, in the obvious order" case with no boundary ambiguity.
+
+`search_limit: 2` over three matching traces, all inside the request window:
+
+  - `0000…aa01` starts at 00:00:10 — oldest, drops off the page.
+  - `0000…bb02` starts at 00:00:20 — second newest, keeps its slot.
+  - `0000…cc03` starts at 00:00:30 — newest, keeps its slot.
+
+Expected output carries `bb02`'s and `cc03`'s spans only; `aa01` contributes
+nothing. This is issue #1451's residual "no-tie ordering" case: distinct from
+the tie-break fixture (which requires two traces to share a start time), it
+exercises the emitter's ordinary path where the outer drain and the top-N
+subquery agree on a clean linear order.
+
+-- search_limit --
+2
+-- search_window --
+1767225600 1767225660
+-- query.traceql --
+{ name = "checkout" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    Timestamp DateTime64(9),
+    SpanName String
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces VALUES
+    ('0000000000000000000000000000aa01', '0000000000000011', toDateTime64('2026-01-01 00:00:10', 9), 'checkout'),
+    ('0000000000000000000000000000bb02', '0000000000000021', toDateTime64('2026-01-01 00:00:20', 9), 'checkout'),
+    ('0000000000000000000000000000cc03', '0000000000000031', toDateTime64('2026-01-01 00:00:30', 9), 'checkout');
+-- expected_rows --
+[
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000021", "__cerberus_traceID": "0000000000000000000000000000bb02"}, "2026-01-01T00:00:20Z", 0],
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000031", "__cerberus_traceID": "0000000000000000000000000000cc03"}, "2026-01-01T00:00:30Z", 0]
+]
+-- args --
+[0] string = "checkout"
+[1] int64 = 1767225600000000000
+[2] int64 = 1767225660000000000
+[3] string = "checkout"
+[4] int64 = 1767225600000000000
+[5] int64 = 1767225660000000000
+-- chplan --
+SearchTraceLimit traceLimit=2
+  Filter predicate=(((SpanName = "checkout") AND (Timestamp >= fromUnixTimestamp64Nano(1767225600000000000))) AND (Timestamp <= fromUnixTimestamp64Nano(1767225660000000000)))
+    Scan(otel_traces)
+-- sql --
+SELECT s.* FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 2)
