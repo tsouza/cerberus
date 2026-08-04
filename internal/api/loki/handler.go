@@ -96,6 +96,18 @@ type Handler struct {
 	// package default (defaultTailWriteTimeout) so tests that build a bare
 	// Handler keep the historical 10s bound.
 	TailWriteTimeout time.Duration
+
+	// onQueryRangeDrain, when non-nil, is invoked once per
+	// /loki/api/v1/query_range request with the number of rows
+	// h.Engine.Query pulled from ClickHouse (res.Inspected) — the
+	// eager-path drain count, mirroring api/prom's onRangeDrain /
+	// onInstantDrain and api/tempo's SearchMetrics.InspectedTraces. Loki's
+	// /query_range has no streaming cursor: Engine.Query drains the whole
+	// result before buildRangeData pivots it into the matrix/streams wire
+	// shape, so res.Inspected IS the drain the boundsdrain harness bounds.
+	// Production leaves it nil so the hot path is byte-unchanged; only
+	// tests install it.
+	onQueryRangeDrain func(int64)
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -356,6 +368,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
+	}
+	if h.onQueryRangeDrain != nil {
+		h.onQueryRangeDrain(res.Inspected)
 	}
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
 	h.Logger.Debug("cerberus loki query_range", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
