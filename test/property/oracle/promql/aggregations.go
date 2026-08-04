@@ -126,8 +126,56 @@ func applyAggregator(a *parser.AggregateExpr, rows []VectorRow) ([]aggResult, er
 			return nil, err
 		}
 		return topKBottomK(rows, k, a.Op == parser.BOTTOMK), nil
+	case parser.QUANTILE:
+		phi, err := aggregatorParamFloat(a)
+		if err != nil {
+			return nil, err
+		}
+		return []aggResult{{labels: groupLabels, value: quantileAggregate(phi, rows)}}, nil
 	}
 	return nil, fmt.Errorf("oracle: unsupported aggregation op %s", a.Op)
+}
+
+// aggregatorParamFloat is aggregatorParam's float counterpart, for
+// `quantile(phi, …)` — phi is a real-valued scalar, not an int count.
+func aggregatorParamFloat(a *parser.AggregateExpr) (float64, error) {
+	if a.Param == nil {
+		return 0, fmt.Errorf("oracle: aggregator %s requires a parameter", a.Op)
+	}
+	n, ok := a.Param.(*parser.NumberLiteral)
+	if !ok {
+		return 0, fmt.Errorf("oracle: aggregator %s param must be NumberLiteral, got %T", a.Op, a.Param)
+	}
+	return n.Val, nil
+}
+
+// quantileAggregate implements the `quantile(phi, vector)` aggregator:
+// Prom's textbook sample-quantile over the group's values (promql/
+// quantile.go::quantile) — sort ascending, then weighted-average
+// interpolate between the two samples straddling rank = phi*(n-1).
+// phi < 0 / > 1 / NaN follow Prom's documented out-of-domain results.
+func quantileAggregate(phi float64, rows []VectorRow) float64 {
+	if math.IsNaN(phi) {
+		return math.NaN()
+	}
+	if phi < 0 {
+		return math.Inf(-1)
+	}
+	if phi > 1 {
+		return math.Inf(1)
+	}
+	values := make([]float64, len(rows))
+	for i, r := range rows {
+		values[i] = r.V
+	}
+	sort.Float64s(values)
+
+	n := float64(len(values))
+	rank := phi * (n - 1)
+	lowerIndex := math.Max(0, math.Floor(rank))
+	upperIndex := math.Min(n-1, lowerIndex+1)
+	weight := rank - math.Floor(rank)
+	return values[int(lowerIndex)]*(1-weight) + values[int(upperIndex)]*weight
 }
 
 // aggregatorParam extracts the constant k for topk/bottomk. PromQL
