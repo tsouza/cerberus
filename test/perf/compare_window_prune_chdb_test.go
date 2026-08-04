@@ -38,6 +38,7 @@
 package perf
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -46,6 +47,9 @@ import (
 	"time"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
+
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 const (
@@ -172,9 +176,9 @@ func cmpAfterSQL() string {
 // MinMax/Partition stage of a single-scan EXPLAIN indexes=1 plan — used
 // on the 's' span leg in isolation, where selected < total proves the
 // in-scan bound Partition-prunes to the window's day-partition(s).
-func cmpScanPartPrune(t *testing.T, db *sql.DB, query string) (selected, total int) {
+func cmpScanPartPrune(t *testing.T, db *sql.DB, query string, args ...any) (selected, total int) {
 	t.Helper()
-	rows, err := db.Query("EXPLAIN indexes=1 " + query)
+	rows, err := db.Query("EXPLAIN indexes=1 "+query, args...)
 	if err != nil {
 		t.Fatalf("EXPLAIN: %v\nquery: %s", err, query)
 	}
@@ -333,6 +337,124 @@ func TestCompareWindowPrune_JoinLegs(t *testing.T) {
 	}
 }
 
+// nonRootWindowStep / nonRootWindowRange size the RangeWindow the real
+// compare() emit path (chsql.emitRangeWindowCompare) requires to produce the
+// non-root root-lookup shape below: Step must be > 0, and the lookback it
+// implies (Range, defaulting to Step when zero) subtracts a single minute
+// off the seed's lower bound — negligible against the corpus's year-scale
+// date spread, so it does not change which rows the seed selects.
+const (
+	nonRootWindowStep  = time.Minute
+	nonRootWindowRange = time.Minute
+)
+
+// compareNonRootRootLookupSQL builds the REAL chplan.MetricsCompare +
+// chplan.RangeWindow tree for the non-root-selection root-lookup shape
+// (matching TraceIDColumn "TraceId", ParentSpanId-rooted RootLookup over
+// spansTable, optionally gated by the RootLookupTraceIDTsTable envelope) and
+// runs it through the ACTUAL chsql.Emit — the same emitter production
+// requests go through — rather than hand-typing the resulting SQL text (the
+// gap #1439 closes). windowRootLookupTraceIDSeed / rootLookupTraceIDTsBounds
+// (internal/chsql/metrics_compare.go) are unexported, so this only reaches
+// them indirectly via chsql.Emit; nothing here reimplements their predicate
+// shape by hand.
+//
+// The full emitted statement is compare()'s three-layer matrix query (anchor
+// fanout + outer count wrapper) around the `s LEFT JOIN r` join this test
+// doesn't need — only the root ('r') leg's own derived-table subquery is
+// under test. That subquery is a complete, self-contained SELECT (chsql
+// always parenthesises a join side via subqueryFrag), so it is extracted by
+// balanced-paren scanning from the `LEFT JOIN (` marker and returned as a
+// standalone, directly-executable query, together with the exact slice of
+// `?`-bound args it consumes — found by counting placeholders: clickhouse-go
+// binds `?` positionally in left-to-right TEXT order, and chsql.Emit appends
+// each arg to its args slice at the moment its placeholder is written, so
+// counting `?` occurrences up to the extraction point yields the arg offset
+// and counting them inside the extracted text yields the arg count.
+func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, winLo, winHi time.Time, envelope bool) (string, []any) {
+	t.Helper()
+
+	matchingChild := &chplan.Binary{
+		Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanName"}, Right: &chplan.LitString{V: "matching-child"},
+	}
+	m := &chplan.MetricsCompare{
+		Selection: matchingChild,
+		Pairs: &chplan.FuncCall{Name: "array", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{
+				&chplan.LitString{V: "name"}, &chplan.ColumnRef{Name: "ServiceName"},
+			}},
+		}},
+		TraceIDColumn: "TraceId",
+		Inner: &chplan.Filter{
+			Input:     &chplan.Scan{Table: spansTable},
+			Predicate: matchingChild,
+		},
+		RootLookup: &chplan.Aggregate{
+			Input: &chplan.Filter{
+				Input: &chplan.Scan{Table: spansTable},
+				Predicate: &chplan.Binary{
+					Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ParentSpanId"}, Right: &chplan.LitString{V: ""},
+				},
+			},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+			AggFuncs: []chplan.AggFunc{
+				{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "root_name"},
+				{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}, Alias: "root_service"},
+			},
+		},
+	}
+	if envelope {
+		m.RootLookupTraceIDTsTable = lookupTable
+		m.RootLookupTraceIDTsStartColumn = "Start"
+		m.RootLookupTraceIDTsEndColumn = "End"
+	}
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Range:           nonRootWindowRange,
+		Step:            nonRootWindowStep,
+		Start:           winLo,
+		End:             winHi,
+		TimestampColumn: "Timestamp",
+	}
+	sql, args, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("chsql.Emit: %v", err)
+	}
+
+	const joinMarker = "LEFT JOIN ("
+	idx := strings.Index(sql, joinMarker)
+	if idx < 0 {
+		t.Fatalf("expected %q (the s/r join) in emitted SQL:\n%s", joinMarker, sql)
+	}
+	start := idx + len(joinMarker)
+	depth := 1
+	end := -1
+	for i := start; i < len(sql); i++ {
+		switch sql[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end >= 0 {
+			break
+		}
+	}
+	if end < 0 {
+		t.Fatalf("unbalanced parens extracting the root ('r') leg from:\n%s", sql)
+	}
+	rootSQL := sql[start:end]
+	argOffset := strings.Count(sql[:start], "?")
+	argCount := strings.Count(rootSQL, "?")
+	if argOffset+argCount > len(args) {
+		t.Fatalf("extracted root leg wants args[%d:%d] but Emit returned only %d args:\n%s", argOffset, argOffset+argCount, len(args), rootSQL)
+	}
+	return rootSQL, args[argOffset : argOffset+argCount]
+}
+
 // TestCompareNonRootRootLookupTraceIDTsEnvelope exercises the case a request
 // window cannot represent: a child matches compare() on May 12 while its root
 // was recorded on May 1. Tempo still attaches that root's name and service to
@@ -349,8 +471,8 @@ func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
 
 	const spans = "compare_nonroot_spans"
 	const lookup = "compare_nonroot_trace_id_ts"
-	const window = "Timestamp >= toDateTime64('2026-05-12 10:00:00', 9) AND Timestamp <= toDateTime64('2026-05-12 11:00:00', 9)"
-	const seed = "SELECT TraceId FROM compare_nonroot_spans WHERE " + window + " AND SpanName = 'matching-child'"
+	winLo := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	winHi := time.Date(2026, 5, 12, 11, 0, 0, 0, time.UTC)
 	for _, stmt := range []string{
 		`CREATE TABLE compare_nonroot_spans (
             Timestamp DateTime64(9), TraceId String, ParentSpanId String,
@@ -380,16 +502,16 @@ func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
 		t.Fatalf("optimize spans: %v", err)
 	}
 
-	before := `SELECT TraceId, any(SpanName), any(ServiceName) FROM ` + spans +
-		` WHERE ParentSpanId = '' AND TraceId IN (` + seed + `) GROUP BY TraceId ORDER BY TraceId`
-	after := `SELECT TraceId, any(SpanName), any(ServiceName) FROM ` + spans +
-		` WHERE ParentSpanId = '' AND Timestamp >= (SELECT min(Start) FROM ` + lookup + ` WHERE TraceId IN (` + seed + `))` +
-		` AND Timestamp <= addSeconds((SELECT max(End) FROM ` + lookup + ` WHERE TraceId IN (` + seed + `)), 1)` +
-		` AND TraceId IN (` + seed + `) GROUP BY TraceId ORDER BY TraceId`
+	// before / after are the REAL chsql-emitted root-lookup subquery for the
+	// #1214 unbounded-but-lossless shape vs. the trace_id_ts-envelope shape —
+	// captured from the actual emitter (see compareNonRootRootLookupSQL), not
+	// hand-typed SQL text.
+	before, beforeArgs := compareNonRootRootLookupSQL(t, spans, lookup, winLo, winHi, false)
+	after, afterArgs := compareNonRootRootLookupSQL(t, spans, lookup, winLo, winHi, true)
 
-	rows := func(query string) []string {
+	rows := func(query string, args ...any) []string {
 		t.Helper()
-		rs, qerr := db.Query(query)
+		rs, qerr := db.Query(query, args...)
 		if qerr != nil {
 			t.Fatalf("query: %v\n%s", qerr, query)
 		}
@@ -404,7 +526,7 @@ func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
 		}
 		return got
 	}
-	beforeRows, afterRows := rows(before), rows(after)
+	beforeRows, afterRows := rows(before, beforeArgs...), rows(after, afterArgs...)
 	if len(beforeRows) != 1 || beforeRows[0] != "selected|checkout-root|checkout" {
 		t.Fatalf("unbounded root lookup = %v, want Tempo root enrichment for selected child", beforeRows)
 	}
@@ -412,8 +534,8 @@ func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
 		t.Fatalf("Tempo parity violation: unbounded=%v trace_id_ts envelope=%v", beforeRows, afterRows)
 	}
 
-	beforeParts, beforeTotal := cmpScanPartPrune(t, db, before)
-	afterParts, afterTotal := cmpScanPartPrune(t, db, after)
+	beforeParts, beforeTotal := cmpScanPartPrune(t, db, before, beforeArgs...)
+	afterParts, afterTotal := cmpScanPartPrune(t, db, after, afterArgs...)
 	if beforeTotal < nonRootEnvelopePartCount || afterTotal != beforeTotal {
 		t.Fatalf("root lookup EXPLAIN parts before=%d/%d after=%d/%d, want a shared multi-part corpus", beforeParts, beforeTotal, afterParts, afterTotal)
 	}
