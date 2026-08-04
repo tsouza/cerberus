@@ -8,5 +8,8 @@
   "histogram_metric": "cerberus_migration_request_duration_seconds",
   "histogram_bounds": [0.1, 0.5, 1.0],
   "traces_per_service": 20,
-  "spans_per_trace": [3, 4, 5]
+  "spans_per_trace": [3, 4, 5],
+  "restarts": {
+    "payments|500": [60]
+  }
 }
