@@ -418,3 +418,73 @@ metrics_instant
 		t.Fatalf("Endpoint = %q", got[0].Endpoint)
 	}
 }
+
+func TestParseCorpus_ExpectStatusOK(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad_scope
+-- endpoint --
+tags_v2
+-- scope --
+all
+-- expect_status --
+400
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].ExpectedStatus != 400 {
+		t.Fatalf("ExpectedStatus = %d, want 400", got[0].ExpectedStatus)
+	}
+}
+
+func TestParseCorpus_ExpectStatusRejects2xx(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- expect_status --
+200
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_status outside 4xx/5xx should fail — that's what the ordinary body-diff path is for")
+	}
+}
+
+func TestParseCorpus_ExpectStatusRejectsTracesEndpoint(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- endpoint --
+traces
+-- traceid_template --
+svc/0
+-- expect_status --
+404
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_status on endpoint=traces should fail — that endpoint runs through the proto differ, which this axis does not cover")
+	}
+}
+
+func TestParseCorpus_ExpectStatusRejectsBodyAssertionCombo(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- expect_status --
+400
+-- expected_min_traces --
+1
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_status combined with a body-shape assertion should fail — the status-parity path never parses the body, so expected_min_traces would silently never run")
+	}
+}

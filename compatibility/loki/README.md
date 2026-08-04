@@ -173,6 +173,29 @@ bit-identical when both sides observed the same values. The pass
 queries with a `line_limit` above the per-service row count so
 neither backend truncates the peek window.
 
+## Status-parity differential pass
+
+The corpus and burndown passes both compare response BODIES, and fold
+any non-200 response into an `UnexpectedFailure` — correct for a
+"both backends must return this body" case, but it means neither pass
+can express "both backends must REJECT this request with the same
+status," or catch cerberus 400-ing where reference Loki 200s (or vice
+versa). `status_parity.go` closes that gap with a small, fixed set of
+known-invalid requests (a missing `query` parameter, syntactically
+invalid LogQL), fetched from both backends via a raw status probe that
+skips the 200-only fold entirely, asserting the HTTP status itself is
+the parity signal. This mirrors the Tempo/TraceQL `-- expect_status --`
+corpus axis (`compatibility/tempo/driver/corpus.go`) on the LogQL side.
+Results join the same report + score pipeline as every other pass.
+
+The two seeded cases are deliberately uncontroversial, protocol-level
+rejections both backends have always agreed on — case selection avoids
+any request shape tied to an open rejection-parity issue (a label or
+matcher case upstream accepts and cerberus currently rejects, or vice
+versa); those belong to their own issue once fixed, not to this list,
+because the committed `compatibility/parity-baseline.json` roster
+requires full parity from every entry it carries.
+
 ## Upstream-skip baseline
 
 The vendored corpus contains ~15 queries upstream marks `skip: true`

@@ -21,12 +21,14 @@
 // accident of the current numbers — a diff against a reference backend
 // is a bug to fix at the source, so there is no shape in this file that
 // can record a divergence as acceptable. The floors are prometheus
-// 739/739, loki 124/124, tempo 61/61, tempo-grpc 59/59; doc-counts.mjs
+// 739/739, loki 126/126, tempo 62/62, tempo-grpc 59/59; doc-counts.mjs
 // asserts those numbers against compatibility/parity-baseline.json, so
 // a corpus change cannot leave this comment behind. tempo-grpc's floor
-// is 2 below tempo's: traces / traces_v2 have no StreamingQuerier RPC
+// is 3 below tempo's: traces / traces_v2 have no StreamingQuerier RPC
 // (see compatibility/tempo/driver/grpc_diff.go), so those 2 corpus
-// cases never enter its roster.
+// cases never enter its roster, and one more (a -- expect_status --
+// rejection-parity case) is excluded pending #1714 (gRPC has no status
+// axis yet — see grpc_diff.go's skippedStatusParity).
 //
 // This is NOT an allow-list. An allow-list names the cases you are
 // permitted to fail; the roster names the cases that must pass, and

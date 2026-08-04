@@ -13,6 +13,23 @@
 // hard errors (corpus load failure, write failure) bubble up. The
 // score JSON drives the downstream badge; CI uses the artifact, not
 // the exit code, to track drift over time.
+//
+// Status-parity axis: fetchJSON folds any non-2xx response into an
+// error, so by default a corpus case can only ever express "both
+// backends must answer 2xx with agreeing bodies" — it has no way to
+// say "both backends must REJECT this input", and no way to say
+// "cerberus 400s where upstream 200s" (or vice versa) as anything
+// other than an indistinguishable-from-a-network-blip HardError. That
+// blinds the differential to an entire class of rejection-parity bug
+// (cerberus #1593, #1484): the corpus simply cannot contain a case
+// that probes it. A corpus case that sets CorpusCase.ExpectedStatus
+// (TXTAR `-- expect_status --`) routes through diffStatusParityCase
+// instead, which compares the two backends' actual status codes
+// against the declared expectation as a first-class outcome — pass
+// when both sides return exactly that code, a normal (non-hard-error)
+// Assertion failure when either side doesn't. A genuine transport
+// failure (no response at all) still hard-errors; there is nothing to
+// compare in that case.
 
 package main
 
@@ -282,6 +299,15 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 	cerbBody, cerbStatus, cerr := fetchJSON(ctx, client, cerbURL)
 	res.TempoStatus = tempoStatus
 	res.CerberusStatus = cerbStatus
+
+	// Status-parity cases never reach the 2xx-required / body-diff path
+	// below: the whole point of -- expect_status -- is that a non-2xx
+	// response is the CORRECT outcome, not a hard error. See the
+	// package doc + diffStatusParityCase.
+	if tc.ExpectedStatus != 0 {
+		return diffStatusParityCase(tc, tempoStatus, cerbStatus, terr, cerr)
+	}
+
 	if terr != nil {
 		res.HardError = fmt.Sprintf("tempo fetch: %v", terr)
 	}
@@ -357,6 +383,49 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 		return res
 	}
 	res.Diff = d
+	return res
+}
+
+// diffStatusParityCase is diffCase's status-parity branch, taken when
+// the corpus case sets ExpectedStatus. It never looks at either
+// response body — validateExpectedStatus (corpus.go) forbids combining
+// -- expect_status -- with any body-shape assertion, so there is
+// nothing else to check.
+//
+// A zero status on either side means fetchJSON never got a response at
+// all (request build failure, transport error, or a body-read
+// failure) — that's a genuine hard error, not a rejection to grade.
+// Otherwise both sides produced a real status code, and the case's
+// only assertion is that each one equals tc.ExpectedStatus; a mismatch
+// is recorded as a normal Assertion (not a HardError) so it flows
+// through the same passed() predicate, report renderer, and
+// compat-cases.json roster as every other per-case outcome.
+func diffStatusParityCase(tc CorpusCase, tempoStatus, cerbStatus int, terr, cerr error) CaseResult {
+	res := CaseResult{Case: tc, TempoStatus: tempoStatus, CerberusStatus: cerbStatus}
+	if tempoStatus == 0 {
+		res.HardError = fmt.Sprintf("tempo fetch: %v", terr)
+		return res
+	}
+	if cerbStatus == 0 {
+		res.HardError = fmt.Sprintf("cerberus fetch: %v", cerr)
+		return res
+	}
+	if tempoStatus != tc.ExpectedStatus {
+		res.Assertions = append(res.Assertions, DiffReason{
+			Kind:   "status_mismatch",
+			Detail: fmt.Sprintf("tempo returned status %d, corpus -- expect_status -- says %d", tempoStatus, tc.ExpectedStatus),
+		})
+	}
+	if cerbStatus != tc.ExpectedStatus {
+		res.Assertions = append(res.Assertions, DiffReason{
+			Kind:   "status_mismatch",
+			Detail: fmt.Sprintf("cerberus returned status %d, corpus -- expect_status -- says %d", cerbStatus, tc.ExpectedStatus),
+		})
+	}
+	// No body was parsed, so there is no structural diff to compute —
+	// mark it trivially Equal so passed() (HardError=="" && Diff.Equal
+	// && len(Assertions)==0) reduces to "did the statuses match".
+	res.Diff = Diff{Equal: true}
 	return res
 }
 

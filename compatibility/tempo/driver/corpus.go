@@ -50,6 +50,16 @@
 //	                            check names; each check runs per-backend against
 //	                            the parsed response (see differ.go::SemanticChecks
 //	                            for the registered names)
+//	-- expect_status --         a 4xx/5xx HTTP status code both backends must
+//	                            return for this case (status-parity axis — see
+//	                            diff.go::diffStatusParityCase). Mutually
+//	                            exclusive with every expected_* body assertion
+//	                            and with semantic_checks (the body is never
+//	                            parsed for a status-parity case, so any of
+//	                            those would silently never run) and with
+//	                            endpoint=traces / traces_v2 (those two run
+//	                            through the proto-aware differ in
+//	                            proto_fetch.go, which this axis does not cover).
 //
 // There is intentionally no opt-out marker on a per-case basis: a case
 // that can't run is removed from the corpus, not flagged. Keeping the
@@ -198,6 +208,19 @@ type CorpusCase struct {
 	// "groupby_labels_present:resource.service.name" — the parser stores
 	// the raw "name:arg" string and the check function splits.
 	SemanticChecks []string
+
+	// ExpectedStatus, when non-zero, switches the case onto the
+	// status-parity axis (diff.go::diffStatusParityCase): the differ
+	// asserts BOTH backends respond with exactly this status code
+	// instead of requiring 2xx + running the body diff. This is what
+	// lets the corpus express "both backends must REJECT this input" —
+	// before this field, any non-2xx response from either side was
+	// folded into an opaque HardError, so a rejection-parity case could
+	// never be told apart from a genuine transport failure (see
+	// diff.go's package doc). Zero (the default) means "no expectation
+	// beyond both sides answering the usual way" and leaves the
+	// pre-existing 2xx-required behaviour untouched.
+	ExpectedStatus int
 }
 
 // LoadCorpus opens a corpus file and parses it into CorpusCases.
@@ -236,6 +259,7 @@ const (
 	secMaxSeries        = "expected_max_series"
 	secSamplesPerSeries = "expected_samples_per_series"
 	secSemanticChecks   = "semantic_checks"
+	secExpectStatus     = "expect_status"
 )
 
 // stripCommentLines returns the body with comment-only lines (`# ...`
@@ -309,6 +333,8 @@ func applySection(cur *CorpusCase, section, body string) error {
 		return applyIntSection(body, "expected_samples_per_series", &cur.ExpectedSamplesPerSeries)
 	case secSemanticChecks:
 		appendNonEmptyLines(body, &cur.SemanticChecks)
+	case secExpectStatus:
+		return applyIntSection(body, "expect_status", &cur.ExpectedStatus)
 	}
 	return nil
 }
@@ -378,7 +404,40 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if cur.Endpoint == "metrics_range" && cur.Step == "" {
 		return cur, fmt.Errorf("case %q: endpoint=metrics_range requires -- step -- (e.g. \"60s\")", cur.Name)
 	}
+	if err := validateExpectedStatus(cur); err != nil {
+		return cur, err
+	}
 	return cur, nil
+}
+
+// validateExpectedStatus enforces the status-parity axis's invariants.
+// A zero ExpectedStatus (the default) skips every check below — the
+// case is an ordinary body-diff case and none of this applies.
+func validateExpectedStatus(cur CorpusCase) error {
+	if cur.ExpectedStatus == 0 {
+		return nil
+	}
+	if cur.ExpectedStatus < 400 || cur.ExpectedStatus > 599 {
+		return fmt.Errorf("case %q: -- expect_status -- must be a 4xx/5xx code (got %d) — this axis exists to express rejection parity, not 2xx parity, which the ordinary body-diff path already covers", cur.Name, cur.ExpectedStatus)
+	}
+	if cur.Endpoint == "traces" || cur.Endpoint == "traces_v2" {
+		return fmt.Errorf("case %q: -- expect_status -- is not supported on endpoint=%s (that endpoint runs through the proto-aware differ, which this axis does not cover)", cur.Name, cur.Endpoint)
+	}
+	// Every field below is a body-shape assertion; diffStatusParityCase
+	// never parses the body, so any of these set alongside expect_status
+	// would be silently dead corpus weight — parsed but never checked.
+	// Rejecting the combination at load time beats a passing assertion
+	// that isn't actually asserting anything.
+	switch {
+	case cur.ExpectedMinTraces != 0, cur.ExpectedMaxTraces != 0,
+		cur.ExpectedMinValues != 0, cur.ExpectedMaxValues != 0,
+		len(cur.ExpectedValues) != 0, len(cur.ExpectedScopes) != 0,
+		len(cur.ExpectedServices) != 0, cur.ExpectedRootNameRE != nil,
+		cur.ExpectedMinSeries != 0, cur.ExpectedMaxSeries != 0,
+		cur.ExpectedSamplesPerSeries != 0, len(cur.SemanticChecks) != 0:
+		return fmt.Errorf("case %q: -- expect_status -- cannot be combined with a body-shape assertion (expected_*/semantic_checks) — the status-parity path never parses the body", cur.Name)
+	}
+	return nil
 }
 
 // isTagEndpoint reports whether the given endpoint is one of the four
@@ -400,7 +459,8 @@ func isKnownSection(name string) bool {
 		secStep, secSpss,
 		secMinTraces, secMaxTraces, secMinValues, secMaxValues,
 		secValues, secScopes, secServices, secRootNameRE,
-		secMinSeries, secMaxSeries, secSamplesPerSeries, secSemanticChecks:
+		secMinSeries, secMaxSeries, secSamplesPerSeries, secSemanticChecks,
+		secExpectStatus:
 		return true
 	}
 	return false
