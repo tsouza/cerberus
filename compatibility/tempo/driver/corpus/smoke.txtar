@@ -45,8 +45,27 @@
 # and a per-id smoke; later additions grew the spanSets, metrics, and
 # nil-comparison families (the count below tracks
 # `grep -c '^-- name --'`).
-# Total: 48 cases — the nil-comparison family activated alongside the
-# Traces Drilldown breakdown fix (intrinsic `!= nil` lowering).
+# Total: 65 cases (`grep -c '^-- name --'`) — 49 from the families
+# above (the nil-comparison family activated alongside the Traces
+# Drilldown breakdown fix, intrinsic `!= nil` lowering) plus 16 from
+# the upstream-mined block described next.
+#
+# The "Upstream-mined" block at the end of this file (#1522) is a
+# different provenance from everything above: every case above was
+# written by a cerberus author reasoning about what to test. These are
+# lifted from grafana/tempo's OWN pkg/traceql table tests (parse_test.go
+# / ast_execute_test.go), ported as query strings only — no upstream
+# AST/parser code is vendored or linked (that stays test-only /
+# quarantined per docs/upstream-forks.md; the agpl-clean gate enforces
+# it). Each case cites the upstream Test function it was mined from.
+# Every candidate was validated to (a) parse and (b) lower cleanly via
+# internal/traceql before being added — one candidate
+# (`{ } | max(duration) - min(duration) >= 0`, mirroring
+# TestScalarExpressionOperators/TestArithmetic's scalar-arithmetic
+# coverage) failed to lower (`lowerScalarExpr` has no case for
+# ast.ScalarOperation) and was left OUT of the corpus rather than added
+# red — see #1708, which tracks the fix and re-adding the case once it
+# lands.
 
 # --- Attribute matchers per scope (5) ---
 
@@ -868,3 +887,222 @@ metrics_range
 -- semantic_checks --
 samples_non_negative
 groupby_labels_present:kind
+
+# --- Upstream-mined scoped intrinsics + boundary cases (#1522) ---
+#
+# Mined from grafana/tempo's own pkg/traceql table tests
+# (TestIntrinsics / TestScopedIntrinsics in parse_test.go, plus the
+# boolean-const / attribute-comparison shapes exercised throughout
+# ast_execute_test.go). Only the query STRINGS were ported — no
+# upstream AST/parser package is imported or linked; every case below
+# was independently parsed and lowered against cerberus's own
+# internal/traceql before being added, so this corpus continues to
+# validate purely via live differential comparison against reference
+# Tempo, not via ported expected values.
+
+-- name --
+scoped_span_kind_server
+# TestScopedIntrinsics: `span:kind` must normalize to the same
+# Intrinsic as unscoped `kind`.
+-- query --
+{ span:kind = server }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_span_name_regex
+# TestScopedIntrinsics: `span:name` normalizes to unscoped `name`.
+-- query --
+{ span:name =~ "GET /api/.*" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_span_duration_gt
+# TestScopedIntrinsics: `span:duration` normalizes to unscoped
+# `duration`. Root spans are seeded at 150ms.
+-- query --
+{ span:duration > 100ms }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_span_status_error
+# TestScopedIntrinsics: `span:status` normalizes to unscoped `status`.
+# Every 5th child span is seeded as Error.
+-- query --
+{ span:status = error }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_span_id_not_nil
+# TestScopedIntrinsics: `span:id` normalizes to unscoped `id`; every
+# span carries a span ID.
+-- query --
+{ span:id != nil }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_span_parent_id_not_nil
+# TestScopedIntrinsics: `span:parentID` normalizes to unscoped
+# `parentID`. Root-span parentID nil-ness semantics are backend-defined
+# (zero-byte vs. true null); left as a pure differential with no
+# expected-count bounds so any real cerberus/reference divergence still
+# surfaces without hard-coding an assumption about root-span encoding.
+-- query --
+{ span:parentID != nil }
+-- endpoint --
+search
+
+-- name --
+scoped_trace_root_service
+# TestScopedIntrinsics: `trace:rootService`. Fixture seeds 4 services,
+# 25 traces each — checkout gets exactly 25 of the 100 total traces.
+-- query --
+{ trace:rootService = "checkout" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_trace_root_name_regex
+# TestScopedIntrinsics: `trace:rootName`, same checkout-service subset
+# as scoped_trace_root_service.
+-- query --
+{ trace:rootName =~ "GET /api/checkout/.*" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_trace_duration_gt
+# TestScopedIntrinsics: `trace:duration`.
+-- query --
+{ trace:duration > 100ms }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_instrumentation_name
+# TestScopedIntrinsics: `instrumentation:name`. Every span in the
+# fixture shares the same InstrumentationScope
+# ("cerberus-tempo-compat-seeder"), so this matches everything.
+-- query --
+{ instrumentation:name = "cerberus-tempo-compat-seeder" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_instrumentation_version
+# TestScopedIntrinsics: `instrumentation:version`. Same shared-scope
+# reasoning as scoped_instrumentation_name.
+-- query --
+{ instrumentation:version = "1" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_event_name_no_events
+# TestScopedIntrinsics: `event:name`. The seeder never emits span
+# events, so this must return zero traces on both backends — a
+# negative-space boundary check rather than a positive match.
+-- query --
+{ event:name = "whatever" }
+-- endpoint --
+search
+-- expected_max_traces --
+0
+
+-- name --
+scoped_link_trace_id_no_links
+# TestScopedIntrinsics: `link:traceID`. The seeder never emits span
+# links, so this must return zero traces on both backends.
+-- query --
+{ link:traceID != nil }
+-- endpoint --
+search
+-- expected_max_traces --
+0
+
+-- name --
+const_boolean_true_matches_all
+# TestArithmetic / boolean-const coverage: a statically-true boolean
+# expression built from string comparisons should match effectively
+# every span, exercising cerberus's constant-folding path the same way
+# upstream's engine tests do.
+-- query --
+{ ("foo" != "bar") && !("foo" = "bar") }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+negated_kind_not_client
+# TestBinOp / TestSpansetFilter_matches negation coverage: `!(kind =
+# client)` should match the large majority of spans (only client-kind
+# children excluded).
+-- query --
+{ !(kind = client) }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+cross_scope_attribute_never_equal
+# TestBinaryOperationsWorkAcrossNumberTypes-style cross-scope
+# comparison coverage: comparing a span attribute against an unrelated
+# resource attribute whose values never coincide (child.index is
+# numeric, deployment.env is the constant "compat-test") must return
+# zero traces on both backends.
+-- query --
+{ span.child.index = resource.deployment.env }
+-- endpoint --
+search
+-- expected_max_traces --
+0
