@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
 
 /**
  * Direct-WebSocket Loki live-tail no-loss / no-dup regression spec.
@@ -81,14 +81,43 @@ type TailResult = {
   errored: string | null;
 };
 
+// Anchor the tail window to ClickHouse's OWN clock, not the Playwright
+// runner's wall clock. The burst rows below are stamped `now64(9)`
+// SERVER-SIDE; if the window bounds instead came from Node's Date.now(),
+// clock skew between the test runner and the ClickHouse server could put
+// the window's [start, end] on the wrong side of the burst's actual
+// timestamps — the tail `start` filter (`Timestamp >= cursor`) or the
+// query_range cross-check window would silently miss rows, an
+// intermittent flake with no code bug behind it (#1511). Querying CH's
+// own `now64(9)` over the same CH_URL HTTP path used for the burst INSERT
+// below keeps both the window and the data on one clock.
+async function chNowNs(request: APIRequestContext): Promise<bigint> {
+  const resp = await request.post(CH_URL, {
+    params: { database: CH_DATABASE },
+    headers: {
+      'X-ClickHouse-User': CH_USER,
+      'X-ClickHouse-Key': CH_PASSWORD,
+      'Content-Type': 'text/plain',
+    },
+    data: 'SELECT toUnixTimestamp64Nano(now64(9))',
+  });
+  expect(
+    resp.status(),
+    `clickhouse now64 query failed: ${await resp.text()}`,
+  ).toBeLessThan(300);
+  return BigInt((await resp.text()).trim());
+}
+
 test('loki tail streams an overflowing burst with no loss and no duplicate', async ({
   page,
   request,
 }) => {
-  // 1. Anchor t0 = now in nanoseconds. The tail `start` lower bound is
-  // inclusive (`Timestamp >= cursor`); anchoring just before the burst
-  // means the very first poll window already contains every burst row.
-  const t0Ns = BigInt(Date.now()) * 1_000_000n;
+  // 1. Anchor t0 = ClickHouse's own now(), in nanoseconds. The tail
+  // `start` lower bound is inclusive (`Timestamp >= cursor`); anchoring
+  // just before the burst means the very first poll window already
+  // contains every burst row. Using CH's clock (not Node's) keeps this in
+  // sync with the `now64(9)` the burst INSERT below stamps server-side.
+  const t0Ns = await chNowNs(request);
   const t0NsStr = t0Ns.toString();
 
   // Unique per-run service name so the selector narrows to THIS burst
@@ -233,7 +262,7 @@ test('loki tail streams an overflowing burst with no loss and no duplicate', asy
     w.__tail.sock.close();
   });
 
-  const nowNs = BigInt(Date.now()) * 1_000_000n;
+  const nowNs = await chNowNs(request);
 
   // 5. Cross-check: query_range over [t0, now] for the SAME selector,
   // extracting the line set as the independent ground truth.
