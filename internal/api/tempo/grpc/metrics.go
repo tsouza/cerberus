@@ -131,13 +131,30 @@ func (s *Service) MetricsQueryInstant(req *tempopb.QueryInstantRequest, stream t
 // in spirit (separate helper to keep test-side helpers focused) but
 // is a single-frame pivot rather than a streaming flusher — range
 // mode emits one frame after eager drain (design §6).
+//
+// Metrics is always stamped non-nil with honest zero counters —
+// mirroring the tail-frame contract search.go's searchFlusher already
+// established for the Search RPC (see its doc-comment) — because
+// QueryRangeResponse.Metrics is a `*SearchMetrics` pointer upstream:
+// leaving it nil serialises to an explicit JSON/proto-JSON `null`
+// rather than an absent key. Grafana's Explore Traces app
+// dereferences `response.metrics.totalBlocks` unconditionally once a
+// query routes through the gRPC/h2c streaming transport (#1665
+// enabled `streamingEnabled.search`, which Grafana's TempoDatasource
+// also uses for TraceQL metrics-pipeline queries, not just Search), so
+// a nil Metrics here crashed the whole Explore Traces surface with
+// `runRequest.catchError TypeError: Cannot read properties of null
+// (reading 'totalBlocks')` (issue #1689). The HTTP JSON path never hit
+// this because MetricsQueryRangeResponse.Metrics is a value type that
+// always serialises, even unset (see metrics_query_range.go).
 func metricsExecRange(ctx context.Context, h *tempo.Handler, query string, start, end time.Time, step time.Duration) (*tempopb.QueryRangeResponse, error) {
 	res, err := h.ExecMetricsRange(ctx, query, start, end, step)
 	if err != nil {
 		return nil, err
 	}
 	out := &tempopb.QueryRangeResponse{
-		Series: make([]*tempopb.TimeSeries, 0, len(res.Series)),
+		Series:  make([]*tempopb.TimeSeries, 0, len(res.Series)),
+		Metrics: &tempopb.SearchMetrics{},
 	}
 	for _, ms := range res.Series {
 		ts := &tempopb.TimeSeries{
@@ -167,13 +184,18 @@ func metricsExecRange(ctx context.Context, h *tempo.Handler, query string, start
 // instant query and pivots the post-processed MetricsInstantSeries
 // list into the tempopb.QueryInstantResponse wire shape. Each series
 // carries a scalar Value rather than a Samples slice.
+//
+// Metrics is always stamped non-nil for the same reason
+// metricsExecRange stamps it — see that function's doc-comment
+// (issue #1689).
 func metricsExecInstant(ctx context.Context, h *tempo.Handler, query string, start, end time.Time) (*tempopb.QueryInstantResponse, error) {
 	res, err := h.ExecMetricsInstant(ctx, query, start, end)
 	if err != nil {
 		return nil, err
 	}
 	out := &tempopb.QueryInstantResponse{
-		Series: make([]*tempopb.InstantSeries, 0, len(res.Series)),
+		Series:  make([]*tempopb.InstantSeries, 0, len(res.Series)),
+		Metrics: &tempopb.SearchMetrics{},
 	}
 	for _, ms := range res.Series {
 		out.Series = append(out.Series, &tempopb.InstantSeries{

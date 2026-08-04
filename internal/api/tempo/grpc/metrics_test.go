@@ -164,6 +164,16 @@ func TestMetricsQueryRange_FrameShape(t *testing.T) {
 	if got, want := len(frames[0].Series), 1; got != want {
 		t.Fatalf("series count: got %d, want %d", got, want)
 	}
+	// #1689: Metrics must never be nil — tempopb.QueryRangeResponse.Metrics
+	// is a *SearchMetrics pointer, and Grafana's Explore Traces app
+	// dereferences response.metrics.totalBlocks unconditionally. A nil
+	// pointer here serialises to an explicit JSON `null` on the wire and
+	// crashes the whole Explore Traces surface with
+	// "runRequest.catchError TypeError: Cannot read properties of null
+	// (reading 'totalBlocks')".
+	if frames[0].Metrics == nil {
+		t.Fatal("Metrics: got nil, want a non-nil (possibly zeroed) *tempopb.SearchMetrics")
+	}
 	got := frames[0].Series[0]
 	if len(got.Labels) != 1 || got.Labels[0].Key != "__name__" || keyValueValue(got.Labels[0]) != "rate" {
 		t.Errorf("labels: want single {__name__=rate}, got %+v", got.Labels)
@@ -283,6 +293,12 @@ func TestMetricsQueryInstant_FrameShape(t *testing.T) {
 	}
 	if got, want := len(frames[0].Series), 2; got != want {
 		t.Fatalf("series count: got %d, want %d", got, want)
+	}
+	// #1689: same non-nil Metrics contract as MetricsQueryRange — see
+	// TestMetricsQueryRange_FrameShape's assertion for the wire-crash
+	// this guards against.
+	if frames[0].Metrics == nil {
+		t.Fatal("Metrics: got nil, want a non-nil (possibly zeroed) *tempopb.SearchMetrics")
 	}
 	// Series are sorted by canonical label key (deterministic
 	// emission); backend < frontend lexicographically.
