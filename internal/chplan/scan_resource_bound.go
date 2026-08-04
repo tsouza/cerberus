@@ -149,32 +149,59 @@ func flattenConjuncts(e Expr) []Expr {
 	return append(flattenConjuncts(b.Left), flattenConjuncts(b.Right)...)
 }
 
-// isTraceIDSetConjunct reports whether c proves a finite TraceId membership:
-//   - a BoundedTraceScope (self-identifying top-N subquery);
-//   - a non-negated InList over the bare TraceId column (root lookup);
-//   - a `TraceId = <literal>` equality (the /traces/{id} singleton set).
+// TraceIDSetCardinality reports the finite trace-set size c proves for cols,
+// or (0, false) when c is not a recognized trace-id-set conjunct. It is the
+// single classification both TraceId-set witnesses share:
+//   - a BoundedTraceScope (self-identifying top-N subquery): cardinality is
+//     its own TraceLimit (the top-N the subquery keeps);
+//   - a non-negated InList over the bare TraceId column (root lookup, or the
+//     resolve-in-Go-and-splice-literals rewrite of a BoundedTraceScope):
+//     cardinality is the literal list length;
+//   - a `TraceId = <literal>` equality (the /traces/{id} singleton set):
+//     cardinality is 1.
 //
 // When cols.TraceID is empty the column checks accept any bare (unqualified)
 // ColumnRef — over a spans scan that is an id column, never an attribute
 // predicate (attribute INs / equalities carry a MapAccess / FieldAccess left,
 // not a bare ColumnRef).
-func isTraceIDSetConjunct(c Expr, cols ScanBoundCols) bool {
+//
+// This is the ONE classifier both the emit-chokepoint invariant
+// (SpansScanResourceBound, which only needs presence — any cardinality
+// proves form-b) and the optimizer's NestedSetAnnotate analyzer
+// (RequireScanResourceBound, which additionally compares the returned
+// cardinality against NestedSetAnnotate.TraceLimit for a lock-step match)
+// read off of, so a literal InList counts as a witness identically in both
+// places (#1702).
+func TraceIDSetCardinality(c Expr, cols ScanBoundCols) (int64, bool) {
 	switch v := c.(type) {
 	case *BoundedTraceScope:
-		return cols.TraceID == "" || v.TraceIDColumn == cols.TraceID
-	case *InList:
-		if v.Negated {
-			return false
+		if cols.TraceID != "" && v.TraceIDColumn != cols.TraceID {
+			return 0, false
 		}
-		return isTraceIDCol(v.Left, cols)
+		return v.TraceLimit, true
+	case *InList:
+		if v.Negated || !isTraceIDCol(v.Left, cols) {
+			return 0, false
+		}
+		return int64(len(v.List)), true
 	case *Binary:
 		if v.Op != OpEq {
-			return false
+			return 0, false
 		}
-		return (isTraceIDCol(v.Left, cols) && isConstExpr(v.Right)) ||
-			(isTraceIDCol(v.Right, cols) && isConstExpr(v.Left))
+		if (isTraceIDCol(v.Left, cols) && isConstExpr(v.Right)) ||
+			(isTraceIDCol(v.Right, cols) && isConstExpr(v.Left)) {
+			return 1, true
+		}
 	}
-	return false
+	return 0, false
+}
+
+// isTraceIDSetConjunct reports whether c proves a finite TraceId membership
+// of ANY cardinality — the emit chokepoint only needs "some finite set", not
+// a specific size.
+func isTraceIDSetConjunct(c Expr, cols ScanBoundCols) bool {
+	_, ok := TraceIDSetCardinality(c, cols)
+	return ok
 }
 
 // isTraceIDCol reports whether e is the bare (unqualified) TraceId column.
