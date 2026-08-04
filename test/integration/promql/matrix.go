@@ -23,12 +23,14 @@ func (c exoticCase) ts() int64 {
 // ExoticMatrix is the hand-curated catalogue. Every entry is bound to a
 // construct the from-scratch oracle (test/property/oracle/promql) already
 // evaluates, so the assertion is a real cerberus-vs-spec comparison rather
-// than a both-erroring no-op. Set ops, absent/clamp/sort, and the
+// than a both-erroring no-op. Set ops, absent/clamp/sort, and the full
 // quantile/count_values/limitk/limit_ratio aggregator family are ALL
 // oracle-evaluated and exercised below (cat3Aggregators, cat4SetOps,
-// cat8ScalarVector) — count_values/limitk/limit_ratio specifically remain
-// oracle gaps tracked by #1693. The remaining categories the oracle can't
-// yet evaluate are each tracked by its own open issue, not by prose:
+// cat8ScalarVector) — limitk is exact-match only at its two
+// iteration-order-independent endpoints (see cat3Aggregators's doc
+// comment); count_values and limit_ratio are exact-match throughout. The
+// remaining categories the oracle can't yet evaluate are each tracked by
+// its own open issue, not by prose:
 //   - subqueries, label_replace, label_join — #1694
 //   - deriv, predict_linear, double_exponential_smoothing,
 //     quantile_over_time — #1695
@@ -140,10 +142,18 @@ func cat2Histogram() []exoticCase {
 }
 
 // cat3Aggregators covers the aggregators the oracle implements:
-// sum/avg/min/max/count/topk/bottomk/quantile, with by/without grouping and
-// edge k / edge phi. count_values/limitk/limit_ratio are implemented by
-// cerberus (internal/promql/lower.go::lowerCountValues / lowerLimitRatio /
-// lowerLimitK) but NOT by the oracle — tracked in
+// sum/avg/min/max/count/topk/bottomk/quantile/count_values/limit_ratio,
+// with by/without grouping and edge k / edge phi. count_values and
+// limit_ratio are exact-match cases (both are deterministic — count_values
+// is a real grouping aggregation, limit_ratio's per-series hash test
+// (test/property/oracle/promql/aggregations.go::limitRatio) is bit-for-bit
+// identical to cerberus's own ratioOffsetExpr SQL lowering). limitk is
+// PARTIALLY covered: the oracle's limitK only reproduces the two
+// iteration-order-independent endpoints (K<1 empty, K at/above a group's
+// cardinality keeps everything) — real Prometheus's mid-range limitk
+// selection has no shared ordering contract with ClickHouse's own
+// `LIMIT k BY`, so only those two endpoints are exercised here as
+// exact-match cases; see limitK's doc comment and
 // https://github.com/tsouza/cerberus/issues/1693.
 func cat3Aggregators() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
@@ -166,6 +176,22 @@ func cat3Aggregators() []exoticCase {
 		// phi out of domain (Prom quantile.go): < 0 -> -Inf, > 1 -> +Inf.
 		{name: "cat3/quantile_phi_neg", promql: "quantile(-0.1, " + mem + ") by (type)"},
 		{name: "cat3/quantile_phi_over1", promql: "quantile(1.5, " + mem + ") by (type)"},
+		// demo_memory_usage_bytes's (instance,type) bases are all distinct
+		// (2e9 + i*1e7 + ti*1e6), so every minted "val" collapses to a
+		// singleton group — still a real assertion on lowerCountValues's
+		// grouping/minting shape, just not a many-to-one collapse.
+		{name: "cat3/count_values_no_grouping", promql: `count_values("val", ` + mem + `)`},
+		{name: "cat3/count_values_by_type", promql: `count_values("val", ` + mem + `) by (type)`},
+		// limit_ratio's per-series hash test is deterministic and
+		// oracle-matched exactly (see doc comment above).
+		{name: "cat3/limit_ratio_half", promql: "limit_ratio(0.5, " + mem + ")"},
+		{name: "cat3/limit_ratio_neg_half", promql: "limit_ratio(-0.5, " + mem + ")"},
+		{name: "cat3/limit_ratio_zero", promql: "limit_ratio(0, " + mem + ")"},
+		// limitk endpoints only (see func doc comment): K<1 empty, K at/above
+		// cardinality keeps everything (12 series overall, 4 per instance).
+		{name: "cat3/limitk_0", promql: "limitk(0, " + mem + ")"},
+		{name: "cat3/limitk_huge", promql: "limitk(9999999999, " + mem + ")"},
+		{name: "cat3/limitk_by_instance_all", promql: "limitk(4, " + mem + ") by (instance)"},
 	}
 }
 

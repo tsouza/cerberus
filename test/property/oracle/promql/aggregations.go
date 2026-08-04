@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 )
 
@@ -132,8 +134,178 @@ func applyAggregator(a *parser.AggregateExpr, rows []VectorRow) ([]aggResult, er
 			return nil, err
 		}
 		return []aggResult{{labels: groupLabels, value: quantileAggregate(phi, rows)}}, nil
+	case parser.COUNT_VALUES:
+		label, err := aggregatorParamString(a)
+		if err != nil {
+			return nil, err
+		}
+		return countValues(a, label, rows), nil
+	case parser.LIMITK:
+		k, err := aggregatorParam(a)
+		if err != nil {
+			return nil, err
+		}
+		return limitK(rows, k), nil
+	case parser.LIMIT_RATIO:
+		r, err := aggregatorParamFloat(a)
+		if err != nil {
+			return nil, err
+		}
+		return limitRatio(r, rows), nil
 	}
 	return nil, fmt.Errorf("oracle: unsupported aggregation op %s", a.Op)
+}
+
+// aggregatorParamString extracts the constant label name for
+// count_values(label, expr) — the only aggregator whose parameter is
+// a string literal rather than a number.
+func aggregatorParamString(a *parser.AggregateExpr) (string, error) {
+	if a.Param == nil {
+		return "", fmt.Errorf("oracle: aggregator %s requires a parameter", a.Op)
+	}
+	s, ok := a.Param.(*parser.StringLiteral)
+	if !ok {
+		return "", fmt.Errorf("oracle: aggregator %s param must be StringLiteral, got %T", a.Op, a.Param)
+	}
+	return s.Val, nil
+}
+
+// countValues implements count_values(label, expr) (Prom engine.go::
+// aggregationCountValues): every input row is stamped with `label`
+// set to its value rendered via Prom's exact formatting
+// (strconv.FormatFloat(v, 'f', -1, 64)), and rows are then re-grouped
+// by the resulting FULL label set — the with/without projection PLUS
+// the minted label — one output row per distinct group, valued at
+// the group's row count.
+//
+// Minting the label BEFORE computing the projection (rather than
+// adding it to the caller's already-narrowed groupLabels) mirrors
+// Prom's own two-step and handles `by`/`without` uniformly: for `by`
+// mode Prom explicitly appends the value label to the grouping key
+// even when the caller didn't name it, so KeepLabels's normal
+// keep-list is widened with an explicit re-set after projection; for
+// `without` mode the minted label naturally survives the projection
+// unless the caller listed it explicitly in without(...), which
+// DropLabels already handles correctly with no special-casing.
+func countValues(a *parser.AggregateExpr, label string, rows []VectorRow) []aggResult {
+	type bucket struct {
+		labels map[string]string
+		count  int
+	}
+	buckets := make(map[string]*bucket)
+	keys := make([]string, 0)
+	for _, r := range rows {
+		merged := CopyLabels(r.Labels)
+		merged[label] = strconv.FormatFloat(r.V, 'f', -1, 64)
+
+		var out map[string]string
+		if a.Without {
+			out = DropLabels(merged, a.Grouping)
+		} else {
+			out = KeepLabels(merged, a.Grouping)
+			out[label] = merged[label]
+		}
+
+		key := labelKey(out)
+		b, ok := buckets[key]
+		if !ok {
+			b = &bucket{labels: out}
+			buckets[key] = b
+			keys = append(keys, key)
+		}
+		b.count++
+	}
+
+	sort.Strings(keys)
+	result := make([]aggResult, 0, len(keys))
+	for _, k := range keys {
+		b := buckets[k]
+		result = append(result, aggResult{labels: b.labels, value: float64(b.count)})
+	}
+	return result
+}
+
+// maxUint64AsFloat is math.MaxUint64 widened to float64, matching
+// Prom's HashRatioSampler.SampleOffset (promql/engine.go) and
+// cerberus's own ratioOffsetExpr SQL lowering
+// (internal/promql/lower.go) — the divisor that turns a series's
+// label hash into a value in [0, 1).
+const maxUint64AsFloat = float64(math.MaxUint64)
+
+// limitRatio implements limit_ratio(r, expr) (Prom engine.go::
+// HashRatioSampler.AddRatioSampleWithOffset): a per-row, per-series
+// deterministic keep/drop test independent of `by`/`without`
+// grouping — Prom applies the identical ratio test to every sample
+// regardless of which aggregation group it lands in (confirmed by
+// reading engine.go's aggregation loop: the `!group.seen` and later
+// branches both call ratiosampler.AddRatioSample with no group-scoped
+// state), and cerberus's own lowering matches: lowerLimitRatio emits
+// a flat chplan.Filter with no groupBy dependency. So this ignores
+// a.Grouping/groupLabels entirely and filters rows independently,
+// which composes correctly with evalAggregation's outer with/without
+// grouping loop since the per-row survival decision never depends on
+// group membership.
+//
+// r == 0 is a hard empty result (Prom returns before any group is
+// even created). r is clamped to [-1, 1]; r >= 0 keeps offset < r,
+// r < 0 keeps offset >= 1+r. Surviving rows keep their full original
+// label set minus __name__, matching topKBottomK's convention.
+func limitRatio(r float64, rows []VectorRow) []aggResult {
+	if r == 0 {
+		return nil
+	}
+	if r > 1 {
+		r = 1
+	} else if r < -1 {
+		r = -1
+	}
+
+	result := make([]aggResult, 0, len(rows))
+	for _, row := range rows {
+		offset := float64(labels.FromMap(row.Labels).Hash()) / maxUint64AsFloat
+		var keep bool
+		if r >= 0 {
+			keep = offset < r
+		} else {
+			keep = offset >= 1+r
+		}
+		if keep {
+			result = append(result, aggResult{
+				labels: DropLabel(row.Labels, MetricNameLabel),
+				value:  row.V,
+			})
+		}
+	}
+	return result
+}
+
+// limitK implements the oracle-observable boundary of limitk(k, expr):
+// K<1 keeps nothing, and K at or beyond the group's cardinality keeps
+// everything (each surviving row keeps its full original label set
+// minus __name__, matching topKBottomK's convention). Prometheus's
+// real selection in between those endpoints is documented as
+// "whatever K rows the storage/evaluation iterator produces first per
+// group" (engine.go: `if int64(len(group.heap)) < k`), with no
+// ordering contract shared with ClickHouse's own `LIMIT k BY <group>`
+// — so this intentionally does NOT try to reproduce cerberus's exact
+// mid-range row selection; callers exercising limitk against real
+// cerberus output must restrict themselves to the two endpoints this
+// implements. See https://github.com/tsouza/cerberus/issues/1693.
+func limitK(rows []VectorRow, k int) []aggResult {
+	if k < 1 {
+		return nil
+	}
+	if k > len(rows) {
+		k = len(rows)
+	}
+	result := make([]aggResult, 0, k)
+	for _, row := range rows[:k] {
+		result = append(result, aggResult{
+			labels: DropLabel(row.Labels, MetricNameLabel),
+			value:  row.V,
+		})
+	}
+	return result
 }
 
 // aggregatorParamFloat is aggregatorParam's float counterpart, for
