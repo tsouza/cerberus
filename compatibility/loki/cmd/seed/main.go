@@ -33,12 +33,46 @@ const entryInterval = 1 * time.Minute
 
 const seedValue = int64(42)
 
+// requestIDSeed seeds the PRNG generateRequestID draws from — a value
+// distinct from seedValue so the two draw streams stay independent (see
+// buildStreams).
+const requestIDSeed = int64(1498)
+
+// requestIDAbsenceEvery gates generateRequestID: one entry in every
+// requestIDAbsenceEvery carries NO request_id structured-metadata key
+// at all, the rest carry a distinct one. detected_level is present on
+// every row (it's a synthesized severity discriminant); request_id
+// models the far more common OTel/Loki shape — a generic, arbitrary
+// correlation id that's only sometimes attached — so leaving a
+// deterministic gap keeps the "absent on some entries" half of issue
+// #1498's fix honest rather than accidentally seeding it as universal.
+const requestIDAbsenceEvery = 3
+
 // packedFormat identifies packed-source's stream format: entries cycle
 // through the four payload shapes `| unpack` must discriminate (see
 // generatePackedLine). It is not one of the three formats
 // LogFormat/QueryRequirements.log_format recognises (json/logfmt/
 // unstructured) because none of them describe a Promtail-pack payload.
 const packedFormat = "packed"
+
+// metadataProbeFormat identifies metadata-probe's stream format, the
+// ONLY seeded stream that carries the generic `request_id`
+// structured-metadata key (see generateRequestID / issue #1498). Like
+// packedFormat, it is deliberately NOT one of the three formats
+// LogFormat/QueryRequirements.log_format recognises (json/logfmt/
+// unstructured): the vendored corpus's `${SELECTOR}` resolver picks a
+// stream at random from whichever ones satisfy a case's `requires:`
+// bounds, and reference Loki folds structured-metadata values directly
+// into a log/metric query's output identity (stream labels / ungrouped
+// series `metric` map) — so a resolver-selected stream that
+// unexpectedly carries a SECOND, high-cardinality structured-metadata
+// key would silently reshape the output of every EXISTING corpus case
+// that happens to land on it, with no relation to what that case
+// actually tests. Keeping request_id off the log_format enum blocks
+// the resolver from ever picking metadata-probe; only this file's own
+// LITERAL-selector cerberus-queries corpus (which names the stream
+// explicitly) ever queries it.
+const metadataProbeFormat = "metadata-probe"
 
 type serviceConfig struct {
 	Name        string
@@ -72,6 +106,11 @@ var serviceConfigs = []serviceConfig{
 	// every other service's JSON lines are plain structured logs that
 	// `| unpack` would either no-op on or reject, never extract from.
 	{Name: "packed-source", ServiceName: "packed-source", Format: packedFormat, Cluster: "cluster-1", Namespace: "namespace-5", Pod: "pod-13", Container: "container-1"},
+	// metadata-probe is the ONLY seeded stream carrying the generic
+	// `request_id` structured-metadata key — see metadataProbeFormat's
+	// doc comment for why request_id can't safely ride along on any of
+	// the streams above.
+	{Name: "metadata-probe", ServiceName: "metadata-probe", Format: metadataProbeFormat, Cluster: "cluster-1", Namespace: "namespace-6", Pod: "pod-14", Container: "container-1"},
 }
 
 var (
@@ -249,13 +288,25 @@ type stream struct {
 }
 
 type entry struct {
-	ts    time.Time
-	level string
-	line  string
+	ts        time.Time
+	level     string
+	line      string
+	requestID string // "" means absent — see generateRequestID.
 }
 
 func buildStreams(start time.Time) []stream {
 	rng := rand.New(rand.NewSource(seedValue)) //nolint:gosec
+	// requestIDRng is deliberately a SEPARATE PRNG stream from rng, seeded
+	// with its own constant, rather than drawing request_id values from
+	// rng inline alongside level / line-content generation. Every other
+	// generator below (generateJSONLine, generateLogfmtLine, ...) draws
+	// its random content from `rng` in a fixed, load-bearing sequence
+	// that OTHER corpus cases pin exact values against (client_ip CIDR
+	// membership, error-message selection, ...); interleaving even one
+	// extra conditional rng.Uint32() draw per entry would shift every
+	// later draw in the shared sequence and silently reshape unrelated
+	// seeded content. See issue #1498.
+	requestIDRng := rand.New(rand.NewSource(requestIDSeed)) //nolint:gosec
 	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
 	out := make([]stream, 0, len(serviceConfigs))
 
@@ -281,6 +332,13 @@ func buildStreams(start time.Time) []stream {
 		for i := 0; i < entriesPerService; i++ {
 			ts := start.Add(time.Duration(i) * entryInterval)
 			level := levels[rng.Intn(len(levels))]
+			// request_id is scoped to metadata-probe ONLY — see
+			// metadataProbeFormat's doc comment for why it can't ride
+			// along on any of the other seeded streams.
+			var requestID string
+			if sc.Format == metadataProbeFormat {
+				requestID = generateRequestID(requestIDRng, i)
+			}
 			var line string
 			switch sc.Format {
 			case "json":
@@ -289,14 +347,38 @@ func buildStreams(start time.Time) []stream {
 				line = generateLogfmtLine(sc.Name, level, ts, rng, i)
 			case packedFormat:
 				line = generatePackedLine(level, i)
+			case metadataProbeFormat:
+				// Reuses generateJSONLine's own default arm (svc name
+				// "metadata-probe" matches none of its named cases) —
+				// realistic JSON content, no bespoke generator needed.
+				line = generateJSONLine(sc.Name, level, ts, rng, i)
 			default:
 				line = generateUnstructuredLine(sc.Name, level, ts, rng, i)
 			}
-			s.entries = append(s.entries, entry{ts: ts, level: level, line: line})
+			s.entries = append(s.entries, entry{ts: ts, level: level, line: line, requestID: requestID})
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+// generateRequestID returns a generic structured-metadata value for the
+// entry at index idx — a synthetic per-record correlation id, the
+// unconstrained-value-domain twin of the small, closed-set
+// `detected_level` — or "" when this entry should carry no request_id
+// key at all (see requestIDAbsenceEvery). Unlike detected_level
+// (derived from severity), the value here is unbounded and
+// content-free: it exists purely to exercise generic structured
+// metadata — selectors, `| label_filter`, and metric-query `by(...)`
+// grouping over an arbitrary key — the gap issue #1498 identified
+// (compatibility/loki/cmd/seed/main.go previously stamped
+// detected_level only, so every non-detected_level structured-metadata
+// path went undiffed against reference Loki).
+func generateRequestID(rng *rand.Rand, idx int) string {
+	if idx%requestIDAbsenceEvery == 0 {
+		return ""
+	}
+	return fmt.Sprintf("req-%08x", rng.Uint32())
 }
 
 func generateJSONLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) string {
@@ -613,14 +695,26 @@ func insertCHLogs(ctx context.Context, conn driver.Conn, streams []stream) error
 			level := e.level
 			// LogAttributes carries per-record attributes — the OTel-CH
 			// analogue of Loki's structured metadata. The key set MUST
-			// mirror what pushLoki sends as structured metadata
-			// (detected_level only): the /detected_fields differential
-			// compares the two backends' structured-metadata-derived
-			// fields, so any CH-only key here would surface as a
-			// permanent parity diff. Stream labels live in
-			// resourceAttrs above, not here.
+			// mirror what pushLoki sends as structured metadata: the
+			// /detected_fields differential compares the two backends'
+			// structured-metadata-derived fields, so any CH-only key
+			// here would surface as a permanent parity diff. Stream
+			// labels live in resourceAttrs above, not here.
+			//
+			// Two keys are stamped: detected_level (synthesized,
+			// present on every row, small closed value set) and
+			// request_id (generic, unconstrained value domain,
+			// non-empty only on metadata-probe's rows per
+			// generateRequestID / e.requestID's scoping — see
+			// metadataProbeFormat) — see issue #1498, which found the
+			// seeder previously carried detected_level only, leaving
+			// every generic structured-metadata path undiffed against
+			// reference Loki.
 			logAttrs := map[string]string{
 				"detected_level": strings.ToLower(level),
+			}
+			if e.requestID != "" {
+				logAttrs["request_id"] = e.requestID
 			}
 			if err := batch.Append(
 				e.ts,
@@ -683,9 +777,15 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 			var sm []logproto.LabelAdapter
 			lvl := strings.ToLower(e.level)
 			if lvl != "" {
-				sm = []logproto.LabelAdapter{
-					{Name: "detected_level", Value: lvl},
-				}
+				sm = append(sm, logproto.LabelAdapter{Name: "detected_level", Value: lvl})
+			}
+			// request_id is the generic-structured-metadata twin of
+			// detected_level (see generateRequestID / issue #1498):
+			// unconstrained value domain, absent on some entries. Must
+			// stay in lockstep with insertCHLogs' logAttrs so the
+			// /detected_fields differential compares like-for-like.
+			if e.requestID != "" {
+				sm = append(sm, logproto.LabelAdapter{Name: "request_id", Value: e.requestID})
 			}
 			entries = append(entries, logproto.Entry{
 				Timestamp:          e.ts,

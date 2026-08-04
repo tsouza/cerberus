@@ -125,7 +125,13 @@ func TestCheckExpansion(t *testing.T) {
 // query definitions (2 cases each) — a metric-mode third case was
 // deliberately left out (issue #1652: metric-mode grouping/filtering
 // by an unpack-extracted label is a separate, unfixed gap) — for a
-// total of 90.
+// total of 90. cerberus-queries/regression/structured-metadata-generic.yaml
+// (issue #1498) then adds a 5th definition set: one `directions: both`
+// log query (2 cases) plus one `directions: backward` log query (1
+// case) plus one metric query (1 case) — a `kind: log` "generic key
+// present" case was deliberately left out (issue #1684: log-query
+// stream-identity fragmentation over a generic structured-metadata key
+// is a separate, unfixed gap) — for +4, a total of 94.
 func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	t.Parallel()
 	f := flags{
@@ -138,8 +144,8 @@ func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadCases: %v", err)
 	}
-	if len(cases) != 90 {
-		t.Fatalf("corpus expanded to %d cases, want 90", len(cases))
+	if len(cases) != 94 {
+		t.Fatalf("corpus expanded to %d cases, want 94", len(cases))
 	}
 
 	revived := []string{

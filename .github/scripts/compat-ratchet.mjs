@@ -21,7 +21,7 @@
 // accident of the current numbers — a diff against a reference backend
 // is a bug to fix at the source, so there is no shape in this file that
 // can record a divergence as acceptable. The floors are prometheus
-// 739/739, loki 120/120, tempo 49/49, tempo-grpc 47/47; doc-counts.mjs
+// 739/739, loki 124/124, tempo 49/49, tempo-grpc 47/47; doc-counts.mjs
 // asserts those numbers against compatibility/parity-baseline.json, so
 // a corpus change cannot leave this comment behind. tempo-grpc's floor
 // is 2 below tempo's: traces / traces_v2 have no StreamingQuerier RPC
