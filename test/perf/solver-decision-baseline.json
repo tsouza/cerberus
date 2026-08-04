@@ -2520,6 +2520,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "mmm_experiment_branch_b_record",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 10,
+    "fanout": 0,
+    "cumulative_d": "0s",
+    "outer_range": "10m0s"
+  },
+  {
     "query": "map_key_order_count",
     "routed": true,
     "k": 8,
