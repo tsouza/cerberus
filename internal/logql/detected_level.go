@@ -492,17 +492,79 @@ func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 // The function still walks the AST defensively so a `nil` expression
 // (only the metric branch should hit ProjectSamples without an `expr`
 // in [engine.Meta.Extra], but the log branch is the documented caller)
-// returns false rather than panicking. The walk is otherwise a no-op
-// for log queries — every log-shaped expression returns true. Metric
-// queries don't reach this code path (the metric branch in
-// [Lang.ProjectSamples] doesn't consult this gate).
+// returns false rather than panicking. Otherwise every log-shaped
+// expression returns true UNLESS the pipeline itself unconditionally
+// removes `detected_level` from the output label set — see
+// [pipelineDropsDetectedLevel]. Metric queries don't reach this code
+// path (the metric branch in [Lang.ProjectSamples] doesn't consult
+// this gate; narrowing the synthesized identity for `| drop` / `| keep`
+// on the metric path is tracked separately in #1607).
 func queryShouldSurfaceDetectedLevel(expr syntax.Expr) bool {
-	// Every parsed log-stream expression triggers the wrap. The
-	// signature stays AST-aware so future revisions can re-gate
-	// specific shapes (e.g., `| drop detected_level` if/when cerberus
-	// honours the drop-stage label set) without re-plumbing the
-	// projection site. A nil expression (defensive: callers should
-	// always populate `engine.Meta.Extra["expr"]`) opts out so the
-	// wrap doesn't run against an empty AST.
-	return expr != nil
+	if expr == nil {
+		return false
+	}
+	return !pipelineDropsDetectedLevel(expr)
+}
+
+// pipelineDropsDetectedLevel reports whether expr's pipeline
+// UNCONDITIONALLY removes the synthesized `detected_level` label from
+// the output label set — mirroring [newLabelProjectionStep]'s /
+// [narrowIdentityByProjection]'s drop/keep semantics, restricted to the
+// cases that are statically decidable without a row's actual severity
+// value:
+//
+//   - `| drop detected_level` (a bare entry, not a value matcher like
+//     `| drop detected_level="info"` — that only removes the label on
+//     rows whose derived value happens to match, so it can't be decided
+//     up front).
+//   - `| keep <names>` where the kept set is a non-empty, all-bare-name
+//     list that doesn't include `detected_level` — anything not named
+//     is dropped, so `detected_level` never survives.
+//
+// A query with neither shape returns false, matching the previous
+// permissive gate exactly (see queryShouldSurfaceDetectedLevel's doc
+// comment for why the gate stayed permissive by default — the
+// `fast/basic-selectors.yaml` regression). Not consumed by the metric
+// (range-aggregation) path; that gate is #1607.
+func pipelineDropsDetectedLevel(expr syntax.Expr) bool {
+	pipe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		return false
+	}
+	for _, stage := range pipe.MultiStages {
+		switch st := stage.(type) {
+		case *syntax.DropLabelsExpr:
+			for _, m := range st.Matchers() {
+				if m.Matcher == nil && isDetectedLevelLabel(m.Name) {
+					return true
+				}
+			}
+		case *syntax.KeepLabelsExpr:
+			if keepListExcludesDetectedLevel(st.Matchers()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// keepListExcludesDetectedLevel reports whether a `| keep` stage's
+// entries statically guarantee `detected_level` is absent from the
+// surviving label set: the list must be non-empty (an empty keep list
+// is upstream's "keep everything"), every entry a bare name (a value
+// matcher like `| keep env="prod"` doesn't decide inclusion up front),
+// and none of those names the label.
+func keepListExcludesDetectedLevel(entries []syntax.NamedLabelMatcher) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	for _, e := range entries {
+		if e.Matcher != nil {
+			return false
+		}
+		if isDetectedLevelLabel(e.Name) {
+			return false
+		}
+	}
+	return true
 }
