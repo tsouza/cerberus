@@ -18,6 +18,10 @@
  *      the whole app sweep. Plugin failures (chunk-load errors,
  *      datasource-resource 502s, fetch aborts) all surface as
  *      console errors.
+ *   5. Each app reaches the expected drill depth (EXPECTED_DRILL_DEPTH,
+ *      currently 2 — both click-drills complete). A depth stuck at 0
+ *      or 1 with no other failure used to report as a clean pass; see
+ *      #1502.
  *
  * Gate posture: NIGHTLY ONLY. Wired into the `dashboard` job in
  * `.github/workflows/e2e.yml`, which runs on push-to-main + nightly +
@@ -95,6 +99,13 @@ type DrilldownFailure = {
 // resp.finished() normally resolves in single-digit ms once the body lands;
 // the cap only guards against a genuinely-stalled stream hanging the sweep.
 const BODY_FINISH_TIMEOUT_MS = 2_000;
+
+// Floor for `levelsClicked` (see drillTwoLevels): every catalogued app is
+// expected to complete both click-drills. Below this, the affordance chain
+// broke before reaching the full depth — a "drilled-clean" outcome with no
+// other failure would otherwise mask that as a silent pass (see #1502: the
+// depth was annotated into the report but never asserted).
+const EXPECTED_DRILL_DEPTH = 2;
 
 test('drilldown-apps: each installed drilldown app drills two levels without 4xx/5xx + no role=alert error + no console errors', async ({
   page,
@@ -178,7 +189,7 @@ test('drilldown-apps: each installed drilldown app drills two levels without 4xx
  *   - after each settled level, snapshot `role="alert"` banners,
  *   - tear down listeners,
  *   - apply: zero non-2xx, zero role=alert banners, zero console
- *     errors.
+ *     errors, and a minimum drill-depth floor (EXPECTED_DRILL_DEPTH).
  *
  * Returns a list of failures — empty if the app sweep is clean.
  */
@@ -418,6 +429,20 @@ async function sweepDrilldownApp(
     type: 'drilldown-app-depth',
     description: `${app.id}: levelsClicked=${levelsClicked}, rootHadNoAffordance=${rootHadNoAffordance}, capturedResponses=${captured.length}`,
   });
+
+  // 4. Drill-depth floor — the annotation above makes depth visible to a
+  //    reviewer reading the report, but a reviewer has to go looking. Assert
+  //    it too: a "drilled-clean" outcome that never actually reached
+  //    EXPECTED_DRILL_DEPTH (affordance present but the second click didn't
+  //    register, or the app rendered nothing to click past level 0/1) is a
+  //    broken drilldown affordance, not a clean sweep.
+  if (levelsClicked < EXPECTED_DRILL_DEPTH) {
+    failures.push({
+      app: app.id,
+      rule: 'drill-depth-below-floor',
+      detail: `levelsClicked=${levelsClicked}, expected >= ${EXPECTED_DRILL_DEPTH} (rootHadNoAffordance=${rootHadNoAffordance}). The click-drill chain broke before reaching the expected depth.`,
+    });
+  }
 
   return failures;
 }
