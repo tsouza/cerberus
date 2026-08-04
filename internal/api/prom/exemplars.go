@@ -16,6 +16,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // ExemplarSeries is the wire shape for one element of the
@@ -142,7 +143,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, ErrInternal, err)
 		return
 	}
-	h.Logger.Debug("cerberus query_exemplars", "promql", q, "sql", sql, "args", args)
+	h.Logger.Debug("cerberus query_exemplars", "promql", telemetry.SanitizeForLog(q), "sql", sql, "args", args)
 
 	rows, err := h.Client.QueryExemplars(r.Context(), sql, args...)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // This file owns the ONE scalar-aggregate metrics execution path both
@@ -158,7 +159,7 @@ func (h *Handler) runMetricsWindow(
 		return nil, nil, qerr
 	}
 	h.Logger.Debug("cerberus tempo metrics exec",
-		"traceql", q, "shape", shape,
+		"traceql", telemetry.SanitizeForLog(q), "shape", shape,
 		"start", rw.Start, "end", rw.End, "step", rw.Step,
 		"sql", res.SQL, "args", res.Args)
 

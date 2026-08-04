@@ -434,7 +434,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpErrStatus(err), "", "", err)
 		return
 	}
-	h.Logger.Debug("cerberus tempo search", "traceql", q, "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus tempo search", "traceql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
 
 	summaries, missingRoots := toTraceSummaries(res.Samples, spss, res.Meta)
 	// Accounted BEFORE TruncateSummaries — see SearchMetricsFor for why the
