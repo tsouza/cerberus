@@ -41,6 +41,13 @@ data:
           # rest of the stack.
           serviceMap:
             datasourceUid: cerberus-prometheus
+          # Streaming search over the gRPC/h2c StreamingQuerier listener —
+          # see test/e2e/grafana/compose/datasources/cerberus.yaml for the
+          # full rationale + jsonData-shape verification (#1454). Mirrored
+          # here so the k3d `dashboard` e2e lane also exercises the gRPC
+          # transport, not just the HTTP one.
+          streamingEnabled:
+            search: true
       # Aliases for Grafana's built-in drilldown apps. Each app's
       # factory defaults reference Grafana Cloud's canonical
       # `grafanacloud-{metrics,logs,traces}` UIDs; without those

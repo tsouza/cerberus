@@ -38,6 +38,20 @@ datasources:
       # rest of the stack.
       serviceMap:
         datasourceUid: cerberus-prometheus
+      # Streaming search: Grafana's Tempo datasource opens the
+      # `StreamingQuerier` gRPC service over h2c on the SAME :8080
+      # port (see cmd/cerberus/main.go's dual-stack HTTP/1.1 +
+      # h2c/gRPC listener) instead of the plain HTTP /api/search
+      # request. Without this flag every e2e/compose lane only ever
+      # drives the HTTP transport, leaving the gRPC listener with no
+      # coverage above its own bufconn unit tests (#1454). The
+      # `TempoJsonData` shape is `{search?: boolean}` — verified
+      # against the pinned `grafana/grafana:12.2.9` image's
+      # `public/app/plugins/datasource/tempo/types.ts`; there is no
+      # top-level flat boolean and (as of 12.2.9) no `metrics`
+      # sub-key on the provisioning-facing type.
+      streamingEnabled:
+        search: true
   # ---------------------------------------------------------------------
   # Grafana 12.x ships three built-in drilldown apps preinstalled:
   #   - grafana-metricsdrilldown-app  (Explore Metrics)
