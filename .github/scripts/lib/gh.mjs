@@ -128,6 +128,30 @@ export function exec(cmd, args, opts = {}) {
   return res.stdout;
 }
 
+// assertSafeArg guards a value that is ABOUT TO become a capture()/exec()
+// argument and originates from outside this script's own literals (an env
+// var override, in every current caller — CodeQL's js/indirect-command-
+// line-injection). capture() never invokes a shell, so the risk a plain
+// quoting fix would address does not apply here; what remains is ARGUMENT
+// injection — a value starting with `-` being parsed by the invoked binary
+// as a FLAG instead of the plain data (a package path, a git ref, an image
+// reference) the caller intends it to be. Every current caller of this
+// guard reads an env var no workflow in this repo actually sets (a
+// developer-only manual override — see e.g. agpl-clean.mjs's
+// AGPL_CLEAN_PACKAGE, brew-upgrade-path.mjs's TAP_MIGRATION_LEGACY_REV), so
+// today's blast radius is "a developer's own shell env", but the guard
+// stays in place regardless: it is what makes it safe for a FUTURE change
+// to wire either one to real workflow input without a fresh audit.
+export function assertSafeArg(value, label) {
+  if (typeof value === 'string' && value.startsWith('-')) {
+    throw new TypeError(
+      `assertSafeArg: ${label}=${JSON.stringify(value)} starts with "-" — refusing to pass it as a ` +
+        'subprocess argument, where it could be parsed as a flag instead of the plain value intended.',
+    );
+  }
+  return value;
+}
+
 // git() — capture()-style git wrapper. Returns { status, stdout, stderr }.
 export function git(args, opts = {}) {
   return capture('git', args, opts);

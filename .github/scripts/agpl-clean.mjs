@@ -34,9 +34,9 @@
 // violation fails CI) and is a required status check on `main`.
 
 import process from 'node:process';
-import { capture, error, notice, log } from './lib/gh.mjs';
+import { assertSafeArg, capture, error, notice, log } from './lib/gh.mjs';
 
-const PACKAGE = process.env.AGPL_CLEAN_PACKAGE || './cmd/cerberus';
+const PACKAGE = assertSafeArg(process.env.AGPL_CLEAN_PACKAGE || './cmd/cerberus', 'AGPL_CLEAN_PACKAGE');
 
 // An import path is an AGPL violation when it sits under grafana/loki,
 // or under grafana/tempo EXCEPT the Apache-licensed tempopb subtree.
