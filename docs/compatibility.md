@@ -106,7 +106,7 @@ branch as shields.io badge JSON; the README shows them live. On
   at all. Both arms run inside the one `compatibility/tempo` job and gate
   independently (`compatibility/parity-baseline.json`'s `heads.tempo` /
   `heads.tempo-grpc`), so a regression on either transport fails the
-  check. The gRPC arm's roster is 47 cases, not 49: `traces` /
+  check. The gRPC arm's roster is 59 cases, not 61: `traces` /
   `traces_v2` have no `StreamingQuerier` RPC (trace-by-id is
   HTTP/proto-only on both backends) and are reported as skipped rather
   than run — see `compatibility/tempo/driver/grpc_diff.go`'s file-level
@@ -359,9 +359,9 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 | head       | passed/total |
 | ---------- | ------------ |
 | prometheus | 739 / 739    |
-| loki       | 120 / 120    |
-| tempo      | 49 / 49      |
-| tempo-grpc | 47 / 47      |
+| loki       | 124 / 124    |
+| tempo      | 61 / 61      |
+| tempo-grpc | 59 / 59      |
 
 The baseline records **full parity** for every head — the ratchet asserts
 `passed == total == cases.length`, so the file has no shape in which a
