@@ -2,10 +2,13 @@
  * Stack-free unit tests for the template-variable contracts
  * (helpers/variables.ts): pin parsing, the set-equality matcher, the
  * variable-query parser for all three heads, the proxy-path builder,
- * and the response-shape extractors. The live resolution path
- * (resolveVariableOptions / checkDashboardVariable) is exercised by
- * iterate-all-dashboards.spec.ts once dashboards gain variables (P3);
- * the pure halves are pinned here. Run via:
+ * the response-shape extractors, and the expr-substitution helper
+ * that lets the probe loop resolve `$name` tokens the way Grafana
+ * does client-side. The live resolution path (resolveVariableOptions
+ * / checkDashboardVariable / substituteVariables feeding a real
+ * probe URL) is exercised end-to-end by iterate-all-dashboards.spec.ts
+ * against showcase-promql.json's `job` variable; the pure halves are
+ * pinned here. Run via:
  *
  *   cd test/e2e/playwright && npx playwright test helpers-variables.spec.ts
  */
@@ -18,6 +21,8 @@ import {
   extractVariableOptions,
   parseVariableQuery,
   readVariablePin,
+  resolveCurrentVariableValue,
+  substituteVariables,
   variableOptionsPath,
 } from './helpers/index.js';
 
@@ -95,6 +100,63 @@ test('checkVariableOptions requires non-empty options when unpinned', () => {
   const v = checkVariableOptions(null, []);
   expect(v).toHaveLength(1);
   expect(v[0]).toContain('zero options');
+});
+
+// --- resolveCurrentVariableValue / substituteVariables -----------------------
+
+test('resolveCurrentVariableValue reads a single-value current', () => {
+  expect(resolveCurrentVariableValue({ name: 'job', current: { value: 'api' } })).toBe(
+    'api',
+  );
+});
+
+test('resolveCurrentVariableValue reads the first entry of a multi-value current', () => {
+  expect(
+    resolveCurrentVariableValue({ name: 'job', current: { value: ['api', 'db'] } }),
+  ).toBe('api');
+});
+
+test('resolveCurrentVariableValue returns null when unresolvable', () => {
+  expect(resolveCurrentVariableValue({ name: 'job' })).toBeNull();
+  expect(resolveCurrentVariableValue({ name: 'job', current: {} })).toBeNull();
+  expect(
+    resolveCurrentVariableValue({ name: 'job', current: { value: '' } }),
+  ).toBeNull();
+  expect(
+    resolveCurrentVariableValue({ name: 'job', current: { value: [] } }),
+  ).toBeNull();
+});
+
+test('substituteVariables replaces $name, ${name}, and [[name]] forms', () => {
+  const vars = [{ name: 'job', current: { value: 'api' } }];
+  expect(substituteVariables('up{job="$job"}', vars)).toBe('up{job="api"}');
+  expect(substituteVariables('up{job="${job}"}', vars)).toBe('up{job="api"}');
+  expect(substituteVariables('up{job="[[job]]"}', vars)).toBe('up{job="api"}');
+});
+
+test('substituteVariables does not partial-match a longer name', () => {
+  const vars = [{ name: 'job', current: { value: 'api' } }];
+  expect(substituteVariables('up{job="$jobber"}', vars)).toBe('up{job="$jobber"}');
+});
+
+test('substituteVariables substitutes multiple distinct variables', () => {
+  const vars = [
+    { name: 'job', current: { value: 'api' } },
+    { name: 'status', current: { value: '200' } },
+  ];
+  expect(
+    substituteVariables('http_requests{job="$job", status="$status"}', vars),
+  ).toBe('http_requests{job="api", status="200"}');
+});
+
+test('substituteVariables leaves unresolvable and unknown tokens untouched', () => {
+  expect(substituteVariables('up{job="$job"}', [])).toBe('up{job="$job"}');
+  expect(
+    substituteVariables('up{job="$job"}', [{ name: 'job' }]),
+  ).toBe('up{job="$job"}');
+  expect(substituteVariables('up{job="api"}', [{ name: 'job', current: { value: 'api' } }])).toBe(
+    'up{job="api"}',
+  );
 });
 
 // --- parseVariableQuery ------------------------------------------------------

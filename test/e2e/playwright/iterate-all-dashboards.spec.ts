@@ -68,6 +68,7 @@ import {
   enforceExpectation,
   generateSelfTraffic,
   readPanelExpectation,
+  substituteVariables,
   sweepDepth,
 } from './helpers/index.js';
 
@@ -303,18 +304,26 @@ function normaliseDs(
  * Build the datasource-proxy URL that hits the same cerberus endpoint
  * Grafana itself would use for this target. Returns null for target
  * types we don't sweep (alerting expressions, dashboard variables…).
+ *
+ * `variables` is the dashboard's `templating.list` — mirrors what
+ * Grafana does client-side before firing a panel query: substitute
+ * every `$name` / `${name}` / `[[name]]` token in the expr with the
+ * variable's persisted `current.value` (substituteVariables, a no-op
+ * when the dashboard carries no variables or the expr has no tokens).
  */
 function buildProbeURL(
   baseURL: string,
   t: FlatTarget,
   nowSec: number,
+  variables: VariableJSON[],
 ): string | null {
   if (!t.expr || !t.dsUid) return null;
+  const expr = substituteVariables(t.expr, variables);
   const start = nowSec - QUERY_WINDOW_SECONDS;
   const end = nowSec;
   const dsType = t.dsType.toLowerCase();
   if (dsType === 'prometheus') {
-    const q = encodeURIComponent(t.expr);
+    const q = encodeURIComponent(expr);
     return (
       `${baseURL}/api/datasources/proxy/uid/${t.dsUid}` +
       `/api/v1/query_range?query=${q}` +
@@ -322,7 +331,7 @@ function buildProbeURL(
     );
   }
   if (dsType === 'loki') {
-    const q = encodeURIComponent(t.expr);
+    const q = encodeURIComponent(expr);
     return (
       `${baseURL}/api/datasources/proxy/uid/${t.dsUid}` +
       `/loki/api/v1/query_range?query=${q}` +
@@ -330,11 +339,11 @@ function buildProbeURL(
     );
   }
   if (dsType === 'tempo') {
-    const q = encodeURIComponent(t.expr || '{}');
+    const q = encodeURIComponent(expr || '{}');
     // TraceQL metrics-pipeline queries (`{...} | rate()` etc.) are
     // served by /api/metrics/query_range, not /api/search — the same
     // routing decision Grafana's Tempo datasource makes client-side.
-    if (isTraceQLMetricsQuery(t.expr)) {
+    if (isTraceQLMetricsQuery(expr)) {
       return (
         `${baseURL}/api/datasources/proxy/uid/${t.dsUid}` +
         `/api/metrics/query_range?q=${q}` +
@@ -591,7 +600,7 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
       let nonEmptyTargets = 0;
       for (const panel of d.panels) {
         for (const t of panel.targets) {
-          const url = buildProbeURL(baseURL, t, nowSec);
+          const url = buildProbeURL(baseURL, t, nowSec, d.variables);
           if (!url) continue;
           probedTargets++;
           await probeTarget(request, url, d, panel, t, (count) => {
@@ -602,9 +611,11 @@ test.describe('iterate-all-dashboards: full provisioned-dashboard sweep', () => 
       // 3. Template-variable contracts — every variable's options
       //    resolve live (the same lookups Grafana fires for the
       //    dropdown); pinned variables (cerberus.expectOptions) get
-      //    set equality, unpinned ones non-emptiness. Today no
-      //    provisioned dashboard carries variables, so the loop is a
-      //    no-op — the path goes live the moment one lands (P3).
+      //    set equality, unpinned ones non-emptiness. showcase-promql's
+      //    `job` variable (static api/db options, see step 2 above for
+      //    the substitution into the panel expr) exercises this path
+      //    on every run; dashboards without variables leave the loop
+      //    an empty no-op.
       const variableViolations: string[] = [];
       for (const variable of d.variables) {
         variableViolations.push(
