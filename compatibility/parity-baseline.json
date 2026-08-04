@@ -748,8 +748,8 @@
       ]
     },
     "loki": {
-      "passed": 120,
-      "total": 120,
+      "passed": 124,
+      "total": 124,
       "cases": [
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} != ip(\"255.255.255.255\") | ip line filter negated: single-IP",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} !> \"<_>error<_>\" | pattern line filter negated: embedded literal",
@@ -863,6 +863,10 @@
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | unwrap bytes [5m])) | step=1m0s | Bytes conversion with sum",
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Duration seconds with sum over time",
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | size != \"\" | unwrap size [5m])) | step=1m0s | Logfmt size unwrap",
+        "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
+        "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {service_name=\"metadata-probe\"} | request_id=\"\" | generic structured-metadata label filter - absent resolves to empty string",
+        "regression/structured-metadata-generic.yaml | log | range | FORWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
+        "regression/structured-metadata-generic.yaml | metric | range | FORWARD | sum by (request_id) (count_over_time({service_name=\"metadata-probe\"}[24h])) | step=1h0m0s | metric query grouped by a generic, unconstrained-value-domain structured-metadata key",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} |~ \"error|exception\" | detected_level=\"error\" | Combined line and metadata filter",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_level=~\"error|warn\" |~ \"(?i)refused\" | Drilldown with error/warn level and refused search",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_level=\"error\" |~ \"(?i)failed\" | Drilldown with failed search and error level",

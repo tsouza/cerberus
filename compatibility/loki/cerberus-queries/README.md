@@ -46,6 +46,9 @@ cerberus-queries/
                           currently empty (see fast/README.md)
   regression/
     unpack.yaml           | unpack differential coverage (issue #1611)
+    structured-metadata-generic.yaml
+                          generic (non-detected_level) structured-
+                          metadata differential coverage (issue #1498)
   exhaustive/             suite dir required by QueryRegistry.Load;
                           currently empty (see exhaustive/README.md)
 ```
