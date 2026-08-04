@@ -55,13 +55,51 @@ import (
 //     exactly the emit's reads, and applyStageScan unions in the Filter
 //     predicate's columns so the predicate stays evaluable.
 //
-// Shapes (3), (4), (5) are what makes the pushdown reach the inner Scan of
-// the canonical metrics shape `Project(Aggregate(Filter(Scan)))` (and the
-// matrix `Project(RangeWindow(Filter(Scan)))`): the Project's pushdown in
-// shapes (1)/(2) stops at the Aggregate/RangeWindow, so without these arms
-// the inner Scan still reads every column (`SELECT *`). Firing on the
-// stage node itself — wherever the FixedPoint walk reaches it — pushes the
-// narrowed column set THROUGH the stage down to the Scan.
+// Four more shapes match a mid-tree stage node sitting directly over Scan
+// or Filter(Scan) — the array-valued / matrix-pipeline siblings of (3)/(4):
+//
+//  6. `RangeBucketFanout(Scan)` / `RangeBucketFanout(Filter(Scan))` — the
+//     single-pass array-aggregate fan-out backing the histogram range
+//     lowerings. narrows the Scan to TimestampCol (the argMax tie-break /
+//     fan-out distance column, also the `HAVING uniqExact(...)` argument)
+//     plus the columns the GroupBy keys and each AggFunc's Params/Args
+//     read. The emitter's fanout SELECT projects `*` from Input, but only
+//     to hand those exact columns through to the collapse SELECT — see
+//     rangeBucketFanoutColumns.
+//  7. `RangeLWR(Scan)` / `RangeLWR(Filter(Scan))` — the single-pass
+//     last-with-respect-to fan-out for a bare instant-vector selector.
+//     Narrows the Scan to exactly the canonical 4-column Sample identity:
+//     MetricNameCol, AttributesCol, TimestampCol, ValueCol.
+//  8. `MetricsAggregate(Scan)` / `MetricsAggregate(Filter(Scan))` — the
+//     TraceQL metrics-pipeline aggregate (`rate()` / `*_over_time()`).
+//     Its child slot is named Inner, not Input. Narrows the Scan to the
+//     union of the GroupBy key refs and Attr (nil for rate /
+//     count_over_time). When this MetricsAggregate is itself wrapped by a
+//     RangeWindow (the matrix path, `RangeWindow(MetricsAggregate(...))`),
+//     a companion case on the RangeWindow arm — reached after this one,
+//     since the walk is bottom-up — widens the Scan this shape narrowed to
+//     also include the RangeWindow's own TimestampColumn, which
+//     emitRangeWindowMetrics reads directly off the same Scan for
+//     time-bucketing. See applyRangeWindowOverMetricsAggregate.
+//  9. `HistogramQuantile(Scan)` / `HistogramQuantile(Filter(Scan))` — the
+//     classic-histogram quantile interpolation. Narrows the Scan to
+//     BucketCountsColumn, ExplicitBoundsColumn, plus the GroupBy refs.
+//     MetricNameColumn / AttributesColumn / TimestampColumn are NOT
+//     included: emitHistogramQuantile never reads them off Input — they
+//     are metadata the wrapping lowering uses to build the Sample-contract
+//     Project ABOVE this node (AttributesColumn's own read, when present,
+//     already rides in via GroupBy). PhiExpr is likewise excluded — a
+//     computed phi is a self-contained ScalarSubquery over a SEPARATE
+//     plan, never a reference into this node's own Input.
+//
+// Shapes (3)–(9) are what makes the pushdown reach the inner Scan of the
+// canonical metrics shape `Project(Aggregate(Filter(Scan)))` (and the
+// matrix `Project(RangeWindow(Filter(Scan)))`, and the array/matrix
+// pipeline shapes above): the Project's pushdown in shapes (1)/(2) stops
+// at the stage node, so without these arms the inner Scan still reads
+// every column (`SELECT *`). Firing on the stage node itself — wherever
+// the FixedPoint walk reaches it — pushes the narrowed column set THROUGH
+// the stage down to the Scan.
 type ProjectionPushdown struct{}
 
 func (ProjectionPushdown) Name() string { return "projection-pushdown" }
@@ -80,11 +118,22 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 	case *chplan.Aggregate:
 		return applyStageScan(node, node.Input, aggregateColumns(node))
 	case *chplan.RangeWindow:
+		if ma, ok := node.Input.(*chplan.MetricsAggregate); ok {
+			return applyRangeWindowOverMetricsAggregate(node, ma)
+		}
 		return applyStageScan(node, node.Input, rangeWindowColumns(node))
 	case *chplan.RangeWindowNative:
 		return applyStageScan(node, node.Input, nativeRangeWindowColumns(node))
 	case *chplan.RangeWindowResample:
 		return applyStageScan(node, node.Input, resampleRangeWindowColumns(node))
+	case *chplan.RangeBucketFanout:
+		return applyStageScan(node, node.Input, rangeBucketFanoutColumns(node))
+	case *chplan.RangeLWR:
+		return applyStageScan(node, node.Input, rangeLWRColumns(node))
+	case *chplan.MetricsAggregate:
+		return applyStageScan(node, node.Inner, metricsAggregateColumns(node))
+	case *chplan.HistogramQuantile:
+		return applyStageScan(node, node.Input, histogramQuantileColumns(node))
 	default:
 		return n, false
 	}
@@ -159,6 +208,22 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 		clone := *s
 		clone.Input = newInput
 		return &clone
+	case *chplan.RangeBucketFanout:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.RangeLWR:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.MetricsAggregate:
+		clone := *s
+		clone.Inner = newInput
+		return &clone
+	case *chplan.HistogramQuantile:
+		clone := *s
+		clone.Input = newInput
+		return &clone
 	default:
 		return stage
 	}
@@ -193,10 +258,11 @@ func aggregateColumns(a *chplan.Aggregate) []string {
 // column refs walked out of GroupBy and ScalarExprs.
 //
 // Only the row-shape (PromQL / LogQL) RangeWindow over Scan / Filter(Scan)
-// reaches this: applyStageScan bails on a MetricsAggregate input before we
-// get here, so the TraceQL matrix mode (which ignores ValueColumn and
-// reads the per-span Timestamp off its MetricsAggregate.Inner) is never
-// narrowed by this path.
+// reaches this: the Apply switch routes a RangeWindow whose Input is a
+// *chplan.MetricsAggregate — the TraceQL matrix mode, which ignores
+// ValueColumn and reads the per-span Timestamp off its MetricsAggregate.Inner
+// — to applyRangeWindowOverMetricsAggregate instead, since that shape needs
+// to WIDEN an already-narrowed Scan rather than narrow one directly.
 func rangeWindowColumns(r *chplan.RangeWindow) []string {
 	seen := map[string]struct{}{}
 	if r.TimestampColumn != "" {
@@ -213,6 +279,84 @@ func rangeWindowColumns(r *chplan.RangeWindow) []string {
 		walkExpr(s, collect)
 	}
 	return sortedColumnSet(seen)
+}
+
+// applyRangeWindowOverMetricsAggregate handles the TraceQL matrix shape
+// `RangeWindow(MetricsAggregate(Scan))` / `RangeWindow(MetricsAggregate(Filter(Scan)))`.
+// applyStageScan's own RangeWindow case never reaches this shape (its inner
+// switch only matches Scan / Filter(Scan) directly), so by design it is the
+// MetricsAggregate arm — firing first, since applyToTree walks bottom-up —
+// that narrows the Scan beneath ma. But metricsAggregateColumns only
+// enumerates the columns MetricsAggregate's OWN emit reads (GroupBy + Attr);
+// per MetricsAggregate's doc comment, emitRangeWindowMetrics additionally
+// reads the wrapping RangeWindow's OWN TimestampColumn slot directly off
+// that same underlying Scan for time-bucketing. A MetricsAggregate node
+// carries no reference to its parent, so the MetricsAggregate arm cannot
+// know about this requirement — only the RangeWindow arm, which sees the
+// already-rewritten (possibly already-narrowed) MetricsAggregate as its
+// Input, can supply it.
+//
+// This widens the already-narrowed inner Scan by unioning in
+// r.TimestampColumn whenever it is missing. It deliberately does NOT use
+// applyStageScan/cloneStageOverInput: those assume the stage sits directly
+// over Scan/Filter(Scan) and bail on any other input shape (including
+// MetricsAggregate) by construction — this is a distinct shape needing a
+// widen instead of a first narrow.
+func applyRangeWindowOverMetricsAggregate(r *chplan.RangeWindow, ma *chplan.MetricsAggregate) (chplan.Node, bool) {
+	if r.TimestampColumn == "" {
+		return r, false
+	}
+	switch inner := ma.Inner.(type) {
+	case *chplan.Scan:
+		widened, ok := widenScanColumns(inner, r.TimestampColumn)
+		if !ok {
+			return r, false
+		}
+		newMA := *ma
+		newMA.Inner = widened
+		newR := *r
+		newR.Input = &newMA
+		return &newR, true
+	case *chplan.Filter:
+		scan, ok := inner.Input.(*chplan.Scan)
+		if !ok {
+			return r, false
+		}
+		widened, ok := widenScanColumns(scan, r.TimestampColumn)
+		if !ok {
+			return r, false
+		}
+		newFilter := *inner
+		newFilter.Input = widened
+		newMA := *ma
+		newMA.Inner = &newFilter
+		newR := *r
+		newR.Input = &newMA
+		return &newR, true
+	default:
+		return r, false
+	}
+}
+
+// widenScanColumns unions extraCol into scan.Columns, returning the widened
+// clone + true when it made a difference. It reports (nil, false) — no
+// widening needed — in two cases: scan.Columns is still empty (SELECT *
+// trivially already carries extraCol; narrowing it to just extraCol here
+// would be a REGRESSION, pre-empting whatever set the eventual narrowing
+// arm was going to apply), or extraCol is already present in the narrowed
+// set (idempotence: a second FixedPoint iteration over an already-widened
+// tree must report no change).
+func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
+	if len(scan.Columns) == 0 {
+		return nil, false
+	}
+	widened := unionSortedColumns(scan.Columns, []string{extraCol})
+	if len(widened) == len(scan.Columns) {
+		return nil, false
+	}
+	newScan := *scan
+	newScan.Columns = widened
+	return &newScan, true
 }
 
 // nativeRangeWindowColumns returns the sorted, deduped set of base columns
@@ -285,6 +429,88 @@ func resampleRangeWindowColumns(r *chplan.RangeWindowResample) []string {
 		if c != "" {
 			seen[c] = struct{}{}
 		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// rangeBucketFanoutColumns returns the sorted, deduped set of base columns
+// a RangeBucketFanout's emit reads off the inner Input. emitRangeBucketFanout
+// (chsql/range_bucket_fanout.go) projects `*` from Input into the fanout
+// SELECT, but the collapse SELECT that consumes it only ever references
+// TimestampCol (the argMax tie-break / fan-out distance column, also the
+// HAVING uniqExact(...) argument when MinSamples > 1), the GroupBy source
+// columns, and each AggFunc's Params + Args — so narrowing the Scan to
+// exactly that union is safe.
+func rangeBucketFanoutColumns(r *chplan.RangeBucketFanout) []string {
+	seen := map[string]struct{}{}
+	if r.TimestampCol != "" {
+		seen[r.TimestampCol] = struct{}{}
+	}
+	collect := collectColumn(seen)
+	for _, g := range r.GroupBy {
+		walkExpr(g, collect)
+	}
+	for _, af := range r.AggFuncs {
+		for _, p := range af.Params {
+			walkExpr(p, collect)
+		}
+		for _, a := range af.Args {
+			walkExpr(a, collect)
+		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// rangeLWRColumns returns the sorted, deduped set of base columns a
+// RangeLWR's emit reads off the inner Input. emitRangeLWR reads EXACTLY
+// four named columns — MetricNameCol, AttributesCol, TimestampCol,
+// ValueCol (mirrors resampleRangeWindowColumns).
+func rangeLWRColumns(r *chplan.RangeLWR) []string {
+	seen := map[string]struct{}{}
+	for _, c := range []string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol} {
+		if c != "" {
+			seen[c] = struct{}{}
+		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// metricsAggregateColumns returns the sorted, deduped set of base columns
+// a MetricsAggregate's own emit reads off its Inner input: the GroupBy
+// key expressions plus Attr (the *_over_time / quantile_over_time operand;
+// nil for rate / count_over_time). TimestampColumn is read off a WRAPPING
+// RangeWindow's own slot when one is present, not off this node — a
+// MetricsAggregate node has no parent pointer, so this function cannot
+// enumerate it; applyRangeWindowOverMetricsAggregate widens the Scan this
+// rule narrows to include it once the RangeWindow's own Apply case runs.
+func metricsAggregateColumns(m *chplan.MetricsAggregate) []string {
+	seen := map[string]struct{}{}
+	collect := collectColumn(seen)
+	for _, g := range m.GroupBy {
+		walkExpr(g, collect)
+	}
+	walkExpr(m.Attr, collect)
+	return sortedColumnSet(seen)
+}
+
+// histogramQuantileColumns returns the sorted, deduped set of base columns
+// a HistogramQuantile's own emit reads off Input: BucketCountsColumn and
+// ExplicitBoundsColumn plus refs walked out of GroupBy. MetricNameColumn /
+// AttributesColumn / TimestampColumn are NOT included: emitHistogramQuantile
+// never references them — they are metadata the wrapping lowering uses to
+// build the Sample contract Project ABOVE this node. PhiExpr is likewise
+// excluded — it is a self-contained ScalarSubquery over a SEPARATE plan.
+func histogramQuantileColumns(h *chplan.HistogramQuantile) []string {
+	seen := map[string]struct{}{}
+	if h.BucketCountsColumn != "" {
+		seen[h.BucketCountsColumn] = struct{}{}
+	}
+	if h.ExplicitBoundsColumn != "" {
+		seen[h.ExplicitBoundsColumn] = struct{}{}
+	}
+	collect := collectColumn(seen)
+	for _, g := range h.GroupBy {
+		walkExpr(g, collect)
 	}
 	return sortedColumnSet(seen)
 }
