@@ -191,6 +191,24 @@ Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.
 
+**fan_factor is nullable, and null is never a free pass.** The profiler's
+per-subquery `count()` decomposition only descends the leftmost `FROM`
+source; it stops on a `WITH`-prefixed subquery (a CTE reference or a
+pre-rendered subquery splice — the `&&` `SetIntersect` shape in
+`internal/chsql/set_op.go` is the current example) and, structurally via
+`EXPLAIN`, on any `RECURSIVE` CTE step. Before #1519 those stages silently
+flattened to `fan_factor = 1.00` — the profiler reported "no fan-out" on
+exactly the constructs it exists to catch. `profile.Record.FanFactor` is
+now a `*float64`: nil (JSON `null`) whenever `UncountableLevels` is
+nonzero, never a fabricated `1.00`. The ratchet is null-aware rather than
+null-blind: a fixture whose current run is `null` must match what the
+committed baseline already says — `null` on both sides passes (already
+honestly acknowledged), a fixture that regresses from measured to `null`
+fails (a human has to look and re-baseline on purpose), and a fixture that
+becomes measurable is always allowed. See the "fan_factor can be
+unmeasured" section of `test/perf/cardinality_ratchet_test.go`'s file doc
+for the full truth table.
+
 A separate structural win holds the slicer's copy-on-write off-spine sharing in
 place. `chplan.ReanchorRange` shares the immutable off-spine subtree across the
 `K` shards instead of `CloneNode`-ing it K+1 times; the wall-clock measurement

@@ -77,8 +77,14 @@ SELECT id, v FROM (SELECT id, vals FROM arr) ARRAY JOIN vals AS v
 	if rec.PeakIntermediate < 5 {
 		t.Errorf("PeakIntermediate = %d, want >= 5", rec.PeakIntermediate)
 	}
-	if rec.FanFactor < 5 {
-		t.Errorf("FanFactor = %.2f, want >= 5", rec.FanFactor)
+	if rec.UncountableLevels != 0 {
+		t.Errorf("UncountableLevels = %d, want 0: %v", rec.UncountableLevels, rec.UncountableReasons)
+	}
+	if rec.FanFactor == nil {
+		t.Fatalf("FanFactor = nil, want a measured value >= 5")
+	}
+	if *rec.FanFactor < 5 {
+		t.Errorf("FanFactor = %.2f, want >= 5", *rec.FanFactor)
 	}
 }
 
@@ -109,13 +115,22 @@ SELECT a FROM flat WHERE a >= 90
 		t.Errorf("unexpected fan-out operators: array=%v cross=%v rcte=%v",
 			rec.HasArrayJoin, rec.HasCrossJoin, rec.HasRecursiveCTE)
 	}
-	if rec.FanFactor != 1 {
-		t.Errorf("FanFactor = %.2f, want 1.0 (no fan-out)", rec.FanFactor)
+	if rec.UncountableLevels != 0 {
+		t.Errorf("UncountableLevels = %d, want 0: %v", rec.UncountableLevels, rec.UncountableReasons)
+	}
+	if rec.FanFactor == nil {
+		t.Fatalf("FanFactor = nil, want a measured value of 1.0")
+	}
+	if *rec.FanFactor != 1 {
+		t.Errorf("FanFactor = %.2f, want 1.0 (no fan-out)", *rec.FanFactor)
 	}
 }
 
 // TestProfileFixture_RecursiveCTE profiles a recursive CTE and asserts the
-// recursive flag fires and max_recursion_depth reflects the closure size.
+// recursive flag fires, max_recursion_depth reflects the closure size, and
+// — the point of issue #1519 part 2 — fan_factor is nil rather than a
+// fabricated 1.00: the per-level count() decomposition cannot see through
+// a RECURSIVE CTE step, so it must admit the fan-out is unmeasured.
 func TestProfileFixture_RecursiveCTE(t *testing.T) {
 	const body = `-- seed --
 CREATE TABLE anchor (n UInt64) ENGINE = MergeTree ORDER BY n;
@@ -144,19 +159,40 @@ WITH RECURSIVE walk AS (SELECT n FROM anchor UNION ALL SELECT n + 1 FROM walk WH
 	if rec.MaxRecursionDepth != 5 {
 		t.Errorf("MaxRecursionDepth = %d, want 5", rec.MaxRecursionDepth)
 	}
+	if rec.UncountableLevels == 0 {
+		t.Errorf("UncountableLevels = 0, want > 0: a recursive CTE step is opaque to the decomposition")
+	}
+	if rec.FanFactor != nil {
+		t.Errorf("FanFactor = %.2f, want nil (unmeasured — see issue #1519 part 2)", *rec.FanFactor)
+	}
+	foundReason := false
+	for _, r := range rec.UncountableReasons {
+		if r == recursiveCTEUncountableReason {
+			foundReason = true
+		}
+	}
+	if !foundReason {
+		t.Errorf("UncountableReasons = %v, want it to include the recursive-CTE reason", rec.UncountableReasons)
+	}
 }
 
+// ff is a small pointer-literal helper for FanFactor test fixtures.
+func ff(v float64) *float64 { return &v }
+
 // TestSortByFanFactor pins the descending ordering used by the nightly
-// step-summary.
+// step-summary, including that an unmeasured (nil) fan_factor sorts
+// first — ahead of every measured value, since an unknown fan-out is at
+// least as much of a risk signal as a known-bad one.
 func TestSortByFanFactor(t *testing.T) {
 	recs := []Record{
-		{Fixture: "a", FanFactor: 2},
-		{Fixture: "b", FanFactor: 10},
-		{Fixture: "c", FanFactor: 5},
+		{Fixture: "a", FanFactor: ff(2)},
+		{Fixture: "b", FanFactor: ff(10)},
+		{Fixture: "c", FanFactor: ff(5)},
+		{Fixture: "d", FanFactor: nil},
 	}
 	SortByFanFactor(recs)
-	if recs[0].Fixture != "b" || recs[1].Fixture != "c" || recs[2].Fixture != "a" {
-		t.Errorf("sort order = %s,%s,%s; want b,c,a",
-			recs[0].Fixture, recs[1].Fixture, recs[2].Fixture)
+	if recs[0].Fixture != "d" || recs[1].Fixture != "b" || recs[2].Fixture != "c" || recs[3].Fixture != "a" {
+		t.Errorf("sort order = %s,%s,%s,%s; want d,b,c,a",
+			recs[0].Fixture, recs[1].Fixture, recs[2].Fixture, recs[3].Fixture)
 	}
 }

@@ -108,6 +108,64 @@ func TestFromSourceLevels(t *testing.T) {
 	}
 }
 
+// TestLevelsWithReasons pins the honesty-relevant half of the descent:
+// a non-recursive WITH-prefixed level (CTE reference / pre-rendered
+// subquery splice) must produce an uncountable reason naming its depth,
+// while a RECURSIVE CTE — deliberately handled elsewhere via the
+// EXPLAIN-derived Record.HasRecursiveCTE flag, to avoid double-counting
+// a leftmost-chain recursive step and missing a JOIN-branch one — must
+// produce no reason from this function at all. See issue #1519 part 2.
+func TestLevelsWithReasons(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		wantLevels  []string
+		wantReasons []string
+	}{
+		{
+			name:        "no WITH at all — nothing uncountable",
+			query:       "SELECT a FROM (SELECT b AS a FROM t)",
+			wantLevels:  []string{"SELECT a FROM (SELECT b AS a FROM t)", "SELECT b AS a FROM t"},
+			wantReasons: nil,
+		},
+		{
+			name:        "non-recursive WITH at depth 0",
+			query:       "WITH c AS (SELECT 1) SELECT * FROM c",
+			wantLevels:  []string{"WITH c AS (SELECT 1) SELECT * FROM c"},
+			wantReasons: []string{uncountableCTEReason(0)},
+		},
+		{
+			name:        "non-recursive WITH nested at depth 1",
+			query:       "SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)",
+			wantLevels:  []string{"SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)"},
+			wantReasons: []string{uncountableCTEReason(1)},
+		},
+		{
+			name:        "recursive WITH at depth 0 — no reason from this function",
+			query:       "WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM c WHERE n<5) SELECT * FROM c",
+			wantLevels:  []string{"WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM c WHERE n<5) SELECT * FROM c"},
+			wantReasons: nil,
+		},
+		{
+			name:        "recursive WITH nested at depth 1 — no reason from this function",
+			query:       "SELECT x FROM (WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM c WHERE n<5) SELECT n AS x FROM c)",
+			wantLevels:  []string{"SELECT x FROM (WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM c WHERE n<5) SELECT n AS x FROM c)"},
+			wantReasons: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotLevels, gotReasons := levelsWithReasons(tc.query)
+			if !reflect.DeepEqual(gotLevels, tc.wantLevels) {
+				t.Errorf("levels mismatch\n got = %#v\nwant = %#v", gotLevels, tc.wantLevels)
+			}
+			if !reflect.DeepEqual(gotReasons, tc.wantReasons) {
+				t.Errorf("reasons mismatch\n got = %#v\nwant = %#v", gotReasons, tc.wantReasons)
+			}
+		})
+	}
+}
+
 func TestLeftmostFromSubquery(t *testing.T) {
 	tests := []struct {
 		query  string
