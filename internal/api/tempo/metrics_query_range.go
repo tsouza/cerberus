@@ -24,8 +24,21 @@ import (
 // labels) tuple, each carrying per-anchor samples sorted ascending by
 // timestamp. Grafana's Tempo datasource consumes this directly for the
 // service-graph node + edge metrics.
+//
+// Metrics mirrors upstream's `tempopb.QueryRangeResponse.Metrics`
+// (`*SearchMetrics`, always populated by reference Tempo — never nil
+// on a successful response). Grafana's Explore Traces app dereferences
+// `response.metrics.totalBlocks` unconditionally (see grafana/tempo's
+// datasource `module.js` `runRequest` path); omitting the field left
+// the app reading `.totalBlocks` off `null` and throwing
+// `runRequest.catchError TypeError` on every Explore Traces surface
+// once the gRPC/h2c streaming transport (#1665) started routing
+// metrics-pipeline queries through cerberus (issue #1689). Cerberus
+// reports the aggregate fields as zeros, matching the `/api/search`
+// SearchResponse.Metrics precedent in types.go.
 type MetricsQueryRangeResponse struct {
-	Series []MetricsSeries `json:"series"`
+	Series  []MetricsSeries `json:"series"`
+	Metrics SearchMetrics   `json:"metrics"`
 }
 
 // MetricsSeries is one entry of MetricsQueryRangeResponse.Series.

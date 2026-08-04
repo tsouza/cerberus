@@ -28,8 +28,13 @@ import (
 // Cerberus follows the same shape so the differ's CompareMetrics
 // (compatibility/tempo/driver/differ_metrics.go) can canonicalise
 // both backends' responses without a shape-specific branch.
+//
+// Metrics mirrors upstream's `tempopb.QueryInstantResponse.Metrics` —
+// see MetricsQueryRangeResponse.Metrics's doc-comment for why this
+// field must always be present (issue #1689).
 type MetricsQueryInstantResponse struct {
-	Series []MetricsInstantSeries `json:"series"`
+	Series  []MetricsInstantSeries `json:"series"`
+	Metrics SearchMetrics          `json:"metrics"`
 }
 
 // MetricsInstantSeries is one entry of MetricsQueryInstantResponse.Series.
