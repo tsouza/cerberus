@@ -57,6 +57,36 @@
 #                      interpolation before compose-pull-images.mjs reads
 #                      the model, so the override reaches both the
 #                      pre-pull and `up`.
+#   TESTER_QUERY_PARALLELISM  passed through to the upstream tester's
+#                      `-query-parallelism` flag (tester default: 20).
+#                      Unset here means the flag is omitted and the
+#                      tester's own default applies — the standard
+#                      compatibility/prometheus lane relies on that.
+#                      compatibility/prometheus-floor sets this LOW (see
+#                      that job's comment in compatibility.yml): below
+#                      25.9 every ts_grid_* native-rate feature resolves
+#                      OFF (#1500), so the floor lane's fallback SQL does
+#                      real per-row rate/quantile/reset aggregation
+#                      instead of ClickHouse's native windowed
+#                      functions — genuinely slower, not incorrect.
+#                      promql-compliance-tester's comparer
+#                      (upstream/promql/comparer/comparer.go) wraps EACH
+#                      comparison's ref+test QueryRange pair in one
+#                      hardcoded `context.WithTimeout(..., 10*time.Second)`
+#                      with no flag to raise it, so at the tester's
+#                      default 20-way concurrency, enough of these
+#                      genuinely-slower floor-lane queries queue behind
+#                      each other that some individually-fast queries miss
+#                      the shared 10s deadline purely from contention —
+#                      "context deadline exceeded" with an empty diff, not
+#                      a semantic divergence. Confirmed by direct
+#                      measurement: every one of the CI-observed timeout
+#                      cases answers in under 3s in isolation; firing the
+#                      same query set at -query-parallelism-equivalent
+#                      concurrency against a 2-vCPU-constrained container
+#                      (matching a GH Actions standard runner) reproduces
+#                      individual response times past 10s at concurrency
+#                      20, comfortably under it at concurrency 2.
 #
 # Upstream tester invocation (post-PR #298 / #300 audit):
 #   The upstream `promql-compliance-tester` only accepts `-config-file`
@@ -200,12 +230,18 @@ echo "==> running tester"
 # distinguish the two by checking whether report.json was produced
 # AND parses as JSON with a non-null results array — if so, RC=1 is
 # parity drift; otherwise it's hard.
+TESTER_ARGS=(
+    -config-file "$ROOT_DIR/test-cerberus.yml"
+    -config-file "$QUERIES"
+    -config-file "$OVERLAY"
+    -output-format json
+)
+if [ -n "${TESTER_QUERY_PARALLELISM:-}" ]; then
+    TESTER_ARGS+=(-query-parallelism "$TESTER_QUERY_PARALLELISM")
+fi
+
 set +e
-"$TESTER_BIN" \
-    -config-file "$ROOT_DIR/test-cerberus.yml" \
-    -config-file "$QUERIES" \
-    -config-file "$OVERLAY" \
-    -output-format json > "$OUTPUT"
+"$TESTER_BIN" "${TESTER_ARGS[@]}" > "$OUTPUT"
 TESTER_RC=$?
 set -e
 
