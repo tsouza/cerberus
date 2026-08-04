@@ -258,6 +258,24 @@ traces-scan-bound-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
 
+# Run the Tempo HTTP traces-scan WINDOW real-CH guard (#1509): drives the
+# real /api/search + /api/metrics/query_range handlers against a REAL
+# ClickHouse (testcontainers-go) seeded with otel_traces spread across many
+# daily partitions, and asserts each drilldown request (i) completes without
+# tripping a session memory cap and (ii) reads strictly fewer rows than the
+# whole table — proving the request-window predicate prunes partitions on the
+# recursive-numbering / structural-closure / compare-root-lookup scans, not
+# just the (non-pruning) `TraceId IN (<seed>)` membership check #1154 added.
+# This test existed fully written but wired into ZERO CI lane before #1509;
+# it is INFORMATIONAL (not a required PR gate) because it duplicates
+# traces-scan-bound-integration's real-CH substrate rather than adding a new
+# invariant class. Requires Docker; gated behind the `integration` build tag.
+# See internal/api/tempo/traces_scan_window_integration_test.go and
+# strict-scan.yml.
+traces-scan-window-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -tags=integration -count=1 -run TestTracesScanWindowRealCH ./internal/api/tempo/...
+
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is
 # actually honored by a real ClickHouse over clickhouse-go/v2, not just
