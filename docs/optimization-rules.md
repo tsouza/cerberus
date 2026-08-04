@@ -45,7 +45,15 @@ version-consistency check
 (`.github/scripts/clickhouse-version-sync.mjs`, wired into the `forbid-skip`
 gate) derives the highest enabled floor from the registry and FAILS if the
 quickstart is too old, so a floor-raising optimization that forgets this bump
-cannot merge.
+cannot merge. One lane is a deliberate, tracked exception to "every
+compatibility image tracks `chdb_substrate`": `compatibility/prometheus-floor`
+(#1500) runs the same PromQL corpus against `min_clickhouse` instead, so the
+below-`chdb_substrate` fallback branches (`ts_grid_*` fan-outs,
+`condition_cache` absence) actually execute somewhere in CI rather than being
+silently unreachable on every substrate. The version-sync gate's check (f)
+binds that lane's `CH_IMAGE` to `min_clickhouse` the same way its other checks
+bind everything else to `chdb_substrate`, so the exception can't drift from
+the invariant it exists to test.
 
 **The hard invariant:** the per-query hot path is a plain interface call with NO
 branch of any kind — no `if cfg.X`, no `optSet.Has(...)`, no `serverAtLeast(...)`,
