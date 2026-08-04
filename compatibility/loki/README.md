@@ -25,6 +25,7 @@ compatibility/loki/
   docker-compose.yml              clickhouse + reference loki + cerberus
   loki-config.yaml                reference Loki single-binary config
   cerberus-test-queries.yml       overlay schema placeholder (no skip consumer)
+  cerberus-queries/               cerberus-owned ADDITIVE query corpus (see below)
   upstream-skip-baseline.txt      pinned set of upstream `skip: true` keys (sanity rail; see "Upstream-skip baseline")
   dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}
   reports/                        diff driver output (gitignored)
@@ -107,9 +108,24 @@ still resolvable when imported by path.
 
 ## Cerberus overlay files
 
-Two files at the harness root capture cerberus-specific configuration
+Files at the harness root capture cerberus-specific configuration
 that lives OUTSIDE the AGPL `upstream/` boundary:
 
+- `cerberus-queries/` — a cerberus-owned, **additive** query corpus
+  mirroring the vendored suite/file layout
+  (`fast/|regression/|exhaustive/*.yaml`, same
+  `queries/schema.json` shape). `cmd/loki-compliance-tester/main.go`'s
+  `loadCerberusQueries` points a second `bench.QueryRegistry` instance
+  at this directory (`-cerberus-queries`, default `./cerberus-queries`)
+  and merges its cases into the vendored corpus's before either set is
+  expanded and run — every case here runs and is graded exactly like a
+  vendored one, through the same pipeline, with no skip/tolerance
+  semantics of its own. It exists for LogQL behaviour the vendored
+  corpus has zero coverage for at all (see
+  [issue #1611](https://github.com/tsouza/cerberus/issues/1611), which
+  found `| unpack` had none — the vendored corpus never queried it and
+  the seeder never emitted a packed-payload line for it to run
+  against). See `cerberus-queries/README.md` for the full rationale.
 - `cerberus-test-queries.yml` — schema placeholder only. The driver
   carries no `should_skip:` consumer code, so any entry would be
   silently ignored. Every diff against reference Loki must surface

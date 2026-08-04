@@ -71,7 +71,10 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Corpus**: vendored
   [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/queries);
   the widened corpus's `${SELECTOR}` / `${LABEL_*}` templates resolve
-  off `dataset_metadata.json`.
+  off `dataset_metadata.json`. Plus a small cerberus-owned additive
+  corpus under `compatibility/loki/cerberus-queries/` (same suite/file
+  layout, merged in by the driver) for behaviour the vendored corpus
+  has no coverage for at all.
 - **Reference**: a real Loki container on `:23100`, seeded from the same
   in-memory fixture as cerberus.
 - **Today**: shipped and running as the required `compatibility/loki` PR
@@ -340,7 +343,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 | head       | passed/total |
 | ---------- | ------------ |
 | prometheus | 739 / 739    |
-| loki       | 116 / 116    |
+| loki       | 121 / 121    |
 | tempo      | 49 / 49      |
 
 The baseline records **full parity** for every head — the ratchet asserts
@@ -383,7 +386,17 @@ discover a query that cerberus mishandles but the corpus doesn't cover:
   [`prometheus/compliance`](https://github.com/prometheus/compliance)
   adding the query (so every adapter benefits), then bump the submodule
   SHA under `compatibility/prometheus/upstream`.
-- **LogQL**: same upstream path against `grafana/loki/pkg/logql/bench`.
+- **LogQL**: same upstream path against `grafana/loki/pkg/logql/bench`
+  when the case would benefit every consumer of that corpus. For a
+  case that needs a real differential run against reference Loki but
+  is cerberus-fixture-specific (e.g. it needs a seeded stream shape
+  the vendored corpus's generator never produces), add it to
+  `compatibility/loki/cerberus-queries/` instead — a cerberus-owned,
+  additive query corpus mirroring the vendored suite/file layout that
+  the driver merges in alongside the vendored cases (see
+  `compatibility/loki/cerberus-queries/README.md`). It carries no
+  skip/tolerance mechanism: every case added there runs and is graded
+  like a vendored one.
 - **TraceQL**: the corpus is cerberus-owned; add a TXTAR case under
   `compatibility/tempo/driver/corpus/`.
 

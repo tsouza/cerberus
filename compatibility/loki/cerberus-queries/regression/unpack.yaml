@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+---
+# `| unpack` differential coverage — see issue #1611. Before this file
+# the vendored corpus never queried `| unpack` at all (zero hits
+# outside its LICENSE text) and the seeder never emitted a
+# Promtail-pack-shaped payload for it to run against, so the stage
+# shipped guarded only by cerberus's own unit tests reading upstream's
+# source rather than a real differential run — exactly the gap #1447
+# (unpackStep silently swallowing the `__error__` /
+# `__error_details__` labels a malformed payload should carry) shipped
+# through.
+#
+# All three queries target `{service_name="packed-source"}`, the one
+# seeded stream (compatibility/loki/cmd/seed/main.go's
+# generatePackedLine) whose lines cycle through the four payload
+# shapes `| unpack` must discriminate: a well-formed packed object
+# (top-level string "_entry" key), a well-formed object with no
+# "_entry" key, a non-object JSON value, and malformed JSON.
+queries:
+  - description: unpack happy path - only successfully unpacked lines
+    query: '{service_name="packed-source"} | unpack | __error__=""'
+    kind: log
+    time_range:
+      length: 24h
+    directions: both
+    tags:
+      - unpack
+      - happy-path
+
+  - description: unpack error path - only lines unpack rejected
+    query: '{service_name="packed-source"} | unpack | __error__="JSONParserErr"'
+    kind: log
+    time_range:
+      length: 24h
+    directions: both
+    tags:
+      - unpack
+      - error-path
+
+  - description: unpack then aggregate by an unpack-extracted label
+    query: sum by (category) (count_over_time({service_name="packed-source"} | unpack | __error__=""[24h]))
+    kind: metric
+    time_range:
+      length: 24h
+      step: 1h
+    tags:
+      - unpack
+      - aggregation
+      - extracted-label-grouping

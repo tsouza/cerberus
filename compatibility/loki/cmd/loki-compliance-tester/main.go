@@ -18,7 +18,12 @@
 //     resolver. Reuses upstream code so template-variable expansion
 //     (`${SELECTOR}` / `${LABEL_NAME}` / `${RANGE}`) tracks Grafana's
 //     reference semantics exactly — cerberus-side divergence here would
-//     defeat the differential test.
+//     defeat the differential test. A second QueryRegistry instance
+//     then loads the cerberus-owned additive corpus at
+//     `-cerberus-queries` (compatibility/loki/cerberus-queries/ by
+//     default — same suite/file layout, never edits the vendored
+//     upstream/loki-bench/ tree) and its cases are merged in; see
+//     loadCerberusQueries.
 //  2. For each expanded test case, fans out parallel `/loki/api/v1/query`
 //     or `/query_range` calls against both endpoints, decodes the
 //     responses into a typed value, normalises ordering, and diffs with
@@ -33,7 +38,10 @@
 // Loki is a real bug. The corresponding YAML carrier
 // (cerberus-test-queries.yml) is kept as a schema placeholder; the
 // consumer code in this driver has been removed so any entry would
-// be silently ignored.
+// be silently ignored. This is distinct from `-cerberus-queries`
+// (above): that mechanism only ever ADDS cases that run and are
+// graded like any other — it has no skip/tolerate semantics of its
+// own.
 //
 // The binary imports the vendored upstream/loki-bench/ package; the
 // root go.mod marks that path `ignore` so it's excluded from
@@ -75,21 +83,22 @@ func main() {
 
 // flags collects all CLI / env knobs in one place.
 type flags struct {
-	addr1            string
-	addr2            string
-	corpusDir        string
-	metadataDir      string
-	reportPath       string
-	scorePath        string
-	casesPath        string
-	skipBaselinePath string
-	regenBaseline    bool
-	tolerance        float64
-	rangeType        string
-	seed             int64
-	parallelism      int
-	includeSkip      bool
-	timeout          time.Duration
+	addr1              string
+	addr2              string
+	corpusDir          string
+	cerberusQueriesDir string
+	metadataDir        string
+	reportPath         string
+	scorePath          string
+	casesPath          string
+	skipBaselinePath   string
+	regenBaseline      bool
+	tolerance          float64
+	rangeType          string
+	seed               int64
+	parallelism        int
+	includeSkip        bool
+	timeout            time.Duration
 }
 
 func parseFlags() flags {
@@ -97,6 +106,7 @@ func parseFlags() flags {
 	flag.StringVar(&f.addr1, "addr-1", "", "Address of baseline (reference) Loki instance, e.g. http://localhost:23100")
 	flag.StringVar(&f.addr2, "addr-2", "", "Address of test (cerberus) Loki-API instance, e.g. http://localhost:29092")
 	flag.StringVar(&f.corpusDir, "corpus", "./queries", "Path to the vendored bench/queries/ directory (suite subdirs: fast/, regression/, exhaustive/)")
+	flag.StringVar(&f.cerberusQueriesDir, "cerberus-queries", "./cerberus-queries", "Path to the cerberus-owned additive query directory (same suite subdirs: fast/, regression/, exhaustive/); merged into the corpus loaded from -corpus. Never edits the AGPL vendor snapshot.")
 	flag.StringVar(&f.metadataDir, "metadata-dir", ".", "Directory containing dataset_metadata.json")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
 	flag.StringVar(&f.scorePath, "score", "", "shields.io endpoint-badge score JSON output path; empty means do not write")
@@ -298,6 +308,12 @@ func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
 	resolver := bench.NewMetadataVariableResolver(metadata, f.seed)
 	defs := registry.GetQueries(f.includeSkip, suites...)
 
+	cerberusDefs, err := loadCerberusQueries(f, suites)
+	if err != nil {
+		return nil, err
+	}
+	defs = append(defs, cerberusDefs...)
+
 	var cases []loadedCase
 	for _, def := range defs {
 		expanded, err := registry.ExpandQuery(def, resolver, isInstant)
@@ -330,6 +346,26 @@ func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
 		cases = filtered
 	}
 	return cases, nil
+}
+
+// loadCerberusQueries loads the cerberus-owned additive query corpus
+// under -cerberus-queries (compatibility/loki/cerberus-queries/ by
+// default). This is the ONLY supported mechanism for cerberus to
+// contribute extra differential cases on top of the vendored
+// grafana/loki:pkg/logql/bench corpus (see issue #1611): a second
+// bench.QueryRegistry instance loading from a cerberus-owned directory
+// that mirrors the vendored suite/file layout
+// (fast/|regression/|exhaustive/*.yaml, same schema.json shape). It
+// never edits upstream/loki-bench/ — a verbatim AGPL-3.0 vendor
+// snapshot — and it carries no should_skip-shaped escape hatch: every
+// definition loaded here runs and is graded exactly like a vendored
+// one, through the same compareAll / score / cases pipeline.
+func loadCerberusQueries(f flags, suites []bench.Suite) ([]bench.QueryDefinition, error) {
+	registry := bench.NewQueryRegistry(f.cerberusQueriesDir)
+	if err := registry.Load(suites...); err != nil {
+		return nil, fmt.Errorf("cerberus query registry.Load(%s): %w", f.cerberusQueriesDir, err)
+	}
+	return registry.GetQueries(f.includeSkip, suites...), nil
 }
 
 // checkExpansion is the zero-expansion rail: a corpus query definition

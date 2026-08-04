@@ -33,6 +33,13 @@ const entryInterval = 1 * time.Minute
 
 const seedValue = int64(42)
 
+// packedFormat identifies packed-source's stream format: entries cycle
+// through the four payload shapes `| unpack` must discriminate (see
+// generatePackedLine). It is not one of the three formats
+// LogFormat/QueryRequirements.log_format recognises (json/logfmt/
+// unstructured) because none of them describe a Promtail-pack payload.
+const packedFormat = "packed"
+
 type serviceConfig struct {
 	Name        string
 	ServiceName string
@@ -57,6 +64,14 @@ var serviceConfigs = []serviceConfig{
 	{Name: "nginx", ServiceName: "nginx", Format: "unstructured", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-10", Container: "container-0"},
 	{Name: "kubernetes", ServiceName: "kubernetes", Format: "unstructured", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-11", Container: "container-0"},
 	{Name: "syslog", ServiceName: "syslog", Format: "unstructured", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-12", Container: "container-1"},
+	// packed-source is the ONLY seeded stream carrying Promtail
+	// `pack`-shaped payloads (a JSON object with a top-level string
+	// "_entry" key) — see generatePackedLine. It exists so the LogQL
+	// `| unpack` compatibility corpus (compatibility/loki/cerberus-queries/)
+	// has real packed/malformed lines to run differentially against;
+	// every other service's JSON lines are plain structured logs that
+	// `| unpack` would either no-op on or reject, never extract from.
+	{Name: "packed-source", ServiceName: "packed-source", Format: packedFormat, Cluster: "cluster-1", Namespace: "namespace-5", Pod: "pod-13", Container: "container-1"},
 }
 
 var (
@@ -84,6 +99,13 @@ var (
 	k8sComponents  = []string{"kubelet", "kube-scheduler", "kube-controller-manager", "kube-apiserver", "etcd"}
 	k8sMessages    = []string{"Started container", "Pulling image", "Created pod", "Scheduled pod", "Node status updated"}
 	nginxPaths     = []string{"/", "/api/", "/static/", "/healthz", "/metrics"}
+
+	// packedCategories is the small, fixed value set generatePackedLine
+	// draws "category" from for its valid-packed payload class. Kept
+	// small and fixed so the unpack-then-aggregate compat query
+	// (compatibility/loki/cerberus-queries/regression/unpack.yaml)
+	// groups into a deterministic, bounded set of series.
+	packedCategories = []string{"auth", "billing", "search", "ingest"}
 )
 
 func main() {
@@ -265,6 +287,8 @@ func buildStreams(start time.Time) []stream {
 				line = generateJSONLine(sc.Name, level, ts, rng, i)
 			case "logfmt":
 				line = generateLogfmtLine(sc.Name, level, ts, rng, i)
+			case packedFormat:
+				line = generatePackedLine(level, i)
 			default:
 				line = generateUnstructuredLine(sc.Name, level, ts, rng, i)
 			}
@@ -447,6 +471,55 @@ func generateUnstructuredLine(svc, level string, ts time.Time, rng *rand.Rand, i
 
 	default:
 		return fmt.Sprintf(`%s %s generic: log entry %d`, tsStr, lvl, idx)
+	}
+}
+
+// packedPayloadShapeCount is the number of distinct payload shapes
+// generatePackedLine cycles through, matching the four cases `|
+// unpack` must discriminate per internal/api/loki/post_process.go's
+// unpackStep doc-comment: a well-formed packed object, a well-formed
+// object with no "_entry" key, a non-object JSON value, and malformed
+// JSON.
+const packedPayloadShapeCount = 4
+
+const (
+	packedShapeValid = iota
+	packedShapeNoEntry
+	packedShapeNonObject
+	packedShapeMalformed
+)
+
+// generatePackedLine cycles a seeded stream's entries through the four
+// payload shapes `| unpack` must discriminate between (see
+// internal/api/loki/post_process.go's unpackStep):
+//
+//   - packedShapeValid: a well-formed Promtail-pack object — a
+//     top-level string "_entry" key (the line `| unpack` replaces the
+//     original line with) plus extra string-valued keys that become
+//     labels. "category" is drawn from the small fixed
+//     packedCategories set so the unpack-then-aggregate compat query
+//     groups deterministically.
+//   - packedShapeNoEntry: a well-formed JSON object with NO "_entry"
+//     key. Loki's UnpackParser (and cerberus's unpackStep) treat this
+//     as a complete no-op: original line, no extracted labels, no
+//     error.
+//   - packedShapeNonObject: valid JSON that is not an object (a JSON
+//     array here). The `_entry`-gate rejects anything not starting
+//     with '{' as `__error__="JSONParserErr"`.
+//   - packedShapeMalformed: a truncated/malformed JSON object — starts
+//     with '{' but never parses, also stamping
+//     `__error__="JSONParserErr"`.
+func generatePackedLine(level string, idx int) string {
+	switch idx % packedPayloadShapeCount {
+	case packedShapeValid:
+		category := packedCategories[idx%len(packedCategories)]
+		return fmt.Sprintf(`{"_entry":"packed log entry %d","category":"%s","priority":"%s"}`, idx, category, strings.ToLower(level))
+	case packedShapeNoEntry:
+		return fmt.Sprintf(`{"level":"%s","msg":"structured but not packed"}`, strings.ToLower(level))
+	case packedShapeNonObject:
+		return fmt.Sprintf(`["not","an","object",%d]`, idx)
+	default: // packedShapeMalformed
+		return fmt.Sprintf(`{"_entry":"truncated payload %d`, idx)
 	}
 }
 
