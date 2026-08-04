@@ -116,6 +116,20 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   files (`emit_node.go`, `emit.go`). See CLAUDE.md § "No raw SQL strings" and
   #1441. No env inputs; always runs the full scan.
   - Exit: `0` clean, `1` on any raw-write violation.
+- **`generated-baseline-structural-guard.mjs`** — `ci.yml`, the `forbid-skip`
+  job step "Structural sanity check over generated baseline shapes (#1568)".
+  A fast, dependency-free structural pre-filter (unique key, sorted order,
+  and — where verified uniform — one consistent field set) over the subset
+  of `-merge`-marked generated baselines (see `.gitattributes`) whose shape
+  was hand-checked against the committed content. Exists because #1568 found
+  that GitHub's server-side merge does not honour `-merge` at all (verified
+  empirically — see the script's own doc comment), so the content-exact
+  regenerate-and-diff ratchets that already cover most of these files (listed
+  in the doc comment) need a branch-protection `strict: true` to guarantee
+  they always run against the content that actually lands on `main`; this
+  script is a cheap, always-on second signal in the meantime. No env inputs.
+  - Exit: `0` clean (or self-test passed), `1` on a structural violation or
+    an unreadable/unparseable file.
 - **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans;
   `compatibility.yml`, the cheap-first `gate`.
   - Env: `CHECK` is `all` (every scan, in registry order) or one of `t-skip`,
