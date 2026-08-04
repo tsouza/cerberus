@@ -267,6 +267,37 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` when every cited path exists + pins are in range (or self-test
     passes), `1` on any dead reference / out-of-range pin (or a failed
     self-test).
+- **`commitlint-range.mjs`** — `ci.yml`, the `lint` job's `commitlint` step
+  (pull_request only). Lints a PR's commit range while skipping commits that
+  touched no files — GitHub Copilot's coding-agent workflow opens every PR it
+  authors with an empty "Initial plan" placeholder commit, which trips
+  commitlint's `subject-empty` / `type-empty` rules and reds the whole `lint`
+  required check (issue #1643). commitlint's own `--from`/`--to` range mode
+  enumerates every commit via its internal traversal and lints all of them
+  regardless of diff content; `--git-log-args=--diff-filter` was tried and
+  verified ineffective (byte-identical output with or without it). This
+  module filters the commit list itself — `git diff-tree --no-commit-id
+  --name-only -r <sha>` empty means "not a real change" — rather than keying
+  on Copilot's exact commit-message text (a commitlint `ignores` predicate
+  matching the literal string "Initial plan" was confirmed to work today but
+  would rot the moment the wording changes, and would also exempt any
+  accidental non-empty commit sharing that subject from real linting).
+  Surviving commits are linted exactly as before, one at a time via
+  commitlint's stdin mode.
+  - Env: `BASE_SHA` / `HEAD_SHA` (required, PR base/head SHAs),
+    `COMMITLINT_CONFIG` (optional; default `.commitlintrc.json`), `GIT_CWD`
+    (optional; default `process.cwd()`).
+  - Exit: `0` when every commit that touched a file passes commitlint (or the
+    range has no such commit), `1` on a real lint failure or an unresolvable
+    range (anti-vacuity: an unresolvable range fails rather than reading as
+    "no commits").
+  - Tests: `commitlint-range.test.mjs` (run in `ci.yml` immediately before the
+    `commitlint` step), exercised against real ephemeral git repos with an
+    injected fake linter (offline; the real commitlint wiring was verified
+    separately against the actual CLI). Negative controls: a genuinely bad
+    commit still fails the gate even beside a skipped empty one, and a
+    non-empty commit whose subject merely reads "Initial plan" is still
+    linted — proving the filter is diff-based, not text-based.
 - **`doc-counts.mjs`** — `ci.yml`, the `forbid-skip` job step "Assert
   doc-stated counts match source". The assert-from-source gate that stops
   doc-stated integer counts from drifting away from the source structures

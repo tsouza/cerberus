@@ -336,6 +336,15 @@ jobs:
       # pull_request events: base.sha..head.sha, i.e. the commits
       # unique to the PR head. `fetch-depth: 0` on the checkout above
       # guarantees both SHAs exist locally.
+      #
+      # The range is NOT handed to commitlint's own --from/--to range mode:
+      # GitHub Copilot's coding-agent workflow opens every PR with an empty
+      # "Initial plan" placeholder commit (no file changes), which trips
+      # subject-empty/type-empty and reds this whole job on every Copilot
+      # PR — a first fix attempt (--git-log-args=--diff-filter) was verified
+      # ineffective, commitlint's range enumeration ignores that flag. See
+      # .github/scripts/commitlint-range.mjs's header for the full
+      # reasoning and issue #1643.
       # Shared by commitlint (pull_request only) and the Playwright
       # typecheck below (every event) — set up unconditionally so both
       # consumers find a Node toolchain.
@@ -360,6 +369,10 @@ jobs:
           npm ci
           npx --no -- tsc --noEmit -p tsconfig.json
 
+      - name: commitlint-range self-test (empty-commit filter guard)
+        if: github.event_name == 'pull_request'
+        run: node --test .github/scripts/commitlint-range.test.mjs
+
       - name: commitlint
         if: github.event_name == 'pull_request'
         env:
@@ -367,8 +380,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
-          npx --no -- commitlint --config .commitlintrc.json \
-            --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+          node .github/scripts/commitlint-range.mjs
 
       - name: markdownlint
         uses: DavidAnson/markdownlint-cli2-action@6bf21b07787794f89a243495939cd651942aeabe  # v24.1.0
