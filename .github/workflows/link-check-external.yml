@@ -74,7 +74,7 @@ jobs:
       # spamming new ones. Never fails the job.
       - name: Open/update link-rot tracking issue
         if: steps.lychee.outputs.exit_code != 0
-        uses: peter-evans/create-issue-from-file@v6
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710  # v6
         with:
           title: Weekly external link check found dead links
           content-filepath: ./lychee-report.md

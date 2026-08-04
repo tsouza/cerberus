@@ -47,7 +47,7 @@ jobs:
       - name: chart-kubeconform self-test (image-guard classifier + staging exemption)
         run: node .github/scripts/chart-kubeconform.mjs --self-test
 
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706  # v4
         id: changes
         with:
           filters: |
@@ -58,7 +58,7 @@ jobs:
               - '.github/scripts/chart-kubeconform.mjs'
 
       - if: steps.changes.outputs.chart == 'true'
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.21.1
 
@@ -106,7 +106,7 @@ jobs:
 
       - name: chart-testing (ct) lint
         if: steps.changes.outputs.chart == 'true'
-        uses: helm/chart-testing-action@v2
+        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2
 
       # No `--charts` override: let ct's changed-chart detection drive the
       # version-bump enforcement. A PR that touches CI/scripts but not the
