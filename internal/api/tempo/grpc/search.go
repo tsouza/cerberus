@@ -149,18 +149,31 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		}
 	}
 
-	// Frame-batch the summaries into searchFrameSize-sized chunks.
-	// The tail frame carries SearchMetrics so Grafana sees the
-	// aggregate exactly once at end-of-stream — mirroring how the
-	// HTTP /api/search response embeds Metrics alongside the (single)
-	// traces array.
+	// Frame-batch the summaries into searchFrameSize-sized chunks. Every
+	// frame — intermediate shards AND the tail — carries the same
+	// SearchMetrics block. That's sound (not premature) because
+	// SearchResult above already ran eagerly: the full sample set, and
+	// therefore searchMetrics, was materialised before this loop starts
+	// (see the "Eager, not streaming" comment above), so there is no
+	// partial/unknown state to withhold. A nil Metrics on intermediate
+	// frames used to reach Grafana's Tempo datasource, which dereferences
+	// metrics.totalBlocks on every streamed frame (not just the last) to
+	// drive its "Streaming Progress" panel — a nil field there is a
+	// TypeError, not a benign omission (#1689). Sending the real,
+	// already-known aggregate on every frame keeps the envelope
+	// non-optional the way the upstream Tempo struct's non-pointer
+	// counters imply, instead of teaching the caller to tolerate null.
+	metricsFrame := &tempopb.SearchMetrics{
+		//nolint:gosec // trace count is bounded by CH row LIMIT; overflow would require > 4B traces which the engine can't materialise.
+		InspectedTraces: uint32(searchMetrics.InspectedTraces),
+	}
 	flusher := newSearchFlusher(searchFrameSize)
 	for i := range summaries {
 		shard, ready := flusher.Push(toTempopbTraceMetadata(summaries[i]))
 		if !ready {
 			continue
 		}
-		if err := stream.Send(&tempopb.SearchResponse{Traces: shard}); err != nil {
+		if err := stream.Send(&tempopb.SearchResponse{Traces: shard, Metrics: metricsFrame}); err != nil {
 			return mapStreamError(err)
 		}
 	}
@@ -175,11 +188,8 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// the tail and an empty trailer keeps the wire envelope round-
 	// tripable through the streaming/HTTP equivalence check.
 	if err := stream.Send(&tempopb.SearchResponse{
-		Traces: tail,
-		Metrics: &tempopb.SearchMetrics{
-			//nolint:gosec // trace count is bounded by CH row LIMIT; overflow would require > 4B traces which the engine can't materialise.
-			InspectedTraces: uint32(searchMetrics.InspectedTraces),
-		},
+		Traces:  tail,
+		Metrics: metricsFrame,
 	}); err != nil {
 		return mapStreamError(err)
 	}

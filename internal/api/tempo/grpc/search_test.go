@@ -167,8 +167,16 @@ func drainSearch(t *testing.T, stream tempopb.StreamingQuerier_SearchClient) ([]
 
 // TestSearch_FrameBatching feeds 45 synthetic traces through the gRPC
 // Search RPC and asserts the wire-level frame layout: 2 full shards
-// of 20 traces each + 1 tail shard with the remaining 5, where the
-// tail carries the SearchMetrics with InspectedTraces = 45.
+// of 20 traces each + 1 tail shard with the remaining 5, where every
+// frame — intermediate shards included — carries the SearchMetrics
+// aggregate with InspectedTraces = 45. Intermediate frames used to
+// send Metrics=nil; Grafana's Tempo datasource dereferences
+// metrics.totalBlocks on every streamed frame (not just the tail) to
+// drive its "Streaming Progress" panel, so a nil field there threw a
+// TypeError in the browser (#1689). SearchResult runs eagerly (the
+// full sample set — and therefore the aggregate — is known before any
+// frame is sent), so stamping the same non-nil Metrics on every frame
+// is both correct and cheap.
 //
 // 45 = 2*searchFrameSize + 5 is picked so the test exercises both the
 // "shard fills exactly" path (Push returns ready=true) and the "tail
@@ -218,18 +226,15 @@ func TestSearch_FrameBatching(t *testing.T) {
 	if got := len(frames[2].Traces); got != 5 {
 		t.Errorf("frame[2] (tail) traces: got %d, want 5", got)
 	}
-	// Metrics live on the tail frame exclusively.
-	if frames[0].Metrics != nil {
-		t.Errorf("frame[0] metrics: want nil, got %+v", frames[0].Metrics)
-	}
-	if frames[1].Metrics != nil {
-		t.Errorf("frame[1] metrics: want nil, got %+v", frames[1].Metrics)
-	}
-	if frames[2].Metrics == nil {
-		t.Fatalf("frame[2] (tail) metrics: want non-nil")
-	}
-	if got, want := int(frames[2].Metrics.InspectedTraces), total; got != want {
-		t.Errorf("frame[2] InspectedTraces: got %d, want %d", got, want)
+	// Metrics ride EVERY frame — intermediate shards and the tail alike
+	// (#1689) — all stamped with the same eagerly-known aggregate.
+	for i, f := range frames {
+		if f.Metrics == nil {
+			t.Fatalf("frame[%d] metrics: want non-nil, got nil", i)
+		}
+		if got, want := int(f.Metrics.InspectedTraces), total; got != want {
+			t.Errorf("frame[%d] InspectedTraces: got %d, want %d", i, got, want)
+		}
 	}
 	// Sum-check: total traces across all frames matches the input.
 	sum := 0
