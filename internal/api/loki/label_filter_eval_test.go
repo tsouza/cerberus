@@ -78,8 +78,8 @@ func TestPostProcess_UnpackThenErrorLabelFilter_KeepsOnlyErrors(t *testing.T) {
 }
 
 // TestPostProcess_OrdinaryLabelFilterAfterUnpack_StillPushedToSQL pins
-// that only the __error__ family is deferred to Go — an ordinary label
-// name keeps the existing structured-metadata SQL fallback, so
+// that only the __error__ family is re-evaluated in Go — an ordinary
+// label name keeps the existing structured-metadata SQL fallback, so
 // postProcessExtract must NOT add a Go-side step for it (adding one
 // would double-apply the filter against post-unpack labels, changing
 // behaviour for a path with pinned SQL-emission fixtures — see

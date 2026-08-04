@@ -109,7 +109,7 @@ func TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo(t *testing.T) {
 			got := emitSQL(t, q, s)
 			bare := emitSQL(t, `{job="api"}`, s)
 			if got != bare {
-				t.Errorf("expected the __error__ filter to have no SQL impact once deferred to Go\nwith filter: %s\nbare:        %s", got, bare)
+				t.Errorf("expected the __error__ filter to have no SQL impact once handled in Go instead\nwith filter: %s\nbare:        %s", got, bare)
 			}
 		})
 	}
