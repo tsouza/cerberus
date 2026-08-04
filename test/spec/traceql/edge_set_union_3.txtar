@@ -23,9 +23,9 @@ INSERT INTO otel_traces (TraceId, SpanId, _svc) VALUES
     ('a0000000000000000000000000000001', '0000000000000004', 'd');
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", "a"],
-  ["a0000000000000000000000000000001", "0000000000000002", "b"],
-  ["a0000000000000000000000000000001", "0000000000000003", "c"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "a"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "b"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "c"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 SetOperation op=||

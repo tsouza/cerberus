@@ -21,7 +21,7 @@ INSERT INTO otel_traces VALUES
     ('b0000000000000000000000000000002', '0000000000000002', 'span', toDateTime64('2026-01-01 00:00:10', 9), map('service.name', 'y'), 1000000);
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", 2, "span", {"service.name": "x"}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225605002000000]
+  ["span", {"__cerberus_traceDurationNs": "5002000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "x"}, "2026-01-01T00:00:00Z", 2]
 ]
 -- chplan --
 Aggregate groupBy=[TraceId AS TraceId, SpanId AS SpanId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]

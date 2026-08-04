@@ -14,8 +14,8 @@ INSERT INTO otel_traces VALUES
     ('Unset');
 -- expected_rows --
 [
-  ["Error"],
-  ["Unset"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(StatusCode != "Ok")

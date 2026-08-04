@@ -33,9 +33,9 @@ INSERT INTO otel_traces (TraceId, SpanId, Region, Tier) VALUES
     ('t3', 's4', 'eu', 'gold');
 -- expected_rows --
 [
-  ["t1", "s1", "us", "silver"],
-  ["t1", "s2", "us", "silver"],
-  ["t3", "s4", "eu", "gold"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "s1", "__cerberus_traceID": "t1"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "s2", "__cerberus_traceID": "t1"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "s4", "__cerberus_traceID": "t3"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- args --
 [0] string = "region"

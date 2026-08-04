@@ -18,8 +18,8 @@ INSERT INTO otel_traces (TraceId, SpanId, _hit) VALUES
     ('a0000000000000000000000000000002', '0000000000000010', true);
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", true],
-  ["a0000000000000000000000000000002", "0000000000000010", true]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000010", "__cerberus_traceID": "a0000000000000000000000000000002"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(SpanAttributes["cache.hit"] = "true")

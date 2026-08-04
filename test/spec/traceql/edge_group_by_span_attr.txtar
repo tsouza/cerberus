@@ -21,8 +21,8 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000002', '0000000000000002', 'span', toDateTime64('2026-01-01 00:00:00', 9), map(), map('http.method', 'POST'), 1000000);
 -- expected_rows --
 [
-  ["GET", "a0000000000000000000000000000001", "0000000000000001", 1, "span", {}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225600001000000],
-  ["POST", "a0000000000000000000000000000002", "0000000000000002", 1, "span", {}, "2026-01-01T00:00:00Z", 1767225600000000000, 1767225600001000000]
+  ["span", {"__cerberus_traceDurationNs": "1000000", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2026-01-01T00:00:00Z", 1],
+  ["span", {"__cerberus_traceDurationNs": "1000000", "__cerberus_traceID": "a0000000000000000000000000000002"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- chplan --
 Aggregate groupBy=[SpanAttributes["http.method"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]

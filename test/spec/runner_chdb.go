@@ -1007,7 +1007,18 @@ func openChDB(t *testing.T) *sql.DB {
 // `CREATE TABLE IF NOT EXISTS` themselves.
 func applySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
-	for _, stmt := range backfillMetricsColumns(splitStatements(seed)) {
+	stmts := backfillMetricsColumns(splitStatements(seed))
+	// Also backfill the otel_traces columns wrapWithSampleProjection reads
+	// unconditionally (TraceId / SpanId / ParentSpanId / SpanName / Duration /
+	// Timestamp / ResourceAttributes) — a no-op for promql/logql seeds, which
+	// never declare a table named otel_traces. Needed so
+	// ReconstructTraceQLSearchWrap's reconstructed wrap-projected SQL doesn't
+	// fail with an unknown-column error against a fixture seed that
+	// (deliberately) only declares the columns its OWN pre-wrap `-- sql --`
+	// touches. Mirrors applyStrictScanSeed's identical backfill in
+	// strictscan_integration_test.go.
+	stmts = backfillTracesColumns(stmts)
+	for _, stmt := range stmts {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
@@ -1043,6 +1054,22 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	}
 	if strings.TrimSpace(rt.SQL) == "" {
 		t.Fatalf("fixture %s has seed/expected_rows but missing sql section", c.Name)
+	}
+
+	// TraceQL search-shaped fixtures are captured pre-ProjectSamples (see
+	// ReconstructTraceQLSearchWrap's doc comment) — the SAME gap #1635 fixed
+	// for the strict-scan differential (issue #1653). Substitute the
+	// wrap-projected reconstruction in place before the chDB prep pipeline
+	// runs, so this required check's `expected_rows` assertions are pinned
+	// against the SQL production actually sends. A no-op (ok=false) for
+	// every promql/logql fixture (no `query.traceql` section) and for
+	// TraceQL metrics-pipeline fixtures, which never reach traceqlLang in
+	// production.
+	if wrapSQL, wrapArgs, ok, err := ReconstructTraceQLSearchWrap(c); err != nil {
+		t.Fatalf("fixture %s: traceql wrap reconstruction: %v", c.Name, err)
+	} else if ok {
+		rt.SQL = wrapSQL
+		rt.Args = wrapArgs
 	}
 
 	// Acquire the process-global chDB engine lock for the FULL engine

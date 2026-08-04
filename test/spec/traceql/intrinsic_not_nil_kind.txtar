@@ -15,9 +15,9 @@ INSERT INTO otel_traces (SpanId, SpanKind) VALUES
     ('cccc', 'Client');
 -- expected_rows --
 [
-  ["aaaa", "Server"],
-  ["bbbb", "Unspecified"],
-  ["cccc", "Client"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "bbbb", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=true

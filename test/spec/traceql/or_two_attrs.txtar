@@ -17,8 +17,8 @@ INSERT INTO otel_traces (Duration) VALUES
     (150000000);
 -- expected_rows --
 [
-  [50000000],
-  [150000000]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "backend"}, "1970-01-01T00:00:00Z", 150000000],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "frontend"}, "1970-01-01T00:00:00Z", 50000000]
 ]
 -- chplan --
 Filter predicate=((ResourceAttributes["service.name"] = "frontend") OR (Duration > 100000000))

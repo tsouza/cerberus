@@ -65,8 +65,8 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000001', '1000000000000004', '1000000000000003', 'db', 'Client', 300, toDateTime64('2026-01-01 00:00:00.000000004', 9), 'Unset', '', '', '', map(), map('service.name', 'db'));
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "1000000000000001", "2026-01-01T00:00:00.000000001Z", "Unset", "frontend", "GET /home", -1, 1, 8],
-  ["a0000000000000000000000000000001", "1000000000000003", "2026-01-01T00:00:00.000000003Z", "Error", "checkout", "checkout", 1, 4, 7]
+  ["GET /home", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetLeft": "1", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_sel_int_nestedSetRight": "8", "__cerberus_sel_name": "GET /home", "__cerberus_sel_str_service.name": "frontend", "__cerberus_sel_str_status": "unset", "__cerberus_spanID": "1000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00.000000001Z", 1000],
+  ["checkout", {"__cerberus_parentSpanID": "1000000000000001", "__cerberus_sel_int_nestedSetLeft": "4", "__cerberus_sel_int_nestedSetParent": "1", "__cerberus_sel_int_nestedSetRight": "7", "__cerberus_sel_name": "checkout", "__cerberus_sel_str_service.name": "checkout", "__cerberus_sel_str_status": "error", "__cerberus_spanID": "1000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "checkout"}, "2026-01-01T00:00:00.000000003Z", 700]
 ]
 -- chplan --
 Project [TraceId, SpanId, Timestamp, StatusCode AS status, ResourceAttributes["service.name"] AS service.name, SpanName AS name, __cerberus_ns_parent AS nestedSetParent, __cerberus_ns_left AS nestedSetLeft, __cerberus_ns_right AS nestedSetRight]
