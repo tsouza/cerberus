@@ -121,7 +121,7 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	// the round-trip assertion executes — the perf profiler reads this
 	// prepared Query directly.
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
-	query = expandStarProjection(query)
+	query = expandStarProjection(query, seedTableColumns(rt.Seed))
 	query = rewriteMapProjections(query)
 	query = nestMapOrderBy(query)
 	colCount := extractProjectionCount(query)
