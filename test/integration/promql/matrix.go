@@ -23,13 +23,26 @@ func (c exoticCase) ts() int64 {
 // ExoticMatrix is the hand-curated catalogue. Every entry is bound to a
 // construct the from-scratch oracle (test/property/oracle/promql) already
 // evaluates, so the assertion is a real cerberus-vs-spec comparison rather
-// than a both-erroring no-op. Categories the oracle can't yet evaluate
-// (set ops, subqueries, label_replace/label_join, absent/clamp/sort,
-// quantile/count_values/limitk, predict_linear/deriv,
-// double_exponential_smoothing, native histograms) are DEFERRED — they are
-// covered either by the deterministic promqltest tail (set ops, @
-// start/end, stale/NaN) or left as documented oracle gaps. See the package
-// doc and the PR body for the full deferred list.
+// than a both-erroring no-op. Set ops, absent/clamp/sort, and the
+// quantile/count_values/limitk/limit_ratio aggregator family are ALL
+// oracle-evaluated and exercised below (cat3Aggregators, cat4SetOps,
+// cat8ScalarVector) — count_values/limitk/limit_ratio specifically remain
+// oracle gaps tracked by #1693. The remaining categories the oracle can't
+// yet evaluate are each tracked by its own open issue, not by prose:
+//   - subqueries, label_replace, label_join — #1694
+//   - deriv, predict_linear, double_exponential_smoothing,
+//     quantile_over_time — #1695
+//   - native (exponential) histograms — #1696
+//
+// @ start()/end() determinism for range queries and stale/NaN handling are
+// NOT oracle gaps — they're covered by the Layer 2a txtar goldens under
+// test/spec/promql/ (at_start_basic.txtar, at_end_basic.txtar,
+// edge_at_start_range.txtar, edge_at_timestamp_range.txtar,
+// edge_increase_at_start.txtar, edge_at_then_offset_neg.txtar for @;
+// quantile_scalar_phi_nan.txtar, lwr_bare_selector_staleness_window.txtar,
+// scalar_many_series_nan.txtar, vector_scalar_multi_series_nan.txtar,
+// clamp_min_scalar_nan_bound.txtar for stale/NaN) rather than by any
+// "promqltest" package — no such package exists in this repo.
 //
 // CAT 1 is the priority class: vector-vector binary ops over
 // rate/irate/increase/delta. It is the explicit regression net for the
@@ -86,8 +99,31 @@ func cat1BinaryOverRate() []exoticCase {
 
 // cat2Histogram exercises histogram_quantile over the classic-histogram
 // fan-out. The oracle implements histogram_quantile + phi out-of-range
-// (-Inf / +Inf) but not the histogram_* value family, so those are
-// deferred.
+// (-Inf / +Inf); the histogram_* value family is not implemented by the
+// oracle and stays uncovered here.
+//
+// hq_p50 (#1488): previously excluded as a suspected cerberus/oracle
+// interpolation divergence — the p50 rank was the only one of the five
+// phi values exercised here that disagreed. Root-caused to the ORACLE:
+// test/property/oracle/promql/histogram.go's bucketQuantile overwrote
+// same-`le` buckets on merge (losing counts from duplicate bounds) and
+// skipped Prometheus's ensureMonotonicAndIgnoreSmallDeltas repair before
+// interpolating. Fixed there (coalesce-by-sum + monotonicity repair,
+// mirroring prometheus/promql/quantile.go); this case now passes.
+//
+// A second, DIFFERENT divergence surfaced while re-investigating this
+// marker: histogram_quantile over a bare, non-rate-wrapped aggregation
+// (`histogram_quantile(0.9, sum by(le)(demo_api_request_duration_seconds_bucket))`,
+// no rate()/increase()/sum_over_time() wrapper) is a genuine CERBERUS bug —
+// internal/promql/histogram_quantile.go's matchHistogramAggIdiom only
+// routes to the histogram-table path when the aggregated expression is
+// wrapped in rate/increase/sum_over_time; without one it falls into the
+// "unrecognised shape" branch and forces an empty result, even though the
+// aggregated selector names a real `_bucket` metric. Fixing that requires
+// a new lowering shape (latest-sample-per-series aggregation, not a
+// windowed reduction), which is out of scope for the oracle-coverage PR
+// that found it — tracked in
+// https://github.com/tsouza/cerberus/issues/1692.
 func cat2Histogram() []exoticCase {
 	const h = "demo_api_request_duration_seconds_bucket"
 	return []exoticCase{
@@ -99,19 +135,16 @@ func cat2Histogram() []exoticCase {
 		// stay in domain and fall through to the normal bucket search.
 		{name: "cat2/hq_phi_neg", promql: "histogram_quantile(-0.1, sum by(le)(rate(" + h + "[5m])))"},
 		{name: "cat2/hq_phi_over1", promql: "histogram_quantile(1.01, sum by(le)(rate(" + h + "[5m])))"},
-		// DEFERRED (cerberus-vs-oracle interpolation/edge divergences,
-		// outside the code-47 scope — see PR body):
-		//   - hq p50: cerberus's sub-bucket interpolation lands at a
-		//     different point than the oracle's bucketQuantile for the p50
-		//     rank (p90/p95 agree). Separate later PR (fix (a)).
-		//   - instant buckets (no rate): cerberus drops the {} series the
-		//     oracle keeps over raw cumulative bucket counts.
+		{name: "cat2/hq_p50", promql: "histogram_quantile(0.5, sum by(le)(rate(" + h + "[5m])))"},
 	}
 }
 
 // cat3Aggregators covers the aggregators the oracle implements:
-// sum/avg/min/max/count/topk/bottomk, with by/without grouping and edge k.
-// quantile/count_values/limitk/limit_ratio are DEFERRED (oracle gap).
+// sum/avg/min/max/count/topk/bottomk/quantile, with by/without grouping and
+// edge k / edge phi. count_values/limitk/limit_ratio are implemented by
+// cerberus (internal/promql/lower.go::lowerCountValues / lowerLimitRatio /
+// lowerLimitK) but NOT by the oracle — tracked in
+// https://github.com/tsouza/cerberus/issues/1693.
 func cat3Aggregators() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
 	const cpu = "demo_cpu_usage_seconds_total"
@@ -128,15 +161,19 @@ func cat3Aggregators() []exoticCase {
 		{name: "cat3/min_by_instance", promql: "min by(instance)(" + mem + ")"},
 		{name: "cat3/count_by_job", promql: "count by(job)(" + mem + ")"},
 		{name: "cat3/sum_no_grouping", promql: "sum(" + mem + ")"},
+		{name: "cat3/quantile_p90_by_type", promql: "quantile(0.9, " + mem + ") by (type)"},
+		{name: "cat3/quantile_p50_by_instance", promql: "quantile(0.5, " + mem + ") by (instance)"},
+		// phi out of domain (Prom quantile.go): < 0 -> -Inf, > 1 -> +Inf.
+		{name: "cat3/quantile_phi_neg", promql: "quantile(-0.1, " + mem + ") by (type)"},
+		{name: "cat3/quantile_phi_over1", promql: "quantile(1.5, " + mem + ") by (type)"},
 	}
 }
 
 // cat4SetOps covers the set operators and / or / unless, matched both on
 // the full label set and via on()/ignoring(). The oracle's set-op support
-// is added in test/property/oracle/promql/binary.go::setOp so the
-// assertion drives the REAL cerberus handler against the spec (rather than
-// routing set ops to a Prometheus-only promqltest tail that would never
-// exercise cerberus's lowering).
+// is added in test/property/oracle/promql/binary.go::setOp, so the
+// assertion drives the REAL cerberus handler against an independent
+// from-scratch evaluator rather than a both-erroring no-op.
 func cat4SetOps() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
 	const cpu = "demo_cpu_usage_seconds_total"
@@ -185,8 +222,13 @@ func cat5Matching() []exoticCase {
 }
 
 // cat7AtOffset covers the @ modifier + offset (absolute pin, compose with
-// offset, negative offset = forward). @ start()/end() determinism for range
-// queries is DEFERRED to the promqltest tail (instant @start==@end here).
+// offset, negative offset = forward) against the from-scratch oracle at a
+// single instant. @ start()/end() determinism specifically for RANGE
+// queries is covered separately by the Layer 2a txtar goldens
+// (test/spec/promql/at_start_basic.txtar, at_end_basic.txtar,
+// edge_at_start_range.txtar, edge_at_timestamp_range.txtar,
+// edge_increase_at_start.txtar, edge_at_then_offset_neg.txtar) rather than
+// by this instant-eval oracle matrix.
 func cat7AtOffset() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
 	pin := EvalTs - 120 // 2 minutes before the default eval ts
@@ -203,8 +245,9 @@ func cat7AtOffset() []exoticCase {
 	}
 }
 
-// cat8ScalarVector covers scalar()/vector() and scalar-vector arithmetic.
-// absent/clamp/sort are DEFERRED (oracle gap).
+// cat8ScalarVector covers scalar()/vector(), scalar-vector arithmetic, and
+// absent()/clamp()/clamp_min()/clamp_max()/sort()/sort_desc() — all
+// oracle-evaluated (test/property/oracle/promql/absent_clamp_sort.go).
 func cat8ScalarVector() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
 	return []exoticCase{
@@ -220,16 +263,28 @@ func cat8ScalarVector() []exoticCase {
 		// Both operands are label-less {} vectors, so they DO match ->
 		// one {} row with value 3 (the both-synthetic fold).
 		{name: "cat8/vector1_plus_vector2", promql: "vector(1) + vector(2)"},
+		// absent() over a selector that DOES match -> empty result.
+		{name: "cat8/absent_present", promql: "absent(" + mem + "{type=\"used\"})"},
+		// absent() over a selector that matches nothing -> single {} = 1.
+		{name: "cat8/absent_missing", promql: "absent(" + mem + "{type=\"does_not_exist\"})"},
+		{name: "cat8/clamp_both", promql: "clamp(" + mem + "{type=\"used\"}, 2.05e9, 2.02e9)"},
+		{name: "cat8/clamp_min", promql: "clamp_min(" + mem + "{type=\"used\"}, 2.05e9)"},
+		{name: "cat8/clamp_max", promql: "clamp_max(" + mem + "{type=\"used\"}, 2.01e9)"},
+		{name: "cat8/sort_asc", promql: "sort(" + mem + "{type=\"used\"})"},
+		{name: "cat8/sort_desc", promql: "sort_desc(" + mem + "{type=\"used\"})"},
 	}
 }
 
-// cat9OverTime covers the *_over_time family the oracle implements. The
-// deriv/predict_linear/double_exponential_smoothing/quantile_over_time/
-// stddev_over_time/changes/resets/last_over_time family is DEFERRED (oracle
-// gap).
+// cat9OverTime covers the *_over_time family the oracle implements —
+// including changes()/resets()/last_over_time()/stddev_over_time()/
+// stdvar_over_time() (test/property/oracle/promql/functions.go).
+// deriv/predict_linear/double_exponential_smoothing/quantile_over_time
+// remain a genuine oracle gap, tracked by
+// https://github.com/tsouza/cerberus/issues/1695.
 func cat9OverTime() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
 	const inter = "demo_intermittent_metric"
+	const restarts = "demo_worker_restarts_total"
 	return []exoticCase{
 		{name: "cat9/avg_over_time", promql: "avg_over_time(" + mem + "{type=\"used\"}[5m])"},
 		{name: "cat9/min_over_time", promql: "min_over_time(" + mem + "{type=\"used\"}[5m])"},
@@ -238,6 +293,17 @@ func cat9OverTime() []exoticCase {
 		// count_over_time on the sparse series sees fewer samples than dense.
 		{name: "cat9/count_over_time_sparse", promql: "count_over_time(" + inter + "[5m])"},
 		{name: "cat9/count_over_time_dense", promql: "count_over_time(" + mem + "{type=\"used\"}[5m])"},
+		{name: "cat9/last_over_time", promql: "last_over_time(" + mem + "{type=\"used\"}[5m])"},
+		{name: "cat9/stddev_over_time", promql: "stddev_over_time(" + mem + "{type=\"used\"}[5m])"},
+		{name: "cat9/stdvar_over_time", promql: "stdvar_over_time(" + mem + "{type=\"used\"}[5m])"},
+		// demo_worker_restarts_total resets at the window midpoint (see
+		// seed.go), so a window wide enough to straddle the reset sees a
+		// real changes()/resets() count rather than a vacuous zero.
+		{name: "cat9/changes_across_reset", promql: "changes(" + restarts + "[10m])"},
+		{name: "cat9/resets_across_reset", promql: "resets(" + restarts + "[10m])"},
+		// A narrow window entirely after the reset sees no reset -> 0,
+		// distinguishing "no reset in this window" from "reset ignored".
+		{name: "cat9/resets_none_narrow_window", promql: "resets(" + restarts + "[1m])"},
 	}
 }
 

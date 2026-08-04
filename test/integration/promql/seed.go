@@ -111,15 +111,28 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// demo_items_shipped_total{instance}: a monotonic counter, one series
 	// per instance (so on(instance)/group_left joins resolve one-to-one).
 	// It is kept monotonic so rate() agrees byte-for-byte between cerberus
-	// and the oracle; counter-RESET behaviour (rate across a restart +
-	// resets()) is exercised separately by the deterministic promqltest
-	// tail (testdata/resets.test) where the expected values are pinned.
+	// and the oracle.
 	for i, inst := range instances {
 		lbls := map[string]string{"instance": inst, "job": "demo"}
 		slope := 5 + float64(i)
 		vals := counterValues(slope, false)
 		b.WriteString(sumInsert("demo_items_shipped_total", lbls, vals))
 		series = append(series, mkSeries("demo_items_shipped_total", lbls, vals))
+	}
+	// demo_worker_restarts_total{instance}: a counter that resets (drops
+	// back to a small value, modeling a process restart) at the window
+	// midpoint. This is the ONLY seeded series with a real reset — every
+	// other counter above is deliberately kept monotonic so its rate()
+	// agrees byte-for-byte with the oracle without a bridge. resets() and
+	// changes() need at least one series where a reset actually happens to
+	// be a meaningful assertion rather than a vacuously-zero one; see
+	// cat9OverTime's resets()/changes() cases.
+	for i, inst := range instances {
+		lbls := map[string]string{"instance": inst, "job": "demo"}
+		slope := 3 + float64(i)
+		vals := counterValues(slope, true)
+		b.WriteString(sumInsert("demo_worker_restarts_total", lbls, vals))
+		series = append(series, mkSeries("demo_worker_restarts_total", lbls, vals))
 	}
 
 	// --- Gauges (otel_metrics_gauge). ---

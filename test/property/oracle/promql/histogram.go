@@ -92,6 +92,13 @@ type bucketPoint struct {
 	count float64
 }
 
+// smallDeltaTolerance mirrors Prom's promql/quantile.go::smallDeltaTolerance:
+// the relative-delta threshold below which adjacent bucket counts are
+// treated as floating-point noise rather than a real (non-)monotonicity
+// signal. See ensureMonotonic's doc for why this matters for the p50
+// rank specifically.
+const smallDeltaTolerance = 1e-12
+
 // bucketQuantile is the textbook histogram_quantile interpolation,
 // matching Prom's promql/quantile.go::bucketQuantile.
 //
@@ -103,12 +110,17 @@ func bucketQuantile(phi float64, buckets []bucketPoint) (float64, bool) {
 	}
 	sort.Slice(buckets, func(i, j int) bool { return buckets[i].le < buckets[j].le })
 
-	// Ensure cumulative — input is supposed to be cumulative, but
-	// merge duplicate `le` and trust the data otherwise.
+	// Ensure cumulative — input is supposed to be cumulative, but merge
+	// duplicate `le` by SUMMING their counts (Prom's coalesceBuckets:
+	// two buckets sharing an upper bound are the same bucket split
+	// across series/scrapes, so their counts add — overwriting instead
+	// of summing was the bug: a low-rank quantile (e.g. p50) landing in
+	// a bucket with a duplicate `le` would search against an
+	// undercounted cumulative total).
 	deduped := buckets[:0]
 	for _, b := range buckets {
 		if len(deduped) > 0 && deduped[len(deduped)-1].le == b.le {
-			deduped[len(deduped)-1].count = b.count
+			deduped[len(deduped)-1].count += b.count
 			continue
 		}
 		deduped = append(deduped, b)
@@ -122,6 +134,7 @@ func bucketQuantile(phi float64, buckets []bucketPoint) (float64, bool) {
 	if len(buckets) < 2 {
 		return math.NaN(), true
 	}
+	ensureMonotonic(buckets)
 	total := buckets[len(buckets)-1].count
 	if total == 0 {
 		return math.NaN(), true
@@ -154,6 +167,50 @@ func bucketQuantile(phi float64, buckets []bucketPoint) (float64, bool) {
 		return bucketEnd, true
 	}
 	return bucketStart + (bucketEnd-bucketStart)*(rank/count), true
+}
+
+// ensureMonotonic mirrors Prom's promql/quantile.go::
+// ensureMonotonicAndIgnoreSmallDeltas: cumulative bucket counts are
+// supposed to be non-decreasing with `le`, but floating-point
+// accumulation (or genuinely inconsistent scrapes) can produce tiny
+// or even real decreases. bucketQuantile's binary search over
+// cumulative counts is undefined if they're not monotonic, so this
+// pass forces the invariant the same way real Prometheus does:
+// insignificant deltas (below smallDeltaTolerance, relative to the
+// pair's sum) are silently folded away, and any remaining decrease is
+// clamped up to the previous (higher) count.
+//
+// This is the second half of the p50-divergence fix alongside the
+// coalesce-by-sum change in bucketQuantile: without it, a bucket
+// sequence with a tiny non-monotonic step can put the phi*total rank
+// on the wrong side of sort.Search's monotonicity assumption,
+// producing a different bucket (and thus a different interpolated
+// value) than real Prometheus.
+func ensureMonotonic(buckets []bucketPoint) {
+	prev := buckets[0].count
+	for i := 1; i < len(buckets); i++ {
+		curr := buckets[i].count
+		switch {
+		case curr == prev:
+			// No correction needed.
+		case almostEqual(prev, curr, smallDeltaTolerance):
+			buckets[i].count = prev
+		case curr < prev:
+			buckets[i].count = prev
+		default:
+			prev = curr
+		}
+	}
+}
+
+// almostEqual mirrors Prom's util/almost.Equal for the non-stale-NaN
+// case this oracle needs: a and b are "almost equal" if they differ by
+// less than their sum times epsilon.
+func almostEqual(a, b, epsilon float64) bool {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.IsNaN(a) && math.IsNaN(b)
+	}
+	return math.Abs(a-b) <= (a+b)*epsilon
 }
 
 func emitConstQuantile(buckets []VectorRow, v float64, evalTsMs int64) []VectorRow {

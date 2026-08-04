@@ -158,15 +158,19 @@ func applyUnary(op parser.ItemType, in value) (value, error) {
 	return value{}, fmt.Errorf("oracle: unsupported unary op %s on kind=%d", op, in.Kind)
 }
 
-// evalCall dispatches a function call. The MVP set:
+// evalCall dispatches a function call. Supported:
 //
-//   - rate/increase/delta + *_over_time over range vectors.
+//   - rate/increase/delta + *_over_time family over range vectors (see
+//     isRangeFunctionName / evalRangeFunction).
 //   - histogram_quantile(phi, vector) — its second arg is an instant
 //     vector (typically a `sum by(le)(rate(...[range]))`) so we
 //     evaluate it the same way as any other instant vector.
 //   - scalar(vec)         — pick the single-element vector's value.
 //   - vector(scalar)      — wrap a scalar into a one-row, no-label
 //     vector.
+//   - absent(vec)         — see evalAbsent.
+//   - clamp/clamp_min/clamp_max — see evalClamp.
+//   - sort/sort_desc      — see evalSort.
 func (e *Evaluator) evalCall(c *parser.Call, evalTsMs int64) (value, error) {
 	name := c.Func.Name
 	if isRangeFunctionName(name) {
@@ -231,6 +235,12 @@ func (e *Evaluator) evalCall(c *parser.Call, evalTsMs int64) (value, error) {
 		return value{Kind: kindVec, Vec: []VectorRow{
 			{Labels: map[string]string{}, T: evalTsMs, V: inner.Scalar},
 		}}, nil
+	case "absent":
+		return e.evalAbsent(c, evalTsMs)
+	case "clamp", "clamp_min", "clamp_max":
+		return e.evalClamp(name, c, evalTsMs)
+	case "sort", "sort_desc":
+		return e.evalSort(c, evalTsMs)
 	}
 	return value{}, fmt.Errorf("oracle: unsupported function %q", name)
 }

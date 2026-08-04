@@ -12,7 +12,7 @@ import (
 // stamped at the eval ts. Per Prom semantics, each series's output is
 // computed independently from its window samples.
 //
-// Supported (PR 2 MVP):
+// Supported:
 //
 //   - rate(m[range])              — extrapolated counter rate / sec
 //   - increase(m[range])          — extrapolated counter increase
@@ -22,6 +22,11 @@ import (
 //   - min_over_time(m[range])     — minimum sample
 //   - max_over_time(m[range])     — maximum sample
 //   - count_over_time(m[range])   — sample count in window
+//   - last_over_time(m[range])    — most recent sample in window
+//   - changes(m[range])           — count of value changes in window
+//   - resets(m[range])            — count of counter resets in window
+//   - stddev_over_time(m[range])  — population stddev of window samples
+//   - stdvar_over_time(m[range])  — population variance of window samples
 //
 // Anything else returns an error so the caller can surface it.
 func (e *Evaluator) evalRangeFunction(c *parser.Call, evalTsMs int64) ([]VectorRow, error) {
@@ -89,8 +94,78 @@ func applyRangeFn(name string, samples []Sample, rangeMs, effectiveTs int64) (fl
 		return maxOverTime(samples), len(samples) > 0
 	case "count_over_time":
 		return float64(len(samples)), len(samples) > 0
+	case "last_over_time":
+		if len(samples) == 0 {
+			return 0, false
+		}
+		return samples[len(samples)-1].V, true
+	case "changes":
+		// Prom drops the row only when the window is entirely empty; a
+		// single-sample window is well-defined at 0 changes.
+		return changesOverTime(samples), len(samples) > 0
+	case "resets":
+		return resetsOverTime(samples), len(samples) > 0
+	case "stddev_over_time":
+		return math.Sqrt(varianceOverTime(samples)), len(samples) > 0
+	case "stdvar_over_time":
+		return varianceOverTime(samples), len(samples) > 0
 	}
 	return 0, false
+}
+
+// changesOverTime counts the number of value changes between
+// consecutive samples in window order, matching Prom's funcChanges for
+// the float-only case (no native histograms in this oracle). Two
+// consecutive NaNs count as unchanged, mirroring Prom's explicit
+// !(NaN && NaN) guard.
+func changesOverTime(samples []Sample) float64 {
+	changes := 0
+	for i := 1; i < len(samples); i++ {
+		cur, prev := samples[i].V, samples[i-1].V
+		if cur != prev && !(math.IsNaN(cur) && math.IsNaN(prev)) {
+			changes++
+		}
+	}
+	return float64(changes)
+}
+
+// resetsOverTime counts counter resets (a value lower than the
+// immediately preceding one) across the window, matching Prom's
+// funcResets for the float-only case.
+func resetsOverTime(samples []Sample) float64 {
+	resets := 0
+	for i := 1; i < len(samples); i++ {
+		if samples[i].V < samples[i-1].V {
+			resets++
+		}
+	}
+	return float64(resets)
+}
+
+// varianceOverTime computes the population variance of the window's
+// values — the shared core of stddev_over_time / stdvar_over_time,
+// matching Prom's promql/functions.go::varianceOverTime (mean, then
+// mean of squared deviations). A plain two-pass computation rather
+// than Prom's single-pass Kahan-summed running variance: mathematically
+// equivalent, and the dataset's value magnitudes never approach the
+// range where the numerical difference would exceed the comparator's
+// tolerance.
+func varianceOverTime(samples []Sample) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var mean float64
+	for _, s := range samples {
+		mean += s.V
+	}
+	mean /= float64(len(samples))
+
+	var sumSquares float64
+	for _, s := range samples {
+		d := s.V - mean
+		sumSquares += d * d
+	}
+	return sumSquares / float64(len(samples))
 }
 
 // extrapolatedRate implements Prometheus's rate/increase/delta
@@ -237,13 +312,15 @@ func maxOverTime(samples []Sample) float64 {
 	return m
 }
 
-// isRangeFunctionName returns whether name is one of the MVP
-// range-vector functions this oracle implements.
+// isRangeFunctionName returns whether name is one of the range-vector
+// functions this oracle implements.
 func isRangeFunctionName(name string) bool {
 	switch name {
 	case "rate", "increase", "delta",
 		"sum_over_time", "avg_over_time",
-		"min_over_time", "max_over_time", "count_over_time":
+		"min_over_time", "max_over_time", "count_over_time",
+		"last_over_time", "changes", "resets",
+		"stddev_over_time", "stdvar_over_time":
 		return true
 	}
 	return false
