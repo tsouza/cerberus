@@ -55,9 +55,17 @@ type stubCursorQuerier struct {
 	// client cancel propagated through SearchResult -> QueryPlan -> Query.
 	block    bool
 	released atomic.Bool
+	// sawByteBudget records whether the ctx passed to Query carried the
+	// wide-projection drain byte budget — lets the gRPC no-bypass ratchet
+	// test (TestSearch_AttachesByteBudget_NoBypass) assert the streaming
+	// Search RPC attaches it, mirroring api/tempo's HTTP-side stubQuerier.
+	sawByteBudget bool
 }
 
 func (s *stubCursorQuerier) Query(ctx context.Context, sql string, args ...any) ([]chclient.Sample, error) {
+	if chclient.DrainByteBudgetFromContext(ctx) != nil {
+		s.sawByteBudget = true
+	}
 	if s.block {
 		<-ctx.Done()
 		s.released.Store(true)
