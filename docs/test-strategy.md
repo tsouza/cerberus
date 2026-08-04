@@ -980,3 +980,61 @@ its own fix. `compatibility/parity-baseline.json` is the one exception
 worth knowing before you hit it: it is rebuilt from a compatibility run's
 `compat-cases.json` artefact and therefore **cannot** be regenerated
 locally.
+
+#### `-merge` only protects a LOCAL git merge — verified 2026-08-04
+
+`-merge` is a built-in git merge driver, honoured by any git CLIENT that
+reads `.gitattributes`: a local `git merge`, `git rebase`, or `git pull`.
+Cerberus's actual merge paths on GitHub are mostly SERVER-SIDE — the "Update
+branch" button, `gh pr merge --squash`, and the mergeability precomputation
+that decides whether a PR shows conflict-free — and nothing had verified
+those honour `.gitattributes` at all (issue #1568, spun out of #1567 while
+adding the gate above).
+
+They do not. Verified empirically 2026-08-04: two throwaway branches pushed
+to this repo, each inserting one new record at a different, non-overlapping
+line offset into `test/perf/solver-decision-baseline.json` off the same base
+commit, produced a throwaway PR that `gh pr view --json mergeable` reported
+as `"mergeable":"MERGEABLE"` — while a LOCAL `git merge` of the identical
+branch pair, run in a scratch worktree, refused with "Cannot merge binary
+files" / `CONFLICT (content)`, exactly as `.gitattributes` documents. The
+throwaway PR was closed unmerged and both branches deleted immediately after.
+
+Auditing every `-merge` path for what actually protects it turned up good
+news: nearly all of them already carry a REQUIRED, PR-blocking,
+content-exact ratchet that regenerates the artefact from source and diffs it
+against the committed file — `TestCardinalityRatchet` /
+`TestSolverDecisionRatchet` / `TestScaleWallPin` (`perf-guards`),
+`TestCatalogueIsRegenerable` and the surface-parity inventory tests
+(`check`), `compat-ratchet.mjs` (`compatibility/*`), `coverage-summary.mjs`
+(`coverage`), and the Tier-0 migration goldens via
+`go test -tags=migration ./test/e2e/migration/tiers/tier0-offline/...`
+(`lint`). Those are the strong "re-run the generator on the merge commit and
+diff it" defence #1568 asked for, and they were already there for most of
+the list.
+
+The residual gap is procedural rather than a missing validator: branch
+protection's "require branches to be up to date before merging" is OFF
+(`strict: false` as of this writing), so a stale PR's squash-merge computes
+its diff against whatever `main` has moved to WITHOUT re-running any of the
+checks above against the resulting content. Turning `strict: true` on closes
+that window — it forces the "Update branch" step, which re-runs every
+required check (including all of the above) against the exact content that
+will land — and is recommended to the maintainer as a follow-up; it is a
+branch-protection admin setting, not a code change, so no PR flips it
+unilaterally.
+
+`.github/scripts/generated-baseline-structural-guard.mjs`, wired into the
+required `forbid-skip` job, adds a fast, dependency-free structural
+pre-filter (unique key, sorted order, and — where verified uniform — one
+consistent field set) over the subset of `-merge` paths whose shape was
+hand-checked against the committed content. It is a cheap, always-on second
+signal, not a replacement for the content-exact ratchets above — a
+structural check cannot tell a value that is merely out of place from one
+that is subtly wrong. One family was found to have weaker per-PR coverage:
+`test/e2e/playwright/crawl/grafana-surface-inventory.{compose,k3d}.json` are
+exercised at full depth only by the release-gated `dashboard` (k3d) lane
+(the merge commit, not the PR), with `compose-smoke` walking only the
+`lean: true` subset of the `.compose.json` rows when its own scope triggers;
+that gap is tracked as a follow-up issue rather than papered over with an
+unverified invariant.
