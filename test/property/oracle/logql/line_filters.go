@@ -1,3 +1,5 @@
+//go:build agpl_oracle
+
 package logql
 
 import (

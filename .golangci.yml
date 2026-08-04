@@ -71,6 +71,7 @@ run:
     - agpl_oracle
     - chaos_sleep
     - chdb
+    - chdb_agpl_oracle
     - e2e
     - integration
     - migration

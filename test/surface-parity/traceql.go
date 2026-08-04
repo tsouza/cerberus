@@ -1,9 +1,5 @@
 package surfaceparity
 
-import (
-	tempotraceql "github.com/grafana/tempo/pkg/traceql"
-)
-
 // Domain-aware TraceQL operands from the showcase seed
 // (test/e2e/seed/cmd/seed/showcase_traceql.go): real resource/span
 // attributes that match seeded spans.
@@ -86,26 +82,28 @@ var tqlAggregateProbes = []tqlProbe{
 	{"aggregate:avg", "aggregate", `{ ` + tqlServiceName + ` } | avg(duration) > 1ms`},
 }
 
-// referenceVerdictTraceQL models reference Tempo acceptance: the wire
-// path parses then validates. traceql.Parse runs the optimizing parse
-// (the same the tempo handler uses) and traceql.Validate runs the
-// reference's unsupported-feature gate — both in-process (the LIGHT
-// path, no compat container).
-func referenceVerdictTraceQL(query string) Verdict {
-	expr, err := tempotraceql.Parse(query)
-	if err != nil {
-		return VerdictReject
-	}
-	if err := tempotraceql.Validate(expr); err != nil {
-		return VerdictReject
-	}
-	return VerdictAccept
-}
-
 // probeTraceQL enumerates the TraceQL intrinsic + metrics-op + aggregate
-// surface and classifies each symbol against cerberus + the in-process
-// reference oracle.
+// surface and classifies each symbol against cerberus + the reference
+// verdict read from the pinned artifact
+// (traceql-reference-verdicts.json).
+//
+// The reference verdict used to be a live in-process
+// tempotraceql.Parse + tempotraceql.Validate call against upstream
+// Tempo's AGPL traceql package. That worked (no compat container needed
+// — parse+validate is data-independent) but meant this file — reached
+// unconditionally by TestInventoryIsRegenerable and
+// `just update-parity-ledgers`, both part of the default `check` gate —
+// imported an AGPL package with no build tag. It now reads the frozen
+// verdict the same live call produced, mirroring logql.go's
+// logql_reference.go split. See traceql_reference.go +
+// traceql_reference_agpl_test.go (the agpl_oracle-tagged
+// regeneration/drift-check counterpart) and #1520.
 func probeTraceQL() ([]Entry, error) {
+	ref, err := loadTraceQLReferenceVerdicts()
+	if err != nil {
+		return nil, err
+	}
+
 	var entries []Entry
 	all := make([]tqlProbe, 0, len(tqlIntrinsicProbes)+len(tqlMetricsProbes)+len(tqlAggregateProbes))
 	all = append(all, tqlIntrinsicProbes...)
@@ -113,15 +111,18 @@ func probeTraceQL() ([]Entry, error) {
 	all = append(all, tqlAggregateProbes...)
 	for _, p := range all {
 		cv, cerr := cerberusVerdictTraceQL(p.probe)
-		ref := referenceVerdictTraceQL(p.probe)
+		rv, rerr := ref.verdict(p.symbol)
+		if rerr != nil {
+			return nil, rerr
+		}
 		entries = append(entries, Entry{
 			Head:          "traceql",
 			Symbol:        p.symbol,
 			Kind:          p.kind,
 			Probe:         p.probe,
 			Cerberus:      cv,
-			Reference:     ref,
-			Class:         classify(cv, ref),
+			Reference:     rv,
+			Class:         classify(cv, rv),
 			CerberusError: cerr,
 		})
 	}

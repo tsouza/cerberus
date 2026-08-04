@@ -447,6 +447,17 @@ update-golden: update-solver-decision-baseline migration-golden update-parity-le
 # so it needs Docker and a network pull. That is a heavier prerequisite than
 # `update-golden` assumes, which puts it with the k3d/compose inventories and
 # the compat parity baseline rather than in this recipe.
+#
+# test/surface-parity/logql-reference-verdicts.json and
+# traceql-reference-verdicts.json are ALSO deliberately not here, for the
+# analogous reason: they are computed by calling the AGPL grafana/loki /
+# grafana/tempo parsers live, gated behind the `agpl_oracle` build tag so
+# this (untagged) recipe — and the default `check` gate that also reaches
+# this ledger via TestInventoryIsRegenerable — stay AGPL-free (#1520).
+# Regenerate them explicitly when a probe changes:
+#
+#   CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/
+#   CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/
 update-parity-ledgers:
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
     @echo
