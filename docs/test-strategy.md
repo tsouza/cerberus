@@ -654,6 +654,29 @@ Each test:
 Failures shrink to a minimal repro via rapid's automatic shrinking and
 land in the standard test output.
 
+### Per-head generator breadth
+
+The `property` check's name (`property (PromQL + LogQL + TraceQL, rapid
+N=500)`) advertises all three heads, but nothing enforces that each
+leg's query generator actually draws a variety of shapes rather than
+one — a leg can sit at its first-sweep accept-set indefinitely while
+still reporting 500 green iterations, because every iteration is the
+same query shape wearing different literal values. Issue #1471 caught
+exactly this for TraceQL. This table is the per-head ledger so a
+stalled leg is visible without diffing generator source:
+
+| Head    | Generator                         | Shape count | Shapes                                                                                                                                                                                                                                                                                                    |
+| ------- | --------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PromQL  | `gen/promql.go`'s `drawExpr`      | 5           | bare selector, `sum(...)`, `sum by(label)(...)`, `rate(...[range] offset d)`, `sum(rate(...))`                                                                                                                                                                                                            |
+| LogQL   | `gen/logql.go`'s `LogQLQuery`     | 6           | bare stream selector; line filter (contains / not-contains); `label_format` rename; IP line filter (contains / not-contains `ip(...)`); pattern line filter (contains / not-contains)                                                                                                                     |
+| TraceQL | `gen/traceql.go`'s `TraceQLQuery` | 14          | bare selector; `count()` filter; attribute matcher beyond service.name; span-attribute matcher; duration intrinsic; status intrinsic; name intrinsic; regex matcher; negated matcher; multi-condition (`&&`); structural child (`>`); structural descendant (`>>`); avg/min/max/sum(duration); `select()` |
+
+When a head's generator widens, update its row here in the same PR —
+the oracle under `test/property/oracle/<head>/` must already be able
+to evaluate every shape the generator draws before the shape lands
+(never the reverse), so this table doubles as a manifest of what the
+independent specification actually covers.
+
 ## Gremlins mutation
 
 `.gremlins.yaml` carries the floor for an unscoped whole-repo `just

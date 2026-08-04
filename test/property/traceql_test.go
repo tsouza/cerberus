@@ -11,9 +11,11 @@
 //     (shared across iterations; each iteration's
 //     CREATE OR REPLACE TABLE statement keeps replays idempotent).
 //  3. The TraceQL generator (gen.TraceQLQuery) draws a random query
-//     targeting the dataset's service pool — either a bare
-//     `{ resource.service.name = "<value>" }` selector or a
-//     selector + `| count() OP N` scalar filter.
+//     from 14 shapes — attribute matchers (resource + span scope,
+//     equality/negation/regex), duration/status/name intrinsics,
+//     multi-condition filters, structural relations (`>`/`>>`),
+//     count()/avg()/min()/max()/sum() scalar-filter pipelines, and
+//     select() — see gen.TraceQLQuery's doc for the full list.
 //  4. The from-scratch oracle (oracle/traceql.Evaluate) evaluates the
 //     query against an in-memory mirror of the dataset, implementing
 //     spanset filter + count() semantics directly from the TraceQL
