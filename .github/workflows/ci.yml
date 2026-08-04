@@ -844,6 +844,19 @@ jobs:
       - name: Reject raw SQL writes outside the chsql Frag layer
         run: node .github/scripts/forbid-sql-raw.mjs
 
+      # #1568: GitHub's server-side merge does NOT honour the `-merge`
+      # .gitattributes driver (verified empirically — see the script's own
+      # doc comment for the experiment). Most `-merge`-marked generated
+      # baselines already have a required, content-exact regenerate-and-diff
+      # ratchet elsewhere; this is a fast, dependency-free structural
+      # pre-filter over the subset whose shape (unique key, sorted order,
+      # consistent field set) was hand-verified, catching the #1422 blend
+      # symptom in milliseconds as a second, independent signal.
+      - name: Structural sanity check over generated baseline shapes (#1568)
+        run: |
+          node .github/scripts/generated-baseline-structural-guard.mjs --self-test
+          node .github/scripts/generated-baseline-structural-guard.mjs
+
   # `forbid-deferral` used to live here. It moved to its own workflow file,
   # `.github/workflows/forbid-deferral.yml`, because one of its three surfaces
   # is the PR DESCRIPTION and this workflow's bare `pull_request:` trigger does

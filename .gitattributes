@@ -30,6 +30,41 @@
 # directions by test/regression/generated_artifact_merge_gate_test.go, which
 # also fails on any tracked data file NAMED like a generated artefact that is
 # neither gated here nor recorded in the hand-authored section at the bottom.
+#
+# `-merge` protects a LOCAL `git merge` / `git rebase` / `git pull`, which
+# reads this file. Whether GitHub's SERVER-SIDE merge (the "Update branch"
+# button, `gh pr merge --squash`, the mergeability precomputation that decides
+# whether a PR shows conflict-free) honours it too went unverified until
+# #1568. It does not: verified empirically 2026-08-04 by pushing two
+# throwaway branches to this repo that each inserted one new record at a
+# different, non-overlapping line offset into
+# test/perf/solver-decision-baseline.json off the same base commit, and
+# opening a throwaway PR between them. `gh pr view --json mergeable` reported
+# `"mergeable":"MERGEABLE"` for that PR, while a LOCAL `git merge` of the
+# identical branch pair refused with "Cannot merge binary files" / `CONFLICT
+# (content)` — exactly the behaviour this file exists to force. The throwaway
+# PR was closed unmerged and both branches deleted immediately after; see
+# issue #1568 for the full experiment writeup.
+#
+# The defence-in-depth for that gap is two-fold — see
+# .github/scripts/generated-baseline-structural-guard.mjs's doc comment for
+# the full audit of what already covers what:
+#   1. nearly every path below already carries a REQUIRED, content-exact
+#      regenerate-and-diff ratchet in a required PR check (perf-guards,
+#      check, coverage, compatibility/*, and the Tier-0 migration goldens via
+#      `lint`) — the "re-run the generator and diff" defence #1568 asked for
+#      already existed for most of this list;
+#   2. the residual risk is that branch protection's "require branches to be
+#      up to date before merging" is OFF (`strict: false`), so a stale PR's
+#      squash-merge can in principle apply a diff against a `main` that moved
+#      without any of those checks ever running against the merged bytes.
+#      Turning `strict: true` on closes that window; it is a repo-admin
+#      setting, not a code change, and is recommended to the maintainer
+#      rather than flipped by the PR that added this note.
+# generated-baseline-structural-guard.mjs additionally adds a fast, always-on
+# structural pre-filter (unique key, sorted order, consistent field shape)
+# over the subset of paths below whose shape was hand-verified — a cheap
+# second signal, not a replacement for the regenerate-and-diff ratchets.
 
 # --- Perf ratchet baselines -------------------------------------------------
 # Regenerate: `just update-cardinality-baseline`

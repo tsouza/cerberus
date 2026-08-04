@@ -451,6 +451,8 @@ jobs:
           docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== otel-collector logs (last 200) ==="
           docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
+          echo "=== seed logs (last 200) ==="
+          docker compose logs --tail=200 seed 2>&1 | tee -a /tmp/compose-state.log || true
           # Infra-flake breadcrumb. Fire ONLY on a REAL disk-full signal —
           # the kernel ENOSPC string in a container log, or root >=90% full.
           # The bare field names
@@ -630,6 +632,8 @@ jobs:
           docker compose logs --tail=200 grafana 2>&1 | tee -a /tmp/compose-state.log || true
           echo "=== otel-collector logs (last 200) ==="
           docker compose logs --tail=200 otel-collector 2>&1 | tee -a /tmp/compose-state.log || true
+          echo "=== seed logs (last 200) ==="
+          docker compose logs --tail=200 seed 2>&1 | tee -a /tmp/compose-state.log || true
           # Fire ONLY on a REAL disk-full signal — the kernel ENOSPC string
           # in a container log, or root >=90% full. The bare field names
           # 'DiskPressure'/'ephemeral-storage' were dropped: they are k8s

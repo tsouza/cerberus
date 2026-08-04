@@ -20,7 +20,7 @@ import (
 // tick, unboundedly, for as long as the stack stayed up.
 //
 // The fix mirrors the showcase-traces shape exactly (a data-anchored
-// `max(Timestamp) - margin` DELETE run AFTER the INSERT, never before —
+// `max(<time column>) - margin` DELETE run AFTER the INSERT, never before —
 // see deleteStaleShowcaseTracesSQL's doc comment in showcase_traceql.go
 // for the full race analysis this ordering avoids) for every other
 // family. It accepts the same class of trade-off showcase-traces made:
@@ -117,8 +117,15 @@ var (
 )
 
 // Stale-row DELETEs, one per table these fixtures write to. Each scopes
-// both the outer DELETE and the max(Timestamp) subquery to the
+// both the outer DELETE and the max(<time column>) subquery to the
 // MetricName/ServiceName/TraceId set this seeder owns in that table —
+// the time column itself is NOT uniform across tables: the OTel-CH
+// exporter's schema names it `TimeUnix` on every otel_metrics_* table
+// (matching the INSERT column lists above — insertGaugeSQL et al. never
+// write a `Timestamp` column, because that column doesn't exist there;
+// `DESCRIBE TABLE otel_metrics_gauge` has no `Timestamp` row) and
+// `Timestamp` on otel_logs/otel_traces. The four metrics DELETEs below
+// use TimeUnix; the logs/base-traces DELETEs after them use Timestamp —
 // unscoped would either eat rows the dogfood self-telemetry pipeline
 // wrote into the same table (see showcase_traceql.go / showcase_logql.go
 // doc comments) or anchor the cutoff on foreign rows. The margin is a
@@ -129,32 +136,32 @@ var (
 const (
 	deleteStaleMetricsGaugeSQL = `ALTER TABLE otel_metrics_gauge DELETE
 WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
+  AND TimeUnix < (
+    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
     FROM otel_metrics_gauge
     WHERE MetricName IN ('up', 'target_info', 'showcase_flapping', 'showcase_multilabel')
   )`
 
 	deleteStaleMetricsSumSQL = `ALTER TABLE otel_metrics_sum DELETE
 WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
+  AND TimeUnix < (
+    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
     FROM otel_metrics_sum
     WHERE MetricName IN ('http_server_request_duration_count', 'showcase_restarting_total')
   )`
 
 	deleteStaleMetricsHistogramSQL = `ALTER TABLE otel_metrics_histogram DELETE
 WHERE MetricName = 'http_server_request_duration'
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
+  AND TimeUnix < (
+    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
     FROM otel_metrics_histogram
     WHERE MetricName = 'http_server_request_duration'
   )`
 
 	deleteStaleMetricsExpHistSQL = `ALTER TABLE otel_metrics_exponential_histogram DELETE
 WHERE MetricName = 'showcase_latency_exp_hist'
-  AND Timestamp < (
-    SELECT max(Timestamp) - INTERVAL {margin:UInt64} SECOND
+  AND TimeUnix < (
+    SELECT max(TimeUnix) - INTERVAL {margin:UInt64} SECOND
     FROM otel_metrics_exponential_histogram
     WHERE MetricName = 'showcase_latency_exp_hist'
   )`
