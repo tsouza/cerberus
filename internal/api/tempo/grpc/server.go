@@ -15,8 +15,16 @@ import (
 //
 //   - otelgrpc.NewServerHandler() as the stats handler — every RPC
 //     becomes an OTel server span on the same TracerProvider the HTTP
-//     handlers use, and gets the standard set of gRPC metrics
-//     (`rpc.server.duration`, `rpc.server.request.size`, etc.).
+//     handlers use, and gets the standard gRPC server duration metric.
+//     otelgrpc (pinned v0.69.0) defaults to semconv v1.41.0's STABLE
+//     naming — `rpc.server.call.duration`, not the older
+//     `rpc.server.duration` — unless OTEL_SEMCONV_STABILITY_OPT_IN
+//     requests the legacy/dup mode (cerberus sets neither). The e2e
+//     compose collector's `transform/metric_names` processor rewrites
+//     dots to underscores before the point reaches ClickHouse, so the
+//     PromQL-queryable series is `rpc_server_call_duration_count` /
+//     `_sum` / `_bucket{le=...}` — see test/e2e/playwright/
+//     tempo_grpc_streaming.spec.ts (#1454), which asserts against it.
 //   - service.Limiter.StreamInterceptor() as the stream interceptor —
 //     per-RPC admission control sharing the same per-head semaphore
 //     the HTTP handlers use, so a saturated Tempo head rejects gRPC

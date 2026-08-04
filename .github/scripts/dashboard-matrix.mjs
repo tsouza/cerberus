@@ -172,6 +172,7 @@ const SHARDS = [
       'iterate-drilldown-apps.spec.ts',
       'service_graph.spec.ts',
       'smoke.spec.ts',
+      'tempo_grpc_streaming.spec.ts', //         gRPC/h2c StreamingQuerier trigger (#1454)
       'tempo_search_flow.spec.ts',
       'tempo_traces.spec.ts',
       'tempo_traces_drilldown.spec.ts',

@@ -160,6 +160,7 @@ const EXCLUDED = [
   'service_graph.spec.ts', //            head-specific flow; dashboard-lane only
   'smoke.spec.ts', //                    legacy single-smoke; dashboard-lane only
   'split_isolation.spec.ts', //          split-mode head-isolation; needs k3d per-head deployments, not the single-container compose stack; dashboard-lane only
+  'tempo_grpc_streaming.spec.ts', //     gRPC/h2c StreamingQuerier trigger (#1454); real Explore + Live round-trip, dashboard-lane only
   'tempo_search_flow.spec.ts', //        head-specific flow; dashboard-lane only
   'tempo_traces.spec.ts', //             head-specific flow; dashboard-lane only
   'tempo_traces_drilldown.spec.ts', //   head-specific flow; dashboard-lane only
