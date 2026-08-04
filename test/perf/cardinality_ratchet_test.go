@@ -173,8 +173,13 @@ type baselineEntry struct {
 	// carried through so a reviewer can see WHY a fixture is unmeasured
 	// without re-running the profiler. Never compared by the ratchet: it
 	// is a symptom count, not a budget, and it is only meaningful when
-	// FanFactor is nil.
-	UncountableLevels int `json:"uncountable_levels,omitempty"`
+	// FanFactor is nil. No `omitempty`: the baseline file's structural
+	// guard (.github/scripts/generated-baseline-structural-guard.mjs)
+	// requires every record to carry the same field set, so a
+	// zero-valued 0 must serialize explicitly rather than vanish —
+	// otherwise measured and unmeasured records blend into two
+	// distinct key sets and the guard's self-test fails the build.
+	UncountableLevels int `json:"uncountable_levels"`
 }
 
 // fanFactorEpsilon absorbs float representation noise in the
