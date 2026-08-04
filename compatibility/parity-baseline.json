@@ -748,8 +748,8 @@
       ]
     },
     "loki": {
-      "passed": 116,
-      "total": 116,
+      "passed": 120,
+      "total": 120,
       "cases": [
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} != ip(\"255.255.255.255\") | ip line filter negated: single-IP",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} !> \"<_>error<_>\" | pattern line filter negated: embedded literal",
@@ -866,7 +866,11 @@
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} |~ \"error|exception\" | detected_level=\"error\" | Combined line and metadata filter",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_level=~\"error|warn\" |~ \"(?i)refused\" | Drilldown with error/warn level and refused search",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_level=\"error\" |~ \"(?i)failed\" | Drilldown with failed search and error level",
-        "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | level=\"error\" | detected_level=\"error\" | Logfmt parsing with level filter"
+        "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | level=\"error\" | detected_level=\"error\" | Logfmt parsing with level filter",
+        "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines",
+        "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected",
+        "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines",
+        "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected"
       ]
     },
     "tempo": {

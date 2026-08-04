@@ -162,6 +162,7 @@ set +e
     -addr-1=http://localhost:23100 \
     -addr-2=http://localhost:29092 \
     -corpus="$ROOT_DIR/upstream/loki-bench/queries" \
+    -cerberus-queries="$ROOT_DIR/cerberus-queries" \
     -metadata-dir="$ROOT_DIR" \
     -skip-baseline="$SKIP_BASELINE" \
     -report="$REPORT" \

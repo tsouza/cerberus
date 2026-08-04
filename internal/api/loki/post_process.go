@@ -9,6 +9,7 @@ import (
 
 	"github.com/buger/jsonparser"
 
+	"github.com/tsouza/cerberus/internal/logql"
 	logpattern "github.com/tsouza/cerberus/internal/logql/logpattern"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -56,6 +57,16 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 	}
 
 	var steps []lineTransform
+	// dynamicLabels mirrors internal/logql/lower.go's
+	// lowerPipelineWithLabels gate: once a `| unpack` / `| pattern`
+	// stage runs, the lowering skips SQL predicate generation for any
+	// downstream LabelFilterExpr that tests the `__error__` /
+	// `__error_details__` family specifically (see that function's doc
+	// comment for why — the structured-metadata SQL fallback used for
+	// ordinary label names is actively wrong for these two magic keys).
+	// Such filters have to be applied here instead, once the dynamic
+	// stage's own step has actually computed them.
+	dynamicLabels := false
 	for _, st := range pipe.MultiStages {
 		switch v := st.(type) {
 		case *syntax.LineFmtExpr:
@@ -76,12 +87,14 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 			switch v.Op {
 			case syntax.OpParserTypeUnpack:
 				steps = append(steps, unpackStep)
+				dynamicLabels = true
 			case syntax.OpParserTypePattern:
 				step, err := newPatternStep(v.Param)
 				if err != nil {
 					return nil, err
 				}
 				steps = append(steps, step)
+				dynamicLabels = true
 			}
 		case *syntax.DropLabelsExpr, *syntax.KeepLabelsExpr:
 			// In a multi-case type switch v keeps the type-switch
@@ -92,6 +105,18 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 				return nil, err
 			}
 			steps = append(steps, step)
+		case *syntax.LabelFilterExpr:
+			if dynamicLabels && logql.FiltersErrorLabel(v.LabelFilterer) {
+				steps = append(steps, newLabelFilterStep(v.LabelFilterer))
+			}
+			// Every other label filter — one preceding any dynamic-label
+			// stage, or one following it but testing an ordinary label
+			// name — already has its SQL predicate applied by the
+			// lowering (see internal/logql/lower.go's
+			// lowerPipelineWithLabels); re-running it here would be
+			// redundant (and, for the mark-stamping numeric/duration/
+			// bytes kinds, would double-stamp `__error__` against the
+			// labels map post-parse-stage).
 		}
 	}
 
@@ -101,33 +126,59 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 	return composeTransforms(steps), nil
 }
 
+// newLabelFilterStep builds the Go-side transform for a `| label op
+// value` filter that follows a `| unpack` / `| pattern` stage (see
+// postProcessExtract's dynamicLabels gate). internal/logql/lower.go's
+// lowerPipelineWithLabels skips SQL lowering for these filters
+// entirely — the labels they test may only exist once the preceding
+// dynamic stage's own step (unpackStep / newPatternStep's closure,
+// which run earlier in the same composed pipeline) has produced them
+// — so this is the only place they're actually evaluated.
+//
+// Returns keep == false to drop the row; [composeTransforms]
+// short-circuits the remaining steps when that happens.
+func newLabelFilterStep(lf syntax.LabelFilterer) lineTransform {
+	return func(line string, _ int64, labels map[string]string) (string, map[string]string, bool) {
+		keep, labels := labelFiltererEval(lf, labels)
+		return line, labels, keep
+	}
+}
+
 // lineTransform is the per-row transform shape: takes the current
 // line, the row's nanosecond timestamp, and the stream's labels and
-// returns the new line + new labels. The timestamp is threaded through
-// so `| line_format` / `| label_format` templates can expose
-// `{{__timestamp__}}` (as a time.Time, matching Loki's
-// AddLineAndTimestampFunctions). Transforms that don't read the
+// returns the new line + new labels + whether the row survives (false
+// means "drop this row entirely" — see [newLabelFilterStep], the only
+// step that ever returns false; every other step keeps every row). The
+// timestamp is threaded through so `| line_format` / `| label_format`
+// templates can expose `{{__timestamp__}}` (as a time.Time, matching
+// Loki's AddLineAndTimestampFunctions). Transforms that don't read the
 // timestamp ignore it.
 //
 // Transforms that don't modify labels (line_format, decolorize)
 // return the input map reference unchanged; transforms that DO
 // modify labels (label_format) return a fresh map so callers can
 // safely treat the original sample's labels as immutable.
-type lineTransform func(line string, ts int64, labels map[string]string) (string, map[string]string)
+type lineTransform func(line string, ts int64, labels map[string]string) (string, map[string]string, bool)
 
 // composeTransforms left-to-right composes the per-stage transforms
 // so the next stage sees the previous stage's output line AND output
 // labels. A `| label_format` followed by a `| line_format` template
-// thus sees the renamed labels in the template's dot map.
+// thus sees the renamed labels in the template's dot map. A step that
+// drops the row (keep == false) short-circuits the remaining steps —
+// there's no row left for them to act on.
 func composeTransforms(steps []lineTransform) lineTransform {
 	if len(steps) == 1 {
 		return steps[0]
 	}
-	return func(line string, ts int64, labels map[string]string) (string, map[string]string) {
+	return func(line string, ts int64, labels map[string]string) (string, map[string]string, bool) {
+		var keep bool
 		for _, s := range steps {
-			line, labels = s(line, ts, labels)
+			line, labels, keep = s(line, ts, labels)
+			if !keep {
+				return line, labels, false
+			}
 		}
-		return line, labels
+		return line, labels, true
 	}
 }
 
@@ -171,7 +222,7 @@ func newLineFormatStep(src string) (lineTransform, error) {
 	if err != nil {
 		return nil, err
 	}
-	return func(line string, ts int64, labels map[string]string) (string, map[string]string) {
+	return func(line string, ts int64, labels map[string]string) (string, map[string]string, bool) {
 		currentLine = line
 		currentTs = ts
 		ctx := make(map[string]any, len(labels))
@@ -180,16 +231,16 @@ func newLineFormatStep(src string) (lineTransform, error) {
 		}
 		var buf bytes.Buffer
 		if err := tpl.Execute(&buf, ctx); err != nil {
-			return line, labels
+			return line, labels, true
 		}
-		return buf.String(), labels
+		return buf.String(), labels, true
 	}, nil
 }
 
 // decolorizeStep strips ANSI escape sequences from each line. Matches
 // Loki's `| decolorize` semantics. Labels pass through unchanged.
-func decolorizeStep(line string, _ int64, labels map[string]string) (string, map[string]string) {
-	return ansiEscape.ReplaceAllString(line, ""), labels
+func decolorizeStep(line string, _ int64, labels map[string]string) (string, map[string]string, bool) {
+	return ansiEscape.ReplaceAllString(line, ""), labels, true
 }
 
 // ansiEscape matches CSI (Control Sequence Introducer) sequences —
@@ -251,7 +302,7 @@ func newLabelFormatStep(formats []syntax.LabelFmt) (lineTransform, error) {
 		}
 		steps = append(steps, c)
 	}
-	return func(line string, ts int64, labels map[string]string) (string, map[string]string) {
+	return func(line string, ts int64, labels map[string]string) (string, map[string]string, bool) {
 		currentLine = line
 		currentTs = ts
 		// Copy the input labels into a fresh map; mutations stay scoped
@@ -286,7 +337,7 @@ func newLabelFormatStep(formats []syntax.LabelFmt) (lineTransform, error) {
 			}
 			out[c.dst] = buf.String()
 		}
-		return line, out
+		return line, out, true
 	}, nil
 }
 
@@ -322,12 +373,12 @@ const jsonParserErr = "JSONParserErr"
 //
 // Returns a FRESH labels map so callers can treat the input as
 // immutable, consistent with newLabelFormatStep.
-func unpackStep(line string, _ int64, labels map[string]string) (string, map[string]string) {
+func unpackStep(line string, _ int64, labels map[string]string) (string, map[string]string, bool) {
 	if len(line) == 0 {
-		return line, labels
+		return line, labels, true
 	}
 	if line[0] != '{' {
-		return line, withParserError(labels, errUnexpectedJSONObject)
+		return line, withParserError(labels, errUnexpectedJSONObject), true
 	}
 
 	// Buffered as alternating key/value pairs so nothing is committed
@@ -360,10 +411,10 @@ func unpackStep(line string, _ int64, labels map[string]string) (string, map[str
 			return nil
 		})
 	if err != nil {
-		return line, withParserError(labels, err)
+		return line, withParserError(labels, err), true
 	}
 	if !isPacked {
-		return line, labels
+		return line, labels, true
 	}
 
 	out := make(map[string]string, len(labels)+len(buf)/2)
@@ -373,7 +424,7 @@ func unpackStep(line string, _ int64, labels map[string]string) (string, map[str
 	for i := 0; i < len(buf); i += 2 {
 		out[buf[i]] = buf[i+1]
 	}
-	return newLine, out
+	return newLine, out, true
 }
 
 // withParserError returns a copy of labels carrying the `__error__` /
@@ -412,10 +463,10 @@ func newPatternStep(p string) (lineTransform, error) {
 		return nil, err
 	}
 	names := m.Names()
-	return func(line string, _ int64, lbs map[string]string) (string, map[string]string) {
+	return func(line string, _ int64, lbs map[string]string) (string, map[string]string, bool) {
 		caps := m.Matches([]byte(line))
 		if len(caps) == 0 {
-			return line, lbs
+			return line, lbs, true
 		}
 		out := make(map[string]string, len(lbs)+len(names))
 		for k, v := range lbs {
@@ -431,7 +482,7 @@ func newPatternStep(p string) (lineTransform, error) {
 			}
 			out[name] = string(c)
 		}
-		return line, out
+		return line, out, true
 	}, nil
 }
 
@@ -455,7 +506,7 @@ func newLabelProjectionStep(stage syntax.StageExpr) (lineTransform, error) {
 	switch s := stage.(type) {
 	case *syntax.DropLabelsExpr:
 		matchers := s.Matchers()
-		return func(line string, _ int64, in map[string]string) (string, map[string]string) {
+		return func(line string, _ int64, in map[string]string) (string, map[string]string, bool) {
 			out := copyLabelMap(in)
 			for _, d := range matchers {
 				if d.Matcher != nil {
@@ -466,14 +517,14 @@ func newLabelProjectionStep(stage syntax.StageExpr) (lineTransform, error) {
 				}
 				delete(out, d.Name)
 			}
-			return line, out
+			return line, out, true
 		}, nil
 	case *syntax.KeepLabelsExpr:
 		matchers := s.Matchers()
-		return func(line string, _ int64, in map[string]string) (string, map[string]string) {
+		return func(line string, _ int64, in map[string]string) (string, map[string]string, bool) {
 			out := copyLabelMap(in)
 			if len(matchers) == 0 {
-				return line, out
+				return line, out, true
 			}
 			for name, val := range in {
 				if isSpecialLabel(name) {
@@ -494,7 +545,7 @@ func newLabelProjectionStep(stage syntax.StageExpr) (lineTransform, error) {
 					delete(out, name)
 				}
 			}
-			return line, out
+			return line, out, true
 		}, nil
 	default:
 		return nil, fmt.Errorf("loki: unsupported label projection stage %T", stage)

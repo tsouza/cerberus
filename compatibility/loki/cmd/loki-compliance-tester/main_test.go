@@ -112,26 +112,34 @@ func TestCheckExpansion(t *testing.T) {
 }
 
 // TestLoadCases_FullCorpusExpansion loads the real vendored corpus +
-// dataset metadata through the same path the driver uses and pins the
-// honest denominator: every runnable definition expands to at least
-// one case, and the eight kind-less metric-shaped definitions in
+// the real cerberus-queries/ additive corpus + dataset metadata
+// through the same path the driver uses and pins the honest
+// denominator: every runnable definition expands to at least one
+// case, and the eight kind-less metric-shaped definitions in
 // exhaustive/aggregations.yaml each contribute exactly one forward
 // metric case carrying the YAML's 1m step. Before the registry's
 // kind-before-directions defaulting fix the corpus expanded to 78
-// cases with those eight silently absent; the fixed total is 86.
+// cases with those eight silently absent; the vendored-only total was
+// 86. loadCerberusQueries (issue #1611) then merges in
+// cerberus-queries/regression/unpack.yaml's 2 `directions: both` log
+// query definitions (2 cases each) — a metric-mode third case was
+// deliberately left out (issue #1652: metric-mode grouping/filtering
+// by an unpack-extracted label is a separate, unfixed gap) — for a
+// total of 90.
 func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	t.Parallel()
 	f := flags{
-		corpusDir:   filepath.Join("..", "..", "upstream", "loki-bench", "queries"),
-		metadataDir: filepath.Join("..", ".."),
-		seed:        42,
+		corpusDir:          filepath.Join("..", "..", "upstream", "loki-bench", "queries"),
+		cerberusQueriesDir: filepath.Join("..", "..", "cerberus-queries"),
+		metadataDir:        filepath.Join("..", ".."),
+		seed:               42,
 	}
 	cases, err := loadCases(f, false)
 	if err != nil {
 		t.Fatalf("loadCases: %v", err)
 	}
-	if len(cases) != 86 {
-		t.Fatalf("corpus expanded to %d cases, want 86", len(cases))
+	if len(cases) != 90 {
+		t.Fatalf("corpus expanded to %d cases, want 90", len(cases))
 	}
 
 	revived := []string{

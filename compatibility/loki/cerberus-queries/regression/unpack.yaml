@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+---
+# `| unpack` differential coverage — see issue #1611. Before this file
+# the vendored corpus never queried `| unpack` at all (zero hits
+# outside its LICENSE text) and the seeder never emitted a
+# Promtail-pack-shaped payload for it to run against, so the stage
+# shipped guarded only by cerberus's own unit tests reading upstream's
+# source rather than a real differential run — exactly the gap #1447
+# (unpackStep silently swallowing the `__error__` /
+# `__error_details__` labels a malformed payload should carry) shipped
+# through.
+#
+# Both queries below target `{service_name="packed-source"}`, the one
+# seeded stream (compatibility/loki/cmd/seed/main.go's
+# generatePackedLine) whose lines cycle through the four payload
+# shapes `| unpack` must discriminate: a well-formed packed object
+# (top-level string "_entry" key), a well-formed object with no
+# "_entry" key, a non-object JSON value, and malformed JSON.
+#
+# Running this corpus for the first time surfaced a SECOND, distinct
+# bug beyond #1447: `| __error__="..."` following `| unpack` was
+# silently a no-op end-to-end (see internal/logql/lower.go's
+# dynamicLabels gate and internal/api/loki/post_process.go's
+# newLabelFilterStep for the fix) — the two `kind: log` cases below
+# cover it. A `kind: metric` case grouping by an unpack-extracted label
+# (`sum by (category) (count_over_time(... | unpack ...))`) is
+# deliberately NOT included here: that's a separate, wider gap (metric
+# queries have no Go-side post-processing pass to hook a fix into —
+# see #1652) and would gate the required `compatibility/loki` check on
+# a fix this PR doesn't make.
+queries:
+  - description: unpack happy path - only successfully unpacked lines
+    query: '{service_name="packed-source"} | unpack | __error__=""'
+    kind: log
+    time_range:
+      length: 24h
+    directions: both
+    tags:
+      - unpack
+      - happy-path
+
+  - description: unpack error path - only lines unpack rejected
+    query: '{service_name="packed-source"} | unpack | __error__="JSONParserErr"'
+    kind: log
+    time_range:
+      length: 24h
+    directions: both
+    tags:
+      - unpack
+      - error-path

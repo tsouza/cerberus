@@ -607,8 +607,13 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	rows := clampLogRows(chclient.DecodeLogRows(samples), limit, dir)
-	streams := toStreamsWithTransform(rows, tx, categorize)
+	// Transform (including any post-`| unpack` label-filter drop — see
+	// newLabelFilterStep) BEFORE clamping to limit: Loki's contract is
+	// "filter, then limit", and clamping first would apply `limit` to
+	// the wrong (pre-filter) candidate set — see [applyLineTransform].
+	rows := applyLineTransform(chclient.DecodeLogRows(samples), tx)
+	rows = clampLogRows(rows, limit, dir)
+	streams := toStreams(rows, categorize)
 	return &QueryData{
 		ResultType:    "streams",
 		EncodingFlags: encodingFlagsFor(categorize, streams),
@@ -631,8 +636,10 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	rows := clampLogRows(chclient.DecodeLogRows(samples), limit, dir)
-	streams := toStreamsWithTransform(rows, tx, categorize)
+	// See buildInstantData: transform (and drop) before clamping.
+	rows := applyLineTransform(chclient.DecodeLogRows(samples), tx)
+	rows = clampLogRows(rows, limit, dir)
+	streams := toStreams(rows, categorize)
 	return &QueryData{
 		ResultType:    "streams",
 		EncodingFlags: encodingFlagsFor(categorize, streams),
@@ -871,38 +878,61 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 	return out
 }
 
-// toStreamsWithTransform pivots log rows into Loki's "streams" result shape
-// and optionally runs a per-row transform (line_format / decolorize /
-// label_format) before grouping. Each distinct *output* label set
-// becomes one Stream; values are sorted by ts ascending. Nil tx is
-// the identity transform.
+// applyLineTransform runs tx over every row, keeping only the ones tx
+// keeps (a *syntax.LabelFilterExpr step — see newLabelFilterStep — can
+// drop a row once its label filter no longer matches the labels
+// unpackStep/newPatternStep just computed). Returns a NEW slice with
+// each surviving row's Line/Labels replaced by tx's output; nil tx is
+// the identity (rows returned unchanged, same length).
 //
-// When the transform mutates labels (e.g., `| label_format`), the
-// grouping reflects the post-format label set — two rows that differ
-// only on a dropped label collapse into a single stream. Conversely,
-// two rows that share the original labels but diverge after a
-// template-set stay in distinct streams.
-func toStreamsWithTransform(rows []chclient.LogRow, tx lineTransform, categorize bool) []Stream {
+// MUST run before [clampLogRows]: Loki's contract for `limit` is
+// "filter, then limit, then take the first N" — clamping first would
+// apply the request's limit to the wrong (pre-filter) candidate set,
+// silently truncating below the caller's requested count once a
+// downstream filter drops any candidate rows (see buildInstantData /
+// buildRangeData).
+func applyLineTransform(rows []chclient.LogRow, tx lineTransform) []chclient.LogRow {
+	if tx == nil {
+		return rows
+	}
+	out := make([]chclient.LogRow, 0, len(rows))
+	for _, r := range rows {
+		line, labels, keep := tx(r.Line, r.Timestamp.UnixNano(), r.Labels)
+		if !keep {
+			continue
+		}
+		r.Line = line
+		r.Labels = labels
+		out = append(out, r)
+	}
+	return out
+}
+
+// toStreams pivots ALREADY-transformed log rows into Loki's "streams"
+// result shape. Each distinct label set becomes one Stream; values
+// are sorted by ts ascending. Callers that need a per-row transform
+// (line_format / decolorize / label_format / unpack / pattern / a
+// post-unpack label filter) run [applyLineTransform] first — see
+// buildInstantData / buildRangeData for the limit-safe ordering, and
+// [toStreamsWithTransform] for the tail-websocket path that doesn't
+// need that ordering (its row cap is a SQL LIMIT, applied before any
+// row reaches here).
+func toStreams(rows []chclient.LogRow, categorize bool) []Stream {
 	type acc struct {
 		labels map[string]string
 		values []StreamValue
 	}
 	bySeries := map[string]*acc{}
 	for _, s := range rows {
-		line := s.Line
-		labels := s.Labels
-		if tx != nil {
-			line, labels = tx(line, s.Timestamp.UnixNano(), labels)
-		}
-		key := format.CanonicalKey(labels)
+		key := format.CanonicalKey(s.Labels)
 		a, ok := bySeries[key]
 		if !ok {
-			a = &acc{labels: labels}
+			a = &acc{labels: s.Labels}
 			bySeries[key] = a
 		}
 		a.values = append(a.values, StreamValue{
 			Timestamp: strconv.FormatInt(s.Timestamp.UnixNano(), 10),
-			Line:      line,
+			Line:      s.Line,
 			// Per-line structured metadata (the OTel-CH LogAttributes map).
 			// When the client requested `categorize-labels` it rides as the
 			// categorized `{"structuredMetadata": {...}}` third tuple element
@@ -928,6 +958,15 @@ func toStreamsWithTransform(rows []chclient.LogRow, tx lineTransform, categorize
 		out = append(out, Stream{Stream: format.NormalizeLabelMap(a.labels), Values: a.values})
 	}
 	return out
+}
+
+// toStreamsWithTransform applies tx (if any) then groups — used by the
+// /tail websocket (see tail.go's runTailLoop), whose row cap is a SQL
+// LIMIT applied to the query itself (buildTailSQL) rather than a
+// post-fetch clamp, so there's no separate clamp step to reorder
+// against the way buildInstantData / buildRangeData need.
+func toStreamsWithTransform(rows []chclient.LogRow, tx lineTransform, categorize bool) []Stream {
+	return toStreams(applyLineTransform(rows, tx), categorize)
 }
 
 // normalizeMetadata rewrites a per-line structured-metadata map through

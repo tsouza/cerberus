@@ -26,7 +26,7 @@ func TestUnpack_ExtractsLabelsAndEntry(t *testing.T) {
 	}
 
 	line := `{"_entry":"original log line","pod":"web-1","container":"app"}`
-	gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 
 	if gotLine != "original log line" {
 		t.Errorf("line: got %q, want %q", gotLine, "original log line")
@@ -47,7 +47,7 @@ func TestUnpack_DuplicateSuffix(t *testing.T) {
 	tx, _ := postProcessExtract(expr)
 
 	line := `{"_entry":"l","job":"shadowed"}`
-	_, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	_, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 
 	if gotLabels["job"] != "api" {
 		t.Errorf("stream label `job` should be preserved; got %q", gotLabels["job"])
@@ -71,7 +71,7 @@ func TestUnpack_NonJSONStampsParserError(t *testing.T) {
 	tx, _ := postProcessExtract(expr)
 
 	for _, line := range []string{"not json", `[1,2]`, `"a string"`, `42`} {
-		gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+		gotLine, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 		if gotLine != line {
 			t.Errorf("line should pass through; got %q, want %q", gotLine, line)
 		}
@@ -95,7 +95,7 @@ func TestUnpack_EmptyLineIsNotAnError(t *testing.T) {
 	expr, _ := syntax.ParseExpr(`{job="api"} | unpack`)
 	tx, _ := postProcessExtract(expr)
 
-	gotLine, gotLabels := tx("", 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx("", 0, map[string]string{"job": "api"})
 	if gotLine != "" {
 		t.Errorf("line should stay empty; got %q", gotLine)
 	}
@@ -115,7 +115,7 @@ func TestUnpack_MalformedObjectStampsParserError(t *testing.T) {
 	tx, _ := postProcessExtract(expr)
 
 	const line = `{"_entry":"l","pod":`
-	gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 	if gotLine != line {
 		t.Errorf("malformed line should pass through unmodified; got %q", gotLine)
 	}
@@ -142,7 +142,7 @@ func TestUnpack_NoPackedEntryExtractsNothing(t *testing.T) {
 	tx, _ := postProcessExtract(expr)
 
 	const line = `{"pod":"web-1","container":"app"}`
-	gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 	if gotLine != line {
 		t.Errorf("line should pass through; got %q", gotLine)
 	}
@@ -161,7 +161,7 @@ func TestUnpack_SanitizesLabelKeys(t *testing.T) {
 	tx, _ := postProcessExtract(expr)
 
 	const line = `{"_entry":"l","pod-name":"web-1","9lives":"cat"}`
-	_, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	_, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 	if gotLabels["pod_name"] != "web-1" {
 		t.Errorf("`pod-name` should sanitise to `pod_name`; got %#v", gotLabels)
 	}
@@ -180,7 +180,7 @@ func TestUnpack_SkipsNonStringValues(t *testing.T) {
 	tx, _ := postProcessExtract(expr)
 
 	line := `{"_entry":"l","count":42,"nested":{"x":1},"pod":"web-1"}`
-	_, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	_, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 
 	if _, ok := gotLabels["count"]; ok {
 		t.Errorf("non-string `count` should be dropped; got %q", gotLabels["count"])
@@ -210,7 +210,7 @@ func TestPattern_NamedCaptures(t *testing.T) {
 		t.Fatalf("expected non-nil transform")
 	}
 
-	gotLine, gotLabels := tx(`10.0.0.1 - GET /index.html`, 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx(`10.0.0.1 - GET /index.html`, 0, map[string]string{"job": "api"})
 	if gotLine != `10.0.0.1 - GET /index.html` {
 		t.Errorf("pattern shouldn't rewrite line; got %q", gotLine)
 	}
@@ -234,7 +234,7 @@ func TestPattern_EmptyLineNoExtraction(t *testing.T) {
 	expr, _ := syntax.ParseExpr(`{job="api"} | pattern "<ip> <_> <method> <path>"`)
 	tx, _ := postProcessExtract(expr)
 
-	gotLine, gotLabels := tx("", 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx("", 0, map[string]string{"job": "api"})
 	if gotLine != "" {
 		t.Errorf("line should pass through; got %q", gotLine)
 	}
@@ -257,7 +257,7 @@ func TestPattern_PartialCapture(t *testing.T) {
 	// Only one space-separated token survives: the matcher captures
 	// `one` for `<a>` and stops (no more space-literals to anchor on),
 	// returning a single capture per Matches' early-return.
-	_, gotLabels := tx("one", 0, map[string]string{"job": "api"})
+	_, gotLabels, _ := tx("one", 0, map[string]string{"job": "api"})
 	if got := gotLabels["a"]; got != "one" {
 		t.Errorf("first capture should be `one`; got %q", got)
 	}
@@ -274,7 +274,7 @@ func TestPattern_DuplicateSuffix(t *testing.T) {
 	expr, _ := syntax.ParseExpr(`{job="api"} | pattern "<job> <_>"`)
 	tx, _ := postProcessExtract(expr)
 
-	_, gotLabels := tx("other rest", 0, map[string]string{"job": "api"})
+	_, gotLabels, _ := tx("other rest", 0, map[string]string{"job": "api"})
 	if gotLabels["job"] != "api" {
 		t.Errorf("stream label `job` should be preserved; got %q", gotLabels["job"])
 	}
@@ -313,7 +313,7 @@ func TestPatternUnpackCompose(t *testing.T) {
 	}
 
 	line := `{"_entry":"GET /healthz","pod":"web-1"}`
-	gotLine, gotLabels := tx(line, 0, map[string]string{"job": "api"})
+	gotLine, gotLabels, _ := tx(line, 0, map[string]string{"job": "api"})
 	if gotLine != "GET /healthz" {
 		t.Errorf("line should be the unpacked _entry; got %q", gotLine)
 	}

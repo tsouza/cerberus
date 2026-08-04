@@ -15,7 +15,15 @@ import (
 // TestLowerUnpackPattern_NoSQLImpact pins the contract that `| unpack`
 // and `| pattern` are post-fetch stages: they extract labels in Go
 // after the rows return, so the lowered SQL contains exactly the same
-// predicates as the equivalent query without the parser stage.
+// predicates as the equivalent query without the parser stage. A
+// downstream label filter on an ORDINARY label name still gets a SQL
+// predicate too (the structured-metadata/stream-label fallback —
+// structuredOrStreamLookup in lower.go), which is what the "before
+// label filter" cases below pin; only a filter on the `__error__` /
+// `__error_details__` family loses SQL visibility (see
+// TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo below and
+// lowerPipelineWithLabels's dynamicLabels gate) since those keys are
+// never legitimately present via that fallback.
 //
 // This mirrors the existing decolorize / line_format / label_format
 // stages — see internal/logql/lower.go for the dispatch.
@@ -70,6 +78,38 @@ func TestLowerUnpackPattern_NoSQLImpact(t *testing.T) {
 			if gotWith != gotWithout {
 				t.Errorf("parser stage altered SQL\nwith stage:    %s\nwithout stage: %s",
 					gotWith, gotWithout)
+			}
+		})
+	}
+}
+
+// TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo pins the fix for
+// the bug the loki-unpack-corpus-coverage compat corpus caught (#1611):
+// `| __error__=""` / `| __error__="JSONParserErr"` following `| unpack`
+// (or `| pattern`) used to still get the structured-metadata SQL
+// fallback pushed down — a silent no-op, since `__error__` never
+// legitimately exists in LogAttributes/ResourceAttributes: the ""
+// comparison matched every row and the non-empty comparison matched
+// none, incorrectly excluding rows before unpackStep's Go-side
+// extraction ever ran (see internal/api/loki/post_process.go's
+// newLabelFilterStep, which now applies these filters instead). A
+// filter on an ORDINARY label name is unaffected — see
+// TestLowerUnpackPattern_NoSQLImpact.
+func TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	cases := []string{
+		`{job="api"} | unpack | __error__=""`,
+		`{job="api"} | unpack | __error__="JSONParserErr"`,
+		`{job="api"} | pattern "<_> <level> <msg>" | __error__=""`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			got := emitSQL(t, q, s)
+			bare := emitSQL(t, `{job="api"}`, s)
+			if got != bare {
+				t.Errorf("expected the __error__ filter to have no SQL impact once handled in Go instead\nwith filter: %s\nbare:        %s", got, bare)
 			}
 		})
 	}
