@@ -191,7 +191,12 @@ func TestLower(t *testing.T) {
 		// NormalizeScanTimeBound establishes the instant windowed-array
 		// leaf scan bound and RequireScanTimeBound verifies it. A panic
 		// here would mean this query shape reaches production unbounded.
-		spec.AssertScanTimeBoundAccepts(t, plan)
+		optimized := spec.AssertScanTimeBoundAccepts(t, plan)
+		optSQL, optArgs, err := chsql.Emit(context.Background(), optimized)
+		if err != nil {
+			t.Fatalf("Emit(optimized plan): %v", err)
+		}
+		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 	})
 }
 

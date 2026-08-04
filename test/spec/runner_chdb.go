@@ -1056,6 +1056,8 @@ func RunRoundTrip(t *testing.T, c *Case) {
 		t.Fatalf("fixture %s has seed/expected_rows but missing sql section", c.Name)
 	}
 
+	sql, args := rt.SQL, rt.Args
+
 	// TraceQL search-shaped fixtures are captured pre-ProjectSamples (see
 	// ReconstructTraceQLSearchWrap's doc comment) — the SAME gap #1635 fixed
 	// for the strict-scan differential (issue #1653). Substitute the
@@ -1068,9 +1070,60 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	if wrapSQL, wrapArgs, ok, err := ReconstructTraceQLSearchWrap(c); err != nil {
 		t.Fatalf("fixture %s: traceql wrap reconstruction: %v", c.Name, err)
 	} else if ok {
-		rt.SQL = wrapSQL
-		rt.Args = wrapArgs
+		sql, args = wrapSQL, wrapArgs
 	}
+
+	// expected_rows is ground truth for the pre-optimizer SQL above, so a
+	// mismatch here is safe to fold into GOLDEN_UPDATE.
+	runRoundTripSQL(t, c, rt, sql, args, true)
+}
+
+// RunRoundTripSQL is [RunRoundTrip]'s post-optimizer twin: it executes a
+// CALLER-SUPPLIED sql/args pair — typically chsql.Emit of the OPTIMIZED
+// plan (see spec.AssertScanTimeBoundAccepts's return value) — against the
+// same fixture's `seed:` and asserts the resulting rows still match
+// `expected_rows:`.
+//
+// This exists because production always runs the optimizer before
+// chsql.Emit (internal/engine/engine.go's Parse → ProjectSamples →
+// Optimize → Emit order), but every *.txtar fixture's own `sql:` /
+// `chplan:` sections — and, until now, the `expected_rows:` round-trip
+// itself — only ever validated the PRE-optimizer plan (issue #1700). The
+// optimizer is meant to be semantics-preserving, so the optimized SQL's
+// result set should be byte-identical to the pre-optimizer SQL's; a
+// mismatch here is a real optimizer bug, not a golden to regenerate — so,
+// unlike RunRoundTrip, GOLDEN_UPDATE=1 never rewrites `expected_rows` from
+// this path. `expected_rows` stays anchored to the pre-optimizer
+// execution that RunRoundTrip captures; this function only ever compares
+// against it.
+//
+// A no-op for fixtures that never opted into round-trip execution, same
+// as RunRoundTrip.
+func RunRoundTripSQL(t *testing.T, c *Case, sql string, args []any) {
+	t.Helper()
+	rt, err := LoadRoundTrip(c)
+	if err != nil {
+		t.Fatalf("LoadRoundTrip: %v", err)
+	}
+	if !rt.IsRoundTrip() {
+		return
+	}
+	if strings.TrimSpace(sql) == "" {
+		t.Fatalf("fixture %s: optimized SQL is empty", c.Name)
+	}
+	runRoundTripSQL(t, c, rt, sql, args, false)
+}
+
+// runRoundTripSQL is the shared chDB-execution core both RunRoundTrip and
+// RunRoundTripSQL delegate to: it seeds an ephemeral chDB session, executes
+// sql/args, and asserts the resulting rows match rt.ExpectedRows.
+// allowGoldenUpdate gates whether a mismatch under GOLDEN_UPDATE=1 rewrites
+// `expected_rows` in place (RunRoundTrip, the pre-optimizer ground truth)
+// or fails outright (RunRoundTripSQL, the post-optimizer check — a
+// mismatch there must never silently become the new "expected", since
+// that would launder a real optimizer bug into a passing golden).
+func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, args []any, allowGoldenUpdate bool) {
+	t.Helper()
 
 	// Acquire the process-global chDB engine lock for the FULL engine
 	// span of this case: open/ping/seed, query, row iteration, and
@@ -1093,7 +1146,7 @@ func RunRoundTrip(t *testing.T, c *Case) {
 	// inspects the SQL. The two passes are independent textually but
 	// the args side is global, and ordering them this way keeps the
 	// argIdx accounting in substituteNow64 simple.
-	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
+	query, queryArgs := substituteNow64(sql, args)
 	query = expandStarProjection(query, seedTableColumns(rt.Seed))
 	query = rewriteMapProjections(query)
 	query = nestMapOrderBy(query)
@@ -1167,8 +1220,9 @@ func RunRoundTrip(t *testing.T, c *Case) {
 		// internal/promql/lower_test.go. Lets dev/CI regenerate the
 		// round-trip cells after a semantically-correct query
 		// change (e.g., PromQL `__name__`-drop fix in #355) without
-		// hand-editing 70+ fixtures.
-		if os.Getenv(envGoldenUpdate) == "1" {
+		// hand-editing 70+ fixtures. Never taken from the
+		// post-optimizer path (see RunRoundTripSQL's doc comment).
+		if allowGoldenUpdate && os.Getenv(envGoldenUpdate) == "1" {
 			Match(t, c, map[string]string{
 				"expected_rows": formatExpectedRows(gotNorm),
 			})

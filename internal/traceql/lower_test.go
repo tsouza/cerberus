@@ -84,6 +84,31 @@ func TestLower(t *testing.T) {
 		// Every real lowered plan must pass the fail-closed
 		// scan-time-bound invariant (see AssertScanTimeBoundAccepts).
 		spec.AssertScanTimeBoundAccepts(t, plan)
+
+		// Production always runs the optimizer before chsql.Emit (see
+		// internal/engine/engine.go's Parse -> ProjectSamples -> Optimize
+		// -> Emit order), but for a search-shaped query it optimizes the
+		// WRAPPED plan (post-ProjectSamples), not the raw plan lowered
+		// above. Reconstruct that wrapped shape via the same helper the
+		// chDB round-trip lane already leans on for issue #1653, so the
+		// optimized SQL below matches what expected_rows was captured
+		// against. Metrics-pipeline queries never take the wrap (see
+		// ReconstructTraceQLSearchWrapPlan's doc comment), so they fall
+		// back to optimizing the raw lowered plan directly, matching how
+		// expected_rows was captured for them too. Closing this gap is
+		// issue #1700.
+		roundTripInput := plan
+		if wrapPlan, ok, werr := spec.ReconstructTraceQLSearchWrapPlan(c); werr != nil {
+			t.Fatalf("fixture %s: traceql wrap reconstruction: %v", c.Name, werr)
+		} else if ok {
+			roundTripInput = wrapPlan
+		}
+		optimized := spec.AssertScanTimeBoundAccepts(t, roundTripInput)
+		optSQL, optArgs, err := chsql.Emit(context.Background(), optimized)
+		if err != nil {
+			t.Fatalf("Emit(optimized plan): %v", err)
+		}
+		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 	})
 }
 
