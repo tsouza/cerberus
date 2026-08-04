@@ -15,7 +15,7 @@ CREATE TABLE otel_traces (
 INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
 -- expected_rows --
 [
-  [1]
+  ["", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "api"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=((ParentSpanId != "") AND (ResourceAttributes["service.name"] = "api"))

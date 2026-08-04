@@ -13,7 +13,7 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), 90000000, map('service.name', 'backend'));
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", 150000000]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 150000000]
 ]
 -- args --
 [0] string = "service.name"

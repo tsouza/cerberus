@@ -53,9 +53,9 @@ INSERT INTO otel_traces VALUES
     ('ffffffffffffffffffffffffffffff03', '0000000000000031', toDateTime64('2026-01-01 00:00:30', 9), 'checkout');
 -- expected_rows --
 [
-  ["0000000000000000000000000000aa01", "0000000000000011", "2026-01-01T00:00:10Z", "checkout"],
-  ["0000000000000000000000000000aa01", "0000000000000012", "2026-01-01T00:00:20Z", "checkout"],
-  ["ffffffffffffffffffffffffffffff03", "0000000000000031", "2026-01-01T00:00:30Z", "checkout"]
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "0000000000000000000000000000aa01"}, "2026-01-01T00:00:10Z", 0],
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000012", "__cerberus_traceID": "0000000000000000000000000000aa01"}, "2026-01-01T00:00:20Z", 0],
+  ["checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000031", "__cerberus_traceID": "ffffffffffffffffffffffffffffff03"}, "2026-01-01T00:00:30Z", 0]
 ]
 -- args --
 [0] string = "checkout"

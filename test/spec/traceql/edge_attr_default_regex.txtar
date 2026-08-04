@@ -16,8 +16,8 @@ INSERT INTO otel_traces (Duration) VALUES
     (30000000);
 -- expected_rows --
 [
-  [10000000],
-  [20000000]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 10000000],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 20000000]
 ]
 -- chplan --
 Filter predicate=(SpanAttributes["path"] =~ "/api/.*")

@@ -141,6 +141,16 @@ type Handler struct {
 	// Production leaves it nil (the range handler skips the call), so the
 	// hot path is byte-unchanged; only tests install it.
 	onRangeDrain func(int64)
+
+	// onInstantDrain, when non-nil, is invoked once per /api/v1/query
+	// request that reaches executeInstant, with the number of rows
+	// Engine.Query pulled from ClickHouse (res.Inspected — the eager-path
+	// analogue of onRangeDrain's streaming cursor count). Instant queries
+	// never buffer via a cursor: executeInstant drains the whole result
+	// inside engine.Query, so res.Inspected IS the drain the boundsdrain
+	// harness needs to bound. Production leaves it nil so the hot path is
+	// byte-unchanged; only tests install it.
+	onInstantDrain func(int64)
 }
 
 // New constructs a Handler with the seed optimizer wired in plus a
@@ -793,6 +803,9 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 	// (zero) X-Cerberus-CH-Millis stamped by the middleware.
 	if c := ctxCounter(ctx); c != nil {
 		c.add(time.Duration(res.CHMillis) * time.Millisecond)
+	}
+	if h.onInstantDrain != nil {
+		h.onInstantDrain(res.Inspected)
 	}
 	return res.Samples, res.Headers, nil
 }

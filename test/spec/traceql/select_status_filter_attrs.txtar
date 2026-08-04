@@ -22,7 +22,7 @@ INSERT INTO otel_traces VALUES
     ('b0000000000000000000000000000002', '2000000000000002', toDateTime64('2026-05-01 11:00:01', 9), 'Unset', map('http.method', 'GET'), map('service.name', 'frontend'));
 -- expected_rows --
 [
-  ["b0000000000000000000000000000001", "2000000000000001", "2026-05-01T11:00:00Z", "POST", "checkout"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_sel_str_http.method": "POST", "__cerberus_sel_str_service.name": "checkout", "__cerberus_spanID": "2000000000000001", "__cerberus_traceID": "b0000000000000000000000000000001", "service.name": "checkout"}, "2026-05-01T11:00:00Z", 0]
 ]
 -- args --
 [0] string = "http.method"

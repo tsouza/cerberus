@@ -13,8 +13,8 @@ CREATE TABLE otel_traces (
 INSERT INTO otel_traces (_idx) VALUES (0), (1), (2);
 -- expected_rows --
 [
-  [0],
-  [2]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "db"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "frontend"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Filter predicate=(ResourceAttributes["service.name"] != "backend")

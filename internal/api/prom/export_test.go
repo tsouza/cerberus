@@ -21,3 +21,16 @@ package prom
 func (h *Handler) SetOnRangeDrain(fn func(int64)) {
 	h.onRangeDrain = fn
 }
+
+// SetOnInstantDrain installs the test-observable eager-drain hook on the
+// handler. The hook fires once per /api/v1/query request that reaches
+// executeInstant, with res.Inspected — the number of rows Engine.Query
+// pulled from ClickHouse before any Go-side result shaping. This is the
+// eager-path counterpart to SetOnRangeDrain: /api/v1/query has no streaming
+// cursor to read Inspected off, so executeInstant threads it through this
+// hook instead. Exposed via export_test.go so the field stays unexported in
+// production code while remaining settable from the chdb-tagged regression
+// tests in package prom_test.
+func (h *Handler) SetOnInstantDrain(fn func(int64)) {
+	h.onInstantDrain = fn
+}

@@ -19,7 +19,7 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000002', '0000000000000002', toDateTime64('2026-01-01 00:00:01', 9), map('service.name', 'backend',  'service.namespace', 'api', 'k8s.cluster.name', 'stg'));
 -- expected_rows --
 [
-  ["a0000000000000000000000000000001", "0000000000000001", "2026-01-01T00:00:00Z", "web", "prod"]
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_sel_str_k8s.cluster.name": "prod", "__cerberus_sel_str_service.namespace": "web", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "k8s.cluster.name": "prod", "service.name": "frontend", "service.namespace": "web"}, "2026-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 Project [TraceId, SpanId, Timestamp, ResourceAttributes["service.namespace"] AS service.namespace, ResourceAttributes["k8s.cluster.name"] AS k8s.cluster.name]

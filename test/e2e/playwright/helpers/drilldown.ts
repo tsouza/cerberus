@@ -26,6 +26,26 @@
  * pin the Grafana version (currently `grafana/grafana:12.2.9`, see
  * helpers/README.md) and re-audit the click paths in the same PR
  * when bumping.
+ *
+ * IMPORTANT: the three apps are also NOT pinned to a Grafana version
+ * on their own. They're grafana.com-hosted plugins the core image
+ * downloads asynchronously at boot (see `waitForAppInstalled` above),
+ * and every fresh container pulls whatever the CURRENT published
+ * version is — independent of the pinned core Grafana tag. Selectors
+ * here can therefore drift even with zero changes to
+ * `docker-compose.yml` / the k3d Grafana manifest. This bit cerberus
+ * for real: `EXPECTED_DRILL_DEPTH` (#1502 / #1661) went from
+ * annotation-only to a hard gate and immediately failed on the very
+ * next push-to-main run, purely from app auto-updates
+ * (grafana-exploretraces-app 2.1.0, grafana-metricsdrilldown-app
+ * 2.3.1, grafana-lokiexplore-app 2.4.0 as of 2026-08-04) — no Grafana
+ * core bump involved. `drillTwoLevels` was re-verified live against
+ * those versions and is documented per-selector below; re-verify the
+ * same way (`docker compose up -d`, drive each app through
+ * `npx playwright test iterate-drilldown-apps.spec.ts`) whenever this
+ * spec starts failing depth-below-floor with no other change in
+ * sight — it's more likely app drift than a cerberus regression, but
+ * only live verification (not assumption) tells you which.
  */
 
 import type { APIRequestContext, Page, Response } from '@playwright/test';
@@ -148,6 +168,100 @@ export type DrillTwoLevelsResult = {
   rootHadNoAffordance: boolean;
 };
 
+// Third-party drilldown-app "select this facet" buttons that carry no
+// data-testid of their own (Traces Drilldown's per-attribute
+// Include/Exclude pair, Metrics Drilldown's by-label breakdown-panel
+// "Select" button — both verified live against the grafana.com-hosted
+// app versions running under grafana/grafana:12.2.9 on 2026-08-04:
+// grafana-exploretraces-app@2.1.0, grafana-metricsdrilldown-app@2.3.1).
+// Scoped to a `data-testid^="data-testid Panel header "` ancestor (a
+// stable, already-load-bearing Grafana convention used throughout every
+// drilldown app) and `:not([data-testid])` so the pattern can't shadow
+// a sibling app's OWN testid'd button with the same visible text —
+// Logs Drilldown's "Include" filter chip carries
+// `data-testid="data-testid button-filter-include"` and must keep
+// matching through its own selector below, not this generic one.
+const PANEL_BUTTON_INCLUDE = '[data-testid^="data-testid Panel header "] button:has-text("Include"):not([data-testid])';
+const PANEL_BUTTON_SELECT = '[data-testid^="data-testid Panel header "] button:has-text("Select"):not([data-testid])';
+
+// Logs Drilldown (2.4.0) moved its per-field breakdown behind a "Fields"
+// tab: the per-service view a first-level click lands on (.../service/
+// <name>/logs) has no second-level facet inline, so the second drill has
+// to switch to that tab before a `data-testid breakdown-select-value`
+// button becomes available. See the fallback in `drillTwoLevels` below
+// for why this is folded into the second click rather than surfaced as
+// its own counted level.
+const LOGS_FIELDS_TAB = '[data-testid="data-testid tab-fields"]';
+const LOGS_BREAKDOWN_SELECT_VALUE = '[data-testid="data-testid breakdown-select-value"]';
+
+// Shared first/second-level selector union. Both drills reuse the same
+// tolerant set of facet-affordance patterns — after a first click most
+// apps render a secondary breakdown view whose affordances reuse the
+// same testid families (or, for Traces Drilldown, literally the same
+// selector: selecting one attribute value re-renders the panel grid one
+// groupBy level deeper with a fresh Include/Exclude pair).
+const AFFORDANCE_SELECTOR = [
+  // Metrics Drilldown (12.x) — per-metric "Select" action on the
+  // tile grid (testid select-action-<metric_name>, verified live
+  // against grafana/grafana:12.2.9), and the untestid'd "Select"
+  // button on a by-label breakdown panel (second drill level).
+  '[data-testid^="select-action-"]',
+  PANEL_BUTTON_SELECT,
+  // Explore Metrics — metric tile / trail card (11.x families,
+  // kept so a selector rename fails loudly here, not silently).
+  '[data-testid^="data-testid metric-select"]',
+  '[data-testid^="data-testid trail-"]',
+  // Logs Drilldown (12.x) — per-service "Show logs" select button,
+  // and the per-field "Include" filter chip (both carry stable
+  // testids; verified live against grafana/grafana:12.2.9).
+  '[data-testid="data-testid button-select-service"]',
+  '[data-testid="data-testid button-filter-include"]',
+  '[data-testid="data-testid breakdown-select-value"]',
+  // Explore Logs — label chip / detected-label entry (older families).
+  '[data-testid^="data-testid detected-label"]',
+  '[data-testid^="data-testid label-name"]',
+  '[data-testid^="data-testid detected-label-value"]',
+  '[data-testid^="data-testid label-value"]',
+  // Explore Traces (2.x) — the per-attribute-value Include button
+  // (untestid'd; see PANEL_BUTTON_INCLUDE doc above). Also try the
+  // older service-/facet- families in case a future version restores
+  // dedicated testids.
+  PANEL_BUTTON_INCLUDE,
+  '[data-testid^="data-testid service-"]',
+  '[data-testid^="data-testid facet-"]',
+  // Explore Profiles — profile-type / flamegraph entry.
+  '[data-testid^="data-testid profile-"]',
+  '[data-testid^="data-testid flamegraph"]',
+  // Generic Grafana table-row affordance (last-resort).
+  '[role="rowgroup"] [role="row"] a[href]',
+].join(', ');
+
+// Upper bound on how long a breakdown panel gets to finish its async
+// render after `networkidle` fires. `networkidle` only means the
+// network went quiet for 500ms — it does NOT mean React has finished
+// mounting the panel grid from the data that already arrived, and the
+// by-label / by-attribute breakdown panels (Metrics Drilldown's
+// PANEL_BUTTON_SELECT, Traces Drilldown's PANEL_BUTTON_INCLUDE) render
+// progressively after that point. A locator `.count()` taken right
+// after `networkidle` can therefore read 0 on an affordance that
+// exists a second later — this is the exact gap that made the
+// drill-depth floor flake locally until the check switched from a
+// point-in-time count to a bounded wait.
+const AFFORDANCE_SETTLE_TIMEOUT_MS = 15_000;
+
+/**
+ * Wait up to `AFFORDANCE_SETTLE_TIMEOUT_MS` for `locator`'s first match
+ * to attach, without throwing. Returns whether it appeared in time.
+ */
+async function affordanceAppears(locator: ReturnType<Page['locator']>): Promise<boolean> {
+  try {
+    await locator.first().waitFor({ state: 'attached', timeout: AFFORDANCE_SETTLE_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Drive two levels of click-drill inside a drilldown app.
  *
@@ -155,14 +269,17 @@ export type DrillTwoLevelsResult = {
  * Step 2: click the first selectable facet / dimension. Each app
  *         exposes a different first-level affordance:
  *           - Explore Metrics  → a metric tile in the trail grid.
- *           - Explore Logs     → a label-value chip in the labels list.
- *           - Explore Traces   → a service-name row in the table.
+ *           - Explore Logs     → a per-service "Show logs" button.
+ *           - Explore Traces   → a per-attribute-value Include button.
  *           - Explore Profiles → a profile-type / service row.
  *         The helper uses a single tolerant selector union so an
  *         affordance schema drift on Grafana upgrade fails loudly
  *         in *this* helper (not silently in a phase spec).
  * Step 3: click the first selectable affordance in the resulting view
- *         (= "drill one more level").
+ *         (= "drill one more level"). Logs Drilldown's second-level
+ *         facet lives behind a "Fields" tab rather than inline — if
+ *         the shared union finds nothing, click that tab (when
+ *         present) and re-probe once before giving up.
  *
  * Each navigation waits for `networkidle` with a 45s cap (matches the
  * existing compose-smoke timing budget). Assertions over the
@@ -186,37 +303,10 @@ export async function drillTwoLevels(
     });
 
   // Step 2 — first drill. Each app exposes a different affordance
-  // type; the selector union below is permissive on purpose.
-  const firstAffordance = page
-    .locator(
-      [
-        // Metrics Drilldown (12.x) — per-metric "Select" action on the
-        // tile grid (testid select-action-<metric_name>, verified live
-        // against grafana/grafana:12.2.9).
-        '[data-testid^="select-action-"]',
-        // Explore Metrics — metric tile / trail card (11.x families,
-        // kept so a selector rename fails loudly here, not silently).
-        '[data-testid^="data-testid metric-select"]',
-        '[data-testid^="data-testid trail-"]',
-        // Logs Drilldown (12.x) — per-service "Show logs" select button
-        // (verified live against grafana/grafana:12.2.9).
-        '[data-testid="data-testid button-select-service"]',
-        // Explore Logs — label chip / detected-label entry.
-        '[data-testid^="data-testid detected-label"]',
-        '[data-testid^="data-testid label-name"]',
-        // Explore Traces — service-name row / facet button.
-        '[data-testid^="data-testid service-"]',
-        '[data-testid^="data-testid facet-"]',
-        // Explore Profiles — profile-type / flamegraph entry.
-        '[data-testid^="data-testid profile-"]',
-        '[data-testid^="data-testid flamegraph"]',
-        // Generic Grafana table-row affordance (last-resort).
-        '[role="rowgroup"] [role="row"] a[href]',
-      ].join(', '),
-    )
-    .first();
+  // type; the selector union is permissive on purpose.
+  const firstAffordance = page.locator(AFFORDANCE_SELECTOR).first();
 
-  if ((await firstAffordance.count()) === 0) {
+  if (!(await affordanceAppears(firstAffordance))) {
     // App root rendered no clickable affordance — that's a spec-level
     // failure (covered by the wire / DOM sweeps), not a precondition
     // bug in this helper. Bail out cleanly so the spec sees the
@@ -229,31 +319,29 @@ export async function drillTwoLevels(
     .waitForLoadState('networkidle', { timeout: 45_000 })
     .catch(() => {});
 
-  // Step 3 — second drill. The selector union is the same; after a
-  // first click most apps render a secondary breakdown view whose
-  // affordances reuse the same testid families.
-  const secondAffordance = page
-    .locator(
-      [
-        // 12.x families first (see the first-drill union above): a
-        // second select-action drills into a breakdown label; the
-        // include-filter button drills a logs facet.
-        '[data-testid^="select-action-"]',
-        '[data-testid="data-testid button-filter-include"]',
-        '[data-testid^="data-testid metric-select"]',
-        '[data-testid^="data-testid trail-"]',
-        '[data-testid^="data-testid detected-label-value"]',
-        '[data-testid^="data-testid label-value"]',
-        '[data-testid^="data-testid service-"]',
-        '[data-testid^="data-testid facet-"]',
-        '[data-testid^="data-testid profile-"]',
-        '[data-testid^="data-testid flamegraph"]',
-        '[role="rowgroup"] [role="row"] a[href]',
-      ].join(', '),
-    )
-    .first();
+  // Step 3 — second drill. Same tolerant union first.
+  let secondAffordance = page.locator(AFFORDANCE_SELECTOR).first();
+  let secondAffordanceFound = await affordanceAppears(secondAffordance);
 
-  if ((await secondAffordance.count()) === 0) {
+  if (!secondAffordanceFound) {
+    // Logs Drilldown-shaped fallback: the per-service view the first
+    // click landed on has no inline second-level facet — it's parked
+    // behind a "Fields" tab. Switch to it (if present) and re-probe
+    // once; this is still one logical "drill one level deeper"
+    // gesture from the caller's point of view; the tab switch is
+    // plumbing, not a counted click of its own.
+    const fieldsTab = page.locator(LOGS_FIELDS_TAB);
+    if (await affordanceAppears(fieldsTab)) {
+      await fieldsTab.first().click({ timeout: 10_000 }).catch(() => {});
+      await page
+        .waitForLoadState('networkidle', { timeout: 45_000 })
+        .catch(() => {});
+      secondAffordance = page.locator(LOGS_BREAKDOWN_SELECT_VALUE).first();
+      secondAffordanceFound = await affordanceAppears(secondAffordance);
+    }
+  }
+
+  if (!secondAffordanceFound) {
     return { levelsClicked: 1, rootHadNoAffordance: false };
   }
 

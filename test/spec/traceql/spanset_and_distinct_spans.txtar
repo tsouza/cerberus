@@ -18,8 +18,8 @@ INSERT INTO otel_traces (TraceId, SpanId, SpanName) VALUES
     ('trace-right-only', 'span-right-only', 'right');
 -- expected_rows --
 [
-  ["trace-both", "span-left", "left"],
-  ["trace-both", "span-right", "right"]
+  ["left", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "span-left", "__cerberus_traceID": "trace-both"}, "1970-01-01T00:00:00Z", 0],
+  ["right", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "span-right", "__cerberus_traceID": "trace-both"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
 SetOperation op=&&

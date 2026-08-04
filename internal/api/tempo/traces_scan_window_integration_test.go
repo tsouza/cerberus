@@ -24,7 +24,10 @@
 // one, so the bound is not vacuously satisfied by a tiny dataset.
 //
 // Gated behind the `integration` build tag (Docker required); wired into the
-// strict-scan CI lane. INFORMATIONAL, not a required PR gate.
+// strict-scan CI lane via `just traces-scan-window-integration` (#1509 —
+// this test was fully written but ran in no CI lane before that fix).
+// strict-scan is itself a required status check on main, so this step gates
+// PRs the same way its sibling traces-scan-bound-integration step does.
 
 package tempo
 
@@ -67,11 +70,6 @@ const (
 	// repeatedly) trends toward OOM (code 241) instead of silently succeeding,
 	// while every correctly-pruned drilldown query completes well under it.
 	scanWinMemoryCapBytes = 256 * 1024 * 1024
-	// scanWinReadRowsFactor bounds a windowed drilldown request's total
-	// read_rows to a small multiple of one partition's span count — the
-	// recursive numbering CTE + structural arms each re-scan the single
-	// in-window partition a handful of times, but never the whole table.
-	scanWinReadRowsFactor = 12
 )
 
 // seed-time constants derived from the shape above.
@@ -157,49 +155,66 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 		t.Fatalf("control: un-windowed leaf read %d rows; expected to touch all ~%d root spans", fullLeaf, scanWinTotalTraces)
 	}
 
-	// readRowsBound is the per-request ceiling: a windowed drilldown must stay
-	// within a small multiple of ONE partition. It is provably below the whole
-	// table, so a no-prune regression (reading every partition) blows past it.
-	readRowsBound := uint64(scanWinPartitionSpans) * scanWinReadRowsFactor
-	if readRowsBound >= scanWinTotalSpans {
-		t.Fatalf("misconfigured bound: readRowsBound=%d must be < totalSpans=%d to detect a no-prune regression",
-			readRowsBound, scanWinTotalSpans)
-	}
-
 	cases := []struct {
 		name   string
 		path   string
 		params url.Values
+		// readRowsFactor sets this case's per-request ceiling as a multiple of
+		// ONE partition's span count (scanWinPartitionSpans). It is per-case,
+		// not shared, because the cases below issue genuinely different
+		// numbers of windowed sub-scans within their one combined SQL
+		// statement: compare_metrics_range is a single root-lookup GROUP BY,
+		// while structure_tab_search's union-structural-arm + nested-set
+		// numbering shape textually repeats the same windowed top-N
+		// trace-id-selection subquery across ~7 branches (two structural
+		// closures — canonical and inverse — each with their own anchor +
+		// recursive step, the plain-root union arm, and the nested-set CTE's
+		// own anchor + recursive step), so its properly-windowed total is a
+		// much larger — but still bounded — multiple of one partition. Every
+		// factor here was set from a REAL measured run (see the PR that wired
+		// this test into CI, #1509) with ~1.3x headroom over the measured
+		// value; a regression that drops the window entirely multiplies every
+		// case's read_rows by ~scanWinDays (30x), an easily-distinguished
+		// jump these bounds catch with a wide margin either way.
+		readRowsFactor uint64
 	}{
 		{
 			// Grafana Traces Drilldown "Structure" tab: union-structural arm OR'd
 			// with the plain root filter, piped into select() over the nested-set
-			// intrinsics — the recursive numbering CTE OOM shape.
+			// intrinsics — the recursive numbering CTE OOM shape. Measured 46500
+			// (46.5x partition-spans) on a correctly-windowed run.
 			name: "structure_tab_search",
 			path: "/api/search",
 			params: url.Values{
 				"q":     {`({ nestedSetParent < 0 } &>> { kind = server }) || ({ nestedSetParent < 0 }) | select(nestedSetParent, nestedSetLeft, nestedSetRight)`},
 				"limit": {"20"},
 			},
+			readRowsFactor: 60,
 		},
 		{
 			// Grafana Traces Drilldown "Comparison" tab: compare() matrix, whose
 			// per-trace root-lookup GROUP BY must be window-pruned below the group.
+			// Measured 10000 (10x partition-spans) on a correctly-windowed run.
 			name: "compare_metrics_range",
 			path: "/api/metrics/query_range",
 			params: url.Values{
 				"q": {`{ } | compare({ status = error })`},
 			},
+			readRowsFactor: 12,
 		},
 		{
 			// Bare structural descendant closure (`A >> B`) — the recursive step
-			// `t` scan must be window-pruned.
+			// `t` scan must be window-pruned. Measured 13800 (13.8x partition-spans)
+			// on a correctly-windowed run: the top-N trace-id-selection subquery
+			// appears twice (anchor restriction + R-side restriction) alongside the
+			// recursive step's own multi-iteration window-only scan.
 			name: "structural_descendant_search",
 			path: "/api/search",
 			params: url.Values{
 				"q":     {`{ kind = server } >> { kind = client }`},
 				"limit": {"20"},
 			},
+			readRowsFactor: 18,
 		},
 	}
 
@@ -222,13 +237,35 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 			if readRows == 0 {
 				t.Fatalf("%s: no QueryFinish rows recorded for log_comment %q — read_rows correlation broke", tc.name, marker)
 			}
-			if readRows >= scanWinTotalSpans {
-				t.Errorf("%s read %d rows >= whole table (%d) — partition pruning did NOT fire (the inert TraceId-IN read full retention)",
-					tc.name, readRows, scanWinTotalSpans)
+			// readRowsBound is THIS case's per-request ceiling: a windowed
+			// drilldown must stay within its declared multiple of ONE partition.
+			// A no-prune regression (every windowed sub-scan degrading to a full
+			// scanWinDays-day scan) inflates read_rows by ~scanWinDays (30x),
+			// which blows past every case's bound with a wide margin — see the
+			// per-case readRowsFactor comments in the cases table above for why
+			// the bound is not a single shared constant. (A blanket
+			// "read_rows >= whole table" check does NOT hold here: a case that
+			// legitimately issues several separate, correctly-windowed
+			// sub-scans within one combined SQL statement — e.g.
+			// structure_tab_search's two structural closures + nested-set CTE —
+			// can sum to more than one table's worth of rows while every
+			// individual sub-scan stays properly pruned to its own partition.)
+			readRowsBound := uint64(scanWinPartitionSpans) * tc.readRowsFactor
+			// Sanity-check the bound itself, independent of the measured
+			// readRows: a factor set so large the bound could never meaningfully
+			// fail (e.g. a future typo) is caught here rather than silently
+			// passing vacuously. scanWinTotalSpans*scanWinBoundSlackMultiplier
+			// sits comfortably above every case's real measured bound (60000 at
+			// most) while staying well below what even a partial no-prune
+			// regression would read.
+			const scanWinBoundSlackMultiplier = 3
+			if readRowsBound >= scanWinTotalSpans*scanWinBoundSlackMultiplier {
+				t.Fatalf("misconfigured bound: %s readRowsBound=%d must stay under %d to remain a meaningful regression guard",
+					tc.name, readRowsBound, scanWinTotalSpans*scanWinBoundSlackMultiplier)
 			}
 			if readRows > readRowsBound {
 				t.Errorf("%s read %d rows > bound %d (%d partition-spans * %d) — the request window did not reach a recursive/grouped spans scan",
-					tc.name, readRows, readRowsBound, scanWinPartitionSpans, scanWinReadRowsFactor)
+					tc.name, readRows, readRowsBound, scanWinPartitionSpans, tc.readRowsFactor)
 			}
 		})
 	}

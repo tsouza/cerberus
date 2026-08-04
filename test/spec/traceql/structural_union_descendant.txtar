@@ -25,8 +25,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName) VALUES
     ('t3', 's6', '',   'b');
 -- expected_rows --
 [
-  ["t1", "s1", "", "a", 0, 0, {}, {}, "", "", "", "", ""],
-  ["t1", "s3", "s2", "b", 0, 0, {}, {}, "", "", "", "", ""]
+  ["a", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "s1", "__cerberus_traceID": "t1"}, "1970-01-01T00:00:00Z", 0],
+  ["b", {"__cerberus_parentSpanID": "s2", "__cerberus_spanID": "s3", "__cerberus_traceID": "t1"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- args --
 [0] string = "a"
