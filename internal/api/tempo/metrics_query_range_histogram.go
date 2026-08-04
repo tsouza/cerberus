@@ -9,6 +9,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // This file wires `| histogram_over_time(<attr>)` into
@@ -138,7 +139,7 @@ func (h *Handler) serveMetricsQueryRangeHistogram(
 		return
 	}
 	h.Logger.Debug("cerberus tempo metrics_query_range histogram",
-		"traceql", q, "start", start, "end", end, "step", step,
+		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
 	normalizeHistogramBucketLabels(res.Samples)

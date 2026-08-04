@@ -14,6 +14,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // IndexStats is the body of a /loki/api/v1/index/stats response, matching
@@ -59,7 +60,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki index_stats", "logql", q, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki index_stats", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
 
 	row, err := h.Client.QueryIndexStats(r.Context(), sqlStr, args...)
 	if err != nil {

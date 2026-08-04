@@ -12,6 +12,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/drain"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // defaultPatternsLineLimit caps the number of log rows the drain
@@ -86,7 +87,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki patterns", "logql", q, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki patterns", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
 
 	lines, err := h.Client.QueryTimestampedLines(r.Context(), sqlStr, args...)
 	if err != nil {
