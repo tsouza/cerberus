@@ -1770,6 +1770,36 @@
     "max_recursion_depth": 0
   },
   {
+    "fixture": "metadata/label_values_no_bounds",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "metadata/labels_no_bounds",
+    "fan_factor": 1,
+    "scan_rows": 1200,
+    "peak_intermediate": 1200,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
+    "fixture": "metadata/series_no_bounds",
+    "fan_factor": 1,
+    "scan_rows": 12,
+    "peak_intermediate": 12,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0
+  },
+  {
     "fixture": "promql/abs_metric",
     "fan_factor": 1,
     "scan_rows": 1,

@@ -67,6 +67,26 @@
 // so the fan_factor ceiling already pins peak_intermediate's bad direction and
 // a second rule would only forbid improvements.
 //
+// # Metadata-endpoint fixtures (#1530)
+//
+// Three rows — metadata/series_no_bounds, metadata/labels_no_bounds,
+// metadata/label_values_no_bounds — are NOT TXTAR fixtures. The windowless
+// Prometheus metadata-discovery endpoints (/api/v1/series, /api/v1/labels,
+// /api/v1/label/<name>/values) build their SQL directly in
+// internal/api/prom/metadata.go rather than lowering through chplan, so
+// they cannot be expressed as a `-- query.promql --` / `-- sql --` TXTAR
+// fixture the way every corpus fixture is (see
+// test/spec/metadata_endpoints_realch_integration_test.go's doc comment for
+// the same gap on the real-CH differential lane). profile.ProfileMetadataEndpoints
+// captures their production SQL by driving the real internal/api/prom.Handler
+// over HTTP with a recording stub Querier (mirroring the technique
+// internal/api/prom/metadata_scan_bound_explain_chdb_test.go already
+// established for the EXPLAIN-based projection-routing guard), then profiles
+// the captured SQL through the SAME [Profiler] every TXTAR fixture uses.
+// Their Records are merged into `current` before the loop below, so they
+// ratchet with no special-casing — PR #958 had promised a `/series` row here
+// and it was never filed as tracked work nor added (issue #1530).
+//
 // # New / removed fixtures force a baseline edit (built-in cost review)
 //
 // The baseline key-set must match the corpus exactly. A NEW fixture fails with
@@ -137,6 +157,22 @@ func TestCardinalityRatchet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profile corpus: %v", err)
 	}
+
+	// The three windowless Prometheus metadata-discovery endpoints (#1530:
+	// /series, /labels, /label/<name>/values) build their SQL directly in
+	// internal/api/prom/metadata.go rather than through chplan, so they
+	// cannot become TXTAR fixtures ProfileCorpus walks — see
+	// profile.ProfileMetadataEndpoints' doc comment. Merging their Records
+	// into the same `current` map before the added/removed/regression
+	// logic below means they ratchet exactly like every corpus fixture,
+	// with no special-casing: a new fixture id fails until recorded, a
+	// removed one fails until dropped, and fan_factor/scan_rows drift is
+	// caught the same way.
+	metaRecs, err := profile.ProfileMetadataEndpoints()
+	if err != nil {
+		t.Fatalf("profile metadata endpoints: %v", err)
+	}
+	recs = append(recs, metaRecs...)
 
 	// A fixture the profiler could not execute has no meaningful fan-out
 	// signal — treat it as a hard regression (it used to be profilable) and
