@@ -266,6 +266,200 @@ func PromoteCreateTable(stmt string) string {
 	return promoteCreateTable(stmt)
 }
 
+// tracesTableName is the fixed table name TraceQL round-trip seeds declare
+// for the spans table — schema.DefaultOTelTraces().SpansTable, mirrored here
+// as a literal so this build-tag-free file doesn't need to import
+// internal/schema just for one string.
+const tracesTableName = "otel_traces"
+
+// tracesBackfilledColumns are the production otel_traces columns
+// wrapWithSampleProjection's canonical wrap (internal/api/tempo/handler.go)
+// reads unconditionally: TraceId / SpanId / ParentSpanId feed the reserved
+// `__cerberus_*` Attributes keys, SpanName / ResourceAttributes / Timestamp /
+// Duration are the four Sample-shape source columns. A TraceQL spec fixture's
+// seed is written minimally — declaring only the columns ITS OWN pre-wrap
+// `-- sql --` touches — so most fixtures omit some of these; the strict-scan
+// differential's wrap reconstruction (traceqlWrapForStrictScan) needs all
+// seven present or the wrapped SQL 502s with UNKNOWN_IDENTIFIER, a false
+// failure that has nothing to do with the strict-scan / type-coercion bug
+// class this lane exists to catch. Types + names mirror the upstream OTel-CH
+// traces DDL (see internal/schema/traces.go's DefaultOTelTraces).
+var tracesBackfilledColumns = []backfilledColumn{
+	{name: "TraceId", ddl: "TraceId String DEFAULT ''"},
+	{name: "SpanId", ddl: "SpanId String DEFAULT ''"},
+	{name: "ParentSpanId", ddl: "ParentSpanId String DEFAULT ''"},
+	{name: "SpanName", ddl: "SpanName String DEFAULT ''"},
+	{name: "Duration", ddl: "Duration Int64 DEFAULT 0"},
+	{name: "Timestamp", ddl: "Timestamp DateTime64(9) DEFAULT toDateTime64(0, 9)"},
+	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
+}
+
+// BackfillTracesColumns mirrors production's otel_traces column set (see
+// [tracesBackfilledColumns]) onto a TraceQL fixture's simplified seed DDL —
+// the traces-table counterpart of [BackfillMetricsColumns]. Exported,
+// build-tag-free seam for the strict-scan differential's seed loop.
+func BackfillTracesColumns(stmts []string) []string {
+	return backfillTracesColumns(stmts)
+}
+
+func backfillTracesColumns(stmts []string) []string {
+	// table name -> ordered column names (pre-backfill) for tables we
+	// injected a column into. Only these tables' INSERTs are rewritten.
+	cols := map[string][]string{}
+	out := make([]string, 0, len(stmts))
+	for _, stmt := range stmts {
+		if table, colNames, body, ok := parseTracesCreate(stmt); ok {
+			cols[table] = colNames
+			out = append(out, body)
+			continue
+		}
+		if rewritten, ok := rewriteBackfilledInsert(stmt, cols); ok {
+			out = append(out, rewritten)
+			continue
+		}
+		out = append(out, stmt)
+	}
+	return out
+}
+
+// parseTracesCreate reports whether stmt is a `CREATE TABLE otel_traces` that
+// omits at least one [tracesBackfilledColumns] entry. On a match it returns
+// the table name, the ordered pre-backfill column names, and the rewritten
+// statement with the missing columns appended to the column list (order is
+// irrelevant — the INSERTs become explicit-column, mirroring
+// [parseMetricsCreate]).
+func parseTracesCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
+	trimmed := stripLeadingNoise(stmt)
+	rest, ok := createTableTail(trimmed)
+	if !ok {
+		return "", nil, "", false
+	}
+	name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
+	if name != tracesTableName {
+		return "", nil, "", false
+	}
+	open := strings.IndexByte(stmt, '(')
+	if open < 0 {
+		return "", nil, "", false
+	}
+	closeParen := matchParen(stmt, open)
+	if closeParen < 0 {
+		return "", nil, "", false
+	}
+	bodyCols := stmt[open+1 : closeParen]
+	defs := splitTopLevelCommas(bodyCols)
+	declared := make(map[string]bool, len(defs))
+	names := make([]string, 0, len(defs))
+	normDefs := make([]string, len(defs))
+	changed := false
+	for i, d := range defs {
+		cn := firstToken(strings.TrimSpace(d))
+		if cn != "" {
+			declared[cn] = true
+			names = append(names, cn)
+		}
+		nd := normalizeTracesColumnDef(d)
+		if nd != d {
+			changed = true
+		}
+		normDefs[i] = nd
+	}
+	missing := make([]string, 0, len(tracesBackfilledColumns))
+	for _, c := range tracesBackfilledColumns {
+		if !declared[c.name] {
+			missing = append(missing, c.ddl)
+		}
+	}
+	if len(missing) == 0 && !changed {
+		return "", nil, "", false
+	}
+	newDefs := make([]string, 0, len(normDefs)+len(missing))
+	newDefs = append(newDefs, normDefs...)
+	for _, ddl := range missing {
+		newDefs = append(newDefs, " "+ddl)
+	}
+	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
+	return name, names, rewritten, true
+}
+
+// normalizeTracesColumnDef rewrites a single otel_traces column definition so
+// it type-matches production's OTel-CH schema closely enough for the
+// strict-scan wrap reconstruction (traceqlWrapForStrictScan) to strict-scan
+// cleanly, without touching any other lane's seed application — only the
+// strict-scan differential calls [BackfillTracesColumns]. Two independent
+// fixups, each addressing a fixture-authoring shortcut that predates the
+// wrap reconstruction and was invisible under the old pre-wrap-only `-- sql
+// --`:
+//
+//  1. `MATERIALIZED` -> `DEFAULT`. ClickHouse's bare `SELECT *` omits
+//     MATERIALIZED columns from the result set by design; several fixtures
+//     use MATERIALIZED as a terse way to derive a column (typically
+//     ResourceAttributes) from another column's value without a verbose
+//     per-row INSERT. wrapWithSampleProjection's canonical branch always
+//     projects from a `SELECT * FROM otel_traces WHERE ...` subquery, so a
+//     MATERIALIZED column it needs silently vanishes from that subquery's
+//     column set ("Unknown identifier") — not a real production bug, since
+//     real otel_traces columns are never MATERIALIZED. DEFAULT computes the
+//     identical value at INSERT time (these fixtures never override it) and
+//     DOES appear in `SELECT *`.
+//  2. Timestamp / Duration retyped to their real OTel-CH types
+//     (DateTime64(9) / Int64, see internal/schema/traces.go's
+//     DefaultOTelTraces) when a fixture declares them as a bare integer
+//     (UInt64 etc) — a shortcut that was invisible while nothing read
+//     Timestamp through the typed TimeUnix (time.Time) alias the wrap
+//     projects it under.
+func normalizeTracesColumnDef(def string) string {
+	rewritten := strings.Replace(def, " MATERIALIZED ", " DEFAULT ", 1)
+	switch firstToken(strings.TrimSpace(rewritten)) {
+	case "Timestamp":
+		if !hasColumnType(rewritten, "DateTime64") {
+			rewritten = replaceColumnType(rewritten, "DateTime64(9)")
+		}
+	case "Duration":
+		if !hasColumnType(rewritten, "Int64") {
+			rewritten = replaceColumnType(rewritten, "Int64")
+		}
+	}
+	return rewritten
+}
+
+// hasColumnType reports whether def's column-type token starts with prefix
+// (e.g. prefix "DateTime64" matches both "DateTime64(9)" and a bare
+// "DateTime64").
+func hasColumnType(def, prefix string) bool {
+	trimmed := strings.TrimSpace(def)
+	name := firstToken(trimmed)
+	rest := strings.TrimSpace(trimmed[len(name):])
+	return strings.HasPrefix(rest, prefix)
+}
+
+// replaceColumnType swaps def's leading type token (the run up to the next
+// top-level space, honouring the type's own parens — e.g. "DateTime64(9)")
+// for wantType, leaving any trailing DEFAULT/MATERIALIZED clause untouched.
+func replaceColumnType(def, wantType string) string {
+	trimmed := strings.TrimSpace(def)
+	name := firstToken(trimmed)
+	rest := strings.TrimSpace(trimmed[len(name):])
+	depth := 0
+	end := len(rest)
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ' ':
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end != len(rest) {
+			break
+		}
+	}
+	return name + " " + wantType + rest[end:]
+}
+
 func backfillMetricsColumns(stmts []string) []string {
 	// table name -> ordered column names (pre-backfill) for tables we
 	// injected a column into. Only these tables' INSERTs are rewritten.
@@ -277,7 +471,7 @@ func backfillMetricsColumns(stmts []string) []string {
 			out = append(out, body)
 			continue
 		}
-		if rewritten, ok := rewriteMetricsInsert(stmt, cols); ok {
+		if rewritten, ok := rewriteBackfilledInsert(stmt, cols); ok {
 			out = append(out, rewritten)
 			continue
 		}
@@ -380,12 +574,15 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	return name, names, rewritten, true
 }
 
-// rewriteMetricsInsert rewrites a positional `INSERT INTO <table> VALUES`
+// rewriteBackfilledInsert rewrites a positional `INSERT INTO <table> VALUES`
 // into one carrying the recorded column list (sans the injected columns)
 // so the DEFAULT-filled columns do not break the value count. Inserts into
 // untracked tables, or that already carry an explicit column list, pass
-// through unchanged.
-func rewriteMetricsInsert(stmt string, cols map[string][]string) (string, bool) {
+// through unchanged. Shared by both the metrics backfill
+// ([backfillMetricsColumns]) and the traces backfill
+// ([backfillTracesColumns]) — the rewrite is column-registry-driven, not
+// metrics-specific.
+func rewriteBackfilledInsert(stmt string, cols map[string][]string) (string, bool) {
 	trimmed := stripLeadingNoise(stmt)
 	prefix := stmt[:len(stmt)-len(trimmed)]
 	upper := strings.ToUpper(trimmed)

@@ -741,7 +741,7 @@ func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
 // otel_traces. The field expression is recursively lowered into a
 // chplan.Expr predicate.
 func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node, error) {
-	pred, err := lowerFieldExpr(f.Expression, s)
+	pred, err := lowerBooleanFieldExpr(f.Expression, s)
 	if err != nil {
 		return nil, err
 	}
@@ -811,6 +811,38 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 		return lowerStatic(v)
 	}
 	return nil, fmt.Errorf("traceql: field expression %T is unsupported", e)
+}
+
+// lowerBooleanFieldExpr is lowerFieldExpr for the three positions a
+// FieldExpression is required to yield a BOOLEAN chplan.Expr: a spanset
+// filter's whole predicate (lowerSpansetFilter), an AND/OR operand
+// (lowerBinaryOperation), and a logical-NOT operand (lowerUnaryNot).
+//
+// Those are also the only positions where a bare `parent` (IntrinsicParent)
+// means TraceQL's "this span has a parent" boolean — ast.Attribute's own
+// impliedType() marks IntrinsicParent TypeNil (unlike every other backed
+// intrinsic, which has a real scalar type) precisely because it has no
+// value-position identity of its own; `parent = "<hex span id>"` is a
+// perfectly ordinary comparison against the raw ParentSpanId string
+// (span:parentID / IntrinsicParentID is the separate, TypeString intrinsic
+// for that value, but reference Tempo also accepts bare `parent` compared to
+// a literal) and must keep lowering to the bare column through the generic
+// lowerFieldExpr path — only the boolean position needs the rewrite.
+// ParentSpanId is a real ClickHouse String column, and a bare String
+// reference is not a valid boolean filter predicate — ClickHouse rejects it
+// with ILLEGAL_TYPE_OF_COLUMN_FOR_FILTER ("Invalid type for filter") — so
+// synthesise the presence check instead of a bare ColumnRef. Mirrors
+// rootnessReduction's identical `ParentSpanId != ""` pattern for the related
+// nestedSetParent root-ness reduction.
+func lowerBooleanFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, error) {
+	if attr, ok := fieldExprAttribute(e); ok && attr.Intrinsic == traceql.IntrinsicParent {
+		return &chplan.Binary{
+			Op:    chplan.OpNe,
+			Left:  &chplan.ColumnRef{Name: s.ParentSpanIDColumn},
+			Right: &chplan.LitString{V: ""},
+		}, nil
+	}
+	return lowerFieldExpr(e, s)
 }
 
 // lowerUnaryOperation handles the unary FieldExpression forms.
@@ -936,7 +968,11 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, er
 // / coerce paths), and `not(false)` is true — the same value reference
 // computes when the comparison evaluates StaticFalse on a missing span.
 func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
-	inner, err := lowerFieldExpr(u.Expression, s)
+	// The NOT operand is a boolean position — same rationale as the AND/OR
+	// operand rewrite in lowerBinaryOperation (see lowerBooleanFieldExpr's
+	// doc comment): `!parent` must lower to `not(ParentSpanId != "")`, not
+	// `not(<bare ColumnRef>)`.
+	inner, err := lowerBooleanFieldExpr(u.Expression, s)
 	if err != nil {
 		return nil, err
 	}
@@ -1153,11 +1189,22 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	if nested, ok := lowerNestedAttrBinary(b, op, s); ok {
 		return nested, nil
 	}
-	lhs, err := lowerFieldExpr(b.LHS, s)
+	// AND/OR operands are boolean positions — route through
+	// lowerBooleanFieldExpr so a bare `parent` operand (e.g.
+	// `{ parent && resource.service.name = "api" }`) lowers to the
+	// `ParentSpanId != ""` presence check rather than a bare (invalid
+	// filter-predicate-typed) ColumnRef. Every other op's operands are
+	// value positions (`parent = "<hex>"` must keep reading the raw
+	// column), so they keep going through the generic lowerFieldExpr.
+	lowerOperand := lowerFieldExpr
+	if op == chplan.OpAnd || op == chplan.OpOr {
+		lowerOperand = lowerBooleanFieldExpr
+	}
+	lhs, err := lowerOperand(b.LHS, s)
 	if err != nil {
 		return nil, err
 	}
-	rhs, err := lowerFieldExpr(b.RHS, s)
+	rhs, err := lowerOperand(b.RHS, s)
 	if err != nil {
 		return nil, err
 	}
