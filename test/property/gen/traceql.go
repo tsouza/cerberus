@@ -18,6 +18,44 @@ import (
 // matches multiple spans (predictable count() arithmetic).
 var TraceQLServicePool = []string{"api", "web", "batch"}
 
+// TraceQLClusterPool is the resource-attribute pool for "cluster" — a
+// second resource attribute alongside service.name, used to exercise
+// attribute matchers beyond resource.service.name.
+var TraceQLClusterPool = []string{"east", "west"}
+
+// TraceQLHTTPMethodPool is the span-attribute pool for "http.method",
+// used to exercise span-scope attribute matchers (`span.http.method`).
+// Deliberately a different pool than TraceQLSpanNamePool so a
+// coincidental value match between the two doesn't mask a real bug.
+var TraceQLHTTPMethodPool = []string{"GET", "POST", "PUT"}
+
+// TraceQLStatusPool is the intrinsic status pool, in the CH-stored
+// (title-case) form. TraceQL query literals are lowercase
+// (ok/error/unset); statusQueryLiteral bridges the two.
+var TraceQLStatusPool = []string{"Ok", "Error", "Unset"}
+
+// TraceQLDurationPoolNs is the fixed duration-bucket pool spans draw
+// from, in nanoseconds. Multiple distinct buckets give the duration
+// intrinsic and avg|min|max|sum(duration) filters real spread to
+// discriminate on, rather than every span sharing one fixed value.
+var TraceQLDurationPoolNs = []int64{10_000_000, 50_000_000, 120_000_000, 300_000_000}
+
+// TraceQLDurationThresholdPoolMs is the pool of millisecond thresholds
+// the query generator draws for duration comparisons (`duration OP
+// Nms`, `avg(duration) OP Nms`, …). Includes values that land exactly
+// on a TraceQLDurationPoolNs bucket and values that fall strictly
+// between buckets, so the boundary case is exercised too.
+var TraceQLDurationThresholdPoolMs = []int64{10, 50, 75, 120, 200, 300}
+
+// traceQLComparisonOps is the scalar-comparison operator pool shared by
+// every numeric filter the generator draws (count(), duration, and the
+// avg|min|max|sum(duration) metrics).
+var traceQLComparisonOps = []string{">", ">=", "<", "<=", "="}
+
+// traceQLEqualityOps is the equality/inequality operator pool for
+// intrinsics that only support (in)equality comparison (status).
+var traceQLEqualityOps = []string{"=", "!="}
+
 // TraceQLSpanNamePool is the fixed span-name pool. Each generated
 // span draws a name from this pool plus a per-span ordinal so the
 // (SpanName, Timestamp) pair is unique across the dataset (Tempo's
@@ -40,23 +78,43 @@ var traceQLAnchor = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 // generator anchors span timestamps to.
 func TraceQLAnchorTime() time.Time { return traceQLAnchor }
 
+// traceQLRootParentID is the all-zero ParentSpanId literal the OTel-CH
+// schema uses to mark a root span (no parent).
+const traceQLRootParentID = "0000000000000000"
+
+// traceQLMaxTraces / traceQLMaxChainDepth bound the dataset's trace
+// count and per-trace parent-chain depth. A linear chain (rather than
+// a branching tree) is enough to exercise both structural operators
+// the generator draws — `>` (immediate child) and `>>` (descendant at
+// any depth) — while keeping ancestor/descendant computation in the
+// oracle a simple walk up a unique parent chain, no general tree
+// algorithm required.
+const (
+	traceQLMaxTraces     = 3
+	traceQLMaxChainDepth = 3
+)
+
 // TraceQLDataset returns a rapid generator that draws a random
-// property.Dataset of OTel-CH traces rows. The dataset is intentionally
-// narrow for the first TraceQL property test:
+// property.Dataset of OTel-CH traces rows.
 //
-//   - 1–5 spans.
-//   - Each span carries a service.name from TraceQLServicePool stored
-//     under ResourceAttributes['service.name'].
+//   - 1–3 traces, each a linear parent→child chain of 1–3 spans (root
+//     first). The chain lets structural-operator queries (`>`, `>>`)
+//     exercise a real ancestor/descendant relationship instead of
+//     every span being trace-root.
+//   - Each span carries a resource.service.name (TraceQLServicePool),
+//     a second resource attribute resource.cluster (TraceQLClusterPool),
+//     and a span attribute span.http.method (TraceQLHTTPMethodPool) —
+//     the pool beyond service.name attribute matchers exercise.
 //   - Span names draw from TraceQLSpanNamePool plus a per-span ordinal
 //     suffix so (SpanName, Timestamp) pairs are unique across the
 //     dataset — Tempo's /api/search collapses traces by name+ts, and
 //     the property test wants one TraceSummary per span so the count
 //     comparator is exact.
-//   - Per-span StartTime is anchor + i*1s; Duration is fixed
-//     50 000 000 ns (50ms). The values don't matter to the selector +
-//     count() queries the generator produces.
-//   - StatusCode = "Unset" for every span (the only intrinsic the
-//     generator touches today).
+//   - Per-span StartTime is anchor + i*1s (i = the global span
+//     ordinal, unique across every trace); Duration and StatusCode
+//     draw from TraceQLDurationPoolNs / TraceQLStatusPool so the
+//     duration/status intrinsic filters have real spread to
+//     discriminate on.
 //
 // The returned Dataset's DDL is a multi-statement script
 // (`CREATE OR REPLACE TABLE otel_traces (...); INSERT ...;`) the chDB
@@ -65,42 +123,58 @@ func TraceQLAnchorTime() time.Time { return traceQLAnchor }
 // SeriesData entries with MetricName=SpanName, Labels carrying the
 // span-level + resource attributes via reserved key prefixes:
 //
-//   - "resource.<key>"  → ResourceAttributes[<key>]
-//   - "span.<key>"      → SpanAttributes[<key>] (unused today; reserved
-//     for span-scope matchers when the generator widens)
+//   - "resource.<key>"  → ResourceAttributes[<key>] (service.name, cluster)
+//   - "span.<key>"      → SpanAttributes[<key>] (http.method)
 //   - "__name__"        → SpanName (mirrors the PromQL convention; the
 //     oracle's labels-minus-__name__ identity rule reuses it)
-//   - "__traceID__"     → TraceID (unique 32-hex per span)
+//   - "__traceID__"     → TraceID (shared by every span in a trace's chain)
 //   - "__spanID__"      → SpanID (unique 16-hex per span)
+//   - "__parentSpanID__" → ParentSpanId (unique per chain: the
+//     preceding span's SpanID, or traceQLRootParentID for the chain root)
 //   - "__duration_ns__" → string-formatted Duration (so the oracle
 //     can read it without changing SeriesData's float64 Point shape)
-//   - "__status__"      → "Unset" (the seeded value)
+//   - "__status__"      → the CH-stored status literal (Ok/Error/Unset)
 //
 // MergeTree is the chosen engine (matches PromQL property test
 // rationale: Memory engine refuses PREWHERE the cerberus optimizer
 // emits).
 func TraceQLDataset() *rapid.Generator[property.Dataset] {
 	return rapid.Custom(func(t *rapid.T) property.Dataset {
-		numSpans := rapid.IntRange(1, 5).Draw(t, "numSpans")
-		spans := make([]traceQLSpan, 0, numSpans)
-		for i := 0; i < numSpans; i++ {
-			service := rapid.SampledFrom(TraceQLServicePool).Draw(t, fmt.Sprintf("service_%d", i))
-			baseName := rapid.SampledFrom(TraceQLSpanNamePool).Draw(t, fmt.Sprintf("spanName_%d", i))
-			// Unique suffix → unique (SpanName, Timestamp) across spans:
-			// Tempo's toTraceSummaries() keys by name+timestamp and collapses
-			// duplicates. Suffixing the span index is the cheapest way to
-			// guarantee uniqueness without adding a second random draw.
-			name := fmt.Sprintf("%s /api/%d", baseName, i)
-			spans = append(spans, traceQLSpan{
-				traceID:    deterministicTraceID(i, 0xa1),
-				spanID:     deterministicSpanID(i, 0xb2),
-				parentID:   "0000000000000000",
-				service:    service,
-				name:       name,
-				startTime:  traceQLAnchor.Add(time.Duration(i) * time.Second),
-				durationNs: 50_000_000,
-				statusCode: "Unset",
-			})
+		numTraces := rapid.IntRange(1, traceQLMaxTraces).Draw(t, "numTraces")
+		var spans []traceQLSpan
+		spanOrdinal := 0
+		for ti := 0; ti < numTraces; ti++ {
+			traceID := deterministicTraceID(ti, 0xa1)
+			chainDepth := rapid.IntRange(1, traceQLMaxChainDepth).Draw(t, fmt.Sprintf("chainDepth_%d", ti))
+			parentID := traceQLRootParentID
+			for ci := 0; ci < chainDepth; ci++ {
+				service := rapid.SampledFrom(TraceQLServicePool).Draw(t, fmt.Sprintf("service_%d_%d", ti, ci))
+				cluster := rapid.SampledFrom(TraceQLClusterPool).Draw(t, fmt.Sprintf("cluster_%d_%d", ti, ci))
+				httpMethod := rapid.SampledFrom(TraceQLHTTPMethodPool).Draw(t, fmt.Sprintf("httpMethod_%d_%d", ti, ci))
+				baseName := rapid.SampledFrom(TraceQLSpanNamePool).Draw(t, fmt.Sprintf("spanName_%d_%d", ti, ci))
+				status := rapid.SampledFrom(TraceQLStatusPool).Draw(t, fmt.Sprintf("status_%d_%d", ti, ci))
+				durationNs := rapid.SampledFrom(TraceQLDurationPoolNs).Draw(t, fmt.Sprintf("duration_%d_%d", ti, ci))
+				// Unique suffix → unique (SpanName, Timestamp) across spans:
+				// Tempo's toTraceSummaries() keys by name+timestamp and collapses
+				// duplicates. Suffixing the global span ordinal is the cheapest way
+				// to guarantee uniqueness without adding a second random draw.
+				name := fmt.Sprintf("%s /api/%d", baseName, spanOrdinal)
+				spanID := deterministicSpanID(spanOrdinal, 0xb2)
+				spans = append(spans, traceQLSpan{
+					traceID:    traceID,
+					spanID:     spanID,
+					parentID:   parentID,
+					service:    service,
+					cluster:    cluster,
+					httpMethod: httpMethod,
+					name:       name,
+					startTime:  traceQLAnchor.Add(time.Duration(spanOrdinal) * time.Second),
+					durationNs: durationNs,
+					statusCode: status,
+				})
+				parentID = spanID
+				spanOrdinal++
+			}
 		}
 		series := traceQLSpansToSeries(spans)
 		return property.Dataset{
@@ -112,12 +186,14 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 
 // traceQLSpan is the in-memory mirror of one row of otel_traces the
 // generator emits. The Dataset.Metrics mirror stores spans as
-// SeriesData entries keyed by SpanName; this struct is the bridge.
+// SeriesData entries; this struct is the bridge.
 type traceQLSpan struct {
-	traceID    string // 32-hex
+	traceID    string // 32-hex, shared by every span in a trace's chain
 	spanID     string // 16-hex
-	parentID   string // 16-hex (all-zero for root)
+	parentID   string // 16-hex (traceQLRootParentID for a chain root)
 	service    string
+	cluster    string
+	httpMethod string
 	name       string
 	startTime  time.Time
 	durationNs int64
@@ -137,6 +213,8 @@ func traceQLSpansToSeries(spans []traceQLSpan) []property.SeriesData {
 	for _, s := range spans {
 		labels := map[string]string{
 			"resource.service.name": s.service,
+			"resource.cluster":      s.cluster,
+			"span.http.method":      s.httpMethod,
 			"__name__":              s.name,
 			"__traceID__":           s.traceID,
 			"__spanID__":            s.spanID,
@@ -161,7 +239,11 @@ func traceQLSpansToSeries(spans []traceQLSpan) []property.SeriesData {
 // ParentSpanId, ServiceName (kept for OTel parity; the generator
 // queries via ResourceAttributes), SpanName, ResourceAttributes,
 // SpanAttributes, StartTimeUnixNano (column name `Timestamp` per
-// OTel-CH default), DurationNs (column name `Duration`), StatusCode.
+// OTel-CH default), DurationNs (column name `Duration`), StatusCode,
+// ScopeName, ScopeVersion — the last two are unvaried (always empty
+// string) but must exist: schema.DefaultOTelTraces() names them, and
+// the structural-join (`>`/`>>`) lowering projects them unconditionally
+// (see the ScopeName/ScopeVersion comment in renderTraceQLRow).
 //
 // `CREATE OR REPLACE TABLE` keeps re-runs idempotent (chdb-go shares
 // one catalog across sessions).
@@ -171,9 +253,9 @@ func renderTraceQLDDL(spans []traceQLSpan) string {
 	b.WriteString(SpansTableName)
 	b.WriteString(` (
     Timestamp DateTime64(9),
-    TraceId FixedString(32),
-    SpanId FixedString(16),
-    ParentSpanId FixedString(16),
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
     SpanName String,
     SpanKind LowCardinality(String),
     ServiceName LowCardinality(String),
@@ -181,7 +263,9 @@ func renderTraceQLDDL(spans []traceQLSpan) string {
     SpanAttributes Map(String, String),
     Duration Int64,
     StatusCode LowCardinality(String),
-    StatusMessage String
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String
 ) ENGINE = MergeTree ORDER BY (Timestamp, TraceId);
 `)
 	if len(spans) == 0 {
@@ -227,10 +311,13 @@ func renderTraceQLRow(s traceQLSpan) string {
 	b.WriteString(quoteSQL(s.service))
 	b.WriteString(", ")
 	// ResourceAttributes
-	b.WriteString(renderTraceQLMap(map[string]string{"service.name": s.service}))
+	b.WriteString(renderTraceQLMap(map[string]string{
+		"service.name": s.service,
+		"cluster":      s.cluster,
+	}))
 	b.WriteString(", ")
-	// SpanAttributes (empty for now; reserved for span.<attr> matchers)
-	b.WriteString("map()")
+	// SpanAttributes
+	b.WriteString(renderTraceQLMap(map[string]string{"http.method": s.httpMethod}))
 	b.WriteString(", ")
 	// Duration
 	fmt.Fprintf(&b, "%d", s.durationNs)
@@ -239,6 +326,16 @@ func renderTraceQLRow(s traceQLSpan) string {
 	b.WriteString(quoteSQL(s.statusCode))
 	b.WriteString(", ")
 	// StatusMessage
+	b.WriteString("''")
+	b.WriteString(", ")
+	// ScopeName / ScopeVersion — the generator doesn't vary instrumentation
+	// scope, but the columns must exist: structuralExtraProjectionColumns
+	// (internal/traceql/lower.go) hard-codes schema.Traces.ScopeNameColumn /
+	// ScopeVersionColumn into every structural-join (`>`/`>>`) wrap
+	// projection, so a table missing them 502s with UNKNOWN_IDENTIFIER the
+	// moment a structural query runs.
+	b.WriteString("''")
+	b.WriteString(", ")
 	b.WriteString("''")
 	b.WriteByte(')')
 	return b.String()
@@ -271,9 +368,10 @@ func renderTraceQLMap(m map[string]string) string {
 
 // quoteSQL renders s as a single-quoted CH SQL string literal. Embedded
 // single quotes get backslash-escaped. The generator only emits values
-// from fixed pools (TraceQLServicePool, TraceQLSpanNamePool, hex IDs),
-// none of which contain quotes — but the escape is here so future
-// generator widening can stay safe.
+// from fixed pools (TraceQLServicePool, TraceQLClusterPool,
+// TraceQLHTTPMethodPool, TraceQLSpanNamePool, hex IDs), none of which
+// contain quotes — but the escape is here so future generator widening
+// can stay safe.
 func quoteSQL(s string) string {
 	if !strings.Contains(s, "'") && !strings.Contains(s, "\\") {
 		return "'" + s + "'"
@@ -311,19 +409,46 @@ func deterministicSpanID(seed, salt int) string {
 	return hex.EncodeToString(buf[:])
 }
 
+// statusQueryLiteral maps a CH-stored StatusCode value (Ok/Error/Unset)
+// to the lowercase literal TraceQL's `status` intrinsic expects on the
+// query side (ok/error/unset).
+func statusQueryLiteral(chStatus string) string {
+	return strings.ToLower(chStatus)
+}
+
 // TraceQLQuery returns a rapid generator that draws a property.Query
-// targeted at dataset d. The accept-set for this first sweep:
+// targeted at dataset d. The accept-set, widened from the first sweep's
+// single selector shape (issue #1471) to a breadth comparable to the
+// PromQL leg's drawExpr (test/property/gen/promql.go), spans 14 shapes
+// drawn uniformly via rapid.IntRange(0, 13):
 //
-//   - Selector only:           `{ resource.service.name = "<value>" }`
-//   - Selector + count filter: `{ resource.service.name = "<v>" } | count() OP N`
-//     where OP ∈ {>, >=, <, <=, =} and N ∈ [0, len(d.Series)].
+//   - 0: bare service-name selector          — `{ resource.service.name = "<v>" }`
+//   - 1: selector + count() scalar filter    — `{ ... } | count() OP N`
+//   - 2: resource attribute beyond service.name — `{ resource.cluster = "<v>" }`
+//   - 3: span attribute matcher              — `{ span.http.method = "<v>" }`
+//   - 4: duration intrinsic                  — `{ duration OP Nms }`
+//   - 5: status intrinsic (eq or negated)    — `{ status OP <ok|error|unset> }`
+//   - 6: name intrinsic (exact match)        — `{ name = "<v>" }`
+//   - 7: regex attribute matcher             — `{ resource.service.name =~ "<pattern>" }`
+//   - 8: negated attribute matcher           — `{ resource.service.name != "<v>" }`
+//   - 9: multi-condition (&&) filter         — `{ resource.service.name = "<v>" && status = <lit> }`
+//   - 10: structural child (`>`)             — `{ A } > { B }`
+//   - 11: structural descendant (`>>`)       — `{ A } >> { B }`
+//   - 12: metric beyond count()              — `{ ... } | avg|min|max|sum(duration) OP Nms`
+//   - 13: select() pipeline stage            — `{ ... } | select(span.http.method)`
+//
+// Every shape's oracle counterpart lives in test/property/oracle/traceql
+// — see that package's parseQuery/Evaluate for the independent
+// specification each shape is checked against. A shape is added here
+// only once the oracle can evaluate it (never the reverse), so the
+// property test is never vacuous for a generated shape.
 //
 // The selector's RHS is always a value drawn from the dataset's
-// observed services so half of the iterations exercise a matching
-// service (genuine non-empty result) and the other half exercise a
-// service not present (empty result). The mix is implicit — rapid
-// draws across the pool uniformly, and the dataset's spans cover only
-// a subset of TraceQLServicePool on any iteration.
+// observed pools so a good share of iterations exercise a matching
+// value (genuine non-empty result) and the rest exercise an absent one
+// (empty result). The mix is implicit — rapid draws across the pools
+// uniformly, and any one dataset draw covers only a subset of a given
+// pool.
 //
 // EvalTs is stamped at TraceQLAnchorTime() + 1h for log completeness.
 // /api/search DOES thread a time range now (the harness sends an explicit
@@ -332,23 +457,8 @@ func deterministicSpanID(seed, salt int) string {
 // dataset out), but the query value itself doesn't carry it.
 func TraceQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 	return rapid.Custom(func(t *rapid.T) property.Query {
-		// Draw service value — always from the global pool so half the
-		// queries hit "absent service" (zero matches), exercising the
-		// empty-result path on both sides.
-		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
-
-		// Optional `| count() OP N` filter.
-		hasCount := rapid.Bool().Draw(t, "hasCount")
-		query := fmt.Sprintf(`{ resource.service.name = "%s" }`, service)
-		if hasCount {
-			op := rapid.SampledFrom([]string{">", ">=", "<", "<=", "="}).Draw(t, "countOp")
-			// Bound N at [0, len(spans)] so the threshold is sometimes
-			// satisfied and sometimes not. len(d.Series) is the upper
-			// bound; using a slightly wider range exercises the
-			// "threshold above ceiling" path too.
-			n := rapid.IntRange(0, len(d.Metrics.Series)+1).Draw(t, "countN")
-			query = fmt.Sprintf("%s | count() %s %d", query, op, n)
-		}
+		shape := rapid.IntRange(0, 13).Draw(t, "shape")
+		query := drawTraceQLQueryString(t, d, shape)
 
 		evalTs := traceQLAnchor.Add(time.Hour).Unix()
 		return property.Query{
@@ -356,4 +466,102 @@ func TraceQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 			EvalTs: evalTs,
 		}
 	})
+}
+
+// drawTraceQLQueryString renders the query string for the given shape
+// index. Split out of TraceQLQuery so each shape's construction reads
+// as one focused case rather than a single sprawling closure.
+func drawTraceQLQueryString(t *rapid.T, d property.Dataset, shape int) string {
+	switch shape {
+	case 0:
+		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+		return fmt.Sprintf(`{ resource.service.name = "%s" }`, service)
+	case 1:
+		return drawTraceQLCountQuery(t, d)
+	case 2:
+		cluster := rapid.SampledFrom(TraceQLClusterPool).Draw(t, "cluster")
+		return fmt.Sprintf(`{ resource.cluster = "%s" }`, cluster)
+	case 3:
+		method := rapid.SampledFrom(TraceQLHTTPMethodPool).Draw(t, "httpMethod")
+		return fmt.Sprintf(`{ span.http.method = "%s" }`, method)
+	case 4:
+		op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "durationOp")
+		thresholdMs := rapid.SampledFrom(TraceQLDurationThresholdPoolMs).Draw(t, "durationThresholdMs")
+		return fmt.Sprintf(`{ duration %s %dms }`, op, thresholdMs)
+	case 5:
+		op := rapid.SampledFrom(traceQLEqualityOps).Draw(t, "statusOp")
+		statusCH := rapid.SampledFrom(TraceQLStatusPool).Draw(t, "status")
+		return fmt.Sprintf(`{ status %s %s }`, op, statusQueryLiteral(statusCH))
+	case 6:
+		return fmt.Sprintf(`{ name = %q }`, drawTraceQLNameValue(t, d))
+	case 7:
+		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+		pattern := service[:1] + ".*"
+		return fmt.Sprintf(`{ resource.service.name =~ %q }`, pattern)
+	case 8:
+		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+		return fmt.Sprintf(`{ resource.service.name != "%s" }`, service)
+	case 9:
+		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+		statusCH := rapid.SampledFrom(TraceQLStatusPool).Draw(t, "status")
+		return fmt.Sprintf(`{ resource.service.name = "%s" && status = %s }`,
+			service, statusQueryLiteral(statusCH))
+	case 10:
+		left := rapid.SampledFrom(TraceQLServicePool).Draw(t, "leftService")
+		right := rapid.SampledFrom(TraceQLServicePool).Draw(t, "rightService")
+		return fmt.Sprintf(`{ resource.service.name = "%s" } > { resource.service.name = "%s" }`, left, right)
+	case 11:
+		left := rapid.SampledFrom(TraceQLServicePool).Draw(t, "leftService")
+		right := rapid.SampledFrom(TraceQLServicePool).Draw(t, "rightService")
+		return fmt.Sprintf(`{ resource.service.name = "%s" } >> { resource.service.name = "%s" }`, left, right)
+	case 12:
+		return drawTraceQLMetricQuery(t)
+	case 13:
+		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+		return fmt.Sprintf(`{ resource.service.name = "%s" } | select(span.http.method)`, service)
+	}
+	// Unreachable: rapid.IntRange(0, 13) never draws outside [0, 13].
+	panic(fmt.Sprintf("gen/traceql: unhandled query shape %d", shape))
+}
+
+// drawTraceQLCountQuery renders shape 1: a service selector with an
+// optional `| count() OP N` scalar filter — the accept-set the first
+// sweep shipped, preserved verbatim as one shape among the widened set.
+func drawTraceQLCountQuery(t *rapid.T, d property.Dataset) string {
+	service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+	query := fmt.Sprintf(`{ resource.service.name = "%s" }`, service)
+	if !rapid.Bool().Draw(t, "hasCount") {
+		return query
+	}
+	op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "countOp")
+	// Bound N at [0, len(spans)+1] so the threshold is sometimes
+	// satisfied and sometimes not, including the "above ceiling" case.
+	n := rapid.IntRange(0, len(d.Metrics.Series)+1).Draw(t, "countN")
+	return fmt.Sprintf("%s | count() %s %d", query, op, n)
+}
+
+// drawTraceQLMetricQuery renders shape 12: a service selector piped
+// into one of avg|min|max|sum(duration) with a scalar comparison —
+// count()'s sibling aggregates, exercising the same trace-scoped
+// aggregate pipeline with a different reducer.
+func drawTraceQLMetricQuery(t *rapid.T) string {
+	service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
+	fn := rapid.SampledFrom([]string{"avg", "min", "max", "sum"}).Draw(t, "metricFn")
+	op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "metricOp")
+	thresholdMs := rapid.SampledFrom(TraceQLDurationThresholdPoolMs).Draw(t, "metricThresholdMs")
+	return fmt.Sprintf(`{ resource.service.name = "%s" } | %s(duration) %s %dms`,
+		service, fn, op, thresholdMs)
+}
+
+// drawTraceQLNameValue picks the RHS for shape 6's `{ name = "<v>" }`.
+// Half the draws (when the dataset has spans) pick a name that's
+// actually present so the equality has something to match; the rest
+// pick a value that's guaranteed absent, exercising the empty-result
+// path deliberately rather than by accident.
+func drawTraceQLNameValue(t *rapid.T, d property.Dataset) string {
+	names := d.Metrics.NamesPresent()
+	if len(names) > 0 && rapid.Bool().Draw(t, "nameExists") {
+		return rapid.SampledFrom(names).Draw(t, "existingName")
+	}
+	return "nonexistent-span-name"
 }
