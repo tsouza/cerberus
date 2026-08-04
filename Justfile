@@ -324,6 +324,23 @@ metadata-endpoints-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestMetadataEndpoints_RealClickHouse ./test/spec/...
 
+# Run the histogram real-exporter-schema differential (#1642): provisions the
+# table shapes the REAL upstream clickhouseexporter creates — LowCardinality-
+# keyed attribute maps (Map(LowCardinality(String), String), not the plain
+# Map(String, String) every other fixture uses) and the exponential-histogram
+# table under its true name, otel_metrics_exponential_histogram — and drives
+# the Prometheus HTTP surface with columnar_result_decode ON. Every other
+# layer validates cerberus against a fixture cerberus itself created, so the
+# seed DDL and the reader always agree; this test is the only one that pins a
+# native exp-histogram quantile against the real exporter table name, the
+# columnar-decode fall-back off a LowCardinality-keyed map, and classic-
+# histogram _bucket/_count/_sum discovery off the real schema. Requires
+# Docker; gated behind the `integration` build tag. See
+# internal/api/prom/handler_histogram_integration_test.go and strict-scan.yml.
+histogram-realexporter-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -tags=integration -count=1 -run TestHistogram_RealExporterSchema_Integration ./internal/api/prom/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":

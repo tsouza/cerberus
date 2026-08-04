@@ -22,11 +22,12 @@
 //      / `_sum` companions are advertised and queryable off the single
 //      bare-name histogram row.
 //
-// Gated by the `integration` build tag (needs Docker) and NOT wired into any CI
-// lane — `internal/api/prom` has no integration step — so this is a
-// locally-runnable reproduction: `go test -tags=integration ./internal/api/prom/`.
-// The columnar `Map(LowCardinality(String), String)` fall-back it exercises IS
-// guarded in CI by internal/chclient's integration lane (chdb.yml runs
+// Gated by the `integration` build tag (needs Docker) and wired into CI as the
+// `histogram-realexporter-integration` just recipe, run from strict-scan.yml
+// alongside internal/api/prom's other real-CH integration steps. Also
+// locally-runnable: `go test -tags=integration ./internal/api/prom/`. The
+// columnar `Map(LowCardinality(String), String)` fall-back it exercises IS
+// also guarded in CI by internal/chclient's integration lane (chdb.yml runs
 // `just chclient-integration`, which executes
 // TestColumnarLowCardinalityMapFallback_E2E); this test additionally walks the
 // full Prom HTTP path end to end.
