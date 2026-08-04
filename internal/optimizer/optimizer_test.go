@@ -530,6 +530,140 @@ var inputs = map[string]chplan.Node{
 			}, Alias: "Value"},
 		},
 	},
+
+	// pushdown_through_range_bucket_fanout: the single-pass array-aggregate
+	// fan-out backing the histogram range lowerings —
+	// RangeBucketFanout(Filter(Scan)). The stage-aware arm fires on the
+	// RangeBucketFanout and narrows the inner Scan to the union of
+	// TimestampCol (the argMax tie-break column), the GroupBy series-identity
+	// ref (Attributes), each AggFunc's Args (BucketCounts, ExplicitBounds —
+	// both read via the same TimeUnix tie-break), and the Filter predicate
+	// ref (MetricName). The emitter's own fanout SELECT projects `*`, but
+	// only these columns ever reach the collapse SELECT that consumes it.
+	"pushdown_through_range_bucket_fanout": &chplan.RangeBucketFanout{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "http_request_duration_seconds"},
+			},
+		},
+		Start:        time.Unix(1000, 0).UTC(),
+		End:          time.Unix(1300, 0).UTC(),
+		Step:         30 * time.Second,
+		Lookback:     5 * time.Minute,
+		GroupBy:      []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+		AggFuncs: []chplan.AggFunc{
+			{
+				Name:  "argMax",
+				Alias: "BucketCounts",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "BucketCounts"},
+					&chplan.ColumnRef{Name: "TimeUnix"},
+				},
+			},
+			{
+				Name:  "argMax",
+				Alias: "ExplicitBounds",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "ExplicitBounds"},
+					&chplan.ColumnRef{Name: "TimeUnix"},
+				},
+			},
+		},
+	},
+
+	// pushdown_through_range_lwr: the single-pass last-with-respect-to
+	// fan-out for a bare instant-vector selector — RangeLWR(Filter(Scan)).
+	// The stage-aware arm fires on the RangeLWR and narrows the inner Scan
+	// to the canonical 4-column Sample identity (MetricNameCol,
+	// AttributesCol, TimestampCol, ValueCol) unioned with the Filter
+	// predicate ref (MetricName, already part of the identity set here).
+	"pushdown_through_range_lwr": &chplan.RangeLWR{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "http_requests_total"},
+			},
+		},
+		Start:         time.Unix(1000, 0).UTC(),
+		End:           time.Unix(1300, 0).UTC(),
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	},
+
+	// pushdown_through_metrics_aggregate: the TraceQL metrics-pipeline
+	// aggregate wrapped in a RangeWindow matrix —
+	// RangeWindow(MetricsAggregate(Filter(Scan))). MetricsAggregate's
+	// child slot is Inner, not Input, so this exercises the
+	// distinctly-named-field clone path. The stage-aware arm fires on the
+	// MetricsAggregate itself (not the wrapping RangeWindow — its own
+	// Input is a MetricsAggregate, not Scan/Filter(Scan), so
+	// applyStageScan bails there) and narrows the inner Scan to the union
+	// of the GroupBy ref (SpanKind) and Attr (Duration — the
+	// avg_over_time operand), plus the Filter predicate ref (SpanName).
+	"pushdown_through_metrics_aggregate": &chplan.RangeWindow{
+		Input: &chplan.MetricsAggregate{
+			Op:   chplan.MetricsOpAvgOverTime,
+			Attr: &chplan.ColumnRef{Name: "Duration"},
+			Inner: &chplan.Filter{
+				Input: &chplan.Scan{Table: "otel_traces"},
+				Predicate: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.ColumnRef{Name: "SpanName"},
+					Right: &chplan.LitString{V: "GET /api"},
+				},
+			},
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "SpanKind"}},
+			GroupByAliases: []string{"span.kind"},
+			ValueAlias:     "Value",
+		},
+		Func:            "avg_over_time",
+		Range:           time.Minute,
+		Step:            30 * time.Second,
+		Start:           time.Unix(1000, 0).UTC(),
+		End:             time.Unix(1300, 0).UTC(),
+		TimestampColumn: "Timestamp",
+	},
+
+	// pushdown_through_histogram_quantile: the classic-histogram quantile
+	// interpolation — HistogramQuantile(Filter(Scan)). The narrowed Scan
+	// must carry BucketCountsColumn, ExplicitBoundsColumn, and the GroupBy
+	// ref (le_bucket_key — deliberately distinct from
+	// MetricNameColumn/AttributesColumn/TimestampColumn) plus the Filter
+	// predicate ref (MetricName). MetricNameColumn ("MetricName"),
+	// AttributesColumn ("Attributes") and TimestampColumn ("TimeUnix") are
+	// set to values NOT otherwise referenced, so the fixture proves they
+	// are correctly excluded from the narrowed Scan: emitHistogramQuantile
+	// never reads them off Input, only the wrapping Project (built
+	// elsewhere) consumes them as metadata.
+	"pushdown_through_histogram_quantile": &chplan.HistogramQuantile{
+		Input: &chplan.Filter{
+			Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+			Predicate: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.ColumnRef{Name: "MetricName"},
+				Right: &chplan.LitString{V: "http_request_duration_seconds"},
+			},
+		},
+		Phi:                  0.9,
+		BucketCountsColumn:   "BucketCounts",
+		ExplicitBoundsColumn: "ExplicitBounds",
+		GroupBy:              []chplan.Expr{&chplan.ColumnRef{Name: "le_bucket_key"}},
+		GroupByAliases:       []string{"le_bucket_key"},
+		MetricNameColumn:     "MetricName",
+		AttributesColumn:     "Attributes",
+		TimestampColumn:      "TimeUnix",
+	},
 }
 
 func TestOptimizer(t *testing.T) {

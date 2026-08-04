@@ -55,13 +55,45 @@ import (
 //     exactly the emit's reads, and applyStageScan unions in the Filter
 //     predicate's columns so the predicate stays evaluable.
 //
-// Shapes (3), (4), (5) are what makes the pushdown reach the inner Scan of
-// the canonical metrics shape `Project(Aggregate(Filter(Scan)))` (and the
-// matrix `Project(RangeWindow(Filter(Scan)))`): the Project's pushdown in
-// shapes (1)/(2) stops at the Aggregate/RangeWindow, so without these arms
-// the inner Scan still reads every column (`SELECT *`). Firing on the
-// stage node itself — wherever the FixedPoint walk reaches it — pushes the
-// narrowed column set THROUGH the stage down to the Scan.
+// Four more shapes match a mid-tree stage node sitting directly over Scan
+// or Filter(Scan) — the array-valued / matrix-pipeline siblings of (3)/(4):
+//
+//  6. `RangeBucketFanout(Scan)` / `RangeBucketFanout(Filter(Scan))` — the
+//     single-pass array-aggregate fan-out backing the histogram range
+//     lowerings. narrows the Scan to TimestampCol (the argMax tie-break /
+//     fan-out distance column, also the `HAVING uniqExact(...)` argument)
+//     plus the columns the GroupBy keys and each AggFunc's Params/Args
+//     read. The emitter's fanout SELECT projects `*` from Input, but only
+//     to hand those exact columns through to the collapse SELECT — see
+//     rangeBucketFanoutColumns.
+//  7. `RangeLWR(Scan)` / `RangeLWR(Filter(Scan))` — the single-pass
+//     last-with-respect-to fan-out for a bare instant-vector selector.
+//     Narrows the Scan to exactly the canonical 4-column Sample identity:
+//     MetricNameCol, AttributesCol, TimestampCol, ValueCol.
+//  8. `MetricsAggregate(Scan)` / `MetricsAggregate(Filter(Scan))` — the
+//     TraceQL metrics-pipeline aggregate (`rate()` / `*_over_time()`).
+//     Its child slot is named Inner, not Input. Narrows the Scan to the
+//     union of the GroupBy key refs and Attr (nil for rate /
+//     count_over_time).
+//  9. `HistogramQuantile(Scan)` / `HistogramQuantile(Filter(Scan))` — the
+//     classic-histogram quantile interpolation. Narrows the Scan to
+//     BucketCountsColumn, ExplicitBoundsColumn, plus the GroupBy refs.
+//     MetricNameColumn / AttributesColumn / TimestampColumn are NOT
+//     included: emitHistogramQuantile never reads them off Input — they
+//     are metadata the wrapping lowering uses to build the Sample-contract
+//     Project ABOVE this node (AttributesColumn's own read, when present,
+//     already rides in via GroupBy). PhiExpr is likewise excluded — a
+//     computed phi is a self-contained ScalarSubquery over a SEPARATE
+//     plan, never a reference into this node's own Input.
+//
+// Shapes (3)–(9) are what makes the pushdown reach the inner Scan of the
+// canonical metrics shape `Project(Aggregate(Filter(Scan)))` (and the
+// matrix `Project(RangeWindow(Filter(Scan)))`, and the array/matrix
+// pipeline shapes above): the Project's pushdown in shapes (1)/(2) stops
+// at the stage node, so without these arms the inner Scan still reads
+// every column (`SELECT *`). Firing on the stage node itself — wherever
+// the FixedPoint walk reaches it — pushes the narrowed column set THROUGH
+// the stage down to the Scan.
 type ProjectionPushdown struct{}
 
 func (ProjectionPushdown) Name() string { return "projection-pushdown" }
@@ -85,6 +117,14 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 		return applyStageScan(node, node.Input, nativeRangeWindowColumns(node))
 	case *chplan.RangeWindowResample:
 		return applyStageScan(node, node.Input, resampleRangeWindowColumns(node))
+	case *chplan.RangeBucketFanout:
+		return applyStageScan(node, node.Input, rangeBucketFanoutColumns(node))
+	case *chplan.RangeLWR:
+		return applyStageScan(node, node.Input, rangeLWRColumns(node))
+	case *chplan.MetricsAggregate:
+		return applyStageScan(node, node.Inner, metricsAggregateColumns(node))
+	case *chplan.HistogramQuantile:
+		return applyStageScan(node, node.Input, histogramQuantileColumns(node))
 	default:
 		return n, false
 	}
@@ -156,6 +196,22 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 		clone.Input = newInput
 		return &clone
 	case *chplan.RangeWindowResample:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.RangeBucketFanout:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.RangeLWR:
+		clone := *s
+		clone.Input = newInput
+		return &clone
+	case *chplan.MetricsAggregate:
+		clone := *s
+		clone.Inner = newInput
+		return &clone
+	case *chplan.HistogramQuantile:
 		clone := *s
 		clone.Input = newInput
 		return &clone
@@ -285,6 +341,85 @@ func resampleRangeWindowColumns(r *chplan.RangeWindowResample) []string {
 		if c != "" {
 			seen[c] = struct{}{}
 		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// rangeBucketFanoutColumns returns the sorted, deduped set of base columns
+// a RangeBucketFanout's emit reads off the inner Input. emitRangeBucketFanout
+// (chsql/range_bucket_fanout.go) projects `*` from Input into the fanout
+// SELECT, but the collapse SELECT that consumes it only ever references
+// TimestampCol (the argMax tie-break / fan-out distance column, also the
+// HAVING uniqExact(...) argument when MinSamples > 1), the GroupBy source
+// columns, and each AggFunc's Params + Args — so narrowing the Scan to
+// exactly that union is safe.
+func rangeBucketFanoutColumns(r *chplan.RangeBucketFanout) []string {
+	seen := map[string]struct{}{}
+	if r.TimestampCol != "" {
+		seen[r.TimestampCol] = struct{}{}
+	}
+	collect := collectColumn(seen)
+	for _, g := range r.GroupBy {
+		walkExpr(g, collect)
+	}
+	for _, af := range r.AggFuncs {
+		for _, p := range af.Params {
+			walkExpr(p, collect)
+		}
+		for _, a := range af.Args {
+			walkExpr(a, collect)
+		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// rangeLWRColumns returns the sorted, deduped set of base columns a
+// RangeLWR's emit reads off the inner Input. emitRangeLWR reads EXACTLY
+// four named columns — MetricNameCol, AttributesCol, TimestampCol,
+// ValueCol (mirrors resampleRangeWindowColumns).
+func rangeLWRColumns(r *chplan.RangeLWR) []string {
+	seen := map[string]struct{}{}
+	for _, c := range []string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol} {
+		if c != "" {
+			seen[c] = struct{}{}
+		}
+	}
+	return sortedColumnSet(seen)
+}
+
+// metricsAggregateColumns returns the sorted, deduped set of base columns
+// a MetricsAggregate's own emit reads off its Inner input: the GroupBy
+// key expressions plus Attr (the *_over_time / quantile_over_time operand;
+// nil for rate / count_over_time). TimestampColumn is read off a WRAPPING
+// RangeWindow's own slot when one is present, not off this node.
+func metricsAggregateColumns(m *chplan.MetricsAggregate) []string {
+	seen := map[string]struct{}{}
+	collect := collectColumn(seen)
+	for _, g := range m.GroupBy {
+		walkExpr(g, collect)
+	}
+	walkExpr(m.Attr, collect)
+	return sortedColumnSet(seen)
+}
+
+// histogramQuantileColumns returns the sorted, deduped set of base columns
+// a HistogramQuantile's own emit reads off Input: BucketCountsColumn and
+// ExplicitBoundsColumn plus refs walked out of GroupBy. MetricNameColumn /
+// AttributesColumn / TimestampColumn are NOT included: emitHistogramQuantile
+// never references them — they are metadata the wrapping lowering uses to
+// build the Sample contract Project ABOVE this node. PhiExpr is likewise
+// excluded — it is a self-contained ScalarSubquery over a SEPARATE plan.
+func histogramQuantileColumns(h *chplan.HistogramQuantile) []string {
+	seen := map[string]struct{}{}
+	if h.BucketCountsColumn != "" {
+		seen[h.BucketCountsColumn] = struct{}{}
+	}
+	if h.ExplicitBoundsColumn != "" {
+		seen[h.ExplicitBoundsColumn] = struct{}{}
+	}
+	collect := collectColumn(seen)
+	for _, g := range h.GroupBy {
+		walkExpr(g, collect)
 	}
 	return sortedColumnSet(seen)
 }
