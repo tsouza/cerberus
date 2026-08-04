@@ -860,3 +860,119 @@ func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T
 		})
 	}
 }
+
+// TestProjectSamples_DropDetectedLevelSkipsWrap pins #1547's fix:
+// queryShouldSurfaceDetectedLevel re-gates on whether the pipeline
+// unconditionally drops detected_level from the output label set,
+// instead of the previous inert `expr != nil` check. A bare
+// `| drop detected_level` (or a multi-name drop naming it, or an
+// equivalent `| keep <others>` that excludes it) must skip the
+// withDetectedLevel wrap entirely — the Attributes slot stays the
+// bare ResourceAttributes ColumnRef, matching
+// TestProjectSamples_NoParserStage_KeepsBareResourceAttributes's
+// no-parser-stage shape.
+func TestProjectSamples_DropDetectedLevelSkipsWrap(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		// bare drop of the canonical name
+		`{job="api"} | drop detected_level`,
+		// detected_level named alongside an unrelated label
+		`{job="api"} | drop env, detected_level`,
+		// keep-list that doesn't name detected_level — everything else
+		// is dropped, detected_level included
+		`{job="api"} | keep job`,
+		`{job="api"} | keep job, env`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj, ok := wrapped.(*chplan.Project)
+			if !ok {
+				t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+			}
+			attrsSlot := proj.Projections[1]
+			if attrsSlot.Alias != "Attributes" {
+				t.Fatalf("attributes slot alias: got %q, want %q", attrsSlot.Alias, "Attributes")
+			}
+			ref, ok := attrsSlot.Expr.(*chplan.ColumnRef)
+			if !ok {
+				t.Fatalf("attributes slot expr for query %q: got %T, want *chplan.ColumnRef "+
+					"(the pipeline unconditionally drops detected_level, so the "+
+					"withDetectedLevel wrap must not run)", q, attrsSlot.Expr)
+			}
+			if ref.Name != s.ResourceAttributesColumn {
+				t.Errorf("attributes slot ColumnRef.Name for query %q: got %q, want %q",
+					q, ref.Name, s.ResourceAttributesColumn)
+			}
+		})
+	}
+}
+
+// TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional
+// is the control side of TestProjectSamples_DropDetectedLevelSkipsWrap:
+// shapes that do NOT statically guarantee detected_level is absent
+// from the output must keep triggering the wrap.
+//
+//   - `| drop env` never names detected_level — an unrelated drop must
+//     not suppress the wrap.
+//   - `| drop detected_level="info"` is a value matcher: it only
+//     removes the label on rows whose derived value happens to equal
+//     "info", so the gate can't decide up front and must stay
+//     permissive (dropping the wrap here would make ALL rows lose
+//     detected_level, not just the "info" ones).
+//   - `| keep job, detected_level` explicitly retains the label.
+//   - `| keep job="api"` is a value-matched keep entry — same
+//     can't-decide-statically reasoning as the drop matcher case.
+func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	l := &logql.Lang{Schema: s}
+
+	for _, q := range []string{
+		`{job="api"} | drop env`,
+		`{job="api"} | drop detected_level="info"`,
+		`{job="api"} | keep job, detected_level`,
+		`{job="api"} | keep job="api"`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan := &chplan.Scan{Table: s.LogsTable}
+			wrapped := l.ProjectSamples(plan, engine.Meta{
+				IsMetric: false,
+				Extra:    map[string]any{"expr": expr},
+			})
+			proj, ok := wrapped.(*chplan.Project)
+			if !ok {
+				t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
+			}
+			attrsSlot := proj.Projections[1]
+			fn, ok := attrsSlot.Expr.(*chplan.FuncCall)
+			if !ok {
+				t.Fatalf("attributes slot expr for query %q: got %T, want *chplan.FuncCall "+
+					"(mapConcat) — this shape doesn't statically guarantee "+
+					"detected_level is dropped, so the wrap must still run", q, attrsSlot.Expr)
+			}
+			if fn.Name != "mapConcat" {
+				t.Errorf("attributes slot FuncCall.Name for query %q: got %q, want %q",
+					q, fn.Name, "mapConcat")
+			}
+		})
+	}
+}
