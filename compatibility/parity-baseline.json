@@ -1,5 +1,5 @@
 {
-  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-cases.json against the matching entry here and FAIL the job on any parity movement this file does not already record: a recorded case that now diverges, a recorded case that stopped running, a new case that diverges on arrival, or a new case that passes but is not yet recorded. See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
+  "_comment": "Parity-regression ratchet baseline. The required compatibility/{prometheus,loki,tempo} checks compare each run's compat-cases.json against the matching entry here and FAIL the job on any parity movement this file does not already record: a recorded case that now diverges, a recorded case that stopped running, a new case that diverges on arrival, or a new case that passes but is not yet recorded. heads.tempo-grpc is the same gate for the compatibility/tempo job's gRPC/h2c StreamingQuerier transport (compatibility/tempo/driver/grpc_diff.go, #1453) — a second differential arm of the SAME required check, not a separate one; its roster excludes traces/traces_v2 (no gRPC RPC exists for trace-by-id). See .github/scripts/compat-ratchet.mjs + docs/compatibility.md.",
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
@@ -926,6 +926,59 @@
         "tags_v2 | tags_v2_span",
         "traces | trace_by_id_first_checkout",
         "traces_v2 | trace_by_id_v2_first_checkout"
+      ]
+    },
+    "tempo-grpc": {
+      "passed": 47,
+      "total": 47,
+      "cases": [
+        "metrics_instant | metrics_avg_over_time_instant",
+        "metrics_instant | metrics_count_over_time_instant",
+        "metrics_instant | metrics_rate_instant",
+        "metrics_range | drilldown_breakdown_kind_not_nil",
+        "metrics_range | metrics_compare_status_error",
+        "metrics_range | metrics_count_over_time_groupby_service",
+        "metrics_range | metrics_histogram_over_time_duration",
+        "metrics_range | metrics_quantile_over_time_p95",
+        "metrics_range | metrics_rate_by_kind_all_spans",
+        "metrics_range | metrics_rate_no_groupby",
+        "search | ancestor_op_consumer_under_payments",
+        "search | avg_duration_per_trace_status_ok",
+        "search | count_spans_per_trace",
+        "search | descendant_op_payments_to_consumer",
+        "search | direct_child_op_client_under_checkout",
+        "search | direct_parent_op_checkout_to_child",
+        "search | duration_gt_100ms",
+        "search | duration_lt_300ms",
+        "search | kind_eq_server",
+        "search | kind_not_nil",
+        "search | kind_not_nil_unspecified_carrier",
+        "search | name_not_nil",
+        "search | resource_deployment_env_eq_compat_test",
+        "search | resource_deployment_env_not_nil",
+        "search | resource_service_name_eq_checkout",
+        "search | resource_service_name_neq_checkout",
+        "search | resource_service_name_regex_shipping",
+        "search | set_and_checkout_and_status_error",
+        "search | set_or_two_kinds",
+        "search | set_or_two_services",
+        "search | span_http_method_eq_get",
+        "search | span_http_method_eq_nil",
+        "search | spansets_and_unions_distinct_spans",
+        "search | spansets_drilldown_structure_tab",
+        "search | spansets_payments_spss_capped",
+        "search | spansets_resource_checkout_complete",
+        "search | spansets_select_nested_set",
+        "search | status_eq_error",
+        "search | status_not_nil",
+        "tag_values_v1 | tag_values_v1_service_name",
+        "tag_values_v2 | tag_values_v2_deployment_env",
+        "tag_values_v2 | tag_values_v2_service_name",
+        "tag_values_v2 | tag_values_v2_unknown_tag_empty",
+        "tags_v1 | tags_v1_all",
+        "tags_v2 | tags_v2_intrinsic",
+        "tags_v2 | tags_v2_resource",
+        "tags_v2 | tags_v2_span"
       ]
     }
   }

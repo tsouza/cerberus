@@ -16,6 +16,17 @@
 //     plus a shields.io endpoint-badge score JSON. Report-only: exit
 //     code is 0 on parity drift; only driver-wide hard errors (corpus
 //     load, report write) escalate to a non-zero rc.
+//   - `diff-grpc` is the gRPC/h2c StreamingQuerier sibling of `diff`
+//     (#1453): it runs the SAME TXTAR corpus over cerberus's and
+//     reference Tempo's tempopb.StreamingQuerier gRPC service instead
+//     of HTTP, accumulates the (possibly multi-frame) streamed
+//     responses into the same wire-shaped JSON `diff`/`differ.go`
+//     already knows how to compare, and reuses that comparator
+//     unchanged. Two corpus endpoint kinds have no gRPC RPC at all
+//     (`traces` / `traces_v2` — TraceByID is HTTP/proto-only on both
+//     backends) and are skipped with an explicit report section rather
+//     than silently dropped; every other endpoint kind runs. Same
+//     report-only exit-code contract as `diff`. See grpc_diff.go.
 //
 // Cerberus is read-only over OTLP — its ingest is the OTel-CH exporter
 // writing to CH. The harness therefore writes to Tempo via OTLP and to
@@ -51,6 +62,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "tempo-compat-driver diff: %v\n", err)
 			os.Exit(1)
 		}
+	case "diff-grpc":
+		if err := runDiffGRPC(args); err != nil {
+			fmt.Fprintf(os.Stderr, "tempo-compat-driver diff-grpc: %v\n", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -71,10 +87,16 @@ subcommands:
   seed    push a deterministic OTLP batch to Tempo (:4317) AND insert
           equivalent rows into ClickHouse otel_traces; smoke-poll
           /api/traces/<id> on both backends.
-  diff    run the TraceQL corpus through both backends, emit a
-          markdown diff report under /reports/ and a shields.io
+  diff    run the TraceQL corpus through both backends over HTTP, emit
+          a markdown diff report under /reports/ and a shields.io
           endpoint-badge score JSON. Report-only: exit code is 0 on
           parity drift; only driver-wide hard errors (corpus load,
           report write) escalate to a non-zero rc.
+  diff-grpc
+          same corpus + comparator, over cerberus's and reference
+          Tempo's gRPC/h2c StreamingQuerier service instead of HTTP
+          (#1453). traces / traces_v2 cases are skipped (no gRPC RPC
+          exists for trace-by-id); every other endpoint kind runs.
+          Same report-only exit-code contract as diff.
 `, version)
 }

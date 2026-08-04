@@ -582,7 +582,7 @@ func TestRenderReport_Roundtrip(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	if err := renderReport(&buf, results); err != nil {
+	if err := renderReport(&buf, httpReportTitle, httpStatusLabel, results); err != nil {
 		t.Fatalf("renderReport: %v", err)
 	}
 	report := buf.String()
