@@ -8,12 +8,19 @@
 #             it via /api/traces. In-process smoke confirms both
 #             backends resolve the first trace ID with non-zero spans.
 #   2. diff — read the TXTAR corpus, run every TraceQL query through
-#             both backends, write a markdown diff report to
+#             both backends over HTTP, write a markdown diff report to
 #             $REPORT_DIR/diff.md AND a shields.io endpoint-badge score
 #             JSON to $REPORT_DIR/compat-score.json. Report-only: the
 #             differ exits 0 even when parity diffs are present; only
 #             driver-wide hard errors (compose up failure, seed failure,
 #             corpus load failure) escalate to a non-zero rc.
+#   3. diff-grpc — same corpus + comparator as step 2, run over
+#             cerberus's and reference Tempo's tempopb.StreamingQuerier
+#             gRPC/h2c service instead of HTTP (#1453). Writes
+#             $REPORT_DIR/diff-grpc.md + compat-score-grpc.json +
+#             compat-cases-grpc.json. Same report-only contract; two
+#             corpus endpoint kinds (traces / traces_v2) have no gRPC RPC
+#             and are listed in the report as skipped rather than run.
 #
 # The seeder and differ run as Go binaries on the CI runner (host),
 # connecting to Docker-published ports on localhost. This avoids Docker
@@ -108,10 +115,11 @@ node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
 # The seeder and differ run as Go binaries on the host, connecting
 # to Docker-published ports on localhost. Port mapping from
 # docker-compose.yml:
-#   Tempo HTTP:    23200:3200   → localhost:23200
-#   Tempo OTLP:    24317:4317   → localhost:24317
-#   cerberus:      29092:29092  → localhost:29092
-#   ClickHouse:    29100:9000   → localhost:29100
+#   Tempo HTTP:     23200:3200   → localhost:23200
+#   Tempo OTLP:     24317:4317   → localhost:24317
+#   Tempo gRPC:     23095:9095   → localhost:23095  (StreamingQuerier, #1453)
+#   cerberus:       29092:29092  → localhost:29092  (HTTP + h2c gRPC, same port)
+#   ClickHouse:     29100:9000   → localhost:29100
 #
 # The Go flag defaults match these host-accessible endpoints; the
 # docker-compose.yml env vars set Docker-internal hostnames for
@@ -169,6 +177,26 @@ set +e
 DIFF_RC=$?
 set -e
 
+# gRPC/h2c StreamingQuerier diff (#1453) — same corpus + comparator as
+# the HTTP diff above, driven over cerberus's and reference Tempo's
+# tempopb.StreamingQuerier gRPC service instead of HTTP. Runs against the
+# SAME seeded data (no re-seed) while the stack is still up. Report-only,
+# same exit-code contract as `diff`: driver-wide hard errors (corpus
+# load, report write, dial failure) are the only non-zero paths.
+echo "==> running diff-grpc driver (writing report to $REPORT_DIR/diff-grpc.md, score to $REPORT_DIR/compat-score-grpc.json)"
+echo "    --tempo-grpc=localhost:23095  (reference Tempo query-frontend StreamingQuerier)"
+echo "    --cerberus-grpc=localhost:29092  (cerberus h2c StreamingQuerier, same port as HTTP)"
+set +e
+"$DRIVER_BIN" diff-grpc \
+    --tempo-grpc=localhost:23095 \
+    --cerberus-grpc=localhost:29092 \
+    --corpus="$ROOT_DIR/driver/corpus/smoke.txtar" \
+    --report="$REPORT_DIR/diff-grpc.md" \
+    --score="$REPORT_DIR/compat-score-grpc.json" \
+    --cases="$REPORT_DIR/compat-cases-grpc.json"
+DIFF_GRPC_RC=$?
+set -e
+
 # Rejection-parity pass: every deliberate 422 in internal/traceql must
 # also be rejected by reference Tempo (status-class comparison, never
 # message text). The corpus is the rejection catalogue itself — see
@@ -184,9 +212,19 @@ echo "==> running rejection-parity driver (traceql)"
     -report "$REPORT_DIR/rejection-parity.json")
 echo "==> rejection-parity report written to $REPORT_DIR/rejection-parity.json"
 
-echo "==> differ exited with rc=$DIFF_RC"
+echo "==> HTTP differ exited with rc=$DIFF_RC"
 echo "==> report at $REPORT_DIR/diff.md"
 echo "==> score at $REPORT_DIR/compat-score.json"
 echo "==> per-case roster at $REPORT_DIR/compat-cases.json"
+echo "==> gRPC differ exited with rc=$DIFF_GRPC_RC"
+echo "==> report at $REPORT_DIR/diff-grpc.md"
+echo "==> score at $REPORT_DIR/compat-score-grpc.json"
+echo "==> per-case roster at $REPORT_DIR/compat-cases-grpc.json"
 
-exit "$DIFF_RC"
+# Non-zero if EITHER transport's driver hit a hard error. Per-case parity
+# drift never reaches either RC (both drivers are report-only); this is
+# purely the "did the harness itself run to completion" signal.
+if [ "$DIFF_RC" -ne 0 ]; then
+    exit "$DIFF_RC"
+fi
+exit "$DIFF_GRPC_RC"

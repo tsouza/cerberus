@@ -705,6 +705,32 @@ jobs:
           SCORE: compatibility/tempo/reports/compat-score.json
           CASES: compatibility/tempo/reports/compat-cases.json
 
+      - name: Append gRPC score to step summary
+        # Second differential arm of this SAME required check (#1453):
+        # run-tempo-compatibility.sh's `diff-grpc` invocation drives the
+        # same corpus over cerberus's and reference Tempo's
+        # tempopb.StreamingQuerier gRPC/h2c service and writes its own
+        # score/cases artefacts alongside the HTTP ones.
+        if: always()
+        run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: tempo-grpc
+          SCORE: compatibility/tempo/reports/compat-score-grpc.json
+
+      - name: Parity-regression ratchet (gRPC)
+        # GATE: same mechanism as the HTTP ratchet above, gating
+        # heads.tempo-grpc in compatibility/parity-baseline.json — an
+        # independent baseline so a regression on one transport can never
+        # mask or be masked by the other. traces / traces_v2 have no
+        # StreamingQuerier RPC and never enter this roster (see
+        # compatibility/tempo/driver/grpc_diff.go).
+        if: steps.harness.outcome == 'success'
+        run: node .github/scripts/compat-ratchet.mjs
+        env:
+          HEAD: tempo-grpc
+          SCORE: compatibility/tempo/reports/compat-score-grpc.json
+          CASES: compatibility/tempo/reports/compat-cases-grpc.json
+
       - name: Upload report
         # `if: always()` so we capture whatever the driver wrote even
         # when the harness step failed. The differ writes diff.md,

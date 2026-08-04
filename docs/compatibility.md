@@ -85,10 +85,10 @@ branch as shields.io badge JSON; the README shows them live. On
 
 ### TraceQL — cerberus-owned driver
 
-- **Driver**: cerberus-owned binary with `seed` + `diff` subcommands
-  (OTLP push to Tempo + direct CH `INSERT` to cerberus, both from one
-  in-memory fixture so per-span fields stay 1:1 across both read paths),
-  patterned on `cmd/tempo-vulture`.
+- **Driver**: cerberus-owned binary with `seed` + `diff` + `diff-grpc`
+  subcommands (OTLP push to Tempo + direct CH `INSERT` to cerberus, both
+  from one in-memory fixture so per-span fields stay 1:1 across both read
+  paths), patterned on `cmd/tempo-vulture`.
 - **Corpus**: cerberus-owned TXTAR corpus. **There is no third-party
   TraceQL conformance suite** (no TraceQL analogue of
   `prometheus/compliance`), so this corpus is author-written rather than
@@ -98,6 +98,22 @@ branch as shields.io badge JSON; the README shows them live. On
   (`/api/metrics/query_range` + `/api/metrics/query`) all run under the
   required `compatibility/tempo` PR check; no allow-list exists. Parity
   drift is report-only, like the other two heads.
+- **Two transport arms, one required check**: `diff` drives the corpus
+  over HTTP; `diff-grpc` (#1453) drives the SAME corpus over cerberus's
+  and reference Tempo's `tempopb.StreamingQuerier` gRPC/h2c service —
+  the transport Grafana's Tempo datasource actually opens when
+  "Streaming" is enabled, which the HTTP-only harness could not exercise
+  at all. Both arms run inside the one `compatibility/tempo` job and gate
+  independently (`compatibility/parity-baseline.json`'s `heads.tempo` /
+  `heads.tempo-grpc`), so a regression on either transport fails the
+  check. The gRPC arm's roster is 47 cases, not 49: `traces` /
+  `traces_v2` have no `StreamingQuerier` RPC (trace-by-id is
+  HTTP/proto-only on both backends) and are reported as skipped rather
+  than run — see `compatibility/tempo/driver/grpc_diff.go`'s file-level
+  comment for the full wire-contract trace, including where reference
+  Tempo's own gRPC listener lives (the query-frontend module's dedicated
+  `:9095`, not multiplexed onto its HTTP port the way cerberus's h2c
+  listener is).
 
 ## Per-head confidence
 
@@ -345,6 +361,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 | prometheus | 739 / 739    |
 | loki       | 120 / 120    |
 | tempo      | 49 / 49      |
+| tempo-grpc | 47 / 47      |
 
 The baseline records **full parity** for every head — the ratchet asserts
 `passed == total == cases.length`, so the file has no shape in which a
