@@ -197,6 +197,24 @@ jobs:
       - name: Run route-B real-CH result differential (real ClickHouse)
         run: just route-b-differential-integration
 
+      # The Loki + Prometheus metadata/label-values endpoints (/series,
+      # /labels, /label/<name>/values, /index/stats, /index/volume,
+      # /metadata) call a chclient.Client decoder method directly from the
+      # handler — QueryLabelSets / QueryIndexStats / QueryStrings /
+      # QueryIndexVolume / QueryMetricMeta — bypassing engine.QueryPlan
+      # entirely, so the SQL these handlers build is exactly what
+      # production sends. Every other spec fixture is query-body-shaped (a
+      # PromQL/LogQL/TraceQL string that lowers into a chplan); these
+      # endpoints are matcher + time-range driven and carried no fixture
+      # corpus at all before this step (#1634) — the same strict-scan blind
+      # spot documented above, left open on six decoder methods never
+      # exercised against a real server. This step drives a real
+      # loki.Handler + prom.Handler through one real case per endpoint
+      # against a real ClickHouse. See
+      # test/spec/metadata_endpoints_realch_integration_test.go.
+      - name: Run metadata-endpoints real-CH differential (real ClickHouse)
+        run: just metadata-endpoints-integration
+
       # Whether a pooled ClickHouse connection SURVIVES a cursor teardown is
       # observable only against a real driver + server: clickhouse-go releases a
       # connection when a query ends on a live context and destroys the socket

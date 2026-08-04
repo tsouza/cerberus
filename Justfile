@@ -287,6 +287,25 @@ route-b-differential-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -tags=integration -count=1 -run TestRouteB_MatchesRouteA_RealClickHouse ./internal/api/prom/...
 
+# Run the Loki + Prometheus metadata/label-values endpoints real-CH
+# differential: /loki/api/v1/{series,labels,label/*/values,index/stats,
+# index/volume} and /api/v1/{labels,label/*/values,metadata} all call a
+# chclient.Client decoder method (QueryLabelSets / QueryIndexStats /
+# QueryStrings / QueryIndexVolume / QueryMetricMeta) directly from the
+# handler, bypassing engine.QueryPlan entirely — the SQL these handlers
+# build is exactly what production sends. Unlike every other spec fixture
+# (query-body-shaped: a PromQL/LogQL/TraceQL string that lowers into a
+# chplan), these endpoints are matcher + time-range driven and carried no
+# fixture corpus at all before this lane (#1634). Drives a REAL
+# loki.Handler + prom.Handler mounted on an httptest.Server against a REAL
+# ClickHouse (testcontainers-go), asserting the decoded response of one
+# real case per endpoint. Requires Docker; gated behind the `integration`
+# build tag. See test/spec/metadata_endpoints_realch_integration_test.go
+# and strict-scan.yml.
+metadata-endpoints-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -tags=integration -count=1 -run TestMetadataEndpoints_RealClickHouse ./test/spec/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
