@@ -88,6 +88,59 @@ func (h *Handler) execMetricsRange(
 	return series, headers, nil
 }
 
+// execMetricsRangeHistogram runs the matrix-shape pipeline for a lowered
+// `| histogram_over_time(<attr>)` plan and returns the per-(group,
+// __bucket) series list plus the engine headers — the histogram sibling
+// of execMetricsRange. Unlike the scalar-aggregate path, a histogram
+// plan node carries its own group/value/bucket column aliases
+// (chplan.MetricsHistogramOverTime) rather than the shared
+// chplan.MetricsAggregate shape, so it gets its own wrap
+// (wrapHistogramForSample) and label-name derivation
+// (histogramLabelNames) — see metrics_query_range_histogram.go.
+//
+// Both Tempo entrypoints that can reach a histogram plan — the HTTP
+// handler's serveMetricsQueryRangeHistogram and the gRPC
+// MetricsQueryRange RPC's ExecMetricsRange (grpc_exports.go) — call this
+// one function, so `| histogram_over_time(...)` behaves identically on
+// both transports. Before this, the gRPC path never checked
+// unwrapMetricsHistogram at all and rejected every histogram_over_time
+// query as "not a TraceQL metrics-pipeline expression" — a real
+// transport-only divergence the compatibility/tempo gRPC differential
+// lane (#1453) caught on its first run.
+func (h *Handler) execMetricsRangeHistogram(
+	ctx context.Context,
+	q string,
+	plan chplan.Node,
+	hist *chplan.MetricsHistogramOverTime,
+	start, end time.Time,
+	step time.Duration,
+) ([]MetricsSeries, map[string]string, error) {
+	rw := &chplan.RangeWindow{
+		Input:           plan,
+		Range:           step,
+		Step:            step,
+		Start:           start,
+		End:             end,
+		TimestampColumn: h.Schema.TimestampColumn,
+	}
+	wrapped := wrapHistogramForSample(rw, hist)
+
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
+		IsMetric:      true,
+		ResponseShape: metricsMatrixShape,
+	})
+	if qerr != nil {
+		return nil, nil, qerr
+	}
+	h.Logger.Debug("cerberus tempo metrics_query_range histogram",
+		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
+		"sql", res.SQL, "args", res.Args)
+
+	normalizeHistogramBucketLabels(res.Samples)
+	series := toMetricsSeriesWithNames(res.Samples, histogramLabelNames(hist))
+	return series, res.Headers, nil
+}
+
 // execMetricsInstant runs the single-anchor pipeline for a lowered
 // scalar-aggregate metrics query — Tempo's translateQueryRangeToInstant
 // shape, one (labels, scalar) tuple per series at end-of-window.

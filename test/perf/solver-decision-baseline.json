@@ -3980,6 +3980,26 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "subquery_over_quantile_phi_above_one",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D",
+    "n_anchors": 241,
+    "fanout": 240,
+    "cumulative_d": "1h1m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_over_quantile_phi_negative",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D",
+    "n_anchors": 241,
+    "fanout": 240,
+    "cumulative_d": "1h1m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "subquery_over_rate",
     "routed": false,
     "k": 0,

@@ -124,7 +124,7 @@ func runDiff(args []string) error {
 		results = append(results, diffCase(ctx, client, tc, opts))
 	}
 
-	if err := writeReport(*reportPath, results); err != nil {
+	if err := writeReport(*reportPath, httpReportTitle, httpStatusLabel, results); err != nil {
 		return fmt.Errorf("write report: %w", err)
 	}
 	logger.Info("wrote markdown report", "path", *reportPath)
@@ -551,11 +551,27 @@ func fetchJSON(ctx context.Context, client *http.Client, urlStr string) ([]byte,
 	return body, resp.StatusCode, nil
 }
 
+// httpReportTitle / httpStatusLabel are the HTTP transport's report
+// heading + per-case status-line label, passed to writeReport /
+// renderReport from runDiff. The gRPC transport (grpc_diff.go) passes
+// its own title + "gRPC" label through the same functions, so the two
+// transports share one report renderer with only the wording that
+// differs by transport parameterised.
+const (
+	httpReportTitle = "Tempo / TraceQL compatibility — diff report"
+	httpStatusLabel = "HTTP"
+)
+
 // writeReport renders the case-by-case markdown summary. The format is
 // deliberately simple — a top-level summary line + per-case sections —
 // so the report renders well as a GH Actions artefact preview and is
 // readable as plaintext in the terminal.
-func writeReport(path string, results []CaseResult) error {
+//
+// title becomes the document's H1; statusLabel names the per-case
+// "tempo <label>: N  cerberus <label>: N" line (HTTP status codes for
+// the HTTP transport, gRPC status codes for the gRPC transport — see
+// grpc_diff.go).
+func writeReport(path, title, statusLabel string, results []CaseResult) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir report dir: %w", err)
 	}
@@ -564,10 +580,10 @@ func writeReport(path string, results []CaseResult) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return renderReport(f, results)
+	return renderReport(f, title, statusLabel, results)
 }
 
-func renderReport(w io.Writer, results []CaseResult) error {
+func renderReport(w io.Writer, title, statusLabel string, results []CaseResult) error {
 	var total, passed, diffed, asserted, hardErr int
 	for _, r := range results {
 		total++
@@ -583,7 +599,7 @@ func renderReport(w io.Writer, results []CaseResult) error {
 		}
 	}
 
-	if _, err := fmt.Fprintln(w, "# Tempo / TraceQL compatibility — diff report"); err != nil {
+	if _, err := fmt.Fprintf(w, "# %s\n", title); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(w); err != nil {
@@ -630,14 +646,14 @@ func renderReport(w io.Writer, results []CaseResult) error {
 		return err
 	}
 	for _, r := range sorted {
-		if err := renderCase(w, r); err != nil {
+		if err := renderCase(w, r, statusLabel); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func renderCase(w io.Writer, r CaseResult) error {
+func renderCase(w io.Writer, r CaseResult, statusLabel string) error {
 	if _, err := fmt.Fprintf(w, "### `%s`\n\n", r.Case.Name); err != nil {
 		return err
 	}
@@ -666,7 +682,7 @@ func renderCase(w io.Writer, r CaseResult) error {
 		}
 	}
 	if r.HardError == "" {
-		if _, err := fmt.Fprintf(w, "- tempo HTTP: %d  cerberus HTTP: %d\n", r.TempoStatus, r.CerberusStatus); err != nil {
+		if _, err := fmt.Fprintf(w, "- tempo %s: %d  cerberus %s: %d\n", statusLabel, r.TempoStatus, statusLabel, r.CerberusStatus); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(w, "- matched canonical-key entries: %d\n", r.Diff.MatchedCount); err != nil {

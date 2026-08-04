@@ -6,10 +6,13 @@
 #                        Ubuntu-base image choice — see the inline note on
 #                        the alpine variant regression.
 #   tempo                Reference grafana/tempo single-binary, listens on
-#                        :3200 (HTTP) and :4317 (OTLP gRPC). Pinned to the
-#                        commit-hash tag that matches the grafana/tempo
-#                        version pinned in go.mod — see the inline note
-#                        on the version pin.
+#                        :3200 (HTTP), :4317 (OTLP gRPC), and :9095 (the
+#                        query-frontend's tempopb.StreamingQuerier gRPC
+#                        service — dskit server's own listener, separate
+#                        from :3200; see grpc_diff.go for the wire-contract
+#                        trace). Pinned to the commit-hash tag that matches
+#                        the grafana/tempo version pinned in go.mod — see
+#                        the inline note on the version pin.
 #   cerberus-tempo       cerberus under test, listens on :29092. Same
 #                        Dockerfile.local image as the prom harness; the
 #                        cerberus binary serves Prom/Loki/Tempo on the
@@ -85,6 +88,7 @@ services:
       # collisions on the developer machine.
       - "23200:3200"  # HTTP (query API)
       - "24317:4317"  # OTLP gRPC ingest (used by PR 3's seeder)
+      - "23095:9095"  # query-frontend tempopb.StreamingQuerier gRPC (#1453's diff-grpc driver mode)
     # No Docker-level healthcheck: the grafana/tempo image is distroless
     # (no sh / wget / curl / nc) and Tempo's binary doesn't expose a
     # self-ping subcommand suitable for `CMD ["tempo", ...]`. Readiness

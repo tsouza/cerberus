@@ -1,0 +1,99 @@
+# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+---
+# Generic (non-detected_level) structured-metadata differential
+# coverage — see issue #1498.
+#
+# Before this file, the seeder (compatibility/loki/cmd/seed/main.go)
+# stamped exactly one structured-metadata key — `detected_level`, a
+# synthesized, small-closed-set severity discriminant — into both
+# ClickHouse's LogAttributes and the reference Loki push. Structured
+# metadata is a first-class Loki label source (selectors, `|
+# label_filter`, metric-query grouping, /detected_fields), so every
+# path exercising an ARBITRARY key — the far more common real-world
+# OTel/Loki shape (correlation ids, free-form annotations, ...) — ran
+# with zero differential coverage.
+#
+# generateRequestID (cmd/seed/main.go) now stamps a second key,
+# `request_id`, on ONE dedicated stream (`metadata-probe`): an
+# unconstrained-value-domain correlation id present on 2 of every 3
+# entries (see requestIDAbsenceEvery) and absent on the third.
+# request_id is deliberately confined to that single stream rather than
+# riding along on every seeded service — see metadataProbeFormat's doc
+# comment in cmd/seed/main.go. Reference Loki folds any structured-
+# metadata value a matching line carries directly into that line's
+# output identity (log-query stream labels, ungrouped metric series
+# `metric` map), so a SECOND, high-cardinality key present broadly
+# would reshape the output of dozens of pre-existing corpus cases that
+# have nothing to do with structured metadata (confirmed locally: an
+# earlier revision that stamped request_id on every service turned 41
+# previously-passing cases into diffs). metadata-probe mirrors
+# packed-source's isolation trick (an unmatched `log_format`, so the
+# vendored corpus's `${SELECTOR}` resolver never picks it) precisely so
+# the cases below are the only queries in the whole differential corpus
+# that ever observe request_id.
+#
+# /detected_fields parity for request_id is already covered without a
+# corpus entry: compareDetectedFieldsAll (cmd/loki-compliance-tester/
+# detected_fields.go) diffs the FULL field set both backends return
+# per service, generically — no per-key allow-list — so it picks up
+# metadata-probe's request_id automatically now that the seeder stamps
+# it.
+#
+# A `kind: log` case filtering on request_id being PRESENT is
+# deliberately NOT included here (mirroring how
+# cerberus-queries/regression/unpack.yaml left a metric-mode case out
+# for issue #1652 rather than gate this required check on an unrelated,
+# unmade fix). Reference Loki folds any structured-metadata value a
+# matching line carries directly into that line's output STREAM label
+# set — even for a single matching line, i.e. this isn't a
+# cardinality/fragmentation artefact — while cerberus only does this
+# for the hardcoded `detected_level` key (see
+# queryShouldSurfaceDetectedLevel / internal/logql/detected_level.go);
+# a generic key like request_id never reaches a log query's output
+# stream identity at all. That's a real, separate gap, filed as issue
+# #1684 rather than worked around here. The `absent` case below stays
+# in-corpus because it doesn't trip the gap: when request_id is truly
+# absent there is nothing for either backend to fold into stream
+# identity, so the two agree.
+queries:
+  - description: stream selector referencing a structured-metadata-only key matches nothing on both backends
+    query: '{request_id="req-00000000"}'
+    kind: log
+    time_range:
+      length: 24h
+    directions: both
+    tags:
+      - structured-metadata
+      - generic
+      - rejection-parity
+      - empty-result
+    notes: >-
+      request_id is structured metadata, never an indexed stream
+      label — reference Loki's `{}` stream selector only consults the
+      index (stream labels), never structured metadata, so this must
+      resolve to zero results on both backends rather than erroring or
+      silently matching.
+
+  - description: generic structured-metadata label filter - absent resolves to empty string
+    query: '{service_name="metadata-probe"} | request_id=""'
+    kind: log
+    time_range:
+      length: 24h
+    directions: backward # forward log queries over structured metadata unsupported by v2 engine (mirrors the detected_level cases in upstream/loki-bench/queries/fast/structured-metadata.yaml)
+    tags:
+      - structured-metadata
+      - generic
+      - filter
+      - absent
+
+  - description: metric query grouped by a generic, unconstrained-value-domain structured-metadata key
+    query: sum by (request_id) (count_over_time({service_name="metadata-probe"}[24h]))
+    kind: metric
+    time_range:
+      length: 24h
+      step: 1h
+    tags:
+      - structured-metadata
+      - generic
+      - metric
+      - grouping

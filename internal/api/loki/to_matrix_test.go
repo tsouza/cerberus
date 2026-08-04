@@ -483,3 +483,79 @@ func TestToMatrixStepGrid_StepLargerThanWindow(t *testing.T) {
 			len(got[0].Values), got[0].Values)
 	}
 }
+
+// TestToMatrixStepGrid_DropsEmptyValuedLabels pins dropEmptyLabelValues'
+// wiring into toMatrixStepGrid: a `by (<generic structured metadata
+// key>)` grouping resolves an entry lacking that key to the empty
+// string (see structuredOrStreamLookup in internal/logql), but
+// reference Loki never materialises an empty-value label into a
+// series' output label set — the key is simply absent. See issue
+// #1498 (found while adding generic structured-metadata differential
+// coverage — a `sum by (request_id) (count_over_time(...))` case where
+// some rows carry request_id and others don't diverged from reference
+// Loki on exactly this: `metric=map[]` expected vs `metric=map[request_id:]`
+// actual).
+func TestToMatrixStepGrid_DropsEmptyValuedLabels(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture()
+	samples := []chclient.Sample{
+		// One series where the group-by key resolved to a real value...
+		{Labels: map[string]string{"job": "api", "request_id": "req-abc123"}, Timestamp: f.at(0), Value: 1},
+		// ...and one where it resolved to "" (the key was absent on the
+		// underlying row).
+		{Labels: map[string]string{"job": "api", "request_id": ""}, Timestamp: f.at(0), Value: 2},
+	}
+
+	got := sortByMetric(toMatrixStepGrid(samples, f.at(0), f.at(0), 30*time.Second))
+	if len(got) != 2 {
+		t.Fatalf("expected 2 distinct series, got %d: %+v", len(got), got)
+	}
+	if want := (map[string]string{"job": "api"}); !mapsEqual(got[0].Metric, want) {
+		t.Errorf("empty-valued request_id: Metric=%v, want %v (key dropped entirely)", got[0].Metric, want)
+	}
+	if want := (map[string]string{"job": "api", "request_id": "req-abc123"}); !mapsEqual(got[1].Metric, want) {
+		t.Errorf("non-empty request_id: Metric=%v, want %v (key retained)", got[1].Metric, want)
+	}
+}
+
+// TestToVector_DropsEmptyValuedLabels is toVector's (instant-query)
+// companion to TestToMatrixStepGrid_DropsEmptyValuedLabels — same rule,
+// different pivot helper.
+func TestToVector_DropsEmptyValuedLabels(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture()
+	samples := []chclient.Sample{
+		{Labels: map[string]string{"job": "api", "request_id": "req-abc123"}, Timestamp: f.at(0), Value: 1},
+		{Labels: map[string]string{"job": "api", "request_id": ""}, Timestamp: f.at(0), Value: 2},
+	}
+
+	got := toVector(samples, f.at(0))
+	sort.Slice(got, func(i, j int) bool {
+		return format.CanonicalKey(got[i].Metric) < format.CanonicalKey(got[j].Metric)
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 distinct series, got %d: %+v", len(got), got)
+	}
+	if want := (map[string]string{"job": "api"}); !mapsEqual(got[0].Metric, want) {
+		t.Errorf("empty-valued request_id: Metric=%v, want %v (key dropped entirely)", got[0].Metric, want)
+	}
+	if want := (map[string]string{"job": "api", "request_id": "req-abc123"}); !mapsEqual(got[1].Metric, want) {
+		t.Errorf("non-empty request_id: Metric=%v, want %v (key retained)", got[1].Metric, want)
+	}
+}
+
+// mapsEqual is a small order-independent map[string]string comparator
+// local to this file's empty-label-drop assertions.
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}

@@ -183,6 +183,72 @@ func TestMetricsQueryRange_FrameShape(t *testing.T) {
 	}
 }
 
+// TestMetricsQueryRange_HistogramOverTime pins the fix for #1453's
+// gRPC-vs-HTTP divergence: `| histogram_over_time(<attr>)` lowers to
+// its own chplan.MetricsHistogramOverTime node rather than the scalar
+// chplan.MetricsAggregate shape ExecMetricsRange's main branch handles,
+// and until execMetricsRangeHistogram was wired into grpc_exports.go's
+// ExecMetricsRange, every histogram_over_time query over gRPC
+// MetricsQueryRange rejected with codes.InvalidArgument ("not a TraceQL
+// metrics-pipeline expression") even though the byte-identical query
+// succeeded over HTTP /api/metrics/query_range. The compatibility/tempo
+// gRPC differential lane (compatibility/tempo/driver/grpc_diff.go)
+// caught this on its first run against reference Tempo.
+func TestMetricsQueryRange_HistogramOverTime(t *testing.T) {
+	t.Parallel()
+	ts := func(min int) time.Time {
+		return time.Date(2026, 5, 12, 10, min, 0, 0, time.UTC)
+	}
+	// The stub querier returns these samples regardless of the emitted
+	// SQL (same pattern as TestMetricsQueryRange_FrameShape) — the
+	// __bucket label is what histogramLabelNames / toMetricsSeriesWithNames
+	// key the per-series label set on.
+	q := &metricsFakeQuerier{samples: []chclient.Sample{
+		{Labels: map[string]string{"__bucket": "10"}, Timestamp: ts(0), Value: 3},
+		{Labels: map[string]string{"__bucket": "100"}, Timestamp: ts(0), Value: 7},
+	}}
+	client, cleanup := newMetricsTestServer(t, q)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.MetricsQueryRange(ctx, &tempopb.QueryRangeRequest{
+		Query: "{ } | histogram_over_time(duration)",
+		Start: metricsFixtureStartNs,
+		End:   metricsFixtureEndNs,
+		Step:  metricsFixtureStepNs,
+	})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	frames := drainRangeFrames(t, stream)
+	if got, want := len(frames), 1; got != want {
+		t.Fatalf("frame count: got %d, want %d (range mode is single-frame)", got, want)
+	}
+	if got, want := len(frames[0].Series), 2; got != want {
+		t.Fatalf("series count: got %d, want %d (one per __bucket value): %+v", got, want, frames[0].Series)
+	}
+	buckets := map[string]float64{}
+	for _, s := range frames[0].Series {
+		if len(s.Labels) != 1 || s.Labels[0].Key != "__bucket" {
+			t.Errorf("series labels: want single __bucket label, got %+v", s.Labels)
+			continue
+		}
+		if len(s.Samples) != 1 {
+			t.Errorf("series %v: want 1 sample, got %d", s.Labels, len(s.Samples))
+			continue
+		}
+		buckets[keyValueValue(s.Labels[0])] = s.Samples[0].Value
+	}
+	if got, want := buckets["10"], 3.0; got != want {
+		t.Errorf("bucket 10 value: got %v, want %v", got, want)
+	}
+	if got, want := buckets["100"], 7.0; got != want {
+		t.Errorf("bucket 100 value: got %v, want %v", got, want)
+	}
+}
+
 // TestMetricsQueryInstant_FrameShape asserts the instant wire shape
 // diverges from range as documented: InstantSeries has a scalar Value
 // (no Samples slice). With step = end - start the matrix RangeWindow
