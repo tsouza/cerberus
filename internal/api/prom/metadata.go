@@ -1203,7 +1203,7 @@ func (h *Handler) catalogMatcherSQL(
 	ctx context.Context, matcher string, start, end time.Time,
 	lowerCatalog func(context.Context, promparser.Expr, schema.Metrics, time.Time, time.Time) (chplan.Node, error),
 ) (string, []any, error) {
-	expr, err := h.parseExpr(ctx, matcher)
+	expr, err := h.parseMatchSelector(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
@@ -1438,7 +1438,7 @@ func (h *Handler) querySamples(ctx context.Context, sql string, args []any) ([]c
 // what makes /series return a series with any in-window sample instead of
 // only series with a sample in the last 5m at wall-clock `now`.
 func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, end time.Time) (string, []any, error) {
-	expr, err := h.parseExpr(ctx, matcher)
+	expr, err := h.parseMatchSelector(ctx, matcher)
 	if err != nil {
 		return "", nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
