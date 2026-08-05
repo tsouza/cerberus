@@ -14,9 +14,9 @@ import "time"
 //
 // The node is produced by the PromQL lowering ONLY when ALL of:
 //
-//   - The boot-wired resample strategy is active (the ts_grid_resample
-//     feature, resolved once at boot from chopt.EnabledSet and injected into
-//     the lowering as a strategy — never read per query). Default off.
+//   - The wired resample strategy is active (the ts_grid_resample feature,
+//     resolved from chopt.EnabledSet and injected into the lowering as a
+//     strategy — never read per query). Default off.
 //   - The query is in range mode: Step > 0 and both Start and End are pinned
 //     (the materialised query_range grid). Instant queries (Step == 0) have
 //     no grid and lower to the simple wrapInstantLatestPerSeries Aggregate.

@@ -177,6 +177,26 @@ the SDK on top of the cerberus-specific knobs above. When both are set,
 the `CERBERUS_OTLP_*` value wins for that field because cerberus passes
 it explicitly to the exporter constructor.
 
+`OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` reach the resource
+cerberus stamps on every exported span, metric point and log record.
+Precedence runs derived defaults (`service.name=cerberus`,
+`service.version=dev`, `service.instance.id` from the hostname) →
+environment → `CERBERUS_OTLP_SERVICE_NAME` / `_SERVICE_VERSION`, so the
+environment overrides a guess and explicit configuration overrides the
+environment. `OTEL_RESOURCE_ATTRIBUTES` is the only channel for the
+dimensions cerberus has no dedicated knob for, and deployments should use
+it to describe cerberus along the same axes as every other producer they
+run:
+
+```sh
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=platform,deployment.environment=prod
+```
+
+This is not cosmetic. Grafana's Traces Drilldown breaks a selected
+service down by `resource.service.namespace`, so a cerberus that
+publishes no `service.namespace` produces an empty breakdown and the
+drill dead-ends one level in.
+
 ### Self-metrics
 
 The instrument set lives in `internal/telemetry`. Names, units and

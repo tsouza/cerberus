@@ -247,7 +247,8 @@ type EnabledHeads map[Head]struct{}
 
 // HeadEnabled reports whether this process serves head. cmd/cerberus gates
 // each head's handler/client/limiter build + route Mount (and the Tempo gRPC
-// service) on it; the health probes never consult it.
+// service) on it, and scopes the /readyz per-head breaker report to it so a
+// head this process does not serve can never hold the pod out of its Service.
 func (c Config) HeadEnabled(head Head) bool {
 	_, ok := c.EnabledHeads[head]
 	return ok
@@ -657,7 +658,8 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_CH_BREAKER_ENABLED       default "true"  (false → breaker never trips)
 //	CERBERUS_CH_BREAKER_THRESHOLD     default 5   (consecutive failures to trip OPEN)
 //	CERBERUS_CH_BREAKER_WINDOW        default "10s" (rolling failure window)
-//	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a probe)
+//	CERBERUS_CH_BREAKER_OPEN_INTERVAL default "5s"  (OPEN-state backoff before a
+//	    probe; also the Retry-After a breaker-open 503 advertises)
 //	CERBERUS_CH_PROTOCOL           default "native" ("native" | "http")
 //	CERBERUS_CH_CONN_OPEN_STRATEGY default "in_order" ("in_order" | "round_robin")
 //	CERBERUS_CH_READ_TIMEOUT       default "" (empty → derived from CERBERUS_QUERY_TIMEOUT;

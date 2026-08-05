@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
@@ -176,7 +177,7 @@ func strategyFor(meta Meta) string {
 // way regardless of which one runs.
 //
 // On top of the always-on ts-grid gate, execContext layers the DARK,
-// flag-gated settings rules from e.Settings (optimize_aggregation_in_order,
+// flag-gated settings rules from e.settings() (optimize_aggregation_in_order,
 // log_comment shape id). Each rule is OFF unless its CERBERUS_* flag is set,
 // so the default ctx is byte-identical to before these rules existed. Every
 // rule writes through chclient.WithQuerySetting, so a plan that triggers more
@@ -193,7 +194,7 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills. Fires only on the metrics-compare plan shape.
 	ctx = applyCompareMemoryBound(ctx, plan, memCap)
-	ctx = e.Settings.apply(ctx, plan)
+	ctx = e.settings().apply(ctx, plan)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the
 	// exact same id the chclient query path later stamps via WithQueryID. The
@@ -229,7 +230,7 @@ func (e *Engine) observeQuery(queryID string, plan chplan.Node, language string,
 	}
 	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveQuery(
-		queryID, planShapeID(plan), e.Settings.enabledOpts(), language,
+		queryID, planShapeID(plan), e.settings().enabledOpts(), language,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
 	)
 }
@@ -272,7 +273,7 @@ func (e *Engine) observeRoutedQuery(info *solver.ExecInfo, plan chplan.Node, lan
 	}
 	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveRoutedQuery(
-		ids, info.Parallelism, planShapeID(plan), e.Settings.enabledOpts(), language,
+		ids, info.Parallelism, planShapeID(plan), e.settings().enabledOpts(), language,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
 	)
 }
@@ -358,7 +359,7 @@ func (e *Engine) observeRejection(language string, plan chplan.Node, decision *s
 	}
 	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveRejection(
-		planShapeID(plan), e.Settings.enabledOpts(), language, token,
+		planShapeID(plan), e.settings().enabledOpts(), language, token,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
 	)
 }
@@ -377,7 +378,7 @@ func (e *Engine) observeDispatchedRejection(queryID, language string, plan chpla
 	}
 	present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason := routeFeatures(language, decision)
 	e.QueryObserver.ObserveDispatchedRejection(
-		queryID, planShapeID(plan), e.Settings.enabledOpts(), language, token,
+		queryID, planShapeID(plan), e.settings().enabledOpts(), language, token,
 		present, route, nAnchors, fanout, cumD, outerRange, step, kShards, reason,
 	)
 }
@@ -572,7 +573,19 @@ type Engine struct {
 	// (optimize_aggregation_in_order, log_comment shape id). The zero value
 	// is "every rule off": every existing call path is byte-unchanged. Wired
 	// from the CERBERUS_* flags in cmd/cerberus. See SettingsRules.
+	//
+	// It is the value in force until SetSettings installs a replacement, and it
+	// is never read directly on the query path — see settings.
 	Settings SettingsRules
+
+	// liveSettings holds the replacement rules installed by SetSettings, or nil
+	// while the engine is still on the wired Settings value. Two of the rules
+	// (OptimizeAggregationInOrder, ConditionCache) are gated on the ClickHouse
+	// server's CAPABILITIES, which change under the running process when the
+	// cluster is upgraded, so the value the query path reads has to be
+	// swappable without a restart. It is a pointer swap rather than a field
+	// mutation because the read happens concurrently on every dispatch.
+	liveSettings atomic.Pointer[SettingsRules]
 
 	// QueryObserver is the OPTIONAL hook the async query_log performance-corpus
 	// reconciler registers to learn, at the dispatch seam, the (query_id,
@@ -599,6 +612,31 @@ type Engine struct {
 	// symmetrically, when a route-A dispatch fails with a resource-exhaustion
 	// error (a retry on route B, at most once, see route_memo_wiring.go).
 	RouteMemo *routememo.Memo
+}
+
+// SetSettings installs rules as the per-query settings the engine evaluates
+// from the NEXT dispatch on, superseding the wired [Engine.Settings] value.
+// It is how a re-resolved ClickHouse capability set reaches the query path:
+// the capability-gated rules (aggregation-in-order, condition cache) answer a
+// question about the SERVER, and a cluster upgraded under a running cerberus
+// changes that answer without the process restarting.
+//
+// The swap is a single pointer store, so a dispatch already in flight keeps
+// the rules it started with and every later one sees the new value whole —
+// there is no window in which half the rules are old and half are new.
+func (e *Engine) SetSettings(rules SettingsRules) {
+	e.liveSettings.Store(&rules)
+}
+
+// settings returns the rules in force right now: the replacement installed by
+// [Engine.SetSettings] when there is one, else the wired [Engine.Settings].
+// Every query-path read goes through here, so a live swap needs no lock on the
+// hot path and no second read site can go on consulting a stale value.
+func (e *Engine) settings() SettingsRules {
+	if live := e.liveSettings.Load(); live != nil {
+		return *live
+	}
+	return e.Settings
 }
 
 // QueryObserver is the narrow seam the corpus reconciler registers on the

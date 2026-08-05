@@ -3536,14 +3536,14 @@
     },
     {
      "cerberus": {
-      "expect": "nonempty",
-      "why": "Cerberus lowers `!( <comparison> )` to a NOT predicate. The showcase has Internal / Client / Producer / Consumer spans, so the negation returns the non-server spans."
+      "expect": "empty",
+      "why": "Reference Tempo empties ANY top-level `!( <comparison> )` spanset filter regardless of the inner comparison's selectivity, so cerberus folds that shape to a constant-false predicate for bit-for-bit parity. Pinned upstream-side by the compatibility/tempo corpus case `negated_kind_not_client` and engine-side by test/spec/traceql/unary_not_intrinsic.txtar (same query, `[]` rows). A real NOT predicate is emitted when the negated operand is compound and sits under && / || — see test/spec/traceql/unary_not_compound_and_operand.txtar."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus implements `{ !(kind = server) }`; reference Tempo accepts it too. This panel pins the nonempty result bidirectionally.",
+     "description": "`{ !(kind = server) }` — a top-level unary `!` over a bare comparison. Reference Tempo returns nothing for this shape, so cerberus does too. This panel pins the empty result bidirectionally: series appearing here means the parity fold regressed.",
      "fieldConfig": {
       "defaults": {
        "color": {

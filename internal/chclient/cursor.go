@@ -442,7 +442,7 @@ func (c *rowsCursor) Close() error {
 // client asking for too much data is not a ClickHouse outage.
 func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Cursor, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	// Dispatch to the cursor-decode strategy resolved at boot. It is ALWAYS
 	// non-nil: the row path by default, the columnar strategy (which embeds the

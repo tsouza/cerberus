@@ -109,6 +109,26 @@ func TestExecute_BreakerHalfOpen_FailsFast(t *testing.T) {
 	}
 }
 
+// TestExecute_BreakerFastFail_CarriesBreakersOwnInterval asserts route B's
+// pre-flight abort advertises the SAME recovery interval route A would. The
+// pre-flight peeks the breaker instead of calling through it, so it builds the
+// fast-fail error itself — and a route that fails fast for the breaker's window
+// while telling the client to come back on some other schedule would make the
+// advertised back-off depend on which route the planner happened to pick.
+func TestExecute_BreakerFastFail_CarriesBreakersOwnInterval(t *testing.T) {
+	br := newFakeBreaker(BreakerOpen)
+	br.retryAfter = 45 * time.Second
+
+	x := newExec(newFakeQuerier(5), newFakeEmitter(), testCfg(), 32, br, nil)
+	_, _, err := x.Execute(context.Background(), "promql", makeDecision(4), nil)
+	if !errors.Is(err, chclient.ErrCircuitOpen) {
+		t.Fatalf("want ErrCircuitOpen, got %v", err)
+	}
+	if got := chclient.RetryAfterSeconds(err); got != 45 {
+		t.Errorf("RetryAfterSeconds = %d; want 45 (the breaker's own interval)", got)
+	}
+}
+
 // TestExecute_EmitFailure_ZeroCHWork asserts an emit failure aborts before
 // any cursor opens.
 func TestExecute_EmitFailure_ZeroCHWork(t *testing.T) {

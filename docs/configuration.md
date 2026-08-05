@@ -252,12 +252,12 @@ as breaker-neutral and never advance the failure count. Set
 [`operations.md`](operations.md#clickhouse-circuit-breaker) for the full state
 machine.
 
-| Variable                            | Config file | Type     | Default | Description                                                                                                               |
-| ----------------------------------- | ----------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_CH_BREAKER_ENABLED`       | —           | bool     | `true`  | Master switch. `false` makes the breaker a no-op (always-allow, never trips); a dead CH then surfaces as ordinary errors. |
-| `CERBERUS_CH_BREAKER_THRESHOLD`     | —           | int      | `5`     | Consecutive CH-health failures within the window that trip the breaker CLOSED -> OPEN. Must be >= 1.                      |
-| `CERBERUS_CH_BREAKER_WINDOW`        | —           | duration | `10s`   | Rolling window over which the threshold failures must occur. Must be > 0.                                                 |
-| `CERBERUS_CH_BREAKER_OPEN_INTERVAL` | —           | duration | `5s`    | OPEN-state backoff before the breaker admits a single HALF-OPEN probe. Must be > 0.                                       |
+| Variable                            | Config file | Type     | Default | Description                                                                                                                              |
+| ----------------------------------- | ----------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_BREAKER_ENABLED`       | —           | bool     | `true`  | Master switch. `false` makes the breaker a no-op (always-allow, never trips); a dead CH then surfaces as ordinary errors.                |
+| `CERBERUS_CH_BREAKER_THRESHOLD`     | —           | int      | `5`     | Consecutive CH-health failures within the window that trip the breaker CLOSED -> OPEN. Must be >= 1.                                     |
+| `CERBERUS_CH_BREAKER_WINDOW`        | —           | duration | `10s`   | Rolling window over which the threshold failures must occur. Must be > 0.                                                                |
+| `CERBERUS_CH_BREAKER_OPEN_INTERVAL` | —           | duration | `5s`    | OPEN-state backoff before the breaker admits a single HALF-OPEN probe, and the `Retry-After` a breaker-open 503 advertises. Must be > 0. |
 
 ## Admission control
 

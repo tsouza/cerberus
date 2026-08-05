@@ -2198,14 +2198,15 @@ func isValidTraceID(id string) bool {
 //
 // When the underlying error chain contains chclient.ErrCircuitOpen
 // (the GA-default downstream-CH circuit breaker is OPEN) the writer
-// stamps `Retry-After: 5` on the response so well-behaved clients
-// back off for the breaker's recovery window. The 503 status is
+// stamps `Retry-After` on the response — sized from the tripped breaker's
+// own recovery interval, which the error carries — so well-behaved clients
+// back off for exactly the breaker's recovery window. The 503 status is
 // supplied by ClassifyErr / ErrClass.HTTPStatus; the header
 // is set here so all Tempo error paths get it without each call site
 // repeating the boilerplate.
 func writeError(w http.ResponseWriter, status int, traceID, spanID string, err error) {
 	if errors.Is(err, chclient.ErrCircuitOpen) {
-		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Retry-After", strconv.Itoa(chclient.RetryAfterSeconds(err)))
 	}
 	httperr.WriteJSON(w, status, ErrorResponse{
 		TraceID: traceID, SpanID: spanID, Error: true,

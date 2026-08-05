@@ -97,6 +97,19 @@ extraEnv:
   # cgroup OOMs.
   - name: GOMEMLIMIT
     value: 2048MiB
+  # Resource dimensions cerberus's own self-telemetry carries, matching the
+  # telemetrygen sample apps in sample-app.yaml so every OTLP producer in the
+  # cluster describes itself along the SAME axes. Grafana Traces Drilldown
+  # walks a fixed attribute list when it breaks a selection down: clicking
+  # "Include" on resource.service.name=cerberus auto-advances the groupBy to
+  # resource.service.namespace and appends `&& resource.service.namespace !=
+  # nil` to the breakdown query. A cerberus that published only
+  # service.name / service.version / service.instance.id made that query
+  # genuinely empty ("No data for selected query"), the second-level
+  # affordance never rendered, and iterate-drilldown-apps.spec.ts failed the
+  # two-level floor with levelsClicked=1 (#1818).
+  - name: OTEL_RESOURCE_ATTRIBUTES
+    value: service.namespace=cerberus-e2e,deployment.environment=e2e
 
 resources:
   requests:

@@ -32,6 +32,15 @@
 #    bare (non-`_bucket`) storage name must answer empty (#1483), and one
 #    over `sum by(le)(<bucket-selector>)` with no wrapping rate/increase/
 #    sum_over_time must still answer (#1692).
+# 6. A cerberus-owned `__name__`-over-subquery block is appended next to the
+#    existing subquery cases. Prometheus keeps `__name__` on exactly two
+#    range functions (`last_over_time` / `first_over_time`) and resolves the
+#    surviving name PER SERIES from the outer function's input series, so a
+#    regex `__name__` matcher, an `@`-pinned subquery, and a nested
+#    range-function inner each exercise a different carrier of that name
+#    through cerberus's subquery spine (#1602, #1778, #1794). Upstream's
+#    corpus reduces subqueries with `max_over_time`, which drops the name,
+#    so no upstream case can discriminate any of them.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -458,6 +467,19 @@ test_cases:
   # irate / idelta family over subqueries.
   - query: 'irate(demo_cpu_usage_seconds_total[5m:1m])'
   - query: 'max_over_time(irate(demo_cpu_usage_seconds_total[5m:1m])[10m:1m])'
+  # `__name__` over subqueries. last_over_time / first_over_time are the two
+  # range functions Prometheus does NOT strip `__name__` from, and the name
+  # is resolved per input series rather than from the query text — so each
+  # of these differs from the max_over_time cases above in the LABELS the
+  # comparison sees, not just the values.
+  - query: 'last_over_time(demo_memory_usage_bytes[10m:1m])'
+  - query: 'first_over_time(demo_memory_usage_bytes[10m:1m])'
+  - query: 'last_over_time({__name__=~"demo_memory_usage_bytes|demo_disk_usage_bytes"}[10m:1m])'
+  - query: 'last_over_time(demo_memory_usage_bytes[10m:1m] @ start())'
+  - query: 'last_over_time(last_over_time(demo_memory_usage_bytes[5m])[10m:1m])'
+  # rate() has already stripped `__name__`, so a preserving outer function
+  # must not resurrect it.
+  - query: 'last_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])'
   # Native-histogram value functions: the corpus carries no native
   # histograms, so reference skips every float sample — both sides
   # answer the empty vector (acceptance + emptiness pinned at the

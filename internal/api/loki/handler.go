@@ -471,14 +471,15 @@ func classifyEngineErr(err error) error {
 		return nil
 	}
 	// Circuit-breaker fast-fail short-circuit: when the chclient
-	// breaker is OPEN, surface 503 + Retry-After: 5 directly. See
-	// internal/api/prom for the rationale.
+	// breaker is OPEN, surface 503 + Retry-After directly, sized from the
+	// tripped breaker's own recovery interval. See internal/api/prom for
+	// the rationale.
 	if errors.Is(err, chclient.ErrCircuitOpen) {
 		return &apiError{
 			Kind:              ErrUnavailable,
 			Err:               err,
 			Status:            http.StatusServiceUnavailable,
-			RetryAfterSeconds: 5,
+			RetryAfterSeconds: chclient.RetryAfterSeconds(err),
 		}
 	}
 	// Sample-budget exceedance: the per-query CERBERUS_QUERY_MAX_SAMPLES
@@ -1123,7 +1124,7 @@ func (h *Handler) respondError(w http.ResponseWriter, err error) {
 	// errors.Is so both shapes (bare and wrapped) get the 503 +
 	// Retry-After treatment.
 	if errors.Is(err, chclient.ErrCircuitOpen) {
-		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Retry-After", strconv.Itoa(chclient.RetryAfterSeconds(err)))
 		writeError(w, http.StatusServiceUnavailable, ErrUnavailable, err)
 		return
 	}

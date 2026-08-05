@@ -498,7 +498,8 @@ What it proves (the contracts, mapped to their landing PRs):
 - **Circuit breaker (#883).** `ch-pod-kill` deletes the single-replica
   CH Deployment (Recreate → clean outage). Under fault, a tight query
   loop forces the shared breaker OPEN: every head returns 503 +
-  `Retry-After: 5` `errorType=unavailable` (accepting the documented
+  `Retry-After` (the breaker's own `CERBERUS_CH_BREAKER_OPEN_INTERVAL`, `5`
+  at the shipped defaults) `errorType=unavailable` (accepting the documented
   502-then-503 ordering), `/readyz` goes 503 with `circuit` in the body,
   and `/healthz` stays 200 (liveness is breaker-independent — a CH
   outage must NEVER restart cerberus). After CH auto-recreates, the

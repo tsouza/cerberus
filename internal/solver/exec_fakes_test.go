@@ -195,6 +195,10 @@ func (c *fakeCursor) Close() error {
 
 type fakeBreaker struct {
 	state atomic.Value // string
+	// retryAfter is the OPEN-state backoff the fake reports; zero keeps the
+	// pre-flight abort on chclient's own default, which is what every test
+	// that does not care about the Retry-After value wants.
+	retryAfter time.Duration
 }
 
 func newFakeBreaker(state string) *fakeBreaker {
@@ -204,6 +208,8 @@ func newFakeBreaker(state string) *fakeBreaker {
 }
 
 func (b *fakeBreaker) PeekBreakerState() string { return b.state.Load().(string) }
+
+func (b *fakeBreaker) BreakerRetryAfter() time.Duration { return b.retryAfter }
 
 // ---- fake admitTopUp ----------------------------------------------------
 

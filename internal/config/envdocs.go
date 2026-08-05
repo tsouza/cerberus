@@ -261,7 +261,7 @@ var envDocs = []EnvDoc{
 	{envCHBreakerEnabled, "bool", "Circuit breaker", "Master switch. `false` makes the breaker a no-op (always-allow, never trips); a dead CH then surfaces as ordinary errors."},
 	{envCHBreakerThreshold, "int", "Circuit breaker", "Consecutive CH-health failures within the window that trip the breaker CLOSED -> OPEN. Must be >= 1."},
 	{envCHBreakerWindow, "duration", "Circuit breaker", "Rolling window over which the threshold failures must occur. Must be > 0."},
-	{envCHBreakerOpenIntrvl, "duration", "Circuit breaker", "OPEN-state backoff before the breaker admits a single HALF-OPEN probe. Must be > 0."},
+	{envCHBreakerOpenIntrvl, "duration", "Circuit breaker", "OPEN-state backoff before the breaker admits a single HALF-OPEN probe, and the `Retry-After` a breaker-open 503 advertises. Must be > 0."},
 
 	// --- Admission control ---
 	{envAdmitDisabled, "bool", "Admission control", "Disable admission control entirely on every head (handy for local development)."},

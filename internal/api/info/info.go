@@ -44,34 +44,42 @@ type Snapshot struct {
 	CHAddress string
 	// CHDatabase is the configured ClickHouse database.
 	CHDatabase string
-	// ServerVersion is the resolved ClickHouse server version as
-	// "<major>.<minor>" — either probed live at boot or, when the probe
-	// failed, the assumed supported floor (see ServerVersionSource).
-	ServerVersion string
-	// ServerVersionSource is "probe" when the boot-time version probe
-	// succeeded, or "fallback" when it failed and the 24.8 supported floor
-	// was assumed.
-	ServerVersionSource string
 
 	// OptSelection is the raw CERBERUS_CH_OPTIMIZATIONS selection
 	// (e.g. "auto", "auto,columnar_result_decode", "off").
 	OptSelection string
 	// OptMode is the resolution mode ("enforcing" | "permissive").
 	OptMode string
-	// OptResolvedAgainstVersion is the version the auto-picker resolved the
-	// selection against ("<major>.<minor>"). It equals ServerVersion.
-	OptResolvedAgainstVersion string
-	// OptEnabled is the EFFECTIVELY ENABLED feature ids (chopt EnabledSet
-	// IDs) — the headline field: it makes plain whether cerberus is running
-	// the optimizations it should.
-	OptEnabled []string
+}
+
+// OptState is the outcome of the CURRENT ClickHouse capability resolution: the
+// server version cerberus resolved its optimization selection against, where
+// that version came from, and the feature ids the resolution enabled.
+//
+// It is deliberately NOT part of [Snapshot]. The selection and the mode are
+// configuration and cannot change under a running process; the resolution is a
+// reading of a LIVE server, which a rolling ClickHouse upgrade moves without
+// cerberus restarting. Reporting a boot-time copy of it would tell an operator
+// watching an upgrade the one thing they must not be told: that nothing changed.
+type OptState struct {
+	// ServerVersion is the ClickHouse server version the selection resolved
+	// against, as "<major>.<minor>".
+	ServerVersion string
+	// ServerVersionSource is [ServerVersionSourceProbe] when the version was
+	// read live, or [ServerVersionSourceFallback] when the probe failed and the
+	// supported floor was assumed.
+	ServerVersionSource string
+	// Enabled is the EFFECTIVELY ENABLED feature ids (chopt EnabledSet IDs) —
+	// the headline field: it makes plain whether cerberus is running the
+	// optimizations it should.
+	Enabled []string
 }
 
 const (
-	// ServerVersionSourceProbe marks a server version read live at boot.
+	// ServerVersionSourceProbe marks a server version read live from the server.
 	ServerVersionSourceProbe = "probe"
 	// ServerVersionSourceFallback marks the assumed supported floor used when
-	// the boot-time version probe failed.
+	// the version probe failed.
 	ServerVersionSourceFallback = "fallback"
 )
 
@@ -79,6 +87,12 @@ const (
 type Options struct {
 	// Snapshot is the static, boot-captured fingerprint. Required.
 	Snapshot Snapshot
+
+	// Optimizations reports the CURRENT ClickHouse capability resolution — the
+	// state a periodic re-probe replaces when the server's capabilities move.
+	// When nil the body reports an unknown server version and an empty enabled
+	// set, which is the honest answer for a handler wired without the resolver.
+	Optimizations func() OptState
 
 	// Reachable reports whether ClickHouse is reachable right now. It is the
 	// same ping the /readyz probe issues, but reported as a plain bool here.
@@ -111,6 +125,7 @@ type Options struct {
 // Handler serves GET /info. Construct via New and register via Mount.
 type Handler struct {
 	snap        Snapshot
+	opts        func() OptState
 	reachable   func(ctx context.Context) bool
 	breaker     func() string
 	schemaReady func() bool
@@ -123,11 +138,13 @@ type Handler struct {
 const defaultPingTimeout = time.Second
 
 // New builds a Handler from opts. Nil live funcs degrade to safe defaults
-// (reachable=false, breaker="closed", schemaReady=true, ready=false) so a
-// partially-wired handler still serves a well-formed body.
+// (reachable=false, breaker="closed", schemaReady=true, ready=false,
+// optimizations=zero OptState) so a partially-wired handler still serves a
+// well-formed body.
 func New(opts Options) *Handler {
 	h := &Handler{
 		snap:        opts.Snapshot,
+		opts:        opts.Optimizations,
 		reachable:   opts.Reachable,
 		breaker:     opts.Breaker,
 		schemaReady: opts.SchemaReady,
@@ -197,6 +214,7 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 	pingCtx, cancel := context.WithTimeout(ctx, h.pingTimeout)
 	defer cancel()
 
+	opts := h.optsNow()
 	return infoResponse{
 		Service:       h.snap.Service,
 		Version:       h.snap.Version,
@@ -207,17 +225,20 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 		ClickHouse: clickHouseInfo{
 			Address:             h.snap.CHAddress,
 			Database:            h.snap.CHDatabase,
-			ServerVersion:       h.snap.ServerVersion,
-			ServerVersionSource: h.snap.ServerVersionSource,
+			ServerVersion:       opts.ServerVersion,
+			ServerVersionSource: opts.ServerVersionSource,
 			Reachable:           h.reachableNow(pingCtx),
 			Breaker:             h.breakerNow(),
 			SchemaReady:         h.schemaReadyNow(),
 		},
 		Optimizations: optimizationsInfo{
-			Selection:              h.snap.OptSelection,
-			Mode:                   h.snap.OptMode,
-			ResolvedAgainstVersion: h.snap.OptResolvedAgainstVersion,
-			Enabled:                h.snap.OptEnabled,
+			Selection: h.snap.OptSelection,
+			Mode:      h.snap.OptMode,
+			// The selection is always resolved against the same version the
+			// clickhouse sub-object reports; they are one reading, rendered
+			// under both keys because each sub-object is read on its own.
+			ResolvedAgainstVersion: opts.ServerVersion,
+			Enabled:                opts.Enabled,
 		},
 		Ready: h.readyNow(pingCtx),
 	}
@@ -236,6 +257,17 @@ func (h *Handler) startTime() time.Time {
 		return time.Now()
 	}
 	return h.start
+}
+
+// optsNow reads the current capability resolution. An unwired resolver yields
+// the zero OptState — an empty server version and an empty enabled list — which
+// reads as "cerberus has not resolved anything", never as "nothing is enabled
+// on a known server".
+func (h *Handler) optsNow() OptState {
+	if h.opts == nil {
+		return OptState{}
+	}
+	return h.opts()
 }
 
 func (h *Handler) reachableNow(ctx context.Context) bool {

@@ -79,3 +79,81 @@ func TestK3sCerberusDeploymentWiresOTLP(t *testing.T) {
 		t.Errorf("%s does not wire OTLP — expected an `otlp:` block with a non-empty `endpoint:` so the k3d cerberus deployment exports self-telemetry; without it the cerberus dashboard panels return empty matrices", valuesPath)
 	}
 }
+
+// drilldownBreakdownDimension is the resource axis Grafana Traces
+// Drilldown auto-advances to after the operator includes a service:
+// clicking "Include" on `resource.service.name` sets the app's groupBy to
+// `resource.service.namespace` and appends `&& resource.service.namespace
+// != nil` to the breakdown query.
+const drilldownBreakdownDimension = "service.namespace"
+
+// TestK3sCerberusPublishesBreakdownResourceDimensions pins the manifest
+// half of the fix for #1818: the Traces Drilldown app drilled only one
+// level in the k3d `dashboard` lane, failing
+// test/e2e/playwright/iterate-drilldown-apps.spec.ts's two-level floor
+// with `levelsClicked=1`.
+//
+// The chain: the harness clicks the first "Include" affordance, which
+// selects `resource.service.name = cerberus` — cerberus's own
+// self-telemetry. The app then breaks that selection down by
+// `resource.service.namespace`. Cerberus published only service.name /
+// service.version / service.instance.id, so the breakdown query was
+// genuinely empty, the panel rendered "No data for selected query", and
+// no second-level affordance existed to click.
+//
+// Two things had to be true, and this test pins the one that is a
+// manifest rather than code:
+//
+//  1. The binary must honour OTEL_RESOURCE_ATTRIBUTES at all —
+//     internal/telemetry.buildResource installs resource.WithFromEnv, and
+//     internal/telemetry's TestBuildResource_HonoursResourceAttributesEnv
+//     asserts it.
+//  2. The k3d deployment must actually SET it, along the same axes the
+//     telemetrygen sample apps already describe themselves by, so every
+//     OTLP producer in the cluster is breakdown-able.
+//
+// The lane that would otherwise catch a regression here (`dashboard`) is
+// a release gate: it short-circuits to a green no-op on an ordinary pull
+// request and does its real work on the merge commit. A static pin in the
+// `check` lane fails on the PR instead.
+func TestK3sCerberusPublishesBreakdownResourceDimensions(t *testing.T) {
+	t.Parallel()
+
+	valuesPath := "../e2e/k3s/cerberus-values.yaml"
+	values, err := os.ReadFile(valuesPath)
+	if err != nil {
+		t.Fatalf("read e2e values %s: %v", valuesPath, err)
+	}
+
+	// The chart renders `extraEnv` verbatim into the container's env, so
+	// the name/value pair appearing there IS the deployed variable.
+	attrsRE := regexp.MustCompile(`(?m)^\s*-\s*name:\s*OTEL_RESOURCE_ATTRIBUTES\s*$\n\s*value:\s*(\S.*?)\s*$`)
+	m := attrsRE.FindStringSubmatch(string(values))
+	if m == nil {
+		t.Fatalf("%s does not set OTEL_RESOURCE_ATTRIBUTES in extraEnv — cerberus then describes itself along service.name / service.version / service.instance.id only, every Traces Drilldown breakdown by another resource axis is empty, and iterate-drilldown-apps.spec.ts fails its two-level floor (#1818)", valuesPath)
+	}
+	deployed := strings.Trim(m[1], `"'`)
+	if !strings.Contains(deployed, drilldownBreakdownDimension+"=") {
+		t.Errorf("%s sets OTEL_RESOURCE_ATTRIBUTES=%q, which carries no %s — that is the exact axis Traces Drilldown breaks a service selection down by, so the drill dead-ends one level in (#1818)", valuesPath, deployed, drilldownBreakdownDimension)
+	}
+
+	// Lock-step with the telemetrygen sample apps: the whole cluster has to
+	// describe itself along the SAME axis, or a breakdown that works for
+	// the sample services silently dead-ends on cerberus (and vice versa).
+	appPath := "../e2e/k3s/sample-app.yaml"
+	app, err := os.ReadFile(appPath)
+	if err != nil {
+		t.Fatalf("read sample app %s: %v", appPath, err)
+	}
+	if !strings.Contains(string(app), drilldownBreakdownDimension+"=") {
+		t.Fatalf("%s no longer sets %s on the telemetrygen producers — this test's lock-step premise is gone; re-derive which resource axis the cluster is uniformly breakdown-able on", appPath, drilldownBreakdownDimension)
+	}
+	sampleNSRE := regexp.MustCompile(regexp.QuoteMeta(drilldownBreakdownDimension) + `="?([A-Za-z0-9_.-]+)"?`)
+	sample := sampleNSRE.FindStringSubmatch(string(app))
+	if sample == nil {
+		t.Fatalf("%s sets %s but its value did not parse — adjust the pattern rather than dropping the lock-step assertion", appPath, drilldownBreakdownDimension)
+	}
+	if !strings.Contains(deployed, drilldownBreakdownDimension+"="+sample[1]) {
+		t.Errorf("%s deploys OTEL_RESOURCE_ATTRIBUTES=%q but %s puts the telemetrygen producers in %s=%q — the two must agree so the whole k3d cluster is breakdown-able along one namespace", valuesPath, deployed, appPath, drilldownBreakdownDimension, sample[1])
+	}
+}

@@ -39,7 +39,7 @@ const (
 	// CapabilityUnreachable means the canary could not get a verdict from the
 	// server at all (a dial / timeout / breaker-open transport failure, not a
 	// typed answer). Treated conservatively like Forbidden — the native family
-	// stays off until a restart re-probes a reachable server, matching the
+	// stays off until a re-probe reaches a server that answers, matching the
 	// version probe's connectivity fallback.
 	CapabilityUnreachable
 )
