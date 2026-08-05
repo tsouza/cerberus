@@ -482,8 +482,17 @@ func renderFloatArray(vals []float64) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
+// formatFloat renders v as a plain-decimal (never scientific-notation)
+// literal for embedding in seed SQL. ClickHouse's SQL literal parser does
+// not correctly round-trip scientific-notation Float64 literals at large
+// magnitudes (e.g. "2.000039936e+09" parses back as 2000039935.9999998,
+// not the exact 2000039936 the shortest-round-trip decimal represents),
+// while the equivalent plain-decimal literal parses exactly. 'f' with
+// precision -1 still emits the shortest round-tripping decimal, just
+// never switches to exponent form, which keeps every gauge/counter value
+// exact through the INSERT -> SELECT round trip regardless of magnitude.
 func formatFloat(v float64) string {
-	return strconv.FormatFloat(v, 'g', -1, 64)
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 func formatInt(v int64) string {

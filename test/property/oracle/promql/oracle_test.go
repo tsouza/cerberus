@@ -403,7 +403,7 @@ func TestFn_QuantileOverTime_EmptyWindow(t *testing.T) {
 }
 
 // =================================================================
-// Aggregation tests — 12
+// Aggregation tests — 19
 // =================================================================
 
 func TestAgg_Sum_NoGrouping(t *testing.T) {
@@ -553,6 +553,132 @@ func TestAgg_PerSeries_LWR(t *testing.T) {
 	)
 	o := eval(d, `sum(g)`, 90)
 	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 6)})
+}
+
+func TestAgg_CountValues_By(t *testing.T) {
+	// Two "job=api" series share value 1; "job=web" has a distinct 2.
+	// count_values("count", g) by (job) mints a "count" label from
+	// each row's rendered value BEFORE grouping, so the two job=api
+	// rows (both valued 1) collapse into one output row valued 2,
+	// while job=web's single row (valued 2) stays its own group.
+	d := build(
+		makeSeries("g", map[string]string{"job": "api", "i": "1"}, sampleSpec{60, 1}),
+		makeSeries("g", map[string]string{"job": "api", "i": "2"}, sampleSpec{60, 1}),
+		makeSeries("g", map[string]string{"job": "web", "i": "1"}, sampleSpec{60, 2}),
+	)
+	o := eval(d, `count_values("count", g) by (job)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api", "count": "1"}, 2),
+		row(map[string]string{"job": "web", "count": "2"}, 1),
+	})
+}
+
+func TestAgg_CountValues_Without(t *testing.T) {
+	// without(i) drops the per-series discriminator, so the two
+	// job=api rows (both valued 1, i.e. same minted "count" label)
+	// merge into one row valued 2, exactly as the `by` case above —
+	// the two grouping modes agree here because both project down to
+	// {job, count}.
+	d := build(
+		makeSeries("g", map[string]string{"job": "api", "i": "1"}, sampleSpec{60, 1}),
+		makeSeries("g", map[string]string{"job": "api", "i": "2"}, sampleSpec{60, 1}),
+		makeSeries("g", map[string]string{"job": "web", "i": "1"}, sampleSpec{60, 2}),
+	)
+	o := eval(d, `count_values("count", g) without (i)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api", "count": "1"}, 2),
+		row(map[string]string{"job": "web", "count": "2"}, 1),
+	})
+}
+
+// TestAgg_LimitRatio_PositiveMid pins limit_ratio's per-series hash
+// test against REAL Prometheus label hashes (computed via
+// labels.FromMap({"__name__":"g","i":"<n>"}).Hash(), the exact
+// function the oracle calls): i=1 offset≈0.7779, i=2 offset≈0.4536,
+// i=3 offset≈0.2495. At r=0.5 (r>=0 branch: keep offset<r), only i=2
+// and i=3 survive.
+func TestAgg_LimitRatio_PositiveMid(t *testing.T) {
+	d := build(
+		makeSeries("g", map[string]string{"i": "1"}, sampleSpec{60, 10}),
+		makeSeries("g", map[string]string{"i": "2"}, sampleSpec{60, 20}),
+		makeSeries("g", map[string]string{"i": "3"}, sampleSpec{60, 30}),
+	)
+	o := eval(d, `limit_ratio(0.5, g)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"i": "2"}, 20),
+		row(map[string]string{"i": "3"}, 30),
+	})
+}
+
+// TestAgg_LimitRatio_NegativeMid exercises the r<0 branch (keep
+// offset>=1+r) against the same real hashes as the positive-mid case:
+// at r=-0.5 the threshold is 0.5, so only i=1 (offset≈0.7779)
+// survives — the complement of the r=0.5 case, as Prom's
+// AddRatioSampleWithOffset documents (negative ratios approximate the
+// complementary sample of the corresponding positive ratio).
+func TestAgg_LimitRatio_NegativeMid(t *testing.T) {
+	d := build(
+		makeSeries("g", map[string]string{"i": "1"}, sampleSpec{60, 10}),
+		makeSeries("g", map[string]string{"i": "2"}, sampleSpec{60, 20}),
+		makeSeries("g", map[string]string{"i": "3"}, sampleSpec{60, 30}),
+	)
+	o := eval(d, `limit_ratio(-0.5, g)`, 90)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{"i": "1"}, 10)})
+}
+
+func TestAgg_LimitRatio_ZeroIsEmpty(t *testing.T) {
+	// r == 0 is a hard empty result — Prom returns before any group is
+	// even created (engine.go: HashRatioSampler.AddRatioSample with
+	// ratioLimit == 0 always reports "not sampled").
+	d := build(
+		makeSeries("g", map[string]string{"i": "1"}, sampleSpec{60, 10}),
+		makeSeries("g", map[string]string{"i": "2"}, sampleSpec{60, 20}),
+	)
+	o := eval(d, `limit_ratio(0, g)`, 90)
+	assertRows(t, o, nil)
+}
+
+func TestAgg_LimitRatio_ClampAboveOneKeepsAll(t *testing.T) {
+	// r > 1 clamps to 1: offset < 1 is true for every hash (offset is
+	// always in [0, 1)), so every series survives regardless of its
+	// individual hash — a clamp-correctness pin that needs no
+	// hand-computed hash value.
+	d := build(
+		makeSeries("g", map[string]string{"i": "1"}, sampleSpec{60, 10}),
+		makeSeries("g", map[string]string{"i": "2"}, sampleSpec{60, 20}),
+	)
+	o := eval(d, `limit_ratio(1.5, g)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"i": "1"}, 10),
+		row(map[string]string{"i": "2"}, 20),
+	})
+}
+
+// TestAgg_LimitK_BelowOneIsEmpty and TestAgg_LimitK_AtCardinalityKeepsAll
+// pin ONLY the two endpoints limitk's oracle implementation claims to
+// reproduce (see limitK's doc comment in aggregations.go) — K<1 empty,
+// K at or beyond the group's cardinality keeps everything. The
+// mid-range row-selection order has no cross-implementation contract
+// with cerberus's `LIMIT k BY` and is intentionally NOT asserted here.
+func TestAgg_LimitK_BelowOneIsEmpty(t *testing.T) {
+	d := build(
+		makeSeries("g", map[string]string{"i": "1"}, sampleSpec{60, 10}),
+		makeSeries("g", map[string]string{"i": "2"}, sampleSpec{60, 20}),
+	)
+	o := eval(d, `limitk(0, g)`, 90)
+	assertRows(t, o, nil)
+}
+
+func TestAgg_LimitK_AtCardinalityKeepsAll(t *testing.T) {
+	d := build(
+		makeSeries("g", map[string]string{"i": "1"}, sampleSpec{60, 10}),
+		makeSeries("g", map[string]string{"i": "2"}, sampleSpec{60, 20}),
+	)
+	o := eval(d, `limitk(2, g)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"i": "1"}, 10),
+		row(map[string]string{"i": "2"}, 20),
+	})
 }
 
 // =================================================================
