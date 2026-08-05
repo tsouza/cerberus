@@ -426,9 +426,8 @@
       "head": "promql",
       "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#1cf264f6",
       "message": "promql: histogram_quantiles requires literal phi arguments for the %q label, got %T",
-      "class": "divergence",
-      "trigger_query": "histogram_quantiles(http_request_duration_seconds, \"quantile\", scalar(http_request_duration_seconds))",
-      "tracking_issue": 1765
+      "class": "rejection",
+      "trigger_query": "histogram_quantiles(http_request_duration_seconds, \"quantile\", scalar(http_request_duration_seconds))"
     },
     {
       "head": "promql",
