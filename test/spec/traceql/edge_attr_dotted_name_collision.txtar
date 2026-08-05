@@ -1,0 +1,24 @@
+-- query.traceql --
+{ .name = "checkout" }
+-- args --
+[0] string = "name"
+[1] string = "checkout"
+-- sql --
+SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)
+-- seed --
+CREATE TABLE otel_traces (
+    Duration UInt64,
+    SpanName String,
+    SpanAttributes Map(String, String) MATERIALIZED if(Duration = 10000000, map('name', 'checkout'), if(Duration = 20000000, map('name', 'billing'), map()))
+) ENGINE = MergeTree ORDER BY Duration;
+INSERT INTO otel_traces (Duration, SpanName) VALUES
+    (10000000, 'checkout-span'),
+    (20000000, 'billing-span'),
+    (30000000, 'other-span');
+-- expected_rows --
+[
+  ["checkout-span", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 10000000]
+]
+-- chplan --
+Filter predicate=(SpanAttributes["name"] = "checkout")
+  Scan(otel_traces)
