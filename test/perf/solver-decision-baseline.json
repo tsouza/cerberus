@@ -2230,6 +2230,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "info_signature_collapse_keeps_newest",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "info_target_info_enrichment",
     "routed": false,
     "k": 0,
