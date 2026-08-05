@@ -22,12 +22,20 @@ func hasUnpinnedMetricNameMatcher(matchers []*labels.Matcher) bool {
 	return false
 }
 
+// Classification is delegated to wireArms (#1756): the union of
+// WireArmWireNamePinned + WireArmWireNameUnpinned (via WireName()) is the
+// `names` split — both pin-nesses land here unchanged, since this
+// consumer resolves the wire name via a post-projection Filter over an
+// already-aliased synthetic-name column (see buildRegexHistogramCompanionArm
+// / buildRegexHistogramBucketArm) rather than a rewritten predicate, so it
+// has no need for wireArms's ResolveName decision.
 func splitRegexHistogramMatchers(matchers []*labels.Matcher) (names, scan, le []*labels.Matcher) {
-	for _, m := range matchers {
-		switch m.Name {
-		case model.MetricNameLabel:
+	w := wireArms(matchers)
+	for i, m := range matchers {
+		switch w.Arms[i] {
+		case WireArmWireNamePinned, WireArmWireNameUnpinned:
 			names = append(names, m)
-		case "le":
+		case WireArmWireBound:
 			le = append(le, m)
 		default:
 			scan = append(scan, m)
