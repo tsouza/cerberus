@@ -262,7 +262,7 @@ against an upstream oracle, not just the emitted SQL.
 PromQL is the strongest leg: the third-party **PromQL Compliance Tester**
 (PromLabs / CNCF Prometheus Conformance Program tooling) against a real
 `prom/prometheus`, seeded identically on both sides via remote-write —
-**739/739 cases pass, no allow-list.** LogQL is solid but measured on a
+**745/745 cases pass, no allow-list.** LogQL is solid but measured on a
 Grafana bench corpus rather than a standardised conformance suite. TraceQL
 is the lightest leg: no third-party TraceQL conformance suite exists, so its
 corpus is author-written TXTAR and its numerical confidence is
