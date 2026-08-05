@@ -63,6 +63,5 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		Select(verbatim("s.*")).
 		From(aliasedFrag(outerSub, "s")).
 		Where(InSubquery(Col(n.TraceIDColumn), topN))
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }

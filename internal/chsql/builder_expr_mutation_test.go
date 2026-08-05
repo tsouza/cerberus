@@ -47,7 +47,7 @@ func TestMutation_ExprInSubquery_RendersLeftAndSubquery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sql, _ := b.Build()
+	sql, _, _ := b.Build()
 	if !strings.Contains(sql, "TraceId") || !strings.Contains(sql, "IN (") || !strings.Contains(sql, "otel_traces") {
 		t.Fatalf("expected `<col> IN (<SELECT … otel_traces>)`, got %q", sql)
 	}
@@ -71,7 +71,7 @@ func TestMutation_ExprLambda_MultiParamCommaSeparator(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sql, _ := b.Build()
+	sql, _, _ := b.Build()
 	if !strings.HasPrefix(sql, "(k, v) -> ") {
 		t.Fatalf("multi-parameter lambda must render `(k, v) -> `, got %q", sql)
 	}
@@ -89,7 +89,7 @@ func TestMutation_ExprLambda_SingleParamNoParens(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sql, _ := b.Build()
+	sql, _, _ := b.Build()
 	if !strings.HasPrefix(sql, "i -> ") {
 		t.Fatalf("single-parameter lambda must render `i -> `, got %q", sql)
 	}
@@ -121,7 +121,7 @@ func TestMutation_ExprMapWithoutEmptyValues_RendersFilter(t *testing.T) {
 	if err := b.Expr(&chplan.MapWithoutEmptyValues{Map: &chplan.ColumnRef{Name: "Attributes"}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sql, _ := b.Build()
+	sql, _, _ := b.Build()
 	if !strings.HasPrefix(sql, "mapFilter((k, v) -> v != '', ") || !strings.HasSuffix(sql, ")") {
 		t.Fatalf("expected a closed mapFilter call, got %q", sql)
 	}

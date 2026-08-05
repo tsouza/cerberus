@@ -92,14 +92,6 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" {
 		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names", ErrUnsupported)
 	}
-	// Pre-flight every GroupBy expression so chplan errors surface
-	// synchronously rather than from inside a Frag callback.
-	for _, g := range h.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-
 	sub, err := e.subqueryFrag(h.Input)
 	if err != nil {
 		return err
@@ -115,8 +107,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	sb.SelectAs(histogramQuantileNativeValueFrag(h), "Value")
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // histogramQuantileNativeValueFrag returns the Frag rendering the

@@ -56,9 +56,6 @@ import (
 const (
 	compareJoinLeftAlias  = "s"
 	compareJoinRightAlias = "r"
-	// rootLookupTraceIDTsEndPadSeconds compensates the trace_id_ts lookup's
-	// DateTime End value flooring a DateTime64(9) span timestamp.
-	rootLookupTraceIDTsEndPadSeconds = 1
 )
 
 // compareScanBound carries the (Start-range, End] Timestamp window the
@@ -117,14 +114,6 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 	}
 	if m.Inner == nil {
 		return nil, fmt.Errorf("%w: MetricsCompare.Inner is nil", ErrUnsupported)
-	}
-	// Pre-flight chplan expressions so errors surface synchronously
-	// (mirrors emitMetricsAggregate's pre-flight loop).
-	if err := (&Builder{}).Expr(m.Selection); err != nil {
-		return nil, err
-	}
-	if err := (&Builder{}).Expr(m.Pairs); err != nil {
-		return nil, err
 	}
 
 	inner, err := e.subqueryFrag(m.Inner)
@@ -360,41 +349,29 @@ func tsBoundExprs(tsCol string, startNano, endNano int64) (lo, hi chplan.Expr) {
 // configured — an envelope over an empty table or column identifier would be a
 // broken query, not a weaker bound. seed must be non-nil; the caller only
 // reaches here once it has one.
+//
+// The bound-construction itself is chplan.TraceIDTsBounds (#1438) — this
+// wrapper supplies the cohort predicate (an IN-subquery over seed, since a
+// MetricsCompare root lookup covers however many trace ids seed selects,
+// unlike the single-trace Eq the Tempo by-id handler uses).
 func rootLookupTraceIDTsBounds(m *chplan.MetricsCompare, seed chplan.Node, timestampColumn string) (lo, hi chplan.Expr) {
 	if m.RootLookupTraceIDTsTable == "" ||
 		m.RootLookupTraceIDTsStartColumn == "" || m.RootLookupTraceIDTsEndColumn == "" {
 		return nil, nil
 	}
-	scalar := func(agg, column string) chplan.Expr {
-		return &chplan.ScalarSubquery{Input: &chplan.Aggregate{
-			Input: &chplan.Filter{
-				Input: &chplan.Scan{Table: m.RootLookupTraceIDTsTable},
-				Predicate: &chplan.InSubquery{
-					Left:     &chplan.ColumnRef{Name: m.TraceIDColumn},
-					Subquery: chplan.CloneNode(seed),
-				},
-			},
-			AggFuncs: []chplan.AggFunc{{
-				Name:  agg,
-				Args:  []chplan.Expr{&chplan.ColumnRef{Name: column}},
-				Alias: column,
-			}},
-		}}
+	cohortPred := func() chplan.Expr {
+		return &chplan.InSubquery{
+			Left:     &chplan.ColumnRef{Name: m.TraceIDColumn},
+			Subquery: chplan.CloneNode(seed),
+		}
 	}
-	lo = &chplan.Binary{
-		Op:    chplan.OpGe,
-		Left:  &chplan.ColumnRef{Name: timestampColumn},
-		Right: scalar("min", m.RootLookupTraceIDTsStartColumn),
-	}
-	hi = &chplan.Binary{
-		Op:   chplan.OpLe,
-		Left: &chplan.ColumnRef{Name: timestampColumn},
-		Right: &chplan.FuncCall{Name: "addSeconds", Args: []chplan.Expr{
-			scalar("max", m.RootLookupTraceIDTsEndColumn),
-			&chplan.LitInt{V: rootLookupTraceIDTsEndPadSeconds},
-		}},
-	}
-	return lo, hi
+	return chplan.TraceIDTsBounds(
+		m.RootLookupTraceIDTsTable,
+		m.RootLookupTraceIDTsStartColumn,
+		m.RootLookupTraceIDTsEndColumn,
+		timestampColumn,
+		cohortPred,
+	)
 }
 
 // pushPredicateToSpansScanFilter walks n in place looking for the Filter
@@ -498,8 +475,7 @@ func (e *emitter) emitMetricsCompare(m *chplan.MetricsCompare) error {
 	outer.GroupBy(Col(selA), Col(attrA), Col(valA))
 	outer.OrderBy(Col(selA), false).OrderBy(Col(attrA), false).OrderBy(Col(valA), false)
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // emitRangeWindowCompare renders the matrix shape — one row per
@@ -635,6 +611,5 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	outer.SelectAs(compareCountValueFrag(), compareValueOut(m))
 	outer.GroupBy(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }

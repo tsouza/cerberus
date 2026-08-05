@@ -214,7 +214,10 @@ func EmitQueryExemplars(
 		).
 		From(inner.Frag())
 
-	sql, args := outer.Build()
+	sql, args, err := outer.subquerySQL()
+	if err != nil {
+		return "", nil, err
+	}
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
 	return sql, args, nil
 }

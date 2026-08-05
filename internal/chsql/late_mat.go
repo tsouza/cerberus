@@ -344,24 +344,10 @@ func projectionColumnNames(ps []chplan.Projection) map[string]struct{} {
 // sides expose the row-key column names).
 //
 // Errors from the predicate / projection expression render flow back
-// through the same pre-flight pattern used by emitFilter / emitProject
-// — chplan errors surface synchronously rather than from inside a
-// Frag callback.
+// through Builder.err (see #1449) — a failing Expr sets the sticky
+// first-error inside the Frag closure it renders from, which
+// subquerySQL / emitSelect surface at the end of this function.
 func (e *emitter) emitLateMat(m *lateMatMatch) error {
-	// Pre-flight every projection expression and the (optional)
-	// predicate. Mirrors emitProject / emitFilter so chplan errors
-	// land at the caller, not inside a render closure.
-	for _, pr := range m.project.Projections {
-		if err := (&Builder{}).Expr(pr.Expr); err != nil {
-			return err
-		}
-	}
-	if m.filter != nil {
-		if err := (&Builder{}).Expr(m.filter.Predicate); err != nil {
-			return err
-		}
-	}
-
 	// Inner SELECT: thin columns + row key, WHERE pred (if any),
 	// LIMIT n. The thin column list already contains the row-key
 	// columns (isLateMatCandidate appends them last), so we just
@@ -390,8 +376,7 @@ func (e *emitter) emitLateMat(m *lateMatMatch) error {
 		outer.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias)
 	}
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // lateMatJoinPredicate returns a Frag rendering the row-key JOIN's ON

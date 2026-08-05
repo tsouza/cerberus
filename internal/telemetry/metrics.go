@@ -207,6 +207,17 @@ type Instruments struct {
 	// OutcomeSuccess for a memo-tracked dispatch, by which route produced
 	// it. Attribute: cerberus.route_choice ("a" / "b").
 	RouteABSuccessTotal metric.Int64Counter
+
+	// ExemplarFailuresTotal counts Tempo metrics-path exemplar
+	// enrichment failures, by which half of attachMetricsExemplars
+	// failed: the chsql.EmitMetricsExemplars render (stage=StageEmit)
+	// or the ClickHouse round trip for the rendered query
+	// (stage=StageExecute). attachMetricsExemplars degrades
+	// gracefully — the matrix response still returns, with an empty
+	// exemplars array — so this counter is the only wire-visible
+	// signal of a systematic exemplar outage; without it the failure
+	// is indistinguishable from "no exemplars in this window" (#1460).
+	ExemplarFailuresTotal metric.Int64Counter
 }
 
 // Histogram bucket boundaries, one ladder per instrument, matched to the
@@ -394,6 +405,14 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build route_ab_success_total: " + err.Error())
 	}
+	exemplarFailures, err := meter.Int64Counter(
+		"cerberus_tempo_exemplar_failures_total",
+		metric.WithDescription("Tempo metrics-path exemplar enrichment failures, by stage (emit/execute)."),
+		metric.WithUnit("{failure}"),
+	)
+	if err != nil {
+		panic("telemetry: build tempo_exemplar_failures_total: " + err.Error())
+	}
 	return &Instruments{
 		QueriesTotal:             queriesTotal,
 		QueryDuration:            queryDuration,
@@ -406,6 +425,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 		RouteMemoPressureActive:  routeMemoPressureActive,
 		RoutedDispatchInflight:   routedDispatchInflight,
 		RouteABSuccessTotal:      routeABSuccess,
+		ExemplarFailuresTotal:    exemplarFailures,
 	}
 }
 
@@ -586,4 +606,16 @@ func ObserveRoutedDispatchInflight(ctx context.Context) func() {
 // resolves to OutcomeSuccess for a memo-tracked dispatch.
 func RecordRouteABSuccess(ctx context.Context, route string) {
 	Get().RouteABSuccessTotal.Add(ctx, 1, metric.WithAttributes(AttrRouteChoice.String(route)))
+}
+
+// RecordTempoExemplarFailure increments ExemplarFailuresTotal for the
+// given attachMetricsExemplars failure stage — StageEmit for a
+// chsql.EmitMetricsExemplars render failure, StageExecute for a
+// ClickHouse query failure on the rendered exemplars SQL. Reuses the
+// AttrStage vocabulary rather than minting a parallel one: both
+// values already name exactly the pipeline phase that failed. Caller
+// is internal/api/tempo/metrics_exec.go's attachMetricsExemplars,
+// shared by both the HTTP and gRPC Tempo metrics entrypoints.
+func RecordTempoExemplarFailure(ctx context.Context, stage string) {
+	Get().ExemplarFailuresTotal.Add(ctx, 1, metric.WithAttributes(AttrStage.String(stage)))
 }

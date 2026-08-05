@@ -89,8 +89,7 @@ func (e *emitter) emitVectorJoin(j *chplan.VectorJoin) error {
 	if isComparisonOp(j.Op) && !j.ReturnBool {
 		sb.Where(vectorJoinCompareFilterFrag(j))
 	}
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 func (e *emitter) validateVectorJoinCols(j *chplan.VectorJoin) error {

@@ -9,6 +9,7 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -53,6 +54,39 @@ func TestLang_Parse_SimpleSelector(t *testing.T) {
 	if !meta.IsMetric {
 		t.Errorf("Meta.IsMetric: got false, want true (every PromQL query is metric-shaped)")
 	}
+}
+
+// TestLang_Parse_ResponseShape — Meta.ResponseShape is chclient.ResponseShapeMatrix
+// only when Step is set (the /api/v1/query_range shape, the only PromQL path
+// that reaches engine.QueryCursor / chclient's columnar decode), and left
+// empty for the instant-query shape (Step == 0, executeInstant's Query path,
+// which never reads ResponseShape). Pins the #1429 defense-in-depth signal
+// at its source so a future edit can't silently stop declaring it.
+func TestLang_Parse_ResponseShape(t *testing.T) {
+	t.Parallel()
+
+	t.Run("range query sets the matrix shape", func(t *testing.T) {
+		l := langForTest()
+		l.Step = 15 * time.Second
+		_, meta, err := l.Parse(context.Background(), "up")
+		if err != nil {
+			t.Fatalf("Parse(`up`): unexpected err: %v", err)
+		}
+		if meta.ResponseShape != chclient.ResponseShapeMatrix {
+			t.Errorf("Meta.ResponseShape: got %q, want %q", meta.ResponseShape, chclient.ResponseShapeMatrix)
+		}
+	})
+
+	t.Run("instant query leaves the shape unset", func(t *testing.T) {
+		l := langForTest()
+		_, meta, err := l.Parse(context.Background(), "up")
+		if err != nil {
+			t.Fatalf("Parse(`up`): unexpected err: %v", err)
+		}
+		if meta.ResponseShape != "" {
+			t.Errorf("Meta.ResponseShape: got %q, want empty (instant queries never reach QueryCursor)", meta.ResponseShape)
+		}
+	})
 }
 
 // TestLang_Parse_ParseError — invalid syntax surfaces as a

@@ -188,8 +188,7 @@ func (e *emitter) emitNestedSetAnnotate(n *chplan.NestedSetAnnotate) error {
 		).
 		From(aliasedFrag(inputSub, "m")).
 		Join(LeftJoin, aliasedFrag(numbering.Frag(), "ns"), onClause)
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // buildNestedSetNumbering assembles the numbering subquery: the
@@ -563,6 +562,7 @@ func optQualColFrag(qual, col string) Frag {
 func quoteIdent(name string) string {
 	b := &Builder{}
 	b.Ident(name)
-	sql, _ := b.Build()
+	// Ident never touches chplan.Expr, so b.err is always nil here.
+	sql, _, _ := b.Build()
 	return sql
 }

@@ -41,7 +41,49 @@ import (
 // Value, in that order. The columnar path engages ONLY when a result block's
 // shape matches this exactly; any other shape (the five-column Loki log-stream
 // projection, the metadata endpoints) falls back to the row path.
+//
+// This is a name/type collision test, not a proof of intent: a future
+// projection that happens to reuse these four names and types (e.g. a
+// differently-shaped log-stream query) would pass it too. See
+// ResponseShapeMatrix below for the defense-in-depth layered on top (#1429).
 var matrixColumns = [...]string{"MetricName", "Attributes", "TimeUnix", "Value"}
+
+// ResponseShapeMatrix is the engine.Meta.ResponseShape value a caller stamps
+// onto a QueryCursor ctx (via WithResponseShape) to declare "this query's SQL
+// really is the prom query_range matrix projection". bindColumns ANDs this
+// against the structural name/type test above rather than replacing it: the
+// column-shape check alone caught every collision seen so far, but it is a
+// coincidence-of-naming test, not a statement of caller intent, so a second,
+// independent signal closes the class rather than the one instance (#1429).
+// A caller that hasn't been threaded to set a ResponseShape at all (empty
+// string) is treated as "unknown, defer to the structural test" so this gate
+// can be adopted incrementally without silently disabling the columnar
+// decode for not-yet-migrated callers.
+const ResponseShapeMatrix = "prom-matrix"
+
+// responseShapeCtxKey is the context key WithResponseShape and
+// ResponseShapeFromContext round-trip on.
+type responseShapeCtxKey struct{}
+
+// WithResponseShape attaches shape (an engine.Meta.ResponseShape value, e.g.
+// ResponseShapeMatrix) to ctx so the columnar matrix decode can confirm the
+// caller actually intends a matrix query before it engages — see
+// ResponseShapeMatrix.
+func WithResponseShape(ctx context.Context, shape string) context.Context {
+	return context.WithValue(ctx, responseShapeCtxKey{}, shape)
+}
+
+// ResponseShapeFromContext returns the ResponseShape ctx carries, or "" when
+// none was attached. Exported (mirroring SampleBudgetFromContext /
+// QuerySettingsFromContext / QueryIDFromContext) so callers outside this
+// package — notably internal/engine's wiring tests — can pin that a
+// ResponseShape set upstream actually reaches the ctx a CursorQuerier
+// receives, not just that WithResponseShape and the internal read-back agree
+// with each other.
+func ResponseShapeFromContext(ctx context.Context) string {
+	shape, _ := ctx.Value(responseShapeCtxKey{}).(string)
+	return shape
+}
 
 // columnarMatrixDecoder owns the dedicated ch-go pool used for the columnar
 // matrix decode. It is built (lazily-dialled, mirroring clickhouse.Open's lazy
@@ -167,6 +209,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 
 	dec := &columnarCursor{
+		responseShape:  ResponseShapeFromContext(ctx),
 		budget:         budgetFromContext(ctx),
 		byteBudget:     drainByteBudgetFromContext(ctx),
 		maxSamples:     c.maxSamples,
@@ -242,6 +285,11 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 type columnarCursor struct {
 	results chproto.Results
 
+	// responseShape is the engine.Meta.ResponseShape the caller declared for
+	// this query (via WithResponseShape), or "" when not threaded. See
+	// ResponseShapeMatrix.
+	responseShape string
+
 	samples []Sample
 	idx     int
 	err     error
@@ -296,7 +344,18 @@ type timeColumn interface {
 // bindColumns type-asserts the Auto-inferred result columns into the matrix
 // shape. A mismatch (wrong count, wrong names, wrong types — e.g. the
 // five-column Loki projection) reports false so the caller falls back.
+//
+// This ANDs two independent checks (#1429): the structural name/type test
+// below, unchanged, PLUS — when the caller declared a ResponseShape — a
+// confirmation that the caller actually intends the matrix decode. Either
+// one declining is enough to fall back to the row path; a caller that
+// hasn't been threaded to set a ResponseShape (empty string) skips only the
+// second check, so this is additive, never a narrowing of what the
+// structural test alone already accepted.
 func (d *columnarCursor) bindColumns() (matrixCols, bool) {
+	if d.responseShape != "" && d.responseShape != ResponseShapeMatrix {
+		return matrixCols{}, false
+	}
 	if len(d.results) != len(matrixColumns) {
 		return matrixCols{}, false
 	}

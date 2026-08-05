@@ -9,7 +9,7 @@ import (
 func renderFragToSQL(f Frag) string {
 	b := NewBuilder()
 	f(b)
-	sql, _ := b.Build()
+	sql, _, _ := b.Build()
 	return sql
 }
 
@@ -30,7 +30,7 @@ func TestMutation_WriteCTEs_NonRecursiveHead(t *testing.T) {
 	qb := &QueryBuilder{ctes: []cteClause{{Name: "cte0", Body: Col("a")}}}
 	b := NewBuilder()
 	qb.writeCTEs(b)
-	head, _ := b.Build()
+	head, _, _ := b.Build()
 
 	if !strings.HasPrefix(head, "WITH ") {
 		t.Fatalf("expected head to start with %q, got %q", "WITH ", head)
@@ -65,7 +65,7 @@ func TestMutation_WriteCTEs_RecursiveOrLeftBranch(t *testing.T) {
 	}}}
 	b := NewBuilder()
 	qb.writeCTEs(b)
-	head, _ := b.Build()
+	head, _, _ := b.Build()
 
 	if !strings.HasPrefix(head, "WITH RECURSIVE ") {
 		t.Fatalf("clause with a non-nil Anchor must render the RECURSIVE head, got %q", head)
