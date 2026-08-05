@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 )
 
 // evalAnchor describes the time-anchor that a VectorSelector's `@` and
@@ -128,12 +129,10 @@ func (c lowerCtx) rangeMode() bool {
 	return c.step > 0 && !c.start.IsZero() && !c.end.IsZero()
 }
 
-// instantLookback is the default Prometheus staleness window applied
-// when an instant-vector selector picks the latest sample per series.
-// Prom defaults to 5 minutes; cerberus matches the upstream constant
-// rather than reading a per-deployment override so the LWR predicate
-// behaves predictably across environments.
-const instantLookback = 5 * time.Minute
+// instantLookback aliases the single shared owner of the Prometheus
+// staleness window, [qlcommon.InstantLookback]. See its doc comment
+// for the full rationale and the list of consumers (#1470).
+const instantLookback = qlcommon.InstantLookback
 
 func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, error) {
 	a := evalAnchor{Offset: vs.OriginalOffset}
