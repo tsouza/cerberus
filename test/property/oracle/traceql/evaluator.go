@@ -183,6 +183,39 @@ func attrGetter(attr string) (func(spanView) string, error) {
 	return nil, fmt.Errorf("unsupported attribute path %q", attr)
 }
 
+// TraceQL's `=~` / `!~` are FULLY ANCHORED, not substring searches:
+// `{ resource.service.name =~ "a.*" }` matches the service `api` and
+// does NOT match `batch`. Tempo evaluates every regex comparison
+// through `pkg/regexp.NewRegexp` (`pkg/traceql/ast_execute.go`), which
+// builds `labels.NewFastRegexMatcher`, which compiles
+// `"^(?s:" + pattern + ")$"` — so the anchors and the dot-matches-
+// newline flag are part of the operator's semantics, not of the
+// pattern the user wrote.
+//
+// The non-capturing group is load-bearing for alternation: `^a|b$`
+// alternates between `^a` and `b$`, so only `^(?s:a|b)$` expresses
+// "the whole value is a or b". `(?s:` additionally makes `.` match
+// `\n`, matching Prometheus's `syntax.DotNL` parse flag — a value
+// containing a newline is still matched by `.*`.
+//
+// A pattern that already carries its own `^`/`$` nests safely:
+// `^(?s:^api$)$` still matches only `api`, because `^`/`$` are
+// zero-width assertions that compose rather than conflict.
+//
+// Cerberus wraps the pattern as `^(?:…)$` at the single SQL site both
+// regex render paths share — `anchoredRegexPattern` in
+// `internal/chsql/builder.go` — and lands on identical semantics
+// because ClickHouse compiles `match()` with RE2's dot-matches-newline
+// option already on, while leaving `^`/`$` non-multiline. Probed
+// directly against chDB: `match('a\nc', '^(?:a.c)$')` = 1 (dot spans
+// the newline) and `match('abc\nxyz', '^(?:abc)$')` = 0 (the anchors
+// bind the whole value, not a line). Go's regexp defaults the other
+// way on the first of those, so the oracle spells the flag out.
+const (
+	anchorRegexPrefix = "^(?s:"
+	anchorRegexSuffix = ")$"
+)
+
 // newAttrCondition builds an attribute matcher condition for one of
 // the four operators the generator draws: `=`, `!=`, `=~`, `!~`.
 func newAttrCondition(attr, op, value string) (condition, error) {
@@ -196,7 +229,7 @@ func newAttrCondition(attr, op, value string) (condition, error) {
 	case "!=":
 		return condition{match: func(sv spanView) bool { return getter(sv) != value }}, nil
 	case "=~", "!~":
-		re, err := regexp.Compile(value)
+		re, err := regexp.Compile(anchorRegexPrefix + value + anchorRegexSuffix)
 		if err != nil {
 			return condition{}, fmt.Errorf("bad regex %q: %w", value, err)
 		}
