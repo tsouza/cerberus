@@ -818,6 +818,142 @@ func TestHistogram_Quantile_SingleBucket(t *testing.T) {
 }
 
 // =================================================================
+// Label-transform tests — 7 (#1694)
+// =================================================================
+
+func TestLabelReplace_Match(t *testing.T) {
+	d := build(makeSeries("up", map[string]string{"job": "api-prod"}, sampleSpec{60, 1}))
+	o := eval(d, `label_replace(up, "svc", "$1", "job", "(.+)-prod")`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api-prod", "svc": "api"}, 1),
+	})
+}
+
+func TestLabelReplace_NoMatch_PassesThroughUnchanged(t *testing.T) {
+	// src value doesn't match the anchored regex -> dst is left as-is
+	// (here, absent), not cleared or errored.
+	d := build(makeSeries("up", map[string]string{"job": "web"}, sampleSpec{60, 1}))
+	o := eval(d, `label_replace(up, "svc", "$1", "job", "(.+)-prod")`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "web"}, 1),
+	})
+}
+
+func TestLabelReplace_MissingSrcLabel_TreatedAsEmptyString(t *testing.T) {
+	// src label absent from the series -> matched against "".
+	d := build(makeSeries("up", map[string]string{"job": "api"}, sampleSpec{60, 1}))
+	o := eval(d, `label_replace(up, "region", "unknown", "zone", "^$")`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api", "region": "unknown"}, 1),
+	})
+}
+
+func TestLabelReplace_NamedCaptureGroup(t *testing.T) {
+	d := build(makeSeries("up", map[string]string{"job": "api-prod"}, sampleSpec{60, 1}))
+	o := eval(d, `label_replace(up, "svc", "${name}", "job", "(?P<name>.+)-prod")`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api-prod", "svc": "api"}, 1),
+	})
+}
+
+func TestLabelReplace_DuplicateLabelSetErrors(t *testing.T) {
+	// Two series collapse onto the same label set after the rewrite ->
+	// Prom's "vector cannot contain metrics with the same labelset".
+	d := build(
+		makeSeries("up", map[string]string{"job": "api", "instance": "a"}, sampleSpec{60, 1}),
+		makeSeries("up", map[string]string{"job": "api", "instance": "b"}, sampleSpec{60, 2}),
+	)
+	o := eval(d, `label_replace(up, "instance", "shared", "instance", ".*")`, 90)
+	if o.Err == nil {
+		t.Fatalf("expected duplicate-labelset error, got rows=%v", o.Rows)
+	}
+}
+
+func TestLabelJoin_MultipleSources(t *testing.T) {
+	d := build(makeSeries("up", map[string]string{"job": "api", "zone": "us"}, sampleSpec{60, 1}))
+	o := eval(d, `label_join(up, "id", "-", "job", "zone")`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api", "zone": "us", "id": "api-us"}, 1),
+	})
+}
+
+func TestLabelJoin_ZeroSources_YieldsEmptyString(t *testing.T) {
+	d := build(makeSeries("up", map[string]string{"job": "api"}, sampleSpec{60, 1}))
+	o := eval(d, `label_join(up, "id", "-")`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"job": "api", "id": ""}, 1),
+	})
+}
+
+// =================================================================
+// Subquery tests — 5 (#1694)
+// =================================================================
+
+func TestSubquery_MaxOverTime_GridAlignment(t *testing.T) {
+	// Gauge ramps 1,2,...,7 at t=0,10,...,60 (10s apart). Evaluate
+	// `max_over_time(g[40s:10s])` at eval=60: subquery grid anchors are
+	// multiples of 10s strictly greater than (60-40)=20, up to and
+	// including 60 -> {30,40,50,60}. At each anchor, g's instant value
+	// (LWR at that ts) is 4,5,6,7 respectively (t=30->4, t=40->5,
+	// t=50->6, t=60->7). max is 7.
+	d := build(makeSeries("g", map[string]string{},
+		sampleSpec{0, 1}, sampleSpec{10, 2}, sampleSpec{20, 3}, sampleSpec{30, 4},
+		sampleSpec{40, 5}, sampleSpec{50, 6}, sampleSpec{60, 7}))
+	o := eval(d, `max_over_time(g[40s:10s])`, 60)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 7)})
+}
+
+func TestSubquery_AvgOverTime_DefaultResolution(t *testing.T) {
+	// Omitted `:resolution` defaults to 1m (defaultSubqueryStep). One
+	// gauge sample at t=0 stays fresh (LWR) across the whole grid, so
+	// every anchor in the subquery's window evaluates to the same
+	// value and avg == that value.
+	d := build(makeSeries("g", map[string]string{}, sampleSpec{0, 42}))
+	o := eval(d, `avg_over_time(g[2m:])`, 90)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 42)})
+}
+
+func TestSubquery_OverRangeFunction_Composition(t *testing.T) {
+	// max_over_time(rate(counter[30s])[60s:30s]) — a subquery whose
+	// inner expression is itself a range function. Counter grows
+	// linearly (10/10s => 1/s), so rate() over any 30s sub-window is a
+	// constant ~1, and the outer max_over_time of a constant sequence
+	// is that same constant.
+	d := build(makeSeries("c", map[string]string{},
+		sampleSpec{0, 0}, sampleSpec{10, 10}, sampleSpec{20, 20}, sampleSpec{30, 30},
+		sampleSpec{40, 40}, sampleSpec{50, 50}, sampleSpec{60, 60}, sampleSpec{70, 70},
+		sampleSpec{80, 80}, sampleSpec{90, 90}))
+	o := eval(d, `max_over_time(rate(c[30s])[60s:30s])`, 90)
+	if len(o.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %v", o.Rows)
+	}
+	if !valuesClose(o.Rows[0].Value, 1) {
+		t.Errorf("want~=1, got=%g", o.Rows[0].Value)
+	}
+}
+
+func TestSubquery_EmptyWindow_NoRows(t *testing.T) {
+	// Series only has samples far before the subquery's window -> every
+	// per-anchor instant eval is empty -> no output series at all.
+	d := build(makeSeries("g", map[string]string{}, sampleSpec{-1000, 1}))
+	o := eval(d, `avg_over_time(g[30s:10s])`, 60)
+	assertRows(t, o, nil)
+}
+
+func TestSubquery_AtModifierInsideInner_ResolvesPerAnchor(t *testing.T) {
+	// The inner expression carries its own offset, which applies
+	// relative to EACH subquery anchor independently (not the outer
+	// eval ts). g has one sample at t=0; querying
+	// `g offset 10s` inside a [30s:10s] subquery evaluated at eval=40
+	// means anchors {20,30,40} each look back 10s further: effective
+	// lookups at {10,20,30}, all of which see the t=0 sample via LWR
+	// (constant thereafter), so the result is a flat 1 at every anchor.
+	d := build(makeSeries("g", map[string]string{}, sampleSpec{0, 1}))
+	o := eval(d, `avg_over_time((g offset 10s)[30s:10s])`, 40)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 1)})
+}
+
+// =================================================================
 // Modifier tests — 6
 // =================================================================
 

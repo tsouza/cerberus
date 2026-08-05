@@ -28,10 +28,11 @@ func (c exoticCase) ts() int64 {
 // oracle-evaluated and exercised below (cat3Aggregators, cat4SetOps,
 // cat8ScalarVector) — limitk is exact-match only at its two
 // iteration-order-independent endpoints (see cat3Aggregators's doc
-// comment); count_values and limit_ratio are exact-match throughout. The
+// comment); count_values and limit_ratio are exact-match throughout.
+// subqueries + label_replace/label_join are ALSO oracle-evaluated and
+// exercised below (cat12SubqueriesAndLabelTransforms), closing #1694. The
 // remaining categories the oracle can't yet evaluate are each tracked by
 // its own open issue, not by prose:
-//   - subqueries, label_replace, label_join — #1694
 //   - deriv, predict_linear, double_exponential_smoothing,
 //     quantile_over_time — #1695
 //   - native (exponential) histograms — #1696
@@ -63,6 +64,7 @@ var ExoticMatrix = func() []exoticCase {
 	m = append(m, cat8ScalarVector()...)
 	m = append(m, cat9OverTime()...)
 	m = append(m, cat10ScalarOps()...)
+	m = append(m, cat12SubqueriesAndLabelTransforms()...)
 	return m
 }()
 
@@ -352,6 +354,46 @@ func cat10ScalarOps() []exoticCase {
 		{name: "cat10/scalar_plus_rate", promql: "1 + rate(" + cpu + "[5m])"},
 		{name: "cat10/rate_gt_scalar", promql: "rate(" + cpu + "[5m]) > 0.5"},
 		{name: "cat10/div_by_count", promql: "sum(" + mem + ") / count(" + mem + ")"},
+	}
+}
+
+// cat12SubqueriesAndLabelTransforms covers the two shapes the oracle
+// gained in #1694: label_replace/label_join (pure label-set transforms,
+// test/property/oracle/promql/label_transform.go) and subqueries
+// (test/property/oracle/promql/subquery.go's evalSubqueryExpr +
+// evalRangeArg). The seed's 10-minute data window (seedSteps*stepInterval)
+// comfortably covers the 5m subquery windows used below.
+func cat12SubqueriesAndLabelTransforms() []exoticCase {
+	const mem = "demo_memory_usage_bytes"
+	const cpu = "demo_cpu_usage_seconds_total"
+	used := mem + `{type="used"}`
+	return []exoticCase{
+		// label_replace: extract the trailing port digits from `instance`
+		// into a new `port` label; every series' instance matches the
+		// pattern, so this is a pure rewrite (no pass-through rows).
+		{name: "cat12/label_replace_extract_port", promql: `label_replace(` + used + `, "port", "$1", "instance", ".*:([0-9]+)")`},
+		// label_replace where the regex only matches a SUBSET of series
+		// (job="demo" always matches, so this instead exercises a src
+		// label that never matches to prove pass-through-unchanged).
+		{name: "cat12/label_replace_no_match_passthrough", promql: `label_replace(` + used + `, "env", "prod", "job", "^nomatch$")`},
+		// label_join: concatenate job+instance into a synthetic id label.
+		{name: "cat12/label_join_job_instance", promql: `label_join(` + used + `, "id", "/", "job", "instance")`},
+		// label_replace composed with rate(): the label rewrite applies to
+		// rate's post-aggregation output labels (mode survives on cpu).
+		{name: "cat12/label_replace_over_rate", promql: `label_replace(rate(` + cpu + `[5m]), "cpu_mode", "$1", "mode", "(.+)")`},
+		// Subquery: max_over_time over a bare selector's re-sampled grid
+		// (explicit resolution).
+		{name: "cat12/subquery_max_over_time", promql: `max_over_time(` + used + `[5m:1m])`},
+		// Subquery: avg_over_time with the OMITTED resolution (defaults to
+		// 1m per PromQL spec, matching cerberus's + the oracle's
+		// defaultSubqueryStep).
+		{name: "cat12/subquery_avg_over_time_default_resolution", promql: `avg_over_time(demo_num_cpus[3m:])`},
+		// Subquery composed with an inner range function: rate() evaluated
+		// at each subquery anchor, then max'd across the anchors.
+		{name: "cat12/subquery_over_rate", promql: `max_over_time(rate(` + cpu + `[2m])[5m:1m])`},
+		// Subquery + offset: shifts the subquery's own end anchor back,
+		// independent of any offset inside the inner expression.
+		{name: "cat12/subquery_with_offset", promql: `avg_over_time(` + used + `[3m:1m] offset 1m)`},
 	}
 }
 
