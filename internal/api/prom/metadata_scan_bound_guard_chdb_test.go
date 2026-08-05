@@ -45,7 +45,7 @@ func scanGuardSeed() (string, map[string]struct{}) {
 	lit := func(d time.Duration) string {
 		return now.Add(-d).Format("2006-01-02 15:04:05.000000000")
 	}
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(
+	seed := metaShapedMetricsDDL + fmt.Sprintf(
 		`
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('g_ancient', map('job', 'old'),    toDateTime64('%s', 9), 1.0),
