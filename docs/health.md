@@ -42,7 +42,7 @@ GET /readyz
 200 OK
 Content-Type: application/json
 
-{"clickhouse":"ok","schema":"ready"}
+{"clickhouse":"ok","schema":"ready","heads":{"prom":"closed","loki":"closed","tempo":"closed"}}
 ```
 
 On failure:
@@ -52,7 +52,7 @@ GET /readyz
 503 Service Unavailable
 Content-Type: application/json
 
-{"clickhouse":"error: dial tcp clickhouse:9000: connect: connection refused","schema":"unknown"}
+{"clickhouse":"error: dial tcp clickhouse:9000: connect: connection refused","schema":"unknown","heads":{"prom":"open","loki":"open","tempo":"open"}}
 ```
 
 - Pings ClickHouse via the configured `chclient.Client` connection
@@ -60,6 +60,9 @@ Content-Type: application/json
 - When `CERBERUS_AUTO_CREATE_SCHEMA=true`, also waits for the startup
   hook that bootstraps the OTel ClickHouse tables to have completed at
   least once.
+- Reports the live circuit-breaker phase of every head this process serves,
+  and goes unready once **all** of them are open (see
+  [Per-head readiness](#per-head-readiness)).
 - Results are memoised behind a **2-second TTL cache** so the typical
   3-second Kubernetes probe period coalesces into roughly one
   ClickHouse ping per probe.
@@ -72,13 +75,43 @@ Content-Type: application/json
 | ------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `schema`     | string  | `"ready"` when the schema is provisioned and the auto-create hook is done (or disabled); `"absent: <reason>"` when the boot-time requirements check found the configured schema not yet provisioned — either the tables are absent or the **database** itself does not exist yet (`database "otel" not yet provisioned: …`), both the cerberus + collector startup race where cerberus waits and re-probes, no restart; `"pending"` while the auto-create hook is still running; `"unknown"` when the CH ping itself failed. |
+| `heads`      | object  | Circuit-breaker phase per **enabled** head (`CERBERUS_ENABLED_HEADS`), keyed `prom` / `loki` / `tempo`: `"closed"`, `"open"`, or `"half-open"`. Present on every response, success or failure.                                                                                                                                                                                                                                                                                                                               |
 
 ### HTTP status codes
 
-| Status | Meaning                                                       |
-| ------ | ------------------------------------------------------------- |
-| 200    | Both ClickHouse and the schema invariant report healthy.      |
-| 503    | At least one dependency is not yet ready.                     |
+| Status | Meaning                                                                            |
+| ------ | ---------------------------------------------------------------------------------- |
+| 200    | Both ClickHouse and the schema invariant report healthy.                           |
+| 503    | At least one dependency is not yet ready, or every enabled head's breaker is open. |
+
+### Per-head readiness
+
+Each query head fronts ClickHouse through its **own** circuit breaker, so
+"can this pod serve" is a per-head question and `/readyz` answers it per
+head. The `heads` object names the live phase of every head this process
+serves — a tripped head is visible on the probe itself, not only in the
+`cerberus_ch_breaker_state` gauge.
+
+The status code turns on **head exhaustion**: the pod goes unready once
+every enabled head's breaker is open, and stays ready while any head can
+still answer.
+
+- Under the chart's **split mode** (one head per Deployment) a process serves
+  exactly one head, so this *is* "this head's breaker is open": a tripped
+  tempo Deployment leaves its Service while the prom and loki Deployments,
+  whose own heads are healthy, keep serving.
+- In **combined mode** one tripped head leaves two working ones behind.
+  Evicting the pod there would take those two down for a fault that is
+  already contained — the whole point of per-head breakers — and, since the
+  breakers trip on a shared ClickHouse, would tend to evict every replica at
+  once. So the phases are reported and the pod stays in its Service.
+
+A head whose breaker is `half-open` is admitting a recovery probe rather
+than failing, and does not count toward exhaustion.
+
+Heads this process does not serve are never reported and never counted: a
+head that was never built has no requests to fail, and counting it would
+evict pods for a breaker nothing can reach.
 
 ## `/info` — metadata fingerprint
 
@@ -123,9 +156,11 @@ top level instead.
 Unlike `/readyz`, `/info` **always returns `200 OK`** — it is a metadata
 surface, not a probe. Readiness is reported *in the body* (`ready`, plus
 the live `clickhouse` sub-object), so a scrape can read the fingerprint of
-an unready process. The live fields (`reachable`, `breaker`, `schemaReady`,
-`ready`) are read on every request through the same dedicated `probe`
-breaker `/readyz` uses; the rest of the body is captured once at boot.
+an unready process. Every field that describes something the process can
+change while it runs is read on each request — the connection state through
+the same dedicated `probe` breaker `/readyz` uses, and the ClickHouse
+capability fields from the resolution currently in force. Only the build
+identity and the operator's configured inputs are captured at boot.
 
 ### Response shape
 
@@ -140,17 +175,8 @@ Static fields, captured once at boot:
   `prom`, `loki`, `tempo` order.
 - `clickhouse.address` / `clickhouse.database` — configured ClickHouse
   endpoint and database.
-- `clickhouse.serverVersion` — resolved server version `<major>.<minor>`.
-- `clickhouse.serverVersionSource` — `"probe"` when read live at boot, or
-  `"fallback"` when the probe failed and the supported floor (`24.8`) was
-  assumed.
 - `optimizations.selection` — raw `CERBERUS_CH_OPTIMIZATIONS` selection.
 - `optimizations.mode` — `"enforcing"` or `"permissive"`.
-- `optimizations.resolvedAgainstVersion` — the version the auto-picker
-  resolved the selection against (equals `serverVersion`).
-- `optimizations.enabled` — **the headline field**: the effectively enabled
-  optimization feature ids. Makes plain whether cerberus is running the
-  optimizations it should.
 
 Live fields, re-read on every request:
 
@@ -160,8 +186,23 @@ Live fields, re-read on every request:
   `"half-open"`.
 - `clickhouse.schemaReady` — schema provisioned and the auto-create hook
   complete (or disabled).
+- `clickhouse.serverVersion` — resolved server version `<major>.<minor>`.
+- `clickhouse.serverVersionSource` — `"probe"` when read live from the
+  server, or `"fallback"` when the probe failed and the supported floor
+  (`24.8`) was assumed.
+- `optimizations.resolvedAgainstVersion` — the version the auto-picker
+  resolved the selection against (equals `serverVersion`).
+- `optimizations.enabled` — **the headline field**: the effectively enabled
+  optimization feature ids. Makes plain whether cerberus is running the
+  optimizations it should.
 - `ready` — the same condition `/readyz` uses (CH reachable AND schema
   present AND schema ready).
+
+The capability fields track the ClickHouse
+[re-probe](clickhouse-optimizations.md#re-probe): a scrape taken after a
+rolling ClickHouse upgrade reports what cerberus is emitting against now, not
+what it booted with. Watching `optimizations.enabled` is therefore how an
+operator confirms an upgrade actually reached the query path.
 
 ## Kubernetes probe configuration
 
@@ -262,7 +303,12 @@ the contract: a too-old / unparseable version, or a wrong-shape table. Set
   `internal/api/info/info.go` (`/info`).
 - Wire-up: `cmd/cerberus/main.go` (separate sub-mux so probes bypass
   the otelhttp wrapper; `infoOptions` builds the `/info` snapshot from
-  config + chopt + chclient and injects the live closures).
+  config + chclient and injects the live closures, `enabledHeadBreakers`
+  scopes the `/readyz` head report to `CERBERUS_ENABLED_HEADS`).
 - ClickHouse ping: `internal/chclient/client.go` — `(*Client).Ping`.
-- Breaker phase: `internal/chclient/client.go` — `(*Client).PeekBreakerState`.
+- Breaker phase: `internal/chclient/client.go` — `(*Client).PeekBreakerState`
+  for the connection-level view, `(*Client).HeadBreakerStates` for the
+  per-head report `/readyz` renders.
+- Capability re-probe behind the live `/info` optimization fields:
+  `cmd/cerberus/chopt_reprobe.go`.
 - Startup benchmark: `test/e2e/startup_bench_test.go`.

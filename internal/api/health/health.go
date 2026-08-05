@@ -30,10 +30,36 @@ type SchemaReadyFunc func() bool
 // process crash-looping. When nil the schema is treated as present.
 type SchemaPresentFunc func() (present bool, reason string)
 
+// HeadBreakersFunc reports the circuit-breaker phase of every query head THIS
+// process actually serves, keyed by head name ("prom" / "loki" / "tempo") and
+// valued with the stable phase vocabulary "closed" / "open" / "half-open".
+//
+// The keys ARE the enablement set: cmd/cerberus builds the map from
+// CERBERUS_ENABLED_HEADS, so a head this process does not serve is simply
+// absent and can never hold the pod out of its Service. A nil func (or an empty
+// map) leaves readiness on the ClickHouse + schema conditions alone.
+type HeadBreakersFunc func() map[string]string
+
+// breakerOpen is the one phase that makes a head unable to answer: an OPEN
+// breaker fast-fails every query it fronts. "half-open" is a recovering head
+// that admits a probe, and "closed" is healthy — neither is a serving failure,
+// so only this value counts against readiness.
+const breakerOpen = "open"
+
 // Options configure Handler.
 type Options struct {
 	// Pinger is the ClickHouse health check. Required.
 	Pinger Pinger
+
+	// HeadBreakers is consulted on every readiness check. Its result is
+	// reported verbatim in the `heads` object of the /readyz body — the
+	// per-head circuit-breaker state that the aggregate ClickHouse ping
+	// cannot express — and drives the head-exhaustion gate described on
+	// Handler.
+	//
+	// When nil the body carries no `heads` object and readiness gates on the
+	// ClickHouse ping + schema conditions only.
+	HeadBreakers HeadBreakersFunc
 
 	// SchemaReady is consulted on every readiness check. When nil the
 	// schema status is treated as ready (i.e. only the CH ping matters).
@@ -61,10 +87,32 @@ type Options struct {
 
 // Handler exposes /healthz (liveness) and /readyz (readiness) HTTP
 // handlers. Construct via New and register via Mount.
+//
+// # Per-head readiness
+//
+// Each query head fronts ClickHouse through its OWN circuit breaker
+// (chclient.Head), so "is cerberus able to serve" is a per-head question and
+// the probe answers it as one. Two rules follow from that, and they are the
+// whole of the head contract:
+//
+//   - The `heads` object of the /readyz body names every head this process
+//     serves and its live breaker phase, so an OPEN head is visible on the
+//     probe surface even when the pod stays in its Service. Without it a
+//     tripped head is observable only in metrics.
+//   - The pod goes NOT-ready when EVERY head it serves has an OPEN breaker —
+//     the point at which it can answer nothing and belongs out of the Service.
+//     Under the split deployment mode (one Deployment per head,
+//     CERBERUS_ENABLED_HEADS naming a single head) that is exactly "this
+//     head's breaker is OPEN", which is the signal Kubernetes needs to stop
+//     routing to a degraded head. Under the combined mode one tripped head
+//     leaves the pod ready, because evicting it would take the other,
+//     healthy heads out of their Services with it — the same per-head
+//     blast-radius isolation the breakers themselves exist to provide.
 type Handler struct {
 	pinger        Pinger
 	schemaReady   SchemaReadyFunc
 	schemaPresent SchemaPresentFunc
+	headBreakers  HeadBreakersFunc
 	pingTimeout   time.Duration
 	cacheTTL      time.Duration
 	now           func() time.Time
@@ -79,6 +127,10 @@ type Handler struct {
 type readyResponse struct {
 	ClickHouse string `json:"clickhouse"`
 	Schema     string `json:"schema"`
+	// Heads maps each served head name to its circuit-breaker phase. Omitted
+	// when no HeadBreakersFunc is wired (the probe then reports only the
+	// aggregate ClickHouse + schema conditions).
+	Heads map[string]string `json:"heads,omitempty"`
 }
 
 // New builds a Handler with the given options. A nil Pinger is allowed
@@ -89,6 +141,7 @@ func New(opts Options) *Handler {
 		pinger:        opts.Pinger,
 		schemaReady:   opts.SchemaReady,
 		schemaPresent: opts.SchemaPresent,
+		headBreakers:  opts.HeadBreakers,
 		pingTimeout:   opts.PingTimeout,
 		cacheTTL:      opts.CacheTTL,
 		now:           opts.Now,
@@ -154,12 +207,18 @@ func (h *Handler) checkReady(ctx context.Context) (readyResponse, int) {
 	return resp, code
 }
 
-// runCheck performs the actual ping + schema-ready evaluation.
+// runCheck performs the actual ping + head-breaker + schema-ready evaluation.
+// The per-head breaker phases are read FIRST and stamped on every response
+// shape below, including the failure ones: an operator debugging a red probe
+// needs to see which heads are tripped regardless of which condition tipped it.
 func (h *Handler) runCheck(ctx context.Context) (readyResponse, int) {
+	heads := h.readHeadBreakers()
+
 	if h.pinger == nil {
 		return readyResponse{
 			ClickHouse: "error: no clickhouse client configured",
 			Schema:     "unknown",
+			Heads:      heads,
 		}, http.StatusServiceUnavailable
 	}
 
@@ -170,10 +229,23 @@ func (h *Handler) runCheck(ctx context.Context) (readyResponse, int) {
 		return readyResponse{
 			ClickHouse: "error: " + err.Error(),
 			Schema:     "unknown",
+			Heads:      heads,
 		}, http.StatusServiceUnavailable
 	}
 
-	// Absent-schema gate first: a schema that has not been provisioned yet
+	// Head exhaustion: ClickHouse answers the probe, but every head this
+	// process serves fast-fails on its own OPEN breaker, so the pod can
+	// answer no query at all and belongs out of its Service. See Handler for
+	// why the gate is "every head" rather than "any head".
+	if allHeadsOpen(heads) {
+		return readyResponse{
+			ClickHouse: "ok",
+			Schema:     "unknown",
+			Heads:      heads,
+		}, http.StatusServiceUnavailable
+	}
+
+	// Absent-schema gate: a schema that has not been provisioned yet
 	// (the cerberus+collector startup race) reports the precise absent
 	// reason so the operator sees WHY readiness is held, distinct from the
 	// auto-create "pending" state below.
@@ -186,6 +258,7 @@ func (h *Handler) runCheck(ctx context.Context) (readyResponse, int) {
 			return readyResponse{
 				ClickHouse: "ok",
 				Schema:     schema,
+				Heads:      heads,
 			}, http.StatusServiceUnavailable
 		}
 	}
@@ -194,11 +267,42 @@ func (h *Handler) runCheck(ctx context.Context) (readyResponse, int) {
 		return readyResponse{
 			ClickHouse: "ok",
 			Schema:     "pending",
+			Heads:      heads,
 		}, http.StatusServiceUnavailable
 	}
 
 	return readyResponse{
 		ClickHouse: "ok",
 		Schema:     "ready",
+		Heads:      heads,
 	}, http.StatusOK
+}
+
+// readHeadBreakers snapshots the served heads' breaker phases, or nil when no
+// HeadBreakersFunc is wired. An empty map is normalised to nil so the `heads`
+// key is omitted rather than rendered as `{}`.
+func (h *Handler) readHeadBreakers() map[string]string {
+	if h.headBreakers == nil {
+		return nil
+	}
+	states := h.headBreakers()
+	if len(states) == 0 {
+		return nil
+	}
+	return states
+}
+
+// allHeadsOpen reports whether every served head's breaker is OPEN. An empty /
+// absent map is NOT exhaustion — a process that reports no heads has nothing to
+// exhaust, and must not be evicted on the strength of an unwired probe.
+func allHeadsOpen(heads map[string]string) bool {
+	if len(heads) == 0 {
+		return false
+	}
+	for _, state := range heads {
+		if state != breakerOpen {
+			return false
+		}
+	}
+	return true
 }

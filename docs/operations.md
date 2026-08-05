@@ -43,11 +43,17 @@ Every CH-touching call is guarded by a circuit breaker
 (`internal/chclient/breaker.go`). After `CERBERUS_CH_BREAKER_THRESHOLD`
 consecutive failures inside `CERBERUS_CH_BREAKER_WINDOW` the breaker trips
 OPEN and methods return `ErrCircuitOpen` without dialling — the handler
-layer maps that into `503` with `Retry-After: 5` so clients back off
+layer maps that into `503` with a `Retry-After` so clients back off
 instead of stacking inner-stage retries against a dead upstream. After
 `CERBERUS_CH_BREAKER_OPEN_INTERVAL` the breaker admits exactly one
 HALF-OPEN probe; a successful probe closes the circuit, a failed one
-restarts the backoff. Pool-acquire timeouts, `MEMORY_LIMIT_EXCEEDED`
+restarts the backoff. That interval is exactly what `Retry-After`
+advertises: the tripped breaker stamps its own recovery interval on the
+error it returns, so widening `CERBERUS_CH_BREAKER_OPEN_INTERVAL` to protect
+a fragile ClickHouse moves the header with it instead of inviting clients
+back while cerberus is still fast-failing. The header is whole seconds
+(RFC 9110), rounded up and floored at `1`, so a sub-second interval still
+asks for a back-off rather than an immediate retry. Pool-acquire timeouts, `MEMORY_LIMIT_EXCEEDED`
 rejections, and client-cancelled requests are treated as breaker-neutral
 (they prove CH is alive, or say nothing about its health) and never
 advance the failure count.
@@ -71,20 +77,26 @@ isolates the fast-fail to that head:
 
 - **Only the storming head returns 503.** A Prom query storm that drives 5
   consecutive CH-health failures trips ONLY the `prom` breaker; Prom queries
-  short-circuit to `ErrCircuitOpen` → `503` + `Retry-After: 5`, while Loki and
+  short-circuit to `ErrCircuitOpen` → `503` + `Retry-After`, while Loki and
   Tempo keep their own CLOSED breakers and serve normally. One head's CH-path
   problem no longer 503s the other two.
-- **`/readyz` stays green under a single head's storm.** The readiness probe
-  pings through the dedicated `probe` breaker, which is driven ONLY by the
-  low-rate, TTL-coalesced readiness pings — never by data-plane traffic. So a
-  Prom-only storm 503s Prom queries while `/readyz` stays green and the pod is
-  **not** evicted: it is still happily serving Loki and Tempo, and could serve
-  Prom again within `CERBERUS_CH_BREAKER_OPEN_INTERVAL` once the HALF-OPEN probe
-  recovers. A genuine total-CH outage still fails the readiness pings
-  themselves, trips the `probe` breaker, and flips `/readyz` red → correct
-  eviction. The probe breaker uses a slightly tighter default failure budget so
-  a dead CH is reported red well inside the k8s `readinessProbe` eviction window
-  even though it only sees the throttled probe stream.
+- **`/readyz` stays green under a single head's storm, and names the tripped
+  head.** The readiness probe pings through the dedicated `probe` breaker, which
+  is driven ONLY by the low-rate, TTL-coalesced readiness pings — never by
+  data-plane traffic. So a Prom-only storm 503s Prom queries while `/readyz`
+  stays green and the pod is **not** evicted: it is still happily serving Loki
+  and Tempo, and could serve Prom again within
+  `CERBERUS_CH_BREAKER_OPEN_INTERVAL` once the HALF-OPEN probe recovers. The
+  probe body still reports the tripped head — it carries a `heads` object with
+  the live phase of every enabled head — so the fault is visible on the probe
+  and not only in the breaker gauge. The pod goes unready when *every* enabled
+  head is OPEN, which under the chart's split mode (one head per Deployment) is
+  the single head that Deployment serves. A genuine total-CH outage also fails
+  the readiness pings themselves, trips the `probe` breaker, and flips `/readyz`
+  red → correct eviction. The probe breaker uses a slightly tighter default
+  failure budget so a dead CH is reported red well inside the k8s
+  `readinessProbe` eviction window even though it only sees the throttled probe
+  stream. See [`health.md`](health.md#per-head-readiness).
 
 **Bulkhead boundary (what this does NOT isolate).** Per-head breakers isolate
 the **503-cascade + pod-eviction** blast radius, NOT pool or CH-server
@@ -284,13 +296,13 @@ the SQL array machinery leaves at high cardinality. See
   is necessary but not sufficient: a hardened ClickHouse profile that
   constrains/pins `allow_experimental_time_series_aggregate_functions`, or a
   readonly user, will reject the per-query stamp with
-  `SETTING_CONSTRAINT_VIOLATION` / `READONLY`. cerberus **probes this at boot**
-  (a one-shot capability canary alongside the version probe) and gates the
+  `SETTING_CONSTRAINT_VIOLATION` / `READONLY`. cerberus **probes this**
+  (a capability canary alongside the version probe) and gates the
   native family on the verdict: under `auto` a forbidden server silently falls
-  back to the fan-out with a boot `WARN`; an explicit `ts_grid_*` (or the legacy
+  back to the fan-out with a `WARN`; an explicit `ts_grid_*` (or the legacy
   force-enable) on a forbidden server is FATAL under `enforcing` and WARN+skip
   under `permissive` — exactly the version-floor semantics. See
-  [`clickhouse-optimizations.md`](clickhouse-optimizations.md#boot-capability-probe-experimental-ts_grid-setting).
+  [`clickhouse-optimizations.md`](clickhouse-optimizations.md#capability-probe-experimental-ts_grid-setting).
 - **Scope: `rate` only.** `increase` / `delta` / `deriv` / `predict_linear`
   stay on the fan-out — there is no `timeSeriesIncreaseToGrid`, and the
   `timeSeriesDeltaToGrid` mapping is not yet differentially proven against
@@ -439,11 +451,15 @@ cache, result cache, or session store — every HTTP request goes through
 parse → lower → optimize → emit → execute against ClickHouse from a
 clean slate. The only in-process memory that survives a request is:
 
-- The ClickHouse driver connection pool (`internal/chclient`).
+- The ClickHouse driver connection pool (`internal/chclient`), and the
+  per-head circuit breakers that front it.
 - The schema configuration (`internal/schema`, immutable after startup).
 - A short-TTL cache inside the readiness probe handler
   (`internal/api/health`) so probe traffic does not amplify into
   ClickHouse pings.
+- The resolved ClickHouse capability set (`internal/chopt`), refreshed on the
+  re-probe cadence so the strategies a query dispatches through describe the
+  server that is actually connected.
 
 None of these survive a process restart, and none are shared across
 replicas. ClickHouse is the durable store; cerberus is a stateless

@@ -90,9 +90,11 @@ func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *
 
 // apiHeads carries what run() needs back from mountAPIHeads: the Tempo gRPC
 // server (nil when the tempo head is disabled, so the dual-stack dispatcher
-// skips the gRPC branch and shutdown skips GracefulStop).
+// skips the gRPC branch and shutdown skips GracefulStop) and the capability-set
+// consumers the periodic re-probe swaps a re-resolved set into.
 type apiHeads struct {
 	grpcServer *grpc.Server
+	consumers  chOptConsumers
 }
 
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
@@ -119,8 +121,13 @@ func mountAPIHeads(
 	logger *slog.Logger,
 ) (apiHeads, error) {
 	// engines accumulates the engines actually built so the corpus reconciler
-	// observes only live heads (a disabled head has no engine to observe).
+	// observes only live heads (a disabled head has no engine to observe), and
+	// so the capability re-probe swaps a re-resolved set into exactly the heads
+	// this process serves.
 	var engines []*engine.Engine
+	// promHandler stays nil when the prom head is disabled; it is the only head
+	// carrying a native-lowering dispatch table for the re-probe to swap.
+	var promHandler *prom.Handler
 
 	if cfg.HeadEnabled(config.HeadProm) {
 		// Per-head Client VIEW (#94): own breaker over the shared pool. Built
@@ -132,7 +139,7 @@ func mountAPIHeads(
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure solver: %w", err)
 		}
-		promHandler := newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
+		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
 	}
@@ -170,16 +177,69 @@ func mountAPIHeads(
 	// hot path).
 	startOptCorpus(ctx, logger, client, cfg, engines...)
 
-	return apiHeads{grpcServer: grpcServer}, nil
+	return apiHeads{
+		grpcServer: grpcServer,
+		consumers:  chOptConsumers{engines: engines, prom: promHandler},
+	}, nil
+}
+
+// servedHead pairs a head's config identity (the CERBERUS_ENABLED_HEADS token,
+// which is also the /readyz `heads` key) with the chclient registry key whose
+// breaker fronts it.
+type servedHead struct {
+	name   config.Head
+	broker chclient.Head
+}
+
+// allServedHeads is the config↔chclient head correspondence, in the canonical
+// prom,loki,tempo order. It is the ONE place the two head vocabularies are
+// mapped onto each other.
+var allServedHeads = [...]servedHead{
+	{config.HeadProm, chclient.HeadProm},
+	{config.HeadLoki, chclient.HeadLoki},
+	{config.HeadTempo, chclient.HeadTempo},
+}
+
+// enabledHeadBreakers builds the /readyz per-head breaker reporter for exactly
+// the heads CERBERUS_ENABLED_HEADS turned on. The enablement set is immutable
+// after boot, so which heads to report is resolved once here; the returned
+// closure reads only LIVE breaker state, per probe.
+//
+// Scoping to the enabled set is what makes the probe's head-exhaustion gate
+// correct under the chart's split mode: a Deployment that serves only tempo
+// reports only tempo, so a tripped tempo breaker takes that pod out of its
+// Service — while a prom/loki pod, whose own heads are healthy, stays in.
+// Reporting a head this process never built would evict pods for a breaker no
+// request can ever reach.
+func enabledHeadBreakers(client *chclient.Client, cfg config.Config) health.HeadBreakersFunc {
+	served := make([]servedHead, 0, len(allServedHeads))
+	for _, h := range allServedHeads {
+		if cfg.HeadEnabled(h.name) {
+			served = append(served, h)
+		}
+	}
+	if len(served) == 0 {
+		return nil
+	}
+	return func() map[string]string {
+		states := client.HeadBreakerStates()
+		out := make(map[string]string, len(served))
+		for _, h := range served {
+			if state, ok := states[h.broker]; ok {
+				out[string(h.name)] = state
+			}
+		}
+		return out
+	}
 }
 
 // enabledHeadNames returns the enabled heads in the canonical prom,loki,tempo
 // order for a stable log line (the EnabledHeads set is unordered).
 func enabledHeadNames(cfg config.Config) []string {
 	var names []string
-	for _, h := range []config.Head{config.HeadProm, config.HeadLoki, config.HeadTempo} {
-		if cfg.HeadEnabled(h) {
-			names = append(names, string(h))
+	for _, h := range allServedHeads {
+		if cfg.HeadEnabled(h.name) {
+			names = append(names, string(h.name))
 		}
 	}
 	return names
@@ -239,6 +299,27 @@ func installStage2Logging(cfg config.Config, providers *telemetry.Providers) *sl
 	return logger
 }
 
+// newTelemetryProviders builds the OTel provider set from the OTLP env config.
+// When CERBERUS_OTLP_ENDPOINT is empty the telemetry package returns noop
+// providers, so cerberus stays a zero-collector-dependency binary by default.
+// Installing what it returns is the caller's job — run() does it before
+// anything that mints an instrument.
+func newTelemetryProviders(ctx context.Context, cfg config.Config) (*telemetry.Providers, error) {
+	providers, err := telemetry.New(ctx, telemetry.Config{
+		Endpoint:       cfg.OTLP.Endpoint,
+		Insecure:       cfg.OTLP.Insecure,
+		Headers:        cfg.OTLP.Headers,
+		Timeout:        cfg.OTLP.Timeout,
+		ExportInterval: cfg.OTLP.ExportInterval,
+		ServiceName:    "cerberus",
+		ServiceVersion: Version,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init telemetry: %w", err)
+	}
+	return providers, nil
+}
+
 func run() error {
 	// Captured first so the /info fingerprint's uptimeSeconds counts from the
 	// earliest point in process lifetime, before any config/connection work.
@@ -269,10 +350,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Install the W3C+Baggage propagator and build OTel providers from
-	// the OTLP env config. When CERBERUS_OTLP_ENDPOINT is empty the
-	// telemetry package returns noop providers, so cerberus stays a
-	// zero-collector-dependency binary by default.
+	// Install the W3C+Baggage propagator and the OTel providers built from the
+	// OTLP env config (see newTelemetryProviders).
 	//
 	// This is the FIRST thing run() does after the signal context, and the
 	// ordering is load-bearing rather than stylistic: OTel's global
@@ -286,17 +365,9 @@ func run() error {
 	// is what makes the loss so easy to miss: the pool census still appears
 	// while the counters beside it silently do not.
 	// Pinned by test/regression/telemetry_provider_ordering_test.go.
-	providers, err := telemetry.New(ctx, telemetry.Config{
-		Endpoint:       cfg.OTLP.Endpoint,
-		Insecure:       cfg.OTLP.Insecure,
-		Headers:        cfg.OTLP.Headers,
-		Timeout:        cfg.OTLP.Timeout,
-		ExportInterval: cfg.OTLP.ExportInterval,
-		ServiceName:    "cerberus",
-		ServiceVersion: Version,
-	})
+	providers, err := newTelemetryProviders(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("init telemetry: %w", err)
+		return err
 	}
 	installOTel(providers.TracerProvider)
 	otel.SetMeterProvider(providers.MeterProvider)
@@ -330,17 +401,24 @@ func run() error {
 	// rejects every statement, version() included (code 81). config.FromEnv has
 	// no live connection, so it carried only the raw CERBERUS_CH_OPTIMIZATIONS
 	// selection + parsed mode + the tri-state legacy alias; this is where they
-	// become the immutable EnabledSet every consumer reads. A fatal resolve
+	// become the EnabledSet every consumer reads. A fatal resolve
 	// (unknown feature id in any mode, or an unsupported explicit id under
 	// enforcing) aborts startup. The resolved set then back-fills
 	// cfg.ExperimentalTSGridRange (the single source of truth for the legacy
 	// ts-grid consumers), drives the per-query SettingsRules built below, and
 	// the main client (passed here) gets the one boot-time columnar-decode swap.
+	//
+	// The resolution is a reading of a LIVE server, not a fact about this
+	// process, so it is held in chOptLive and re-read on a fixed cadence: a
+	// rolling ClickHouse upgrade that crosses a feature floor moves the answer
+	// under a running pod, and reprobeCHOptimizations (started once the heads
+	// are mounted) swaps the new one into the query path.
 	optRes, err := resolveCHOptimizations(ctx, logger, client, &cfg)
 	if err != nil {
 		return err
 	}
 	optSet := optRes.Set
+	chOpts := newCHOptLive(optRes)
 
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
@@ -415,6 +493,12 @@ func run() error {
 	}
 	grpcServer := heads.grpcServer
 
+	// Periodic capability re-probe: re-resolves the optimization set against the
+	// connected server and swaps a changed result into the heads mounted above,
+	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
+	// to the run ctx, so SIGTERM stops it.
+	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval)
+
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
 	// /healthz and /readyz live on a separate sub-mux that bypasses
@@ -430,10 +514,15 @@ func run() error {
 	// transient CH storm never evicts a pod that is still serving the other
 	// two heads. A genuine total-CH outage still fails the pings themselves
 	// and trips the probe breaker, flipping /readyz red — correct eviction.
+	// The per-head breaker report is scoped to the ENABLED heads, so the
+	// probe's head-exhaustion gate means "this pod can serve nothing it was
+	// deployed to serve" in every deployment mode — including the split mode
+	// where one Deployment serves a single head.
 	healthHandler := health.New(health.Options{
 		Pinger:        client.ForHead(chclient.HeadProbe),
 		SchemaReady:   schemaReady,
 		SchemaPresent: schemaPresent,
+		HeadBreakers:  enabledHeadBreakers(client, cfg),
 	})
 
 	// /info is cerberus's own metadata/health/connection fingerprint — a
@@ -443,7 +532,7 @@ func run() error {
 	// readiness probe uses for its live reachability/breaker fields, and
 	// reuses the /readyz readiness condition for "ready". Like the health
 	// probes it bypasses otelhttp (low-frequency metadata scrape, no spans).
-	infoHandler := info.New(infoOptions(client, cfg, optRes, schemaReady, schemaPresent, startTime))
+	infoHandler := info.New(infoOptions(client, cfg, chOpts, schemaReady, schemaPresent, startTime))
 
 	rootMux := http.NewServeMux()
 	healthHandler.Mount(rootMux)
@@ -735,26 +824,25 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 }
 
 // infoOptions assembles the /info handler options: the static boot Snapshot
-// (build identity, enabled heads, CH address/database, and the resolved
-// optimization decision) plus the live closures the handler re-reads per
-// request. The live reachability + readiness funcs run over the HeadProbe
-// breaker view — the SAME breaker /readyz uses — so /info's clickhouse fields
-// agree with the readiness probe; "ready" mirrors the /readyz condition (CH
-// reachable AND schema present AND schema ready).
+// (build identity, enabled heads, CH address/database, and the raw optimization
+// SELECTION, all of which are configuration) plus the live closures the handler
+// re-reads per request. The live reachability + readiness funcs run over the
+// HeadProbe breaker view — the SAME breaker /readyz uses — so /info's clickhouse
+// fields agree with the readiness probe; "ready" mirrors the /readyz condition
+// (CH reachable AND schema present AND schema ready).
+//
+// The RESOLVED capability decision is a live closure rather than a snapshot
+// field: it is a reading of the connected server, and the periodic re-probe
+// moves it when the cluster is upgraded (see reprobeCHOptimizations).
 func infoOptions(
 	client *chclient.Client,
 	cfg config.Config,
-	optRes chOptResolution,
+	live *chOptLive,
 	schemaReady health.SchemaReadyFunc,
 	schemaPresent health.SchemaPresentFunc,
 	startTime time.Time,
 ) info.Options {
 	probe := client.ForHead(chclient.HeadProbe)
-
-	serverVersionSource := info.ServerVersionSourceProbe
-	if optRes.VersionFallback {
-		serverVersionSource = info.ServerVersionSourceFallback
-	}
 
 	schemaReadyNow := func() bool {
 		return schemaReady == nil || schemaReady()
@@ -769,24 +857,21 @@ func infoOptions(
 
 	return info.Options{
 		Snapshot: info.Snapshot{
-			Service:                   "cerberus",
-			Version:                   Version,
-			Revision:                  buildRevision(),
-			GoVersion:                 runtime.Version(),
-			Heads:                     enabledHeadsList(cfg),
-			CHAddress:                 cfg.ClickHouse.Addr,
-			CHDatabase:                cfg.ClickHouse.Database,
-			ServerVersion:             optRes.ResolvedVersion.String(),
-			ServerVersionSource:       serverVersionSource,
-			OptSelection:              cfg.CHOptimizations,
-			OptMode:                   cfg.CHOptimizationsMode.String(),
-			OptResolvedAgainstVersion: optRes.ResolvedVersion.String(),
-			OptEnabled:                optRes.Set.IDs(),
+			Service:      "cerberus",
+			Version:      Version,
+			Revision:     buildRevision(),
+			GoVersion:    runtime.Version(),
+			Heads:        enabledHeadsList(cfg),
+			CHAddress:    cfg.ClickHouse.Addr,
+			CHDatabase:   cfg.ClickHouse.Database,
+			OptSelection: cfg.CHOptimizations,
+			OptMode:      cfg.CHOptimizationsMode.String(),
 		},
-		StartTime:   startTime,
-		Reachable:   func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
-		Breaker:     probe.PeekBreakerState,
-		SchemaReady: schemaReadyNow,
+		Optimizations: live.infoState,
+		StartTime:     startTime,
+		Reachable:     func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
+		Breaker:       probe.PeekBreakerState,
+		SchemaReady:   schemaReadyNow,
 		Ready: func(ctx context.Context) bool {
 			return probe.Ping(ctx) == nil && schemaPresentNow() && schemaReadyNow()
 		},
@@ -823,13 +908,30 @@ func buildRevision() string {
 	return "unknown"
 }
 
+// chOptResolution is a ClickHouse-optimization decision, captured for the
+// consumers that need more than the EnabledSet: the engine/handler wiring reads
+// Set, while the /info fingerprint also reports the version the auto-picker
+// resolved against and whether that version was probed live or assumed from the
+// supported floor (VersionFallback) after a failed probe.
+type chOptResolution struct {
+	Set             chopt.EnabledSet
+	ResolvedVersion chopt.Version
+	VersionFallback bool
+}
+
+// supportedFloorVersion is the oldest ClickHouse cerberus supports, and the
+// version an unreachable server is assumed to be running: resolving against it
+// keeps every floor-safe optimization on while holding back anything newer, so
+// a failed probe degrades the feature set rather than the process.
+var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
+
 // resolveCHOptimizations probes the connected ClickHouse server version and
-// resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it ONCE, returning
-// the immutable EnabledSet. It back-fills cfg.ExperimentalTSGridRange from the
-// resolved set so the legacy ts-grid consumers (the PromQL lowering, the engine
-// native gate, the preflight version floor) read a single source of truth, and
-// logs the resolved set + the server version + any warnings (permissive skips
-// and the legacy-alias deprecation) at boot.
+// resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it at boot,
+// returning the EnabledSet the process starts on. It back-fills
+// cfg.ExperimentalTSGridRange from the resolved set so the legacy ts-grid
+// consumers (the PromQL lowering, the engine native gate, the preflight version
+// floor) read a single source of truth, and logs the resolved set + the server
+// version + any warnings (permissive skips and the legacy-alias deprecation).
 //
 // The version probe is best-effort with respect to CONNECTIVITY: cerberus is
 // designed to boot even when ClickHouse is briefly unreachable (the
@@ -837,31 +939,21 @@ func buildRevision() string {
 // /readyz once the schema lands). A probe that fails to reach the server is
 // therefore NOT fatal here; it falls back to the documented supported floor
 // (24.8) so the stable 24.8-safe optimizations still resolve under `auto`,
-// while any newer feature (condition_cache, ts_grid_range) stays off until a
-// restart re-probes against a reachable server. A genuine CONFIG fault
+// while any newer feature (condition_cache, ts_grid_range) stays off until
+// reprobeCHOptimizations reaches a server that answers. A genuine CONFIG fault
 // (unknown feature id, or an unsupported explicit id under enforcing) is still
 // fatal — that is a typo/operator error, independent of connectivity.
-// chOptResolution is the boot-time ClickHouse-optimization decision, captured
-// once for the consumers that need more than the EnabledSet: the engine/handler
-// wiring reads Set, while the /info fingerprint also reports the version the
-// auto-picker resolved against and whether that version was probed live or
-// assumed from the supported floor (VersionFallback) after a failed probe.
-type chOptResolution struct {
-	Set             chopt.EnabledSet
-	ResolvedVersion chopt.Version
-	VersionFallback bool
-}
-
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chOptResolution, error) {
 	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
 	versionFallback := err != nil
 	if err != nil {
 		// Connectivity fallback: assume the supported floor so 24.8-safe
 		// stable features still resolve under auto; newer features stay off
-		// until a restart re-probes. Never fatal on a probe read error.
-		resolvedVersion = chopt.Version{Major: 24, Minor: 8}
+		// until the periodic re-probe reaches a server that answers. Never
+		// fatal on a probe read error.
+		resolvedVersion = supportedFloorVersion
 		logger.Warn(
-			"clickhouse version probe failed; resolving optimizations against the supported floor (restart to re-probe)",
+			"clickhouse version probe failed; resolving optimizations against the supported floor until the next re-probe",
 			"err", err,
 			"assumed_version", resolvedVersion.String(),
 		)

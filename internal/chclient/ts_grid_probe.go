@@ -71,7 +71,7 @@ func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
 // readonly 164 codes are the expected shapes, and any other typed answer is
 // treated the same: the server will not run the setting). Anything else is a
 // transport failure with no server verdict -- Unreachable, the conservative
-// state that leaves native off until a restart re-probes.
+// state that leaves native off until a later re-probe gets a verdict.
 func classifyTSGridCapability(err error) chopt.Capability {
 	if err == nil {
 		return chopt.CapabilityAvailable

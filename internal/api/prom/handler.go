@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -74,18 +75,30 @@ type Handler struct {
 	// behaviour when build metadata is unset).
 	Version string
 
-	// Lowerers is the BOOT-WIRED polymorphic dispatch table for the
+	// Lowerers is the WIRED polymorphic dispatch table for the
 	// ClickHouse-native timeSeries*ToGrid family (native rate +
 	// native staleness). It is threaded into the query_range lowering so
 	// eligible shapes lower to the native nodes (chplan.RangeWindowNative /
 	// chplan.RangeWindowResample) instead of the generic SQL fan-out. Built
-	// ONCE at boot in cmd/cerberus from the resolved chopt.EnabledSet
+	// at boot in cmd/cerberus from the resolved chopt.EnabledSet
 	// (per-function; native rate and native staleness are independent). The
 	// zero value (nil strategy fields) is the all-fan-out default. Only the
 	// range-streaming path consults it — instant and metadata queries never
 	// produce a rate / range-staleness query_range grid, so they are
 	// unaffected.
+	//
+	// It is the table in force until SetLowerers installs a replacement, and it
+	// is never read directly on the query path — see lowerers.
 	Lowerers promql.RangeLowerers
+
+	// liveLowerers holds the replacement table installed by SetLowerers, or nil
+	// while the handler is still on the wired Lowerers value. Which native
+	// lowerers may be selected is a question about the SERVER's capabilities,
+	// and a ClickHouse cluster upgraded under a running cerberus changes that
+	// answer, so the table the lowering reads has to be swappable without a
+	// restart. It is a pointer swap rather than a field mutation because the
+	// read happens concurrently on every query_range request.
+	liveLowerers atomic.Pointer[promql.RangeLowerers]
 
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
@@ -171,6 +184,31 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 		Logger:    logger,
 		parser:    promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
 	}
+}
+
+// SetLowerers installs table as the native-lowering dispatch table the handler
+// uses from the NEXT query_range on, superseding the wired [Handler.Lowerers]
+// value. It is how a re-resolved ClickHouse capability set reaches the lowering:
+// which timeSeries*ToGrid members may be selected is a fact about the SERVER,
+// and a cluster upgraded under a running cerberus changes that fact without the
+// process restarting.
+//
+// The swap is a single pointer store, so a request already lowering keeps the
+// table it started with and every later one sees the new table whole — no
+// request can ever mix a native rate lowerer with a stale sibling.
+func (h *Handler) SetLowerers(table promql.RangeLowerers) {
+	h.liveLowerers.Store(&table)
+}
+
+// lowerers returns the dispatch table in force right now: the replacement
+// installed by [Handler.SetLowerers] when there is one, else the wired
+// [Handler.Lowerers]. The single query-path read goes through here so a live
+// swap needs no lock and no second read site can go on consulting a stale table.
+func (h *Handler) lowerers() promql.RangeLowerers {
+	if live := h.liveLowerers.Load(); live != nil {
+		return *live
+	}
+	return h.Lowerers
 }
 
 // Mount registers the Prom-compatible endpoints under /api/v1/ on mux.
@@ -813,7 +851,7 @@ func (h *Handler) executeRangeStreaming(
 		Start:    start,
 		End:      end,
 		Step:     step,
-		Lowerers: h.Lowerers,
+		Lowerers: h.lowerers(),
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -1029,16 +1067,19 @@ func classifyEngineError(err error) error {
 		return nil
 	}
 	// Circuit-breaker fast-fail short-circuit: when the chclient
-	// breaker is OPEN, surface 503 + Retry-After: 5 directly without
+	// breaker is OPEN, surface 503 + Retry-After directly without
 	// dressing it as a 5xx "execute" failure. This is the wire
 	// signal Grafana / Prom clients honour to back off rather than
-	// hammer the gateway during an upstream CH outage.
+	// hammer the gateway during an upstream CH outage. The header is
+	// sized from the tripped breaker's own recovery interval, which
+	// the error carries, so a client that honours it comes back no
+	// earlier than the circuit can answer.
 	if errors.Is(err, chclient.ErrCircuitOpen) {
 		return &apiError{
 			Kind:              ErrUnavailable,
 			Err:               err,
 			Status:            http.StatusServiceUnavailable,
-			RetryAfterSeconds: 5,
+			RetryAfterSeconds: chclient.RetryAfterSeconds(err),
 		}
 	}
 	// Sample-budget exceedance (instant path: engine.Query drains the
@@ -1476,7 +1517,7 @@ func (h *Handler) respondError(w http.ResponseWriter, err error) {
 	// errors.Is rescues both shapes (bare and wrapped) for the
 	// 503 + Retry-After treatment.
 	if errors.Is(err, chclient.ErrCircuitOpen) {
-		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Retry-After", strconv.Itoa(chclient.RetryAfterSeconds(err)))
 		writeError(w, http.StatusServiceUnavailable, ErrUnavailable, err)
 		return
 	}
