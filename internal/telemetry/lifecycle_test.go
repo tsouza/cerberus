@@ -15,6 +15,7 @@ import (
 // in Config still produces "cerberus" on the resource. Anchors the
 // invariant cerberus dashboards rely on (service.name=cerberus).
 func TestBuildResource_DefaultsServiceName(t *testing.T) {
+	clearResourceEnv(t)
 	res, err := buildResource(t.Context(), Config{}, nil)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
@@ -27,6 +28,7 @@ func TestBuildResource_DefaultsServiceName(t *testing.T) {
 // TestBuildResource_DefaultsServiceVersion confirms an empty
 // ServiceVersion in Config falls back to "dev".
 func TestBuildResource_DefaultsServiceVersion(t *testing.T) {
+	clearResourceEnv(t)
 	res, err := buildResource(t.Context(), Config{}, nil)
 	if err != nil {
 		t.Fatalf("buildResource: %v", err)
@@ -272,4 +274,94 @@ func attr(res *resource.Resource, key string) string {
 		}
 	}
 	return ""
+}
+
+// clearResourceEnv neutralises the two standard OTel resource env vars
+// for the duration of a test. buildResource now honours them (that is
+// the whole point of the WithFromEnv detector), so a test asserting a
+// *default* has to state that the environment supplies nothing —
+// otherwise a developer shell or CI runner that exports OTEL_SERVICE_NAME
+// turns a genuine assertion into an environment-dependent coin flip.
+// t.Setenv restores the prior value on cleanup, and the SDK's fromEnv
+// detector treats an empty value as absent.
+func clearResourceEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("OTEL_SERVICE_NAME", "")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+}
+
+// TestBuildResource_HonoursResourceAttributesEnv pins the fix for the
+// Traces Drilldown depth regression (#1818): cerberus's own
+// self-telemetry carried only service.name / service.version /
+// service.instance.id, so a breakdown query grouping by any other
+// resource dimension — the Drilldown app walks a fixed attribute list
+// and appends `&& <groupBy> != nil` to every query — returned nothing
+// and the drill dead-ended one level in. OTEL_RESOURCE_ATTRIBUTES is the
+// standard channel for the dimensions cerberus has no config knob for,
+// it is what docs/observability.md documents, and before this it was
+// silently dropped.
+func TestBuildResource_HonoursResourceAttributesEnv(t *testing.T) {
+	clearResourceEnv(t)
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.namespace=cerberus-e2e,deployment.environment=e2e")
+
+	res, err := buildResource(t.Context(), Config{}, nil)
+	if err != nil {
+		t.Fatalf("buildResource: %v", err)
+	}
+	if got := attr(res, "service.namespace"); got != "cerberus-e2e" {
+		t.Errorf("service.namespace = %q; want cerberus-e2e", got)
+	}
+	if got := attr(res, "deployment.environment"); got != "e2e" {
+		t.Errorf("deployment.environment = %q; want e2e", got)
+	}
+	// The derived defaults survive alongside the env attributes.
+	if got := attr(res, "service.name"); got != "cerberus" {
+		t.Errorf("service.name = %q; want cerberus", got)
+	}
+	if got := attr(res, "service.instance.id"); got == "" {
+		t.Error("service.instance.id = empty; want non-empty")
+	}
+}
+
+// TestBuildResource_EnvServiceNameBeatsDefault confirms OTEL_SERVICE_NAME
+// overrides the derived "cerberus" fallback. The fallback is a guess;
+// the environment is an explicit operator statement, so it must win.
+func TestBuildResource_EnvServiceNameBeatsDefault(t *testing.T) {
+	clearResourceEnv(t)
+	t.Setenv("OTEL_SERVICE_NAME", "cerberus-gateway")
+
+	res, err := buildResource(t.Context(), Config{}, nil)
+	if err != nil {
+		t.Fatalf("buildResource: %v", err)
+	}
+	if got := attr(res, "service.name"); got != "cerberus-gateway" {
+		t.Errorf("service.name = %q; want cerberus-gateway", got)
+	}
+}
+
+// TestBuildResource_ConfigBeatsEnv pins the precedence contract
+// docs/observability.md states: when both the CERBERUS_OTLP_* knob and
+// the OTel env var set the same field, the cerberus config wins. The
+// env-only attributes it does NOT set are untouched.
+func TestBuildResource_ConfigBeatsEnv(t *testing.T) {
+	clearResourceEnv(t)
+	t.Setenv("OTEL_SERVICE_NAME", "from-env")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.version=from-env,service.namespace=kept")
+
+	res, err := buildResource(t.Context(), Config{
+		ServiceName:    "from-config",
+		ServiceVersion: "v9.9.9",
+	}, nil)
+	if err != nil {
+		t.Fatalf("buildResource: %v", err)
+	}
+	if got := attr(res, "service.name"); got != "from-config" {
+		t.Errorf("service.name = %q; want from-config", got)
+	}
+	if got := attr(res, "service.version"); got != "v9.9.9" {
+		t.Errorf("service.version = %q; want v9.9.9", got)
+	}
+	if got := attr(res, "service.namespace"); got != "kept" {
+		t.Errorf("service.namespace = %q; want kept", got)
+	}
 }
