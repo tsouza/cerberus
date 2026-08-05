@@ -17,8 +17,8 @@ var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not ma
 
 // ReanchorRange returns a re-anchored view of n whose windowed spine is
 // re-anchored to evaluate one row per anchor across [start, end], with each
-// matrix RangeWindow's own input spine widened by a further Range of lookback
-// so every anchor finds the samples it needs.
+// matrix RangeWindow's own input spine widened per RangeWindow.InputWindow
+// (Offset+Range of lookback) so every anchor finds the samples it needs.
 //
 // It is the head-agnostic, no-mutate generalization of
 // promql.widenSubquerySpine (internal/promql/subquery.go): where
@@ -66,11 +66,12 @@ var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not ma
 // Spine shape mirrors widenSubquerySpine exactly so the two stay
 // equivalent on post-optimizer plans (pinned by the equivalence test in
 // internal/promql): matrix RangeWindows (Step > 0) re-anchor and recurse
-// into their input with start.Add(-Range); instant RangeWindows (Step == 0)
-// terminate the walk; the wrapper nodes the subquery lowerings interpose
-// (Project / Aggregate / TopK / Filter) pass the requirement through
-// unchanged. Every other node type is SHARED verbatim (the original pointer,
-// not a copy) — it is below the spine and does not move in time.
+// into their input via RangeWindow.InputWindow (start.Add(-Offset-Range));
+// instant RangeWindows (Step == 0) terminate the walk; the wrapper nodes the
+// subquery lowerings interpose (Project / Aggregate / TopK / Filter) pass
+// the requirement through unchanged. Every other node type is SHARED
+// verbatim (the original pointer, not a copy) — it is below the spine and
+// does not move in time.
 //
 // RangeLWR (the bare-selector last-with-respect-to leaf, the deriv / idelta /
 // irate / instant-LWR / negative-offset families) re-anchors the same way:
@@ -104,9 +105,13 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		c.Start = start
 		c.End = end
 		c.OuterRange = end.Sub(start)
-		// Each of this window's anchors looks back v.Range; widen the input
-		// spine by that much so the inner grid covers every anchor's window.
-		input, err := reanchor(v.Input, start.Add(-v.Range), end)
+		// Each of this window's anchors looks back Offset+Range (the window
+		// is [End-Offset-Range, End-Offset], see the RangeWindow doc comment
+		// above); widen the input spine by that much via the single shared
+		// owner of this arithmetic so the inner grid covers every anchor's
+		// window.
+		inStart, inEnd := v.InputWindow(start, end)
+		input, err := reanchor(v.Input, inStart, inEnd)
 		if err != nil {
 			return nil, err
 		}

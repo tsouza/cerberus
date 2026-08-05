@@ -432,13 +432,12 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		for _, e := range v.ScalarExprs {
 			p.walkExpr(e, sig)
 		}
-		// Recurse into the inner spine widened by Range (mirrors
-		// ReanchorRange / widenSubquerySpine).
-		if v.Step > 0 {
-			p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, depth+1, sig)
-		} else {
-			p.walkNode(v.Input, predStart, predEnd, depth+1, sig)
-		}
+		// Recurse into the inner spine widened via the single shared owner
+		// of this arithmetic (mirrors ReanchorRange / widenSubquerySpine) so
+		// the grid this predicts for the child matches what re-anchoring
+		// actually produces — including the Offset term (#1464).
+		inStart, inEnd := v.InputWindow(predStart, predEnd)
+		p.walkNode(v.Input, inStart, inEnd, depth+1, sig)
 		return
 
 	case *chplan.RangeLWR:
