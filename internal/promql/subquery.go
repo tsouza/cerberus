@@ -539,6 +539,18 @@ func lowerOuterRangeFnOverSubquery(
 		return nil, err
 	}
 
+	// Resolve the per-series `__name__` ONCE, before the arms split: all
+	// three need the same answer, and the spine widening it performs must
+	// happen before widenSubquerySpine narrows the same windows' time
+	// bounds (the two touch disjoint fields, but one pass is one pass).
+	// Non-nil means every RangeWindow from here down to the name-bearing
+	// relation now groups on MetricName — including this outer reducer,
+	// which has to group on the key it is about to project.
+	nameExpr := subqueryPreservedNameExpr(inner, outer.Func.Name, s)
+	if nameExpr != nil {
+		appendNameGroupKey(rw, s)
+	}
+
 	rangeMode := ctx.rangeMode()
 	pinned := subqueryPinned(sub)
 
@@ -565,15 +577,18 @@ func lowerOuterRangeFnOverSubquery(
 		// instant-shaped), so InputWindow's Step<=0 guard can't be reused
 		// directly; the same Offset+Range arithmetic is inlined instead.
 		widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
-		// The subquery spine groups by Attributes alone, so MetricName is
-		// already gone by the time this outer reducer runs — a preserving
-		// fn can only stamp the empty literal here. Widening the spine to
-		// carry it is issue #1602.
-		var nameExpr chplan.Expr
-		if rangeFnPreservesName(outer.Func.Name) {
-			nameExpr = &chplan.LitString{V: ""}
+		// A preserving outer fn over a name-dropping spine still projects
+		// the EMPTY LITERAL rather than nothing: `isDerivedShape` has no
+		// *chplan.CrossJoin arm, so a broadcast Project without a
+		// MetricName output falls through to its `return false` and the
+		// handler takes the canonical branch — emitting `SELECT MetricName`
+		// over a relation that has no such column (real CH: 502). Keeping
+		// the 5-column broadcast shape is what makes the fallback safe.
+		broadcastName := nameExpr
+		if broadcastName == nil && rangeFnPreservesName(outer.Func.Name) {
+			broadcastName = &chplan.LitString{V: ""}
 		}
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr, value), nil
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, broadcastName, value), nil
 	case rangeMode:
 		// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
 		// must fan across the request's step grid so each anchor in
@@ -633,10 +648,172 @@ func lowerOuterRangeFnOverSubquery(
 			widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
 		}
 	}
-	if !replaceValue {
-		return rw, nil
+	if replaceValue {
+		// quantile_over_time's out-of-range-phi fold. That fn drops
+		// `__name__`, so nameExpr is nil here by construction.
+		return projectValueOverInner(rw, s, value), nil
 	}
-	return projectValueOverInner(rw, s, value), nil
+	if nameExpr != nil {
+		// The subquery sibling of the matrix/instant name-preservation wrap
+		// in lowerRangeVectorCall. Without it the bare RangeWindow reaches
+		// the handler as a derived shape and `wrapWithSampleProjection`
+		// synthesises `'' AS MetricName`, discarding the name the spine now
+		// carries. The wrap's tsExpr rule (`anchor_ts`, re-anchored when
+		// `Offset != 0 && !Identity`, else the synthesised instant anchor)
+		// reproduces that handler's `matrixWindowOffset` / `synthesizedAnchor`
+		// choice exactly, so no reported timestamp moves.
+		return wrapRangeWindowPreserveName(rw, s, nameExpr), nil
+	}
+	return rw, nil
+}
+
+// subqueryPreservedNameExpr resolves the expression an outer
+// `last_over_time` / `first_over_time` over a SUBQUERY projects as the
+// MetricName column, and — as its one side effect — widens the subquery
+// spine so that expression has something to read.
+//
+// It returns nil when the name must be dropped, which the caller renders
+// as "no MetricName projection at all" (matrix / instant arms) or as the
+// empty literal (the `@`-pinned broadcast arm, see the call site).
+//
+// Why there is no matcher shortcut here: reference Prometheus never
+// derives `__name__` from a selector's matchers. promql/engine.go:2114
+// computes `dropName := (fn != "last_over_time" && fn != "first_over_time")`
+// for the OUTER call, ORs it per series with the INPUT series' own drop
+// bit, and then reads the name off `selVS.Series[i].Labels()`. For a
+// subquery the input series come from `evalSubquery`, so the outer reducer
+// reads whatever name the inner produced — per series. Cerberus reproduces
+// that by carrying the name as a COLUMN, never as a constant: a regex
+// `__name__` matcher, a selector with no name matcher at all, a nested
+// `last_over_time`, and a multi-table fan-out are then all the same case.
+//
+// The input drop bit needs no separate IR: cerberus already materialises
+// it as the VALUE of the MetricName column. `projectValueOverInner`
+// stamps `” AS MetricName` for every derived-sample shape, and
+// internal/api/format/metric.go's `WithMetricName` omits `__name__`
+// entirely for the empty string — so "empty string" IS "name dropped",
+// end to end, and `dropName || inputDropName` falls out of carrying the
+// column and letting the outer function decide whether to project it.
+func subqueryPreservedNameExpr(inner chplan.Node, outerFn string, s schema.Metrics) chplan.Expr {
+	if !rangeFnPreservesName(outerFn) {
+		return nil
+	}
+	if s.MetricNameColumn == "" {
+		// A schema with no metric-name column has no per-series name to
+		// carry — same branch preservedNameExpr takes at the leaf.
+		return nil
+	}
+	if !subquerySpineCarriesName(inner, s) {
+		return nil
+	}
+	carrySubqueryNameGroupKey(inner, s)
+	return &chplan.ColumnRef{Name: s.MetricNameColumn}
+}
+
+// subquerySpineCarriesName reports whether a lowered subquery plan can
+// deliver a per-series `__name__` to an outer reducer. Pure — it never
+// mutates the plan, so a spine that turns out to be name-dropping is
+// never half-widened by [carrySubqueryNameGroupKey].
+//
+// Walking top-down, the arms are:
+//
+//   - RangeWindow — an Identity wrapper (`Func == ""`, the bare-selector /
+//     arithmetic subquery shape) inherits the answer from below. A
+//     REDUCING window is upstream's `inputDropName`: `last_over_time` and
+//     `first_over_time` keep the name, every other reducer (rate,
+//     max_over_time, …) drops it and terminates the walk.
+//   - Filter — transparent; the modifier time-bound and the empty-K fold
+//     reshape no columns.
+//   - Project / UnionAll — terminal ACCEPT when the relation already
+//     exposes a name-bearing MetricName output (see
+//     [projectCarriesMetricName]). This is the leaf selector Project, the
+//     histogram fan-out's `concat(MetricName, '_sum')` arms, and
+//     label_replace.
+//   - everything else (Aggregate, TopK, count_values, AbsentOverTime,
+//     CrossJoin, StepGrid, VectorSetOp, …) — false. PromQL drops the name
+//     across an aggregation anyway, so those arms need no special case:
+//     their wrapping Project simply has no MetricName slot.
+func subquerySpineCarriesName(n chplan.Node, s schema.Metrics) bool {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		if v.Func != "" && !rangeFnPreservesName(v.Func) {
+			return false
+		}
+		return subquerySpineCarriesName(v.Input, s)
+	case *chplan.Filter:
+		return subquerySpineCarriesName(v.Input, s)
+	case *chplan.Project:
+		return projectCarriesMetricName(v, s)
+	case *chplan.UnionAll:
+		// A multi-table selector (regex `__name__`, histogram fan-out)
+		// unions one arm per physical layout. Every arm must carry a name
+		// or the union's MetricName column is only partly populated.
+		if len(v.Inputs) == 0 {
+			return false
+		}
+		for _, in := range v.Inputs {
+			if !subquerySpineCarriesName(in, s) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// projectCarriesMetricName reports whether p outputs a MetricName column
+// that names a real metric.
+//
+// A `LitString{V: ""}` output is `projectValueOverInner`'s (and
+// lowerAggregate's) already-dropped name — upstream's `inputDropName=true`
+// — so it is rejected and the outer reducer falls back to the empty
+// literal, which is both the correct answer and the narrower plan. A
+// NON-empty literal is a genuine constant name (the histogram companion
+// arm's `'<base>_count'`) and is accepted. A Projections-less Project
+// passes its input's columns through under `SELECT *`, but its
+// Replacements may rebind MetricName, so it is not walked through.
+func projectCarriesMetricName(p *chplan.Project, s schema.Metrics) bool {
+	for _, proj := range p.Projections {
+		if projectionOutputName(proj) != s.MetricNameColumn {
+			continue
+		}
+		lit, isLit := proj.Expr.(*chplan.LitString)
+		return !isLit || lit.V != ""
+	}
+	return false
+}
+
+// projectionOutputName returns the column name a Projection exposes: its
+// explicit Alias, else the bare-ColumnRef name it passes through. A
+// computed Expr with no Alias names no output column. Mirrors the
+// identically named helper in internal/api/prom/handler.go, which answers
+// the same question for the HTTP layer's canonical-shape check.
+func projectionOutputName(p chplan.Projection) string {
+	if p.Alias != "" {
+		return p.Alias
+	}
+	if ref, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return ref.Name
+	}
+	return ""
+}
+
+// carrySubqueryNameGroupKey widens every RangeWindow between the outer
+// reducer and the name-bearing relation so `MetricName` survives each
+// windowed-array `GROUP BY`. Run ONLY after [subquerySpineCarriesName]
+// returned true: a stray group key under an aggregate-bearing spine would
+// change what the aggregate averages over.
+//
+// The walk stops where the predicate accepted (Project / UnionAll) — the
+// name is already a column there, and below that point nothing groups.
+func carrySubqueryNameGroupKey(n chplan.Node, s schema.Metrics) {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		appendNameGroupKey(v, s)
+		carrySubqueryNameGroupKey(v.Input, s)
+	case *chplan.Filter:
+		carrySubqueryNameGroupKey(v.Input, s)
+	}
 }
 
 // canonicalRangeWindowFunc maps a parsed PromQL function name to the
@@ -792,6 +969,13 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 // Both "holt_winters" and "double_exponential_smoothing" are listed even
 // though the upstream parser only ever produces the latter today — same
 // forward-compat rationale as lowerRangeVectorCall's two-spelling case.
+//
+// "first_over_time" sits here beside "last_over_time" because the two are
+// the `__name__`-preserving pair (rangeFnPreservesName): admitting one
+// over a subquery but not the other would make the name contract
+// unobservable for half of it. Both route through the emitter's shared
+// `emitRangeWindowOverTime` case, so the matrix and instant shapes are the
+// same code path `last_over_time` already exercises.
 var rangeVectorFn = map[string]struct{}{
 	"rate":                         {},
 	"irate":                        {},
@@ -806,6 +990,7 @@ var rangeVectorFn = map[string]struct{}{
 	"min_over_time":                {},
 	"max_over_time":                {},
 	"count_over_time":              {},
+	"first_over_time":              {},
 	"last_over_time":               {},
 	"stddev_over_time":             {},
 	"stdvar_over_time":             {},

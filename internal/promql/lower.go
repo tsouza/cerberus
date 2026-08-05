@@ -2602,19 +2602,6 @@ func isIdentityColumnRef(x chplan.Expr, name string) bool {
 	return ok && ref.Name == name
 }
 
-// wrapRangeWindowPreserveName wraps a RangeWindow with a canonical
-// 4-column Project that pins MetricName to a literal so the HTTP-layer
-// `wrapWithSampleProjection` recognises the canonical shape and
-// preserves `__name__` on the wire. Used by `last_over_time` /
-// `first_over_time` to mirror Prom's `dropName=false` for these fns.
-//
-// The matrix-shape RangeWindow (Step > 0) carries per-row anchors in
-// the `anchor_ts` column; the instant shape doesn't expose a real
-// TimeUnix at all (the SQL emits only Attributes + Value), so the
-// projection synthesises one via the same `now64() - 5s` expression
-// the handler uses for derived-shape Projects. The outer
-// `wrapWithSampleProjection` canonical branch reads back the
-// `s.TimestampColumn` alias verbatim either way.
 // rangeFnPreservesName reports whether a PromQL range function keeps
 // `__name__` on its output. Mirrors upstream:
 //
@@ -2625,7 +2612,8 @@ func rangeFnPreservesName(fn string) bool {
 }
 
 // preservedNameExpr picks the expression a preserve-name wrapper should
-// project as the MetricName column.
+// project as the MetricName column, for the LEAF shape — a range function
+// applied directly to a matrix selector, where the matchers are in scope.
 //
 // A single `__name__="x"` equality matcher pins the same name onto every
 // row, so a literal is enough and the window's grouping key is left
@@ -2636,6 +2624,13 @@ func rangeFnPreservesName(fn string) bool {
 // metrics sharing an attribute set would collapse into a single series
 // because MetricName is not part of the grouping key. So the name rides
 // through the window on the group key and is projected per row.
+//
+// The SPINE sibling of this function is [subqueryPreservedNameExpr] in
+// subquery.go: an outer reducer over a subquery has no matcher context at
+// all (its input is another lowered plan, not a selector), so it always
+// takes the per-series column route — widening every RangeWindow between
+// the reducer and the name-bearing Project. Same design, applied one
+// level down.
 func preservedNameExpr(rw *chplan.RangeWindow, ms []*labels.Matcher, s schema.Metrics) chplan.Expr {
 	if name := metricNameFromMatchers(ms); name != "" {
 		return &chplan.LitString{V: name}
@@ -2645,6 +2640,15 @@ func preservedNameExpr(rw *chplan.RangeWindow, ms []*labels.Matcher, s schema.Me
 		// carry; the literal keeps the canonical 4-column shape intact.
 		return &chplan.LitString{V: ""}
 	}
+	return appendNameGroupKey(rw, s)
+}
+
+// appendNameGroupKey adds `MetricName` to a RangeWindow's grouping key so
+// the windowed-array emitter projects it per row (the emitter projects
+// exactly the group keys, so a column absent from GroupBy is absent from
+// the window's output relation). Idempotent: a window that already groups
+// on the name keeps a single key. Returns the ColumnRef a caller projects.
+func appendNameGroupKey(rw *chplan.RangeWindow, s schema.Metrics) *chplan.ColumnRef {
 	nameRef := &chplan.ColumnRef{Name: s.MetricNameColumn}
 	for _, g := range rw.GroupBy {
 		if isIdentityColumnRef(g, s.MetricNameColumn) {
@@ -2655,6 +2659,23 @@ func preservedNameExpr(rw *chplan.RangeWindow, ms []*labels.Matcher, s schema.Me
 	return nameRef
 }
 
+// wrapRangeWindowPreserveName wraps a RangeWindow with a canonical
+// 4-column Project that projects `name` as the MetricName column, so the
+// HTTP-layer `wrapWithSampleProjection` recognises the canonical shape
+// and preserves `__name__` on the wire. Used by `last_over_time` /
+// `first_over_time` — at the leaf (lowerRangeVectorCall) and over a
+// subquery spine (lowerOuterRangeFnOverSubquery) — to mirror Prom's
+// `dropName=false` for those two fns. `name` is either a literal (a
+// pinned `__name__=` matcher) or a ColumnRef the window now carries on
+// its grouping key.
+//
+// The matrix-shape RangeWindow (OuterRange > 0) carries per-row anchors
+// in the `anchor_ts` column; the instant shape doesn't expose a real
+// TimeUnix at all (the SQL emits only Attributes + Value), so the
+// projection synthesises one via the same `now64() - 5s` expression
+// the handler uses for derived-shape Projects. The outer
+// `wrapWithSampleProjection` canonical branch reads back the
+// `s.TimestampColumn` alias verbatim either way.
 func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name chplan.Expr) chplan.Node {
 	var tsExpr chplan.Expr
 	if rw.OuterRange > 0 {
