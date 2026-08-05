@@ -9581,6 +9581,17 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "traceql/unary_not_compound_and_operand",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "traceql/unary_not_double_negation",
     "fan_factor": 1,
     "scan_rows": 1,

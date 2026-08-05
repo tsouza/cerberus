@@ -300,6 +300,14 @@ services:
       # safe inside the cerberus-dev docker network.
       CERBERUS_OTLP_ENDPOINT: "otel-collector:4317"
       CERBERUS_OTLP_INSECURE: "true"
+      # OTEL_RESOURCE_ATTRIBUTES  standard OTel resource dimensions for
+      # cerberus's own self-telemetry. Kept in lock-step with the k3d stack
+      # (test/e2e/k3s/cerberus-values.yaml) so a dashboard or drilldown flow
+      # that groups spans by a resource axis behaves identically on both
+      # substrates. Without it cerberus describes itself along service.name /
+      # service.version / service.instance.id only, and any breakdown by
+      # another resource dimension is genuinely empty (#1818).
+      OTEL_RESOURCE_ATTRIBUTES: "service.namespace=cerberus-dev,deployment.environment=dev"
       # CERBERUS_CH_QUERY_MAX_MEMORY   per-query ClickHouse memory cap
       # (`max_memory_usage` on every data-plane query). 1 GiB, matching
       # the binary default and the k3d stack

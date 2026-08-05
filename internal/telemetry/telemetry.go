@@ -9,8 +9,10 @@
 // resource carrying `service.name`, `service.version`, and
 // `service.instance.id`.
 //
-// The OTel Go SDK also reads standard `OTEL_EXPORTER_OTLP_*` env vars on
-// its own; cerberus's CERBERUS_OTLP_* knobs apply on top of those.
+// The OTel Go SDK also reads the standard `OTEL_EXPORTER_OTLP_*` env
+// vars on its own, and buildResource wires in the standard resource
+// detector so `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` are
+// honoured too; cerberus's CERBERUS_OTLP_* knobs apply on top of those.
 package telemetry
 
 import (
@@ -21,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -84,7 +87,8 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 // cfg.Endpoint returns noop providers and a no-op Shutdown — the safe
 // "OTel disabled" default. A non-empty endpoint builds real gRPC OTLP
 // exporters; resource attributes are filled from cfg.ServiceName,
-// cfg.ServiceVersion, and the local hostname (with a random fallback).
+// cfg.ServiceVersion, the standard OTel resource env vars, and the local
+// hostname (with a random fallback) — see buildResource for precedence.
 func New(ctx context.Context, cfg Config) (*Providers, error) {
 	if cfg.Endpoint == "" {
 		return &Providers{
@@ -241,26 +245,37 @@ func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 // errored hostnames).
 type hostnameFunc func() (string, error)
 
-// buildResource composes the resource attached to every exported span
-// and metric. Attribute fallbacks:
+// Fallback resource values used when neither the cerberus config nor the
+// standard OTel environment supplies one.
+const (
+	defaultServiceName    = "cerberus"
+	defaultServiceVersion = "dev"
+)
+
+// buildResource composes the resource attached to every exported span,
+// metric, and log record. Three precedence tiers are merged in order,
+// each one overriding the tier before it (resource.New merges detectors
+// left-to-right, and Merge lets the right-hand resource win):
 //
-//   - service.name        ← cfg.ServiceName  (defaults to "cerberus" if blank)
-//   - service.version     ← cfg.ServiceVersion (defaults to "dev" if blank)
-//   - service.instance.id ← hostname()        (falls back to a random 16-byte
-//     hex string when hostname lookup errors out — common in scratch
-//     containers)
+//  1. Derived defaults — service.name "cerberus", service.version "dev",
+//     and service.instance.id from hostname() (a random 16-byte hex
+//     string when hostname lookup errors out or returns empty, common in
+//     scratch containers). These are guesses, so anything explicit beats
+//     them.
+//  2. The standard OTel environment — OTEL_SERVICE_NAME and
+//     OTEL_RESOURCE_ATTRIBUTES, via resource.WithFromEnv. This is the
+//     only channel through which a deployment can attach resource
+//     attributes cerberus has no config knob for (service.namespace,
+//     deployment.environment, k8s.*), which is what every other OTLP
+//     producer in a stack does and what docs/observability.md documents.
+//  3. Explicit cerberus config — CERBERUS_OTLP_SERVICE_NAME /
+//     _SERVICE_VERSION. Applied last so the documented "when both are
+//     set, the CERBERUS_* value wins for that field" contract holds.
+//     Blank config fields contribute nothing, leaving tiers 1-2 intact.
 //
 // hostname is parameterised for testability — production callers pass
 // os.Hostname; tests supply a stub. Nil is treated as os.Hostname.
 func buildResource(ctx context.Context, cfg Config, hostname hostnameFunc) (*resource.Resource, error) {
-	name := cfg.ServiceName
-	if name == "" {
-		name = "cerberus"
-	}
-	version := cfg.ServiceVersion
-	if version == "" {
-		version = "dev"
-	}
 	if hostname == nil {
 		hostname = os.Hostname
 	}
@@ -268,13 +283,24 @@ func buildResource(ctx context.Context, cfg Config, hostname hostnameFunc) (*res
 	if err != nil || instance == "" {
 		instance = randomInstanceID()
 	}
+
+	explicit := make([]attribute.KeyValue, 0, 2)
+	if cfg.ServiceName != "" {
+		explicit = append(explicit, semconv.ServiceName(cfg.ServiceName))
+	}
+	if cfg.ServiceVersion != "" {
+		explicit = append(explicit, semconv.ServiceVersion(cfg.ServiceVersion))
+	}
+
 	return resource.New(
 		ctx,
 		resource.WithAttributes(
-			semconv.ServiceName(name),
-			semconv.ServiceVersion(version),
+			semconv.ServiceName(defaultServiceName),
+			semconv.ServiceVersion(defaultServiceVersion),
 			semconv.ServiceInstanceID(instance),
 		),
+		resource.WithFromEnv(),
+		resource.WithAttributes(explicit...),
 	)
 }
 
