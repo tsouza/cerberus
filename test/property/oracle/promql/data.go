@@ -16,10 +16,12 @@ const DefaultLookbackDelta = 5 * time.Minute
 
 // Sample is one (timestamp, value) point. Timestamp is unix
 // milliseconds, matching Prom convention and what the dataset
-// generator emits.
+// generator emits. H mirrors property.Point's Histogram field: when
+// set, this sample is a native-histogram sample and V is unused.
 type Sample struct {
 	T int64
 	V float64
+	H *property.NativeHistogram
 }
 
 // Series is one labeled time series in the in-memory model. The
@@ -80,7 +82,7 @@ func FromDataset(d property.Dataset) *Model {
 
 		samples := make([]Sample, 0, len(s.Points))
 		for _, p := range s.Points {
-			samples = append(samples, Sample{T: p.TimestampMs, V: p.Value})
+			samples = append(samples, Sample{T: p.TimestampMs, V: p.Value, H: p.Histogram})
 		}
 		// Sort by (timestamp asc, value asc) so dedupSamplesByTimestamp's
 		// last-of-equal-ts-run is the max-valued sample at that timestamp.

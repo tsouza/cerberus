@@ -5,16 +5,20 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/test/property"
 )
 
 // VectorRow is one (labels, ts, value) tuple in an instant-vector
 // result. The timestamp is the evaluation timestamp (Prom convention:
 // every output sample is stamped at eval ts, not the source sample's
-// ts).
+// ts). Histogram mirrors Sample.H: when set, this row is a
+// native-histogram sample and V is unused.
 type VectorRow struct {
-	Labels map[string]string
-	T      int64
-	V      float64
+	Labels    map[string]string
+	T         int64
+	V         float64
+	Histogram *property.NativeHistogram
 }
 
 // RangePoints is one (labels, samples) tuple in a range-vector result.
@@ -48,9 +52,10 @@ func (e *Evaluator) evalVectorSelector(v *parser.VectorSelector, evalTsMs int64)
 			continue
 		}
 		out = append(out, VectorRow{
-			Labels: CopyLabels(s.Labels),
-			T:      evalTsMs,
-			V:      sample.V,
+			Labels:    CopyLabels(s.Labels),
+			T:         evalTsMs,
+			V:         sample.V,
+			Histogram: sample.H,
 		})
 	}
 	sortVectorRows(out)

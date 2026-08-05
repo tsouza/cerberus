@@ -49,12 +49,34 @@ type SeriesData struct {
 	Points []Point
 }
 
-// Point is one (timestamp, value) sample in a SeriesData.
+// Point is one (timestamp, value) sample in a SeriesData. Histogram is
+// an additive alternative payload: when set, the point represents an
+// OTel native (exponential) histogram sample rather than a plain
+// float, and Value is unused. A SeriesData mixing plain and histogram
+// points isn't a shape any generator or fixture produces today.
 type Point struct {
 	// TimestampMs is unix milliseconds, matching Prometheus's internal
 	// convention so the oracle's storage layer can consume it directly.
 	TimestampMs int64
 	Value       float64
+	Histogram   *NativeHistogram
+}
+
+// NativeHistogram is an OTel/native exponential-histogram sample,
+// mirroring the otel_metrics_exponential_histogram row shape (see
+// internal/chsql/histogram_quantile_native.go for the bucket-walk
+// semantics this feeds). ZeroThreshold isn't modeled: the default
+// OTel-CH DDL doesn't persist it, so the zero bucket collapses to a
+// point at 0 everywhere in cerberus, and this mirror follows suit.
+type NativeHistogram struct {
+	Count                uint64
+	Sum                  float64
+	Scale                int32
+	ZeroCount            uint64
+	PositiveOffset       int32
+	PositiveBucketCounts []uint64
+	NegativeOffset       int32
+	NegativeBucketCounts []uint64
 }
 
 // LogsModel is the in-memory logs mirror. It holds the rows the

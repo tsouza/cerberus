@@ -207,10 +207,53 @@ func (e *Evaluator) evalCall(c *parser.Call, evalTsMs int64) (value, error) {
 		if bucketsVal.Kind != kindVec {
 			return value{}, fmt.Errorf("oracle: histogram_quantile bucket arg must be vector")
 		}
-		out, err := histogramQuantile(phiVal.Scalar, bucketsVal.Vec, evalTsMs)
+		out, err := e.evalHistogramQuantile(phiVal.Scalar, bucketsVal.Vec, evalTsMs)
 		if err != nil {
 			return value{}, err
 		}
+		return value{Kind: kindVec, Vec: out}, nil
+	case "histogram_count", "histogram_sum", "histogram_avg", "histogram_stddev", "histogram_stdvar":
+		if len(c.Args) != 1 {
+			return value{}, fmt.Errorf("oracle: %s expects 1 arg, got %d", name, len(c.Args))
+		}
+		inner, err := e.evalAny(c.Args[0], evalTsMs)
+		if err != nil {
+			return value{}, err
+		}
+		if inner.Kind != kindVec {
+			return value{}, fmt.Errorf("oracle: %s argument must be vector", name)
+		}
+		out, err := nativeHistogramValue(name, inner.Vec, evalTsMs)
+		if err != nil {
+			return value{}, err
+		}
+		return value{Kind: kindVec, Vec: out}, nil
+	case "histogram_fraction":
+		if len(c.Args) != 3 {
+			return value{}, fmt.Errorf("oracle: histogram_fraction expects 3 args, got %d", len(c.Args))
+		}
+		lowerVal, err := e.evalAny(c.Args[0], evalTsMs)
+		if err != nil {
+			return value{}, err
+		}
+		if lowerVal.Kind != kindScalar {
+			return value{}, fmt.Errorf("oracle: histogram_fraction lower bound must be scalar")
+		}
+		upperVal, err := e.evalAny(c.Args[1], evalTsMs)
+		if err != nil {
+			return value{}, err
+		}
+		if upperVal.Kind != kindScalar {
+			return value{}, fmt.Errorf("oracle: histogram_fraction upper bound must be scalar")
+		}
+		vecVal, err := e.evalAny(c.Args[2], evalTsMs)
+		if err != nil {
+			return value{}, err
+		}
+		if vecVal.Kind != kindVec {
+			return value{}, fmt.Errorf("oracle: histogram_fraction vector arg must be vector")
+		}
+		out := nativeHistogramFraction(lowerVal.Scalar, upperVal.Scalar, vecVal.Vec, evalTsMs)
 		return value{Kind: kindVec, Vec: out}, nil
 	case "scalar":
 		if len(c.Args) != 1 {
@@ -255,6 +298,37 @@ func (e *Evaluator) evalCall(c *parser.Call, evalTsMs int64) (value, error) {
 		return e.evalLabelJoin(c, evalTsMs)
 	}
 	return value{}, fmt.Errorf("oracle: unsupported function %q", name)
+}
+
+// evalHistogramQuantile routes histogram_quantile's bucket-vector
+// argument to the classic le-bucket oracle or the native-histogram
+// bucket-walk oracle, per row. A bare selector's rows are uniformly
+// one shape or the other in practice (a metric is either a classic
+// histogram or a native one), but partitioning defensively means
+// neither path silently drops the other's rows.
+func (e *Evaluator) evalHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) ([]VectorRow, error) {
+	var classicRows, nativeRows []VectorRow
+	for _, r := range rows {
+		if r.Histogram != nil {
+			nativeRows = append(nativeRows, r)
+		} else {
+			classicRows = append(classicRows, r)
+		}
+	}
+
+	out := make([]VectorRow, 0, len(rows))
+	if len(classicRows) > 0 {
+		classicOut, err := histogramQuantile(phi, classicRows, evalTsMs)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, classicOut...)
+	}
+	if len(nativeRows) > 0 {
+		out = append(out, nativeHistogramQuantile(phi, nativeRows, evalTsMs)...)
+	}
+	sortVectorRows(out)
+	return out, nil
 }
 
 // applyBinaryAST adapts the AST-level binary expr into the
