@@ -134,6 +134,57 @@ func TestEvaluate_Shapes(t *testing.T) {
 	}
 }
 
+// TestEvaluate_RegexIsFullyAnchored pins the semantics the TraceQL
+// property test drifted on: `=~` / `!~` are fully-anchored matches,
+// not substring searches.
+//
+// The counterexample rapid shrunk to (seed 5609448711362248639) was
+// `{ resource.service.name =~ "a.*" }` against a lone span whose
+// service is `batch`. An unanchored Go `regexp.MatchString` finds
+// `atch` at offset 1 and reports a match; Tempo does not, because
+// `pkg/traceql/ast_execute.go` routes every regex comparison through
+// `pkg/regexp.NewRegexp` → `labels.NewFastRegexMatcher` →
+// `regexp.Compile("^(?s:" + pattern + ")$")`. Cerberus agreed with
+// Tempo and the oracle was the wrong side.
+//
+// The `!~` half is asserted alongside because a negation that inherits
+// an over-broad matcher fails in the opposite direction — it drops
+// spans it should keep — and would not be caught by the `=~` case.
+func TestEvaluate_RegexIsFullyAnchored(t *testing.T) {
+	// fixtureDataset services: api (r1), web (c1), batch (g1), api (r2).
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantCount int
+	}{
+		// The shrunk counterexample: `a.*` is a prefix match, so it
+		// selects both `api` spans and neither `web` nor `batch` —
+		// unanchored it would additionally match `batch` ("atch").
+		{"prefix_excludes_infix_match", `{ resource.service.name =~ "a.*" }`, 2},
+		{"negated_prefix_keeps_infix_match", `{ resource.service.name !~ "a.*" }`, 2},
+		// A bare literal is an exact match, not a substring probe:
+		// unanchored, `pi` would match both `api` spans.
+		{"literal_is_not_a_substring_probe", `{ resource.service.name =~ "pi" }`, 0},
+		{"negated_literal_is_not_a_substring_probe", `{ resource.service.name !~ "pi" }`, 4},
+		// Alternation must bind as a whole-value choice: the
+		// non-capturing group in the wrap is what stops `^web|batc`
+		// parsing as (`^web`) or (`batc` at any offset).
+		{"alternation_binds_whole_value", `{ resource.service.name =~ "web|batc" }`, 1},
+		// A user-supplied anchor nests without conflicting.
+		{"user_supplied_anchors_nest", `{ resource.service.name =~ "^web$" }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := evalQ(t, tc.query)
+			if out.Err != nil {
+				t.Fatalf("query %q: unexpected error: %v", tc.query, out.Err)
+			}
+			if len(out.Rows) != tc.wantCount {
+				t.Fatalf("query %q: row count = %d, want %d", tc.query, len(out.Rows), tc.wantCount)
+			}
+		})
+	}
+}
+
 // TestEvaluate_ParseErrors asserts the recognizer rejects shapes
 // outside the generator's accept-set rather than silently
 // misevaluating them.
