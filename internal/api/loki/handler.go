@@ -21,6 +21,7 @@ import (
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/optimizer"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -276,12 +277,12 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Instant /query: collapse the window onto a single point. Per
-	// upstream Loki contract the evaluation lookback is the previous
-	// 5 minutes (the same instant-lookback PromQL uses). Threading
-	// [ts - 5m, ts] keeps the Scan filtered to that envelope so the
-	// SQL doesn't return every matching log in the table.
-	const instantLookback = 5 * time.Minute
-	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-instantLookback), ts), q)
+	// upstream Loki contract the evaluation lookback is
+	// [qlcommon.InstantLookback] (the same instant-lookback PromQL
+	// uses). Threading [ts - InstantLookback, ts] keeps the Scan
+	// filtered to that envelope so the SQL doesn't return every
+	// matching log in the table.
+	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
