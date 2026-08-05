@@ -30,7 +30,7 @@ SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, 
 [24] string = "service"
 [25] string = ""
 [26] string = ""
-[27] string = ".+"
+[27] string = "^(?:.+)$"
 [28] string = "2026-01-01 00:00:01.000000000"
 [29] int64 = 9
 [30] string = "2026-01-01 00:00:01.000000000"

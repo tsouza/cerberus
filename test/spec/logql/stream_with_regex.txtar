@@ -4,7 +4,7 @@
 SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?)
 -- args --
 [0] string = "env"
-[1] string = "prod|stg"
+[1] string = "^(?:prod|stg)$"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,

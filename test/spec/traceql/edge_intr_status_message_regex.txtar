@@ -1,7 +1,7 @@
 -- query.traceql --
 { statusMessage =~ "timeout.*" }
 -- args --
-[0] string = "timeout.*"
+[0] string = "^(?:timeout.*)$"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`StatusMessage`, ?)
 -- seed --

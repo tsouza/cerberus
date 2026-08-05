@@ -1,5 +1,5 @@
 -- args --
-[0] string = "^api-.*"
+[0] string = "^(?:^api-.*)$"
 -- sql --
 SELECT * FROM `otel_metrics_gauge` WHERE match(`ResourceAttributes_service_name`, ?)
 -- chplan --

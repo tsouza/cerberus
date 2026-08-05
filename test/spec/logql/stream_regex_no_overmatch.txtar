@@ -1,0 +1,29 @@
+# Regex alternation with no explicit anchors ("prod|stg"). ClickHouse's
+# match() is a substring search, so a naive lowering would match any env
+# value CONTAINING "prod" or "stg" as a substring — "production" and
+# "staging" both would wrongly match. Loki's stream-selector regex matchers
+# are ALWAYS implicitly fully anchored, so `env=~"prod|stg"` must match
+# ONLY env values exactly equal to "prod" or "stg" — never "production" or
+# "staging". Regression fixture for issue #1741.
+
+-- query.logql --
+{env=~"prod|stg"}
+-- sql --
+SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?)
+-- args --
+[0] string = "env"
+[1] string = "^(?:prod|stg)$"
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('env', Body)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body) VALUES ('prod'), ('production'), ('stg'), ('staging'), ('dev');
+-- expected_rows --
+[
+  ["prod"],
+  ["stg"]
+]
+-- chplan --
+Filter predicate=(ResourceAttributes["env"] =~ "prod|stg")
+  Scan(otel_logs)

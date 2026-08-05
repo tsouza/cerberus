@@ -6,7 +6,7 @@
 [2] string = "msg"
 [3] string = "msg"
 [4] string = "msg"
-[5] string = "^$"
+[5] string = "^(?:^$)$"
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)
 -- seed --

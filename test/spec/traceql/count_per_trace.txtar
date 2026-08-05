@@ -18,7 +18,7 @@ INSERT INTO otel_traces VALUES
 -- args --
 [0] int64 = 1
 [1] string = "service.name"
-[2] string = ".+"
+[2] string = "^(?:.+)$"
 [3] int64 = 0
 -- chplan --
 Filter predicate=(Value > 0)

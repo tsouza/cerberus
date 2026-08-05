@@ -3320,6 +3320,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "regex_unanchored_no_overmatch",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "resets_counter",
     "routed": true,
     "k": 8,

@@ -13,6 +13,14 @@
 #    has no resource attributes; the OTel-CH schema stores them apart from
 #    the datapoint attributes, so the aggregated fan-out has a grouping key
 #    no upstream case can reach.
+# 3. One cerberus-owned case is added to the vector-selector block: a regex
+#    label matcher with no wildcards/anchors that is a strict PREFIX of an
+#    actual label value (`job=~"dem"` against the seeded `job="demo"`).
+#    ClickHouse's match() is a substring search; Prometheus regex matchers
+#    are always implicitly fully anchored (issue #1741). The case only
+#    discriminates cerberus's own lowering bug — reference Prometheus has
+#    nothing to diverge on — but it is the corpus's only case that would
+#    have caught it, so it stays alongside the other two documented edits.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -56,6 +64,11 @@ test_cases:
   - query: 'demo_memory_usage_bytes{type!="free"}'
   - query: 'demo_memory_usage_bytes{instance=~"demo.promlabs.com:.*"}'
   - query: 'demo_memory_usage_bytes{instance=~"host"}'
+  - query: 'demo_memory_usage_bytes{job=~"dem"}'
+    # Cerberus-owned (see file header edit 3 / issue #1741): "dem" is a
+    # strict prefix of the seeded job="demo", never the whole string, so
+    # this must answer empty on both backends. A substring-search
+    # lowering of `=~` would wrongly match every demo series.
   - query: 'demo_memory_usage_bytes{instance!~".*:10000"}'
   - query: 'demo_memory_usage_bytes{type="free", instance!="demo.promlabs.com:10000"}'
   - query: '{type="free", instance!="demo.promlabs.com:10000"}'

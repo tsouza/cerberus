@@ -8,7 +8,7 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(if(mapCo
 [2] string = "env"
 [3] string = "env"
 [4] string = "env"
-[5] string = "prod|stg"
+[5] string = "^(?:prod|stg)$"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),

@@ -4,7 +4,7 @@
 SELECT * FROM `otel_traces` WHERE NOT match(`ResourceAttributes`[?], ?)
 -- args --
 [0] string = "service.name"
-[1] string = "back.*"
+[1] string = "^(?:back.*)$"
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,

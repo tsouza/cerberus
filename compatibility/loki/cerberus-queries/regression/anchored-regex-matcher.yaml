@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+---
+# Anchored-regex-matcher differential coverage — see issue #1741.
+#
+# LogQL stream-selector and label-filter regex matchers (`=~` / `!~`) are,
+# like Prometheus's, ALWAYS implicitly fully anchored: `service_name=~"auth"`
+# must match a stream ONLY when service_name is exactly "auth", never a
+# stream whose service_name merely CONTAINS "auth" as a substring. Cerberus
+# lowered `=~` to ClickHouse's match(), which is a substring search — a live
+# wrong-answer bug fixed centrally in internal/chsql/builder.go by anchoring
+# every bound pattern as `^(?:...)$` before it reaches match().
+#
+# "auth" is a strict prefix of the seeded service_name "auth-service"
+# (cmd/seed/main.go's serviceCatalog) and equal to no seeded service_name,
+# so both backends must agree the selector matches nothing — reference Loki
+# was never wrong here, only cerberus's substring-search lowering was. That
+# is exactly what makes the case load-bearing: it fails against a pre-fix
+# cerberus and passes against reference Loki either way, so it pins the fix
+# rather than merely documenting existing agreement.
+queries:
+  - description: stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing
+    query: '{service_name=~"auth"}'
+    kind: log
+    time_range:
+      length: 24h
+    directions: both
+    tags:
+      - regex
+      - anchoring
+      - empty-result
+    notes: >-
+      "auth" is a proper prefix of the seeded "auth-service", never the
+      whole string, so this must resolve to zero results on both
+      backends. A substring-search lowering of `=~` would wrongly match
+      every auth-service line.
+
+  - description: label-filter regex matcher that is a strict prefix of an actual value matches nothing
+    query: '{service_name="auth-service"} | service_name=~"auth"'
+    kind: log
+    time_range:
+      length: 24h
+    directions: backward
+    tags:
+      - regex
+      - anchoring
+      - filter
+      - empty-result
+    notes: >-
+      Same discriminating shape as the stream-selector case above, but
+      through the `| label=~"..."` filter stage instead of the initial
+      selector — a separate lowering path that shares the same
+      substring-search bug pre-fix.

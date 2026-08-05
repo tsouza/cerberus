@@ -145,17 +145,23 @@ func TestLower_HistogramQuantile_UnpinnedNameUsesBucketWireName(t *testing.T) {
 			if !tc.wantWireName {
 				return
 			}
+			// The bound pattern is anchored with `^(?:...)$` (issue
+			// #1741 — ClickHouse's match() is a substring search, but
+			// Prometheus `__name__` regex matchers are always fully
+			// anchored), so the arg carries the wrapped form rather
+			// than the bare namePattern.
+			wantArg := "^(?:" + namePattern + ")$"
 			var sawPattern bool
 			for _, a := range args {
-				if str, ok := a.(string); ok && str == namePattern {
+				if str, ok := a.(string); ok && str == wantArg {
 					sawPattern = true
 					break
 				}
 			}
 			if !sawPattern {
-				t.Fatalf("emitted SQL params do not carry the `__name__` regex %q — "+
+				t.Fatalf("emitted SQL params do not carry the anchored `__name__` regex %q — "+
 					"the matcher was dropped rather than routed to the wire name.\nargs: %v",
-					namePattern, args)
+					wantArg, args)
 			}
 		})
 	}

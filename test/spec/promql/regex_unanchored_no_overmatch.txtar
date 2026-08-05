@@ -1,9 +1,12 @@
-# ClickHouse `match()` is unanchored (re2). `api|web` matches the labels
-# 'api' and 'web' AND any substring containing them. Seed values are
-# chosen so the expected matches read unambiguously.
+# Regex carries NO explicit ^/$ anchors ("ap"). ClickHouse's match() is a
+# substring search, so a naive lowering matches any job containing "ap" as a
+# substring — "api" and "apiserver" both would. Prometheus/Loki/Tempo regex
+# matchers are ALWAYS implicitly fully anchored (labels.NewFastRegexMatcher),
+# so `job=~"ap"` must match ONLY a series whose job label is exactly "ap" —
+# never "api" or "apiserver". Regression fixture for issue #1741.
 
 -- query.promql --
-up{job=~"api|web"}
+up{job=~"ap"}
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
@@ -12,13 +15,13 @@ CREATE TABLE otel_metrics_gauge (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
-    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
-    ('up', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
-    ('up', map('job', 'database'), toDateTime64('2026-01-01 00:00:00', 9), 3.0);
+    ('up', map('job', 'ap'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('job', 'apiserver'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('up', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
 -- expected_rows --
 [
-  ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1.0],
-  ["up", {"job": "web"}, "2026-01-01T00:00:00Z", 2.0]
+  ["up", {"job": "ap"}, "2026-01-01T00:00:00Z", 1.0]
 ]
 -- sql --
 SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?) WHERE match(coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?), ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
@@ -35,7 +38,7 @@ SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `
 [9] string = "job"
 [10] string = ""
 [11] string = ""
-[12] string = "^(?:api|web)$"
+[12] string = "^(?:ap)$"
 [13] string = "2026-01-01 00:00:01.000000000"
 [14] int64 = 9
 [15] string = "2026-01-01 00:00:01.000000000"
@@ -46,5 +49,5 @@ Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix,
   Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
     Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
       Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-        Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") =~ "api|web") AND (MetricName = "up"))
+        Filter predicate=((coalesce(nullIf(Attributes["job"], ""), nullIf(ResourceAttributes["job"], ""), "") =~ "ap") AND (MetricName = "up"))
           Scan(merge(otel_metrics_gauge|otel_metrics_sum))
