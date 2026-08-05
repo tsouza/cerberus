@@ -501,8 +501,16 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 			}
 		}
 	}
+	if a.Having != nil {
+		if err := (&Builder{}).Expr(a.Having); err != nil {
+			return err
+		}
+	}
 	if len(a.GroupBy) == 0 && len(a.AggFuncs) == 0 {
 		return fmt.Errorf("%w: Aggregate with no GroupBy keys and no AggFuncs", ErrUnsupported)
+	}
+	if a.Having != nil && len(a.GroupBy) == 0 && a.DropEmptyOnNoGroup {
+		return fmt.Errorf("%w: Aggregate.Having combined with DropEmptyOnNoGroup", ErrUnsupported)
 	}
 
 	sub, err := e.subqueryFrag(a.Input)
@@ -538,6 +546,10 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 	// GROUP BY mirrors the SELECT-list group-by keys — see [groupKeyFrags]
 	// for why an aliased key is named by its alias.
 	sb.GroupBy(groupKeyFrags(a.GroupBy, a.GroupByAliases)...)
+	if a.Having != nil {
+		having := a.Having
+		sb.Having(func(b *Builder) { _ = b.Expr(having) })
+	}
 	e.emitSelect(sb)
 	return nil
 }

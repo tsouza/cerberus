@@ -81,6 +81,14 @@ type stalenessLowerInput struct {
 	start, end             time.Time
 	step, lookback, offset time.Duration
 
+	// stepAligned mirrors lowerCtx.stepAligned: the caller resolved this
+	// staleness wrap over a subquery inner's epoch-aligned (phase 0) grid,
+	// not the outer request's own [start, end]. It threads onto
+	// chplan.RangeLWR.StepAlign so chplan.ReanchorRange re-derives each
+	// shard's grid from epoch 0 instead of assigning the shard's raw
+	// bounds verbatim.
+	stepAligned bool
+
 	metricNameCol, attributesCol string
 	timestampCol, valueCol       string
 }
@@ -259,6 +267,7 @@ func (FanoutStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node
 		Step:          in.step,
 		Lookback:      in.lookback,
 		Offset:        in.offset,
+		StepAlign:     in.stepAligned,
 		MetricNameCol: in.metricNameCol,
 		AttributesCol: in.attributesCol,
 		TimestampCol:  in.timestampCol,

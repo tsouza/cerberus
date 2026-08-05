@@ -68,9 +68,9 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 	// are either unpinned or already equal to the target grid, so to re-grid
 	// each slice onto a SUB-window we first build one spine-UNPINNED, share-
 	// immutable-off-spine view of the plan; ReanchorRange then fills each
-	// slice's grid into it. The original plan is never touched — unpinSpine
+	// slice's grid into it. The original plan is never touched — UnpinSpine
 	// clones only the spine path and shares the off-spine subtrees.
-	base := unpinSpine(plan)
+	base := UnpinSpine(plan)
 
 	// m = ceil(N/K) anchors per slice (newest-first index space).
 	m := (n + k - 1) / k
@@ -133,12 +133,12 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 	return slices, nil
 }
 
-// unpinSpine returns a copy-on-write view of plan whose windowed-spine bounds
+// UnpinSpine returns a copy-on-write view of plan whose windowed-spine bounds
 // (RangeWindow / RangeLWR Start, End, and the matrix OuterRange) are zeroed,
 // so ReanchorRange treats every spine node as the unpinned subquery-inner
 // shape and fills each slice's grid in.
 //
-// The original plan is never mutated. unpinSpine clones ONLY the spine-path
+// The original plan is never mutated. UnpinSpine clones ONLY the spine-path
 // nodes it actually zeroes (and their ancestors back to the root, the
 // O(spine-depth) chain) and SHARES every immutable off-spine subtree verbatim
 // — the structural-sharing companion to ReanchorRange's off-spine sharing.
@@ -151,17 +151,21 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 // information being dropped is exactly the grid ReanchorRange recomputes.
 //
 // GUARDRAIL B (nested subqueries). Blanket off-spine sharing is exact only
-// when an off-spine subtree carries no windowed node that unpinSpine must
+// when an off-spine subtree carries no windowed node that UnpinSpine must
 // zero. An off-spine subtree reachable via a non-spine Node child (e.g. a
 // TopK.KExpr computed-K plan) CAN itself contain a RangeWindow / RangeLWR
 // that needs zeroing; sharing that subtree and zeroing it in place would
-// corrupt the caller's plan. So unpinSpine DESCENDS into off-spine children,
+// corrupt the caller's plan. So UnpinSpine DESCENDS into off-spine children,
 // cloning the path to any inner windowed node it must zero, and shares only
 // the genuinely window-free subtrees. (ScalarSubquery interiors are reached
 // through Expr slots, not Node children; chplan.Walk and the Children() walk
 // here never descend into them, so they are carried by value inside the
-// shared/cloned node exactly as before — unpinSpine never zeroed them.)
-func unpinSpine(plan chplan.Node) chplan.Node {
+// shared/cloned node exactly as before — UnpinSpine never zeroed them.)
+//
+// Exported so tests outside this package can exercise the same sequence the
+// solver actually runs (UnpinSpine → chplan.ReanchorRange) rather than
+// approximating it — see internal/promql/reanchor_equivalence_test.go.
+func UnpinSpine(plan chplan.Node) chplan.Node {
 	out, _ := unpinSpineCOW(plan)
 	return out
 }
@@ -228,7 +232,7 @@ func unpinSpineCOW(n chplan.Node) (chplan.Node, bool) {
 }
 
 // descendOffSpine handles the off-spine case of unpinSpineCOW. It probes each
-// Node child for a windowed node that unpinSpine must zero; if none is found
+// Node child for a windowed node that UnpinSpine must zero; if none is found
 // the original node is shared verbatim. If one is found, the whole node is
 // deep-copied and its spine zeroed in place by zeroSpineInPlace -- exactly the
 // pre-COW path -- so the shared original is never touched.
@@ -243,8 +247,8 @@ func descendOffSpine(n chplan.Node) (chplan.Node, bool) {
 
 // subtreeHasZeroableSpine reports whether the subtree rooted at n (descending
 // only through Node children, never through Expr-embedded ScalarSubquery
-// interiors -- which unpinSpine never zeroed) contains a windowed node whose
-// grid unpinSpine would zero: any RangeLWR, or a matrix RangeWindow (Step > 0).
+// interiors -- which UnpinSpine never zeroed) contains a windowed node whose
+// grid UnpinSpine would zero: any RangeLWR, or a matrix RangeWindow (Step > 0).
 func subtreeHasZeroableSpine(n chplan.Node) bool {
 	found := false
 	chplan.Walk(n, func(node chplan.Node) bool {
@@ -262,7 +266,7 @@ func subtreeHasZeroableSpine(n chplan.Node) bool {
 }
 
 // zeroSpineInPlace zeroes the windowed-spine bounds of an OWNED node tree in
-// place. It is the original (pre-COW) unpinSpine walk, retained for the
+// place. It is the original (pre-COW) UnpinSpine walk, retained for the
 // GUARDRAIL B off-spine fallback where unpinSpineCOW has already deep-copied
 // the subtree and may safely mutate the copy.
 func zeroSpineInPlace(n chplan.Node) {

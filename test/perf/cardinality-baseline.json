@@ -4455,6 +4455,17 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "promql/info_signature_collapse_keeps_newest",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "promql/info_target_info_enrichment",
     "fan_factor": 1,
     "scan_rows": 2,
@@ -6171,6 +6182,17 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "promql/subquery_holt_winters_rate",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "promql/subquery_irate_nested",
     "fan_factor": 5,
     "scan_rows": 3,
@@ -6406,6 +6428,39 @@
     "fan_factor": 1.3333333333333333,
     "scan_rows": 6,
     "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_predict_linear_rate",
+    "fan_factor": 1,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_quantile_over_time_out_of_range_phi",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_quantile_over_time_rate",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": false,
@@ -7473,6 +7528,39 @@
     "fan_factor": 1,
     "scan_rows": 2,
     "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/edge_attr_dotted_duration_collision",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/edge_attr_dotted_name_collision",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/edge_attr_dotted_status_collision",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,

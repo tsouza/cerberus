@@ -355,10 +355,10 @@ func TestSliceLWR_SpineImmutability(t *testing.T) {
 }
 
 // nestedSubqueryWindowPlan builds a single-spine plan whose OFF-spine subtree
-// carries its own matrix RangeWindow that unpinSpine must zero. The spine root
+// carries its own matrix RangeWindow that UnpinSpine must zero. The spine root
 // is a pinned matrix RangeWindow; on the spine sits a TopK whose computed-K
 // subtree (KExpr) is a SECOND matrix RangeWindow over a leaf scan. TopK.KExpr
-// is a Node child (not the spine Input), so unpinSpine reaches it through the
+// is a Node child (not the spine Input), so UnpinSpine reaches it through the
 // off-spine descent — the GUARDRAIL B path: it must DESCEND and clone the path
 // to that inner window rather than blanket-share the KExpr subtree (sharing +
 // zeroing in place would corrupt the caller's plan).
@@ -395,7 +395,7 @@ func nestedSubqueryWindowPlan(start, end time.Time, step, rang time.Duration) ch
 }
 
 // TestSlice_NestedSubqueryDescendsAndClones is GUARDRAIL B: an off-spine
-// subtree that itself carries a windowed node unpinSpine must zero is handled
+// subtree that itself carries a windowed node UnpinSpine must zero is handled
 // by DESCENDING and cloning the path to that inner window, never by blanket-
 // sharing-and-mutating. It asserts:
 //

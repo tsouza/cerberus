@@ -138,13 +138,29 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 			return nil, err
 		}
 		c := *v
-		c.Start = start
-		c.End = end
+		if v.StepAlign {
+			// Epoch-aligned subquery inner (see RangeLWR.StepAlign): the
+			// unsliced query would have evaluated this grid at absolute-epoch
+			// (phase 0) anchors, independent of [start, end]. epochFloor's
+			// residue from phase 0 does not depend on what offset produced
+			// its input, so re-deriving the floor directly from this shard's
+			// own predicted bounds reproduces the SAME phase every shard
+			// would use — keeping every shard commensurate with the others
+			// and with the unsliced grid.
+			c.End = epochFloor(end, v.Step)
+			c.Start = epochFloor(start, v.Step).Add(v.Step)
+			if c.Start.After(c.End) {
+				c.Start = c.End
+			}
+		} else {
+			c.Start = start
+			c.End = end
+		}
 		// The membership window looks back Offset+Lookback from each anchor;
 		// widen the input spine by that much so every anchor finds its samples.
 		// Offset enters with its sign (a negative offset shifts the window
 		// forward), mirroring the solver-owned sign-aware scan floor.
-		input, err := reanchor(v.Input, start.Add(-v.Offset-v.Lookback), end)
+		input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Lookback), c.End)
 		if err != nil {
 			return nil, err
 		}
@@ -249,6 +265,23 @@ func checkPredictedGrid(r *RangeWindow, predStart, predEnd time.Time) error {
 		ErrReanchorGridMismatch,
 		r.Start, r.End, r.OuterRange,
 		predStart, predEnd, predEnd.Sub(predStart))
+}
+
+// epochFloor floors t to the nearest absolute-epoch (phase 0) multiple of
+// step at or before t. It is the chplan-local twin of
+// internal/promql.epochFloor — duplicated rather than shared because chplan
+// cannot import promql (promql imports chplan) — and must stay in exact
+// lock-step with it: both implement PromQL's subquery inner-sample-grid
+// floor, and a StepAlign RangeLWR's phase is only reproducible across shards
+// if every caller floors identically.
+func epochFloor(t time.Time, step time.Duration) time.Time {
+	stepNS := step.Nanoseconds()
+	ns := t.UTC().UnixNano()
+	floor := ns / stepNS
+	if ns%stepNS != 0 && ns < 0 {
+		floor--
+	}
+	return time.Unix(0, floor*stepNS).UTC()
 }
 
 // checkPredictedGridLWR is checkPredictedGrid for a RangeLWR. The LWR carries

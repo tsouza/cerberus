@@ -103,6 +103,12 @@ const (
 	rootSpanDurationNs = int64(150 * time.Millisecond)
 )
 
+// attrNameCollisionValue is the root span's "name" span-attribute value —
+// deliberately colliding with the `name` intrinsic identifier so the
+// corpus can pin the dotted-vs-bare distinction (#1598): `.name` must read
+// this attribute while bare `name` must keep reading SpanName.
+const attrNameCollisionValue = "attr-name-collision-sentinel"
+
 // seederScopeName / seederScopeVersion identify the OTLP
 // InstrumentationScope every pushed span rides under. The CH-side seed
 // mirrors them into the ScopeName / ScopeVersion columns so both
@@ -312,6 +318,12 @@ func newTrace(start time.Time, svc string, svcIdx, traceIdx int) *fixtureTrace {
 			"http.method": "GET",
 			"http.target": fmt.Sprintf("/api/%s/%d", svc, traceIdx),
 			"trace.index": fmt.Sprintf("%d", traceIdx),
+			// "name" collides with the `name` intrinsic on purpose: it
+			// pins the dotted-vs-bare distinction (#1598) — `.name`
+			// must read this span attribute, while bare `name` must
+			// keep reading the SpanName ("GET /api/<svc>/<idx>")
+			// intrinsic column instead.
+			"name": attrNameCollisionValue,
 		}),
 		Status: &otlptrace.Status{
 			Code: otlptrace.Status_STATUS_CODE_OK,

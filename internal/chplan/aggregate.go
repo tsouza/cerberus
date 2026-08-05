@@ -48,11 +48,24 @@ func (a AggFunc) Equal(other AggFunc) bool {
 // zeros for aggregate-only queries. PromQL / LogQL set it; TraceQL
 // (whose `| count() = 0` idiom requires a 0 row for empty input) does
 // not. Has no effect when GroupBy is non-empty.
+//
+// Having is an optional post-aggregation predicate rendered as a real SQL
+// `HAVING <Having>` clause. Nil means "no HAVING". This is deliberately
+// NOT the same shape as a runtime guard riding as an extra unreferenced
+// AggFunc in the SELECT list: ClickHouse's column-pruning analyzer drops
+// a SELECT-list expression nothing downstream reads — including a
+// `throwIf(...)` planted purely for its side effect — so a guard that
+// needs to fire unconditionally belongs in Having, where it gates row
+// production and cannot be pruned as dead code. Has no effect when
+// GroupBy is empty and DropEmptyOnNoGroup is set (that path renders a
+// different two-layer shape — see emitAggregateNoGroup); Having and
+// DropEmptyOnNoGroup are not combined by any caller today.
 type Aggregate struct {
 	Input              Node
 	GroupBy            []Expr
 	GroupByAliases     []string
 	AggFuncs           []AggFunc
+	Having             Expr
 	DropEmptyOnNoGroup bool
 }
 
@@ -80,6 +93,12 @@ func (a *Aggregate) Equal(other Node) bool {
 		if !a.AggFuncs[i].Equal(o.AggFuncs[i]) {
 			return false
 		}
+	}
+	if (a.Having == nil) != (o.Having == nil) {
+		return false
+	}
+	if a.Having != nil && !a.Having.Equal(o.Having) {
+		return false
 	}
 	return a.Input.Equal(o.Input)
 }

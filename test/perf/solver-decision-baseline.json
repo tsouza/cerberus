@@ -2240,6 +2240,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "info_signature_collapse_keeps_newest",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "info_target_info_enrichment",
     "routed": false,
     "k": 0,
@@ -3771,9 +3781,9 @@
   },
   {
     "query": "subquery_agg_of_binary",
-    "routed": false,
-    "k": 0,
-    "reason": "incommensurate",
+    "routed": true,
+    "k": 4,
+    "reason": "routed",
     "n_anchors": 241,
     "fanout": 20,
     "cumulative_d": "15m0s",
@@ -3841,6 +3851,16 @@
   },
   {
     "query": "subquery_count_over_time_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D",
+    "n_anchors": 241,
+    "fanout": 240,
+    "cumulative_d": "1h5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_holt_winters_rate",
     "routed": false,
     "k": 0,
     "reason": "high-D",
@@ -3933,7 +3953,7 @@
     "query": "subquery_over_binexpr",
     "routed": false,
     "k": 0,
-    "reason": "incommensurate",
+    "reason": "below-threshold",
     "n_anchors": 241,
     "fanout": 10,
     "cumulative_d": "6m0s",
@@ -4070,6 +4090,36 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "subquery_predict_linear_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D",
+    "n_anchors": 241,
+    "fanout": 240,
+    "cumulative_d": "1h5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_quantile_over_time_out_of_range_phi",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D",
+    "n_anchors": 241,
+    "fanout": 240,
+    "cumulative_d": "1h5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_quantile_over_time_rate",
+    "routed": false,
+    "k": 0,
+    "reason": "high-D",
+    "n_anchors": 241,
+    "fanout": 240,
+    "cumulative_d": "1h5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "subquery_quantile_scalar_phi",
     "routed": true,
     "k": 6,
@@ -4131,9 +4181,9 @@
   },
   {
     "query": "subquery_unary_minus",
-    "routed": false,
-    "k": 0,
-    "reason": "incommensurate",
+    "routed": true,
+    "k": 6,
+    "reason": "routed",
     "n_anchors": 241,
     "fanout": 20,
     "cumulative_d": "10m0s",

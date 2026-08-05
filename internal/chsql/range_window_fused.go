@@ -5,7 +5,7 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // This file implements the memory-bounded FUSED emitter for instant PromQL
 // subqueries of the shape `<reducer>(rate|increase|delta(m[range])[outer:step])`
 // where <reducer> is an order-independent *_over_time aggregate
-// (min/max/count/present).
+// (min/max/count).
 //
 // The materialized path (emitWindowedArrayExtrapolatedMatrix +
 // emitRangeWindowOverTimeDirect) builds a 5-layer stack whose
@@ -42,6 +42,13 @@ type fusedReduce func(perAnchorVals Frag) Frag
 // materialized path. Only the order-independent reducers that route through
 // emitRangeWindowOverTimeDirect are fusible here; sum/avg/quantile/stddev/…
 // reach the array path (emitWindowedArray) and never hit this dispatch.
+//
+// present_over_time is deliberately absent: it is NOT a member of
+// rangeVectorFn (internal/promql/subquery.go), the set that gates whether a
+// PromQL function accepts a subquery argument at all, so no valid query can
+// build the nested-RangeWindow shape tryEmitFusedInstantSubquery dispatches
+// on for it. Adding a case here without also widening rangeVectorFn would be
+// dead code with zero fixture or chDB coverage backing its correctness (#1706).
 func fusedOuterReducer(fn string) (fusedReduce, bool) {
 	switch fn {
 	case "max_over_time":
@@ -55,12 +62,6 @@ func fusedOuterReducer(fn string) (fusedReduce, bool) {
 		return func(vals Frag) Frag {
 			return Call("toFloat64", Call("arrayReduce", InlineLit("count"), vals))
 		}, true
-	case "present_over_time":
-		// The outer WHERE length(qualified_anchors) > 0 guarantees at least
-		// one qualifying anchor, so present is the constant 1 — matching the
-		// materialized direct path's toFloat64(1). vals is intentionally
-		// unused (and so never rendered).
-		return func(Frag) Frag { return Call("toFloat64", InlineLit(int64(1))) }, true
 	}
 	return nil, false
 }
