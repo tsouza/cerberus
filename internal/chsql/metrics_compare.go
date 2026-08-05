@@ -56,9 +56,6 @@ import (
 const (
 	compareJoinLeftAlias  = "s"
 	compareJoinRightAlias = "r"
-	// rootLookupTraceIDTsEndPadSeconds compensates the trace_id_ts lookup's
-	// DateTime End value flooring a DateTime64(9) span timestamp.
-	rootLookupTraceIDTsEndPadSeconds = 1
 )
 
 // compareScanBound carries the (Start-range, End] Timestamp window the
@@ -352,41 +349,29 @@ func tsBoundExprs(tsCol string, startNano, endNano int64) (lo, hi chplan.Expr) {
 // configured — an envelope over an empty table or column identifier would be a
 // broken query, not a weaker bound. seed must be non-nil; the caller only
 // reaches here once it has one.
+//
+// The bound-construction itself is chplan.TraceIDTsBounds (#1438) — this
+// wrapper supplies the cohort predicate (an IN-subquery over seed, since a
+// MetricsCompare root lookup covers however many trace ids seed selects,
+// unlike the single-trace Eq the Tempo by-id handler uses).
 func rootLookupTraceIDTsBounds(m *chplan.MetricsCompare, seed chplan.Node, timestampColumn string) (lo, hi chplan.Expr) {
 	if m.RootLookupTraceIDTsTable == "" ||
 		m.RootLookupTraceIDTsStartColumn == "" || m.RootLookupTraceIDTsEndColumn == "" {
 		return nil, nil
 	}
-	scalar := func(agg, column string) chplan.Expr {
-		return &chplan.ScalarSubquery{Input: &chplan.Aggregate{
-			Input: &chplan.Filter{
-				Input: &chplan.Scan{Table: m.RootLookupTraceIDTsTable},
-				Predicate: &chplan.InSubquery{
-					Left:     &chplan.ColumnRef{Name: m.TraceIDColumn},
-					Subquery: chplan.CloneNode(seed),
-				},
-			},
-			AggFuncs: []chplan.AggFunc{{
-				Name:  agg,
-				Args:  []chplan.Expr{&chplan.ColumnRef{Name: column}},
-				Alias: column,
-			}},
-		}}
+	cohortPred := func() chplan.Expr {
+		return &chplan.InSubquery{
+			Left:     &chplan.ColumnRef{Name: m.TraceIDColumn},
+			Subquery: chplan.CloneNode(seed),
+		}
 	}
-	lo = &chplan.Binary{
-		Op:    chplan.OpGe,
-		Left:  &chplan.ColumnRef{Name: timestampColumn},
-		Right: scalar("min", m.RootLookupTraceIDTsStartColumn),
-	}
-	hi = &chplan.Binary{
-		Op:   chplan.OpLe,
-		Left: &chplan.ColumnRef{Name: timestampColumn},
-		Right: &chplan.FuncCall{Name: "addSeconds", Args: []chplan.Expr{
-			scalar("max", m.RootLookupTraceIDTsEndColumn),
-			&chplan.LitInt{V: rootLookupTraceIDTsEndPadSeconds},
-		}},
-	}
-	return lo, hi
+	return chplan.TraceIDTsBounds(
+		m.RootLookupTraceIDTsTable,
+		m.RootLookupTraceIDTsStartColumn,
+		m.RootLookupTraceIDTsEndColumn,
+		timestampColumn,
+		cohortPred,
+	)
 }
 
 // pushPredicateToSpansScanFilter walks n in place looking for the Filter
