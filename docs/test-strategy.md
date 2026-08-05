@@ -340,7 +340,8 @@ gating on every PR through `check`:
   diffs cerberus's KNOWN 422 code-sites against the reference's error class
   for the same probe, so a rejection whose *message / status* drifts from
   the reference is caught even when the accept/reject verdict agrees.
-  `catalogue.json` + `catalogue_test.go` ratchet it the same way.
+  The `catalogue/` shard directory (one JSON shard per lowering source file)
+  - `catalogue_test.go` ratchet it the same way.
 
   Two harness conditions make that diff mean something, and both are pinned
   by `test/regression/compat_rejection_parity_reference_test.go`: the

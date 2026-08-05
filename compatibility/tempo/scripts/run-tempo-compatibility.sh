@@ -208,7 +208,7 @@ set -e
 echo "==> running rejection-parity driver (traceql)"
 (cd "$REPO_ROOT" && go run ./compatibility/cmd/rejection-parity \
     -head traceql \
-    -catalogue test/rejection-parity/catalogue.json \
+    -catalogue test/rejection-parity/catalogue \
     -ref http://localhost:23200 \
     -cerberus http://localhost:29092 \
     -report "$REPORT_DIR/rejection-parity.json")

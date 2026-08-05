@@ -145,7 +145,10 @@ test/e2e/grafana/ql-inventory/traceql-feature-inventory.json  -merge
 # CERBERUS_UPDATE_INVENTORY=1 go test ./test/rejection-parity/
 # (regen preserves the curated fields of surviving sites; new sites arrive
 #  unclassified, so the diff is the review)
-test/rejection-parity/catalogue.json         -merge
+# The catalogue is one shard per lowering SOURCE FILE, so two branches fixing
+# guards in different files write different shards and never blend; `-merge`
+# still covers the residual case of two branches touching the same shard.
+test/rejection-parity/catalogue/*.json       -merge
 # CERBERUS_UPDATE_INVENTORY=1 go test ./test/surface-parity/
 test/surface-parity/inventory.json           -merge
 # Regenerate: REGENERATE=1 node .github/scripts/promql-surface-gate.mjs

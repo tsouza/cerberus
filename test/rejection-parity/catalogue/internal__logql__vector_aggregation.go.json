@@ -1,0 +1,32 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#3cb2166f",
+      "message": "logql: aggregation operation %q is unsupported",
+      "class": "internal",
+      "rationale": "every vector-aggregation op the LogQL grammar accepts is handled: sum/avg/min/max/count/stddev/stdvar build an AggFunc here, and topk/bottomk/sort/sort_desc/approx_topk route to lowerTopK/lowerSort before this switch. The only remaining op constant (__count_min_sketch__) is a shard-mapper internal the parser never yields from a wire query, so the default arm is unreachable."
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#4f64fcaa",
+      "message": "logql: vector-aggregation inner is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#9210acc4",
+      "message": "logql: vector-aggregation has nil inner",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a vector aggregation with a nil inner"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:sortableShapedInner#4f64fcaa",
+      "message": "logql: vector-aggregation inner is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr (mirror of lowerVectorAggregation#4f64fcaa)"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 // rejection-parity-divergence-liveness.mjs — the divergence-tracking-issue
 // liveness gate.
 //
-// test/rejection-parity/catalogue.json's `class: "divergence"` entries make a
+// The `class: "divergence"` entries in test/rejection-parity/catalogue/ make a
 // ratchet claim (see test/rejection-parity/doc.go): cerberus deliberately
 // rejects a query the reference backend answers, and an OPEN GitHub issue in
 // this repository tracks closing the gap. The Go meta-tests under
@@ -31,8 +31,8 @@
 //   GITHUB_REPOSITORY  REQUIRED. `owner/repo` (runner-provided).
 //   GITHUB_TOKEN       REQUIRED. Needs `issues: read`.
 //   GITHUB_API_URL     API base (runner-provided; default https://api.github.com).
-//   CATALOGUE_PATH     Path to the catalogue JSON artifact (default
-//                      test/rejection-parity/catalogue.json).
+//   CATALOGUE_DIR      Directory holding the catalogue's per-source-file JSON
+//                      shards (default test/rejection-parity/catalogue).
 //
 // Exit codes: 0 = every divergence entry's tracking issue is open and is an
 // issue (or there are no divergence entries at all), 1 = a missing / closed /
@@ -41,7 +41,8 @@
 // reused unchanged here for the same 404-means-two-things reason its own
 // header documents).
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -50,7 +51,47 @@ import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
 
 const HTTP_NOT_FOUND = 404;
 
+// SHARD_EXT is the suffix of every catalogue shard; the directory holds
+// nothing else.
+const SHARD_EXT = '.json';
+
 // --- pure halves --------------------------------------------------------
+
+// mergeShards — the catalogue is stored as one shard per lowering SOURCE FILE
+// (test/rejection-parity/catalogue/internal__promql__lower.go.json and
+// friends), so this gate reads the directory and concatenates. Order does not
+// matter here: every entry is examined, and the entries carry their own site
+// key. A shard with no `entries` array throws rather than contributing
+// nothing — an unreadable shard must never be indistinguishable from a
+// catalogue with no divergence entries, which would pass silently.
+export function mergeShards(shards) {
+  const entries = [];
+  for (const { path: shardPath, doc } of shards) {
+    const shardEntries = doc && Array.isArray(doc.entries) ? doc.entries : null;
+    if (shardEntries === null) {
+      throw new Error(`${shardPath} has no "entries" array — malformed or wrong file`);
+    }
+    entries.push(...shardEntries);
+  }
+  return { entries };
+}
+
+// readCatalogue — mergeShards over a real directory. An empty (or shardless)
+// directory is an error for the same reason a malformed shard is: this gate
+// reports "no divergence entries" as a PASS, so it must never reach that
+// conclusion by having read nothing.
+export function readCatalogue(dir, { readDir = readdirSync, readFile = (p) => readFileSync(p, 'utf8') } = {}) {
+  const names = readDir(dir).filter((n) => n.endsWith(SHARD_EXT)).sort();
+  if (names.length === 0) {
+    throw new Error(`${dir} holds no ${SHARD_EXT} shard — the catalogue is a directory of per-source-file shards`);
+  }
+  return mergeShards(
+    names.map((name) => {
+      const shardPath = path.join(dir, name);
+      return { path: shardPath, doc: JSON.parse(readFile(shardPath)) };
+    }),
+  );
+}
 
 // divergenceEntries — every class="divergence" entry in the catalogue,
 // unchanged, in file order. Any other class is out of scope for this script;
@@ -160,11 +201,9 @@ async function main() {
   const repo = requireEnv('GITHUB_REPOSITORY', 'the gate cannot resolve a cited issue without it');
   const token = requireEnv('GITHUB_TOKEN', 'resolving a cited issue needs issues:read');
   const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
-  const cataloguePath = process.env.CATALOGUE_PATH || 'test/rejection-parity/catalogue.json';
+  const catalogueDir = process.env.CATALOGUE_DIR || 'test/rejection-parity/catalogue';
 
-  const raw = readFileSync(cataloguePath, 'utf8');
-  const catalogue = JSON.parse(raw);
-  const entries = divergenceEntries(catalogue);
+  const entries = divergenceEntries(readCatalogue(catalogueDir));
 
   const violations = [];
   const structurallyValid = [];

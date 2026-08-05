@@ -53,7 +53,8 @@ func LoadDivergenceCeiling(path string) (*DivergenceCeiling, error) {
 }
 
 // MarshalDivergenceCeiling renders the canonical on-disk JSON form (2-space
-// indent + trailing newline), mirroring MarshalCatalogue.
+// indent + trailing newline), mirroring ShardCatalogue's per-shard
+// rendering.
 func MarshalDivergenceCeiling(c *DivergenceCeiling) ([]byte, error) {
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

@@ -247,13 +247,20 @@ differentially, so a query cerberus rejects but the reference accepts
 (the `kind != nil` class, which reference Tempo answers) surfaces as a
 real bug rather than a silent wrong-rejection:
 
-1. **Catalogue** — `test/rejection-parity/catalogue.json` is the
+1. **Catalogue** — `test/rejection-parity/catalogue/` is the
    machine-readable inventory of every prefixed error-construction
    site in the three lowerings, derived by a go/ast scan
    (`test/rejection-parity`). Every site is classified either
    `rejection` (reachable from a parseable query; carries a minimal
    trigger query) or `internal` (parser-enforced shape, invariant, or
-   `%w` wrapper; carries a rationale).
+   `%w` wrapper; carries a rationale). It is stored as one JSON shard
+   per lowering SOURCE FILE —
+   `catalogue/internal__promql__subquery.go.json` holds exactly the
+   entries whose site keys name `internal/promql/subquery.go` — so two
+   branches fixing guards in different lowering files write different
+   files and never blend. `LoadCatalogue` merges the shards back into
+   one site-sorted value, so every consumer sees the same flat
+   catalogue it always did.
 2. **Meta-tests** — `go test ./test/rejection-parity/` pins the
    ratchet: the scanned-site set must equal the catalogue
    (regenerable via `CERBERUS_UPDATE_INVENTORY=1`, mirroring

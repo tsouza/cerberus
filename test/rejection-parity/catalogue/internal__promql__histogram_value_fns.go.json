@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:histogramValueExpr#1a671757",
+      "message": "promql: %s is not a native-histogram value function",
+      "class": "internal",
+      "rationale": "Dispatch invariant: lowerCall routes exactly the six native-histogram value-function names here, so the default arm cannot fire from a parseable query."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#5337b47e",
+      "message": "promql: histogram_fraction expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces builtin arity for histogram_fraction at parse time; a wrong-arity call never reaches lowering."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces builtin arity for the one-argument histogram value functions at parse time; a wrong-arity call never reaches lowering."
+    }
+  ]
+}

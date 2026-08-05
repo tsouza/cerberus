@@ -1,0 +1,257 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:evalIntCmp#e6d8e3f6",
+      "message": "traceql: operator %s is unsupported on nestedSetParent",
+      "class": "internal",
+      "rationale": "non-comparison operators never reach the nested-set evaluation: regex / arithmetic shapes fail the integer-literal check first"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
+      "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
+      "class": "rejection",
+      "trigger_query": "{ nestedSetParent }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerAttributeExpr#dbf30854",
+      "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
+      "class": "internal",
+      "rationale": "Defensive: reached only when the configured Traces schema has no Events/Links column for the bare event-/link-scoped reference; the default OTel-CH schema materialises both, so no parseable query against the default schema hits it."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerChainedSecondStage#9a3a2523",
+      "message": "traceql: chained second-stage element/separator length mismatch (%d vs %d)",
+      "class": "internal",
+      "rationale": "internal invariant: upstream's ChainedSecondStage keeps Elements and Separators in lock-step"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerChainedSecondStage#add566ca",
+      "message": "traceql: chained second-stage has no elements",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a chained second stage with zero elements"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerFieldExpr#3f3859bf",
+      "message": "traceql: field expression %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every field-expression type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerFollowingElement#2dc247dc",
+      "message": "traceql: pipeline tail element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline-tail element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerInOperation#b76969a7",
+      "message": "traceql: IN comparison RHS must be a literal array, got %T",
+      "class": "internal",
+      "rationale": "Defensive: the Tempo parser only folds `attr = a || attr = b` into an OpIn/OpNotIn BinaryOperation whose RHS is an array Static, so a non-literal RHS is unreachable from a parseable query."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerInOperation#e5851186",
+      "message": "traceql: IN comparison LHS must be an attribute reference, got %T",
+      "class": "internal",
+      "rationale": "Defensive: the Tempo parser only emits an OpIn/OpNotIn BinaryOperation with an attribute LHS, so a non-attribute LHS is unreachable from a parseable query."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#07654c50",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no events column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures an events column; reachable only under a schema override that drops it"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#284df75f",
+      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
+      "class": "internal",
+      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#5c445f2a",
+      "message": "traceql: %s = nil is not valid because intrinsics cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ kind = nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#e2d1d3a8",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no links column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures a links column; reachable only under a schema override that drops it"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsFilter#20c8f8b5",
+      "message": "traceql: metrics filter operator %s is not a supported threshold comparison",
+      "class": "internal",
+      "rationale": "the grammar restricts metrics-filter operators to the six threshold comparisons, all of which pass isThresholdBinaryOp"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsFilter#b2411d4d",
+      "message": "traceql: metrics filter operator %s: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the grammar restricts metrics-filter operators to the six threshold comparisons, all mapped"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsSecondStage#86ae75c3",
+      "message": "traceql: metrics second-stage element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every metrics second-stage element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#dc45d078",
+      "message": "traceql: intrinsic %s is not a nested-set position",
+      "class": "internal",
+      "rationale": "Defensive: reached only via a nested-set intrinsic attribute, for which nestedSetColumn always resolves, so the not-a-position branch is unreachable."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#dbf30854",
+      "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures attribute columns for every scope this branch checks; reachable only under a schema override that drops one"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#fca86ae4",
+      "message": "traceql: %s = nil is not valid because resource.service.name cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name = nil }"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerPipeline#3bb91b26",
+      "message": "traceql: empty pipeline",
+      "class": "internal",
+      "rationale": "Defensive: lowerRoot rejects an empty top-level pipeline before this helper runs, and a parsed sub-pipeline operand always carries at least one element, so the empty-pipeline branch is unreachable."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerPipelineElement#3ea8ac7a",
+      "message": "traceql: pipeline element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerRoot#3bb91b26",
+      "message": "traceql: empty pipeline",
+      "class": "internal",
+      "rationale": "internal invariant: tempo's Parse never returns an empty pipeline without an error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerRoot#e52d8be5",
+      "message": "traceql: nil RootExpr",
+      "class": "internal",
+      "rationale": "internal invariant: tempo's Parse never returns a nil RootExpr without an error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarExpr#187e881e",
+      "message": "traceql: scalar expression %T is unsupported",
+      "class": "rejection",
+      "trigger_query": "{} | count() \u003e 1 + 1"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarFilter#37e7c55d",
+      "message": "traceql: scalar-filter RHS must be a literal, got %T",
+      "class": "rejection",
+      "trigger_query": "{} | count() \u003e count()"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarFilter#ead2eeaf",
+      "message": "traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T",
+      "class": "rejection",
+      "trigger_query": "{} | 1 \u003e 2"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerSpansetExpr#e8ccb6b4",
+      "message": "traceql: spanset expression %T is unsupported",
+      "class": "internal",
+      "rationale": "Defensive: every SpansetExpression the parser can place as a set-operation operand (SpansetFilter, SpansetOperation, Pipeline) is handled above, so the default branch is unreachable from a parseable query."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#218e2332",
+      "message": "traceql: static status literal has no Status() value",
+      "class": "internal",
+      "rationale": "internal invariant: a TypeStatus static always carries a Status value"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#25110d71",
+      "message": "traceql: static literal type %s is unsupported",
+      "class": "internal",
+      "rationale": "every static type the pinned grammar produces in lowerable positions (int / float / string / bool / duration / status / kind) is handled; array statics do not parse"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#567e5794",
+      "message": "traceql: static kind literal has no Kind() value",
+      "class": "internal",
+      "rationale": "internal invariant: a TypeKind static always carries a Kind value"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStaticArray#d179f2fa",
+      "message": "traceql: IN comparison RHS literal type %s is not an array",
+      "class": "internal",
+      "rationale": "Defensive: only invoked for an OpIn/OpNotIn RHS, which the parser guarantees is an array-typed Static, so the non-array branch is unreachable."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerTopKBottomK#78efd9fa",
+      "message": "traceql: %s(%d): limit must be \u003e 0",
+      "class": "rejection",
+      "trigger_query": "{} | rate() by (span.name) | topk(0)",
+      "endpoint": "traceql_metrics"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerUnaryOperation#5f9f3466",
+      "message": "traceql: unary operator %s is unsupported",
+      "class": "internal",
+      "rationale": "Defensive: TraceQL admits only OpExists / OpNotExists / OpNot unary operators, all handled above, so the unsupported-operator branch is unreachable from a parseable query."
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapBinaryOp#786cde25",
+      "message": "traceql: operator %s is unsupported",
+      "class": "internal",
+      "rationale": "every operator the pinned grammar yields in binary positions is mapped; unary operators route through lowerUnaryOperation"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapSecondStageOp#76dac09c",
+      "message": "traceql: second-stage op %s is not supported",
+      "class": "internal",
+      "rationale": "the grammar's metrics second stages are exactly topk / bottomk, both mapped"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapStructuralOp#753a4362",
+      "message": "traceql: spanset op %s is not a structural relation",
+      "class": "internal",
+      "rationale": "callers pre-filter to the structural operator set before consulting this mapper"
+    }
+  ]
+}

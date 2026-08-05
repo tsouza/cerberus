@@ -276,7 +276,7 @@ fi
 echo "==> running rejection-parity driver (promql)"
 (cd "$ROOT_DIR/../.." && go run ./compatibility/cmd/rejection-parity \
     -head promql \
-    -catalogue test/rejection-parity/catalogue.json \
+    -catalogue test/rejection-parity/catalogue \
     -ref http://localhost:29090 \
     -cerberus http://localhost:29091 \
     -eval-time "$END_TIME" \

@@ -482,8 +482,9 @@ update-golden: update-solver-decision-baseline migration-golden update-parity-le
 
 # Regenerate the parser-surface parity ledgers: test/surface-parity/inventory.json
 # (every PromQL / LogQL / TraceQL symbol the three parsers expose, with the
-# in-process cerberus verdict for each) and test/rejection-parity/catalogue.json
-# (every rejection site in internal/{promql,logql,traceql}). Both re-probe the
+# in-process cerberus verdict for each) and test/rejection-parity/catalogue/
+# (every rejection site in internal/{promql,logql,traceql}, one JSON shard per
+# lowering source file). Both re-probe the
 # parsers directly, so they drift on a PARSER-SURFACE change rather than a
 # plan-shape one — a different trigger from the TXTAR goldens, the same failure
 # shape if nobody regenerates them (#1595).

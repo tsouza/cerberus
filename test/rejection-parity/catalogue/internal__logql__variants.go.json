@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/variants.go:lowerMultiVariant#9a618675",
+      "message": "logql: variants(...) has no variant arms",
+      "class": "internal",
+      "rationale": "the LogQL grammar (metricExprs) requires at least one variant arm inside `variants(...)`; a zero-arm MultiVariantExpr is unreachable from the pinned parser"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/variants.go:lowerMultiVariant#b3f11e2a",
+      "message": "logql: variant %d is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "every SampleExpr the parser stores in MultiVariantExpr.Variants() also satisfies syntax.Expr; the type assertion is a defensive guard the pinned parser never trips"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/variants.go:lowerMultiVariant#c6a4748a",
+      "message": "logql: variant %d: %w",
+      "class": "internal",
+      "rationale": "wraps the per-arm lowering error of an inner SampleExpr — the underlying failure is catalogued at its own lowering site, so this wrapper adds no new wire-reachable rejection"
+    }
+  ]
+}

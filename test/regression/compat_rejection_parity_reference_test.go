@@ -35,9 +35,9 @@ import (
 //
 // The three tests below pin one condition each.
 const (
-	compatComposePath      = "../../compatibility/prometheus/docker-compose.yml"
-	compatDriverScript     = "../../compatibility/prometheus/scripts/run-prometheus-compatibility.sh"
-	rejectionCataloguePath = "../../test/rejection-parity/catalogue.json"
+	compatComposePath     = "../../compatibility/prometheus/docker-compose.yml"
+	compatDriverScript    = "../../compatibility/prometheus/scripts/run-prometheus-compatibility.sh"
+	rejectionCatalogueDir = "../../test/rejection-parity/catalogue"
 
 	// promExperimentalFunctionsFlag is the reference-Prometheus flag that
 	// admits the experimental PromQL surface (limitk, limit_ratio,
@@ -155,9 +155,9 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 		t.Fatal("no metric families extracted from the compat seeder; this test would compare nothing")
 	}
 
-	cat, err := rejectionparity.LoadCatalogue(rejectionCataloguePath)
+	cat, err := rejectionparity.LoadCatalogue(rejectionCatalogueDir)
 	if err != nil {
-		t.Fatalf("load %s: %v", rejectionCataloguePath, err)
+		t.Fatalf("load %s: %v", rejectionCatalogueDir, err)
 	}
 
 	m := schema.DefaultOTelMetrics()

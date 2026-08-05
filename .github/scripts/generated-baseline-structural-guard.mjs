@@ -100,7 +100,7 @@
 //   1  a structural violation, or an unreadable/unparseable file.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
 import { error, log, notice } from './lib/gh.mjs';
@@ -185,6 +185,50 @@ export function checkSortedKeys({ label, obj }) {
   return problems;
 }
 
+// SHARD_EXT is the suffix of a shard file inside a sharded target's directory.
+const SHARD_EXT = '.json';
+
+// runShardedTarget is the directory variant: the target names a directory of
+// per-source-file shards (test/rejection-parity/catalogue/) rather than one
+// file. Each shard gets the same within-file check as a whole-file target,
+// PLUS a cross-shard uniqueness check on the key — sharding moves the #1422
+// hazard, it does not remove it, and a key appearing in two shards is the one
+// corruption a per-file check cannot see. Sorted order is asserted only WITHIN
+// a shard: the shards partition the key space by source file, and their names
+// (path separators folded to `__`) do not sort in the same order as the keys
+// they hold.
+function runShardedTarget(t, { readFile, readDir }) {
+  const names = readDir(t.path).filter((n) => n.endsWith(SHARD_EXT)).sort();
+  if (names.length === 0) {
+    return [`${t.path}: holds no ${SHARD_EXT} shard — a sharded target that reads nothing checks nothing`];
+  }
+
+  const problems = [];
+  const owner = new Map();
+  for (const name of names) {
+    const shardPath = `${t.path}/${name}`;
+    const items = get(JSON.parse(readFile(shardPath)), t.arrayPath);
+    const label = `${shardPath}#${t.arrayPath.join('.') || '(top)'}`;
+    if (!Array.isArray(items)) {
+      problems.push(`${label}: expected an array, got ${typeof items}`);
+      continue;
+    }
+    problems.push(...checkArray({ label, items, key: t.key, uniformShape: t.uniformShape }));
+    for (const item of items) {
+      const value = item?.[t.key];
+      if (owner.has(value)) {
+        problems.push(
+          `${t.path}: ${JSON.stringify(t.key)} ${JSON.stringify(value)} appears in both ` +
+            `${owner.get(value)} and ${shardPath} — one entry has been copied across shards rather than moved`,
+        );
+      } else {
+        owner.set(value, shardPath);
+      }
+    }
+  }
+  return problems;
+}
+
 // TARGETS — every entry's shape was checked by hand against the committed
 // file before being added here (see the file doc above for the ones left
 // out and why). `arrayPath` / `dictPath` are lists of keys to descend from
@@ -205,8 +249,8 @@ export const TARGETS = [
     uniformShape: true,
   },
   {
-    path: 'test/rejection-parity/catalogue.json',
-    kind: 'array',
+    path: 'test/rejection-parity/catalogue',
+    kind: 'array-shards',
     arrayPath: ['entries'],
     key: 'site',
     // Entries carry optional fields (e.g. `trigger_query`, `endpoint`) —
@@ -267,7 +311,10 @@ export const TARGETS = [
   },
 ];
 
-export function runTarget(t, { readFile = (p) => readFileSync(p, 'utf8') } = {}) {
+export function runTarget(t, { readFile = (p) => readFileSync(p, 'utf8'), readDir = readdirSync } = {}) {
+  if (t.kind === 'array-shards') {
+    return runShardedTarget(t, { readFile, readDir });
+  }
   if (t.kind === 'lines') {
     const text = readFile(t.path);
     return checkSortedLines({ label: t.path, text });
@@ -344,7 +391,7 @@ function selfTest() {
   assert.equal(nonUniform.length, 1);
   assert.match(nonUniform[0], /distinct field sets/);
 
-  // Non-uniform shape, NOT asserted -> tolerated (catalogue.json's optional fields).
+  // Non-uniform shape, NOT asserted -> tolerated (the catalogue's optional fields).
   assert.deepEqual(
     checkArray({ label: 't', items: [{ id: 'a', x: 1 }, { id: 'b' }], key: 'id', uniformShape: false }),
     [],
@@ -391,6 +438,40 @@ function selfTest() {
     runTarget({ path: 'd.json', kind: 'dict-keys', dictPath: ['verdicts'] }, { readFile }).length,
     1,
   );
+
+  // 'array-shards': clean across shards, then the two failure modes a sharded
+  // artefact adds — a key duplicated across shards (which no per-file check
+  // can see) and a directory that holds nothing at all.
+  const shards = {
+    'cat/a.go.json': JSON.stringify({ entries: [{ site: 'a.go:f#1' }, { site: 'a.go:g#2' }] }),
+    'cat/b.go.json': JSON.stringify({ entries: [{ site: 'b.go:h#3' }] }),
+  };
+  const shardRead = (p) => {
+    if (!(p in shards)) throw new Error(`unexpected read: ${p}`);
+    return shards[p];
+  };
+  const shardTarget = {
+    path: 'cat',
+    kind: 'array-shards',
+    arrayPath: ['entries'],
+    key: 'site',
+    uniformShape: true,
+  };
+  assert.deepEqual(
+    runTarget(shardTarget, { readFile: shardRead, readDir: () => ['a.go.json', 'b.go.json'] }),
+    [],
+  );
+
+  const crossShardDup = runTarget(shardTarget, {
+    readFile: (p) => (p === 'cat/b.go.json' ? JSON.stringify({ entries: [{ site: 'a.go:f#1' }] }) : shardRead(p)),
+    readDir: () => ['a.go.json', 'b.go.json'],
+  });
+  assert.equal(crossShardDup.length, 1);
+  assert.match(crossShardDup[0], /appears in both/);
+
+  const noShards = runTarget(shardTarget, { readFile: shardRead, readDir: () => [] });
+  assert.equal(noShards.length, 1);
+  assert.match(noShards[0], /holds no \.json shard/);
 
   // Every configured TARGET is currently clean against the real committed
   // files in this tree — the guard itself must not be a standing failure.

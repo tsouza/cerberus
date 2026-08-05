@@ -1,0 +1,32 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#dd15dfed",
+      "message": "promql: clamp expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity for clamp (three arguments)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#e15d3cf4",
+      "message": "promql: unknown clamp function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only clamp / clamp_min / clamp_max here"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerClamp#f69a3fbc",
+      "message": "promql: %s expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity for clamp_min / clamp_max (two arguments)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerInstantFn#ce14c98d",
+      "message": "promql: %s with %d arguments is unsupported (instant math fns are unary)",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the unary instant math functions are pinned at one argument in parser.Functions"
+    }
+  ]
+}

@@ -186,7 +186,7 @@ set -e
 echo "==> running rejection-parity driver (logql)"
 (cd "$REPO_ROOT" && go run ./compatibility/cmd/rejection-parity \
     -head logql \
-    -catalogue test/rejection-parity/catalogue.json \
+    -catalogue test/rejection-parity/catalogue \
     -ref http://localhost:23100 \
     -cerberus http://localhost:29092 \
     -report "$ROOT_DIR/reports/rejection-parity.json")

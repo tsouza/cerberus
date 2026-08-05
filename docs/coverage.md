@@ -43,7 +43,7 @@ all, not which argument *shapes* of that symbol it accepts. A function listed
 as Supported here can still reject a specific argument shape the reference
 accepts (a computed rather than literal scalar, say). Those narrower gaps are
 tracked one-per-entry as `class: "divergence"` rows in
-[`test/rejection-parity/catalogue.json`](../test/rejection-parity/catalogue.json),
+[`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 each citing an open issue and held to a count ceiling plus an age cap — see
 [`test/rejection-parity/doc.go`](../test/rejection-parity/doc.go).
 

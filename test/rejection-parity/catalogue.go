@@ -119,17 +119,57 @@ type Entry struct {
 	Since string `json:"since,omitempty"`
 }
 
-// Catalogue is the checked-in JSON artifact shape
-// (test/rejection-parity/catalogue.json).
+// Catalogue is the merged, in-memory view of the checked-in artifact
+// (the shard directory test/rejection-parity/catalogue/), sorted by
+// site key. Its mechanical half is a go/ast scan of the
+// fmt.Errorf/errors.New sites in internal/{promql,logql,traceql}
+// (non-test files); the classification and trigger queries are curated
+// by hand and pinned by this package's meta-tests.
+//
+// Consumers see this one flat value regardless of how many shards it
+// was assembled from — sharding is an on-disk concurrency measure, not
+// a semantic split.
 type Catalogue struct {
-	Source  string  `json:"source"`
 	Entries []Entry `json:"entries"`
 }
 
-// catalogueSource documents how the mechanical half is derived.
-const catalogueSource = "go/ast scan of fmt.Errorf/errors.New sites in " +
-	"internal/{promql,logql,traceql} (non-test files); classification + " +
-	"trigger queries are curated and pinned by test/rejection-parity"
+// catalogueShard is the on-disk shape of one shard file: the entries
+// whose site keys name a single source file, sorted by site key. There
+// is deliberately no other field — anything a shard could carry about
+// the catalogue as a whole would be duplicated 30 times and would
+// itself become a merge conflict.
+type catalogueShard struct {
+	Entries []Entry `json:"entries"`
+}
+
+// Shard-file naming.
+//
+// The catalogue is stored as one shard per SOURCE FILE, so two PRs
+// fixing guards in different lowering files never write the same file.
+// A shard's name is its source path with every "/" replaced by
+// shardPathSeparator, plus a ".json" suffix:
+//
+//	internal/promql/subquery.go  ->  internal__promql__subquery.go.json
+//
+// The mapping is injective and reversible — split the name's stem on
+// shardPathSeparator to recover the source path — as long as no path
+// component itself contains the separator. shardName rejects such a
+// path rather than silently aliasing two source files onto one shard.
+const (
+	shardPathSeparator = "__"
+	shardExt           = ".json"
+)
+
+// shardFileMode / shardDirMode are the permissions a regenerated shard
+// and its parent directory get.
+const (
+	shardFileMode = 0o644
+	shardDirMode  = 0o755
+)
+
+// siteSourceSeparator splits a site key into its source-file half and
+// the "<func>#<hash>" half. Source paths never contain it.
+const siteSourceSeparator = ":"
 
 // Endpoint identifiers consumed by compatibility/cmd/rejection-parity.
 const (
@@ -380,7 +420,7 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 			prevByKey[e.Site.Site] = e
 		}
 	}
-	out := &Catalogue{Source: catalogueSource}
+	out := &Catalogue{}
 	for _, s := range sites {
 		e := Entry{Site: s}
 		if p, ok := prevByKey[s.Site]; ok {
@@ -396,28 +436,205 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 	return out, nil
 }
 
-// LoadCatalogue reads + parses the checked-in artifact.
-func LoadCatalogue(path string) (*Catalogue, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // repo-relative artifact path
-	if err != nil {
-		return nil, err
+// siteSourceFile returns the source-file half of a site key —
+// "internal/promql/subquery.go:lowerSubquery#0a1b2c3d" yields
+// "internal/promql/subquery.go". It is the shard key.
+func siteSourceFile(site string) (string, error) {
+	src, _, ok := strings.Cut(site, siteSourceSeparator)
+	if !ok || src == "" {
+		return "", fmt.Errorf("site key %q carries no %q-terminated source path — every key is "+
+			"\"<file>.go:<func>#<hash8>\"", site, siteSourceSeparator)
 	}
-	var cat Catalogue
-	if err := json.Unmarshal(raw, &cat); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return &cat, nil
+	return src, nil
 }
 
-// MarshalCatalogue renders the canonical on-disk JSON form (2-space
-// indent + trailing newline) so the regenerate-and-diff test compares
-// byte-for-byte. Mirrors test/inventory.MarshalInventory.
-func MarshalCatalogue(cat *Catalogue) ([]byte, error) {
-	b, err := json.MarshalIndent(cat, "", "  ")
+// shardName maps a source path to the shard file that owns its
+// entries. See the shardPathSeparator doc comment for the rule; a path
+// component containing the separator is rejected rather than aliased.
+func shardName(srcPath string) (string, error) {
+	parts := strings.Split(srcPath, "/")
+	for _, p := range parts {
+		if p == "" || strings.Contains(p, shardPathSeparator) {
+			return "", fmt.Errorf("source path %q has a component that is empty or contains %q — the "+
+				"shard-name mapping cannot represent it reversibly", srcPath, shardPathSeparator)
+		}
+	}
+	return strings.Join(parts, shardPathSeparator) + shardExt, nil
+}
+
+// shardSourcePath reverses shardName.
+func shardSourcePath(name string) (string, error) {
+	stem, ok := strings.CutSuffix(name, shardExt)
+	if !ok || stem == "" {
+		return "", fmt.Errorf("shard file %q is not a %q-suffixed shard name", name, shardExt)
+	}
+	return strings.ReplaceAll(stem, shardPathSeparator, "/"), nil
+}
+
+// LoadCatalogue reads every shard in dir and merges them into one
+// catalogue sorted by site key — byte-for-byte the same in-memory
+// value the single-file artifact used to produce, so nothing
+// downstream of this function knows the artifact is sharded. A missing
+// directory is returned as-is (os.IsNotExist holds) so the regen path
+// can bootstrap from nothing.
+func LoadCatalogue(dir string) (*Catalogue, error) {
+	names, err := listShards(dir)
 	if err != nil {
 		return nil, err
 	}
-	return append(b, '\n'), nil
+	cat := &Catalogue{}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		raw, err := os.ReadFile(path) //nolint:gosec // repo-relative artifact path
+		if err != nil {
+			return nil, err
+		}
+		var shard catalogueShard
+		if err := json.Unmarshal(raw, &shard); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		cat.Entries = append(cat.Entries, shard.Entries...)
+	}
+	sortEntries(cat.Entries)
+	return cat, nil
+}
+
+// listShards returns the shard file names in dir, sorted.
+func listShards(dir string) ([]string, error) {
+	des, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, de := range des {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), shardExt) {
+			continue
+		}
+		out = append(out, de.Name())
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// sortEntries orders entries by site key — the catalogue's only order,
+// applied both to the merged in-memory value and within each shard.
+func sortEntries(entries []Entry) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Site.Site < entries[j].Site.Site })
+}
+
+// ShardCatalogue renders the canonical on-disk form: shard file name ->
+// file bytes (2-space indent + trailing newline), entries partitioned
+// by source file and sorted by site key inside each shard. A catalogue
+// with no entries for a source file yields no shard for it, which is
+// what makes pruning in WriteCatalogue a total operation rather than a
+// guess.
+func ShardCatalogue(cat *Catalogue) (map[string][]byte, error) {
+	byShard := map[string][]Entry{}
+	for _, e := range cat.Entries {
+		src, err := siteSourceFile(e.Site.Site)
+		if err != nil {
+			return nil, err
+		}
+		name, err := shardName(src)
+		if err != nil {
+			return nil, err
+		}
+		byShard[name] = append(byShard[name], e)
+	}
+	out := make(map[string][]byte, len(byShard))
+	for name, entries := range byShard {
+		sortEntries(entries)
+		b, err := json.MarshalIndent(catalogueShard{Entries: entries}, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		out[name] = append(b, '\n')
+	}
+	return out, nil
+}
+
+// WriteCatalogue writes the sharded form into dir and REMOVES shards
+// that carry no entries any more. Pruning is not housekeeping: a shard
+// left behind after the last guard in its source file was deleted
+// keeps feeding stale entries into LoadCatalogue, so the catalogue
+// would go on asserting rejections that no longer exist while the
+// regenerate-and-diff test — which only ever compared the files it
+// wrote — reported green.
+func WriteCatalogue(dir string, cat *Catalogue) error {
+	shards, err := ShardCatalogue(cat)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, shardDirMode); err != nil {
+		return err
+	}
+	for name, body := range shards {
+		if err := os.WriteFile(filepath.Join(dir, name), body, shardFileMode); err != nil {
+			return err
+		}
+	}
+	existing, err := listShards(dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range existing {
+		if _, keep := shards[name]; keep {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DiffShards compares the rendered shards in want against the files in
+// dir, returning one human-readable line per difference (a shard that
+// is missing, one that lingers with no entries left, or one whose
+// bytes drifted). An empty result means the checked-in directory is
+// byte-for-byte what regeneration would write.
+func DiffShards(dir string, want map[string][]byte) ([]string, error) {
+	existing, err := listShards(dir)
+	if err != nil {
+		return nil, err
+	}
+	onDisk := map[string]bool{}
+	for _, name := range existing {
+		onDisk[name] = true
+	}
+
+	var diffs []string
+	for _, name := range sortedKeys(want) {
+		path := filepath.Join(dir, name)
+		if !onDisk[name] {
+			diffs = append(diffs, fmt.Sprintf("%s: missing — the source file gained its first catalogued site", path))
+			continue
+		}
+		got, err := os.ReadFile(path) //nolint:gosec // repo-relative artifact path
+		if err != nil {
+			return nil, err
+		}
+		if string(got) != string(want[name]) {
+			diffs = append(diffs, fmt.Sprintf("%s: stale — want %d bytes, got %d bytes", path, len(want[name]), len(got)))
+		}
+	}
+	for _, name := range existing {
+		if _, keep := want[name]; !keep {
+			diffs = append(diffs, fmt.Sprintf("%s: stale shard — no catalogued site names that source file any more", filepath.Join(dir, name)))
+		}
+	}
+	return diffs, nil
+}
+
+// sortedKeys returns m's keys in lexical order, so every diff this
+// package reports is deterministic.
+func sortedKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // MessageFragments splits a fmt format string into its literal
