@@ -102,6 +102,12 @@ func (e *Evaluator) evalAny(expr parser.Expr, evalTsMs int64) (value, error) {
 		return value{Kind: kindVec, Vec: e.evalVectorSelector(v, evalTsMs)}, nil
 	case *parser.MatrixSelector:
 		return value{Kind: kindRange, Range: e.evalMatrixSelector(v, evalTsMs)}, nil
+	case *parser.SubqueryExpr:
+		rp, err := e.evalSubqueryExpr(v, evalTsMs)
+		if err != nil {
+			return value{}, err
+		}
+		return value{Kind: kindRange, Range: rp}, nil
 	case *parser.Call:
 		return e.evalCall(v, evalTsMs)
 	case *parser.AggregateExpr:
@@ -171,6 +177,8 @@ func applyUnary(op parser.ItemType, in value) (value, error) {
 //   - absent(vec)         — see evalAbsent.
 //   - clamp/clamp_min/clamp_max — see evalClamp.
 //   - sort/sort_desc      — see evalSort.
+//   - label_replace/label_join — see evalLabelReplace / evalLabelJoin
+//     (label_transform.go).
 func (e *Evaluator) evalCall(c *parser.Call, evalTsMs int64) (value, error) {
 	name := c.Func.Name
 	if isRangeFunctionName(name) {
@@ -241,6 +249,10 @@ func (e *Evaluator) evalCall(c *parser.Call, evalTsMs int64) (value, error) {
 		return e.evalClamp(name, c, evalTsMs)
 	case "sort", "sort_desc":
 		return e.evalSort(c, evalTsMs)
+	case "label_replace":
+		return e.evalLabelReplace(c, evalTsMs)
+	case "label_join":
+		return e.evalLabelJoin(c, evalTsMs)
 	}
 	return value{}, fmt.Errorf("oracle: unsupported function %q", name)
 }

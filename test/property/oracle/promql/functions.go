@@ -41,6 +41,11 @@ import (
 // quantile_over_time's matrix arg comes second, not first) — they're
 // dispatched to evalTrendFunction below.
 //
+// The matrix argument itself may be a bare matrix selector (`m[5m]`) or
+// a subquery (`<expr>[5m:1m]`, #1694, e.g.
+// `max_over_time(rate(m[5m])[10m:1m])`) — see evalRangeArg
+// (subquery.go).
+//
 // Anything else returns an error so the caller can surface it.
 func (e *Evaluator) evalRangeFunction(c *parser.Call, evalTsMs int64) ([]VectorRow, error) {
 	if len(c.Args) == 0 {
@@ -50,22 +55,9 @@ func (e *Evaluator) evalRangeFunction(c *parser.Call, evalTsMs int64) ([]VectorR
 	case "deriv", "predict_linear", "double_exponential_smoothing", "quantile_over_time":
 		return e.evalTrendFunction(c, evalTsMs)
 	}
-	ms, ok := c.Args[0].(*parser.MatrixSelector)
-	if !ok {
-		return nil, fmt.Errorf("oracle: %s argument must be a matrix selector, got %T", c.Func.Name, c.Args[0])
-	}
-	ranges := e.evalMatrixSelector(ms, evalTsMs)
-
-	vs, _ := ms.VectorSelector.(*parser.VectorSelector)
-	rangeMs := ms.Range.Milliseconds()
-	// The "window edges" are the (T-range, T] mathematical interval
-	// for extrapolation, where T already includes @-modifier + offset
-	// shifts. This is what Prom uses for rate's extrapolation, not
-	// the first/last actual sample timestamps.
-	effectiveTs := evalTsMs
-	if vs != nil {
-		effectiveTs = effectiveEvalTs(vs, evalTsMs, e.startMs, e.endMs)
-		effectiveTs -= vs.OriginalOffset.Milliseconds()
+	ranges, rangeMs, effectiveTs, err := e.evalRangeArg(c.Args[0], evalTsMs)
+	if err != nil {
+		return nil, fmt.Errorf("oracle: %s: %w", c.Func.Name, err)
 	}
 
 	out := make([]VectorRow, 0, len(ranges))
