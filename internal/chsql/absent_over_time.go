@@ -178,8 +178,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		Select(As(absentGridAnchorFrag(offsetNS), a.TimestampColumn)).
 		Select(As(Call("toFloat64", Lit(float64(1))), a.ValueColumn))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // absentGridAnchorFrag renders the OUTPUT timestamp for an absence row.

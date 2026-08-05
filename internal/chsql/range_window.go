@@ -28,23 +28,6 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 	if err != nil {
 		return err
 	}
-	// Pre-flight expressions so chplan errors surface synchronously
-	// (mirrors emitAggregate's pre-flight loop).
-	for _, g := range m.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-	for _, p := range params {
-		if err := (&Builder{}).Expr(p); err != nil {
-			return err
-		}
-	}
-	for _, a := range args {
-		if err := (&Builder{}).Expr(a); err != nil {
-			return err
-		}
-	}
 	if m.Inner == nil {
 		return fmt.Errorf("%w: MetricsAggregate.Inner is nil", ErrUnsupported)
 	}
@@ -92,8 +75,7 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 	sb.GroupBy(groupKeyFrags(m.GroupBy, selectedAliases)...)
 
 	if !multi {
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	}
 
 	// Multi-phi wrap layer 1: arrayJoin the per-(group) quantiles
@@ -115,8 +97,7 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 	}
 	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(1))), metricsMultiQuantilePhiLabel))
 	final.Select(As(Call("tupleElement", BareIdent("phi_val"), InlineLit(int64(2))), m.ValueAlias))
-	e.emitSelect(final)
-	return nil
+	return e.emitSelect(final)
 }
 
 // metricsAggregateCH maps a MetricsAggregate.Op to the CH aggregate
@@ -333,9 +314,6 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 	switch {
 	case len(r.ScalarExprs) == 1:
 		tExpr := r.ScalarExprs[0]
-		if err := (&Builder{}).Expr(tExpr); err != nil {
-			return err
-		}
 		writeT = func(b *Builder) { _ = b.Expr(tExpr) }
 	case len(r.Scalars) == 1:
 		t := r.Scalars[0]
@@ -557,8 +535,7 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
 
-	e.emitSelect(outerSb)
-	return nil
+	return e.emitSelect(outerSb)
 }
 
 // emitWindowedArrayPairsMatrix is the OuterRange > 0 variant of
@@ -650,8 +627,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 		outer.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
@@ -862,23 +838,6 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		return err
 	}
 
-	// Pre-flight all expressions so chplan errors surface synchronously.
-	for _, g := range m.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-	for _, p := range params {
-		if err := (&Builder{}).Expr(p); err != nil {
-			return err
-		}
-	}
-	for _, a := range args {
-		if err := (&Builder{}).Expr(a); err != nil {
-			return err
-		}
-	}
-
 	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
 	// Range defaults to Step (per-bucket = per-step). When r.Range is
@@ -1012,8 +971,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	groupFrags = append(groupFrags, Col("anchor_ts"))
 	outerSb.GroupBy(groupFrags...)
 
-	e.emitSelect(outerSb)
-	return nil
+	return e.emitSelect(outerSb)
 }
 
 // zeroFillExtraCol is an extra (frag, alias) SELECT item the zero-fill
@@ -1190,16 +1148,6 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 		return err
 	}
 
-	// Pre-flight expressions so chplan errors surface synchronously.
-	if err := (&Builder{}).Expr(m.Attr); err != nil {
-		return err
-	}
-	for _, g := range m.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-
 	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
 	rangeDur := r.Range
@@ -1295,8 +1243,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	groupFrags = append(groupFrags, Col("anchor_ts"), Col(metricsQuantileBucketAlias))
 	outerSb.GroupBy(groupFrags...)
 
-	e.emitSelect(outerSb)
-	return nil
+	return e.emitSelect(outerSb)
 }
 
 // quantileBucketIfFrag renders the conditional `__bucket` projection
@@ -2553,8 +2500,7 @@ func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag)
 	)
 	sb.GroupBy(groupFrags...)
 
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // emitRangeWindowOverTimeDirectMatrix is the OuterRange > 0 variant of
@@ -2625,8 +2571,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
 	regroup.GroupBy(regroupKeys...)
 
-	e.emitSelect(regroup)
-	return nil
+	return e.emitSelect(regroup)
 }
 
 // emitRangeWindowDeriv emits SQL for `deriv(v[range])`.
@@ -2708,11 +2653,13 @@ func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 // (no adjacent pairs). The outer SELECT drops empty-window rows via
 // `WHERE length(window_vals) >= 1`.
 //
-// Implementation mirrors emitRangeWindowResets but with `c != p` as
-// the per-pair indicator. Prom's funcChanges has an additional
-// `!(NaN(curr) && NaN(prev))` carve-out so a NaN-on-both-sides pair
-// is not counted as a change; we accept the divergence on float-NaN
-// streams (rare in practice, and the goldens cover only finite values).
+// Implementation mirrors emitRangeWindowResets but with `c != p AND NOT
+// (isNaN(c) AND isNaN(p))` as the per-pair indicator — matching Prom's
+// funcChanges, whose `!(NaN(curr) && NaN(prev))` carve-out means a
+// NaN-on-both-sides pair is never counted as a change (see #1489). A
+// NaN paired with a finite value IS still a change on both sides: `!=`
+// already evaluates true there (IEEE-754, both in Go and ClickHouse),
+// so the carve-out only needs to suppress the both-NaN case.
 func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 	value := Cast(
 		Call(
@@ -2720,7 +2667,10 @@ func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 			Call(
 				"arrayMap",
 				Lambda2("p", "c", If(
-					Neq(BareIdent("c"), BareIdent("p")),
+					And(
+						Neq(BareIdent("c"), BareIdent("p")),
+						Not(Paren(And(Call("isNaN", BareIdent("c")), Call("isNaN", BareIdent("p"))))),
+					),
 					InlineLit(int64(1)),
 					InlineLit(int64(0)),
 				)),
@@ -2850,10 +2800,6 @@ func irateValueFrag() Frag {
 func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 	if len(r.ScalarExprs) == 1 {
 		phiE := r.ScalarExprs[0]
-		// Pre-flight so chplan errors surface synchronously.
-		if err := (&Builder{}).Expr(phiE); err != nil {
-			return err
-		}
 		// Linear-interpolation quantile over the sorted window, computed-phi
 		// path. Mirrors Prom's quantile() helper: rank = phi*(n-1), the
 		// value is the lower / upper sorted samples blended by the
@@ -3060,8 +3006,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
@@ -3170,8 +3115,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // firstTsFrag renders `tupleElement(window_pairs[1], 1)` — the first
@@ -3488,8 +3432,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
 	}
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // emitWindowedArrayMatrix is the OuterRange > 0 variant: each series
@@ -3601,8 +3544,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
 	}
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // collectGroupByFrags renders each GroupBy expression to an isolated
@@ -3624,7 +3566,9 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}
-		sql, args := sub.Build()
+		// Expr's error is already checked above; Build's sticky b.err is
+		// therefore always nil here — see Builder.err.
+		sql, args, _ := sub.Build()
 		// Append captured args to the emitter so they land at the
 		// position the outer SELECT-list will reference them. Since
 		// every supported group-by expression is currently arg-free

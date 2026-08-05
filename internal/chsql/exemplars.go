@@ -128,12 +128,6 @@ func (e *emitter) emitMetricsExemplars(
 	maxPerSeries int64,
 	spansTable string,
 ) error {
-	for _, g := range m.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-
 	end := endExprFrag(rw)
 	stepNS := rw.Step.Nanoseconds()
 	rangeDur := rw.Range
@@ -306,6 +300,5 @@ func (e *emitter) emitMetricsExemplars(
 		outerSb.LimitBy(limitByFrags...)
 	}
 
-	e.emitSelect(outerSb)
-	return nil
+	return e.emitSelect(outerSb)
 }

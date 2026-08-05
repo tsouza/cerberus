@@ -73,10 +73,7 @@ const (
 	// FeatureTSGridChanges opts eligible changes(<v>[<range>]) query_range
 	// shapes onto the native timeSeriesChangesToGrid aggregate (the per-window
 	// value-change count), retiring the arrayPopBack/arrayPopFront `c != p`
-	// fan-out (internal/chsql.emitRangeWindowChanges). Like the rest of the
-	// family its maturity is Experimental but it is AUTO-SELECTED on capable
-	// servers (no legacy env alias — auto picks it once the server is >= 25.9, or
-	// list it in CERBERUS_CH_OPTIMIZATIONS).
+	// fan-out (internal/chsql.emitRangeWindowChanges).
 	//
 	// IMPORTANT — the floor is 25.9, shared with the rest of the family.
 	// timeSeriesChangesToGrid/ResetsToGrid shipped a full quarter after the
@@ -87,6 +84,21 @@ const (
 	// different reason — the left-open window fix, PR #86588; both PRs landed in
 	// 25.9.) The experimental allow_experimental_time_series_aggregate_functions
 	// gate is shared with the rest of the family.
+	//
+	// IMPORTANT — unlike the rest of the timeSeries*ToGrid family, this one is
+	// NOT auto-selected. The native builtin overcounts by exactly 1 whenever a
+	// window's chronologically-earliest in-window sample is NaN (#1721), and
+	// separately implements no NaN-both-sides carve-out at all, so it diverges
+	// from reference Prometheus's funcChanges on any NaN-adjacent window —
+	// exactly the divergence #1489 fixed in the fan-out kernel
+	// (internal/chsql.emitRangeWindowChanges) but cannot patch inside a
+	// ClickHouse builtin. Confirmed against a real reference Prometheus on the
+	// compatibility/prometheus substrate (ClickHouse 26.5, well above the 25.9
+	// floor): auto-selecting this feature emits a wrong answer the instant a
+	// NaN-bearing series is queried. AutoSelect is false — like
+	// FeatureColumnarResultDecode, it's reachable only via an explicit
+	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes listing — until ClickHouse
+	// fixes the builtin's NaN handling upstream and #1721 closes.
 	FeatureTSGridChanges = "ts_grid_changes"
 
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
@@ -264,9 +276,9 @@ var registry = []Feature{
 		ID:                         FeatureTSGridChanges,
 		MinVersion:                 Version{Major: 25, Minor: 9},
 		Stability:                  Experimental,
-		AutoSelect:                 true,
+		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental maturity, auto-enabled on server >= 25.9)",
+		Doc:                        "opt eligible changes(<v>[<range>]) shapes onto native timeSeriesChangesToGrid (experimental maturity, server >= 25.9, opt-in only via CERBERUS_CH_OPTIMIZATIONS — the builtin diverges from reference Prometheus on NaN-adjacent windows, #1721)",
 	},
 	{
 		ID:                         FeatureTSGridResets,

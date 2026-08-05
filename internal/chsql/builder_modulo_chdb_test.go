@@ -133,7 +133,7 @@ func TestEmitGoModulo_BitExactVsGo(t *testing.T) {
 			t.Errorf("emit (x=%v, y=%v): %v", tc.x, tc.y, err)
 			continue
 		}
-		sqlStr, args := bld.Build()
+		sqlStr, args, _ := bld.Build()
 		query := "SELECT " + sqlStr
 		var v float64
 		if err := db.QueryRow(query, args...).Scan(&v); err != nil {

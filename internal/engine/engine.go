@@ -1322,6 +1322,14 @@ func (e *Engine) dispatchRouteACursor(
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	// Thread the adapter's declared response shape onto the execute ctx so
+	// chclient's columnar matrix decode can confirm (defense-in-depth, on top
+	// of its own structural name/type check) that this query really is the
+	// matrix projection before it engages — see chclient.ResponseShapeMatrix
+	// (#1429). meta.ResponseShape is "" for adapters that haven't opted in,
+	// which chclient treats as "unknown, defer to the structural check
+	// alone" — byte-unchanged behaviour for those callers.
+	execCtx = chclient.WithResponseShape(execCtx, meta.ResponseShape)
 	cursor, err := cq.QueryCursor(execCtx, sql, args...)
 	execT.Done(ctx)
 	if err != nil {

@@ -101,8 +101,7 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 			Select(outCols...).
 			From(windowed.Frag()).
 			Where(Eq(Col(setOpSideCol), Col(narySetOpMinSideCol)))
-		e.emitSelect(outer)
-		return nil
+		return e.emitSelect(outer)
 	case chplan.VectorSetAnd:
 		// present-in-every-arm: keep arm-0 rows whose signature's
 		// contributing-arm bitmask is all-ones (every arm present).
@@ -128,8 +127,7 @@ func (e *emitter) emitNaryVectorSetOp(s *chplan.NaryVectorSetOp) error {
 				Eq(Col(setOpSideCol), InlineLit(0)),
 				Eq(Col(narySetOpSidesMaskCol), InlineLit(fullMask)),
 			))
-		e.emitSelect(outer)
-		return nil
+		return e.emitSelect(outer)
 	}
 	return fmt.Errorf("%w: n-ary vector set op %q", ErrUnsupported, s.Op)
 }

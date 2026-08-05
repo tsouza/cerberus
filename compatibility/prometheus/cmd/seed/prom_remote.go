@@ -109,6 +109,7 @@ var fixtureSources = []fixtureSource{
 	{"demo_batch_last_success_timestamp_seconds", "otel_metrics_gauge"},
 	{"demo_intermittent_metric", "otel_metrics_gauge"},
 	{"up", "otel_metrics_gauge"},
+	{"demo_gauge_with_nan_run", "otel_metrics_gauge"},
 }
 
 // histogramFixtureSource mirrors a classic-histogram fixture. `base` is

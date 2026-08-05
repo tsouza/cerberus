@@ -40,17 +40,6 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 	if m.Inner == nil {
 		return fmt.Errorf("%w: MetricsHistogramOverTime.Inner is nil", ErrUnsupported)
 	}
-	// Pre-flight every chplan expression so errors surface synchronously
-	// (mirrors emitMetricsAggregate's pre-flight loop).
-	if err := (&Builder{}).Expr(m.Attr); err != nil {
-		return err
-	}
-	for _, g := range m.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-
 	sub, err := e.subqueryFrag(m.Inner)
 	if err != nil {
 		return err
@@ -94,8 +83,7 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 	groupFrags = append(groupFrags, Col(bucketAlias))
 	sb.GroupBy(groupFrags...)
 
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // histogramBucketFrag renders the
@@ -209,16 +197,6 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		return err
 	}
 
-	// Pre-flight expressions so chplan errors surface synchronously.
-	if err := (&Builder{}).Expr(m.Attr); err != nil {
-		return err
-	}
-	for _, g := range m.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-
 	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
 	rangeDur := r.Range
@@ -314,8 +292,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	groupFrags = append(groupFrags, Col(bucketAlias), Col("anchor_ts"))
 	outerSb.GroupBy(groupFrags...)
 
-	e.emitSelect(outerSb)
-	return nil
+	return e.emitSelect(outerSb)
 }
 
 // histogramZeroFillArgs bundles the inputs histogramZeroFillGridArm

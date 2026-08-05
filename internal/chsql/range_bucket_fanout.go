@@ -75,26 +75,6 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		return fmt.Errorf("%w: RangeBucketFanout requires at least one AggFunc", ErrUnsupported)
 	}
 
-	// Pre-flight group-key + aggregate expressions so chplan errors
-	// surface synchronously (mirrors emitAggregate).
-	for _, g := range r.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-	for _, af := range r.AggFuncs {
-		for _, p := range af.Params {
-			if err := (&Builder{}).Expr(p); err != nil {
-				return err
-			}
-		}
-		for _, a := range af.Args {
-			if err := (&Builder{}).Expr(a); err != nil {
-				return err
-			}
-		}
-	}
-
 	stepNS := r.Step.Nanoseconds()
 	lookbackNS := r.Lookback.Nanoseconds()
 
@@ -180,6 +160,5 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		collapse.Having(Gte(Call("uniqExact", Col(r.TimestampCol)), InlineLit(int64(r.MinSamples))))
 	}
 
-	e.emitSelect(collapse)
-	return nil
+	return e.emitSelect(collapse)
 }
