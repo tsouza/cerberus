@@ -588,10 +588,14 @@ func (m Metrics) TablesFor(metricName string) []string {
 // (lowerRegexHistogramSelector in internal/promql/regex_histogram_lower.go,
 // wired from lowerVectorSelector for any selector with an unpinned
 // __name__ matcher): it unions this unknown-name candidate set with a
-// companion arm per `_count`/`_sum` suffix and a `_bucket` arm. Native
-// (exponential) histograms have no equivalent arm — HistogramCompanionColumn
-// only resolves [Metrics.IsExpHistogramMetric] from a literal bare name, so
-// ExpHistogramTable stays unreachable under a regex name matcher.
+// companion arm per `_count`/`_sum` suffix and a `_bucket` arm, PLUS a
+// `_count`/`_sum` companion arm per suffix reading ExpHistogramTable
+// (#1549 residue 1) — the same pair, mirroring
+// expHistogramSelectorRouting's pinned-path policy in
+// internal/promql/lower.go. There is no exp-histogram `_bucket` arm: an
+// exp-histogram row has no ExplicitBounds ladder to fan (Scale /
+// PositiveBucketCounts / NegativeBucketCounts instead), so
+// `<base>_exp_hist_bucket` is not a wire-reachable series either way.
 func (m Metrics) TablesForUnknownName() []string {
 	if m.SumTable != "" && m.SumTable != m.GaugeTable {
 		return []string{m.GaugeTable, m.SumTable}

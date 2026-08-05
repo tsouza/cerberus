@@ -3350,6 +3350,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "regex_name_matcher_scans_exp_histogram_table",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "regex_name_matcher_scans_sum_table",
     "routed": true,
     "k": 8,
