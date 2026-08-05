@@ -17,6 +17,21 @@
  * it; this spec asserts what the UI actually renders plus the wire
  * field the transform consumes.
  *
+ * Transport split (#1665): the `cerberus-tempo` datasource carries
+ * `jsonData.streamingEnabled.search: true`, so Grafana's Tempo
+ * datasource routes a TraceQL search through `handleStreamingQuery()`
+ * → Grafana Live (`/api/live/ws`) → the Grafana backend's h2c gRPC
+ * call into cerberus's `StreamingQuerier`. The browser therefore
+ * issues ZERO `/api/search?` HTTP requests on this datasource, and a
+ * `page.on('response')` capture of that URL is structurally empty —
+ * it is evidence of the transport in use, not of the payload shape.
+ * The wire-shape pin below is consequently driven by an explicit
+ * request through the datasource proxy rather than by whatever the
+ * page happened to emit: that request always happens, so the shape
+ * assertions can never go vacuous. Any `/api/search` response the
+ * page DOES emit (a non-streaming lane, or a future app version that
+ * falls back to HTTP) is still folded into the same shape check.
+ *
  * Gate posture: NIGHTLY ONLY (auto-discovered by the `dashboard` job's
  * unfiltered `npx playwright test` run in .github/workflows/e2e.yml;
  * deliberately NOT in the compose-smoke job's explicit spec list —
@@ -50,8 +65,53 @@ const traceListURL =
   '/a/grafana-exploretraces-app/explore' +
   '?actionView=traceList&var-ds=cerberus-tempo&from=now-30m&to=now';
 
+// Grafana's datasource-proxy route onto the same cerberus Tempo head
+// the drilldown queries — the HTTP half of the transport split
+// documented in the module header.
+const tempoProxySearch = '/api/datasources/proxy/uid/cerberus-tempo/api/search';
+
+// The trace-list query the drilldown issues is tableType=spans with an
+// explicit result cap (`limit`) and a per-trace span cap (`spss`) —
+// both were ignored by cerberus in the #770 regression this spec pins,
+// so the probe must carry them rather than search bare.
+const TRACE_LIST_LIMIT = 20;
+const TRACE_LIST_SPANS_PER_SPAN_SET = 10;
+
+// A seeded resource attribute (test/e2e/seed/cmd/seed/main.go inserts
+// `frontend`/`api`/`db` services) so the probe matches deterministically
+// rather than depending on the self-telemetry window being non-empty.
+const SEEDED_SERVICE_QUERY = '{ resource.service.name = "frontend" }';
+
+type SearchBody = {
+  traces?: Array<{
+    spanSets?: Array<{ spans?: unknown[] }>;
+    spanSet?: { spans?: unknown[] };
+  }>;
+};
+
+/**
+ * Assert every trace summary in `body` carries the exact fields
+ * Grafana's tempo resultTransformer reads to build the spans table.
+ */
+function assertSpanSetShape(body: SearchBody, source: string): void {
+  for (const trace of body.traces ?? []) {
+    expect(
+      Array.isArray(trace.spanSets) && trace.spanSets.length > 0,
+      `${source}: every trace summary carries spanSets (got: ${JSON.stringify(trace).slice(0, 200)})`,
+    ).toBe(true);
+    expect(
+      (trace.spanSets?.[0]?.spans?.length ?? 0) > 0,
+      `${source}: spanSets[0].spans is non-empty`,
+    ).toBe(true);
+    expect(
+      (trace.spanSet?.spans?.length ?? 0) > 0,
+      `${source}: legacy spanSet mirror is populated`,
+    ).toBe(true);
+  }
+}
+
 test.describe('Traces Drilldown — trace list (tableType=spans)', () => {
-  test('Traces tab badge > 0 and span table renders rows', async ({ page }) => {
+  test('Traces tab badge > 0 and span table renders rows', async ({ page, request }) => {
     // The app boots its own React tree + fires a wave of datasource
     // queries; budget generously for a cold ClickHouse.
     test.setTimeout(180_000);
@@ -121,38 +181,32 @@ test.describe('Traces Drilldown — trace list (tableType=spans)', () => {
 
     page.off('response', onResponse);
 
-    // Wire-shape pin: at least one captured /api/search response must
-    // carry per-trace spanSets (and the legacy spanSet mirror) — the
-    // exact fields Grafana's resultTransformer reads. An empty traces
-    // window would have failed the badge assertion already.
-    type SearchBody = {
-      traces?: Array<{
-        spanSets?: Array<{ spans?: unknown[] }>;
-        spanSet?: { spans?: unknown[] };
-      }>;
-    };
-    const withTraces = (searchBodies as SearchBody[]).filter(
-      (b) => Array.isArray(b?.traces) && b.traces.length > 0,
+    // Wire-shape pin, HTTP half. Driven explicitly (not harvested from
+    // the page) because the drilldown's own search rides the streaming
+    // gRPC transport — see the module header. The proxy request carries
+    // the same limit + spss caps the drilldown sends, so this asserts
+    // the exact response shape Grafana's resultTransformer consumes.
+    const probeResp = await request.get(
+      `${tempoProxySearch}?q=${encodeURIComponent(SEEDED_SERVICE_QUERY)}` +
+        `&limit=${TRACE_LIST_LIMIT}&spss=${TRACE_LIST_SPANS_PER_SPAN_SET}`,
     );
+    expect(probeResp.status(), 'tableType=spans search returns 200').toBe(200);
+    const probeBody = (await probeResp.json()) as SearchBody;
     expect(
-      withTraces.length,
-      'at least one /api/search response with traces was captured',
+      Array.isArray(probeBody.traces) ? probeBody.traces.length : 0,
+      'tableType=spans search returns at least one trace summary',
     ).toBeGreaterThan(0);
-    for (const body of withTraces) {
-      for (const trace of body.traces ?? []) {
-        expect(
-          Array.isArray(trace.spanSets) && trace.spanSets.length > 0,
-          `every trace summary carries spanSets (got: ${JSON.stringify(trace).slice(0, 200)})`,
-        ).toBe(true);
-        expect(
-          (trace.spanSets?.[0]?.spans?.length ?? 0) > 0,
-          'spanSets[0].spans is non-empty',
-        ).toBe(true);
-        expect(
-          (trace.spanSet?.spans?.length ?? 0) > 0,
-          'legacy spanSet mirror is populated',
-        ).toBe(true);
-      }
+    assertSpanSetShape(probeBody, 'proxied /api/search');
+
+    // Wire-shape pin, passive half. Any /api/search response the page
+    // itself emitted (a lane whose Tempo datasource has streaming off,
+    // or a future app version that falls back to HTTP) gets the same
+    // shape check. Zero captures is the expected streaming-lane state
+    // and is not itself an assertion — the explicit probe above is what
+    // guarantees the shape is checked at all.
+    for (const body of searchBodies as SearchBody[]) {
+      if (!Array.isArray(body?.traces) || body.traces.length === 0) continue;
+      assertSpanSetShape(body, 'page-captured /api/search');
     }
   });
 });
