@@ -703,17 +703,37 @@ func subqueryPreservedNameExpr(inner chplan.Node, outerFn string, s schema.Metri
 		// carry — same branch preservedNameExpr takes at the leaf.
 		return nil
 	}
-	if !subquerySpineCarriesName(inner, s) {
+	windows, ok := subquerySpineNameWindows(inner, s)
+	if !ok {
 		return nil
 	}
-	carrySubqueryNameGroupKey(inner, s)
+	for _, rw := range windows {
+		appendNameGroupKey(rw, s)
+	}
 	return &chplan.ColumnRef{Name: s.MetricNameColumn}
 }
 
-// subquerySpineCarriesName reports whether a lowered subquery plan can
-// deliver a per-series `__name__` to an outer reducer. Pure — it never
-// mutates the plan, so a spine that turns out to be name-dropping is
-// never half-widened by [carrySubqueryNameGroupKey].
+// subquerySpineNameWindows answers, in ONE walk, both halves of the
+// name-carrying decision: whether a lowered subquery plan can deliver a
+// per-series `__name__` to an outer reducer, and — when it can — every
+// RangeWindow between that reducer and the name-bearing relation whose
+// windowed-array `GROUP BY` must gain the MetricName key for the name to
+// survive.
+//
+// One walk is the whole point. A separate predicate and mutator would
+// have to enumerate the same node set twice, and the emitter punishes any
+// disagreement with a hard failure rather than a wrong number:
+// internal/chsql/range_window.go projects exactly the grouping keys, so a
+// window the predicate accepted but the mutator skipped yields a relation
+// with no MetricName while the caller's wrap emits `SELECT MetricName` /
+// `GROUP BY MetricName` over it — ClickHouse answers `Unknown identifier`
+// (a 502). Returning the windows from the accepting walk makes that
+// divergence unrepresentable: a window is widened exactly when the walk
+// that found it also accepted the relation beneath it.
+//
+// Nothing is mutated here, so a spine that turns out to be name-dropping
+// is never left half-widened; the caller applies the keys only after the
+// walk has accepted the whole spine.
 //
 // Walking top-down, the arms are:
 //
@@ -721,44 +741,55 @@ func subqueryPreservedNameExpr(inner chplan.Node, outerFn string, s schema.Metri
 //     arithmetic subquery shape) inherits the answer from below. A
 //     REDUCING window is upstream's `inputDropName`: `last_over_time` and
 //     `first_over_time` keep the name, every other reducer (rate,
-//     max_over_time, …) drops it and terminates the walk.
+//     max_over_time, …) drops it and terminates the walk. Either way the
+//     window groups, so an accepted one joins the returned set.
 //   - Filter — transparent; the modifier time-bound and the empty-K fold
-//     reshape no columns.
-//   - Project / UnionAll — terminal ACCEPT when the relation already
-//     exposes a name-bearing MetricName output (see
-//     [projectCarriesMetricName]). This is the leaf selector Project, the
-//     histogram fan-out's `concat(MetricName, '_sum')` arms, and
-//     label_replace.
+//     reshape no columns, and a Filter has no grouping key of its own.
+//   - UnionAll — a multi-table selector (regex `__name__`, histogram
+//     fan-out) unions one arm per physical layout. Every arm must carry a
+//     name or the union's MetricName column is only partly populated, and
+//     an arm's own windows are spine windows too: this is the arm whose
+//     absence from a separate mutator would emit the unknown-identifier
+//     SQL above.
+//   - Project — terminal ACCEPT when the relation already exposes a
+//     name-bearing MetricName output (see [projectCarriesMetricName]).
+//     This is the leaf selector Project, the histogram fan-out's
+//     `concat(MetricName, '_sum')` arms, and label_replace. It groups
+//     nothing, so it contributes no window.
 //   - everything else (Aggregate, TopK, count_values, AbsentOverTime,
-//     CrossJoin, StepGrid, VectorSetOp, …) — false. PromQL drops the name
-//     across an aggregation anyway, so those arms need no special case:
-//     their wrapping Project simply has no MetricName slot.
-func subquerySpineCarriesName(n chplan.Node, s schema.Metrics) bool {
+//     CrossJoin, StepGrid, VectorSetOp, …) — false. Those nodes reshape
+//     labels in ways cerberus does not yet carry a name through; their
+//     wrapping Project simply has no MetricName slot.
+func subquerySpineNameWindows(n chplan.Node, s schema.Metrics) ([]*chplan.RangeWindow, bool) {
 	switch v := n.(type) {
 	case *chplan.RangeWindow:
 		if v.Func != "" && !rangeFnPreservesName(v.Func) {
-			return false
+			return nil, false
 		}
-		return subquerySpineCarriesName(v.Input, s)
+		below, ok := subquerySpineNameWindows(v.Input, s)
+		if !ok {
+			return nil, false
+		}
+		return append([]*chplan.RangeWindow{v}, below...), true
 	case *chplan.Filter:
-		return subquerySpineCarriesName(v.Input, s)
+		return subquerySpineNameWindows(v.Input, s)
 	case *chplan.Project:
-		return projectCarriesMetricName(v, s)
+		return nil, projectCarriesMetricName(v, s)
 	case *chplan.UnionAll:
-		// A multi-table selector (regex `__name__`, histogram fan-out)
-		// unions one arm per physical layout. Every arm must carry a name
-		// or the union's MetricName column is only partly populated.
 		if len(v.Inputs) == 0 {
-			return false
+			return nil, false
 		}
+		var windows []*chplan.RangeWindow
 		for _, in := range v.Inputs {
-			if !subquerySpineCarriesName(in, s) {
-				return false
+			armWindows, ok := subquerySpineNameWindows(in, s)
+			if !ok {
+				return nil, false
 			}
+			windows = append(windows, armWindows...)
 		}
-		return true
+		return windows, true
 	}
-	return false
+	return nil, false
 }
 
 // projectCarriesMetricName reports whether p outputs a MetricName column
@@ -796,24 +827,6 @@ func projectionOutputName(p chplan.Projection) string {
 		return ref.Name
 	}
 	return ""
-}
-
-// carrySubqueryNameGroupKey widens every RangeWindow between the outer
-// reducer and the name-bearing relation so `MetricName` survives each
-// windowed-array `GROUP BY`. Run ONLY after [subquerySpineCarriesName]
-// returned true: a stray group key under an aggregate-bearing spine would
-// change what the aggregate averages over.
-//
-// The walk stops where the predicate accepted (Project / UnionAll) — the
-// name is already a column there, and below that point nothing groups.
-func carrySubqueryNameGroupKey(n chplan.Node, s schema.Metrics) {
-	switch v := n.(type) {
-	case *chplan.RangeWindow:
-		appendNameGroupKey(v, s)
-		carrySubqueryNameGroupKey(v.Input, s)
-	case *chplan.Filter:
-		carrySubqueryNameGroupKey(v.Input, s)
-	}
 }
 
 // canonicalRangeWindowFunc maps a parsed PromQL function name to the

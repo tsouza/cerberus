@@ -222,6 +222,57 @@ func TestSubqueryPreservedNameExpr_UnionAllAllArmsCarry(t *testing.T) {
 	assertNameGroupKey(t, identity, s)
 }
 
+// TestSubqueryPreservedNameExpr_UnionAllArmWindowsWidened pins the arm
+// that a split predicate/mutator pair would silently miss: a RangeWindow
+// living INSIDE a union arm (directly, and behind a Filter). The
+// acceptance walk reaches those windows, so the widening must too —
+// internal/chsql/range_window.go projects exactly the grouping keys, so
+// an arm left on `GROUP BY Attributes` alone contributes a relation with
+// no MetricName while the caller's wrap emits `SELECT MetricName` over
+// the union: ClickHouse answers `Unknown identifier`, a 502, not a wrong
+// number. Accepting an arm and not widening it must be unrepresentable.
+func TestSubqueryPreservedNameExpr_UnionAllArmWindowsWidened(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	bareArmWindow := attrOnlySubqueryWindow("last_over_time", nameBearingProject(s), s)
+	filteredArmWindow := attrOnlySubqueryWindow("first_over_time", nameBearingProject(s), s)
+	union := &chplan.UnionAll{Inputs: []chplan.Node{
+		bareArmWindow,
+		&chplan.Filter{Input: filteredArmWindow, Predicate: &chplan.LitString{V: "1"}},
+	}}
+	identity := attrOnlySubqueryWindow("", union, s)
+
+	got := subqueryPreservedNameExpr(identity, "last_over_time", s)
+
+	if !isIdentityColumnRef(got, s.MetricNameColumn) {
+		t.Fatalf("projected name expr: got %#v, want ColumnRef(%q)", got, s.MetricNameColumn)
+	}
+	assertNameGroupKey(t, identity, s)
+	assertNameGroupKey(t, bareArmWindow, s)
+	assertNameGroupKey(t, filteredArmWindow, s)
+}
+
+// TestSubqueryPreservedNameExpr_UnionAllArmWindowDropsRejected is the
+// negative half of the arm walk: one arm reduces with a name-dropping
+// function, so the union cannot deliver a name and NOTHING may be
+// widened — not the sibling arm's window, not the outer identity. A
+// half-applied mutation is the failure this pairs against.
+func TestSubqueryPreservedNameExpr_UnionAllArmWindowDropsRejected(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	carryingArmWindow := attrOnlySubqueryWindow("last_over_time", nameBearingProject(s), s)
+	droppingArmWindow := attrOnlySubqueryWindow("rate", nameBearingProject(s), s)
+	union := &chplan.UnionAll{Inputs: []chplan.Node{carryingArmWindow, droppingArmWindow}}
+	identity := attrOnlySubqueryWindow("", union, s)
+
+	if got := subqueryPreservedNameExpr(identity, "last_over_time", s); got != nil {
+		t.Fatalf("name expr over a union with a rate arm: got %#v, want nil", got)
+	}
+	assertAttrOnlyGroupKey(t, identity, s)
+	assertAttrOnlyGroupKey(t, carryingArmWindow, s)
+	assertAttrOnlyGroupKey(t, droppingArmWindow, s)
+}
+
 // TestSubqueryPreservedNameExpr_UnionAllOneArmDropsRejected: a single
 // name-dropping arm makes the union's MetricName column only partly
 // populated, which would report `__name__` on some series and not
