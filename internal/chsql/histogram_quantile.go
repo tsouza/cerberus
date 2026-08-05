@@ -47,14 +47,6 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 	if h.BucketCountsColumn == "" || h.ExplicitBoundsColumn == "" {
 		return fmt.Errorf("%w: HistogramQuantile requires BucketCountsColumn and ExplicitBoundsColumn", ErrUnsupported)
 	}
-	// Pre-flight every GroupBy expression so chplan errors surface
-	// synchronously rather than from inside a Frag callback.
-	for _, g := range h.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-
 	sub, err := e.subqueryFrag(h.Input)
 	if err != nil {
 		return err
@@ -70,8 +62,7 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	sb.SelectAs(histogramQuantileValueFrag(h), "Value")
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // histogramQuantileValueFrag returns the Frag that renders the per-row

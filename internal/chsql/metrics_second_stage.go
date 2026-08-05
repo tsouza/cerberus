@@ -74,8 +74,7 @@ func (e *emitter) emitMetricsSecondStageTopK(m *chplan.MetricsSecondStage) error
 		parts = append(parts, func(b *Builder) { b.Ident(col) })
 	}
 	sb.LimitBy(parts...)
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // emitMetricsSecondStageThreshold renders the threshold wrap:
@@ -101,12 +100,8 @@ func (e *emitter) emitMetricsSecondStageThreshold(m *chplan.MetricsSecondStage) 
 		Left:  &chplan.ColumnRef{Name: m.ValueAlias},
 		Right: &chplan.LitFloat{V: m.ThresholdValue},
 	}
-	if err := (&Builder{}).Expr(pred); err != nil {
-		return err
-	}
 	sb := NewQuery().From(sub).Where(func(b *Builder) { _ = b.Expr(pred) })
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // isThresholdOp reports whether op is one of the six comparison

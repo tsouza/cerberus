@@ -118,14 +118,6 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 	if m.Inner == nil {
 		return nil, fmt.Errorf("%w: MetricsCompare.Inner is nil", ErrUnsupported)
 	}
-	// Pre-flight chplan expressions so errors surface synchronously
-	// (mirrors emitMetricsAggregate's pre-flight loop).
-	if err := (&Builder{}).Expr(m.Selection); err != nil {
-		return nil, err
-	}
-	if err := (&Builder{}).Expr(m.Pairs); err != nil {
-		return nil, err
-	}
 
 	inner, err := e.subqueryFrag(m.Inner)
 	if err != nil {
@@ -498,8 +490,7 @@ func (e *emitter) emitMetricsCompare(m *chplan.MetricsCompare) error {
 	outer.GroupBy(Col(selA), Col(attrA), Col(valA))
 	outer.OrderBy(Col(selA), false).OrderBy(Col(attrA), false).OrderBy(Col(valA), false)
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // emitRangeWindowCompare renders the matrix shape — one row per
@@ -635,6 +626,5 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	outer.SelectAs(compareCountValueFrag(), compareValueOut(m))
 	outer.GroupBy(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }

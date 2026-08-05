@@ -293,7 +293,7 @@ func TestQueryBuilder_Frag_WrapsWithParens(t *testing.T) {
 
 	outer := NewBuilder()
 	inner.Frag()(outer)
-	sql, args := outer.Build()
+	sql, args, _ := outer.Build()
 	if want := "(SELECT `Value` FROM `t` WHERE `k` = ?)"; sql != want {
 		t.Errorf("Frag wrap = %q; want %q", sql, want)
 	}

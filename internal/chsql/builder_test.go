@@ -16,7 +16,7 @@ func TestBuilder_Empty(t *testing.T) {
 	t.Parallel()
 
 	var b Builder
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if sql != "" {
 		t.Errorf("empty Builder produced SQL %q; want empty", sql)
 	}
@@ -71,7 +71,7 @@ func TestBuilder_Arg(t *testing.T) {
 	b.Arg("hello")
 	b.writeSQL(", ")
 	b.Arg(42)
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	if want := "?, ?"; gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
 	}
@@ -86,7 +86,7 @@ func TestBuilder_MapAt(t *testing.T) {
 
 	b := NewBuilder()
 	b.MapAt("Attributes", "service.name")
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	if want := "`Attributes`[?]"; gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
 	}
@@ -101,7 +101,7 @@ func TestBuilder_MapKeys(t *testing.T) {
 
 	b := NewBuilder()
 	b.MapKeys("Attributes")
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	if want := "mapKeys(`Attributes`)"; gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
 	}
@@ -116,7 +116,7 @@ func TestBuilder_MapFilterExcept(t *testing.T) {
 
 	b := NewBuilder()
 	b.MapFilterExcept("Attributes", "instance", "job")
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	want := "mapFilter((k, v) -> NOT (k IN (?, ?)), `Attributes`)"
 	if gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
@@ -182,7 +182,7 @@ func TestBuilder_SubtractNanos_PreservesArgOrder(t *testing.T) {
 		b.MapAt("Attributes", "service.name")
 		b.writeSQL(")")
 	}, 1000)
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	wantSQL := "(max(`Attributes`[?]) - toIntervalNanosecond(1000))"
 	if gotSQL != wantSQL {
 		t.Errorf("SQL = %q; want %q", gotSQL, wantSQL)
@@ -236,7 +236,7 @@ func TestBuilder_Lambda(t *testing.T) {
 		b.writeSQL("k = ")
 		b.Arg("env")
 	})
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	if want := "(k, v) -> k = ?"; gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
 	}
@@ -260,7 +260,7 @@ func TestBuilder_ParamAgg_Parameterised(t *testing.T) {
 			func(b *Builder) { b.Ident("Value") },
 		},
 	)
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	if want := "quantile(?)(`Value`)"; gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
 	}
@@ -302,7 +302,7 @@ func TestBuilder_ParamAgg_MultiParam(t *testing.T) {
 			func(b *Builder) { b.Ident("Value") },
 		},
 	)
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	if want := "quantiles(?, ?)(`Value`)"; gotSQL != want {
 		t.Errorf("SQL = %q; want %q", gotSQL, want)
 	}
@@ -325,7 +325,7 @@ func TestFrag_HelpersBindAtPosition(t *testing.T) {
 	Call("now64", InlineLit(int64(9)))(b)
 	b.writeSQL(", ")
 	Qual("L", "TimeUnix")(b)
-	gotSQL, gotArgs := b.Build()
+	gotSQL, gotArgs, _ := b.Build()
 	wantSQL := "`Value`, ?, now64(9), `L`.`TimeUnix`"
 	if gotSQL != wantSQL {
 		t.Errorf("SQL = %q; want %q", gotSQL, wantSQL)
@@ -379,7 +379,7 @@ func TestUnionAll_JoinsParts(t *testing.T) {
 
 	b := NewBuilder()
 	UnionAll(left.Frag(), right.Frag())(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "(SELECT `MetricName` FROM `gauge` WHERE `MetricName` = ?)" +
 		" UNION ALL " +
 		"(SELECT `MetricName` FROM `sum` WHERE `MetricName` = ?)"
@@ -882,7 +882,7 @@ func TestBuilder_Expr(t *testing.T) {
 			if err := b.Expr(tc.expr); err != nil {
 				t.Fatalf("Expr: %v", err)
 			}
-			sql, args := b.Build()
+			sql, args, _ := b.Build()
 			if sql != tc.wantSQL {
 				t.Errorf("SQL = %q; want %q", sql, tc.wantSQL)
 			}
@@ -946,7 +946,7 @@ func TestAnd_JoinsParts(t *testing.T) {
 		Eq(Col("b"), Lit(int64(2))),
 		Eq(Col("c"), Lit(int64(3))),
 	)(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "`a` = ? AND `b` = ? AND `c` = ?"
 	if sql != want {
 		t.Errorf("And SQL = %q; want %q", sql, want)
@@ -1035,7 +1035,7 @@ func TestTuple_RendersCommaSeparated(t *testing.T) {
 
 	b := NewBuilder()
 	Tuple(Lit(int64(1)), Lit(int64(2)), Lit(int64(3)))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if got, want := sql, "(?, ?, ?)"; got != want {
 		t.Errorf("Tuple SQL = %q; want %q", got, want)
 	}
@@ -1139,7 +1139,7 @@ func TestArray_RendersLiteral(t *testing.T) {
 
 	b := NewBuilder()
 	Array(Lit("a"), Lit("b"), Lit("c"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if got, want := sql, "[?, ?, ?]"; got != want {
 		t.Errorf("Array SQL = %q; want %q", got, want)
 	}
@@ -1166,7 +1166,7 @@ func TestSubscript_RendersBrackets(t *testing.T) {
 
 	b := NewBuilder()
 	Subscript(Col("Attributes"), Lit("service.name"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if got, want := sql, "`Attributes`[?]"; got != want {
 		t.Errorf("Subscript SQL = %q; want %q", got, want)
 	}
@@ -1186,7 +1186,7 @@ func TestIf_RendersTernary(t *testing.T) {
 		Lit("yes"),
 		Lit("no"),
 	)(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if got, want := sql, "if(`a` = ?, ?, ?)"; got != want {
 		t.Errorf("If SQL = %q; want %q", got, want)
 	}
@@ -1219,7 +1219,7 @@ func TestSubquery_QueryBuilder(t *testing.T) {
 
 	b := NewBuilder()
 	Subquery(inner)(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "(SELECT `v` FROM `t` WHERE `k` = ?)"
 	if sql != want {
 		t.Errorf("Subquery SQL = %q; want %q", sql, want)
@@ -1263,7 +1263,7 @@ func TestIn_RendersList(t *testing.T) {
 
 	b := NewBuilder()
 	In(Col("a"), Lit("x"), Lit("y"), Lit("z"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if got, want := sql, "`a` IN (?, ?, ?)"; got != want {
 		t.Errorf("In SQL = %q; want %q", got, want)
 	}
@@ -1314,7 +1314,7 @@ func TestCall_MultipleArgs(t *testing.T) {
 
 	b := NewBuilder()
 	Call("if", Eq(Col("a"), Lit(1)), Lit("y"), Lit("n"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if want := "if(`a` = ?, ?, ?)"; sql != want {
 		t.Errorf("Call(if,...) = %q; want %q", sql, want)
 	}
@@ -1330,7 +1330,7 @@ func TestParametric_OneParamOneArg(t *testing.T) {
 
 	b := NewBuilder()
 	Parametric("quantile", []Frag{Lit(0.5)}, Col("Value"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if want := "quantile(?)(`Value`)"; sql != want {
 		t.Errorf("Parametric = %q; want %q", sql, want)
 	}
@@ -1346,7 +1346,7 @@ func TestParametric_MultiParamMultiArg(t *testing.T) {
 
 	b := NewBuilder()
 	Parametric("quantiles", []Frag{Lit(0.5), Lit(0.9)}, Col("a"), Col("b"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if want := "quantiles(?, ?)(`a`, `b`)"; sql != want {
 		t.Errorf("Parametric = %q; want %q", sql, want)
 	}
@@ -1442,7 +1442,7 @@ func TestBetween(t *testing.T) {
 
 	b := NewBuilder()
 	Between(Col("ts"), Lit(1), Lit(10))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if want := "`ts` BETWEEN ? AND ?"; sql != want {
 		t.Errorf("Between = %q; want %q", sql, want)
 	}
@@ -1491,7 +1491,7 @@ func TestRangeWindowFilter_BindsArgsInOrder(t *testing.T) {
 
 	b := NewBuilder()
 	RangeWindowFilter(Lit("S"), Lit("E"), Lit("A"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "arrayFilter(p -> tupleElement(p, 1) > ? AND tupleElement(p, 1) <= ?, ?)"
 	if sql != want {
 		t.Errorf("RangeWindowFilter SQL = %q; want %q", sql, want)
@@ -1545,7 +1545,7 @@ func TestIfNonZero_Basic(t *testing.T) {
 		Call("arraySum", BareIdent("window_vals")),
 		Lit(60.0),
 	)(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "if(length(window_vals) > 0, arraySum(window_vals) / ?, 0.0)"
 	if sql != want {
 		t.Errorf("IfNonZero SQL = %q; want %q", sql, want)
@@ -1563,7 +1563,7 @@ func TestIfNonZero_InlineDenom(t *testing.T) {
 
 	b := NewBuilder()
 	IfNonZero(BareIdent("window_vals"), BareIdent("range_seconds"))(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "if(length(window_vals) > 0, window_vals / range_seconds, 0.0)"
 	if sql != want {
 		t.Errorf("IfNonZero SQL = %q; want %q", sql, want)

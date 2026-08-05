@@ -121,8 +121,7 @@ func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 		sb.GroupBy(infoBaseSampleKeyFrags(j)...)
 		sb.Having(infoConflictGuardFrag(j))
 	}
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // infoConflictGuardFrag renders the HAVING term that fails the query when
