@@ -17,11 +17,11 @@ import (
 // alignUnionArms call. The remaining five all still exist, unchanged in
 // substance, just renumbered by intervening edits:
 //
-//	lower.go:613  isNarrowSpanProjection  Replacements guard
+//	lower.go:612  isNarrowSpanProjection  Replacements guard
 //	lower.go:620  isNarrowSpanProjection  Projections-length guard
-//	lower.go:1323 lowerInOperation        absentAttributePredicate guard
-//	lower.go:1394 attributeHasNoBacking   instrumentation-scope guard
-//	lower.go:1469 coerceBoolFieldAccess   op guard
+//	lower.go:1333 lowerInOperation        absentAttributePredicate guard
+//	lower.go:1417 attributeHasNoBacking   instrumentation-scope guard
+//	lower.go:1670 coerceBoolFieldAccess   op guard
 //
 // Each test below calls the mutated function/call-site directly and asserts
 // the CONCRETE result on both sides of the guard, so a CONDITIONALS_NEGATION
@@ -108,7 +108,7 @@ func TestIsNarrowSpanProjection_PerColumnGuard(t *testing.T) {
 }
 
 // TestLowerInOperation_AbsentAttributeGuard pins the `; absent {` guard at
-// lower.go:1323 (`if pred, absent := absentAttributePredicate(...); absent`).
+// lower.go:1333 (`if pred, absent := absentAttributePredicate(...); absent`).
 // The mutant flips it to `; !absent {`, which:
 //   - on a backed attribute (absent == false) wrongly fires the early
 //     return, yielding the (nil, nil) zero value instead of an *InList;
@@ -152,7 +152,7 @@ func TestLowerInOperation_AbsentAttributeGuard(t *testing.T) {
 
 // TestAttributeHasNoBacking_InstrumentationScopeGuard pins the
 // `attr.Scope == AttributeScopeInstrumentation && s.ScopeAttributesColumn ==
-// ""` predicate (lower.go:1394). The mutant negates the whole expression,
+// ""` predicate (lower.go:1417). The mutant negates the whole expression,
 // which flips every one of the three cases below.
 func TestAttributeHasNoBacking_InstrumentationScopeGuard(t *testing.T) {
 	t.Parallel()
@@ -179,7 +179,7 @@ func TestAttributeHasNoBacking_InstrumentationScopeGuard(t *testing.T) {
 }
 
 // TestCoerceBoolFieldAccess_OpGuard pins the `op != chplan.OpEq && op !=
-// chplan.OpNe` guard (lower.go:1469). The mutant flips it to `op == OpEq ||
+// chplan.OpNe` guard (lower.go:1670). The mutant flips it to `op == OpEq ||
 // op == OpNe`, which:
 //   - on OpEq wrongly fires the early return, leaving the LitBool operand
 //     un-coerced instead of rewritten to its OTel-CH string encoding;

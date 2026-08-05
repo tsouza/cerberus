@@ -1,0 +1,38 @@
+-- query.traceql --
+{ rootServiceName = "checkout" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    _svc String,
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, ServiceName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'checkout'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 'db'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'billing');
+-- expected_rows --
+[
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2024-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2024-01-01T00:00:01Z", 0]
+]
+-- args --
+[0] string = ""
+[1] string = "0000000000000000"
+[2] string = "checkout"
+-- chplan --
+Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[argMinIf(ServiceName, Timestamp, (ParentSpanId IN ("", "0000000000000000"))) AS _cerb_trace_scoped_val] ; Scan(otel_traces)})
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`ServiceName`, `Timestamp`, (`ParentSpanId` IN (?, ?))) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))

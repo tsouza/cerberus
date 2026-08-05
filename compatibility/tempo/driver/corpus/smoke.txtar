@@ -8,19 +8,21 @@
 # /api/metrics/query handler (see internal/api/tempo/metrics_query_instant.go).
 #
 # 4 cases mined from upstream in #1709 diverged from reference Tempo on
-# arrival and are held OUT of this corpus per driver/corpus.go's "no
+# arrival and were held OUT of this corpus per driver/corpus.go's "no
 # opt-out marker, a case that can't run is removed" contract (real
-# divergences never enter the baseline). Each is a filed bug, re-added
-# by the PR that closes it:
+# divergences never enter the baseline). Both filed bugs are now fixed
+# and the 4 cases are re-added in their own section below
+# ("Trace-scoped root identity + NOT-evaluation parity"):
 #   * scoped_trace_root_service, scoped_trace_root_name_regex,
-#     scoped_trace_duration_gt — cerberus folds trace:rootService /
+#     scoped_trace_duration_gt — cerberus used to fold trace:rootService /
 #     trace:rootName / trace:duration comparisons to constant-false
-#     instead of computing real answers (#1711).
+#     instead of computing real answers; now lowers to a real per-trace
+#     correlated subquery (#1711).
 #   * negated_kind_not_client — reference Tempo returns empty for any
 #     top-level `!(<comparison>)` spanset filter regardless of the
-#     inner comparison's selectivity; cerberus computes the logically
-#     correct (non-empty) answer instead of matching that behaviour
-#     bit-for-bit (#1712).
+#     inner comparison's selectivity; cerberus now reproduces that
+#     bit-for-bit instead of computing the logically-correct
+#     (non-empty) answer (#1712).
 #
 # The shadow test runs the SAME 20 search categories against a fake
 # in-process span set; this corpus runs the SAME categories against
@@ -60,10 +62,11 @@
 # and a per-id smoke; later additions grew the spanSets, metrics, and
 # nil-comparison families (the count below tracks
 # `grep -c '^-- name --'`).
-# Total: 65 cases (`grep -c '^-- name --'`) — 49 from the families
+# Total: 67 cases (`grep -c '^-- name --'`) — 51 from the families
 # above (the nil-comparison family activated alongside the Traces
-# Drilldown breakdown fix, intrinsic `!= nil` lowering) plus 16 from
-# the upstream-mined block described next.
+# Drilldown breakdown fix, intrinsic `!= nil` lowering), 4 from the
+# trace-scoped root-identity + NOT-evaluation-parity block re-added by
+# #1711/#1712, and 12 from the upstream-mined block described next.
 #
 # The "Upstream-mined" block at the end of this file (#1522) is a
 # different provenance from everything above: every case above was
@@ -933,6 +936,77 @@ metrics_range
 -- semantic_checks --
 samples_non_negative
 groupby_labels_present:kind
+
+# --- Trace-scoped root identity + NOT-evaluation parity (#1711, #1712) ---
+#
+# The 4 cases held back at #1709's arrival (see the top-of-file note),
+# re-added now that both bugs are fixed:
+#   * scoped_trace_root_service / scoped_trace_root_name_regex /
+#     scoped_trace_duration_gt (#1711) — trace:rootService /
+#     trace:rootName / trace:duration now lower to a real per-trace
+#     correlated subquery instead of folding to constant-false.
+#   * negated_kind_not_client (#1712) — reference Tempo's `/api/search`
+#     always empties a top-level `!(<comparison>)` spanset filter
+#     regardless of the inner comparison; cerberus now reproduces that
+#     bit-for-bit instead of computing the logically-correct answer, so
+#     both backends agree the case returns zero traces.
+
+-- name --
+scoped_trace_root_service
+# Every trace's root span carries the fixture's service name as
+# resource.service.name, so this must match every trace for that
+# service (25 of the 100-trace fixture; see seeder.go's 4x25 shape).
+-- query --
+{ trace:rootService = "checkout" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+200
+-- expected_services --
+checkout
+
+-- name --
+scoped_trace_root_name_regex
+# Root span name is always "GET /api/<svc>/<idx>" (seeder.go::newTrace).
+-- query --
+{ trace:rootName =~ "GET /api/.*" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_trace_duration_gt
+# Root span duration is fixed at 150ms (seeder.go::rootSpanDurationNs);
+# trace duration (root span end - root span start) is >= that for every
+# trace, so this must match broadly across the fixture.
+-- query --
+{ trace:duration > 100ms }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+negated_kind_not_client
+# Reference Tempo empties ANY top-level `!(<comparison>)` spanset filter
+# regardless of the inner comparison's selectivity (#1712) — cerberus
+# matches that bit-for-bit, so both backends must agree on zero traces
+# even though `kind = client` alone matches plenty of spans.
+-- query --
+{ !(kind = client) }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+0
 
 # --- Upstream-mined scoped intrinsics + boundary cases (#1522) ---
 #
