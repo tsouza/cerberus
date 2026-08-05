@@ -380,7 +380,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 | head       | passed/total |
 | ---------- | ------------ |
 | prometheus | 748 / 748    |
-| loki       | 129 / 129    |
+| loki       | 130 / 130    |
 | tempo      | 68 / 68      |
 | tempo-grpc | 65 / 65      |
 

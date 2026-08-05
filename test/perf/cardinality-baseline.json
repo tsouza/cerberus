@@ -1243,6 +1243,39 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "logql/pipeline_drop_detected_level_by_level_grouping",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "logql/pipeline_drop_detected_level_matcher_on_aggregation",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "logql/pipeline_drop_detected_level_on_aggregation",
+    "fan_factor": 1,
+    "scan_rows": 3,
+    "peak_intermediate": 3,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "logql/pipeline_drop_merges_streams",
     "fan_factor": 1,
     "scan_rows": 3,
