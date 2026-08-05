@@ -582,10 +582,16 @@ func (m Metrics) TablesFor(metricName string) []string {
 //
 // The histogram / exp-histogram tables cannot join this candidate set:
 // their row shape (Count / Sum / BucketCounts, no Value column) is
-// disjoint from the Sample contract the `merge()` fan-out requires, so
-// surfacing classic-histogram series under regex name matchers needs
-// the per-arm UnionAll lowering (see the `_count` / `_sum` companion
-// path) — out of scope for the unknown-name fan-out.
+// disjoint from the Sample contract the `merge()` fan-out requires.
+// Classic-histogram series under a regex name matcher are surfaced by a
+// separate per-arm UnionAll lowering instead
+// (lowerRegexHistogramSelector in internal/promql/regex_histogram_lower.go,
+// wired from lowerVectorSelector for any selector with an unpinned
+// __name__ matcher): it unions this unknown-name candidate set with a
+// companion arm per `_count`/`_sum` suffix and a `_bucket` arm. Native
+// (exponential) histograms have no equivalent arm — HistogramCompanionColumn
+// only resolves [Metrics.IsExpHistogramMetric] from a literal bare name, so
+// ExpHistogramTable stays unreachable under a regex name matcher.
 func (m Metrics) TablesForUnknownName() []string {
 	if m.SumTable != "" && m.SumTable != m.GaugeTable {
 		return []string{m.GaugeTable, m.SumTable}
