@@ -8989,24 +8989,24 @@
   {
     "fixture": "traceql/select_nested_set_drilldown_historical_window",
     "fan_factor": null,
-    "scan_rows": 6,
-    "peak_intermediate": 6,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": true,
     "max_recursion_depth": 4,
-    "uncountable_levels": 1
+    "uncountable_levels": 2
   },
   {
     "fixture": "traceql/select_nested_set_drilldown_limited",
     "fan_factor": null,
-    "scan_rows": 6,
-    "peak_intermediate": 6,
+    "scan_rows": 4,
+    "peak_intermediate": 4,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": true,
     "max_recursion_depth": 4,
-    "uncountable_levels": 1
+    "uncountable_levels": 2
   },
   {
     "fixture": "traceql/select_nested_set_drilldown_structure",
@@ -9022,13 +9022,13 @@
   {
     "fixture": "traceql/select_nested_set_drilldown_unbounded_noop",
     "fan_factor": null,
-    "scan_rows": 12,
-    "peak_intermediate": 12,
+    "scan_rows": 8,
+    "peak_intermediate": 8,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": true,
     "max_recursion_depth": 8,
-    "uncountable_levels": 1
+    "uncountable_levels": 2
   },
   {
     "fixture": "traceql/select_nested_set_structural",

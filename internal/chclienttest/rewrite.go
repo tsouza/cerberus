@@ -82,9 +82,29 @@ func isMapColumn(name string) bool {
 //	`Attributes` AS `Attributes`       → toJSONString(`Attributes`) AS `Attributes`
 //
 // Anything else passes through. If a Map column slips through unwrapped
-// the chdb-go parquet decoder will panic loudly at scan time, which is
-// the failure mode we want.
+// the chdb-go parquet decoder surfaces the cell as NULL against the
+// string scan destination, so the caller fails with "converting NULL to
+// string is unsupported" on the Map column's index.
 func rewriteMapProjections(query string) string {
+	// A leading `WITH …` head — the vector-set-op CSE CTE, the
+	// structural-join `WITH RECURSIVE` closure, or the emitter's
+	// single-evaluation trace-scope binding — sits in front of the outer
+	// SELECT, so the projection split below would not recognise the
+	// statement at all. Peel it, rewrite the SELECT it heads, re-prepend
+	// it verbatim: CTE bodies are subqueries CH consumes server-side, so
+	// their Map columns stay raw like every other subquery's.
+	if head, body := stripWithHead(query); head != "" {
+		return head + rewriteMapProjections(body)
+	}
+	// `SELECT * FROM (<plan>)` — the wrapper the emitter renders around a
+	// plan that needs an outer binding. The star carries the inner
+	// projection's Map column out unwrapped and hides its alias from the
+	// pass below, so rewrite the subquery instead: the star forwards the
+	// inner names and order unchanged, which makes wrapping one level down
+	// produce exactly the same outer wire shape.
+	if inner, ok := starOverSubquery(query); ok {
+		return "SELECT * FROM (" + rewriteMapProjections(inner) + ")"
+	}
 	// Top-level UNION-ALL shape: `(SELECT …) UNION ALL (SELECT …) …`. The
 	// fan-in metadata /series path (internal/api/prom/metadata.go) renders
 	// the combined Sample query as a bare UnionAll of parenthesised SELECT
@@ -119,6 +139,75 @@ func rewriteMapProjections(query string) string {
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
 	}
 	return "SELECT " + strings.Join(projs, ", ") + tail
+}
+
+// stripWithHead peels a leading `WITH <cte-chain> ` off query, returning
+// (head, body) where head is the verbatim prefix up to — and excluding —
+// the outer SELECT, and body is that SELECT. Returns ("", "") when query
+// does not begin with `WITH ` (case-insensitive), so a bare SELECT falls
+// through to the single-SELECT path.
+//
+// The outer SELECT is the first `SELECT ` keyword reached at paren depth
+// 0: every CTE body is parenthesised, whether it is a relational
+// `WITH x AS (SELECT …)`, a `WITH RECURSIVE x AS (…)`, or a scalar
+// `WITH (SELECT …) AS x`, so their own SELECTs sit deeper and are
+// skipped. Mirrors test/spec/runner_chdb.go's peel of the same shapes.
+func stripWithHead(query string) (head, body string) {
+	if !strings.HasPrefix(strings.ToUpper(query), "WITH ") {
+		return "", ""
+	}
+	const sel = "SELECT "
+	depth := 0
+	inStr := byte(0)
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+		switch {
+		case inStr != 0:
+			if c == inStr {
+				inStr = 0
+			}
+			continue
+		case c == '\'' || c == '`':
+			inStr = c
+			continue
+		case c == '(':
+			depth++
+			continue
+		case c == ')':
+			depth--
+			continue
+		}
+		if depth != 0 || i == 0 || i+len(sel) > len(query) {
+			continue
+		}
+		// Standalone keyword only — a `SELECT` that continues an identifier
+		// is not the outer one.
+		if !strings.EqualFold(query[i:i+len(sel)], sel) || !isSQLBreak(query[i-1]) {
+			continue
+		}
+		return query[:i], query[i:]
+	}
+	return "", ""
+}
+
+// isSQLBreak reports whether c can precede a standalone SQL keyword.
+func isSQLBreak(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ')'
+}
+
+// starOverSubquery matches `SELECT * FROM (<subquery>)` — the wrapper the
+// chsql emitter renders around a plan whose gates reference a binding
+// declared on the outermost statement. Returns the subquery body and
+// ok=true only when the projection is exactly `*` AND the parenthesised
+// FROM operand runs to the end of the statement, so a star over a join, a
+// star followed by ORDER BY / LIMIT, or a star over a bare table all fall
+// through untouched rather than being rewritten on a guess.
+func starOverSubquery(query string) (inner string, ok bool) {
+	head, tail := splitOuterSelect(query)
+	if strings.TrimSpace(head) != "*" {
+		return "", false
+	}
+	return stripOuterParens(tail[len(" FROM "):])
 }
 
 // splitTopLevelUnionAll splits a `<arm> UNION ALL <arm> …` statement on

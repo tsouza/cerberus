@@ -419,7 +419,19 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 // leaf-scan gate and the numbering scope see a byte-identical trace set. The
 // subquery self-parenthesises (QueryBuilder.Frag) and InSubquery adds none, so
 // the result is the CH-idiomatic `<TraceId> IN (SELECT …)` with one paren pair.
+// When the emit chokepoint has bound the top-N set once
+// (chplan.BindBoundedTraceScope stamps BindingAlias), the gate renders
+// instead as `has(<alias>, <TraceId>)` against that binding — the same
+// trace set, derived once for the whole statement rather than re-scanned at
+// every gate. `IN <alias>` is not an option: ClickHouse only accepts a
+// constant or a table expression on the right of IN, and a scalar array is
+// neither; `has` against the bound array still drives the TraceId
+// bloom-filter skip index, so granule pruning is unchanged.
 func (b *Builder) exprBoundedTraceScope(s *chplan.BoundedTraceScope) error {
+	if s.BindingAlias != "" {
+		Call("has", BareIdent(s.BindingAlias), Col(s.TraceIDColumn))(b)
+		return nil
+	}
 	InSubquery(
 		Col(s.TraceIDColumn),
 		boundedRootScopeFrag(s.SpansTable, s.TraceIDColumn, s.ParentSpanIDColumn, s.TimestampColumn, s.TraceLimit, s.WindowStartNano, s.WindowEndNano),
@@ -2063,11 +2075,23 @@ type joinClause struct {
 //     the textual duplication that blew set-op chains up
 //     exponentially). Body renders the (already-parenthesised) arm
 //     subquery Frag.
+//
+//   - Scalar (Body set, Scalar true):
+//     `WITH (<body>) AS <name>` — ClickHouse's scalar-CTE form, where
+//     the alias binds a VALUE rather than a relation. This is the only
+//     WITH shape ClickHouse evaluates exactly once no matter how many
+//     times the alias is referenced: a non-recursive relational CTE is
+//     INLINED at each reference, so N references cost N scans. Used by
+//     the emit chokepoint to bind a structure-tab query's repeated
+//     top-N trace-id set once (chplan.BindBoundedTraceScope). Note the
+//     inverted token order — the parenthesised subquery comes FIRST and
+//     the alias second, unlike the relational shapes above.
 type cteClause struct {
 	Name      string
 	Anchor    *QueryBuilder
 	Recursive *QueryBuilder
 	Body      Frag
+	Scalar    bool
 }
 
 // QueryBuilder accumulates a SELECT statement's parts. Slots are
@@ -2218,6 +2242,34 @@ func (s *QueryBuilder) With(name string, body Frag) *QueryBuilder {
 	return s
 }
 
+// WithScalar registers a `WITH (<body>) AS <name>` scalar CTE in front of
+// the SELECT: the alias binds the VALUE the body's single-row, single-column
+// SELECT produces, and ClickHouse evaluates that body EXACTLY ONCE however
+// many times the alias is referenced — including from nested subqueries,
+// since a WITH alias declared on the outermost statement is visible
+// throughout it.
+//
+// That single-evaluation property is the whole reason this shape exists
+// alongside [QueryBuilder.With]. A non-recursive relational CTE is inlined by
+// ClickHouse at every reference, so `WITH x AS (SELECT …)` referenced N times
+// reads N times — it dedupes the emitted TEXT, never the work. The scalar
+// form dedupes the work.
+//
+// The natural payload is an array: `(SELECT groupArray(TraceId) FROM (<top-N
+// traces>)) AS ids`, tested with `has(ids, TraceId)`. `TraceId IN ids` is NOT
+// available — ClickHouse rejects a scalar array as an IN operand ("Function
+// 'in' is supported only if second argument is constant or table
+// expression") — while `has` against a bound array still drives the spans
+// table's TraceId bloom-filter skip index, so granule pruning is preserved.
+//
+// body is a QueryBuilder (not a Frag) so this method owns the surrounding
+// parens, matching WithRecursive's anchor/recursive children; passing a nil
+// body panics at render time.
+func (s *QueryBuilder) WithScalar(name string, body *QueryBuilder) *QueryBuilder {
+	s.ctes = append(s.ctes, cteClause{Name: name, Body: Subquery(body), Scalar: true})
+	return s
+}
+
 // Where appends predicates to the WHERE clause. Multiple predicates
 // are joined with " AND " when rendered.
 func (s *QueryBuilder) Where(conds ...Frag) *QueryBuilder {
@@ -2346,6 +2398,16 @@ func (s *QueryBuilder) writeCTEs(b *Builder) {
 		// CTE aliases, and the existing structural_join fixture pins
 		// `_struct_closure` (no backticks). The caller is responsible
 		// for passing a CH-identifier-safe token.
+		//
+		// The scalar shape inverts the token order: ClickHouse spells a
+		// value-valued CTE `(<subquery>) AS <name>`, not
+		// `<name> AS (<subquery>)`.
+		if c.Scalar {
+			c.writeBody(b)
+			b.sb.WriteString(" AS ")
+			b.sb.WriteString(c.Name)
+			continue
+		}
 		b.sb.WriteString(c.Name)
 		b.sb.WriteString(" AS ")
 		c.writeBody(b)
