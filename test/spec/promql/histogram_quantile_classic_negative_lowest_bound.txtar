@@ -9,7 +9,7 @@
 # phi=0.5 → rank 3.5, which the first rung (4) already covers, so upstream
 # answers -10. Interpolating from 0 instead answers -8.75.
 -- query.promql --
-histogram_quantile(0.5, http_server_request_duration)
+histogram_quantile(0.5, http_server_request_duration_bucket)
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,

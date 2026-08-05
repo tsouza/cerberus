@@ -5,7 +5,7 @@
 # arrayFirstIndex hits length -> returns 1.0.
 
 -- query.promql --
-histogram_quantile(0.95, http_server_request_duration{service="api"})
+histogram_quantile(0.95, http_server_request_duration_bucket{service="api"})
 -- range_step --
 30s
 -- seed --

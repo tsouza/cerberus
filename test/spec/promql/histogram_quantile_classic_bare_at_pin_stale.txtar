@@ -12,7 +12,7 @@
 # hour-old histogram — the row count is what discriminates.
 
 -- query.promql --
-histogram_quantile(0.95, http_server_request_duration @ 1767225600)
+histogram_quantile(0.95, http_server_request_duration_bucket @ 1767225600)
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,

@@ -3,6 +3,7 @@ package promql
 import (
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -239,13 +240,13 @@ func lowerHistogramQuantileClassicBareRange(
 	// fire `rate(<X>_bucket[r])`; the OTel-CH histogram row carries
 	// the bare `<X>` MetricName, so the strip is what makes the
 	// filter find rows.
-	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
+	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	groupBy := []chplan.Expr{histogramIdentityExpr(s)}
 	groupByAliases := []string{s.AttributesColumn}
 	attrsRebuild := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 	return buildHistogramRangeTree(
-		scan, pred, windowFor(vs, instantLookback),
+		scan, pred, leMatchers, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
 		classicBucketShaping{aggs: classicBucketLatestAggs(s)}, phi, s, ctx,
 	)
@@ -268,7 +269,7 @@ func lowerHistogramQuantileClassicAggRange(
 	scan := &chplan.Scan{Table: s.HistogramTable}
 	// `_bucket` suffix strip — see stripBucketSuffix in
 	// histogram_quantile.go.
-	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
+	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	// Stage 1: fan each sample over its anchors and reduce each
 	// (series, anchor) window to one row, applying the range-vector
@@ -279,7 +280,7 @@ func lowerHistogramQuantileClassicAggRange(
 	// EMPTY, so the floor would otherwise ask whether the whole anchor
 	// held two scrapes instead of whether this series did.
 	fanout := buildHistogramBucketFanout(
-		scan, pred, aggWindowFor(shape),
+		scan, pred, leMatchers, aggWindowFor(shape),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		classicBucketWindowAggs(s), s, ctx,
 	)
@@ -337,6 +338,7 @@ func lowerHistogramQuantileClassicAggRange(
 func buildHistogramRangeTree(
 	scan *chplan.Scan,
 	pred chplan.Expr,
+	leMatchers []*labels.Matcher,
 	win histogramWindow,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
@@ -348,7 +350,7 @@ func buildHistogramRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, shaping.aggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, leMatchers, win, userGroupBy, userAliases, shaping.aggs, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
@@ -532,7 +534,7 @@ func buildHistogramNativeRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, expHistAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, expHistAggs, s, ctx)
 
 	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
 	// fields (already aliased to their schema-canonical names by the
@@ -609,7 +611,7 @@ func buildHistogramNativeRangeTreeMerge(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
-	agg := buildHistogramBucketFanout(scan, pred, win, userGroupBy, userAliases, mergeAggs, s, ctx)
+	agg := buildHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, mergeAggs, s, ctx)
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
@@ -688,6 +690,7 @@ func buildHistogramNativeRangeTreeMerge(
 func buildHistogramBucketFanout(
 	scan *chplan.Scan,
 	pred chplan.Expr,
+	leMatchers []*labels.Matcher,
 	win histogramWindow,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
@@ -702,6 +705,13 @@ func buildHistogramBucketFanout(
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}
 	}
+	// `le` matcher restriction (#1478) — narrows BucketCounts /
+	// ExplicitBounds to the retained rungs before the fan-out ever reads
+	// them, so RangeBucketFanout's own aggregation (argMax / sumForEach)
+	// operates on the restricted per-bucket shape like any other classic
+	// histogram row. No-op (returns rawSide unchanged) when leMatchers is
+	// empty — every non-classic-histogram caller passes nil.
+	rawSide = classicBucketLeRestriction(rawSide, leMatchers, s)
 
 	return &chplan.RangeBucketFanout{
 		Input:    rawSide,

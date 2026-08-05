@@ -1,5 +1,5 @@
 -- query.promql --
-histogram_quantile(0.3, http_server_request_duration)
+histogram_quantile(0.3, http_server_request_duration_bucket)
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
