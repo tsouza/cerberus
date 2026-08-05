@@ -512,13 +512,31 @@ func lowerOuterRangeFnOverSubquery(
 	}
 
 	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Func:            outer.Func.Name,
+		Input: inner,
+		// Use the canonical "holt_winters" IR name regardless of whether
+		// the source query used the legacy name or the
+		// `double_exponential_smoothing` alias — the chsql emitter
+		// switches on the IR name only, mirroring lowerHoltWinters's
+		// same canonicalization in range_fns.go.
+		Func:            canonicalRangeWindowFunc(outer.Func.Name),
 		Range:           sub.Range,
 		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+
+	// predict_linear / holt_winters / quantile_over_time carry extra
+	// scalar arguments beyond the subquery itself; thread them onto rw
+	// the same way the non-subquery lowerers in range_fns.go do
+	// (Scalars for a literal, ScalarExprs for a computed scalar()
+	// expression). value is ordinarily rw's own Value column;
+	// quantile_over_time's out-of-range literal phi folds it to the
+	// PromQL-spec ±Inf/NaN constant instead, mirroring
+	// lowerQuantileOverTime's post-Project fold (#1456).
+	value, replaceValue, err := threadOuterRangeFnScalars(outer, rw, s, ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	rangeMode := ctx.rangeMode()
@@ -555,8 +573,7 @@ func lowerOuterRangeFnOverSubquery(
 		if rangeFnPreservesName(outer.Func.Name) {
 			nameExpr = &chplan.LitString{V: ""}
 		}
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr,
-			&chplan.ColumnRef{Name: s.ValueColumn}), nil
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr, value), nil
 	case rangeMode:
 		// Range mode: the outer reducer in `max_over_time(rate(m[5m])[1h:5m])`
 		// must fan across the request's step grid so each anchor in
@@ -616,7 +633,102 @@ func lowerOuterRangeFnOverSubquery(
 			widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
 		}
 	}
-	return rw, nil
+	if !replaceValue {
+		return rw, nil
+	}
+	return projectValueOverInner(rw, s, value), nil
+}
+
+// canonicalRangeWindowFunc maps a parsed PromQL function name to the
+// name the chsql emitter's RangeWindow dispatch switches on. Only
+// holt_winters / double_exponential_smoothing need this: the upstream
+// parser only recognises the `double_exponential_smoothing` spelling
+// (the legacy `holt_winters` name was removed upstream and is rejected
+// at parse time), but the emitter's switch — and rangeVectorFn below —
+// key on the IR's "holt_winters" name regardless of source spelling.
+func canonicalRangeWindowFunc(name string) string {
+	if name == "double_exponential_smoothing" {
+		return "holt_winters"
+	}
+	return name
+}
+
+// threadOuterRangeFnScalars extracts and validates the extra scalar
+// argument(s) an outer range-vector function over a subquery requires,
+// beyond the subquery itself — mirroring lowerPredictLinear /
+// lowerHoltWinters / lowerQuantileOverTime's literal-vs-computed
+// extraction in range_fns.go, adapted for the arg POSITIONS this call
+// shape uses: predict_linear / holt_winters carry the subquery at
+// outer.Args[0] with the trailing scalar(s) after it; quantile_over_time
+// carries phi at outer.Args[0] with the subquery at outer.Args[1] (its
+// PromQL signature is `quantile_over_time(phi, v[range])`).
+//
+// Functions outside this set (rate, *_over_time without extra scalars,
+// …) fall through untouched: value is rw's own Value column and
+// replaceValue is false.
+//
+// The returned value is the expression the caller should ultimately
+// project as the Value column: ordinarily rw's own Value column, or —
+// for quantile_over_time with an out-of-range literal phi —
+// PromQL-spec's ±Inf / NaN constant, with replaceValue=true telling the
+// caller to fold it in via projectValueOverInner /
+// wrapRangeWindowAtBroadcast instead of forwarding rw's own aggregate.
+func threadOuterRangeFnScalars(
+	outer *parser.Call, rw *chplan.RangeWindow, s schema.Metrics, ctx lowerCtx,
+) (value chplan.Expr, replaceValue bool, err error) {
+	value = &chplan.ColumnRef{Name: s.ValueColumn}
+	switch outer.Func.Name {
+	case "predict_linear":
+		if len(outer.Args) != 2 {
+			return nil, false, fmt.Errorf("promql: predict_linear expects 2 arguments, got %d", len(outer.Args))
+		}
+		if t, ok := tryScalarLiteral(outer.Args[1]); ok {
+			rw.Scalars = []float64{t}
+		} else {
+			computed, cerr := lowerScalarArg(outer.Args[1], s, ctx)
+			if cerr != nil {
+				return nil, false, cerr
+			}
+			rw.ScalarExprs = []chplan.Expr{computed}
+		}
+	case "holt_winters", "double_exponential_smoothing":
+		if len(outer.Args) != 3 {
+			return nil, false, fmt.Errorf("promql: holt_winters expects 3 arguments, got %d", len(outer.Args))
+		}
+		sf, okSf := tryScalarLiteral(outer.Args[1])
+		tf, okTf := tryScalarLiteral(outer.Args[2])
+		if !okSf || !okTf {
+			return nil, false, fmt.Errorf("promql: holt_winters requires scalar-literal smoothing and trend factors")
+		}
+		if sf <= 0 || sf >= 1 {
+			return nil, false, fmt.Errorf("promql: holt_winters smoothing factor must be in (0, 1), got %v", sf)
+		}
+		if tf <= 0 || tf >= 1 {
+			return nil, false, fmt.Errorf("promql: holt_winters trend factor must be in (0, 1), got %v", tf)
+		}
+		rw.Scalars = []float64{sf, tf}
+	case "quantile_over_time":
+		if len(outer.Args) != 2 {
+			return nil, false, fmt.Errorf("promql: quantile_over_time expects 2 arguments, got %d", len(outer.Args))
+		}
+		if phi, ok := tryScalarLiteral(outer.Args[0]); ok {
+			if infValue, replace := outOfRangePhiInf(phi); replace {
+				// Out-of-range / NaN literal: feed the same in-domain
+				// sentinel the non-subquery lowering uses to the inner
+				// aggregate and fold the spec value on the way out.
+				rw.Scalars = []float64{quantileSentinelPhi}
+				return &chplan.LitFloat{V: infValue}, true, nil
+			}
+			rw.ScalarExprs = []chplan.Expr{&chplan.LitFloat{V: phi}}
+		} else {
+			computed, cerr := lowerScalarArg(outer.Args[0], s, ctx)
+			if cerr != nil {
+				return nil, false, cerr
+			}
+			rw.ScalarExprs = []chplan.Expr{computed}
+		}
+	}
+	return value, false, nil
 }
 
 // widenSubquerySpine threads the range-mode evaluation window down a
@@ -673,26 +785,34 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 // handles as range-vector reducers — i.e. every RangeWindow.Func the
 // windowed-array emitters support in both instant and matrix
 // (OuterRange > 0) modes. Subquery-argument lowering only fires for
-// these. predict_linear / holt_winters / quantile_over_time are
-// excluded: they carry extra scalar arguments the subquery RangeWindow
-// construction doesn't thread.
+// these. predict_linear / holt_winters / quantile_over_time carry extra
+// scalar arguments beyond the subquery itself; threadOuterRangeFnScalars
+// (called from lowerOuterRangeFnOverSubquery) threads them onto the
+// RangeWindow the same way range_fns.go's non-subquery lowerers do (#1456).
+// Both "holt_winters" and "double_exponential_smoothing" are listed even
+// though the upstream parser only ever produces the latter today — same
+// forward-compat rationale as lowerRangeVectorCall's two-spelling case.
 var rangeVectorFn = map[string]struct{}{
-	"rate":             {},
-	"irate":            {},
-	"increase":         {},
-	"delta":            {},
-	"idelta":           {},
-	"deriv":            {},
-	"resets":           {},
-	"changes":          {},
-	"sum_over_time":    {},
-	"avg_over_time":    {},
-	"min_over_time":    {},
-	"max_over_time":    {},
-	"count_over_time":  {},
-	"last_over_time":   {},
-	"stddev_over_time": {},
-	"stdvar_over_time": {},
+	"rate":                         {},
+	"irate":                        {},
+	"increase":                     {},
+	"delta":                        {},
+	"idelta":                       {},
+	"deriv":                        {},
+	"resets":                       {},
+	"changes":                      {},
+	"sum_over_time":                {},
+	"avg_over_time":                {},
+	"min_over_time":                {},
+	"max_over_time":                {},
+	"count_over_time":              {},
+	"last_over_time":               {},
+	"stddev_over_time":             {},
+	"stdvar_over_time":             {},
+	"predict_linear":               {},
+	"holt_winters":                 {},
+	"double_exponential_smoothing": {},
+	"quantile_over_time":           {},
 }
 
 // instantTransformFns is the set of sample-preserving instant-vector
