@@ -855,9 +855,9 @@
         "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_level=\"error\" | Structured metadata error level filter",
         "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_level=\"error\" | logfmt | Logfmt parsing with structured metadata filter first",
         "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | detected_level=\"error\" | Logfmt parsing with structured metadata filter",
-        "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=\"auth-service\"} | service_name=~\"auth\" | label-filter regex matcher strict prefix actual value matches nothing",
-        "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=~\"auth\"} | stream-selector regex matcher strict prefix an actual service_name matches nothing",
-        "regression/anchored-regex-matcher.yaml | log | range | FORWARD | {service_name=~\"auth\"} | stream-selector regex matcher strict prefix an actual service_name matches nothing",
+        "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=\"auth-service\"} | service_name=~\"auth\" | label-filter regex matcher that is a strict prefix of an actual value matches nothing",
+        "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=~\"auth\"} | stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing",
+        "regression/anchored-regex-matcher.yaml | log | range | FORWARD | {service_name=~\"auth\"} | stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing",
         "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | json | logfmt | drop __error__, __error_details__ | level=\"error\" or level=\"warn\" | Drilldown with error or warn level filter",
         "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | json | logfmt | drop __error__, __error_details__ | level=\"error\" | Drilldown with error level filter",
         "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | json | logfmt | drop __error__, __error_details__ | Basic drilldown with json and logfmt parsing",
@@ -964,8 +964,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 64,
-      "total": 64,
+      "passed": 65,
+      "total": 65,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -997,6 +997,7 @@
         "search | resource_deployment_env_not_nil",
         "search | resource_service_name_eq_checkout",
         "search | resource_service_name_neq_checkout",
+        "search | resource_service_name_regex_prefix_no_overmatch",
         "search | resource_service_name_regex_shipping",
         "search | scoped_event_name_no_events",
         "search | scoped_instrumentation_name",
