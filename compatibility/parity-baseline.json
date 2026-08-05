@@ -763,8 +763,8 @@
       ]
     },
     "loki": {
-      "passed": 129,
-      "total": 129,
+      "passed": 130,
+      "total": 130,
       "cases": [
         "cerberus/status-parity | status_parity | range | n/a |  | missing query parameter on /query_range",
         "cerberus/status-parity | status_parity | range | n/a | { | syntactically invalid LogQL (unbalanced selector) on /query_range",
@@ -885,6 +885,7 @@
         "regression/metric-queries.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | size != \"\" | unwrap size [5m])) | step=1m0s | Logfmt size unwrap",
         "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
         "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {service_name=\"metadata-probe\"} | request_id=\"\" | generic structured-metadata label filter - absent resolves to empty string",
+        "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {service_name=\"metadata-probe\"} | request_id=~\"req-.+\" | generic structured-metadata label filter - present folds the value into log-query stream identity",
         "regression/structured-metadata-generic.yaml | log | range | FORWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
         "regression/structured-metadata-generic.yaml | metric | range | FORWARD | sum by (request_id) (count_over_time({service_name=\"metadata-probe\"}[24h])) | step=1h0m0s | metric query grouped by a generic, unconstrained-value-domain structured-metadata key",
         "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} |~ \"error|exception\" | detected_level=\"error\" | Combined line and metadata filter",

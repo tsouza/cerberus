@@ -378,9 +378,22 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     collapsing 2a/2b/6d/7b to their integer = 14) and asserts the
     "N-layer test map" / "tested in N layers" claims in `CLAUDE.md`,
     `docs/test-strategy.md`, and `README.md` match.
+  - **compat parity floors** — reads the per-head `<passed>/<total>` floors
+    `compat-ratchet.mjs`'s header states (unwrapping `//` continuations) and
+    asserts each matches the `heads` block of
+    `compatibility/parity-baseline.json`, exactly once per head. `README.md`
+    and `docs/test-strategy.md` route readers to that header for the canonical
+    numbers, so it may not fall behind the file it explains.
+  - **compat parity roster table** — the same numbers restated as a markdown
+    table in `docs/compatibility.md` (`| <head> | <passed> / <total> |`),
+    asserted against the same baseline. Head names are matched as whole
+    table cells so `tempo` cannot read `tempo-grpc`'s row. Nothing checked
+    this table until #1819, and it had drifted below the baseline across
+    three consecutive corpus moves because each one bumped the header floor
+    the gate DID check.
   - Counts are parsed from the actual structures (registry keys / markdown
-    headings), never from a string match on the prose they validate, so a
-    doc can only go green by matching reality.
+    headings / table cells), never from a string match on the prose they
+    validate, so a doc can only go green by matching reality.
   - **`--self-test`** is a meta-test that feeds the derivers / extractors
     deliberately-drifted inputs and proves each assertion FAILS on a
     mismatch (and ACCEPTS the corrected wording). The CI step runs

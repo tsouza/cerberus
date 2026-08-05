@@ -39,22 +39,20 @@
 # metadata-probe's request_id automatically now that the seeder stamps
 # it.
 #
-# A `kind: log` case filtering on request_id being PRESENT is
-# deliberately NOT included here (mirroring how
-# cerberus-queries/regression/unpack.yaml left a metric-mode case out
-# for issue #1652 rather than gate this required check on an unrelated,
-# unmade fix). Reference Loki folds any structured-metadata value a
-# matching line carries directly into that line's output STREAM label
+# The `present` case below is the one that pins log-query STREAM
+# IDENTITY. Reference Loki folds any structured-metadata value a
+# matching line carries directly into that line's output stream label
 # set — even for a single matching line, i.e. this isn't a
-# cardinality/fragmentation artefact — while cerberus only does this
-# for the hardcoded `detected_level` key (see
-# queryShouldSurfaceDetectedLevel / internal/logql/detected_level.go);
-# a generic key like request_id never reaches a log query's output
-# stream identity at all. That's a real, separate gap, filed as issue
-# #1684 rather than worked around here. The `absent` case below stays
-# in-corpus because it doesn't trip the gap: when request_id is truly
-# absent there is nothing for either backend to fold into stream
-# identity, so the two agree.
+# cardinality/fragmentation artefact — so a query whose matching set
+# carries ~960 distinct request_id values returns ~960 streams, one per
+# distinct value. Cerberus reaches the same shape in
+# foldStructuredMetadata (internal/api/loki/handler.go), which merges
+# every structured-metadata key of a row into its stream identity for
+# clients that did not ask for the `categorize-labels` response
+# encoding — the harness is such a client, and so is any plain HTTP
+# caller. The `absent` case is its complement: when request_id is truly
+# absent there is nothing for either backend to fold, so identity stays
+# the raw stream labels.
 queries:
   - description: stream selector referencing a structured-metadata-only key matches nothing on both backends
     query: '{request_id="req-00000000"}'
@@ -85,6 +83,27 @@ queries:
       - generic
       - filter
       - absent
+
+  - description: generic structured-metadata label filter - present folds the value into log-query stream identity
+    query: '{service_name="metadata-probe"} | request_id=~"req-.+"'
+    kind: log
+    time_range:
+      length: 24h
+    directions: backward # see the `absent` case: forward log queries over structured metadata are unsupported by the v2 engine
+    tags:
+      - structured-metadata
+      - generic
+      - filter
+      - present
+      - stream-identity
+    notes: >-
+      Every matching line carries a distinct request_id, and reference
+      Loki keys a stream on the entry's FULL label set — indexed labels
+      plus structured metadata — so the response is close to one stream
+      per matching line rather than one stream per severity. Pins
+      foldStructuredMetadata (internal/api/loki/handler.go); before it
+      cerberus returned 4 streams (one per detected_level) where
+      reference returned ~960.
 
   - description: metric query grouped by a generic, unconstrained-value-domain structured-metadata key
     query: sum by (request_id) (count_over_time({service_name="metadata-probe"}[24h]))

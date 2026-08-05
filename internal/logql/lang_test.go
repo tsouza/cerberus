@@ -861,16 +861,18 @@ func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T
 	}
 }
 
-// TestProjectSamples_DropDetectedLevelSkipsWrap pins #1547's fix:
-// queryShouldSurfaceDetectedLevel re-gates on whether the pipeline
-// unconditionally drops detected_level from the output label set,
-// instead of the previous inert `expr != nil` check. A bare
-// `| drop detected_level` (or a multi-name drop naming it, or an
-// equivalent `| keep <others>` that excludes it) must skip the
-// withDetectedLevel wrap entirely — the Attributes slot stays the
-// bare ResourceAttributes ColumnRef, matching
+// TestProjectSamples_DropDetectedLevelSkipsWrap pins the pipeline
+// shapes whose `| drop` / `| keep` stages remove detected_level from
+// EVERY row: [detectedLevelIdentityExpr] returns nil and the
+// withDetectedLevel wrap must not run at all — the Attributes slot
+// stays the bare ResourceAttributes ColumnRef, matching
 // TestProjectSamples_NoParserStage_KeepsBareResourceAttributes's
 // no-parser-stage shape.
+//
+// A `| keep` list is upstream's "keep only what matches an entry", so a
+// keep entry that names a DIFFERENT label removes detected_level
+// whether or not it carries a value matcher — `| keep job="api"`
+// retains detected_level no more than a bare `| keep job` does.
 func TestProjectSamples_DropDetectedLevelSkipsWrap(t *testing.T) {
 	t.Parallel()
 
@@ -886,6 +888,9 @@ func TestProjectSamples_DropDetectedLevelSkipsWrap(t *testing.T) {
 		// is dropped, detected_level included
 		`{job="api"} | keep job`,
 		`{job="api"} | keep job, env`,
+		// value-matched keep entry naming a different label: still a
+		// keep-list detected_level cannot match
+		`{job="api"} | keep job="api"`,
 	} {
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
@@ -922,19 +927,17 @@ func TestProjectSamples_DropDetectedLevelSkipsWrap(t *testing.T) {
 
 // TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional
 // is the control side of TestProjectSamples_DropDetectedLevelSkipsWrap:
-// shapes that do NOT statically guarantee detected_level is absent
-// from the output must keep triggering the wrap.
+// shapes that keep detected_level on at least some rows must keep
+// emitting the wrap.
 //
 //   - `| drop env` never names detected_level — an unrelated drop must
 //     not suppress the wrap.
-//   - `| drop detected_level="info"` is a value matcher: it only
-//     removes the label on rows whose derived value happens to equal
-//     "info", so the gate can't decide up front and must stay
-//     permissive (dropping the wrap here would make ALL rows lose
-//     detected_level, not just the "info" ones).
+//   - `| drop detected_level="info"` is a value matcher: it removes the
+//     label only on rows whose derived value equals "info", so the
+//     retention rides as a row predicate on the synthesized VALUE and
+//     the wrap stays (skipping it would strip detected_level from ALL
+//     rows, not just the "info" ones).
 //   - `| keep job, detected_level` explicitly retains the label.
-//   - `| keep job="api"` is a value-matched keep entry — same
-//     can't-decide-statically reasoning as the drop matcher case.
 func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *testing.T) {
 	t.Parallel()
 
@@ -945,7 +948,6 @@ func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *te
 		`{job="api"} | drop env`,
 		`{job="api"} | drop detected_level="info"`,
 		`{job="api"} | keep job, detected_level`,
-		`{job="api"} | keep job="api"`,
 	} {
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()

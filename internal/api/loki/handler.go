@@ -628,7 +628,10 @@ func buildInstantData(expr syntax.Expr, samples []chclient.Sample, ts time.Time,
 	// newLabelFilterStep) BEFORE clamping to limit: Loki's contract is
 	// "filter, then limit", and clamping first would apply `limit` to
 	// the wrong (pre-filter) candidate set — see [applyLineTransform].
-	rows := applyLineTransform(chclient.DecodeLogRows(samples), tx)
+	// The structured-metadata fold runs BEFORE the transform so the
+	// pipeline's label stages see the same label set upstream's
+	// LabelsBuilder does — see [foldStructuredMetadata].
+	rows := applyLineTransform(foldStructuredMetadata(chclient.DecodeLogRows(samples), categorize), tx)
 	rows = clampLogRows(rows, limit, dir)
 	streams := toStreams(rows, categorize)
 	return &QueryData{
@@ -653,8 +656,9 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 	if err != nil {
 		return nil, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
-	// See buildInstantData: transform (and drop) before clamping.
-	rows := applyLineTransform(chclient.DecodeLogRows(samples), tx)
+	// See buildInstantData: fold metadata, then transform (and drop),
+	// then clamp.
+	rows := applyLineTransform(foldStructuredMetadata(chclient.DecodeLogRows(samples), categorize), tx)
 	rows = clampLogRows(rows, limit, dir)
 	streams := toStreams(rows, categorize)
 	return &QueryData{
@@ -1017,7 +1021,73 @@ func toStreams(rows []chclient.LogRow, categorize bool) []Stream {
 // post-fetch clamp, so there's no separate clamp step to reorder
 // against the way buildInstantData / buildRangeData need.
 func toStreamsWithTransform(rows []chclient.LogRow, tx lineTransform, categorize bool) []Stream {
-	return toStreams(applyLineTransform(rows, tx), categorize)
+	return toStreams(applyLineTransform(foldStructuredMetadata(rows, categorize), tx), categorize)
+}
+
+// foldStructuredMetadata merges each row's per-line structured metadata
+// into its stream-identity labels, for clients that did NOT request the
+// `categorize-labels` response encoding.
+//
+// Structured metadata is an ordinary member of a record's label set in
+// reference Loki: the ingester stores it alongside the stream labels and
+// the querier's `LabelsBuilder` seeds the pipeline with both, so a
+// `| drop` / `| keep` / `| label_format` stage projects a metadata key
+// exactly like an indexed one, and the entry's rendered label string —
+// the value the querier groups `logproto.Stream`s by — carries it. Two
+// lines of the same stream that differ only in a metadata value are two
+// streams. Cerberus reached the same shape for exactly ONE key,
+// `detected_level`, by splicing it into the identity map in SQL
+// (`withDetectedLevel`); every other metadata key stayed in the
+// per-line `Metadata` side channel and never widened stream identity,
+// so a query over a high-cardinality key returned one stream per
+// severity where reference returns one per distinct value (issue
+// #1684).
+//
+// `categorize-labels` is precisely the flag that turns that off:
+// upstream's `CategorizeLabelsIterator` splits structured metadata back
+// OUT of the entry's labels into the third tuple element and keys the
+// stream on the indexed labels alone. Grafana always sends the flag;
+// the loki-compat harness does not — so the fold is gated on it and the
+// categorized response keeps the narrow, un-widened identity.
+//
+// The merge runs before [applyLineTransform] so the pipeline's label
+// stages see the folded set, and an INDEXED label always wins a key
+// collision — the SQL layer has already resolved `detected_level` to
+// its normalised form there, and re-folding the raw `LogAttributes`
+// entry over it would undo the normalisation. `LogRow.Labels` is
+// interned per series by the cursor and read-only, so a row that gains
+// a key gets a fresh map.
+func foldStructuredMetadata(rows []chclient.LogRow, categorize bool) []chclient.LogRow {
+	if categorize {
+		return rows
+	}
+	for i := range rows {
+		r := &rows[i]
+		md := normalizeMetadata(r.Metadata)
+		if !addsLabel(r.Labels, md) {
+			continue
+		}
+		merged := make(map[string]string, len(r.Labels)+len(md))
+		for k, v := range md {
+			merged[k] = v
+		}
+		for k, v := range r.Labels {
+			merged[k] = v
+		}
+		r.Labels = merged
+	}
+	return rows
+}
+
+// addsLabel reports whether `md` carries a key `labels` does not, i.e.
+// whether folding the two would actually change the label set.
+func addsLabel(labels, md map[string]string) bool {
+	for k := range md {
+		if _, ok := labels[k]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeMetadata rewrites a per-line structured-metadata map through

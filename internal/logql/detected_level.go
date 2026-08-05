@@ -343,14 +343,19 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 // the same synthesized map, whose `toString(...)` values CAN be empty
 // on rows that don't populate the column.
 //
+// `levelValue` is the projected value expression the caller obtained
+// from [detectedLevelIdentityExpr]; a nil value means the query's
+// pipeline removes `detected_level` from the output label set on every
+// row, and the key is left out of the synthesized map entirely.
+//
 // Used by both the log-stream projection (Lang.ProjectSamples for log
 // queries, where the surfaced label splits the streams response into
 // one Stream per detected_level) and the bare range-aggregation
 // projection (lowerRangeAggregation when no by/without grouping, where
 // the augmented identity drives the RangeWindow GROUP BY to emit one
 // series per detected_level).
-func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
-	return withDetectedLevelAndColumns(s, baseLabels, nil)
+func withDetectedLevel(s schema.Logs, baseLabels, levelValue chplan.Expr) chplan.Expr {
+	return withDetectedLevelAndColumns(s, baseLabels, levelValue, nil)
 }
 
 // withDetectedLevelAndColumns is the column-aware companion of
@@ -382,10 +387,16 @@ func withDetectedLevel(s schema.Logs, baseLabels chplan.Expr) chplan.Expr {
 // When `outerByLabels` is empty the function behaves identically to
 // the original [withDetectedLevel] — bare `rate({}[5m])` and other
 // no-outer-grouping queries keep their lean identity map.
-func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByLabels []string) chplan.Expr {
-	args := []chplan.Expr{
-		&chplan.LitString{V: detectedLevelLabel},
-		detectedLevelExpr(s),
+//
+// A nil `levelValue` drops the `detected_level` pair from the
+// synthesized map (the query's `| drop` / `| keep` projection removes
+// the label on every row — see [detectedLevelIdentityExpr]). When that
+// leaves nothing to synthesize at all, the base labels are returned
+// untouched so the plan carries no vestigial `mapConcat(base, map())`.
+func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Expr, outerByLabels []string) chplan.Expr {
+	var args []chplan.Expr
+	if levelValue != nil {
+		args = append(args, &chplan.LitString{V: detectedLevelLabel}, levelValue)
 	}
 	for _, col := range topLevelColumnsReferencedBy(outerByLabels, s) {
 		args = append(
@@ -416,6 +427,9 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels chplan.Expr, outerByL
 			&chplan.LitString{V: key},
 			structuredOrStreamLookup(s, key),
 		)
+	}
+	if len(args) == 0 {
+		return baseLabels
 	}
 	synthMap := &chplan.FuncCall{Name: "map", Args: args}
 	filtered := &chplan.FuncCall{
@@ -485,16 +499,24 @@ func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 	}
 }
 
-// queryShouldSurfaceDetectedLevel reports whether the parsed LogQL
-// expression should carry the synthesized `detected_level` label on its
-// output stream identity. Used by the log-stream projection in
-// [Lang.ProjectSamples] to gate the `withDetectedLevel` wrap.
+// detectedLevelIdentityExpr returns the value expression the
+// synthesized `detected_level` identity key carries for `expr`, or nil
+// when the query must not surface the label at all.
 //
-// Reference Loki surfaces `detected_level` as a stream-identity label
-// whenever the underlying records carry severity metadata that the
-// detection pipeline can resolve to a canonical level value. The
-// detection sources are (mirrored from
-// `github.com/grafana/loki/pkg/distributor/field_detection.go::extractLogLevel`):
+// Reference Loki stamps `detected_level` as STRUCTURED METADATA at
+// ingest (`pkg/distributor/field_detection.go::extractLogLevel`, default-on
+// via the `discover_log_levels` limit), so by the time a query's
+// pipeline runs the label is an ordinary member of the record's label
+// set — one a `| drop` / `| keep` stage projects exactly like any
+// other. Cerberus synthesizes the key instead of reading it off a
+// column, and splices it into the identity map AFTER
+// [narrowIdentityByProjection] has filtered the real map entries, so
+// the projection is applied to the synthesized VALUE — see
+// [projectSyntheticLabelValue] for the three outcomes and why an empty
+// value is equivalent to a filtered-out key.
+//
+// The detection sources cerberus mirrors (from the same upstream
+// function) are:
 //
 //  1. Stream / structured-metadata label named `detected_level` /
 //     `level` / `severity` / `severity_text` / …
@@ -504,107 +526,33 @@ func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 //  3. Content scan over the log line (JSON / logfmt / keyword scan
 //     for ERROR / WARN / INFO / DEBUG / TRACE / FATAL / CRITICAL).
 //
-// Cerberus's seeder always populates the OTel `SeverityText` column,
-// so every log row that reaches the projection carries a non-empty
-// severity value. The `mapFilter` inside [withDetectedLevel] drops the
-// `detected_level` entry when `SeverityText` is empty, so the wrap is
-// idempotent on rows without severity — there's no observable downside
-// to applying it broadly.
+// Cerberus's [detectedLevelSourceExpr] covers (1) and (2); (3) stays
+// out of scope (see this file's package comment), resolving to
+// `unknown`. Every log row therefore carries a non-empty derived value,
+// which is why the gate is otherwise permissive: a query that never
+// names the label still gets it, because reference Loki splits the
+// response into one Stream per detected_level even for bare selectors,
+// line filters, and label filters on unrelated keys. The earlier
+// restrictive gate (surface only when the user named
+// `detected_level` / `level`) is what caused the loki-compat
+// `fast/basic-selectors.yaml` stream-identity regressions.
 //
-// In light of that, the gate is permissive: every log-stream query
-// triggers the wrap. The previous restrictive gate (only when the user
-// referenced `detected_level` / `level` explicitly) caused the
-// loki-compat `fast/basic-selectors.yaml` regressions where Loki splits
-// the response into one Stream per detected_level even for queries
-// that never name the label (bare selectors, line filters, label
-// filters on unrelated keys). Returning true universally restores
-// stream-identity parity with reference Loki.
+// A nil `expr` returns nil rather than panicking: only the metric
+// branch of [Lang.ProjectSamples] reaches a projection without an
+// `expr` in [engine.Meta.Extra], and it doesn't consult this.
 //
 // Pipe stages with parser-extracted `level` keys (`| logfmt`,
 // `| json`, `| regexp ...`, `| pattern ...`, `| label_format ...`)
 // keep going through their existing label-filter-context lookups —
 // see [isDetectedLevelLabel] vs [isDetectedLevelGroupingLabel] for
-// the matcher / grouping split. The wrap surfaces `detected_level`
-// alongside any parser-derived keys; both can coexist in the output
-// label map without conflict (Loki's reference response carries both
-// when applicable).
-//
-// The function still walks the AST defensively so a `nil` expression
-// (only the metric branch should hit ProjectSamples without an `expr`
-// in [engine.Meta.Extra], but the log branch is the documented caller)
-// returns false rather than panicking. Otherwise every log-shaped
-// expression returns true UNLESS the pipeline itself unconditionally
-// removes `detected_level` from the output label set — see
-// [pipelineDropsDetectedLevel]. Metric queries don't reach this code
-// path (the metric branch in [Lang.ProjectSamples] doesn't consult
-// this gate; narrowing the synthesized identity for `| drop` / `| keep`
-// on the metric path is tracked separately in #1607).
-func queryShouldSurfaceDetectedLevel(expr syntax.Expr) bool {
+// the matcher / grouping split. The synthesized key coexists with any
+// parser-derived keys in the output label map (Loki's reference
+// response carries both when applicable).
+func detectedLevelIdentityExpr(s schema.Logs, expr syntax.Expr) chplan.Expr {
 	if expr == nil {
-		return false
+		return nil
 	}
-	return !pipelineDropsDetectedLevel(expr)
-}
-
-// pipelineDropsDetectedLevel reports whether expr's pipeline
-// UNCONDITIONALLY removes the synthesized `detected_level` label from
-// the output label set — mirroring [newLabelProjectionStep]'s /
-// [narrowIdentityByProjection]'s drop/keep semantics, restricted to the
-// cases that are statically decidable without a row's actual severity
-// value:
-//
-//   - `| drop detected_level` (a bare entry, not a value matcher like
-//     `| drop detected_level="info"` — that only removes the label on
-//     rows whose derived value happens to match, so it can't be decided
-//     up front).
-//   - `| keep <names>` where the kept set is a non-empty, all-bare-name
-//     list that doesn't include `detected_level` — anything not named
-//     is dropped, so `detected_level` never survives.
-//
-// A query with neither shape returns false, matching the previous
-// permissive gate exactly (see queryShouldSurfaceDetectedLevel's doc
-// comment for why the gate stayed permissive by default — the
-// `fast/basic-selectors.yaml` regression). Not consumed by the metric
-// (range-aggregation) path; that gate is #1607.
-func pipelineDropsDetectedLevel(expr syntax.Expr) bool {
-	pipe, ok := expr.(*syntax.PipelineExpr)
-	if !ok {
-		return false
-	}
-	for _, stage := range pipe.MultiStages {
-		switch st := stage.(type) {
-		case *syntax.DropLabelsExpr:
-			for _, m := range st.Matchers() {
-				if m.Matcher == nil && isDetectedLevelLabel(m.Name) {
-					return true
-				}
-			}
-		case *syntax.KeepLabelsExpr:
-			if keepListExcludesDetectedLevel(st.Matchers()) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// keepListExcludesDetectedLevel reports whether a `| keep` stage's
-// entries statically guarantee `detected_level` is absent from the
-// surviving label set: the list must be non-empty (an empty keep list
-// is upstream's "keep everything"), every entry a bare name (a value
-// matcher like `| keep env="prod"` doesn't decide inclusion up front),
-// and none of those names the label.
-func keepListExcludesDetectedLevel(entries []syntax.NamedLabelMatcher) bool {
-	if len(entries) == 0 {
-		return false
-	}
-	for _, e := range entries {
-		if e.Matcher != nil {
-			return false
-		}
-		if isDetectedLevelLabel(e.Name) {
-			return false
-		}
-	}
-	return true
+	return projectSyntheticLabelValue(expr, detectedLevelLabel, func() chplan.Expr {
+		return detectedLevelExpr(s)
+	})
 }

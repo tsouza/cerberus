@@ -781,7 +781,7 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 //	for _, label := range e.Grouping.Groups {
 //	    args = append(args,
 //	        &chplan.LitString{V: label},
-//	        levelAwareRangeGroupKey(label, s),
+//	        levelAwareRangeGroupKey(label, s, newLevelValue),
 //	    )
 //	}
 //
@@ -826,7 +826,8 @@ func TestRangeAggregationGroupByEmitsLabelKeyAndValuePairs(t *testing.T) {
 		t.Fatalf("fixture invalid: Grouping=%v Groups=%v", ra.Grouping, ra.Grouping)
 	}
 
-	got, err := rangeAggregationGroupBy(ra, s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	got, err := rangeAggregationGroupBy(ra, s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
+		func() chplan.Expr { return detectedLevelIdentityExpr(s, ra.Left.Left) })
 	if err != nil {
 		t.Fatalf("rangeAggregationGroupBy: %v", err)
 	}
@@ -917,7 +918,8 @@ func TestRangeAggregationGroupByWithoutStripsFromIdentityBase(t *testing.T) {
 		Map:  &chplan.ColumnRef{Name: "_logql_merged_labels"},
 		Keys: []string{"latency"},
 	}
-	got, err := rangeAggregationGroupBy(ra, s, identityBase)
+	got, err := rangeAggregationGroupBy(ra, s, identityBase,
+		func() chplan.Expr { return detectedLevelIdentityExpr(s, ra.Left.Left) })
 	if err != nil {
 		t.Fatalf("rangeAggregationGroupBy: %v", err)
 	}
