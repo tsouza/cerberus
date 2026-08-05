@@ -8,7 +8,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// BenchmarkSlice measures the plan-slicing hot path — one unpinSpine plus K
+// BenchmarkSlice measures the plan-slicing hot path — one UnpinSpine plus K
 // ReanchorRange calls — at K=2/4/8/16. The copy-on-write rewrite shares the
 // immutable off-spine subtree instead of CloneNode-ing it K+1 times, so this
 // benchmark is dominated by the O(K x spine-depth) spine clone rather than the

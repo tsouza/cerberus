@@ -1217,6 +1217,7 @@ func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnc
 		step:          ctx.step,
 		lookback:      instantLookback,
 		offset:        anchor.Offset,
+		stepAligned:   ctx.stepAligned,
 		metricNameCol: s.MetricNameColumn,
 		attributesCol: s.AttributesColumn,
 		timestampCol:  s.TimestampColumn,

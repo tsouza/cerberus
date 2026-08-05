@@ -96,6 +96,17 @@ type lowerCtx struct {
 	// [selectorAttributesExpr] returns the bare `Attributes` ColumnRef:
 	// re-deriving either layer here would reference out-of-scope columns.
 	attributesPreMerged bool
+
+	// stepAligned marks a ctx built by subqueryGridCtx for a subquery inner
+	// evaluated on PromQL's epoch-aligned (phase 0) sub-step grid — start /
+	// end / step here are already floored to that grid, not the outer
+	// request's own [start, end]. It threads through to
+	// chplan.RangeWindow.StepAlign / chplan.RangeLWR.StepAlign on any
+	// windowed node this ctx lowers, so the sharded-pushdown solver
+	// (internal/solver) and chplan.ReanchorRange know the node's grid is
+	// anchored to epoch 0 rather than to the shard's own bounds. Every
+	// non-subquery-inner ctx leaves this false.
+	stepAligned bool
 }
 
 // withAttributesPreMerged returns a copy of c with attributesPreMerged

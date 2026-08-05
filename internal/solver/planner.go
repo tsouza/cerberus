@@ -362,7 +362,7 @@ type signals struct {
 	// outside the routable set, which ReanchorRange CloneNode's verbatim (so
 	// every shard would emit stale bounds). The routable set is the
 	// RangeWindow matrix family plus the RangeLWR bare-selector family: both
-	// are re-gridded by ReanchorRange and zeroed/re-filled by unpinSpine, so
+	// are re-gridded by ReanchorRange and zeroed/re-filled by UnpinSpine, so
 	// neither sets this flag. RangeWindowNative / RangeWindowResample /
 	// RangeBucketFanout / StepGrid / AbsentOverTime fail closed to route A
 	// until ReanchorRange learns their grids — see carrierGeometry.reanchorable,
@@ -643,7 +643,7 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 	case *chplan.RangeLWR:
 		// The bare-selector last-with-respect-to leaf: one sample per anchor,
 		// chosen inside the Lookback staleness horizon. Re-gridded by
-		// ReanchorRange and zeroed/re-filled by the slicer's unpinSpine, so
+		// ReanchorRange and zeroed/re-filled by the slicer's UnpinSpine, so
 		// the deriv / idelta / irate / instant-LWR / negative-offset families
 		// that lower to a bare RangeLWR spine are routable.
 		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
@@ -807,10 +807,16 @@ func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.
 	} else if startZero != endZero {
 		sig.sawUnpinnedBound = true
 	}
-	// RangeLWR has no StepAlign sibling: emitRangeLWR generates its anchors
-	// as `End - i*Step` with no epoch snap, so a nested one's phase moves
-	// with the shard's End and always constrains the slice quantum.
-	if depth > 0 && v.Step > 0 {
+	// (5) Nested-grid phase for the slice-quantum check — mirrors
+	// checkRangeWindowGrid's StepAlign carve-out above. A plain RangeLWR
+	// generates its anchors as `End - i*Step` with no epoch snap, so a
+	// nested one's phase moves with the shard's End and always constrains
+	// the slice quantum. A StepAlign RangeLWR (the subquery inner-sample
+	// grid — see chplan.RangeLWR.StepAlign) is re-anchored by
+	// chplan.ReanchorRange to a fresh epoch-floored [Start, End] derived
+	// from this shard's own predicted bounds, so its anchors land on
+	// phase 0 no matter what End is and it imposes no quantum constraint.
+	if depth > 0 && v.Step > 0 && !v.StepAlign {
 		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
 	}
 }
