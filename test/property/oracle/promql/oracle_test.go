@@ -225,7 +225,7 @@ func TestSelector_EmptyLabelSet(t *testing.T) {
 }
 
 // =================================================================
-// Function tests — 8
+// Function tests — 15
 // =================================================================
 
 func TestFn_Rate_BasicCounter(t *testing.T) {
@@ -327,6 +327,78 @@ func TestFn_OverTime_EmptyWindow(t *testing.T) {
 	// Sample at t=0; window (60, 120] is empty → no rows.
 	d := build(makeSeries("g", map[string]string{}, sampleSpec{0, 5}))
 	o := eval(d, `sum_over_time(g[60s])`, 120)
+	assertRows(t, o, nil)
+}
+
+func TestFn_Deriv_PerfectlyLinear(t *testing.T) {
+	// Perfectly linear ramp: value = 100 + t (t in seconds). The
+	// regression slope over any subset of these points is exactly 1
+	// (value/sec), independent of the window edges or the intercept
+	// anchor — this is deriv's simplest, exactly-checkable case.
+	d := build(makeSeries("g", map[string]string{},
+		sampleSpec{0, 100}, sampleSpec{10, 110}, sampleSpec{20, 120}, sampleSpec{30, 130}))
+	o := eval(d, `deriv(g[40s])`, 30)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 1)})
+}
+
+func TestFn_Deriv_TooFewSamples(t *testing.T) {
+	// A single sample in the window has no defined derivative — Prom
+	// drops the row.
+	d := build(makeSeries("g", map[string]string{}, sampleSpec{0, 5}))
+	o := eval(d, `deriv(g[40s])`, 0)
+	assertRows(t, o, nil)
+}
+
+func TestFn_PredictLinear_ProjectsForward(t *testing.T) {
+	// Same perfectly-linear series as the deriv test: slope=1/s. Prom
+	// anchors the regression at the eval ts, so the fitted intercept
+	// equals the actual value there (130, since the fit is exact for
+	// collinear points); projecting 100s forward adds slope*100=100.
+	d := build(makeSeries("g", map[string]string{},
+		sampleSpec{0, 100}, sampleSpec{10, 110}, sampleSpec{20, 120}, sampleSpec{30, 130}))
+	o := eval(d, `predict_linear(g[40s], 100)`, 30)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 230)})
+}
+
+func TestFn_DoubleExponentialSmoothing_HandComputed(t *testing.T) {
+	// 3 samples [10, 15, 20], sf=tf=0.5. Hand-traced against Prom's
+	// funcDoubleExponentialSmoothing/calcTrendValue:
+	//   s1=10, b=5 (init)
+	//   i=1: b=calcTrendValue(0,...)=5 (i==0 short-circuit); y=0.5*(10+5)=7.5;
+	//        s0,s1 = 10, 0.5*15+7.5 = 15
+	//   i=2: b=calcTrendValue(1,0.5,10,15,5)=0.5*(15-10)+0.5*5=5; y=0.5*(15+5)=10;
+	//        s0,s1 = 15, 0.5*20+10 = 20
+	// Final output is s1=20.
+	d := build(makeSeries("g", map[string]string{},
+		sampleSpec{0, 10}, sampleSpec{10, 15}, sampleSpec{20, 20}))
+	o := eval(d, `double_exponential_smoothing(g[30s], 0.5, 0.5)`, 20)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 20)})
+}
+
+func TestFn_DoubleExponentialSmoothing_InvalidFactorErrors(t *testing.T) {
+	// sf outside (0,1) is a query error in Prom (funcDoubleExponentialSmoothing
+	// panics); the oracle mirrors that as an Evaluate error rather than
+	// silently producing a row.
+	d := build(makeSeries("g", map[string]string{}, sampleSpec{0, 10}, sampleSpec{10, 15}))
+	o := eval(d, `double_exponential_smoothing(g[30s], 1.5, 0.5)`, 10)
+	if o.Err == nil {
+		t.Fatalf("expected an error for out-of-range smoothing factor, got rows=%v", o.Rows)
+	}
+}
+
+func TestFn_QuantileOverTime_Median(t *testing.T) {
+	// Samples [1,2,3,4] in window order; median (phi=0.5) interpolates
+	// exactly halfway between the two middle values: rank=0.5*3=1.5 →
+	// values[1]*0.5 + values[2]*0.5 = 2*0.5 + 3*0.5 = 2.5.
+	d := build(makeSeries("g", map[string]string{},
+		sampleSpec{0, 1}, sampleSpec{10, 2}, sampleSpec{20, 3}, sampleSpec{30, 4}))
+	o := eval(d, `quantile_over_time(0.5, g[40s])`, 30)
+	assertRows(t, o, []property.OutcomeRow{row(map[string]string{}, 2.5)})
+}
+
+func TestFn_QuantileOverTime_EmptyWindow(t *testing.T) {
+	d := build(makeSeries("g", map[string]string{}, sampleSpec{0, 5}))
+	o := eval(d, `quantile_over_time(0.5, g[60s])`, 120)
 	assertRows(t, o, nil)
 }
 

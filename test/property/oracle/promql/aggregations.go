@@ -321,12 +321,27 @@ func aggregatorParamFloat(a *parser.AggregateExpr) (float64, error) {
 	return n.Val, nil
 }
 
-// quantileAggregate implements the `quantile(phi, vector)` aggregator:
-// Prom's textbook sample-quantile over the group's values (promql/
-// quantile.go::quantile) — sort ascending, then weighted-average
+// quantileAggregate implements the `quantile(phi, vector)` aggregator by
+// interpolating across the group's values at one instant. See
+// quantileInterpolate for the shared interpolation math.
+func quantileAggregate(phi float64, rows []VectorRow) float64 {
+	values := make([]float64, len(rows))
+	for i, r := range rows {
+		values[i] = r.V
+	}
+	return quantileInterpolate(phi, values)
+}
+
+// quantileInterpolate is Prom's textbook sample-quantile (promql/
+// quantile.go::quantile): sort ascending, then weighted-average
 // interpolate between the two samples straddling rank = phi*(n-1).
 // phi < 0 / > 1 / NaN follow Prom's documented out-of-domain results.
-func quantileAggregate(phi float64, rows []VectorRow) float64 {
+// Shared by the `quantile()` aggregator (quantileAggregate, above —
+// across series at one instant) and `quantile_over_time()`
+// (functions.go — across one series' window samples). Callers must
+// pass a slice they don't need back in its original order: this sorts
+// in place.
+func quantileInterpolate(phi float64, values []float64) float64 {
 	if math.IsNaN(phi) {
 		return math.NaN()
 	}
@@ -335,10 +350,6 @@ func quantileAggregate(phi float64, rows []VectorRow) float64 {
 	}
 	if phi > 1 {
 		return math.Inf(1)
-	}
-	values := make([]float64, len(rows))
-	for i, r := range rows {
-		values[i] = r.V
 	}
 	sort.Float64s(values)
 
