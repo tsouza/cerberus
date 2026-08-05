@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // TestLower_Info_IgnoresBaseInfoSeries pins the reference engine's
@@ -97,9 +97,17 @@ func TestLower_Info_IgnoresBaseInfoSeries(t *testing.T) {
 // `conflicting label: %s` when a second info metric contributes a data
 // label the first already recorded with a different value).
 //
-// The guard is only meaningful where several info metrics can merge onto
-// one base sample; a `__name__` equality pins a single info metric, so
-// there is nothing to disagree with and no guard is emitted.
+// This guard is only meaningful where several info metrics can merge
+// onto one base sample; a `__name__` equality pins a single info metric,
+// so there is nothing to disagree with and no merge guard is emitted. It
+// is distinct from — and always coexists with — the per-signature
+// timestamp-tie throwIf collapseInfoSeriesBySignature always plants on
+// the info arm as its own HAVING clause (see
+// TestLower_Info_SignatureCollapse), so both guards render as `HAVING
+// (throwIf(...) = ?)`. The merge guard's own marker is
+// `groupArrayArray(arrayZip(` — the per-info-metric label-pair fold only
+// the merge path builds — rather than the bare "HAVING" any info() query
+// now emits.
 func TestLower_Info_ConflictGuard(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +115,8 @@ func TestLower_Info_ConflictGuard(t *testing.T) {
 		name  string
 		query string
 		// guard is true when several info metrics may merge, so a
-		// conflict is representable and must abort the query.
+		// conflict is representable and the merge guard must abort the
+		// query.
 		guard bool
 	}{
 		{name: "regex name matcher merges several info metrics", query: `info(up, {__name__=~".+_info"})`, guard: true},
@@ -120,20 +129,52 @@ func TestLower_Info_ConflictGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sql, _ := emitInfoQuery(t, tc.query)
-			hasGuard := strings.Contains(sql, "throwIf(")
-			if hasGuard != tc.guard {
-				t.Fatalf("conflict guard present = %v, want %v for %s; full SQL:\n%s",
-					hasGuard, tc.guard, tc.query, sql)
+			// The pairs are zipped BEFORE the fold, so a key can never be
+			// paired with another info metric's value; its presence is
+			// what's unique to the merge-conflict guard.
+			hasMergeGuard := strings.Contains(sql, "groupArrayArray(arrayZip(")
+			if hasMergeGuard != tc.guard {
+				t.Fatalf("merge guard present = %v, want %v for %s; full SQL:\n%s",
+					hasMergeGuard, tc.guard, tc.query, sql)
 			}
-			if !tc.guard {
-				return
-			}
+			// The signature-tie HAVING guard is unconditional, so
+			// "HAVING" and the shared message always appear regardless
+			// of merge multiplicity.
 			for _, want := range []string{
 				"HAVING",
-				"'" + chsql.InfoConflictingLabelMessage + "'",
-				// The pairs are zipped BEFORE the fold, so a key can never
-				// be paired with another info metric's value.
-				"groupArrayArray(arrayZip(",
+				"'" + chplan.InfoConflictingLabelMessage + "'",
+			} {
+				if !strings.Contains(sql, want) {
+					t.Errorf("expected SQL to contain %q; full SQL:\n%s", want, sql)
+				}
+			}
+		})
+	}
+}
+
+// TestLower_Info_SignatureCollapse pins collapseInfoSeriesBySignature's
+// always-on shape: every info() lowering — merged or not — groups the
+// info arm by (metric name, identity-label values) and plants a
+// timestamp-tie throwIf in a real HAVING clause, so ClickHouse's
+// column-pruning analyzer can never optimise the guard away as an
+// unreferenced SELECT-list expression (see chplan.Aggregate.Having's
+// doc and issue #1630).
+func TestLower_Info_SignatureCollapse(t *testing.T) {
+	t.Parallel()
+
+	for _, query := range []string{
+		`info(up)`,
+		`info(up, {__name__="build_info"})`,
+		`info(up, {__name__=~".+_info"})`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := emitInfoQuery(t, query)
+			for _, want := range []string{
+				"argMax(",
+				"HAVING",
+				"countEqual(groupArray(",
+				"'" + chplan.InfoConflictingLabelMessage + "'",
 			} {
 				if !strings.Contains(sql, want) {
 					t.Errorf("expected SQL to contain %q; full SQL:\n%s", want, sql)

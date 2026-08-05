@@ -1093,7 +1093,7 @@ func classifyEngineError(err error) error {
 	if chsql.IsInfoConflictingLabelError(err) {
 		return &apiError{
 			Kind:   ErrExecution,
-			Err:    errors.New(chsql.InfoConflictingLabelMessage),
+			Err:    errors.New(chplan.InfoConflictingLabelMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
 	}

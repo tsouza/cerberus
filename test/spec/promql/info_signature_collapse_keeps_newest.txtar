@@ -1,5 +1,31 @@
+# Two info series sharing one (metric name, identity-label) signature must
+# collapse to a single row before the join, keeping the sample with the
+# greatest timestamp — the reference engine's combineWithInfoSeries never
+# lets more than one info candidate per signature reach the merge. This is
+# issue #1630's own repro shape: two `target_info{job="api"}` series at
+# different timestamps, differing only in `version`.
+#
+# Cerberus without the collapse would fan the LEFT JOIN out to one output
+# row per matching info series — two `up` rows, one per `version`. The
+# fix must yield exactly one, carrying the NEWER `version`.
+
 -- query.promql --
 info(up)
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('job', 'api', 'version', '4.5.6'), toDateTime64('2026-01-01 00:00:00.500', 9), 1.0);
+-- expected_rows --
+[
+  ["up", {"job": "api", "version": "4.5.6"}, "2026-01-01T00:00:00Z", 1.0]
+]
 -- args --
 [0] string = "instance"
 [1] string = "job"
@@ -39,23 +65,6 @@ info(up)
 [35] string = "instance"
 [36] string = "job"
 [37] string = "job"
--- seed --
-CREATE TABLE otel_metrics_gauge (
-    MetricName String,
-    Attributes Map(String, String),
-    TimeUnix DateTime64(9),
-    Value Float64
-) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_gauge VALUES
-    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
-    ('up', map('job', 'db'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
-    ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
-    ('target_info', map('job', 'db', 'version', '4.5.6'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
--- expected_rows --
-[
-  ["up", {"job": "api", "version": "1.2.3"}, "2026-01-01T00:00:00Z", 1.0],
-  ["up", {"job": "db", "version": "4.5.6"}, "2026-01-01T00:00:00Z", 0.0]
-]
 -- chplan --
 InfoJoin identity=[instance, job]
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]

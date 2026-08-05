@@ -2,6 +2,35 @@ package chplan
 
 import "slices"
 
+// InfoConflictingLabelMessage is the `throwIf` message a query-time info()
+// abort carries, shared between the lowering layer that plants the guard
+// (internal/promql's collapseInfoSeriesBySignature, internal/chsql's
+// infoConflictGuardFrag) and the classifier that recognises it on the way
+// back out (chsql.IsInfoConflictingLabelError). It lives in chplan — the
+// one layer both promql and chsql already depend on — rather than in
+// chsql, so promql can embed it in a plan expression without importing the
+// SQL-emission layer (see .go-arch-lint.yml: promql may depend on chplan
+// only).
+//
+// Two distinct scenarios raise it, both mirroring the reference engine's
+// refusal to silently pick a winner:
+//
+//   - collapseInfoSeriesBySignature: two ROWS on the info side share one
+//     (metric name, identity labels) signature AND tie exactly on the
+//     greatest timestamp (promql/info.go's "found duplicate series for
+//     info metric").
+//   - infoConflictGuardFrag: two matched info METRICS (MergeInfoMetrics)
+//     disagree on the value of the same data label (promql/info.go's
+//     "conflicting label: %s").
+//
+// Upstream distinguishes the two with different, more specific messages
+// that name the offending series/label; ClickHouse requires `throwIf`'s
+// message to be a compile-time constant, so cerberus can't interpolate
+// per-row detail into it. The observable behaviour both scenarios need —
+// the query aborts instead of returning an arbitrary pick — is what the
+// divergence in wording is about.
+const InfoConflictingLabelMessage = "conflicting label"
+
 // InfoJoin models PromQL's `info(v[, {label matchers}])` label-enrichment
 // join. PromQL's reference engine (promql/info.go::evalInfo) enriches each
 // base series in `v` with the data labels carried by a companion info
@@ -15,9 +44,15 @@ import "slices"
 //     canonical per-series-latest Sample shape (MetricName, Attributes,
 //     TimeUnix, Value).
 //   - Info   — the info-metric scan (default `target_info`, or the name
-//     selected by the second arg's `__name__` matcher), also lowered to
-//     the per-series-latest Sample shape so each base series matches at
-//     most one info series per identity key.
+//     selected by the second arg's `__name__` matcher), lowered through
+//     the same VectorSelector path and then COLLAPSED to one row per
+//     (metric name, identity-label values) signature — see
+//     internal/promql's collapseInfoSeriesBySignature. Two info series
+//     sharing a signature (e.g. two target_info scrapes with the same
+//     job/instance but different build versions) keep only the sample
+//     with the greatest timestamp; an exact tie on that timestamp aborts
+//     the query rather than picking one arbitrarily (mirrors upstream's
+//     combineWithInfoSeries/sigFunction).
 //
 // IdentityLabels are the labels the join keys on — the reference engine
 // hard-codes `{instance, job}`.

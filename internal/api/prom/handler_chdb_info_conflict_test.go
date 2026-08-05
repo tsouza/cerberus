@@ -16,6 +16,13 @@
 // These tests pin the observable contract at the wire: a conflict is a
 // 422 execution error naming the conflict, not a 200 carrying a coin
 // flip, and not a 502 blaming the backend.
+//
+// TestInfo_SignatureTie_ChDB below exercises a DIFFERENT abort sharing the
+// same message and classifier: two info series collapsing onto the same
+// (metric name, identity labels) signature (internal/promql's
+// collapseInfoSeriesBySignature, issue #1630) that also tie exactly on the
+// winning timestamp. That case never reaches MergeInfoMetrics — it aborts
+// one join arm earlier, before the two sides even merge.
 
 package prom_test
 
@@ -29,7 +36,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
-	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // infoConflictSeedTime is the instant both the seed and the query use, so
@@ -99,9 +106,9 @@ func TestInfo_ConflictingLabel_ChDB(t *testing.T) {
 	if parsed.ErrorType != prom.ErrExecution {
 		t.Fatalf("errorType: got %q, want %q; body=%s", parsed.ErrorType, prom.ErrExecution, body)
 	}
-	if !strings.Contains(parsed.Error, chsql.InfoConflictingLabelMessage) {
+	if !strings.Contains(parsed.Error, chplan.InfoConflictingLabelMessage) {
 		t.Fatalf("error: got %q, want it to name %q; body=%s",
-			parsed.Error, chsql.InfoConflictingLabelMessage, body)
+			parsed.Error, chplan.InfoConflictingLabelMessage, body)
 	}
 	// A ClickHouse stack frame leaking to the client would mean the abort
 	// was forwarded rather than translated.
@@ -154,5 +161,62 @@ func TestInfo_NonConflictingMerge_ChDB(t *testing.T) {
 		if got := vec[0].Metric[k]; got != want {
 			t.Errorf("label %q: got %q, want %q; metric=%v", k, got, want, vec[0].Metric)
 		}
+	}
+}
+
+// infoSignatureTieQuery enriches from the single default `target_info`
+// info metric, so InfoJoin.MergeInfoMetrics is false and the only guard
+// that can fire is collapseInfoSeriesBySignature's per-signature
+// timestamp-tie throwIf — isolating it from the merge-conflict guard the
+// two tests above pin.
+const infoSignatureTieQuery = `info(up)`
+
+// TestInfo_SignatureTie_ChDB drives issue #1630's repro shape end to end:
+// two `target_info` series sharing the `{instance, job}` identity
+// signature but differing on a data label (`version`). At distinct
+// timestamps the collapse must keep only the newer sample (this half is
+// pinned by test/spec/promql/info_signature_collapse_keeps_newest.txtar's
+// chDB roundtrip); at the EXACT SAME timestamp there is no newer sample to
+// prefer, so the query must abort rather than pick one of the two
+// arbitrarily — the same 422/execution/IsInfoConflictingLabelError
+// contract TestInfo_ConflictingLabel_ChDB pins for the other guard.
+func TestInfo_SignatureTie_ChDB(t *testing.T) {
+	ts := infoConflictSeedTime.Format("2006-01-02 15:04:05.000000000")
+	seed := gaugeDDL + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('up',          map('job', 'api'),                     toDateTime64('%s', 9), 1.0),
+    ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('%s', 9), 1.0),
+    ('target_info', map('job', 'api', 'version', '4.5.6'), toDateTime64('%s', 9), 1.0);`,
+		ts, ts, ts)
+	srv, _ := newChDBServer(t, seed)
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
+		srv.URL, url.QueryEscape(infoSignatureTieQuery), infoConflictSeedTime.Unix()))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status: got %d, want %d; body=%s",
+			resp.StatusCode, http.StatusUnprocessableEntity, body)
+	}
+
+	var parsed prom.Response
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v; body=%s", err, body)
+	}
+	if parsed.Status != "error" {
+		t.Fatalf("status: got %q, want %q; body=%s", parsed.Status, "error", body)
+	}
+	if parsed.ErrorType != prom.ErrExecution {
+		t.Fatalf("errorType: got %q, want %q; body=%s", parsed.ErrorType, prom.ErrExecution, body)
+	}
+	if !strings.Contains(parsed.Error, chplan.InfoConflictingLabelMessage) {
+		t.Fatalf("error: got %q, want it to name %q; body=%s",
+			parsed.Error, chplan.InfoConflictingLabelMessage, body)
+	}
+	if strings.Contains(parsed.Error, "DB::Exception") {
+		t.Errorf("error leaks the ClickHouse exception: %q", parsed.Error)
 	}
 }

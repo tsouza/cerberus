@@ -307,7 +307,11 @@ func infoDropsUnmatched(dataMatchers []*labels.Matcher) bool {
 // so the info side gets the same per-series-latest (LWR) / per-step-
 // matrix treatment as the base vector — and so regex / negated name
 // matchers reuse the same unpinned-name scan fan-out an ordinary
-// `{__name__=~"…"}` selector gets.
+// `{__name__=~"…"}` selector gets. The result is then collapsed to one
+// row per (metric name, identity-label values) signature — see
+// collapseInfoSeriesBySignature — because lowerVectorSelector's
+// per-series-latest shape is keyed on the FULL label set, one level
+// finer than the signature upstream's info() enrichment keys on.
 func lowerInfoMetric(nameMatchers, dataMatchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	matchers := make([]*labels.Matcher, 0, len(nameMatchers)+len(dataMatchers))
 	matchers = append(matchers, nameMatchers...)
@@ -319,7 +323,144 @@ func lowerInfoMetric(nameMatchers, dataMatchers []*labels.Matcher, s schema.Metr
 		Name:          metricNameFromMatchers(matchers),
 		LabelMatchers: matchers,
 	}
-	return lowerVectorSelector(sel, s, ctx)
+	node, err := lowerVectorSelector(sel, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return collapseInfoSeriesBySignature(node, s), nil
+}
+
+// infoSignatureKeyAlias names the synthetic GROUP BY column
+// collapseInfoSeriesBySignature mints for the i-th identity label's
+// extracted value. These never survive past the wrapping Project either —
+// they exist only to make the GROUP BY key for that label addressable in
+// GROUP BY without re-rendering (and thereby risking a shadowed-alias
+// mismatch — see groupKeyFrags).
+func infoSignatureKeyAlias(i int) string {
+	return fmt.Sprintf("_cerberus_info_sig_%d", i)
+}
+
+// infoWinnerAttrsAlias, infoWinnerTimeAlias and infoWinnerValueAlias name
+// the synthetic aggregate-output columns collapseInfoSeriesBySignature
+// mints for the winning row's Attributes / TimeUnix / Value, mirroring the
+// LWR aggregate's lwr_ts/lwr_value convention (see lowerVectorSelector):
+// the wrapping Project is what renames these to the canonical Sample
+// column names, so the aggregate itself never aliases an output to the
+// SAME name as a raw column it also reads.
+//
+// That distinction is load-bearing, not stylistic: aliasing straight to
+// s.AttributesColumn (i.e. `argMax(Attributes, TimeUnix) AS Attributes`)
+// collides with the bare `Attributes` column collapseInfoSeriesBySignature
+// also reads inside the GROUP BY key expressions (`Attributes["instance"]`
+// for the signature columns), and ClickHouse's GROUP BY key elimination
+// then rejects the query with ILLEGAL_AGGREGATION ("argMax(...) AS
+// Attributes is found in GROUP BY"), reading the aggregate's own output
+// alias as if it re-entered the grouping key set.
+const (
+	infoWinnerAttrsAlias = "_cerberus_info_winner_attrs"
+	infoWinnerTimeAlias  = "_cerberus_info_winner_ts"
+	infoWinnerValueAlias = "_cerberus_info_winner_value"
+)
+
+// collapseInfoSeriesBySignature collapses the info side of an info() join
+// down to one row per (metric name, identity-label values) signature,
+// keeping the sample with the greatest timestamp — mirroring the
+// reference engine's combineWithInfoSeries/sigFunction (promql/info.go).
+//
+// lowerVectorSelector produces one row per FULL label set, which is
+// finer-grained than the signature upstream keys on: two info series
+// sharing every identity label but differing on a data label (e.g.
+// target_info{job="api",instance="i1",version="1.2.3"} @ t0 and
+// target_info{job="api",instance="i1",version="4.5.6"} @ t1, t1 > t0) must
+// collapse into the single, newest row rather than fan the join out to
+// both — see issue #1630.
+//
+// An exact tie on the winning timestamp is not picked arbitrarily: CH's
+// argMax is documented as choosing an unspecified one of the tied rows,
+// so the aggregate also computes whether more than one row shares the
+// group's maximum timestamp and, if so, aborts the query with
+// chplan.InfoConflictingLabelMessage — mirroring upstream's "found
+// duplicate series for info metric" error (the shared message is the
+// closest constant-string abort cerberus can raise; see
+// chplan.InfoConflictingLabelMessage's doc for why the wording differs).
+//
+// The tie check rides as a real HAVING clause (`chplan.Aggregate.Having`),
+// not an extra unreferenced SELECT-list column: ClickHouse's analyzer
+// prunes a SELECT expression nothing downstream reads, throwIf side
+// effect included, so a column-shaped guard silently never fires. HAVING
+// gates row production directly and cannot be pruned. See
+// chplan.Aggregate.Having's doc.
+func collapseInfoSeriesBySignature(node chplan.Node, s schema.Metrics) chplan.Node {
+	groupBy := make([]chplan.Expr, 0, 1+len(infoIdentityLabels))
+	groupByAliases := make([]string, 0, 1+len(infoIdentityLabels))
+	groupBy = append(groupBy, &chplan.ColumnRef{Name: s.MetricNameColumn})
+	groupByAliases = append(groupByAliases, s.MetricNameColumn)
+	for i, id := range infoIdentityLabels {
+		groupBy = append(groupBy, attributeLookup(s.AttributesColumn, id))
+		groupByAliases = append(groupByAliases, infoSignatureKeyAlias(i))
+	}
+
+	timeUnix := &chplan.ColumnRef{Name: s.TimestampColumn}
+	maxTimeUnix := &chplan.FuncCall{Name: "max", Args: []chplan.Expr{timeUnix}}
+	tieCount := &chplan.FuncCall{
+		Name: "countEqual",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "groupArray", Args: []chplan.Expr{timeUnix}},
+			maxTimeUnix,
+		},
+	}
+
+	// throwIf returns 0 on success, so `= 0` is the HAVING gate — the same
+	// idiom internal/chsql/info_join.go's infoConflictGuardFrag uses for
+	// the sibling merge-conflict guard.
+	tieCheck := &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Name: "throwIf",
+			Args: []chplan.Expr{
+				&chplan.Binary{Op: chplan.OpGt, Left: tieCount, Right: &chplan.LitInt{V: 1}},
+				&chplan.InlineString{V: chplan.InfoConflictingLabelMessage},
+			},
+		},
+		Right: &chplan.LitInt{V: 0},
+	}
+
+	agg := &chplan.Aggregate{
+		Input:          node,
+		GroupBy:        groupBy,
+		GroupByAliases: groupByAliases,
+		AggFuncs: []chplan.AggFunc{
+			{
+				Name:  "argMax",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}, timeUnix},
+				Alias: infoWinnerAttrsAlias,
+			},
+			{
+				Name:  "max",
+				Args:  []chplan.Expr{timeUnix},
+				Alias: infoWinnerTimeAlias,
+			},
+			{
+				Name:  "argMax",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}, timeUnix},
+				Alias: infoWinnerValueAlias,
+			},
+		},
+		Having: tieCheck,
+	}
+
+	// Drop the synthetic signature-key + tie-check columns, restoring the
+	// canonical four-column Sample shape lowerInfoJoin's Info field
+	// requires.
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: infoWinnerAttrsAlias}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: infoWinnerTimeAlias}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: infoWinnerValueAlias}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // infoDataLabelNames returns the de-duplicated set of label names the
