@@ -132,6 +132,10 @@ func TestCheckExpansion(t *testing.T) {
 // present" case was deliberately left out (issue #1684: log-query
 // stream-identity fragmentation over a generic structured-metadata key
 // is a separate, unfixed gap) — for +4, a total of 94.
+// cerberus-queries/regression/anchored-regex-matcher.yaml (issue #1741)
+// then adds a 6th definition set: one `directions: both` log query (2
+// cases) plus one `directions: backward` log query (1 case) — for +3,
+// a total of 97.
 func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	t.Parallel()
 	f := flags{
@@ -144,8 +148,8 @@ func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadCases: %v", err)
 	}
-	if len(cases) != 94 {
-		t.Fatalf("corpus expanded to %d cases, want 94", len(cases))
+	if len(cases) != 97 {
+		t.Fatalf("corpus expanded to %d cases, want 97", len(cases))
 	}
 
 	revived := []string{

@@ -838,6 +838,12 @@ func TestBuilder_Expr(t *testing.T) {
 			wantArg: []any{"x"},
 		},
 		{
+			// OpMatch/OpNotMatch patterns are anchored with `^(?:...)$`
+			// before binding (see anchoredRegexPattern in builder.go /
+			// issue #1741) so ClickHouse's substring-searching match()
+			// reproduces Prometheus/Loki/Tempo's always-anchored regex
+			// matcher semantics. A pattern that already carries its own
+			// anchors (as here) nests safely under the wrap.
 			name: "binary_match",
 			expr: &chplan.Binary{
 				Op:    chplan.OpMatch,
@@ -845,7 +851,7 @@ func TestBuilder_Expr(t *testing.T) {
 				Right: &chplan.LitString{V: "^api-.*"},
 			},
 			wantSQL: "match(`ServiceName`, ?)",
-			wantArg: []any{"^api-.*"},
+			wantArg: []any{"^(?:^api-.*)$"},
 		},
 		{
 			// TraceQL link / event spanset filters lower to this shape

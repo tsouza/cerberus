@@ -4,7 +4,7 @@
 SELECT * FROM `otel_traces` WHERE arrayExists(x -> match(x[?], ?), `Events`.`Attributes`)
 -- args --
 [0] string = "exception.message"
-[1] string = ".*timeout.*"
+[1] string = "^(?:.*timeout.*)$"
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,

@@ -9,7 +9,7 @@ SELECT * FROM `otel_logs` WHERE match(coalesce(nullIf(`ServiceName`, ?), if(mapC
 [3] string = "service.name"
 [4] string = "service.name"
 [5] string = "service/name"
-[6] string = ".*"
+[6] string = "^(?:.*)$"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,

@@ -1,7 +1,7 @@
 -- query.traceql --
 { name =~ "GET.*" }
 -- args --
-[0] string = "GET.*"
+[0] string = "^(?:GET.*)$"
 -- sql --
 SELECT * FROM `otel_traces` WHERE match(`SpanName`, ?)
 -- seed --

@@ -546,7 +546,8 @@ func (b *Builder) exprSubscript(s *chplan.Subscript) error {
 //     match(<elem>, ?)`: ClickHouse has no `=~` operator, so the raw
 //     infix spelling the generic branch writes is a server-side
 //     syntax error (the bug TraceQL `{ event.foo =~ "..." }` hit
-//     before the showcase pinned it).
+//     before the showcase pinned it). The pattern is anchored via
+//     [anchoredRegexPattern] — see its doc comment.
 //   - Presence != PresenceCompare renders the existence probes for
 //     TraceQL nil comparisons: `arrayExists(x -> mapContains(x, ?),
 //     …)` (HasKey), `arrayExists(x -> not(mapContains(x, ?)), …)`
@@ -600,7 +601,7 @@ func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
 		b.sb.WriteString("match(")
 		elem()
 		b.sb.WriteString(", ")
-		if err := b.Expr(n.Value); err != nil {
+		if err := b.Expr(anchoredRegexPattern(n.Value)); err != nil {
 			return err
 		}
 		b.sb.WriteByte(')')
@@ -619,6 +620,56 @@ func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
 	return nil
 }
 
+// anchoredRegexPattern wraps a chplan.OpMatch / chplan.OpNotMatch
+// pattern expression so ClickHouse's match() — a SUBSTRING search —
+// reproduces Prometheus/Loki/Tempo's regex matcher semantics, which
+// are ALWAYS fully anchored: `job=~"ap"` must match ONLY `job="ap"`,
+// never `job="api"`. Every current chplan.OpMatch/OpNotMatch producer
+// (PromQL label + `__name__` matchers, LogQL stream-selector and
+// label-filter-stage matchers, TraceQL `=~`/`!~` attribute and nested
+// event/link comparisons) borrows this exact anchored-FastRegexMatcher
+// semantics from upstream — PromQL and LogQL both compile matchers
+// through prometheus/model/labels, and Tempo's own regex evaluator
+// (grafana/tempo/pkg/regexp) is built on labels.NewFastRegexMatcher
+// too — so anchoring centrally here, at the one SQL emission site both
+// render paths share, covers every head without touching any of the
+// three lowering packages. See issue #1741.
+//
+// The non-capturing group is required: `^1|2.5$` alternates between
+// `^1` and `2.5$`, not the intended "the whole string is 1 or 2.5" —
+// `^(?:1|2.5)$` is the only correct wrap for alternation patterns.
+//
+// A user-supplied pattern that already carries its own `^`/`$`
+// (`job=~"^api$"`) nests safely: `^(?:^api$)$` still matches only
+// "api" in RE2 — `^`/`$` are zero-width assertions, so the nested pair
+// composes rather than conflicting. Verified against chDB directly
+// (see the PR that introduced this function for the empirical
+// before/after `match()` calls).
+//
+// v's shape is almost always *chplan.LitString — every matcher lowerer
+// binds the pattern as a plain string literal — in which case the
+// anchors are folded into the Go string before it becomes the bound
+// `?` parameter, so the emitted SQL is byte-identical in shape to the
+// unanchored form, just a longer parameter value. Any other Expr shape
+// (defensive — no current caller produces one) is wrapped with CH's
+// concat() instead, composed via the typed FuncCall Frag rather than
+// string concatenation.
+func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
+	const anchorPrefix = "^(?:"
+	const anchorSuffix = ")$"
+	if lit, ok := v.(*chplan.LitString); ok {
+		return &chplan.LitString{V: anchorPrefix + lit.V + anchorSuffix}
+	}
+	return &chplan.FuncCall{
+		Name: "concat",
+		Args: []chplan.Expr{
+			&chplan.LitString{V: anchorPrefix},
+			v,
+			&chplan.LitString{V: anchorSuffix},
+		},
+	}
+}
+
 func (b *Builder) exprBinary(bx *chplan.Binary) error {
 	switch bx.Op {
 	case chplan.OpMatch, chplan.OpNotMatch:
@@ -630,7 +681,7 @@ func (b *Builder) exprBinary(bx *chplan.Binary) error {
 			return err
 		}
 		b.sb.WriteString(", ")
-		if err := b.Expr(bx.Right); err != nil {
+		if err := b.Expr(anchoredRegexPattern(bx.Right)); err != nil {
 			return err
 		}
 		b.sb.WriteByte(')')

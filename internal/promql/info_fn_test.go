@@ -160,28 +160,33 @@ func TestLower_Info_NameMatcherTypes(t *testing.T) {
 			wantArgs: []string{"build_info"},
 		},
 		{
+			// Regex matcher values are bound anchored (`^(?:...)$`,
+			// issue #1741 — ClickHouse's match() is a substring search
+			// but Prometheus `__name__` regex matchers are always
+			// fully anchored); equality matcher values (build_info /
+			// target_info below) are untouched by that wrap.
 			name:     "regex name matcher may match several metrics",
 			query:    `info(up, {__name__=~".*_info"})`,
 			merge:    true,
-			wantArgs: []string{".*_info"},
+			wantArgs: []string{"^(?:.*_info)$"},
 		},
 		{
 			name:     "negated-only name matcher gains the .+_info fallback",
 			query:    `info(up, {__name__!="target_info"})`,
 			merge:    true,
-			wantArgs: []string{".+_info", "target_info"},
+			wantArgs: []string{"^(?:.+_info)$", "target_info"},
 		},
 		{
 			name:     "negated regex name matcher gains the .+_info fallback",
 			query:    `info(up, {__name__!~"target.*"})`,
 			merge:    true,
-			wantArgs: []string{".+_info", "target.*"},
+			wantArgs: []string{"^(?:.+_info)$", "^(?:target.*)$"},
 		},
 		{
 			name:     "positive plus negated name matchers keep the positive anchor",
 			query:    `info(up, {__name__=~".*_info", __name__!="build_info"})`,
 			merge:    true,
-			wantArgs: []string{".*_info", "build_info"},
+			wantArgs: []string{"^(?:.*_info)$", "build_info"},
 		},
 	}
 

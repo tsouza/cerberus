@@ -62,11 +62,17 @@
 # and a per-id smoke; later additions grew the spanSets, metrics, and
 # nil-comparison families (the count below tracks
 # `grep -c '^-- name --'`).
-# Total: 67 cases (`grep -c '^-- name --'`) — 51 from the families
+# Total: 68 cases (`grep -c '^-- name --'`) — 51 from the families
 # above (the nil-comparison family activated alongside the Traces
 # Drilldown breakdown fix, intrinsic `!= nil` lowering), 4 from the
 # trace-scoped root-identity + NOT-evaluation-parity block re-added by
 # #1711/#1712, and 12 from the upstream-mined block described next.
+# Plus one anchored-regex regression case
+# (resource_service_name_regex_prefix_no_overmatch, issue #1741 —
+# "check" is a strict prefix of the seeded "checkout" service name,
+# never the whole string, so an anchored `=~` must match zero traces
+# on both backends; a substring-search lowering would wrongly match
+# every checkout trace).
 #
 # The "Upstream-mined" block at the end of this file (#1522) is a
 # different provenance from everything above: every case above was
@@ -123,6 +129,17 @@ search
 200
 -- expected_services --
 shipping
+
+-- name --
+resource_service_name_regex_prefix_no_overmatch
+-- query --
+{ resource.service.name =~ "check" }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+0
 
 -- name --
 resource_deployment_env_eq_compat_test

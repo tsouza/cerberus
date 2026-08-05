@@ -19,7 +19,15 @@
 #    changes() NaN-both-sides carve-out (#1489) against a real reference
 #    Prometheus — only against chDB. See demo_gauge_with_nan_run in
 #    cmd/seed/main.go.
-# 4. Two more cerberus-owned cases pin classic-histogram lowering bugs found
+# 4. One cerberus-owned case is added to the vector-selector block: a regex
+#    label matcher with no wildcards/anchors that is a strict PREFIX of an
+#    actual label value (`job=~"dem"` against the seeded `job="demo"`).
+#    ClickHouse's match() is a substring search; Prometheus regex matchers
+#    are always implicitly fully anchored (issue #1741). The case only
+#    discriminates cerberus's own lowering bug — reference Prometheus has
+#    nothing to diverge on — but it is the corpus's only case that would
+#    have caught it, so it stays alongside the other two documented edits.
+# 5. Two more cerberus-owned cases pin classic-histogram lowering bugs found
 #    by inspection rather than by upstream: a `histogram_quantile` over the
 #    bare (non-`_bucket`) storage name must answer empty (#1483), and one
 #    over `sum by(le)(<bucket-selector>)` with no wrapping rate/increase/
@@ -76,6 +84,11 @@ test_cases:
   - query: 'demo_memory_usage_bytes{type!="free"}'
   - query: 'demo_memory_usage_bytes{instance=~"demo.promlabs.com:.*"}'
   - query: 'demo_memory_usage_bytes{instance=~"host"}'
+  - query: 'demo_memory_usage_bytes{job=~"dem"}'
+    # Cerberus-owned (see file header edit 3 / issue #1741): "dem" is a
+    # strict prefix of the seeded job="demo", never the whole string, so
+    # this must answer empty on both backends. A substring-search
+    # lowering of `=~` would wrongly match every demo series.
   - query: 'demo_memory_usage_bytes{instance!~".*:10000"}'
   - query: 'demo_memory_usage_bytes{type="free", instance!="demo.promlabs.com:10000"}'
   - query: '{type="free", instance!="demo.promlabs.com:10000"}'

@@ -3,8 +3,8 @@
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
-      "passed": 747,
-      "total": 747,
+      "passed": 748,
+      "total": 748,
       "cases": [
         "\"a string literal\"",
         "(1 * 2 + 4 / 6 - (10%7)^2) != demo_memory_usage_bytes",
@@ -289,6 +289,7 @@
         "demo_memory_usage_bytes{instance!~\".*:10000\"}",
         "demo_memory_usage_bytes{instance=~\"demo.promlabs.com:.*\"}",
         "demo_memory_usage_bytes{instance=~\"host\"}",
+        "demo_memory_usage_bytes{job=~\"dem\"}",
         "demo_memory_usage_bytes{type!=\"free\"}",
         "demo_memory_usage_bytes{type=\"free\", instance!=\"demo.promlabs.com:10000\"}",
         "demo_memory_usage_bytes{type=\"free\"}",
@@ -756,8 +757,8 @@
       ]
     },
     "loki": {
-      "passed": 126,
-      "total": 126,
+      "passed": 129,
+      "total": 129,
       "cases": [
         "cerberus/status-parity | status_parity | range | n/a |  | missing query parameter on /query_range",
         "cerberus/status-parity | status_parity | range | n/a | { | syntactically invalid LogQL (unbalanced selector) on /query_range",
@@ -856,6 +857,9 @@
         "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_level=\"error\" | Structured metadata error level filter",
         "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_level=\"error\" | logfmt | Logfmt parsing with structured metadata filter first",
         "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | detected_level=\"error\" | Logfmt parsing with structured metadata filter",
+        "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=\"auth-service\"} | service_name=~\"auth\" | label-filter regex matcher that is a strict prefix of an actual value matches nothing",
+        "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=~\"auth\"} | stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing",
+        "regression/anchored-regex-matcher.yaml | log | range | FORWARD | {service_name=~\"auth\"} | stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing",
         "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | json | logfmt | drop __error__, __error_details__ | level=\"error\" or level=\"warn\" | Drilldown with error or warn level filter",
         "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | json | logfmt | drop __error__, __error_details__ | level=\"error\" | Drilldown with error level filter",
         "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | json | logfmt | drop __error__, __error_details__ | Basic drilldown with json and logfmt parsing",
@@ -888,8 +892,8 @@
       ]
     },
     "tempo": {
-      "passed": 67,
-      "total": 67,
+      "passed": 68,
+      "total": 68,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -921,6 +925,7 @@
         "search | resource_deployment_env_not_nil",
         "search | resource_service_name_eq_checkout",
         "search | resource_service_name_neq_checkout",
+        "search | resource_service_name_regex_prefix_no_overmatch",
         "search | resource_service_name_regex_shipping",
         "search | scoped_event_name_no_events",
         "search | scoped_instrumentation_name",
@@ -961,8 +966,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 64,
-      "total": 64,
+      "passed": 65,
+      "total": 65,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -994,6 +999,7 @@
         "search | resource_deployment_env_not_nil",
         "search | resource_service_name_eq_checkout",
         "search | resource_service_name_neq_checkout",
+        "search | resource_service_name_regex_prefix_no_overmatch",
         "search | resource_service_name_regex_shipping",
         "search | scoped_event_name_no_events",
         "search | scoped_instrumentation_name",

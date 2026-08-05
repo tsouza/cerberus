@@ -30,7 +30,7 @@ INSERT INTO otel_metrics_gauge VALUES
 [9] string = "job"
 [10] string = ""
 [11] string = ""
-[12] string = "api-.*"
+[12] string = "^(?:api-.*)$"
 [13] string = "2026-01-01 00:00:01.000000000"
 [14] int64 = 9
 [15] string = "2026-01-01 00:00:01.000000000"
