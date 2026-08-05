@@ -23,17 +23,18 @@ func (c exoticCase) ts() int64 {
 // ExoticMatrix is the hand-curated catalogue. Every entry is bound to a
 // construct the from-scratch oracle (test/property/oracle/promql) already
 // evaluates, so the assertion is a real cerberus-vs-spec comparison rather
-// than a both-erroring no-op. Set ops, absent/clamp/sort, and the full
-// quantile/count_values/limitk/limit_ratio aggregator family are ALL
-// oracle-evaluated and exercised below (cat3Aggregators, cat4SetOps,
-// cat8ScalarVector) — limitk is exact-match only at its two
+// than a both-erroring no-op. Set ops, absent/clamp/sort, the
+// quantile/count_values/limitk/limit_ratio aggregator family, and the
+// deriv/predict_linear/double_exponential_smoothing/quantile_over_time
+// trend-function family are ALL oracle-evaluated and exercised below
+// (cat3Aggregators, cat4SetOps, cat8ScalarVector, cat11TrendFunctions) —
+// count_values/limitk/limit_ratio were closed by #1693, the trend
+// functions by #1695. limitk is exact-match only at its two
 // iteration-order-independent endpoints (see cat3Aggregators's doc
 // comment); count_values and limit_ratio are exact-match throughout. The
 // remaining categories the oracle can't yet evaluate are each tracked by
 // its own open issue, not by prose:
 //   - subqueries, label_replace, label_join — #1694
-//   - deriv, predict_linear, double_exponential_smoothing,
-//     quantile_over_time — #1695
 //   - native (exponential) histograms — #1696
 //
 // @ start()/end() determinism for range queries and stale/NaN handling are
@@ -63,6 +64,7 @@ var ExoticMatrix = func() []exoticCase {
 	m = append(m, cat8ScalarVector()...)
 	m = append(m, cat9OverTime()...)
 	m = append(m, cat10ScalarOps()...)
+	m = append(m, cat11TrendFunctions()...)
 	return m
 }()
 
@@ -303,10 +305,10 @@ func cat8ScalarVector() []exoticCase {
 
 // cat9OverTime covers the *_over_time family the oracle implements —
 // including changes()/resets()/last_over_time()/stddev_over_time()/
-// stdvar_over_time() (test/property/oracle/promql/functions.go).
-// deriv/predict_linear/double_exponential_smoothing/quantile_over_time
-// remain a genuine oracle gap, tracked by
-// https://github.com/tsouza/cerberus/issues/1695.
+// stdvar_over_time() (test/property/oracle/promql/functions.go). The
+// regression/smoothing trend-function family
+// (deriv/predict_linear/double_exponential_smoothing/quantile_over_time)
+// lives separately in cat11TrendFunctions.
 func cat9OverTime() []exoticCase {
 	const mem = "demo_memory_usage_bytes"
 	const inter = "demo_intermittent_metric"
@@ -330,6 +332,37 @@ func cat9OverTime() []exoticCase {
 		// A narrow window entirely after the reset sees no reset -> 0,
 		// distinguishing "no reset in this window" from "reset ignored".
 		{name: "cat9/resets_none_narrow_window", promql: "resets(" + restarts + "[1m])"},
+	}
+}
+
+// cat11TrendFunctions covers deriv/predict_linear/double_exponential_smoothing/
+// quantile_over_time — the trend-function family the oracle gained in #1695
+// (test/property/oracle/promql/functions.go's evalTrendFunction). Every case
+// targets demo_memory_usage_bytes{type="used"}, which seed.go's gaugeRamp
+// makes an exactly-linear ramp (base + step*1024), so deriv/predict_linear
+// have a closed-form expected answer independent of floating-point
+// regression noise: slope is exactly 1024 per stepInterval (15s).
+// double_exponential_smoothing and quantile_over_time don't need linearity,
+// but reuse the same series so the category stays self-contained.
+func cat11TrendFunctions() []exoticCase {
+	const mem = "demo_memory_usage_bytes"
+	used := mem + `{type="used"}`
+	return []exoticCase{
+		{name: "cat11/deriv_linear_ramp", promql: "deriv(" + used + "[5m])"},
+		// Project 5 minutes (300s) past the eval ts along the same slope.
+		{name: "cat11/predict_linear_forward", promql: "predict_linear(" + used + "[5m], 300)"},
+		// Negative horizon projects backward — exercises the same
+		// intercept/slope arithmetic with the opposite sign.
+		{name: "cat11/predict_linear_negative_horizon", promql: "predict_linear(" + used + "[5m], -120)"},
+		{name: "cat11/quantile_over_time_median", promql: "quantile_over_time(0.5, " + used + "[5m])"},
+		{name: "cat11/quantile_over_time_p90", promql: "quantile_over_time(0.9, " + used + "[5m])"},
+		// phi outside [0,1] is defined (±Inf), not an error — mirrors the
+		// aggregate quantile()'s out-of-domain behaviour.
+		{name: "cat11/quantile_over_time_phi_above_one", promql: "quantile_over_time(1.5, " + used + "[5m])"},
+		{name: "cat11/double_exponential_smoothing_basic", promql: "double_exponential_smoothing(" + used + "[5m], 0.5, 0.5)"},
+		// A second (sf, tf) pair exercises the recurrence's dependence on
+		// both factors independently, not just the sf==tf coincidence above.
+		{name: "cat11/double_exponential_smoothing_asymmetric_factors", promql: "double_exponential_smoothing(" + used + "[5m], 0.2, 0.8)"},
 	}
 }
 
