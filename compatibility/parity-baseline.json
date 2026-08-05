@@ -3,8 +3,8 @@
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
-      "passed": 748,
-      "total": 748,
+      "passed": 754,
+      "total": 754,
       "cases": [
         "\"a string literal\"",
         "(1 * 2 + 4 / 6 - (10%7)^2) != demo_memory_usage_bytes",
@@ -326,6 +326,7 @@
         "deriv(demo_disk_usage_bytes[5m])",
         "exp(-demo_memory_usage_bytes)",
         "exp(demo_memory_usage_bytes)",
+        "first_over_time(demo_memory_usage_bytes[10m:1m])",
         "floor(-demo_memory_usage_bytes)",
         "floor(demo_memory_usage_bytes)",
         "histogram_avg(nonexistent_metric_name)",
@@ -413,6 +414,8 @@
         "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"nonexistent-src\", \"(.*)\")",
         "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"nonexistent-src\", \"source-value-(.*)\")",
         "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"src\", \"(.*\")",
+        "last_over_time(demo_memory_usage_bytes[10m:1m] @ start())",
+        "last_over_time(demo_memory_usage_bytes[10m:1m])",
         "last_over_time(demo_memory_usage_bytes[15m])",
         "last_over_time(demo_memory_usage_bytes[15s])",
         "last_over_time(demo_memory_usage_bytes[1h])",
@@ -425,6 +428,9 @@
         "last_over_time(demo_memory_usage_bytes[5m] offset 1m)",
         "last_over_time(demo_memory_usage_bytes[5m] offset 5m)",
         "last_over_time(demo_memory_usage_bytes[5m])",
+        "last_over_time(last_over_time(demo_memory_usage_bytes[5m])[10m:1m])",
+        "last_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])",
+        "last_over_time({__name__=~\"demo_memory_usage_bytes|demo_disk_usage_bytes\"}[10m:1m])",
         "ln(-demo_memory_usage_bytes)",
         "ln(demo_memory_usage_bytes)",
         "log10(-demo_memory_usage_bytes)",

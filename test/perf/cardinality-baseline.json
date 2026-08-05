@@ -6259,6 +6259,17 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "promql/subquery_first_over_time_name",
+    "fan_factor": 2.6666666666666665,
+    "scan_rows": 6,
+    "peak_intermediate": 16,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "promql/subquery_holt_winters_rate",
     "fan_factor": 1,
     "scan_rows": 4,
@@ -6285,6 +6296,72 @@
     "fan_factor": 3,
     "scan_rows": 3,
     "peak_intermediate": 9,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_last_over_time_at_pinned_name",
+    "fan_factor": 2,
+    "scan_rows": 6,
+    "peak_intermediate": 12,
+    "has_cross_join": true,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_last_over_time_histogram_fanout_name",
+    "fan_factor": 3,
+    "scan_rows": 8,
+    "peak_intermediate": 24,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_last_over_time_name",
+    "fan_factor": 2.6666666666666665,
+    "scan_rows": 6,
+    "peak_intermediate": 16,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_last_over_time_nested_call",
+    "fan_factor": 2.6666666666666665,
+    "scan_rows": 6,
+    "peak_intermediate": 16,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_last_over_time_nested_subquery",
+    "fan_factor": 6.666666666666667,
+    "scan_rows": 6,
+    "peak_intermediate": 40,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "promql/subquery_last_over_time_rate_inner_no_name",
+    "fan_factor": 2.6666666666666665,
+    "scan_rows": 6,
+    "peak_intermediate": 16,
     "has_cross_join": false,
     "has_array_join": true,
     "has_recursive_cte": false,

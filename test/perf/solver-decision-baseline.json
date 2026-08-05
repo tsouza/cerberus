@@ -3920,6 +3920,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "subquery_first_over_time_name",
+    "routed": true,
+    "k": 4,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 40,
+    "cumulative_d": "15m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "subquery_holt_winters_rate",
     "routed": false,
     "k": 0,
@@ -3947,6 +3957,66 @@
     "n_anchors": 241,
     "fanout": 20,
     "cumulative_d": "10m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_last_over_time_at_pinned_name",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 5,
+    "cumulative_d": "15m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_last_over_time_histogram_fanout_name",
+    "routed": true,
+    "k": 4,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 40,
+    "cumulative_d": "15m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_last_over_time_name",
+    "routed": true,
+    "k": 4,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 40,
+    "cumulative_d": "15m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_last_over_time_nested_call",
+    "routed": true,
+    "k": 4,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 40,
+    "cumulative_d": "15m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_last_over_time_nested_subquery",
+    "routed": true,
+    "k": 3,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 40,
+    "cumulative_d": "20m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "subquery_last_over_time_rate_inner_no_name",
+    "routed": true,
+    "k": 4,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 40,
+    "cumulative_d": "15m0s",
     "outer_range": "1h0m0s"
   },
   {
