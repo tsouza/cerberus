@@ -108,14 +108,16 @@ func TestResolve_Off_LegacyFalse_StaysEmpty(t *testing.T) {
 
 func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	// On 25.9 the stable features (aggregation_in_order 24.8, condition_cache
-	// 25.3) plus ALL SEVEN 25.9-floored ts_grid_* features (ts_grid_range,
-	// ts_grid_resample, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
-	// ts_grid_predict_linear, ts_grid_recollapse) are AutoSelect=true and
-	// supported;
-	// columnar_result_decode is AutoSelect=false so auto never picks it. 25.9 is
-	// the first release whose timeSeries*ToGrid window is left-open (PR #86588),
-	// so it is the native floor for the whole family (deriv/predict_linear
-	// shipped at 25.8 but are registry-pinned to the shared 25.9 floor).
+	// 25.3) plus SIX of the seven 25.9-floored ts_grid_* features (ts_grid_range,
+	// ts_grid_resample, ts_grid_resets, ts_grid_deriv, ts_grid_predict_linear,
+	// ts_grid_recollapse) are AutoSelect=true and supported. 25.9 is the first
+	// release whose timeSeries*ToGrid window is left-open (PR #86588), so it is
+	// the native floor for the whole family (deriv/predict_linear shipped at
+	// 25.8 but are registry-pinned to the shared 25.9 floor).
+	// columnar_result_decode and ts_grid_changes are both AutoSelect=false so
+	// auto never picks either: columnar_result_decode is a perf tradeoff,
+	// ts_grid_changes diverges from reference Prometheus on NaN-adjacent windows
+	// (#1721) and is opt-in only via CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes.
 	// Capability=Available is the happy-path boot verdict (the server permits
 	// the experimental setting).
 	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, v(25, 9))
@@ -123,10 +125,13 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache,
-		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
+		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse)
 	if set.Has(FeatureColumnarResultDecode) {
 		t.Errorf("auto on 25.9 enabled %q; want it off (opt-in only)", FeatureColumnarResultDecode)
+	}
+	if set.Has(FeatureTSGridChanges) {
+		t.Errorf("auto on 25.9 enabled %q; want it off (opt-in only, #1721)", FeatureTSGridChanges)
 	}
 }
 
@@ -155,16 +160,22 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache,
-		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
+		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse)
+	if set.Has(FeatureTSGridChanges) {
+		t.Errorf("empty-selection-defaults-to-auto enabled %q; want it off (opt-in only, #1721)", FeatureTSGridChanges)
+	}
 }
 
 func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	// The auto-selection matrix as the probed server version crosses each floor,
 	// with the boot capability verdict = Available (the server permits the
 	// experimental setting) so the version floor is the only gate in play.
-	// columnar_result_decode (AutoSelect=false) is absent from every row even
-	// though it carries no version floor — auto must never select it.
+	// columnar_result_decode and ts_grid_changes (both AutoSelect=false) are
+	// absent from every row: columnar_result_decode carries no version floor at
+	// all, and ts_grid_changes never auto-selects regardless of version because
+	// the native builtin diverges from reference Prometheus on NaN-adjacent
+	// windows (#1721) — auto must never select either.
 	cases := []struct {
 		name   string
 		server Version
@@ -191,11 +202,11 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 			want:   []string{FeatureAggregationInOrder, FeatureConditionCache},
 		},
 		{
-			name:   "25.9 adds all seven ts_grid_* features (left-open window)",
+			name:   "25.9 adds six ts_grid_* features (left-open window; ts_grid_changes stays opt-in)",
 			server: v(25, 9),
 			want: []string{
 				FeatureAggregationInOrder, FeatureConditionCache,
-				FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
+				FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 				FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 			},
 		},
@@ -209,6 +220,9 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 			assertSet(t, set, tc.want...)
 			if set.Has(FeatureColumnarResultDecode) {
 				t.Error("auto selected columnar_result_decode; it is opt-in only (AutoSelect=false)")
+			}
+			if set.Has(FeatureTSGridChanges) {
+				t.Error("auto selected ts_grid_changes; it is opt-in only (AutoSelect=false, #1721)")
 			}
 			if len(warns) != 0 {
 				t.Errorf("auto emitted warnings %v; want none (auto is silent on version skips)", warns)
@@ -326,14 +340,16 @@ func TestResolve_ColumnarResultDecode_NoVersionFloor(t *testing.T) {
 func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 	// The headline case: "auto,columnar_result_decode" = the version-gated auto
 	// set PLUS the opt-in feature, without bailing out of auto. On 25.9 the auto
-	// half includes all seven 25.9-floored ts_grid_* features.
+	// half includes six of the seven 25.9-floored ts_grid_* features
+	// (ts_grid_changes stays opt-in-only, #1721, and is absent even from the
+	// explicit union here since it was not itself listed).
 	set, _, err := Resolve(Config{Optimizations: "auto,columnar_result_decode", Capability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
 	}
 	assertSet(t, set,
 		FeatureAggregationInOrder, FeatureConditionCache,
-		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
+		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureColumnarResultDecode)
 }
@@ -480,7 +496,8 @@ func TestResolve_BothLegacyAndExplicitList_EnforcingFatal(t *testing.T) {
 func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 	// Unset legacy is a no-op: the resolved set is exactly what plain auto gives
 	// (so on 25.9 ts_grid_range/resample ARE present — auto-selected by version,
-	// not by the legacy flag) and no deprecation notice is emitted.
+	// not by the legacy flag; ts_grid_changes stays absent — it is opt-in only,
+	// #1721) and no deprecation notice is emitted.
 	set, warns, err := Resolve(Config{
 		Optimizations: "auto",
 		Capability:    CapabilityAvailable,
@@ -490,7 +507,7 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache,
-		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
+		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse)
 	if hasDeprecation(warns) {
 		t.Errorf("unset legacy must not emit deprecation; warns = %v", warns)
@@ -500,9 +517,11 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 func TestRegistry_SeededEntries(t *testing.T) {
 	reg := Registry()
 	// AutoSelect is decoupled from Stability: the native timeSeries*ToGrid
-	// aggregates are Experimental maturity yet AutoSelect=true (auto picks them
-	// by version), while columnar_result_decode is the lone AutoSelect=false
-	// opt-in perf tradeoff.
+	// aggregates are Experimental maturity yet mostly AutoSelect=true (auto
+	// picks them by version). Two features are AutoSelect=false, opt-in only:
+	// columnar_result_decode (a perf tradeoff) and ts_grid_changes (the native
+	// builtin diverges from reference Prometheus on NaN-adjacent windows,
+	// #1721).
 	// RequiresExperimentalTSGrid marks the seven native timeSeries*ToGrid
 	// features (the six aggregates plus the ts_grid_recollapse shape knob that
 	// rides on the rate one); the stable/client-side features leave it false.
@@ -512,7 +531,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTSGridRange:          {ID: FeatureTSGridRange, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridResample:       {ID: FeatureTSGridResample, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureColumnarResultDecode: {ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSGridChanges:        {ID: FeatureTSGridChanges, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridChanges:        {ID: FeatureTSGridChanges, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureTSGridResets:         {ID: FeatureTSGridResets, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridDeriv:          {ID: FeatureTSGridDeriv, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridPredictLinear:  {ID: FeatureTSGridPredictLinear, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
@@ -535,11 +554,15 @@ func TestRegistry_SeededEntries(t *testing.T) {
 
 func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	// A 25.9 server (every native floor met) whose boot verdict is FORBIDDEN:
-	// auto drops ALL SEVEN native ts_grid_* features and keeps the non-experimental
-	// stable ones (aggregation_in_order, condition_cache). Each dropped native
-	// feature emits a boot WARN naming the experimental setting + the fan-out
-	// fallback (auto is silent on version skips, but NOT on a capability block —
-	// the operator should see a working deployment lost the native path).
+	// auto drops all seven native ts_grid_* features and keeps the non-experimental
+	// stable ones (aggregation_in_order, condition_cache). Six of the seven are
+	// AutoSelect=true and each emits a boot WARN naming the experimental setting
+	// + the fan-out fallback (auto is silent on version skips, but NOT on a
+	// capability block — the operator should see a working deployment lost the
+	// native path). ts_grid_changes is the seventh: it is AutoSelect=false
+	// (opt-in only, #1721), so auto never even considers it — it is absent from
+	// the resolved set for that reason alone, independent of the capability
+	// verdict, and produces no WARN of its own.
 	set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityForbidden}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -553,8 +576,8 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 			t.Errorf("auto enabled %q on a capability-forbidden server; want it dropped to fan-out", native)
 		}
 	}
-	if len(warns) != 7 {
-		t.Fatalf("want one WARN per dropped native feature (7); got %d: %v", len(warns), warns)
+	if len(warns) != 6 {
+		t.Fatalf("want one WARN per capability-dropped AutoSelect=true native feature (6, excludes ts_grid_changes which is opt-in only); got %d: %v", len(warns), warns)
 	}
 	for _, w := range warns {
 		if !strings.Contains(w, "allow_experimental_time_series_aggregate_functions") || !strings.Contains(w, "fan-out") {

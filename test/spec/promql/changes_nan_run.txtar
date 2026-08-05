@@ -8,14 +8,18 @@ CREATE TABLE otel_metrics_gauge (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
-    ('load_state', map('host', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 0.0),
-    ('load_state', map('host', 'a'), toDateTime64('2025-12-31 23:59:15', 9), 1.0),
-    ('load_state', map('host', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 1.0),
-    ('load_state', map('host', 'a'), toDateTime64('2025-12-31 23:59:45', 9), 0.0),
-    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+    ('load_state', map('host', 'c'), toDateTime64('2025-12-31 23:58:00', 9), nan),
+    ('load_state', map('host', 'c'), toDateTime64('2025-12-31 23:59:00', 9), nan),
+    ('load_state', map('host', 'c'), toDateTime64('2026-01-01 00:00:00', 9), nan),
+    ('load_state', map('host', 'd'), toDateTime64('2025-12-31 23:56:00', 9), 3.0),
+    ('load_state', map('host', 'd'), toDateTime64('2025-12-31 23:57:00', 9), nan),
+    ('load_state', map('host', 'd'), toDateTime64('2025-12-31 23:58:00', 9), nan),
+    ('load_state', map('host', 'd'), toDateTime64('2025-12-31 23:59:00', 9), 3.0),
+    ('load_state', map('host', 'd'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
 -- expected_rows --
 [
-  [{"host": "a"}, 3.0]
+  [{"host": "c"}, 0],
+  [{"host": "d"}, 3]
 ]
 -- args --
 [0] string = "service.name"
