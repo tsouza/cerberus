@@ -91,7 +91,7 @@ func BenchmarkBuilder_NewAndBuild(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		bld := NewBuilder()
 		frag(bld)
-		_, _ = bld.Build()
+		_, _, _ = bld.Build()
 	}
 }
 

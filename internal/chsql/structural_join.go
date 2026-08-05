@@ -167,8 +167,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 				aliasedFrag(leftSub, "L"),
 				structuralDirectOnFrag(j, relFrag),
 			)
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	case j.Op.IsUnion():
 		// Union direct: (SELECT R.* FROM L INNER JOIN R ON <rel>)
 		//   UNION ALL
@@ -190,8 +189,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 				aliasedFrag(rightSub, "R"),
 				structuralDirectOnFrag(j, relFrag),
 			)
-		e.emitStructuralSpanUnion(j, rightArm, leftArm)
-		return nil
+		return e.emitStructuralSpanUnion(j, rightArm, leftArm)
 	default:
 		sb := NewQuery().
 			Select(rightProj...).
@@ -201,8 +199,7 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 				aliasedFrag(rightSub, "R"),
 				structuralDirectOnFrag(j, relFrag),
 			)
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	}
 }
 
@@ -286,8 +283,7 @@ func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
 			From(aliasedFrag(rightSub, "R")).
 			Join(LeftJoin, aliasedFrag(aggL.Frag(), "L"), onEq).
 			Where(negWhere)
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	case j.Op.IsUnion():
 		rightArm := NewQuery().
 			Select(rightProj...).
@@ -299,16 +295,14 @@ func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
 			From(aliasedFrag(leftSub, "L")).
 			Join(InnerJoin, aliasedFrag(rightSub, "R"), onEq).
 			Where(distinctSpan)
-		e.emitStructuralSpanUnion(j, rightArm, leftArm)
-		return nil
+		return e.emitStructuralSpanUnion(j, rightArm, leftArm)
 	default:
 		sb := NewQuery().
 			Select(rightProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(InnerJoin, aliasedFrag(rightSub, "R"), onEq).
 			Where(distinctSpan)
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	}
 }
 
@@ -405,7 +399,7 @@ func structuralUnionOutputCols(j *chplan.StructuralJoin) []string {
 // the same CH 25.8 analyzer constraint structuralProjectionFrags
 // documents. It falls back to `*` only on the `<side>.* EXCEPT (…)` arm
 // shape, where the column set is not knowable at emit time.
-func (e *emitter) emitStructuralSpanUnion(j *chplan.StructuralJoin, rightArm, leftArm *QueryBuilder) {
+func (e *emitter) emitStructuralSpanUnion(j *chplan.StructuralJoin, rightArm, leftArm *QueryBuilder) error {
 	proj := []Frag{verbatim("*")}
 	if cols := structuralUnionOutputCols(j); len(cols) > 0 {
 		proj = make([]Frag, 0, len(cols))
@@ -418,7 +412,7 @@ func (e *emitter) emitStructuralSpanUnion(j *chplan.StructuralJoin, rightArm, le
 		From(Paren(UnionAll(rightArm.Frag(), leftArm.Frag()))).
 		Limit(unionDedupLimitPerIdentity).
 		LimitBy(Col(j.TraceIDColumn), Col(j.SpanIDColumn))
-	e.emitSelect(sb)
+	return e.emitSelect(sb)
 }
 
 // aliasedSideCol renders `<side>.<col> AS <alias>` with `col` and
@@ -688,8 +682,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		if len(j.TraceIDRestriction) > 0 {
 			sb = sb.Where(inStringLiteralsFrag(qualColFrag("R", j.TraceIDColumn), j.TraceIDRestriction))
 		}
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	case j.Op.IsUnion():
 		// Union recursive: emit two closure-keyed INNER-JOIN arms —
 		// one projecting R.*, one L.* — glued by UNION ALL and
@@ -716,8 +709,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			Select(leftProj...).
 			From(aliasedFrag(leftSub, "L")).
 			Join(InnerJoin, aliasedFrag(inverseClosure.Frag(), "R"), onClause)
-		e.emitStructuralSpanUnion(j, rightArm, leftArm)
-		return nil
+		return e.emitStructuralSpanUnion(j, rightArm, leftArm)
 	default:
 		// Outer SELECT R.* FROM (<closure>) AS L INNER JOIN (<R>) AS R ON L.TraceId = R.TraceId AND L.SpanId = R.SpanId.
 		sb := NewQuery().
@@ -730,8 +722,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		if len(j.TraceIDRestriction) > 0 {
 			sb = sb.Where(inStringLiteralsFrag(qualColFrag("R", j.TraceIDColumn), j.TraceIDRestriction))
 		}
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	}
 }
 

@@ -25,6 +25,21 @@ import (
 type Builder struct {
 	sb   strings.Builder
 	args []any
+
+	// err is the first error Expr encountered while rendering into this
+	// Builder, first-error-wins. It exists because Frag has no error
+	// return (`func(b *Builder)`), so an expression embedded via a
+	// closure — `func(b *Builder) { _ = b.Expr(expr) }`, the shape every
+	// QueryBuilder clause slot (Select/Where/Having/OrderBy/...) takes —
+	// cannot propagate a chplan rendering error through its own return
+	// value. Before this field existed, every such call site paid for a
+	// throwaway `(&Builder{}).Expr(expr)` pre-flight render just to catch
+	// that error synchronously, ahead of the real render — see #1449.
+	// Expr now records the error here as a side effect, so the real
+	// render IS the check: Build (both Builder.Build and
+	// QueryBuilder.Build) surfaces err, and Subquery/Spliced propagate a
+	// nested QueryBuilder's err into the outer Builder they splice into.
+	err error
 }
 
 // NewBuilder returns an empty Builder. Equivalent to &Builder{}.
@@ -38,9 +53,10 @@ func (b *Builder) String() string { return b.sb.String() }
 // should not mutate it.
 func (b *Builder) Args() []any { return b.args }
 
-// Build is the conventional terminator: returns the rendered SQL and
-// its positional argument slice.
-func (b *Builder) Build() (string, []any) { return b.sb.String(), b.args }
+// Build is the conventional terminator: returns the rendered SQL, its
+// positional argument slice, and the first Expr render error (if any) —
+// see Builder.err.
+func (b *Builder) Build() (string, []any, error) { return b.sb.String(), b.args, b.err }
 
 // writeSQL appends raw SQL text. Unexported — external packages must
 // use the typed surface (QueryBuilder slots + Frag constructors like
@@ -265,7 +281,17 @@ func (b *Builder) ParamAgg(name string, params, args []func(b *Builder)) {
 // Builder helpers (Ident / Arg / etc.). It is used by the ported
 // emitFilter / emitProject to emit predicates and projection expressions
 // without reaching into the private emitter.
-func (b *Builder) Expr(x chplan.Expr) error {
+//
+// Besides returning the error to a caller that checks it directly, Expr
+// records the first one on b.err (first-error-wins) so a caller that
+// embeds it in a Frag closure — which cannot itself return an error —
+// still surfaces it once the enclosing Build runs. See Builder.err.
+func (b *Builder) Expr(x chplan.Expr) (err error) {
+	defer func() {
+		if err != nil && b.err == nil {
+			b.err = err
+		}
+	}()
 	switch v := x.(type) {
 	case *chplan.ColumnRef:
 		if v.Qualifier != "" {
@@ -1218,7 +1244,12 @@ func InlineLit(v any) Frag {
 func Render(f Frag) (string, []any) {
 	b := NewBuilder()
 	f(b)
-	return b.Build()
+	// Render's callers (RenderDDL) only ever hand it DDL Frags, which
+	// compose Ident / InlineLit / Call and never reach chplan.Expr — so
+	// b.err is always nil here. Discarding it keeps Render's signature
+	// stable for its one production caller; see Builder.err.
+	sql, args, _ := b.Build()
+	return sql, args
 }
 
 // UnionAll joins one or more Frags with " UNION ALL " between them. It
@@ -1625,8 +1656,16 @@ func IfNonZero(num, denom Frag) Frag {
 // statement. *QueryBuilder satisfies it; PreRenderedSQL adapts a
 // (sql, args) pair from the legacy emitter so its output can flow
 // through Subquery without raw-string composition.
+//
+// subquerySQL is deliberately unexported (rather than named Build) so
+// *QueryBuilder's public, two-value Build() — consumed across
+// internal/api/{prom,loki,tempo}, internal/optcorpus,
+// internal/routerrules and internal/preflight — keeps its existing
+// signature. Only the two types chsql itself defines implement
+// Subqueryable, so the unexported method is satisfiable without
+// reaching outside this package.
 type Subqueryable interface {
-	Build() (string, []any)
+	subquerySQL() (string, []any, error)
 }
 
 // Subquery returns a Frag rendering "(<rendered s>)" — wraps a
@@ -1641,7 +1680,10 @@ type Subqueryable interface {
 // port can collapse that emitter into the QueryBuilder surface.
 func Subquery(s Subqueryable) Frag {
 	return func(b *Builder) {
-		sql, args := s.Build()
+		sql, args, err := s.subquerySQL()
+		if err != nil && b.err == nil {
+			b.err = err
+		}
 		b.sb.WriteByte('(')
 		b.sb.WriteString(sql)
 		b.sb.WriteByte(')')
@@ -1660,7 +1702,10 @@ func Subquery(s Subqueryable) Frag {
 // user input.
 func Spliced(s Subqueryable) Frag {
 	return func(b *Builder) {
-		sql, args := s.Build()
+		sql, args, err := s.subquerySQL()
+		if err != nil && b.err == nil {
+			b.err = err
+		}
 		b.sb.WriteString(sql)
 		b.args = append(b.args, args...)
 	}
@@ -1679,8 +1724,10 @@ type PreRenderedSQL struct {
 	Args []any
 }
 
-// Build satisfies Subqueryable.
-func (p PreRenderedSQL) Build() (string, []any) { return p.SQL, p.Args }
+// subquerySQL satisfies Subqueryable. p.SQL is always already-rendered
+// text (from the legacy string emitter), so it never carries a render
+// error.
+func (p PreRenderedSQL) subquerySQL() (string, []any, error) { return p.SQL, p.Args, nil }
 
 // writeFragList emits Frags comma-separated (with ", " between
 // subsequent parts) into the builder. Shared helper for the function-
@@ -2199,6 +2246,19 @@ func (s *QueryBuilder) Frag() Frag {
 // Build renders the SELECT statement to (sql, args). Equivalent to
 // running Frag() into a fresh Builder, minus the surrounding parens.
 func (s *QueryBuilder) Build() (string, []any) {
+	sql, args, _ := s.subquerySQL()
+	return sql, args
+}
+
+// subquerySQL is Build's error-propagating counterpart (see
+// Subqueryable). It is what the recursive emitter's emitSelect/splice
+// and the Subquery/Spliced Frag helpers call instead of Build, so a
+// nested QueryBuilder's Builder.err first-error-wins state (#1449)
+// reaches the outer render rather than being silently dropped the way
+// the old pre-flight-then-discard-and-render-again pattern needed to
+// work around. Unexported: Build stays the public two-value surface
+// every non-chsql caller already depends on.
+func (s *QueryBuilder) subquerySQL() (string, []any, error) {
 	b := NewBuilder()
 	s.writeInto(b)
 	return b.Build()

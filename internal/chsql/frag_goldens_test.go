@@ -321,7 +321,7 @@ func TestFrag_Goldens(t *testing.T) {
 			t.Parallel()
 			b := NewBuilder()
 			tc.frag(b)
-			gotSQL, gotArgs := b.Build()
+			gotSQL, gotArgs, _ := b.Build()
 			if gotSQL != tc.wantSQL {
 				t.Errorf("SQL = %q; want %q", gotSQL, tc.wantSQL)
 			}
@@ -352,7 +352,7 @@ func TestFrag_NestedComposition(t *testing.T) {
 	)
 	b := NewBuilder()
 	expr(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	want := "(`a` = ? OR `b` != ?) AND NOT `c` IN (?, ?)"
 	if sql != want {
 		t.Errorf("SQL = %q; want %q", sql, want)
@@ -484,7 +484,7 @@ func TestFrag_Array_BindsAtPosition(t *testing.T) {
 	Array(Lit(1), Lit(2), Lit(3))(b)
 	b.writeSQL(", ")
 	Lit(4)(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if want := "[?, ?, ?], ?"; sql != want {
 		t.Errorf("SQL = %q; want %q", sql, want)
 	}
@@ -504,7 +504,7 @@ func TestFrag_Call_BindsAtPosition(t *testing.T) {
 	Call("concat", Lit("a"), Lit("b"))(b)
 	b.writeSQL(", ")
 	Lit("c")(b)
-	sql, args := b.Build()
+	sql, args, _ := b.Build()
 	if want := "concat(?, ?), ?"; sql != want {
 		t.Errorf("SQL = %q; want %q", sql, want)
 	}

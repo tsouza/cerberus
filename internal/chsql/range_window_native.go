@@ -469,8 +469,7 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	)
 	outer.Where(IsNotNull(Col(nativeGridValAlias)))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // requireRecollapseEmittable rejects every deferred-shaping node the emitter

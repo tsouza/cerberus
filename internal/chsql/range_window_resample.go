@@ -145,6 +145,5 @@ func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
 	)
 	outer.Where(IsNotNull(Col(nativeGridValAlias)))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
