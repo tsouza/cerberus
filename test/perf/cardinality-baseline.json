@@ -3641,6 +3641,17 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "promql/histogram_mean_latency_exp",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": true,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "promql/histogram_quantile_agg_empty",
     "fan_factor": 0,
     "scan_rows": 0,
