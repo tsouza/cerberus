@@ -1476,20 +1476,24 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 	return out, nil
 }
 
-// TimestampedLine is one (Timestamp, Body) tuple from the peek-window
-// SQL backing /loki/api/v1/patterns. The timestamp is the row's
-// DateTime64 value verbatim; the body is the raw log line. The drain
-// template miner consumes the pair via [drain.Miner.Train], which takes
-// the timestamp as unix nanoseconds.
+// TimestampedLine is one (Timestamp, Body, Severity) tuple from the
+// peek-window SQL backing /loki/api/v1/patterns. The timestamp is the
+// row's DateTime64 value verbatim; the body is the raw log line. The
+// drain template miner consumes the (Timestamp, Body) pair via
+// [drain.Miner.Train], which takes the timestamp as unix nanoseconds;
+// Severity is the row's raw SeverityText, used to bucket pattern mining
+// per detected level (see internal/logql.NormalizeDetectedLevel).
 type TimestampedLine struct {
 	Timestamp time.Time
 	Body      string
+	Severity  string
 }
 
-// QueryTimestampedLines runs sql and decodes a (DateTime64, String)
-// two-column result set into a flat slice. Used by /loki/api/v1/patterns
-// to feed the drain template miner — drain needs both the line body and
-// a timestamp to bucket per-cluster samples.
+// QueryTimestampedLines runs sql and decodes a (DateTime64, String,
+// String) three-column result set into a flat slice. Used by
+// /loki/api/v1/patterns to feed the drain template miner — drain needs
+// the line body and a timestamp to bucket per-cluster samples, and the
+// handler buckets mining itself by the row's severity.
 //
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...any) ([]TimestampedLine, error) {
@@ -1515,10 +1519,11 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...
 	for rows.Next() {
 		var ts time.Time
 		var body string
-		if err := rows.Scan(&ts, &body); err != nil {
+		var severity string
+		if err := rows.Scan(&ts, &body, &severity); err != nil {
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
-		out = append(out, TimestampedLine{Timestamp: ts, Body: body})
+		out = append(out, TimestampedLine{Timestamp: ts, Body: body, Severity: severity})
 		buffered += int64(len(body))
 		if err := logPeekBytesExceeded(buffered); err != nil {
 			return nil, err
