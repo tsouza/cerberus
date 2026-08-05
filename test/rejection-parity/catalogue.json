@@ -556,6 +556,13 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/lower.go:expHistogramSelectorRouting#bcc398d7",
+      "message": "promql: %q is an exponential histogram metric; only histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
+      "class": "rejection",
+      "trigger_query": "rate(demo_exp_histogram[5m])"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
