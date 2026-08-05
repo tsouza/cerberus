@@ -41,6 +41,18 @@ type BoundedTraceScope struct {
 	TraceLimit         int64
 	WindowStartNano    int64
 	WindowEndNano      int64
+
+	// BindingAlias, when non-empty, names a single-evaluation ClickHouse
+	// scalar binding that already holds the top-N trace-id array, so this
+	// gate renders as `has(<BindingAlias>, <TraceIDColumn>)` instead of
+	// re-deriving the whole top-N subquery here. It is stamped by
+	// [BindBoundedTraceScope] at the emit chokepoint — never by a lowering
+	// or an optimizer rule — and selects exactly the same trace set as the
+	// unbound form, so a partially-stamped tree is a partial optimisation,
+	// not a semantic difference. See internal/chsql/emit.go for the
+	// `WITH (SELECT groupArray(...) FROM (<top-N>)) AS <alias>` binding the
+	// alias resolves against.
+	BindingAlias string
 }
 
 func (*BoundedTraceScope) exprNode() {}
@@ -49,6 +61,22 @@ func (b *BoundedTraceScope) Equal(other Expr) bool {
 	o, ok := other.(*BoundedTraceScope)
 	return ok &&
 		b.SpansTable == o.SpansTable &&
+		b.TraceIDColumn == o.TraceIDColumn &&
+		b.ParentSpanIDColumn == o.ParentSpanIDColumn &&
+		b.TimestampColumn == o.TimestampColumn &&
+		b.TraceLimit == o.TraceLimit &&
+		b.WindowStartNano == o.WindowStartNano &&
+		b.WindowEndNano == o.WindowEndNano &&
+		b.BindingAlias == o.BindingAlias
+}
+
+// SameScope reports whether b and o select the same trace set, ignoring
+// which rendering form each one carries (BindingAlias). It is what
+// [BindBoundedTraceScope] uses to decide that every gate in a tree may
+// share one binding: the gates must agree on the table, the columns, the
+// limit and the window — everything the top-N subquery is derived from.
+func (b *BoundedTraceScope) SameScope(o *BoundedTraceScope) bool {
+	return b.SpansTable == o.SpansTable &&
 		b.TraceIDColumn == o.TraceIDColumn &&
 		b.ParentSpanIDColumn == o.ParentSpanIDColumn &&
 		b.TimestampColumn == o.TimestampColumn &&
