@@ -426,8 +426,9 @@
       "head": "promql",
       "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#1cf264f6",
       "message": "promql: histogram_quantiles requires literal phi arguments for the %q label, got %T",
-      "class": "rejection",
-      "trigger_query": "histogram_quantiles(http_request_duration_seconds, \"quantile\", scalar(http_request_duration_seconds))"
+      "class": "divergence",
+      "trigger_query": "histogram_quantiles(http_request_duration_seconds, \"quantile\", scalar(http_request_duration_seconds))",
+      "tracking_issue": 1765
     },
     {
       "head": "promql",
@@ -652,8 +653,9 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lowerTopKComputed#8af012e4",
       "message": "promql: %s K must be a scalar literal or scalar(\u003cvector\u003e); computed-K with other shapes is not yet supported",
-      "class": "rejection",
-      "trigger_query": "topk(scalar(up) * 2, up)"
+      "class": "divergence",
+      "trigger_query": "topk(scalar(up) * 2, up)",
+      "tracking_issue": 1766
     },
     {
       "head": "promql",
