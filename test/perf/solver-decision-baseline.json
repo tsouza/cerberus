@@ -1500,7 +1500,27 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "histogram_quantile_agg_no_range_wrapper",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "histogram_quantile_avg_by_le",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "histogram_quantile_bare_name_unsatisfiable",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable",
@@ -1721,6 +1741,16 @@
   },
   {
     "query": "histogram_quantile_le_not_in_by",
+    "routed": false,
+    "k": 0,
+    "reason": "not-sliceable",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
+    "query": "histogram_quantile_le_regex_bound_subset",
     "routed": false,
     "k": 0,
     "reason": "not-sliceable",

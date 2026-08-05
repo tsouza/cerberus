@@ -56,10 +56,10 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
   template-expanded to concrete cases, plus a small cerberus-owned tail for
-  shapes upstream cannot express (resource-attribute grouping) — 739 in all.
-- **Today**: **739/739** cases pass; no allow-list exists. This is the
+  shapes upstream cannot express (resource-attribute grouping) — 741 in all.
+- **Today**: **741/741** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 739/739 is a
+  a real reference. (Parity drift is report-only in CI; the 741/741 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -122,7 +122,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 739/739, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 741/741, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -358,9 +358,9 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 739 / 739    |
-| loki       | 124 / 124    |
-| tempo      | 61 / 61      |
+| prometheus | 741 / 741    |
+| loki       | 126 / 126    |
+| tempo      | 63 / 63      |
 | tempo-grpc | 59 / 59      |
 
 The baseline records **full parity** for every head — the ratchet asserts
