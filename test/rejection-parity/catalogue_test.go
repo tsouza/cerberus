@@ -102,6 +102,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			if e.TrackingIssue != 0 {
 				t.Errorf("rejection entry %s carries a tracking issue — tracking issues belong to divergence entries", e.Site.Site)
 			}
+			if e.Since != "" {
+				t.Errorf("rejection entry %s carries a since date — since dates belong to divergence entries", e.Site.Site)
+			}
 		case ClassInternal:
 			if strings.TrimSpace(e.Rationale) == "" {
 				t.Errorf("internal entry %s carries no rationale — every internal classification must justify why the site is not wire-reachable", e.Site.Site)
@@ -111,6 +114,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			}
 			if e.TrackingIssue != 0 {
 				t.Errorf("internal entry %s carries a tracking issue — tracking issues belong to divergence entries", e.Site.Site)
+			}
+			if e.Since != "" {
+				t.Errorf("internal entry %s carries a since date — since dates belong to divergence entries", e.Site.Site)
 			}
 		case ClassDivergence:
 			if strings.TrimSpace(e.TriggerQuery) == "" {
@@ -128,6 +134,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			}
 			if e.TrackingIssue <= 0 {
 				t.Errorf("divergence entry %s has no tracking issue — every divergence must cite an open issue tracking closure", e.Site.Site)
+			}
+			if _, err := time.Parse(divergenceDateLayout, e.Since); err != nil {
+				t.Errorf("divergence entry %s has an invalid since date %q (want %s): %v — every divergence must record when it was first classified, so the age cap can measure it", e.Site.Site, e.Since, divergenceDateLayout, err)
 			}
 		default:
 			t.Errorf("entry %s is unclassified (class=%q) — classify as rejection (with trigger query), internal (with rationale), or divergence (with trigger query + tracking issue)", e.Site.Site, e.Class)
