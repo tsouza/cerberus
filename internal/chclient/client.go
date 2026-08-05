@@ -383,8 +383,10 @@ type Config struct {
 // guarded by a circuit breaker (see breaker.go). When CH goes dark the
 // breaker trips after a short failure budget and methods return
 // [ErrCircuitOpen] without dialling — the handler layer maps that into
-// HTTP 503 with a `Retry-After: 5` header so clients back off cleanly
-// instead of stacking inner-stage retries against a dead upstream.
+// HTTP 503 with a `Retry-After` header sized from the tripped breaker's own
+// recovery interval ([RetryAfterSeconds]) so clients back off for exactly as
+// long as the circuit stays shut, instead of stacking inner-stage retries
+// against a dead upstream.
 //
 // PER-HEAD ISOLATION (#94). A single *Client holds a registry of N
 // breakers, one per [Head] (prom / loki / tempo / probe), all sharing the
@@ -1151,7 +1153,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("chclient: ping: nil connection")
 	}
 	if !c.br.allow() {
-		return fmt.Errorf("chclient: ping: %w", ErrCircuitOpen)
+		return c.br.openErr("chclient: ping")
 	}
 	err := c.pingOpen(ctx)
 	c.br.record(ctx, err)
@@ -1255,7 +1257,7 @@ func (c *Client) MaxQuerySamples() int64 {
 // ErrCircuitOpen without touching CH and without opening an execute span.
 func (c *Client) Exec(ctx context.Context, sql string, args ...any) error {
 	if !c.br.allow() {
-		return fmt.Errorf("chclient: exec: %w", ErrCircuitOpen)
+		return c.br.openErr("chclient: exec")
 	}
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
@@ -1380,7 +1382,7 @@ func mapBytes(m map[string]string) int64 {
 // the breaker is OPEN, no execute span opened.
 func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1437,7 +1439,7 @@ type DetectedFieldRow struct {
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ...any) ([]DetectedFieldRow, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1498,7 +1500,7 @@ type TimestampedLine struct {
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryTimestampedLines(ctx context.Context, sql string, args ...any) ([]TimestampedLine, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1553,7 +1555,7 @@ type MetricMetaRow struct {
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryMetricMeta(ctx context.Context, sql, metricType string, args ...any) ([]MetricMetaRow, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1607,7 +1609,7 @@ type IndexStatsRow struct {
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryIndexStats(ctx context.Context, sql string, args ...any) (IndexStatsRow, error) {
 	if !c.br.allow() {
-		return IndexStatsRow{}, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return IndexStatsRow{}, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1650,7 +1652,7 @@ type IndexVolumeRow struct {
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]IndexVolumeRow, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1717,7 +1719,7 @@ type ExemplarRow struct {
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([]ExemplarRow, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1765,7 +1767,7 @@ func (c *Client) QueryExemplars(ctx context.Context, sql string, args ...any) ([
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -1816,7 +1818,7 @@ type NameTypePair struct {
 // the breaker is OPEN, no execute span opened.
 func (c *Client) QueryNameTypePairs(ctx context.Context, sql string, args ...any) ([]NameTypePair, error) {
 	if !c.br.allow() {
-		return nil, fmt.Errorf("chclient: query: %w", ErrCircuitOpen)
+		return nil, c.br.openErr("chclient: query")
 	}
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)

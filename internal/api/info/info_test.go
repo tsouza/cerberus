@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -13,20 +14,31 @@ import (
 // tests to mutate per-case.
 func baseSnapshot() Snapshot {
 	return Snapshot{
-		Service:                   "cerberus",
-		Version:                   "1.6.1",
-		Revision:                  "abc1234",
-		GoVersion:                 "go1.23.0",
-		Heads:                     []string{"prom", "loki", "tempo"},
-		CHAddress:                 "clickhouse:9000",
-		CHDatabase:                "otel",
-		ServerVersion:             "25.8",
-		ServerVersionSource:       ServerVersionSourceProbe,
-		OptSelection:              "auto,columnar_result_decode",
-		OptMode:                   "enforcing",
-		OptResolvedAgainstVersion: "25.8",
-		OptEnabled:                []string{"aggregation_in_order", "columnar_result_decode", "condition_cache"},
+		Service:      "cerberus",
+		Version:      "1.6.1",
+		Revision:     "abc1234",
+		GoVersion:    "go1.23.0",
+		Heads:        []string{"prom", "loki", "tempo"},
+		CHAddress:    "clickhouse:9000",
+		CHDatabase:   "otel",
+		OptSelection: "auto,columnar_result_decode",
+		OptMode:      "enforcing",
 	}
+}
+
+// baseOptState returns a representative capability resolution for the handler
+// tests to mutate per-case.
+func baseOptState() OptState {
+	return OptState{
+		ServerVersion:       "25.8",
+		ServerVersionSource: ServerVersionSourceProbe,
+		Enabled:             []string{"aggregation_in_order", "columnar_result_decode", "condition_cache"},
+	}
+}
+
+// staticOpts adapts an OptState into the Options.Optimizations closure.
+func staticOpts(st OptState) func() OptState {
+	return func() OptState { return st }
 }
 
 // decodeInfo issues GET /info against a freshly-mounted handler and decodes
@@ -52,12 +64,13 @@ func decodeInfo(t *testing.T, h *Handler) (infoResponse, int) {
 func TestInfo_StaticFields(t *testing.T) {
 	snap := baseSnapshot()
 	h := New(Options{
-		Snapshot:    snap,
-		StartTime:   time.Now().Add(-90 * time.Second),
-		Reachable:   func(context.Context) bool { return true },
-		Breaker:     func() string { return "closed" },
-		SchemaReady: func() bool { return true },
-		Ready:       func(context.Context) bool { return true },
+		Snapshot:      snap,
+		Optimizations: staticOpts(baseOptState()),
+		StartTime:     time.Now().Add(-90 * time.Second),
+		Reachable:     func(context.Context) bool { return true },
+		Breaker:       func() string { return "closed" },
+		SchemaReady:   func() bool { return true },
+		Ready:         func(context.Context) bool { return true },
 	})
 
 	got, code := decodeInfo(t, h)
@@ -94,12 +107,13 @@ func TestInfo_StaticFields(t *testing.T) {
 // EnabledSet ids surface verbatim under optimizations.enabled.
 func TestInfo_OptimizationsEnabled(t *testing.T) {
 	snap := baseSnapshot()
-	snap.OptEnabled = []string{"columnar_result_decode", "ts_grid_range"}
 	snap.OptSelection = "auto,columnar_result_decode"
 	snap.OptMode = "permissive"
-	snap.OptResolvedAgainstVersion = "25.9"
+	st := baseOptState()
+	st.ServerVersion = "25.9"
+	st.Enabled = []string{"columnar_result_decode", "ts_grid_range"}
 
-	h := New(Options{Snapshot: snap})
+	h := New(Options{Snapshot: snap, Optimizations: staticOpts(st)})
 	got, _ := decodeInfo(t, h)
 
 	if got.Optimizations.Selection != "auto,columnar_result_decode" {
@@ -134,11 +148,11 @@ func TestInfo_ServerVersionSource(t *testing.T) {
 		{"fallback", ServerVersionSourceFallback, "24.8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snap := baseSnapshot()
-			snap.ServerVersion = tc.ver
-			snap.ServerVersionSource = tc.source
+			st := baseOptState()
+			st.ServerVersion = tc.ver
+			st.ServerVersionSource = tc.source
 
-			h := New(Options{Snapshot: snap})
+			h := New(Options{Snapshot: baseSnapshot(), Optimizations: staticOpts(st)})
 			got, _ := decodeInfo(t, h)
 
 			if got.ClickHouse.ServerVersion != tc.ver {
@@ -156,11 +170,12 @@ func TestInfo_ServerVersionSource(t *testing.T) {
 func TestInfo_LiveState(t *testing.T) {
 	snap := baseSnapshot()
 	h := New(Options{
-		Snapshot:    snap,
-		Reachable:   func(context.Context) bool { return false },
-		Breaker:     func() string { return "open" },
-		SchemaReady: func() bool { return false },
-		Ready:       func(context.Context) bool { return false },
+		Snapshot:      snap,
+		Optimizations: staticOpts(baseOptState()),
+		Reachable:     func(context.Context) bool { return false },
+		Breaker:       func() string { return "open" },
+		SchemaReady:   func() bool { return false },
+		Ready:         func(context.Context) bool { return false },
 	})
 
 	got, code := decodeInfo(t, h)
@@ -204,5 +219,50 @@ func TestInfo_NilFuncsSafeDefaults(t *testing.T) {
 	}
 	if got.UptimeSeconds != 0 {
 		t.Errorf("uptimeSeconds with zero StartTime = %d; want 0", got.UptimeSeconds)
+	}
+	if got.ClickHouse.ServerVersion != "" {
+		t.Errorf("serverVersion with no resolver = %q; want empty", got.ClickHouse.ServerVersion)
+	}
+	if len(got.Optimizations.Enabled) != 0 {
+		t.Errorf("optimizations.enabled with no resolver = %v; want empty", got.Optimizations.Enabled)
+	}
+}
+
+// TestInfo_OptimizationsAreLive is the regression pin for the capability
+// re-probe: /info must re-read the resolution on EVERY request, so a set that
+// changes under a running process (a ClickHouse upgrade crossing a feature
+// floor) is visible on the next scrape rather than at the next restart. A
+// handler that captured the resolution once at construction — the boot-snapshot
+// shape this replaced — returns the first answer twice and fails here.
+func TestInfo_OptimizationsAreLive(t *testing.T) {
+	var current atomic.Pointer[OptState]
+	before := OptState{ServerVersion: "25.8", ServerVersionSource: ServerVersionSourceProbe, Enabled: []string{"aggregation_in_order"}}
+	current.Store(&before)
+
+	h := New(Options{
+		Snapshot:      baseSnapshot(),
+		Optimizations: func() OptState { return *current.Load() },
+	})
+
+	got, _ := decodeInfo(t, h)
+	if got.ClickHouse.ServerVersion != "25.8" {
+		t.Fatalf("serverVersion before upgrade = %q; want 25.8", got.ClickHouse.ServerVersion)
+	}
+	if len(got.Optimizations.Enabled) != 1 || got.Optimizations.Enabled[0] != "aggregation_in_order" {
+		t.Fatalf("enabled before upgrade = %v; want [aggregation_in_order]", got.Optimizations.Enabled)
+	}
+
+	after := OptState{ServerVersion: "25.9", ServerVersionSource: ServerVersionSourceProbe, Enabled: []string{"aggregation_in_order", "ts_grid_range"}}
+	current.Store(&after)
+
+	got, _ = decodeInfo(t, h)
+	if got.ClickHouse.ServerVersion != "25.9" {
+		t.Errorf("serverVersion after upgrade = %q; want 25.9", got.ClickHouse.ServerVersion)
+	}
+	if got.Optimizations.ResolvedAgainstVersion != "25.9" {
+		t.Errorf("resolvedAgainstVersion after upgrade = %q; want 25.9", got.Optimizations.ResolvedAgainstVersion)
+	}
+	if len(got.Optimizations.Enabled) != 2 || got.Optimizations.Enabled[1] != "ts_grid_range" {
+		t.Errorf("enabled after upgrade = %v; want [aggregation_in_order ts_grid_range]", got.Optimizations.Enabled)
 	}
 }

@@ -15,10 +15,9 @@ import (
 //
 // The node is produced by the PromQL lowering ONLY when ALL of:
 //
-//   - The boot-wired native-rate strategy is active (the ts_grid_range
-//     feature, resolved once at boot from chopt.EnabledSet and injected into
-//     the lowering as a RangeLowerers strategy — never read per query). Default
-//     off.
+//   - The wired native-rate strategy is active (the ts_grid_range feature,
+//     resolved from chopt.EnabledSet and injected into the lowering as a
+//     RangeLowerers strategy — never read per query). Default off.
 //   - Func == "rate" (the first cut; increase / delta have no dedicated
 //     timeSeries*ToGrid aggregate proven equivalent to Prom's
 //     funcIncrease / funcDelta yet, so they stay on the fan-out).

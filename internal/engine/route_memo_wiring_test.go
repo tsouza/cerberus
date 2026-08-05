@@ -159,12 +159,14 @@ func newMemoWiringEngine(t *testing.T, cursorClient solver.CursorQuerier) (*Engi
 }
 
 // openBreakerFake satisfies solver.ExecDeps' unexported breakerPeeker
-// interface structurally (PeekBreakerState() string) — Go interface
-// satisfaction is by method set, not by name, so this local type is enough
-// to make the Solver see an OPEN breaker without importing chclient.
+// interface structurally (PeekBreakerState + BreakerRetryAfter) — Go
+// interface satisfaction is by method set, not by name, so this local type is
+// enough to make the Solver see an OPEN breaker without importing chclient.
 type openBreakerFake struct{}
 
 func (openBreakerFake) PeekBreakerState() string { return solver.BreakerOpen }
+
+func (openBreakerFake) BreakerRetryAfter() time.Duration { return 0 }
 
 // newMemoWiringEngineWithOpenBreaker is newMemoWiringEngine plus a breaker
 // that always reports OPEN — used only by the breaker-open skip-reason
