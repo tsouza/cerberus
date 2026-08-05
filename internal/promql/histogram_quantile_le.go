@@ -38,22 +38,6 @@ import (
 // `length(BucketCounts) = 0 -> nan` branch in the chsql emitter
 // (histogramQuantileValueFrag) fires. No emitter change is needed —
 // the guard lives entirely in the shape this Project constructs.
-// anchoredMatchValue returns the matcher's comparison value, fully
-// anchored for the two regex match types. chplan.OpMatch / OpNotMatch
-// compile to ClickHouse's match() / NOT match(), which performs an
-// unanchored substring search rather than Prometheus's fully-anchored
-// `^(?:...)$` regex semantics — left unanchored, `le=~"1"` would also
-// select bucket boundaries like "0.1" or "21". Equality matcher values
-// pass through unchanged; they never reach OpMatch/OpNotMatch.
-func anchoredMatchValue(m *labels.Matcher) string {
-	switch m.Type {
-	case labels.MatchRegexp, labels.MatchNotRegexp:
-		return "^(?:" + m.Value + ")$"
-	default:
-		return m.Value
-	}
-}
-
 func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher, s schema.Metrics) chplan.Node {
 	if len(leMatchers) == 0 {
 		return input
@@ -104,18 +88,18 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// lePred(i) ANDs every `le` matcher against the position-`i` bucket's
 	// synthesised le string — matchOp covers all four labels.MatchType
 	// values (=, !=, =~, !~), same routing matcherToExpr uses for every
-	// other label. Regex values are anchored (anchoredMatchValue) before
-	// reaching chplan.OpMatch/OpNotMatch: the chsql emitter renders those
-	// ops as ClickHouse's match()/NOT match(), which is an unanchored
-	// substring search, not a full-string match — an unanchored "1" would
-	// wrongly select bucket "0.1" or "21" too. See #1741 for the same gap
-	// in ordinary (non-`le`) label matchers, tracked separately.
+	// other label. Regex values are passed through as-is: the chsql
+	// emitter's anchoredRegexPattern (builder.go, #1741) wraps every
+	// chplan.OpMatch/OpNotMatch pattern with `^(?:...)$` at the one SQL
+	// emission site both render paths share, so an unanchored "1" here
+	// would still only match bucket "1", never "0.1" or "21" — wrapping
+	// again here would double-anchor to `^(?:^(?:1)$)$`.
 	var lePred chplan.Expr
 	for _, m := range leMatchers {
 		cmp := &chplan.Binary{
 			Op:    matchOp(m.Type),
 			Left:  leStrAt(&chplan.BareIdent{Name: "i"}),
-			Right: &chplan.LitString{V: anchoredMatchValue(m)},
+			Right: &chplan.LitString{V: m.Value},
 		}
 		lePred = andExpr(lePred, cmp)
 	}
