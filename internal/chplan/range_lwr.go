@@ -57,6 +57,25 @@ type RangeLWR struct {
 	// shifts it forward) WITHOUT moving the emitted anchor timestamp.
 	Offset time.Duration
 
+	// StepAlign marks a Start/End grid that was epoch-aligned (phase 0)
+	// AT LOWERING TIME — the subquery inner-sample-grid shape
+	// internal/promql.subqueryGridCtx builds for a bare-selector or
+	// binary-expression subquery inner (mirrors RangeWindow.StepAlign's
+	// semantics, PromQL's `interval * ((endTs - offset) / interval)`
+	// evaluation grid). Unlike RangeWindow, whose chsql emitter re-floors
+	// the anchor grid dynamically at SQL-render time regardless of the
+	// Go-level Start/End it carries, RangeLWR's emitter (chsql.emitRangeLWR)
+	// computes its anchor count from the concrete Start/End it is given —
+	// there is no render-time floor to fall back on. So StepAlign's sole
+	// consumer is chplan.ReanchorRange: when true, re-anchoring a shard
+	// re-derives a fresh epoch-floored [Start, End] from the shard's own
+	// predicted bounds instead of assigning them verbatim, keeping every
+	// shard's anchor grid at the SAME absolute phase the unsliced query
+	// would have used. False (the default) is every other RangeLWR shape —
+	// the top-level query_range eval grid and any offset-based leaf — whose
+	// phase is anchored to the request's own start/end, not to epoch 0.
+	StepAlign bool
+
 	// Column names on Input (canonical OTel-CH: MetricName / Attributes /
 	// TimeUnix / Value).
 	MetricNameCol string
@@ -78,6 +97,9 @@ func (r *RangeLWR) Equal(other Node) bool {
 		return false
 	}
 	if r.Step != o.Step || r.Lookback != o.Lookback || r.Offset != o.Offset {
+		return false
+	}
+	if r.StepAlign != o.StepAlign {
 		return false
 	}
 	if r.MetricNameCol != o.MetricNameCol || r.AttributesCol != o.AttributesCol {

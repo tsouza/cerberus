@@ -216,6 +216,7 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	out.start = gridStart.UTC()
 	out.end = gridEnd.UTC()
 	out.step = step
+	out.stepAligned = true
 	return out, true, nil
 }
 
