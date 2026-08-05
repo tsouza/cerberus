@@ -227,9 +227,17 @@ func retargetLogs(sql string) string   { return strings.ReplaceAll(sql, "otel_lo
 // for one metric. Schema columns match what cerberus's metrics
 // lowering reads (ServiceName, MetricName, Attributes, TimeUnix, Value).
 func seedE2EMetrics(s *session) error {
+	// metricEnvelopeColumnsDDL (shared with cmd/bench-report/headline_chdb.go)
+	// declares ServiceName plus the rest of the envelope columns the real
+	// otel_metrics_{gauge,sum} tables carry — retargetMetrics maps BOTH
+	// schema-default table names onto this one table, so its merge() scan
+	// (internal/chsql/emit_node.go scanTableFrag) needs the same column set
+	// a genuine gauge/sum union projects, including ResourceAttributes
+	// (the default schema's resource-label promotion references it
+	// unconditionally; see internal/promql/resource_attributes.go).
 	ddl := `CREATE OR REPLACE TABLE e2e_metrics_gauge (
-  ServiceName String, MetricName String, Attributes Map(String,String),
-  TimeUnix DateTime64(9), Value Float64
+  MetricName String, Attributes Map(String,String),
+  TimeUnix DateTime64(9), Value Float64` + metricEnvelopeColumnsDDL + `
 ) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix));`
 	if err := s.exec(ddl); err != nil {
 		return err
@@ -237,7 +245,7 @@ func seedE2EMetrics(s *session) error {
 	// 5000 series (instance dim) × (rows / 5000) timestamps. Samples span
 	// the hour before the eval anchor (2026-06-01 12:00) at ~3.6s spacing so
 	// the 5m-rate windows have real data.
-	ins := fmt.Sprintf(`INSERT INTO e2e_metrics_gauge SELECT
+	ins := fmt.Sprintf(`INSERT INTO e2e_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value) SELECT
   concat('svc-', toString(number %% 10)),
   'e2e.http.requests',
   map('instance', concat('i', toString(number %% 5000)), 'method', if(number %% 2 = 0, 'GET', 'POST')),

@@ -32,6 +32,7 @@ var microPackages = []struct{ short, path string }{
 	{"optimizer", "./internal/optimizer/..."},
 	{"chsql", "./internal/chsql/..."},
 	{"chclient", "./internal/chclient/..."},
+	{"solver", "./internal/solver/..."},
 	{"api/prom", "./internal/api/prom/..."},
 	{"api/format", "./internal/api/format/..."},
 }

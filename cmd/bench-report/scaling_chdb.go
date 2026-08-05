@@ -79,7 +79,7 @@ func curveRangeLWR(s *session, iters int) (scalingCurve, error) {
 	// otherwise seed it. CREATE OR REPLACE keeps this idempotent.
 	seed := `CREATE TABLE IF NOT EXISTS bench_lwr_gauge (
   MetricName String, Attributes Map(String,String),
-  TimeUnix DateTime64(9), Value Float64
+  TimeUnix DateTime64(9), Value Float64` + metricEnvelopeColumnsDDL + `
 ) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix);`
 	if err := s.execAll(seed); err != nil {
 		return scalingCurve{}, err
@@ -110,10 +110,12 @@ func curveRangeLWR(s *session, iters int) (scalingCurve, error) {
 	return c, nil
 }
 
-// curveSetOpChain sweeps the chain depth K. Post-#814 the intermediate
-// stays a tiny bounded constant (the disjoint-arm row count); the wall is
-// the residual super-linear finding (~2.6×/level) tracked for the N-ary
-// flatten (#90). The curve shows both: fan_factor flat, wall tracking K.
+// curveSetOpChain sweeps the chain depth K. Post-#840 (FlattenVectorSetOp,
+// N-ary linearisation) the intermediate stays a tiny bounded constant (the
+// disjoint-arm row count) and the wall tracks K roughly linearly — a single
+// UNION-ALL + window pass still scans all K arms once — replacing the
+// pre-#840 super-linear per-level nesting (~2.6×/level, #814). The curve
+// shows both: fan_factor flat, wall tracking K.
 func curveSetOpChain(s *session, iters int) (scalingCurve, error) {
 	evalTime := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 	const maxK = 8
@@ -122,10 +124,10 @@ func curveSetOpChain(s *session, iters int) (scalingCurve, error) {
 	b.WriteString("DROP TABLE IF EXISTS bench_setop_curve;")
 	b.WriteString(`CREATE TABLE bench_setop_curve (
   MetricName String, Attributes Map(String,String),
-  TimeUnix DateTime64(9), Value Float64
+  TimeUnix DateTime64(9), Value Float64` + metricEnvelopeColumnsDDL + `
 ) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix);`)
 	ts := evalTime.Add(-time.Second).UTC().Format("2006-01-02 15:04:05.000000000")
-	b.WriteString("\nINSERT INTO bench_setop_curve VALUES\n")
+	b.WriteString("\nINSERT INTO bench_setop_curve (MetricName, Attributes, TimeUnix, Value) VALUES\n")
 	for i := 0; i <= maxK; i++ {
 		if i > 0 {
 			b.WriteString(",\n")
