@@ -2708,11 +2708,13 @@ func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 // (no adjacent pairs). The outer SELECT drops empty-window rows via
 // `WHERE length(window_vals) >= 1`.
 //
-// Implementation mirrors emitRangeWindowResets but with `c != p` as
-// the per-pair indicator. Prom's funcChanges has an additional
-// `!(NaN(curr) && NaN(prev))` carve-out so a NaN-on-both-sides pair
-// is not counted as a change; we accept the divergence on float-NaN
-// streams (rare in practice, and the goldens cover only finite values).
+// Implementation mirrors emitRangeWindowResets but with `c != p AND NOT
+// (isNaN(c) AND isNaN(p))` as the per-pair indicator — matching Prom's
+// funcChanges, whose `!(NaN(curr) && NaN(prev))` carve-out means a
+// NaN-on-both-sides pair is never counted as a change (see #1489). A
+// NaN paired with a finite value IS still a change on both sides: `!=`
+// already evaluates true there (IEEE-754, both in Go and ClickHouse),
+// so the carve-out only needs to suppress the both-NaN case.
 func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 	value := Cast(
 		Call(
@@ -2720,7 +2722,10 @@ func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 			Call(
 				"arrayMap",
 				Lambda2("p", "c", If(
-					Neq(BareIdent("c"), BareIdent("p")),
+					And(
+						Neq(BareIdent("c"), BareIdent("p")),
+						Not(Paren(And(Call("isNaN", BareIdent("c")), Call("isNaN", BareIdent("p"))))),
+					),
 					InlineLit(int64(1)),
 					InlineLit(int64(0)),
 				)),

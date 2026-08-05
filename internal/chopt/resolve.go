@@ -123,13 +123,16 @@ const (
 //     any other token (off + anything -> FATAL).
 //   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server.
 //     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
-//     (Feature.Stability): the native timeSeries*ToGrid aggregates are
+//     (Feature.Stability): most native timeSeries*ToGrid aggregates are
 //     Experimental in maturity yet AutoSelect=true, so auto picks them on a
-//     capable server. The lone opt-in-only feature is columnar_result_decode
-//     (AutoSelect=false) -- a perf tradeoff, never auto. "auto" may sit
-//     alongside explicit ids, so "auto,columnar_result_decode" means the
-//     auto-set PLUS columnar_result_decode -- the way to add the opt-in feature
-//     without giving up version-aware auto-selection of the rest.
+//     capable server. Two features are opt-in-only (AutoSelect=false):
+//     columnar_result_decode (a perf tradeoff, never auto) and ts_grid_changes
+//     (a correctness gap -- the native builtin diverges from reference
+//     Prometheus on NaN-adjacent windows, #1721 -- never auto until upstream
+//     fixes it). "auto" may sit alongside explicit ids, so
+//     "auto,columnar_result_decode" means the auto-set PLUS
+//     columnar_result_decode -- the way to add an opt-in feature without
+//     giving up version-aware auto-selection of the rest.
 //   - a feature id -> an explicit request: supported -> enable; unsupported
 //     under Enforcing -> err (FATAL); unsupported under Permissive -> WARN +
 //     skip. An explicit id keeps its "I require this" semantics even next to
