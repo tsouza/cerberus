@@ -748,10 +748,10 @@ jobs:
     # Reference-backed full-surface PromQL rejection-completeness gate (#106).
     #
     # Stands up a SECOND reference Prometheus — the same pinned
-    # prom/prometheus tag as compatibility/prometheus, but started WITH
-    # --enable-feature=promql-experimental-functions (the standard
-    # prometheus job deliberately runs flag-OFF for the showcase parity
-    # contract, so this is a distinct target). It then drives every
+    # prom/prometheus tag as compatibility/prometheus, with the same
+    # --enable-feature=promql-experimental-functions surface, but with no
+    # ClickHouse / seed / cerberus alongside it (this job's verdict is
+    # parse + type validation only). It then drives every
     # parser.Functions symbol + the two experimental aggregators through
     # the flag-enabled reference's HTTP /api/v1/query and asserts that no
     # PromQL function the reference ACCEPTS is silently rejected by

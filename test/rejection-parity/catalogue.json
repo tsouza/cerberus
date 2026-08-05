@@ -427,8 +427,10 @@
       "head": "promql",
       "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#1cf264f6",
       "message": "promql: histogram_quantiles requires literal phi arguments for the %q label, got %T",
-      "class": "rejection",
-      "trigger_query": "histogram_quantiles(http_request_duration_seconds, \"quantile\", scalar(http_request_duration_seconds))"
+      "class": "divergence",
+      "trigger_query": "histogram_quantiles(demo_api_request_duration_seconds, \"quantile\", scalar(vector(0.9)))",
+      "tracking_issue": 1765,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -606,15 +608,17 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lowerLimitK#5ff80394",
       "message": "promql: limitk K must be a scalar literal; computed-K (e.g. scalar(\u003cvector\u003e)) is not supported",
-      "class": "rejection",
-      "trigger_query": "limitk(scalar(up), up)"
+      "class": "divergence",
+      "trigger_query": "limitk(scalar(vector(2)), demo_memory_usage_bytes)",
+      "tracking_issue": 1787,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerLimitRatio#a75ec376",
       "message": "promql: limit_ratio ratio value is NaN",
       "class": "rejection",
-      "trigger_query": "limit_ratio(NaN, up)"
+      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)"
     },
     {
       "head": "promql",
@@ -719,21 +723,23 @@
       "site": "internal/promql/range_fns.go:lowerHoltWinters#0ff3d8b3",
       "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
       "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(http_requests_total[10m], 1.5, 0.5)"
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 1.5, 0.5)"
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#15e82804",
       "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(http_requests_total[10m], scalar(up), 0.5)"
+      "class": "divergence",
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], scalar(vector(0.5)), 0.5)",
+      "tracking_issue": 1782,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#2db9f2aa",
       "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
       "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(http_requests_total[10m], 0.5, 1.5)"
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 0.5, 1.5)"
     },
     {
       "head": "promql",
@@ -802,8 +808,10 @@
       "head": "promql",
       "site": "internal/promql/sort.go:lowerSortByLabel#8f9fe409",
       "message": "promql: %s expects at least 2 arguments (vector, label[, label…]), got %d",
-      "class": "rejection",
-      "trigger_query": "sort_by_label(http_requests)"
+      "class": "divergence",
+      "trigger_query": "sort_by_label(demo_memory_usage_bytes)",
+      "tracking_issue": 1783,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -816,8 +824,10 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
-      "class": "rejection",
-      "trigger_query": "mad_over_time(up[5m:1m])"
+      "class": "divergence",
+      "trigger_query": "mad_over_time(demo_memory_usage_bytes[5m:1m])",
+      "tracking_issue": 1784,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -858,22 +868,28 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
-      "class": "rejection",
-      "trigger_query": "max_over_time(limit_ratio(0.5, up)[5m:1m])"
+      "class": "divergence",
+      "trigger_query": "max_over_time(limit_ratio(0.5, demo_memory_usage_bytes)[5m:1m])",
+      "tracking_issue": 1786,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#1796796f",
       "message": "promql: subquery inner %s expects exactly 1 argument, got %d",
-      "class": "rejection",
-      "trigger_query": "max_over_time(double_exponential_smoothing(up[5m], 0.5, 0.5)[10m:1m])"
+      "class": "divergence",
+      "trigger_query": "max_over_time(double_exponential_smoothing(demo_memory_usage_bytes[5m], 0.5, 0.5)[10m:1m])",
+      "tracking_issue": 1785,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
-      "class": "rejection",
-      "trigger_query": "max_over_time(info(up)[5m:1m])"
+      "class": "divergence",
+      "trigger_query": "max_over_time(info(demo_memory_usage_bytes)[5m:1m])",
+      "tracking_issue": 1785,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -886,8 +902,10 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
-      "class": "rejection",
-      "trigger_query": "max_over_time(mad_over_time(up[5m:1m])[10m:1m])"
+      "class": "divergence",
+      "trigger_query": "max_over_time(mad_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
+      "tracking_issue": 1784,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -943,14 +961,16 @@
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#0ff3d8b3",
       "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
       "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(rate(http_requests_total[5m])[1h:5m], 1.5, 0.5)"
+      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], 1.5, 0.5)"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#15e82804",
       "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(rate(http_requests_total[5m])[1h:5m], scalar(up), 0.5)"
+      "class": "divergence",
+      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], scalar(vector(0.5)), 0.5)",
+      "tracking_issue": 1782,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -964,7 +984,7 @@
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2db9f2aa",
       "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
       "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(rate(http_requests_total[5m])[1h:5m], 0.5, 1.5)"
+      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], 0.5, 1.5)"
     },
     {
       "head": "promql",

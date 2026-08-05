@@ -77,6 +77,17 @@ services:
       - --storage.tsdb.path=/prometheus
       - --web.enable-remote-write-receiver
       - --web.listen-address=:9090
+      # Cerberus's own PromQL parser runs with
+      # EnableExperimentalFunctions, so the reference must too or the
+      # two backends aren't comparable. Without this flag the reference
+      # rejects every experimental symbol at the function-existence
+      # stage, which silently turned 15 rejection-parity trigger queries
+      # into "both 4xx" verdicts that proved nothing about the guard
+      # each one claims to check (#1770), and forced at least one entry
+      # into a classification the harness itself reported as wrong.
+      # test/regression/compat_rejection_parity_reference_test.go pins
+      # the flag.
+      - --enable-feature=promql-experimental-functions
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:

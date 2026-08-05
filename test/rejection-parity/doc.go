@@ -32,6 +32,29 @@
 //     A `rejection` entry whose reference accepts is a wrong-rejection
 //     bug to fix at the source — never an allow-list entry.
 //
+// # Trigger queries must name metrics the lane's fixture seeds
+//
+// Cerberus rejects at LOWERING time, before it reads a row, so on
+// cerberus's side a trigger's verdict is purely shape-based and any
+// metric name would do. The reference backends are not shape-based:
+// PromQL's argument-domain checks (a double_exponential_smoothing
+// smoothing factor outside (0, 1), say) live in the function BODY,
+// which the engine never enters for a selector that matched no series.
+// A trigger naming a metric the fixture does not seed therefore gets an
+// empty 200 from the reference standing in for the 422 it would in fact
+// have returned — the case reads as wrong_rejection while the two
+// backends actually agree.
+//
+// Two invariants follow, and both have bitten:
+//
+//   - Trigger queries name fixture metrics (the promql lane seeds the
+//     `demo_*` family — see compatibility/prometheus/cmd/seed).
+//   - The driver queries INSIDE the seeded window. The promql lane's
+//     fixture is anchored at a fixed historical timestamp, so
+//     run-prometheus-compatibility.sh passes `-at "$END_TIME"`; the
+//     loki and tempo lanes seed relative to wall-clock and use the
+//     driver's default anchor.
+//
 // # The three classes
 //
 //   - `rejection`  — the parity claim is "cerberus and the reference
