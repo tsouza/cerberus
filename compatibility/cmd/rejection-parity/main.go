@@ -1,33 +1,58 @@
 // Command rejection-parity is the differential harness for cerberus's
 // deliberate rejections. It consumes the rejection catalogue
 // (test/rejection-parity/catalogue.json — see that package's doc for
-// the full mechanism) and, for every class=rejection entry of the
-// selected head, sends the entry's trigger query to BOTH the reference
-// backend and cerberus, then compares the rejection *status class*:
+// the full mechanism) and, for every class=rejection or
+// class=divergence entry of the selected head, sends the entry's
+// trigger query to BOTH the reference backend and cerberus, then
+// compares the *status class* — never message text, because the two
+// backends phrase rejections differently by construction. The
+// comparison direction depends on the case's class:
 //
-//   - both 4xx                → parity (cerberus's rejection claim holds)
+// class=rejection (the claim: both backends reject this query):
+//
+//   - both 4xx                    → parity (the claim holds)
 //   - reference 2xx, cerberus 4xx → wrong_rejection — cerberus rejects a
 //     query the reference backend answers; a real bug to fix at the
 //     source (the `kind != nil` class), never an allow-list entry
-//   - cerberus 2xx            → stale_catalogue — the catalogue says
+//   - cerberus 2xx                → stale_catalogue — the catalogue says
 //     cerberus rejects this, but the live binary accepts it; the
 //     catalogue needs regenerating
-//   - 5xx / transport failure → hard_error (infrastructure, not parity)
+//   - 5xx / transport failure     → hard_error (infrastructure, not parity)
 //
-// Only the status class is compared — never message text — because
-// the two backends phrase rejections differently by construction.
+// class=divergence (the claim: cerberus rejects, the reference
+// answers — see test/rejection-parity's doc.go for why this is a
+// ratchet, not an allow-list):
+//
+//   - cerberus 2xx                 → divergence_resolved — cerberus now
+//     answers a query the entry says it rejects; the divergence closed
+//     from cerberus's side and the entry must be deleted
+//   - cerberus 4xx, reference 2xx  → divergence_confirmed (the claim
+//     holds; this is the expected, passing state for a live divergence)
+//   - cerberus 4xx, reference 4xx  → divergence_closed — the reference
+//     backend now also rejects; the divergence closed from the
+//     reference's side and the entry must be reclassified to
+//     `rejection`
+//   - 5xx / transport failure      → hard_error (infrastructure, not parity)
 //
 // The corpus is the catalogue itself (rejectionparity.BuildCases), so
-// corpus-case count == catalogue rejection-entry count by
+// corpus-case count == catalogue rejection+divergence-entry count by
 // construction; the meta-tests under test/rejection-parity pin the
 // remaining legs of the ratchet (site scan == catalogue, triggers
 // exercise their sites).
 //
-// Exit semantics mirror the other compat drivers (task #68,
-// report-only): parity drift — including wrong_rejection — is recorded
-// in the JSON report and the stderr summary but does not change the
-// exit code. Only driver-wide hard errors (catalogue load, report
-// write) escalate to a non-zero rc.
+// Exit semantics: ordinary numeric parity drift in the sibling
+// promql-compliance-tester report stays report-only (task #68), but
+// this driver's own verdicts are claims this package makes about
+// itself, not observational drift — a wrong_rejection, a
+// divergence_resolved, or a divergence_closed verdict means one of
+// the catalogue's own assertions is now false. run() writes the JSON
+// report first (the artifact survives either way) and then returns a
+// non-zero exit whenever any of those three verdicts occurred, so the
+// enclosing compat shell script's `set -e` fails the check instead of
+// shipping green on a stale claim. Only stale_catalogue and hard_error
+// stay non-fatal here: stale_catalogue needs a regenerate-and-curate
+// pass a CI run cannot perform on its own, and hard_error is
+// infrastructure, not a parity verdict.
 package main
 
 import (
@@ -65,8 +90,16 @@ type CaseResult struct {
 	RefStatus      int `json:"refStatus"`
 	CerberusStatus int `json:"cerberusStatus"`
 
-	// Verdict: "parity" | "wrong_rejection" | "stale_catalogue" |
-	// "hard_error".
+	// Class is the case's catalogue classification (ClassRejection or
+	// ClassDivergence), carried through so the report is
+	// self-describing without a join back to the catalogue.
+	Class string `json:"class"`
+
+	// Verdict: for class=rejection, "parity" | "wrong_rejection" |
+	// "stale_catalogue" | "hard_error". For class=divergence,
+	// "divergence_confirmed" | "divergence_resolved" |
+	// "divergence_closed" | "hard_error". See the package doc for the
+	// meaning of each.
 	Verdict string `json:"verdict"`
 	// Detail carries the transport error or a snippet of the
 	// unexpected response body for triage.
@@ -75,13 +108,31 @@ type CaseResult struct {
 
 // Report is the on-disk JSON artifact.
 type Report struct {
-	Head           string       `json:"head"`
-	Total          int          `json:"total"`
-	Parity         int          `json:"parity"`
-	WrongRejection int          `json:"wrongRejection"`
-	StaleCatalogue int          `json:"staleCatalogue"`
-	HardErrors     int          `json:"hardErrors"`
-	Cases          []CaseResult `json:"cases"`
+	Head   string `json:"head"`
+	Total  int    `json:"total"`
+	Parity int    `json:"parity"`
+
+	// WrongRejection / StaleCatalogue count class=rejection verdicts.
+	WrongRejection int `json:"wrongRejection"`
+	StaleCatalogue int `json:"staleCatalogue"`
+
+	// DivergenceConfirmed / DivergenceResolved / DivergenceClosed count
+	// class=divergence verdicts — see the package doc.
+	DivergenceConfirmed int `json:"divergenceConfirmed"`
+	DivergenceResolved  int `json:"divergenceResolved"`
+	DivergenceClosed    int `json:"divergenceClosed"`
+
+	HardErrors int          `json:"hardErrors"`
+	Cases      []CaseResult `json:"cases"`
+}
+
+// Fatal reports whether the report's verdict counts include a claim
+// this package makes about ITSELF that turned out false — a
+// wrong_rejection, a divergence_resolved, or a divergence_closed. See
+// the package doc's exit-semantics section for why these three (and
+// only these three) are fatal.
+func (r Report) Fatal() bool {
+	return r.WrongRejection > 0 || r.DivergenceResolved > 0 || r.DivergenceClosed > 0
 }
 
 func run() error {
@@ -122,6 +173,12 @@ func run() error {
 			rep.WrongRejection++
 		case "stale_catalogue":
 			rep.StaleCatalogue++
+		case "divergence_confirmed":
+			rep.DivergenceConfirmed++
+		case "divergence_resolved":
+			rep.DivergenceResolved++
+		case "divergence_closed":
+			rep.DivergenceClosed++
 		default:
 			rep.HardErrors++
 		}
@@ -132,21 +189,39 @@ func run() error {
 		return fmt.Errorf("write report: %w", err)
 	}
 	fmt.Fprintf(os.Stderr,
-		"==> rejection-parity %s: total=%d parity=%d wrong_rejection=%d stale_catalogue=%d hard_errors=%d -> %s\n",
-		rep.Head, rep.Total, rep.Parity, rep.WrongRejection, rep.StaleCatalogue, rep.HardErrors, *report)
+		"==> rejection-parity %s: total=%d parity=%d wrong_rejection=%d stale_catalogue=%d "+
+			"divergence_confirmed=%d divergence_resolved=%d divergence_closed=%d hard_errors=%d -> %s\n",
+		rep.Head, rep.Total, rep.Parity, rep.WrongRejection, rep.StaleCatalogue,
+		rep.DivergenceConfirmed, rep.DivergenceResolved, rep.DivergenceClosed, rep.HardErrors, *report)
 	for _, c := range rep.Cases {
-		if c.Verdict != "parity" {
+		if c.Verdict != "parity" && c.Verdict != "divergence_confirmed" {
 			fmt.Fprintf(os.Stderr, "    [%s] %s (%s): ref=%d cerberus=%d query=%s\n",
 				c.Verdict, c.Name, c.Endpoint, c.RefStatus, c.CerberusStatus, c.Query)
 		}
+	}
+
+	// A wrong_rejection, divergence_resolved, or divergence_closed
+	// verdict means one of the catalogue's own assertions is now
+	// false — this is not observational drift, it's a broken claim
+	// this package makes about itself. Fail the check (see the
+	// package doc's exit-semantics section); the report above already
+	// landed on disk so the artifact survives this branch.
+	if rep.Fatal() {
+		return fmt.Errorf(
+			"rejection-parity %s: %d wrong_rejection + %d divergence_resolved + %d divergence_closed verdict(s) — "+
+				"see %s for detail; a wrong_rejection is a bug to fix at the source, a divergence_resolved means the "+
+				"catalogue entry must be deleted, a divergence_closed means it must be reclassified to \"rejection\"",
+			rep.Head, rep.WrongRejection, rep.DivergenceResolved, rep.DivergenceClosed, *report,
+		)
 	}
 	return nil
 }
 
 // runCase fires the trigger query at both backends and classifies the
-// status pair.
+// status pair. The comparison direction depends on c.Class — see the
+// package doc.
 func runCase(client *http.Client, c rejectionparity.Case, refURL, cerbURL string, now time.Time) CaseResult {
-	res := CaseResult{Name: c.Name, Endpoint: c.Endpoint, Query: c.Query}
+	res := CaseResult{Name: c.Name, Endpoint: c.Endpoint, Query: c.Query, Class: c.Class}
 
 	refStatus, refBody, refErr := fetch(client, buildURL(refURL, c, now))
 	cerbStatus, cerbBody, cerbErr := fetch(client, buildURL(cerbURL, c, now))
@@ -162,6 +237,8 @@ func runCase(client *http.Client, c rejectionparity.Case, refURL, cerbURL string
 	case refStatus/100 == 5 || cerbStatus/100 == 5:
 		res.Verdict = "hard_error"
 		res.Detail = fmt.Sprintf("5xx: ref=%q cerberus=%q", snippet(refBody), snippet(cerbBody))
+	case c.Class == rejectionparity.ClassDivergence:
+		res.Verdict, res.Detail = divergenceVerdict(cerbStatus, refStatus, refBody, cerbBody)
 	case cerbStatus/100 == 2:
 		// The catalogue claims cerberus rejects this query; the live
 		// binary accepted it. The catalogue (or the lowering) moved —
@@ -179,6 +256,28 @@ func runCase(client *http.Client, c rejectionparity.Case, refURL, cerbURL string
 		res.Detail = fmt.Sprintf("unclassifiable status pair; ref=%q cerberus=%q", snippet(refBody), snippet(cerbBody))
 	}
 	return res
+}
+
+// divergenceVerdict classifies a class=divergence case's status pair.
+// The entry's claim is inverted relative to class=rejection: cerberus
+// REJECTS the trigger query and the reference backend ACCEPTS it.
+func divergenceVerdict(cerbStatus, refStatus int, refBody, cerbBody []byte) (string, string) {
+	switch {
+	case cerbStatus/100 == 2:
+		// cerberus now answers a query the entry says it rejects —
+		// the divergence closed from cerberus's side.
+		return "divergence_resolved", fmt.Sprintf("cerberus accepted (divergence entry expects 4xx); ref=%q", snippet(refBody))
+	case refStatus/100 == 2:
+		// The expected, passing state: cerberus still rejects, the
+		// reference still answers.
+		return "divergence_confirmed", ""
+	case refStatus/100 == 4:
+		// The reference now also rejects — the divergence closed from
+		// the reference's side; reclassify to "rejection".
+		return "divergence_closed", fmt.Sprintf("reference now rejects (divergence entry expects 2xx); ref=%q cerberus=%q", snippet(refBody), snippet(cerbBody))
+	default:
+		return "hard_error", fmt.Sprintf("unclassifiable status pair; ref=%q cerberus=%q", snippet(refBody), snippet(cerbBody))
+	}
 }
 
 // buildURL composes the per-endpoint query URL. The window is ±1h
