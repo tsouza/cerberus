@@ -3046,14 +3046,14 @@
     },
     {
      "cerberus": {
-      "expect": "empty",
-      "why": "The OTel-CH schema stores one row per span and materialises no whole-trace rootName; reference resolves the absent field to StaticNil so the comparison is constant-false. Cerberus mirrors that \u2014 a defined-empty 2xx result, not a 422."
+      "expect": "nonempty",
+      "why": "rootName is a trace-scoped intrinsic: cerberus resolves it per trace from the root span (argMinIf over ParentSpanId IN ('', all-zero hex)), matching reference Tempo's trace-level RootSpanName. The showcase seed's b0...001 trace is rooted at gateway's `GET /api/checkout`, so exactly that trace comes back \u2014 and only that trace, never one that merely contains a non-root span of the same name."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus implements `{ rootName = \"GET /api/checkout\" }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
+     "description": "Cerberus implements `{ rootName = \"GET /api/checkout\" }` as a real per-trace root-identity filter; reference Tempo answers it the same way. This panel pins the match bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3116,14 +3116,14 @@
     },
     {
      "cerberus": {
-      "expect": "empty",
-      "why": "No per-span rootServiceName column exists; reference resolves the absent field to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
+      "expect": "nonempty",
+      "why": "rootServiceName is trace-scoped, not a per-span column: cerberus resolves each trace's root-span ServiceName with the same argMinIf-over-root-condition aggregate rootName uses, matching reference Tempo's trace-level RootServiceName. Both showcase traces are rooted in the `gateway` service, so both come back."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus implements `{ rootServiceName = \"gateway\" }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
+     "description": "Cerberus implements `{ rootServiceName = \"gateway\" }` as a real per-trace root-identity filter; reference Tempo answers it the same way. This panel pins the match bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {
@@ -3186,14 +3186,14 @@
     },
     {
      "cerberus": {
-      "expect": "empty",
-      "why": "No per-span whole-trace duration column exists; reference resolves the absent field to StaticNil (constant-false). Cerberus returns a defined-empty 2xx result."
+      "expect": "nonempty",
+      "why": "traceDuration is trace-scoped: no per-span column carries it, so cerberus computes `max(span end) - min(span start)` per trace and filters on that, matching reference Tempo's trace-level duration. The showcase traces span ~3 s and ~600 ms of wall clock, both over the 100 ms threshold."
      },
      "datasource": {
       "type": "tempo",
       "uid": "cerberus-tempo"
      },
-     "description": "Cerberus implements `{ traceDuration > 100ms }`; reference Tempo accepts it too. This panel pins the empty result bidirectionally.",
+     "description": "Cerberus implements `{ traceDuration > 100ms }` as a real per-trace duration filter; reference Tempo answers it the same way. This panel pins the match bidirectionally.",
      "fieldConfig": {
       "defaults": {
        "color": {

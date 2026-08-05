@@ -112,13 +112,13 @@
     },
     {
       "id": "intrinsic:rootName",
-      "class": "intrinsic-unbacked",
+      "class": "intrinsic-trace-scoped",
       "token": "rootName",
       "pin": "{ rootName = \"GET /home\" }"
     },
     {
       "id": "intrinsic:rootServiceName",
-      "class": "intrinsic-unbacked",
+      "class": "intrinsic-trace-scoped",
       "token": "rootServiceName",
       "pin": "{ rootServiceName = \"frontend\" }"
     },
@@ -148,7 +148,7 @@
     },
     {
       "id": "intrinsic:traceDuration",
-      "class": "intrinsic-unbacked",
+      "class": "intrinsic-trace-scoped",
       "token": "traceDuration",
       "pin": "{ traceDuration \u003e 100ms }"
     },
