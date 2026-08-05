@@ -623,6 +623,8 @@ func TestConformance_LokiDetectedLabelsWire(t *testing.T) {
 //     legacy wrapper was dropped in #514 to match upstream Loki's
 //     `WriteQueryPatternsResponseJSON`),
 //   - each element decodes into `loki.Pattern{Pattern, Level, Samples}`,
+//     and `Level` carries a real per-cluster detected level (#1434),
+//     never the empty string,
 //   - each `samples[i]` is a 2-tuple `[unix_seconds, count]`. The first
 //     slot is unix SECONDS (not ms/ns) per upstream's
 //     `sample.Timestamp.Unix()` projection.
@@ -693,10 +695,13 @@ func TestConformance_LokiPatternsBasic(t *testing.T) {
 		if p.Pattern == "" {
 			t.Errorf("env.Data[%d].Pattern is empty", i)
 		}
-		// Level is "" in this slice (PR B emits empty level — see
-		// patterns.go doc + plan §5).
-		if p.Level != "" {
-			t.Errorf("env.Data[%d].Level=%q want empty (PR B does not bucket by level)", i, p.Level)
+		// The canned rows carry no SeverityText, so the normalized
+		// detected level resolves to "unknown" — mirroring reference
+		// Loki's constants.LogLevelUnknown stamping for severity-free
+		// records (#1434). It must never be the empty string upstream
+		// Grafana clients treat as "field absent".
+		if p.Level != "unknown" {
+			t.Errorf("env.Data[%d].Level=%q want %q", i, p.Level, "unknown")
 		}
 		for j, s := range p.Samples {
 			// unix_seconds for 2026-05-14T12:00:00Z is ~1.78e9. unix_ms
