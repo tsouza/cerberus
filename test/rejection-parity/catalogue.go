@@ -71,9 +71,11 @@ type Entry struct {
 	//                  the trigger query, the reference backend answers
 	//                  it, and an open GitHub issue tracks closing the
 	//                  gap. Requires TriggerQuery (+ Endpoint) exactly
-	//                  like "rejection", plus TrackingIssue; forbids
-	//                  Rationale. See doc.go for why this is a ratchet
-	//                  and not the allow-list the package forbids.
+	//                  like "rejection", plus TrackingIssue and Since;
+	//                  forbids Rationale. See doc.go for why this is a
+	//                  ratchet and not the allow-list the package
+	//                  forbids, and for the two mechanisms (a count
+	//                  ceiling + an age cap) that keep it that way.
 	//
 	// The verify test fails on any other value (including ""), so a
 	// new rejection site cannot land unclassified.
@@ -106,6 +108,15 @@ type Entry struct {
 	// be deleted (cerberus was fixed) or re-filed against a fresh
 	// issue, never left pointing at a closed one.
 	TrackingIssue int `json:"tracking_issue,omitempty"`
+
+	// Since (class=divergence) is the date, in divergenceDateLayout
+	// ("2026-01-02"), the entry was first classified as a divergence —
+	// backdated to the PR that introduced or reclassified it, never
+	// reset by later edits. TestDivergenceEntriesRespectAgeCap fails
+	// once now minus Since exceeds divergenceStaleAfter, so a
+	// divergence cannot sit past its age cap silently: see
+	// divergence_ratchet.go and doc.go.
+	Since string `json:"since,omitempty"`
 }
 
 // Catalogue is the checked-in JSON artifact shape
@@ -378,6 +389,7 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 			e.Endpoint = p.Endpoint
 			e.Rationale = p.Rationale
 			e.TrackingIssue = p.TrackingIssue
+			e.Since = p.Since
 		}
 		out.Entries = append(out.Entries, e)
 	}

@@ -87,6 +87,42 @@
 // failing the build. That is what distinguishes it from an allow-list
 // entry, which by definition stops anyone from checking again.
 //
+// # Why that alone is not enough, and the two mechanisms that close the gap
+//
+// The three claims above keep every EXISTING entry truthful, but they
+// say nothing about the SET of entries: nothing stops it from growing
+// without bound, and nothing stops an individual entry from sitting
+// behind a permanently-open tracking issue forever. Two entries is a
+// debt register; twenty is a parking lot wearing a better name — the
+// allow-list dynamic this package forbids, arrived at from the other
+// direction. divergence_ratchet.go adds the missing pressure with two
+// independent mechanisms, both enforced by divergence_ratchet_test.go:
+//
+//  1. A monotonic count ceiling (divergence-ceiling.json). The number
+//     of class=divergence entries may never increase without a
+//     hand-edited bump to that file in the SAME diff —
+//     CheckDivergenceCeiling fails the build otherwise. A decrease
+//     (an entry gets fixed or reclassified) is free and self-tightens:
+//     CERBERUS_UPDATE_INVENTORY=1 (the same regen convention
+//     TestCatalogueIsRegenerable uses) lowers the ceiling to match, but
+//     — mirroring test/coverage-floor.json's floor ratchet in the
+//     opposite direction — NextDivergenceCeiling refuses to RAISE it
+//     automatically. An increase is only ever a reviewable line a human
+//     wrote.
+//  2. A per-entry age cap (Entry.Since + divergenceStaleAfter).
+//     CheckDivergenceAge fails once an entry has sat open past the
+//     threshold, forcing a conscious re-decision instead of permanent
+//     silent tracking: fix the underlying rejection, close the
+//     tracking issue as won't-fix with the reasoning recorded there, or
+//     make a deliberate, acknowledged bump. This is expected to
+//     eventually fire on a divergence that is real, correct, and
+//     genuinely expensive to close — see #1768, where closing the
+//     label_replace duplicate-capture-group gap likely means moving
+//     regex expansion from ClickHouse's extractGroups to Go — and that
+//     is the point: the cap does not dispute the divergence, it only
+//     refuses to let it become permanent without someone looking at it
+//     again.
+//
 // Adding a new rejection to a lowering therefore requires: a
 // catalogue entry (the regen test fails without it), a trigger query
 // (the exerciser test fails without it), and — by construction — a

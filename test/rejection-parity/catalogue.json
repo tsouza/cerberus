@@ -70,7 +70,8 @@
       "message": "logql: label_replace: %w",
       "class": "divergence",
       "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
-      "tracking_issue": 1768
+      "tracking_issue": 1768,
+      "since": "2026-08-05"
     },
     {
       "head": "logql",
@@ -519,7 +520,8 @@
       "message": "promql: label_replace: %w",
       "class": "divergence",
       "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
-      "tracking_issue": 1768
+      "tracking_issue": 1768,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -562,7 +564,8 @@
       "message": "promql: %q is an exponential histogram metric; only histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
       "trigger_query": "rate(demo_exp_hist[5m])",
-      "tracking_issue": 1772
+      "tracking_issue": 1772,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
