@@ -199,6 +199,34 @@ func (r *RangeWindow) NumAnchors() int64 {
 	return r.OuterRange.Nanoseconds()/r.Step.Nanoseconds() + 1
 }
 
+// InputWindow returns the [start, end) bound r's OWN Input spine must be
+// widened to so every anchor r evaluates across [start, end] finds every
+// sample its window needs. This is the SINGLE owner of the "how far back
+// does a RangeWindow's input need to reach" arithmetic: every re-anchoring /
+// widening / grid-prediction pass that walks below a RangeWindow (chplan's
+// own ReanchorRange, promql's widenSubquerySpine, and the solver planner's
+// grid-prediction walk) calls this instead of re-deriving the formula, so
+// the three stay consistent by construction — see issue #1464, where the
+// RangeWindow arm of ReanchorRange re-derived `start.Add(-r.Range)` locally
+// and silently dropped the Offset term the RangeLWR arm got right.
+//
+// A matrix-shape window (Step > 0) reduces the samples in
+// `(anchor-Offset-Range, anchor-Offset]` at each anchor (the package doc
+// above documents the scanned span as [End-Offset-Range, End-Offset]), so
+// the union across every anchor in [start, end] needs input covering
+// [start-Offset-Range, end]. Offset enters with its sign, mirroring the
+// emitter's own maybePushInnerScanTimeBounds (internal/chsql/range_window.go)
+// and RangeLWR's Offset+Lookback widening. An instant-shape window (Step <=
+// 0) resolves a single anchor itself and is never walked below by these
+// passes; InputWindow returns (start, end) unchanged for it so a caller that
+// invokes it unconditionally is still safe.
+func (r *RangeWindow) InputWindow(start, end time.Time) (time.Time, time.Time) {
+	if r.Step <= 0 {
+		return start, end
+	}
+	return start.Add(-r.Offset - r.Range), end
+}
+
 func (r *RangeWindow) Equal(other Node) bool {
 	o, ok := other.(*RangeWindow)
 	if !ok {

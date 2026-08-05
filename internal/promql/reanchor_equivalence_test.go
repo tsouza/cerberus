@@ -67,6 +67,11 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 		// Binary-inner subquery: the inner is evaluated per anchor on the
 		// epoch-aligned sub-step grid, so its grid is pinned at lowering.
 		{query: `max_over_time((demo_cpu * 2)[5m:1m])`, pinnedInner: true},
+		// Offset-carrying subquery (#1464): the outer reducer's own
+		// `offset` modifier must widen the inner spine by Offset+Range,
+		// not Range alone — this is what the RangeWindow arm of both
+		// ReanchorRange and widenSubquerySpine silently dropped.
+		{query: `max_over_time(rate(demo_cpu[1m])[5m:30s] offset 10m)`},
 	}
 
 	s := schema.DefaultOTelMetrics()
@@ -110,9 +115,12 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 			optimized := driver.Run(context.Background(), inner)
 			snapshot := chplan.CloneNode(optimized) // pre-pass reference
 
-			// widenSubquerySpine is called with [start.Add(-sub.Range), end]
-			// (lowerOuterRangeFnOverSubquery). Mirror that exactly.
-			wStart := start.Add(-sub.Range)
+			// widenSubquerySpine is called with
+			// [start.Add(-rw.Offset-sub.Range), end]
+			// (lowerOuterRangeFnOverSubquery, #1464). rw.Offset is always
+			// sub.OriginalOffset (subqueryAnchor sets it unconditionally).
+			// Mirror that exactly.
+			wStart := start.Add(-sub.OriginalOffset).Add(-sub.Range)
 
 			widenClone := chplan.CloneNode(optimized)
 			widenSubquerySpine(widenClone, wStart, end)

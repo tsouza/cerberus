@@ -541,7 +541,11 @@ func lowerOuterRangeFnOverSubquery(
 		// per-series value across the step grid. The range-vector sibling
 		// of this guard lives in `lowerRangeVectorCall`.
 		rw.End = anchor.End
-		widenSubquerySpine(inner, anchor.End.Add(-sub.Range), anchor.End)
+		// Widen by Offset+Range, matching RangeWindow.InputWindow (#1464) —
+		// rw.Step is still 0 here (this branch keeps the outer reducer
+		// instant-shaped), so InputWindow's Step<=0 guard can't be reused
+		// directly; the same Offset+Range arithmetic is inlined instead.
+		widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
 		// The subquery spine groups by Attributes alone, so MetricName is
 		// already gone by the time this outer reducer runs — a preserving
 		// fn can only stamp the empty literal here. Widening the spine to
@@ -590,7 +594,10 @@ func lowerOuterRangeFnOverSubquery(
 		// `max_over_time(sum(demo_memory_usage_bytes + ...)[5m:1m])`
 		// (and the stddev / quantile / nested-irate siblings) returned
 		// [] on query_range while instant answers were correct.
-		widenSubquerySpine(inner, ctx.start.Add(-sub.Range), ctx.end)
+		// Widen by Offset+Range, matching RangeWindow.InputWindow (#1464):
+		// the outer's own Offset (rw.Offset, from the subquery's `offset`
+		// modifier) shifts every anchor's window back by that much too.
+		widenSubquerySpine(inner, ctx.start.Add(-rw.Offset-sub.Range), ctx.end)
 	default:
 		// Instant eval (no query_range grid): the outer reducer collapses to a
 		// single anchor at anchor.End (now concrete via subqueryAnchor's eval-ts
@@ -603,7 +610,9 @@ func lowerOuterRangeFnOverSubquery(
 		// ts keeps the outer reducer and the widened inner grid on one base.
 		if !anchor.End.IsZero() {
 			rw.End = anchor.End
-			widenSubquerySpine(inner, anchor.End.Add(-sub.Range), anchor.End)
+			// Widen by Offset+Range, matching RangeWindow.InputWindow and the
+			// range-mode branch above (#1464).
+			widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
 		}
 	}
 	return rw, nil
@@ -612,11 +621,11 @@ func lowerOuterRangeFnOverSubquery(
 // widenSubquerySpine threads the range-mode evaluation window down a
 // lowered subquery plan's spine: every matrix RangeWindow on the spine
 // is re-anchored to emit one row per anchor across [start, end], and
-// its OWN input spine widens by a further window.Range of lookback so
-// each of its anchors finds the samples it needs. Wrapper nodes the
-// subquery lowerings interpose (Project / Aggregate / TopK / Filter)
-// pass the requirement through unchanged — they reshape rows per
-// anchor but don't move time.
+// its OWN input spine widens per RangeWindow.InputWindow (Offset+Range of
+// lookback — the window is [End-Offset-Range, End-Offset]) so each of its
+// anchors finds the samples it needs. Wrapper nodes the subquery lowerings
+// interpose (Project / Aggregate / TopK / Filter) pass the requirement
+// through unchanged — they reshape rows per anchor but don't move time.
 //
 // Instant-shape RangeWindows (Step == 0) terminate the walk: they
 // resolve a single anchor themselves and appear only below shapes
@@ -642,7 +651,12 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		// it correctly keeps StepAlign=false (the outer query_range grid
 		// uses user start + k*step, not epoch-aligned).
 		v.StepAlign = true
-		widenSubquerySpine(v.Input, start.Add(-v.Range), end)
+		// Widen by Offset+Range of lookback (the window is
+		// [End-Offset-Range, End-Offset]) via the single shared owner of this
+		// arithmetic — chplan.ReanchorRange and the solver planner's grid
+		// prediction call the same method so all three stay consistent (#1464).
+		inStart, inEnd := v.InputWindow(start, end)
+		widenSubquerySpine(v.Input, inStart, inEnd)
 	case *chplan.Project:
 		widenSubquerySpine(v.Input, start, end)
 	case *chplan.Aggregate:

@@ -91,6 +91,49 @@ func TestReanchorRange_NestedSpineWidens(t *testing.T) {
 	}
 }
 
+// TestReanchorRange_NestedSpineWidensWithOffset is the offset-carrying
+// sibling of TestReanchorRange_NestedSpineWidens (#1464): the outer
+// RangeWindow's `offset` modifier must widen the inner spine's Start by
+// Offset+Range, not Range alone — RangeWindow.InputWindow is the single
+// owner of that arithmetic (mirrors RangeLWR's Offset+Lookback widening).
+// Before the fix, the RangeWindow arm of ReanchorRange silently dropped
+// Offset and under-scanned the inner spine.
+func TestReanchorRange_NestedSpineWidensWithOffset(t *testing.T) {
+	t.Parallel()
+
+	inner := matrixWindow(time.Minute, 30*time.Second, 0)
+	outer := &chplan.RangeWindow{
+		Input:           inner,
+		Func:            "max_over_time",
+		Range:           5 * time.Minute,
+		Offset:          10 * time.Minute,
+		Step:            time.Minute,
+		TimestampColumn: "anchor_ts",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+
+	start := time.Unix(10_000, 0).UTC()
+	end := time.Unix(20_000, 0).UTC()
+	out, err := chplan.ReanchorRange(outer, start, end)
+	if err != nil {
+		t.Fatalf("ReanchorRange: %v", err)
+	}
+	gotOuter := out.(*chplan.RangeWindow)
+	if !gotOuter.Start.Equal(start) || !gotOuter.End.Equal(end) {
+		t.Fatalf("outer not re-anchored to [%v,%v], got [%v,%v]", start, end, gotOuter.Start, gotOuter.End)
+	}
+	gotInner := gotOuter.Input.(*chplan.RangeWindow)
+	wantInnerStart := start.Add(-outer.Offset - outer.Range)
+	if !gotInner.Start.Equal(wantInnerStart) || !gotInner.End.Equal(end) {
+		t.Fatalf("inner not widened by Offset+Range: want Start=%v End=%v, got Start=%v End=%v",
+			wantInnerStart, end, gotInner.Start, gotInner.End)
+	}
+	if gotInner.OuterRange != end.Sub(wantInnerStart) {
+		t.Fatalf("inner OuterRange wrong: %v", gotInner.OuterRange)
+	}
+}
+
 // TestReanchorRange_RejectsAtPin asserts an @-pinned matrix window (End
 // already set to a value that is NOT the predicted grid End) is rejected so
 // the solver routes A.

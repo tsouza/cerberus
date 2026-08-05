@@ -477,3 +477,82 @@ func TestSliceLWR_OffSpineIsShared(t *testing.T) {
 		}
 	}
 }
+
+// nestedOnSpineWindowPlan builds a two-level ON-SPINE matrix RangeWindow —
+// an outer RangeWindow (with the given Offset) whose Input is ANOTHER
+// RangeWindow directly on the spine (the `max_over_time(rate(m[5m])[1h:5m]
+// offset X)`-shaped route-B carrier). Distinct from nestedSubqueryWindowPlan
+// above, which nests through an OFF-spine TopK.KExpr child.
+func nestedOnSpineWindowPlan(start, end time.Time, step, rang, outerRange, offset time.Duration) chplan.Node {
+	inner := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}},
+		Func:            "rate",
+		Range:           rang,
+		Step:            30 * time.Second,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	return &chplan.RangeWindow{
+		Input:           inner,
+		Func:            "max_over_time",
+		Range:           outerRange,
+		Offset:          offset,
+		Step:            step,
+		OuterRange:      end.Sub(start),
+		Start:           start,
+		End:             end,
+		TimestampColumn: "anchor_ts",
+		ValueColumn:     "Value",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+}
+
+// TestSlice_NestedOnSpineWidensWithOffset is the route-B regression for
+// #1464: an ON-spine nested matrix RangeWindow (outer wraps another
+// RangeWindow directly as Input, both on the spine) whose OUTER carries a
+// nonzero Offset must widen the INNER's re-anchored Start by Offset+Range
+// per shard, not Range alone. Before the fix, ReanchorRange's RangeWindow
+// arm re-derived `start.Add(-Range)` locally and silently dropped Offset,
+// under-scanning the inner spine on every shard whenever the outer carried
+// an `offset` modifier.
+func TestSlice_NestedOnSpineWidensWithOffset(t *testing.T) {
+	t.Parallel()
+	p := &Planner{Cfg: autoCfg()}
+	start := time.Unix(1_700_000_000, 0).UTC()
+	step := time.Minute
+	end := start.Add(time.Hour)
+	outerRange := 5 * time.Minute
+	offset := 10 * time.Minute
+	meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
+
+	plan := nestedOnSpineWindowPlan(start, end, step, time.Minute, outerRange, offset)
+
+	slices, err := p.slice(plan, meta, 4)
+	if err != nil {
+		t.Fatalf("slice: %v", err)
+	}
+	if len(slices) < 2 {
+		t.Fatalf("expected >= 2 slices, got %d", len(slices))
+	}
+
+	for i, s := range slices {
+		outer, ok := s.Plan.(*chplan.RangeWindow)
+		if !ok {
+			t.Fatalf("slice %d Plan is %T, want *chplan.RangeWindow", i, s.Plan)
+		}
+		if !outer.Start.Equal(s.Start) || !outer.End.Equal(s.End) {
+			t.Fatalf("slice %d outer not re-gridded: Start=%v End=%v want [%v,%v]",
+				i, outer.Start, outer.End, s.Start, s.End)
+		}
+		inner, ok := outer.Input.(*chplan.RangeWindow)
+		if !ok {
+			t.Fatalf("slice %d outer.Input is %T, want *chplan.RangeWindow", i, outer.Input)
+		}
+		wantInnerStart := s.Start.Add(-offset - outerRange)
+		if !inner.Start.Equal(wantInnerStart) || !inner.End.Equal(s.End) {
+			t.Fatalf("slice %d inner not widened by Offset+Range: want Start=%v End=%v, got Start=%v End=%v",
+				i, wantInnerStart, s.End, inner.Start, inner.End)
+		}
+	}
+}
