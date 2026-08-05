@@ -143,6 +143,17 @@ search
 -- expected_max_traces --
 500
 
+-- name --
+dotted_attr_name_collision
+-- query --
+{ .name = "attr-name-collision-sentinel" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
 # --- Intrinsics (4) ---
 
 -- name --

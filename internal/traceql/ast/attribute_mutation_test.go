@@ -38,11 +38,20 @@ func TestNewScopedAttributeIntrinsicResolution(t *testing.T) {
 	}
 }
 
-// TestNewAttributeResolvesIntrinsic pins the unscoped constructor.
-func TestNewAttributeResolvesIntrinsic(t *testing.T) {
+// TestNewAttributeNeverResolvesIntrinsic pins the dotted-form constructor:
+// `.name` names a real span attribute even when the name collides with an
+// intrinsic's name (mirrors upstream Tempo, which only resolves intrinsics
+// through their own bare-identifier grammar productions).
+func TestNewAttributeNeverResolvesIntrinsic(t *testing.T) {
 	t.Parallel()
-	if got := NewAttribute("status").Intrinsic; got != IntrinsicStatus {
-		t.Errorf("NewAttribute(status).Intrinsic = %v; want IntrinsicStatus", got)
+	if got := NewAttribute("status").Intrinsic; got != IntrinsicNone {
+		t.Errorf("NewAttribute(status).Intrinsic = %v; want IntrinsicNone", got)
+	}
+	if got := NewAttribute("name").Intrinsic; got != IntrinsicNone {
+		t.Errorf("NewAttribute(name).Intrinsic = %v; want IntrinsicNone", got)
+	}
+	if got := NewAttribute("duration").Intrinsic; got != IntrinsicNone {
+		t.Errorf("NewAttribute(duration).Intrinsic = %v; want IntrinsicNone", got)
 	}
 	if got := NewAttribute("http.method").Intrinsic; got != IntrinsicNone {
 		t.Errorf("NewAttribute(http.method).Intrinsic = %v; want IntrinsicNone", got)

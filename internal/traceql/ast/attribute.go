@@ -40,10 +40,14 @@ func (a Attribute) impliedType() StaticType {
 	}
 }
 
-// NewAttribute builds an unscoped attribute, resolving the name to an
-// intrinsic when it names one.
+// NewAttribute builds an unscoped, dotted-form attribute (the `.name`
+// spelling). It never resolves an intrinsic: upstream Tempo only reaches
+// intrinsics through their own dedicated bare-identifier grammar productions
+// (NewIntrinsic) or the scoped/parent form's guarded resolution
+// (NewScopedAttribute), so `.name`, `.duration`, `.status`, etc. always name
+// a real span attribute, even when they collide with an intrinsic's name.
 func NewAttribute(name string) Attribute {
-	return Attribute{Name: name, Intrinsic: intrinsicFromString(name)}
+	return Attribute{Name: name, Intrinsic: IntrinsicNone}
 }
 
 // NewScopedAttribute builds a scoped (or parent-qualified) attribute. An
