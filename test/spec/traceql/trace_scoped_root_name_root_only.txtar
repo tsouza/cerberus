@@ -1,0 +1,62 @@
+# `rootName` is a TRACE-scoped intrinsic: it resolves to the name of the
+# trace's ROOT span (the one with no parent), not to any span name that
+# happens to occur somewhere in the trace. The fixture is built so a
+# lowering that resolved root identity from an arbitrary span — the
+# `any(SpanName)` shape, rather than argMinIf keyed on the root-span
+# condition — would be caught, and so would one that ignored the
+# all-zero ParentSpanId spelling of "no parent":
+#
+#   trace ...0001  root  'GET /api/checkout'  (ParentSpanId = '')     -> MATCHES
+#                  child 'charge'
+#   trace ...0002  root  'POST /api/orders'                           -> must NOT match
+#                  child 'GET /api/checkout'   <- the over-match trap:
+#                        the needle name IS present in this trace, but
+#                        not on its root span.
+#   trace ...0003  root  'GET /api/checkout'  (ParentSpanId = all-zero hex)
+#                  child 'charge'                                     -> MATCHES
+#
+# A matching trace contributes ALL of its spans (the filter selects
+# traces, and /api/search returns the trace's spans), so the expected
+# row set is traces 1 and 3 in full and nothing from trace 2.
+-- query.traceql --
+{ rootName = "GET /api/checkout" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 'charge'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'POST /api/orders'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000020', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:01', 9), 'charge');
+-- expected_rows --
+[
+  ["GET /api/checkout", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2024-01-01T00:00:00Z", 0],
+  ["GET /api/checkout", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_spanID": "0000000000000020", "__cerberus_traceID": "a0000000000000000000000000000003"}, "2024-01-01T00:00:00Z", 0],
+  ["charge", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2024-01-01T00:00:01Z", 0],
+  ["charge", {"__cerberus_parentSpanID": "0000000000000020", "__cerberus_spanID": "0000000000000021", "__cerberus_traceID": "a0000000000000000000000000000003"}, "2024-01-01T00:00:01Z", 0]
+]
+-- args --
+[0] string = ""
+[1] string = "0000000000000000"
+[2] string = "GET /api/checkout"
+-- chplan --
+Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "GET /api/checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[argMinIf(SpanName, Timestamp, (ParentSpanId IN ("", "0000000000000000"))) AS _cerb_trace_scoped_val] ; Scan(otel_traces)})
+  Scan(otel_traces)
+-- sql --
+SELECT * FROM `otel_traces` WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`SpanName`, `Timestamp`, (`ParentSpanId` IN (?, ?))) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))

@@ -2,7 +2,6 @@ package promql
 
 import (
 	"sort"
-	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -169,15 +168,3 @@ func sortVectorRows(rows []VectorRow) {
 		return labelKey(rows[i].Labels) < labelKey(rows[j].Labels)
 	})
 }
-
-// instantSampleTimestampForOffset returns the effective evaluation
-// timestamp millis after applying offset. Unused as a standalone
-// function today — callers compute it inline — but kept here so the
-// LWR semantics are documented in one place. Reserved for future
-// expansion (e.g. when subquery offsets need to recurse).
-func instantSampleTimestampForOffset(evalTsMs int64, offset time.Duration) int64 {
-	return evalTsMs - offset.Milliseconds()
-}
-
-// _ silences unused-function lints on instantSampleTimestampForOffset.
-var _ = instantSampleTimestampForOffset

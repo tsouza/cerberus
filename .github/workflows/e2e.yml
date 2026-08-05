@@ -421,7 +421,7 @@ jobs:
           # metrics-explorer, and crawl (BFS + ds/query + lints) contracts.
           # See docs/test-strategy.md (interaction sweep) for the per-spec map
           # and the shard manifest for which spec lands on which shard.
-          npx playwright test ${{ matrix.specs }} --reporter=list
+          npx playwright test ${{ matrix.specs }} --reporter=list,html
 
       - name: upload Playwright report on failure
         if: steps.playwright_smoke.outcome == 'failure'
@@ -604,7 +604,7 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
           CRAWL_STACK: compose
-        run: npx playwright test ${{ matrix.specs }} --reporter=list
+        run: npx playwright test ${{ matrix.specs }} --reporter=list,html
 
       - name: upload Playwright report on failure
         if: steps.playwright_smoke.outcome == 'failure'
@@ -1007,7 +1007,7 @@ jobs:
           # so loki_explore_columns.spec.ts — the #908 Logs-Drilldown column
           # gate that queries {service_name="clickhouse"} directly — runs here.
           DASHBOARDS_DIR: ${{ github.workspace }}/test/e2e/grafana/dashboards
-        run: npx playwright test ${{ matrix.specs }} --reporter=list
+        run: npx playwright test ${{ matrix.specs }} --reporter=list,html
 
       # ---- crawl shard (CRAWL_STACK=k3d) ----
       # The same crawl framework the compose-smoke job runs per-PR
@@ -1035,7 +1035,7 @@ jobs:
           CRAWL_STACK: ${{ matrix.crawlStack }}
           SWEEP_DEPTH: full
           CERBERUS_UPDATE_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory && '1' || '' }}
-        run: npx playwright test ${{ matrix.specs }} --reporter=list
+        run: npx playwright test ${{ matrix.specs }} --reporter=list,html
 
       - name: Upload regenerated k3d crawl inventory
         if: always() && matrix.crawlStack == 'k3d' && github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory
@@ -1082,6 +1082,17 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      # A `--reporter=` on the command line REPLACES the config's
+      # `reporter` array outright, so the bare `--reporter=list` this job
+      # used to pass silenced playwright.config.ts's html reporter and
+      # this step uploaded nothing on every red run ("No files were found
+      # with the provided path: test/e2e/playwright/playwright-report",
+      # run 31029759827) — a failure-diagnosis path that had been inert
+      # since the flag was added. The playwright steps above therefore
+      # name both reporters explicitly (`list,html`), and the upload
+      # carries `test-results` too: traces, screenshots, videos and
+      # error-context live there, and without them a red drilldown-app
+      # shard is undiagnosable after the fact.
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -1089,7 +1100,10 @@ jobs:
           # Per-shard name — a static name 409s across the matrix
           # (upload-artifact@v4+ rejects a second upload to a used name).
           name: playwright-report-${{ matrix.name }}
-          path: test/e2e/playwright/playwright-report
+          path: |
+            test/e2e/playwright/playwright-report
+            test/e2e/playwright/test-results
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Dump cluster state on failure

@@ -83,12 +83,19 @@ func curatedTraceQLRows() []Row {
 		mk("intrinsic:instrumentation-name", "intrinsic", "instrumentation:name", `{ instrumentation:name = "showcase-instrumentation" }`),
 		mk("intrinsic:instrumentation-version", "intrinsic", "instrumentation:version", `{ instrumentation:version = "1.2.3" }`),
 
-		// --- Unbacked intrinsics (parse, but cerberus 422s — the
-		// OTel-CH span-row schema cannot answer them; the showcase pins
-		// the rejection bidirectionally) ---
-		mk("intrinsic:rootName", "intrinsic-unbacked", "rootName", `{ rootName = "GET /home" }`),
-		mk("intrinsic:rootServiceName", "intrinsic-unbacked", "rootServiceName", `{ rootServiceName = "frontend" }`),
-		mk("intrinsic:traceDuration", "intrinsic-unbacked", "traceDuration", `{ traceDuration > 100ms }`),
+		// --- Trace-scoped intrinsics (no per-span column backs them;
+		// cerberus resolves each one from the whole trace — the root
+		// span's identity, or the trace's wall-clock extent — via a
+		// per-trace aggregate, matching reference Tempo's trace-level
+		// columns; the showcase pins the match bidirectionally) ---
+		mk("intrinsic:rootName", "intrinsic-trace-scoped", "rootName", `{ rootName = "GET /home" }`),
+		mk("intrinsic:rootServiceName", "intrinsic-trace-scoped", "rootServiceName", `{ rootServiceName = "frontend" }`),
+		mk("intrinsic:traceDuration", "intrinsic-trace-scoped", "traceDuration", `{ traceDuration > 100ms }`),
+
+		// --- Unbacked intrinsics (parse, but the OTel-CH span-row
+		// schema cannot answer them, so the comparison is a defined
+		// constant-false; the showcase pins the empty result
+		// bidirectionally) ---
 		mk("intrinsic:childCount", "intrinsic-unbacked", "span:childCount", `{ span:childCount > 0 }`),
 		mk("intrinsic:event-timeSinceStart", "intrinsic-unbacked", "event:timeSinceStart", `{ event:timeSinceStart > 1ms }`),
 
