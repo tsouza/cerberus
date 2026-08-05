@@ -31,26 +31,40 @@
 // requires >= 1 sample/window and returns a 0 count for a single-sample window
 // (NULL -> ABSENT only for an EMPTY window via WHERE grid_val IS NOT NULL),
 // matching the fan-out's `length(window_vals) >= 1` + per-pair `c != p` count.
-// Prom's funcChanges additionally carves out NaN-on-both-sides pairs; both the
-// fan-out and the native fn accept divergence there.
 //
-// #1707: that documented Prometheus-divergence carve-out is exactly why this
-// seed MUST exercise NaN input rather than avoid it — the two kernels are only
-// known to diverge from Prometheus on NaN-NaN pairs; whether they diverge from
-// EACH OTHER there was, before this seed extension, completely unverified. The
-// host-c/host-d/host-e series below (an all-NaN run, a mixed NaN/finite run
-// with transitions on both sides, and a single-sample window) mostly feed the
-// same bit-identical fan-out==native assertion below — no hand-derived
-// expected count is needed there, because the test only ever asserts the two
-// kernels agree with each other, never a value pinned against Prometheus.
+// #1489 (fixed): Prom's funcChanges carves out NaN-on-both-sides pairs (a pair
+// only counts as a "change" when `c != p AND NOT (isNaN(c) AND isNaN(p))`).
+// The fan-out kernel now implements that carve-out and is Prometheus-pinned
+// by the spec corpus (test/spec/promql/changes_nan_run.txtar); the native
+// timeSeriesChangesToGrid builtin does not, and cerberus can't patch a
+// ClickHouse builtin from its own SQL emission. That is a real,
+// evidence-backed fan-out/native divergence, characterized below rather than
+// tolerated silently.
 //
-// #1721: the seed extension DID surface a genuine native-vs-fan-out
-// divergence, not merely a divergence from Prometheus: native
-// timeSeriesChangesToGrid overcounts by exactly 1 whenever a window's
-// chronologically-earliest in-window sample is NaN. That shape is pinned
-// narrowly and explicitly — see changesKnownNativeNaNLeadOvercount below —
-// rather than relaxed away, so the assertion stays honest about exactly what
-// is and isn't known-divergent.
+// #1707: the Prometheus-divergence carve-out above is exactly why this seed
+// MUST exercise NaN input rather than avoid it. The host-c/host-d/host-e
+// series below (an all-NaN run, a mixed NaN/finite run with transitions on
+// both sides, and a single-sample window) mostly still feed the same
+// bit-identical fan-out==native assertion below — no hand-derived expected
+// count is needed for a cell whose window has no NaN-NaN adjacent pair,
+// because the test only ever asserts the two kernels agree with each other,
+// never a value pinned against Prometheus.
+//
+// #1721: native timeSeriesChangesToGrid diverges from the (now
+// Prometheus-correct) fan-out on any window containing at least one NaN-NaN
+// adjacent pair, by exactly `nanPairCount + leadNaNOvercount`:
+//   - nanPairCount: native counts EVERY NaN-NaN adjacent pair as a change —
+//     it implements no carve-out at all. This component was invisible before
+//     #1489's fix, because the old, also-uncarved-out fan-out counted
+//     NaN-NaN pairs the same way native does, masking the gap.
+//   - leadNaNOvercount: an ADDITIONAL +1 whenever the window's
+//     chronologically-earliest in-window sample is NaN — the narrower shape
+//     originally pinned under #1721, before #1489's fix exposed the broader
+//     nanPairCount gap it had been hiding.
+//
+// Both components are pinned per-cell and explicitly below — see
+// changesKnownNativeCarveoutGap — rather than relaxed away, so the assertion
+// stays honest about exactly what is and isn't known-divergent.
 package chsql_test
 
 import (
@@ -121,40 +135,48 @@ INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
 // both paths must agree on.
 const changesQuery = `sum by(host) (changes(load_state[5m]))`
 
-// changesKnownNativeNaNLeadOvercount pins a genuine, evidence-backed
-// divergence between the native and fan-out kernels, filed as #1721: native
-// timeSeriesChangesToGrid counts exactly ONE MORE change than the fan-out
-// whenever a window's chronologically-EARLIEST in-window sample is NaN.
-// Reading internal/chsql/range_window_native.go confirms cerberus passes
-// (ts, val) straight into the ClickHouse builtin with no NaN-specific
-// pre/post-processing anywhere in cerberus's own SQL — the bug lives inside
-// the builtin itself, not in code this test's assertion could paper over.
+// changesKnownNativeCarveoutGap pins the exact native-minus-fan-out offset for
+// every cell whose window contains at least one NaN-NaN adjacent pair (see
+// #1721 above for the nanPairCount + leadNaNOvercount decomposition). Every
+// offset here is hand-derived from the seed's own window membership — not an
+// opaque "don't check this" entry — and every cell NOT listed here must still
+// be bit-identical (see the assertion below). Reading
+// internal/chsql/range_window_native.go confirms cerberus passes (ts, val)
+// straight into the ClickHouse builtin with no NaN-specific pre/post
+// processing anywhere in cerberus's own SQL — the gap lives inside the
+// builtin itself, not in code this test's assertion could paper over.
 //
-// This is NOT a blanket tolerance: every cell not listed here must still be
-// bit-identical, and every cell listed here must diverge by EXACTLY +1 (see
-// the assertion below) — a value pinned against the seed's own hand-traced
-// window membership, not an opaque "don't check this" entry. host 'c' is
-// all-NaN, so all 11 of its anchors (00:00:00..00:05:00 @ 30s) have a NaN
-// leading sample. host 'd' has exactly one such anchor: at 00:05:00 the
-// half-open (anchor-5m, anchor] left boundary excludes its t=00:00:00 finite
-// sample, promoting its t=00:01:00 NaN sample to the window's leading
-// position; every other host 'd' anchor has a finite leading sample and stays
-// bit-identical. If a future ClickHouse release fixes the builtin, the
-// dedicated assertion below will start failing (native no longer +1) and this
-// pin must be deleted, not widened.
-var changesKnownNativeNaNLeadOvercount = map[gridCell]bool{
-	{ql: "c", anchor: "2026-01-01T00:00:00Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:00:30Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:01:00Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:01:30Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:02:00Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:02:30Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:03:00Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:03:30Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:04:00Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:04:30Z"}: true,
-	{ql: "c", anchor: "2026-01-01T00:05:00Z"}: true,
-	{ql: "d", anchor: "2026-01-01T00:05:00Z"}: true,
+// host 'c' is all-NaN, so every one of its 11 anchors (00:00:00..00:05:00 @
+// 30s) has an all-NaN window: offset = nanPairCount(window) + 1 (its leading
+// sample is always NaN too). host 'd' alternates finite/NaN
+// (3.0, NaN, NaN, 3.0, 4.0, NaN at t=0..5m): exactly one NaN-NaN pair
+// (t=00:01:00, t=00:02:00) is in-window from 00:02:00 onward, so those
+// anchors get offset 1; at 00:05:00 the half-open (anchor-5m, anchor] left
+// boundary additionally excludes host d's t=00:00:00 finite sample, promoting
+// the still-in-window t=00:01:00 NaN sample to the window's leading position
+// (the #1721 shape originally pinned) for a combined offset of 2. If a future
+// ClickHouse release fixes the builtin, the dedicated assertion below will
+// start failing (native no longer diverges) and this pin must be deleted, not
+// widened.
+var changesKnownNativeCarveoutGap = map[gridCell]int{
+	{ql: "c", anchor: "2026-01-01T00:00:00Z"}: 1, // 0 nan-nan pairs (single-sample window) + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:00:30Z"}: 1, // 0 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:01:00Z"}: 2, // 1 pair + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:01:30Z"}: 2, // 1 pair + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:02:00Z"}: 3, // 2 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:02:30Z"}: 3, // 2 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:03:00Z"}: 4, // 3 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:03:30Z"}: 4, // 3 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:04:00Z"}: 5, // 4 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:04:30Z"}: 5, // 4 pairs + 1 lead
+	{ql: "c", anchor: "2026-01-01T00:05:00Z"}: 5, // 4 pairs (t=0 excluded by left-open bound) + 1 lead (t=1 still NaN)
+	{ql: "d", anchor: "2026-01-01T00:02:00Z"}: 1, // 1 nan-nan pair, finite lead
+	{ql: "d", anchor: "2026-01-01T00:02:30Z"}: 1, // 1 nan-nan pair, finite lead
+	{ql: "d", anchor: "2026-01-01T00:03:00Z"}: 1, // 1 nan-nan pair, finite lead
+	{ql: "d", anchor: "2026-01-01T00:03:30Z"}: 1, // 1 nan-nan pair, finite lead
+	{ql: "d", anchor: "2026-01-01T00:04:00Z"}: 1, // 1 nan-nan pair, finite lead
+	{ql: "d", anchor: "2026-01-01T00:04:30Z"}: 1, // 1 nan-nan pair, finite lead
+	{ql: "d", anchor: "2026-01-01T00:05:00Z"}: 2, // 1 nan-nan pair + 1 lead (t=0 excluded, t=1 NaN leads)
 }
 
 func TestNativeTSGridChanges_DualEmitParity(t *testing.T) {
@@ -216,15 +238,15 @@ func TestNativeTSGridChanges_DualEmitParity(t *testing.T) {
 			t.Errorf("cell %+v present in fan-out but absent in native", cell)
 			continue
 		}
-		if changesKnownNativeNaNLeadOvercount[cell] {
-			// #1721: pinned NaN-leading-window overcount. Assert the EXACT
-			// known shape (native = fanout + 1), not merely "don't check" —
-			// any other relationship means the bug changed shape and this
-			// pin is stale.
-			if math.Float64bits(nv) != math.Float64bits(fv+1) {
-				t.Errorf("cell %+v: expected the pinned #1721 divergence native=fanout+1 "+
+		if offset, known := changesKnownNativeCarveoutGap[cell]; known {
+			// #1721: pinned nanPairCount+leadNaNOvercount gap. Assert the
+			// EXACT known offset, not merely "don't check" — any other
+			// relationship means the gap changed shape and this pin is stale.
+			want := fv + float64(offset)
+			if math.Float64bits(nv) != math.Float64bits(want) {
+				t.Errorf("cell %+v: expected the pinned #1721 carve-out gap native=fanout+%d "+
 					"(fanout=%.20g so native should be %.20g), got native=%.20g — the known "+
-					"divergence shape changed; update or remove this pin", cell, fv, fv+1, nv)
+					"divergence shape changed; update or remove this pin", cell, offset, fv, want, nv)
 			}
 			continue
 		}
@@ -237,8 +259,8 @@ func TestNativeTSGridChanges_DualEmitParity(t *testing.T) {
 		identical++
 	}
 	t.Logf("changes dual-emit parity: %d/%d cells bit-identical, %d cells hold the pinned "+
-		"#1721 NaN-leading-window divergence. native == fan-out == Prometheus everywhere else.",
-		identical, len(fanout), len(changesKnownNativeNaNLeadOvercount))
+		"#1721 NaN-carve-out gap. native == fan-out == Prometheus everywhere else.",
+		identical, len(fanout), len(changesKnownNativeCarveoutGap))
 }
 
 // runChangesEmit lowers + emits the changes query with the native-changes

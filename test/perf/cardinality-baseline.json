@@ -2640,6 +2640,17 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "promql/changes_nan_run",
+    "fan_factor": 1,
+    "scan_rows": 8,
+    "peak_intermediate": 8,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "promql/changes_oscillating",
     "fan_factor": 1,
     "scan_rows": 5,
@@ -9306,10 +9317,43 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "traceql/trace_scoped_duration_filter",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "traceql/trace_scoped_intrinsic_constant_false",
     "fan_factor": 0,
     "scan_rows": 0,
     "peak_intermediate": 0,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/trace_scoped_root_name_in",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/trace_scoped_root_service_eq",
+    "fan_factor": 1,
+    "scan_rows": 2,
+    "peak_intermediate": 2,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,
@@ -9351,6 +9395,17 @@
   },
   {
     "fixture": "traceql/unary_not_attr",
+    "fan_factor": 0,
+    "scan_rows": 0,
+    "peak_intermediate": 0,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/unary_not_double_negation",
     "fan_factor": 1,
     "scan_rows": 1,
     "peak_intermediate": 1,
@@ -9362,9 +9417,20 @@
   },
   {
     "fixture": "traceql/unary_not_intrinsic",
+    "fan_factor": 0,
+    "scan_rows": 0,
+    "peak_intermediate": 0,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/unary_not_or_composition",
     "fan_factor": 1,
-    "scan_rows": 2,
-    "peak_intermediate": 2,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
     "has_cross_join": false,
     "has_array_join": false,
     "has_recursive_cte": false,

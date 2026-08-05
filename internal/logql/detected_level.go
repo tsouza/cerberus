@@ -1,6 +1,8 @@
 package logql
 
 import (
+	"strings"
+
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -231,24 +233,7 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 		Args: []chplan.Expr{value},
 	}
 
-	// Each (variants, canonical) pair builds an OR-chain comparison.
-	// Order matches upstream Loki's `normalizeLogLevel` switch:
-	// trace / debug / info / warn / error / critical / fatal.
-	type group struct {
-		variants  []string
-		canonical string
-	}
-	groups := []group{
-		{[]string{"trace", "trc"}, "trace"},
-		{[]string{"debug", "dbg"}, "debug"},
-		{[]string{"info", "inf", "information"}, "info"},
-		{[]string{"warn", "wrn", "warning"}, "warn"},
-		{[]string{"error", "err"}, "error"},
-		{[]string{"critical"}, "critical"},
-		{[]string{"fatal"}, "fatal"},
-	}
-
-	args := make([]chplan.Expr, 0, (len(groups)+1)*2+1)
+	args := make([]chplan.Expr, 0, (len(levelNormalizationGroups)+1)*2+1)
 	// Empty severity first — reference Loki stamps "unknown" when no
 	// level is detectable (constants.LogLevelUnknown), it never leaves
 	// the label absent or empty.
@@ -257,7 +242,7 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 		&chplan.Binary{Op: chplan.OpEq, Left: lowerValue, Right: &chplan.LitString{V: ""}},
 		&chplan.LitString{V: "unknown"},
 	)
-	for _, g := range groups {
+	for _, g := range levelNormalizationGroups {
 		args = append(args, anyEqual(lowerValue, g.variants), &chplan.LitString{V: g.canonical})
 	}
 	// Default branch — pass through the lowercased original. Matches
@@ -265,6 +250,61 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	args = append(args, lowerValue)
 
 	return &chplan.FuncCall{Name: "multiIf", Args: args}
+}
+
+// levelNormalizationGroup pairs the input-variant spellings upstream
+// Loki's `normalizeLogLevel` accepts with the canonical lowercase level
+// string they map to.
+type levelNormalizationGroup struct {
+	variants  []string
+	canonical string
+}
+
+// levelNormalizationGroups is the single source of truth for the
+// variant→canonical mapping, order matching upstream Loki's
+// `normalizeLogLevel` switch: trace / debug / info / warn / error /
+// critical / fatal. Shared by [normaliseLevelExpr] (the SQL `multiIf`
+// cascade) and [NormalizeDetectedLevel] (the plain-Go equivalent) so the
+// two derivations can't drift apart.
+var levelNormalizationGroups = []levelNormalizationGroup{
+	{[]string{"trace", "trc"}, "trace"},
+	{[]string{"debug", "dbg"}, "debug"},
+	{[]string{"info", "inf", "information"}, "info"},
+	{[]string{"warn", "wrn", "warning"}, "warn"},
+	{[]string{"error", "err"}, "error"},
+	{[]string{"critical"}, "critical"},
+	{[]string{"fatal"}, "fatal"},
+}
+
+// NormalizeDetectedLevel maps a raw severity/level string to Loki's
+// canonical lowercase level set entirely in Go — the string-typed
+// counterpart to [normaliseLevelExpr]'s SQL `multiIf` cascade, built from
+// the same [levelNormalizationGroups] table so the two can't diverge.
+//
+// An empty input maps to `"unknown"`, matching reference Loki's
+// `constants.LogLevelUnknown` stamping (see [normaliseLevelExpr]'s doc
+// comment). A non-empty input that matches none of the known variants
+// falls through to its lowercased form, matching upstream
+// `normalizeLogLevel`'s default branch.
+//
+// Used by `/loki/api/v1/patterns` (internal/api/loki/patterns.go) to
+// bucket pattern mining per detected level: that handler resolves each
+// row's SeverityText once in Go rather than pushing a chplan expression
+// through the optimizer/emit pipeline for a value it already has in
+// hand.
+func NormalizeDetectedLevel(raw string) string {
+	lower := strings.ToLower(raw)
+	if lower == "" {
+		return "unknown"
+	}
+	for _, g := range levelNormalizationGroups {
+		for _, v := range g.variants {
+			if lower == v {
+				return g.canonical
+			}
+		}
+	}
+	return lower
 }
 
 // anyEqual returns a left-folded OR-chain of `expr = variant`

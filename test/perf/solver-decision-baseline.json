@@ -590,6 +590,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "changes_nan_run",
+    "routed": true,
+    "k": 8,
+    "reason": "routed",
+    "n_anchors": 241,
+    "fanout": 20,
+    "cumulative_d": "5m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "changes_oscillating",
     "routed": true,
     "k": 8,

@@ -62,10 +62,10 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	q := &stubQuerier{
 		tsLines: []chclient.TimestampedLine{
-			{Timestamp: base, Body: "GET /api/users/1 status=200 latency=5ms"},
-			{Timestamp: base.Add(1 * time.Second), Body: "GET /api/users/2 status=200 latency=7ms"},
-			{Timestamp: base.Add(2 * time.Second), Body: "GET /api/users/42 status=200 latency=4ms"},
-			{Timestamp: base.Add(3 * time.Second), Body: "GET /api/users/1337 status=200 latency=11ms"},
+			{Timestamp: base, Body: "GET /api/users/1 status=200 latency=5ms", Severity: "INFO"},
+			{Timestamp: base.Add(1 * time.Second), Body: "GET /api/users/2 status=200 latency=7ms", Severity: "INFO"},
+			{Timestamp: base.Add(2 * time.Second), Body: "GET /api/users/42 status=200 latency=4ms", Severity: "INFO"},
+			{Timestamp: base.Add(3 * time.Second), Body: "GET /api/users/1337 status=200 latency=11ms", Severity: "INFO"},
 		},
 	}
 
@@ -130,10 +130,70 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 			t.Errorf("sample ts=%d out of expected window [%d ± 1d]; likely a unit mis-shift", s[0], baseUnix)
 		}
 	}
-	// Level is empty in PR B — per-cluster bucketing lands in a
-	// follow-up (see patterns.go doc + plan § 5).
-	if hit.Level != "" {
-		t.Errorf("expected empty Level in PR B; got %q", hit.Level)
+	// Pattern mining buckets per normalized detected level; every
+	// trained line here carries SeverityText "INFO", so the cluster's
+	// Level must resolve to the canonical lowercase "info" (#1434).
+	if hit.Level != "info" {
+		t.Errorf("expected Level %q, got %q", "info", hit.Level)
+	}
+}
+
+// TestPatterns_BucketsByDetectedLevel feeds the handler two structurally
+// identical templates at different severities and asserts the handler
+// emits two DISTINCT clusters, one per level — pattern mining must not
+// merge lines whose only difference is severity, and each cluster's
+// Level must carry the real (normalized) detected level rather than the
+// empty string (#1434).
+func TestPatterns_BucketsByDetectedLevel(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	q := &stubQuerier{
+		tsLines: []chclient.TimestampedLine{
+			{Timestamp: base, Body: "connection reset by peer", Severity: "ERROR"},
+			{Timestamp: base.Add(1 * time.Second), Body: "connection reset by peer", Severity: "err"},
+			{Timestamp: base.Add(2 * time.Second), Body: "connection reset by peer", Severity: "WARN"},
+		},
+	}
+
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1778760000&end=1778760100`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var out patternsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	byLevel := map[string]int64{}
+	for _, p := range out.Data {
+		var total int64
+		for _, s := range p.Samples {
+			total += s[1]
+		}
+		byLevel[p.Level] += total
+	}
+	// The two "ERROR"/"err" lines normalize to the same "error" bucket
+	// (two samples); the "WARN" line is its own "warn" bucket (one
+	// sample) — never merged with the error-level cluster despite an
+	// identical line body.
+	if byLevel["error"] != 2 {
+		t.Errorf("expected 2 samples in level=error, got %d (byLevel=%+v)", byLevel["error"], byLevel)
+	}
+	if byLevel["warn"] != 1 {
+		t.Errorf("expected 1 sample in level=warn, got %d (byLevel=%+v)", byLevel["warn"], byLevel)
+	}
+	if _, ok := byLevel[""]; ok {
+		t.Errorf("expected no empty-level cluster, got byLevel=%+v", byLevel)
 	}
 }
 
@@ -179,10 +239,12 @@ func TestPatterns_PushesLineLimitToSQL(t *testing.T) {
 			if !strings.Contains(gotSQL, tc.wantLimit) {
 				t.Errorf("expected SQL to contain %q; got: %s", tc.wantLimit, gotSQL)
 			}
-			// Peek SQL must project both Timestamp and Body — drain
-			// needs the (ts, line) pair to bucket per-cluster samples.
-			if !strings.Contains(gotSQL, "`Timestamp`") || !strings.Contains(gotSQL, "`Body`") {
-				t.Errorf("expected SQL to project both Timestamp and Body; got: %s", gotSQL)
+			// Peek SQL must project Timestamp, Body, and SeverityText —
+			// drain needs the (ts, line) pair to bucket per-cluster
+			// samples, and the handler buckets mining itself by the
+			// row's severity (#1434).
+			if !strings.Contains(gotSQL, "`Timestamp`") || !strings.Contains(gotSQL, "`Body`") || !strings.Contains(gotSQL, "`SeverityText`") {
+				t.Errorf("expected SQL to project Timestamp, Body, and SeverityText; got: %s", gotSQL)
 			}
 		})
 	}

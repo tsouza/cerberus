@@ -11,6 +11,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/drain"
+	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -28,9 +29,10 @@ const defaultPatternsLineLimit = 1000
 // each sample as a `[unix_seconds, count]` 2-tuple — the timestamp is
 // `sample.Timestamp.Unix()`, which strips the millisecond component.
 //
-// Level mirrors upstream's per-cluster `detected_level` discriminant.
-// Cerberus emits `""` for every cluster (one drain instance for all
-// severities, no per-level bucketing).
+// Level mirrors upstream's per-cluster `detected_level` discriminant:
+// cerberus buckets pattern mining per row's normalized SeverityText
+// (see [minePatterns]), so each cluster carries the level of the lines
+// that trained it.
 type Pattern struct {
 	Pattern string     `json:"pattern"`
 	Level   string     `json:"level"`
@@ -47,7 +49,7 @@ type Pattern struct {
 // `WriteQueryPatternsResponseJSON` wire shape:
 //
 //	{"status":"success","data":[
-//	   {"pattern":"GET /api/<_> 200","level":"","samples":[[ts,n], ...]},
+//	   {"pattern":"GET /api/<_> 200","level":"info","samples":[[ts,n], ...]},
 //	   ...
 //	]}
 //
@@ -57,9 +59,9 @@ type Pattern struct {
 // order every time"; the SQL emits `ORDER BY Timestamp DESC LIMIT N` so
 // chDB returns rows in deterministic order.
 //
-// Cerberus trains a single drain instance for all severities and emits
-// `level:""` for every cluster; Grafana's pattern panel renders both
-// with-level and without-level payloads.
+// Cerberus trains one drain instance per detected level (see
+// [minePatterns]), so each cluster carries a real `level` value —
+// Grafana's pattern panel filters by level using this field.
 func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.FormValue("query")
 	if q == "" {
@@ -106,19 +108,21 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 
 // buildPatternsSQL renders:
 //
-//	SELECT `Timestamp`, `Body`
+//	SELECT `Timestamp`, `Body`, `SeverityText`
 //	FROM `otel_logs`
 //	WHERE <matchers> AND <time bounds>
 //	ORDER BY `Timestamp` DESC
 //	LIMIT <lineLimit>
 //
-// Mirrors buildDetectedFieldsSQL but projects two columns — drain needs
-// both the body and a real timestamp to bucket per-cluster samples.
+// Mirrors buildDetectedFieldsSQL but projects three columns — drain
+// needs the body and a real timestamp to bucket per-cluster samples, and
+// [minePatterns] buckets mining itself by the row's raw severity.
 func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.Time, lineLimit int) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(
 			chsql.Col(s.TimestampColumn),
 			chsql.Col(s.BodyColumn),
+			chsql.Col(s.SeverityColumn),
 		).
 		From(chsql.Col(s.LogsTable))
 
@@ -132,42 +136,64 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 	return sqlStr, args, nil
 }
 
-// minePatterns trains a single drain instance over the peek window and
-// projects the resulting clusters onto the upstream `[]Pattern` wire
-// shape. Returns an empty (non-nil) slice when no lines hit any cluster
-// — the JSON envelope encodes that as `data:[]`, matching upstream Loki.
+// minePatterns buckets the peek window by each row's normalized
+// detected level ([logql.NormalizeDetectedLevel] of the row's raw
+// SeverityText), trains one drain instance per bucket, and projects the
+// resulting clusters onto the upstream `[]Pattern` wire shape — so each
+// cluster carries the real `level` of the lines that trained it, mirroring
+// upstream's per-cluster `detected_level` discriminant. Returns an empty
+// (non-nil) slice when no lines hit any cluster — the JSON envelope
+// encodes that as `data:[]`, matching upstream Loki.
 //
 // The miner is the in-house clean-room Drain implementation
 // (internal/drain), which tokenises on whitespace and treats
 // digit-bearing tokens as variables — generic enough for arbitrary log
-// lines without a per-format tokeniser gate.
+// lines without a per-format tokeniser gate. Each level bucket gets its
+// own drain.Miner instance (confirmed independent — a Miner owns its own
+// token tree and cluster slice, no shared state), so lines never mix
+// templates across levels.
 func minePatterns(lines []chclient.TimestampedLine) []Pattern {
-	d := drain.New(drain.DefaultConfig())
+	miners := make(map[string]*drain.Miner)
+	levels := make([]string, 0)
 	for _, line := range lines {
-		d.Train(line.Body, line.Timestamp.UnixNano())
+		level := logql.NormalizeDetectedLevel(line.Severity)
+		m, ok := miners[level]
+		if !ok {
+			m = drain.New(drain.DefaultConfig())
+			miners[level] = m
+			levels = append(levels, level)
+		}
+		m.Train(line.Body, line.Timestamp.UnixNano())
 	}
 
-	clusters := d.Clusters()
-	out := make([]Pattern, 0, len(clusters))
-	for _, c := range clusters {
-		if c == nil {
-			continue
+	out := make([]Pattern, 0)
+	for _, level := range levels {
+		for _, c := range miners[level].Clusters() {
+			if c == nil {
+				continue
+			}
+			s := c.String()
+			if s == "" {
+				continue
+			}
+			out = append(out, Pattern{
+				Pattern: s,
+				Level:   level,
+				Samples: projectSamples(c.Samples()),
+			})
 		}
-		s := c.String()
-		if s == "" {
-			continue
-		}
-		out = append(out, Pattern{
-			Pattern: s,
-			Level:   "",
-			Samples: projectSamples(c.Samples()),
-		})
 	}
 	// Stable response order — drain's Clusters() return order follows
 	// LRU cache traversal, which is not deterministic across runs.
-	// Sorting by pattern string lets Grafana / tests pin on the wire
-	// shape without flake.
-	sort.Slice(out, func(i, j int) bool { return out[i].Pattern < out[j].Pattern })
+	// Sorting by (pattern, level) lets Grafana / tests pin on the wire
+	// shape without flake; the level tiebreak matters now that the same
+	// pattern string can recur across two different level buckets.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Pattern != out[j].Pattern {
+			return out[i].Pattern < out[j].Pattern
+		}
+		return out[i].Level < out[j].Level
+	})
 	return out
 }
 
