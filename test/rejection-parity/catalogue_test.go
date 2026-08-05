@@ -68,8 +68,9 @@ func TestCatalogueIsRegenerable(t *testing.T) {
 }
 
 // TestCatalogueEntriesAreClassified is the curation gate: every
-// scanned site must be classified, rejection entries must carry a
-// trigger query + valid endpoint, and internal entries must justify
+// scanned site must be classified, rejection/divergence entries must
+// carry a trigger query + valid endpoint (divergence additionally
+// requires a tracking issue), and internal entries must justify
 // themselves with a rationale. An unclassified entry (the regen
 // default for a new rejection site) fails here — a new deliberate
 // rejection cannot land without a parity-corpus case.
@@ -84,7 +85,7 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 		}
 		seen[e.Site.Site] = true
 		switch e.Class {
-		case "rejection":
+		case ClassRejection:
 			if strings.TrimSpace(e.TriggerQuery) == "" {
 				t.Errorf("rejection entry %s has no trigger query", e.Site.Site)
 			}
@@ -98,32 +99,58 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			if e.Rationale != "" {
 				t.Errorf("rejection entry %s carries a rationale — rationales belong to internal entries; a rejection justifies itself via its trigger query", e.Site.Site)
 			}
-		case "internal":
+			if e.TrackingIssue != 0 {
+				t.Errorf("rejection entry %s carries a tracking issue — tracking issues belong to divergence entries", e.Site.Site)
+			}
+		case ClassInternal:
 			if strings.TrimSpace(e.Rationale) == "" {
 				t.Errorf("internal entry %s carries no rationale — every internal classification must justify why the site is not wire-reachable", e.Site.Site)
 			}
 			if e.TriggerQuery != "" || e.Endpoint != "" {
 				t.Errorf("internal entry %s carries trigger query / endpoint — those belong to rejection entries", e.Site.Site)
 			}
+			if e.TrackingIssue != 0 {
+				t.Errorf("internal entry %s carries a tracking issue — tracking issues belong to divergence entries", e.Site.Site)
+			}
+		case ClassDivergence:
+			if strings.TrimSpace(e.TriggerQuery) == "" {
+				t.Errorf("divergence entry %s has no trigger query", e.Site.Site)
+			}
+			ep := e.Endpoint
+			if ep == "" {
+				ep = DefaultEndpoint(e.Head)
+			}
+			if !ValidEndpoint(e.Head, ep) {
+				t.Errorf("divergence entry %s: endpoint %q invalid for head %s", e.Site.Site, ep, e.Head)
+			}
+			if e.Rationale != "" {
+				t.Errorf("divergence entry %s carries a rationale — rationales belong to internal entries; a divergence justifies itself via its trigger query + tracking issue", e.Site.Site)
+			}
+			if e.TrackingIssue <= 0 {
+				t.Errorf("divergence entry %s has no tracking issue — every divergence must cite an open issue tracking closure", e.Site.Site)
+			}
 		default:
-			t.Errorf("entry %s is unclassified (class=%q) — classify as rejection (with trigger query) or internal (with rationale)", e.Site.Site, e.Class)
+			t.Errorf("entry %s is unclassified (class=%q) — classify as rejection (with trigger query), internal (with rationale), or divergence (with trigger query + tracking issue)", e.Site.Site, e.Class)
 		}
 	}
 }
 
 // TestRejectionTriggersExerciseSites is the centrepiece pin: for every
-// class=rejection entry, the trigger query (a) parses with the head's
-// reference parser — proving the rejection is semantic, not a parse
-// error — and (b) fails the head's lowering with an error matching the
-// site's message — proving the trigger actually exercises the
-// catalogued site, so the parity corpus diffs the claim the site makes
-// and not some other failure.
+// class=rejection or class=divergence entry, the trigger query (a)
+// parses with the head's reference parser — proving the rejection is
+// semantic, not a parse error — and (b) fails the head's lowering with
+// an error matching the site's message — proving the trigger actually
+// exercises the catalogued site, so the parity corpus diffs the claim
+// the site makes and not some other failure. Divergence entries share
+// this reachability proof with rejection entries — the two classes
+// only disagree about what the REFERENCE backend does with the same
+// trigger, never about whether cerberus itself rejects it.
 func TestRejectionTriggersExerciseSites(t *testing.T) {
 	t.Parallel()
 
 	cat := loadCatalogue(t)
 	for _, e := range cat.Entries {
-		if e.Class != "rejection" {
+		if e.Class != ClassRejection && e.Class != ClassDivergence {
 			continue
 		}
 		e := e
@@ -140,9 +167,11 @@ func TestRejectionTriggersExerciseSites(t *testing.T) {
 
 // TestParityCorpusMatchesCatalogue pins the third leg of the ratchet:
 // the parity-corpus case set the compat driver runs is derived 1:1
-// from the rejection entries — same count, same site keys — for every
-// head. BuildCases is the same function the driver binary calls, so
-// the corpus cannot drift from the catalogue.
+// from the rejection + divergence entries — same count, same site
+// keys, same class tags — for every head. BuildCases is the same
+// function the driver binary calls, so the corpus cannot drift from
+// the catalogue, and a divergence entry cannot be silently dropped
+// from the set that gets checked.
 func TestParityCorpusMatchesCatalogue(t *testing.T) {
 	t.Parallel()
 
@@ -152,22 +181,26 @@ func TestParityCorpusMatchesCatalogue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildCases(%s): %v", head, err)
 		}
-		var rejections []string
+		var wantNames, wantClasses []string
 		for _, e := range cat.Entries {
-			if e.Head == head && e.Class == "rejection" {
-				rejections = append(rejections, e.Site.Site)
+			if e.Head == head && (e.Class == ClassRejection || e.Class == ClassDivergence) {
+				wantNames = append(wantNames, e.Site.Site)
+				wantClasses = append(wantClasses, e.Class)
 			}
 		}
-		if len(cases) != len(rejections) {
-			t.Fatalf("head %s: %d parity cases for %d rejection entries", head, len(cases), len(rejections))
+		if len(cases) != len(wantNames) {
+			t.Fatalf("head %s: %d parity cases for %d rejection/divergence entries", head, len(cases), len(wantNames))
 		}
 		for i, c := range cases {
-			if c.Name != rejections[i] {
-				t.Fatalf("head %s: case %d is %s, want %s", head, i, c.Name, rejections[i])
+			if c.Name != wantNames[i] {
+				t.Fatalf("head %s: case %d is %s, want %s", head, i, c.Name, wantNames[i])
+			}
+			if c.Class != wantClasses[i] {
+				t.Fatalf("head %s: case %d (%s) has class %s, want %s", head, i, c.Name, c.Class, wantClasses[i])
 			}
 		}
 		if len(cases) == 0 {
-			t.Fatalf("head %s: zero parity cases — the catalogue lost its rejection entries", head)
+			t.Fatalf("head %s: zero parity cases — the catalogue lost its rejection/divergence entries", head)
 		}
 	}
 }

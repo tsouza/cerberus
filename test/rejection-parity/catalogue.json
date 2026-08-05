@@ -68,8 +68,9 @@
       "head": "logql",
       "site": "internal/logql/label_fns.go:lowerLabelReplace#8cd9f67b",
       "message": "logql: label_replace: %w",
-      "class": "rejection",
-      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")"
+      "class": "divergence",
+      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
+      "tracking_issue": 1768
     },
     {
       "head": "logql",
@@ -516,8 +517,9 @@
       "head": "promql",
       "site": "internal/promql/label_fns.go:lowerLabelReplace#d11e3df4",
       "message": "promql: label_replace: %w",
-      "class": "rejection",
-      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")"
+      "class": "divergence",
+      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
+      "tracking_issue": 1768
     },
     {
       "head": "promql",
@@ -558,8 +560,9 @@
       "head": "promql",
       "site": "internal/promql/lower.go:expHistogramSelectorRouting#bcc398d7",
       "message": "promql: %q is an exponential histogram metric; only histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
-      "class": "rejection",
-      "trigger_query": "rate(demo_exp_hist[5m])"
+      "class": "divergence",
+      "trigger_query": "rate(demo_exp_hist[5m])",
+      "tracking_issue": 1759
     },
     {
       "head": "promql",

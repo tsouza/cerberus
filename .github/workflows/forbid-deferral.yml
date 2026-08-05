@@ -101,3 +101,16 @@ jobs:
           # range end below needs no extra term.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # test/rejection-parity/catalogue.json's class=divergence entries carry
+      # the same tracking-issue liveness contract this job already enforces
+      # for deferral markers, just read off the catalogue's own state instead
+      # of a diff — see rejection-parity-divergence-liveness.mjs's header. It
+      # runs unconditionally (not diff-scoped) because the failure mode it
+      # exists to catch is someone closing the tracking issue without ever
+      # touching this repository's tree at all.
+      - name: Assert the divergence liveness scanner matches
+        run: node --test .github/scripts/rejection-parity-divergence-liveness.test.mjs
+      - name: Reject a divergence entry with a dead tracking-issue citation
+        run: node .github/scripts/rejection-parity-divergence-liveness.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

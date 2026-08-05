@@ -54,37 +54,58 @@ type Entry struct {
 
 	// Class is the curated classification:
 	//
-	//   "rejection" — reachable from a parseable query: a deliberate
-	//                 semantic rejection whose parity against the
-	//                 reference backend the compat harnesses verify.
-	//                 Requires TriggerQuery (+ Endpoint for traceql
-	//                 metrics-pipeline sites).
-	//   "internal"  — not reachable from a parseable query through the
-	//                 HTTP query endpoints: parser-enforced shapes,
-	//                 internal invariants, error-propagation wrappers
-	//                 (%w), or paths only reachable via non-wire entry
-	//                 points. Requires Rationale.
+	//   "rejection"  — reachable from a parseable query: a deliberate
+	//                  semantic rejection whose parity against the
+	//                  reference backend the compat harnesses verify.
+	//                  Requires TriggerQuery (+ Endpoint for traceql
+	//                  metrics-pipeline sites); forbids Rationale and
+	//                  TrackingIssue.
+	//   "internal"   — not reachable from a parseable query through the
+	//                  HTTP query endpoints: parser-enforced shapes,
+	//                  internal invariants, error-propagation wrappers
+	//                  (%w), or paths only reachable via non-wire entry
+	//                  points. Requires Rationale; forbids TriggerQuery,
+	//                  Endpoint and TrackingIssue.
+	//   "divergence" — reachable AND wire-verified to differ from the
+	//                  reference backend on purpose: cerberus rejects
+	//                  the trigger query, the reference backend answers
+	//                  it, and an open GitHub issue tracks closing the
+	//                  gap. Requires TriggerQuery (+ Endpoint) exactly
+	//                  like "rejection", plus TrackingIssue; forbids
+	//                  Rationale. See doc.go for why this is a ratchet
+	//                  and not the allow-list the package forbids.
 	//
 	// The verify test fails on any other value (including ""), so a
 	// new rejection site cannot land unclassified.
 	Class string `json:"class"`
 
-	// TriggerQuery (class=rejection) is a minimal concrete query that
-	// parses with the head's reference parser and fails this site's
-	// lowering with this site's message. Pinned by
+	// TriggerQuery (class=rejection, class=divergence) is a minimal
+	// concrete query that parses with the head's reference parser and
+	// fails this site's lowering with this site's message. Pinned by
 	// TestRejectionTriggersExerciseSites.
 	TriggerQuery string `json:"trigger_query,omitempty"`
 
-	// Endpoint (class=rejection) selects the HTTP endpoint the parity
-	// driver sends TriggerQuery to. Empty means the head default
-	// (DefaultEndpoint). TraceQL metrics-pipeline rejections set
-	// "traceql_metrics" because /api/search does not accept metrics
-	// expressions.
+	// Endpoint (class=rejection, class=divergence) selects the HTTP
+	// endpoint the parity driver sends TriggerQuery to. Empty means
+	// the head default (DefaultEndpoint). TraceQL metrics-pipeline
+	// rejections set "traceql_metrics" because /api/search does not
+	// accept metrics expressions.
 	Endpoint string `json:"endpoint,omitempty"`
 
 	// Rationale (class=internal) documents why the site is not a
 	// wire-reachable semantic rejection.
 	Rationale string `json:"rationale,omitempty"`
+
+	// TrackingIssue (class=divergence) is the number of an open GitHub
+	// issue, in this repository, tracking closure of the divergence.
+	// The forbid-deferral workflow asserts on every PR/push/merge_group
+	// that the issue exists, is open, and is an issue rather than a
+	// pull request — the same liveness contract forbid-deferral.mjs
+	// already enforces for deferral markers. A closed or missing issue
+	// with the entry still present is a failure: the entry must either
+	// be deleted (cerberus was fixed) or re-filed against a fresh
+	// issue, never left pointing at a closed one.
+	TrackingIssue int `json:"tracking_issue,omitempty"`
 }
 
 // Catalogue is the checked-in JSON artifact shape
@@ -105,6 +126,14 @@ const (
 	EndpointLogQLRange     = "logql_range"
 	EndpointTraceQLSearch  = "traceql_search"
 	EndpointTraceQLMetrics = "traceql_metrics"
+)
+
+// Class identifiers — see the Entry.Class doc comment for the full
+// semantics of each.
+const (
+	ClassRejection  = "rejection"
+	ClassInternal   = "internal"
+	ClassDivergence = "divergence"
 )
 
 // DefaultEndpoint returns the per-head endpoint used when an entry
@@ -134,9 +163,10 @@ func ValidEndpoint(head, ep string) bool {
 	return false
 }
 
-// Case is one parity-corpus case derived from a rejection entry. The
-// driver sends Query to Endpoint on both backends and asserts both
-// reject (4xx).
+// Case is one parity-corpus case derived from a rejection or
+// divergence entry. The driver sends Query to Endpoint on both
+// backends; the expected verdict depends on Class — see
+// compatibility/cmd/rejection-parity's runCase.
 type Case struct {
 	// Name is the catalogue site key — stable, unique, and greppable
 	// straight back to the error-construction site.
@@ -145,30 +175,40 @@ type Case struct {
 	// Endpoint is resolved (entry override or head default).
 	Endpoint string `json:"endpoint"`
 	Query    string `json:"query"`
+	// Class is the entry's classification (ClassRejection or
+	// ClassDivergence — BuildCases never emits ClassInternal cases).
+	// The driver branches its verdict logic on this field: a
+	// rejection case asserts BOTH backends reject; a divergence case
+	// asserts cerberus rejects AND the reference backend answers.
+	Class string `json:"class"`
 }
 
 // BuildCases derives the parity corpus for one head from the
-// catalogue: exactly one case per class=rejection entry, no more, no
-// fewer. The 1:1 derivation is the "corpus-case count == catalogue
-// count" leg of the ratchet — there is no separate corpus file to
-// drift.
+// catalogue: exactly one case per class=rejection or class=divergence
+// entry, no more, no fewer. The 1:1 derivation is the "corpus-case
+// count == catalogue count" leg of the ratchet — there is no separate
+// corpus file to drift. Divergence entries are included deliberately:
+// being checked on every compat run — with an inverted expected
+// verdict — is the entire point of the class (see doc.go); silently
+// dropping them from the corpus would turn "divergence" into exactly
+// the allow-list the package forbids.
 func BuildCases(cat *Catalogue, head string) ([]Case, error) {
 	var out []Case
 	for _, e := range cat.Entries {
-		if e.Head != head || e.Class != "rejection" {
+		if e.Head != head || (e.Class != ClassRejection && e.Class != ClassDivergence) {
 			continue
 		}
 		if strings.TrimSpace(e.TriggerQuery) == "" {
-			return nil, fmt.Errorf("rejection entry %s has no trigger query", e.Site.Site)
+			return nil, fmt.Errorf("%s entry %s has no trigger query", e.Class, e.Site.Site)
 		}
 		ep := e.Endpoint
 		if ep == "" {
 			ep = DefaultEndpoint(head)
 		}
 		if !ValidEndpoint(head, ep) {
-			return nil, fmt.Errorf("rejection entry %s: endpoint %q invalid for head %s", e.Site.Site, ep, head)
+			return nil, fmt.Errorf("%s entry %s: endpoint %q invalid for head %s", e.Class, e.Site.Site, ep, head)
 		}
-		out = append(out, Case{Name: e.Site.Site, Head: head, Endpoint: ep, Query: e.TriggerQuery})
+		out = append(out, Case{Name: e.Site.Site, Head: head, Endpoint: ep, Query: e.TriggerQuery, Class: e.Class})
 	}
 	return out, nil
 }
@@ -314,10 +354,10 @@ func stringLiteral(e ast.Expr) (string, bool) {
 
 // Generate scans repoRoot and merges the result with the previous
 // catalogue: sites present in prev keep their curated classification
-// (class / trigger query / endpoint / rationale); new sites land with
-// an empty class so the verify test demands curation; sites that
-// disappeared from the source are dropped. Shrink and growth are both
-// therefore deliberate, reviewable diffs.
+// (class / trigger query / endpoint / rationale / tracking issue);
+// new sites land with an empty class so the verify test demands
+// curation; sites that disappeared from the source are dropped.
+// Shrink and growth are both therefore deliberate, reviewable diffs.
 func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 	sites, err := ScanSites(repoRoot)
 	if err != nil {
@@ -337,6 +377,7 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 			e.TriggerQuery = p.TriggerQuery
 			e.Endpoint = p.Endpoint
 			e.Rationale = p.Rationale
+			e.TrackingIssue = p.TrackingIssue
 		}
 		out.Entries = append(out.Entries, e)
 	}

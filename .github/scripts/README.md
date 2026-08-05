@@ -200,6 +200,41 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   - Exit: `0` when every marker is tracked by an open issue (or none were
     found); `1` on an untracked deferral or a malformed input. ENFORCING and a
     required status check on `main`.
+- **`rejection-parity-divergence-liveness.mjs`** — `forbid-deferral.yml`, the
+  same `forbid-deferral` job, as an additional step. The liveness half of the
+  `test/rejection-parity/catalogue.json` `class: "divergence"` contract (see
+  `test/rejection-parity/doc.go`'s "Why `divergence` is not the allow-list this
+  package forbids" section): a divergence entry cites an open GitHub issue
+  tracking closure of a deliberate cerberus/reference-backend gap, and that
+  citation must stay live forever, not just at the moment it was written. The
+  Go meta-tests in `test/rejection-parity` run offline and pin only the
+  STRUCTURAL half (`TrackingIssue` is a positive integer —
+  `TestCatalogueEntriesAreClassified`); this script pins the LIVENESS half by
+  re-reading the catalogue on every run (not just a diff) and resolving each
+  cited number through the GitHub API. It runs unconditionally, because the
+  failure mode it exists to catch — someone closes the tracking issue without
+  ever touching this repository's tree — leaves no diff for a scoped gate to
+  see. Reuses `forbid-deferral.mjs`'s exported `issuesReadability` two-request
+  capability probe unchanged (same 404-means-two-things reason: GitHub answers
+  an issue the token cannot read the same way it answers one that does not
+  exist), and mirrors (does not import, since they are unexported) its private
+  `apiHeaders` / `probeStatus` / `apiJson` / `requireEnv` helpers and its
+  probe-at-most-once-per-run resolution loop.
+  `rejection-parity-divergence-liveness.test.mjs` is the `node --test` guard
+  (run as the step BEFORE the gate): it pins the pure halves — which entries
+  count as `divergence`, the structural check, and the open/closed/pull-request
+  verdict — reusing the same three real fixture numbers (`#1535` open,
+  `#1486` closed, `#1143` a closed pull request) `forbid-deferral.test.mjs`
+  already resolves, so the two gates' notion of "what a resolved citation looks
+  like" cannot drift apart silently.
+  - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `issues: read`; already
+    granted to the `forbid-deferral` job), `GITHUB_API_URL` (optional;
+    runner-provided), `CATALOGUE_PATH` (optional; default
+    `test/rejection-parity/catalogue.json`).
+  - Exit: `0` when every divergence entry cites an open issue (or there are no
+    divergence entries); `1` on a missing / closed / PR-shaped citation, a
+    malformed entry, or a capability fault. ENFORCING and a required status
+    check on `main` (as a step of the required `forbid-deferral` context).
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident
