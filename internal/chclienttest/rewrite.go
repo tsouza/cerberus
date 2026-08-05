@@ -2,7 +2,10 @@
 
 package chclienttest
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // chdbEOFSentinel is the spurious "empty row" error chdb-go's parquet
 // driver returns instead of io.EOF at end-of-iteration (see chdb-go
@@ -341,21 +344,55 @@ func isBlank(s string) bool {
 // helper tables a test seeds stay untouched.
 const metricsTablePrefix = "otel_metrics_"
 
+// histogramCountSumTables are the OTel-CH metric tables that store the
+// scalar `Count` / `Sum` companion columns on the same row as the bucket
+// payload — the two tables a `<base>_count` / `<base>_sum` selector
+// lowers against. The gauge and sum tables carry no such columns in
+// production, so the backfill must NOT invent them there: a seed that
+// silently grew a `Count` column would mask a real bug where a query
+// projects a companion column off a table that cannot have one.
+var histogramCountSumTables = []string{
+	"otel_metrics_histogram",
+	"otel_metrics_exponential_histogram",
+}
+
 // backfilledColumn pairs a column name with the definition the backfill
 // injects for it. Every DEFAULT keeps positional INSERTs' value count
 // intact — the backfilled INSERTs carry an explicit column list omitting
-// these columns.
+// these columns. A nil `tables` applies the column to every
+// `otel_metrics_*` table; a non-nil one restricts it to those tables, so
+// the injected shape stays faithful to the production DDL per table kind.
 type backfilledColumn struct {
-	name string
-	ddl  string
+	name   string
+	ddl    string
+	tables []string
+}
+
+// appliesTo reports whether this column belongs in `table` (already
+// lower-cased by the caller).
+func (c backfilledColumn) appliesTo(table string) bool {
+	if c.tables == nil {
+		return true
+	}
+	return slices.Contains(c.tables, table)
 }
 
 // backfilledColumns is the ordered registry of production OTel-CH metric
 // columns the handler tests' simplified seed DDL may omit. Keep in
 // lock-step with test/spec/roundtrip_prep.go::backfilledColumns.
+//
+// `Count` / `Sum` are here because the classic- and exp-histogram
+// companion lowering projects `toFloat64(Count)` / `toFloat64(Sum)`
+// against those tables whenever a selector can name a `_count` / `_sum`
+// series — including the regex `__name__` fan-out, which reaches BOTH
+// histogram tables for any selector at all. A simplified seed that
+// declares neither column therefore fails at query time with
+// UNKNOWN_IDENTIFIER even though it seeds no histogram rows.
 var backfilledColumns = []backfilledColumn{
 	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
 	{name: "ServiceName", ddl: "ServiceName LowCardinality(String) DEFAULT ''"},
+	{name: "Count", ddl: "Count UInt64 DEFAULT 0", tables: histogramCountSumTables},
+	{name: "Sum", ddl: "Sum Float64 DEFAULT 0", tables: histogramCountSumTables},
 }
 
 // backfillMetricsColumns mirrors the production OTel-CH invariant — every
@@ -447,7 +484,7 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	}
 	missing := make([]string, 0, len(backfilledColumns))
 	for _, c := range backfilledColumns {
-		if !declared[c.name] {
+		if !declared[c.name] && c.appliesTo(name) {
 			missing = append(missing, c.ddl)
 		}
 	}

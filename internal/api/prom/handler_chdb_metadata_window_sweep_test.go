@@ -58,7 +58,7 @@ func metaWindowSeed() (string, map[string]time.Time) {
 	jobTimes := map[string]time.Time{"t0": t0, "t1": t1, "t2": t2, "t3": t3}
 
 	lit := func(t time.Time) string { return t.Format("2006-01-02 15:04:05.000000000") }
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('m', map('job', 't0'), toDateTime64('%s', 9), 1.0),
     ('m', map('job', 't1'), toDateTime64('%s', 9), 1.0),
@@ -325,9 +325,9 @@ func TestMetadataWindowSweep_HistogramCompanion_ChDB(t *testing.T) {
 	}
 	lit := func(t time.Time) string { return t.Format("2006-01-02 15:04:05.000000000") }
 	// `mh` lives in otel_metrics_histogram at all four sample times, one
-	// per job. All three tables exist so the companion union (histogram +
-	// literal-name value arms) resolves; the gauge/sum tables stay empty.
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	// per job. Every metric table exists so the companion union (histogram
+	// + literal-name value arms) resolves; the others stay empty.
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds) VALUES
     ('mh', map('job', 't0'), toDateTime64('%s', 9), 1, 1.0, [1, 0], [0.5]),
     ('mh', map('job', 't1'), toDateTime64('%s', 9), 1, 1.0, [1, 0], [0.5]),

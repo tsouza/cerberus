@@ -69,8 +69,9 @@ const metaShapedSumDDL = `CREATE TABLE otel_metrics_sum (
     IsMonotonic Bool DEFAULT false
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
-// metaShapedHistogramDDL completes the trio. The metadata-handler SQL
-// reads the same three columns regardless of table kind; the histogram
+// metaShapedHistogramDDL is the classic-histogram table. The
+// metadata-handler SQL reads the same three columns regardless of table
+// kind; the histogram
 // kind only matters when query / range-query SQL targets the table.
 //
 // Includes `Count UInt64` + `Sum Float64` because the bare-histogram
@@ -98,6 +99,54 @@ const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
+// metaShapedExpHistogramDDL is the fourth table. It carries `Count` /
+// `Sum` for the same reason metaShapedHistogramDDL does, one table over:
+// the regex `__name__` fan-out (lowerRegexHistogramSelector in
+// internal/promql/regex_histogram_lower.go) appends exp-histogram
+// companion arms that project `toFloat64(Count)` / `toFloat64(Sum)`
+// against THIS table for every regex selector, regardless of whether any
+// exp-histogram row exists. Without the table the read fails with
+// UNKNOWN_IDENTIFIER on `Count`.
+//
+// It is part of [metaShapedMetricsDDL] rather than an opt-in because
+// "which tables does this seed need?" is not a question a test author can
+// answer from the selector alone — the fan-out reaches tables the query
+// never names. Seeding all four removes the question.
+//
+// Columns mirror catalogExpHistogramDDL, plus the metaShaped* house
+// additions (MetricDescription / MetricUnit for the metadata handler,
+// ResourceAttributes / ServiceName for the metadata-catalog projection).
+const metaShapedExpHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    MetricDescription String,
+    MetricUnit String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName String,
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
+
+// metaShapedMetricsDDL creates all four metric tables a metadata-surface
+// seed can be read against. Metadata selectors fan out across tables the
+// query never names — the bare-histogram companion expansion
+// (expandBareHistogramMatcher) and the regex `__name__` fan-out both
+// reach the histogram tables for selectors that mention neither — so a
+// seed that creates only the tables it INSERTs into reads whatever a
+// previously-run test left in chdb-go's process-wide catalog, and passes
+// or fails on test order. Concatenating the full set makes each seed
+// self-contained; the tables a test seeds no rows into stay empty and
+// contribute nothing to any assertion.
+const metaShapedMetricsDDL = metaShapedGaugeDDL + metaShapedSumDDL +
+	metaShapedHistogramDDL + metaShapedExpHistogramDDL
+
 // TestLabelValues_MatchSelector_ChDB pins the
 // `fetchLabelValuesMatched` → `labelValuesForMatcher` → chsql roundtrip
 // against a real chDB session. Seeds two `up` rows with distinct
@@ -106,13 +155,13 @@ const metaShapedHistogramDDL = `CREATE TABLE otel_metrics_histogram (
 func TestLabelValues_MatchSelector_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	// All three metric tables are created because fetchLabelValuesMatched
-	// fans a bare classic-histogram base name out across the histogram
-	// table via expandBareHistogramMatcher; the companion variants
-	// (`up_bucket` / `up_count` / `up_sum`) lower to the histogram table
-	// and chDB errors on missing-table reads. The histogram + sum tables
-	// stay empty — only gauge carries rows.
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	// Every metric table is created because fetchLabelValuesMatched fans a
+	// bare classic-histogram base name out across the histogram table via
+	// expandBareHistogramMatcher; the companion variants (`up_bucket` /
+	// `up_count` / `up_sum`) lower to the histogram table and chDB errors
+	// on missing-table reads. Only gauge carries rows — see
+	// metaShapedMetricsDDL for why the rest are seeded anyway.
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', 'scrape ok', '', map('job', 'api', 'instance', 'h1:8080'), toDateTime64('%s', 9), 1.0),
     ('up', 'scrape ok', '', map('job', 'db',  'instance', 'h1:8080'), toDateTime64('%s', 9), 0.0),
@@ -173,7 +222,7 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Regex_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0),
     ('up', '', '', map('job', 'db'),  toDateTime64('%s', 9), 1.0);`,
@@ -215,11 +264,11 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Multiple_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	// Histogram + sum tables are created (empty) so the bare-name
+	// The companion tables are created (empty) so the bare-name
 	// classic-histogram companion fan-out
 	// (expandBareHistogramMatcher) finds the histogram table when it
 	// probes `up_bucket` / `up_count` / `up_sum`.
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up',   '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0),
     ('up',   '', '', map('job', 'db'),  toDateTime64('%s', 9), 1.0),
@@ -261,10 +310,10 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_Empty_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	// Histogram + sum tables are created (empty) so the bare-name
+	// The companion tables are created (empty) so the bare-name
 	// fan-out for `does_not_exist` finds the histogram table when it
 	// probes `does_not_exist_bucket` / `_count` / `_sum`.
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0);`, ts)
 
@@ -291,7 +340,7 @@ INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attri
 func TestLabelValues_MatchSelector_MetricName_ChDB(t *testing.T) {
 	seedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up',                  '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0),
     ('http_requests_total', '', '', map('job', 'api'), toDateTime64('%s', 9), 1.0),
@@ -340,7 +389,7 @@ func TestMetadata_NonMonotonicSumIsGauge_ChDB(t *testing.T) {
 	// still lists the metric — beyond-horizon data is TTL-gone in prod too.
 	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value, IsMonotonic) VALUES
     ('cerberus_queries_total',  'Total engine queries.',            '{query}', map('cerberus.ql', 'promql'), toDateTime64('%s', 9), 42.0, true),
     ('cerberus_query_inflight', 'Currently-executing engine queries.', '{query}', map('cerberus.ql', 'promql'), toDateTime64('%s', 9), 3.0,  false);`,
@@ -412,7 +461,7 @@ func TestMetadata_TruncateAtLimit_ChDB(t *testing.T) {
 	// Windowless /api/v1/metadata — seed within the default-lookback horizon.
 	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('alpha',   'a desc', 'a_unit', map(), toDateTime64('%s', 9), 1.0),
     ('beta',    'b desc', 'b_unit', map(), toDateTime64('%s', 9), 1.0),
@@ -470,7 +519,7 @@ func TestMetadata_LimitAboveCount_ChDB(t *testing.T) {
 	// Windowless /api/v1/metadata — seed within the default-lookback horizon.
 	seedTime := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	ts := seedTime.Format("2006-01-02 15:04:05.000")
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('alpha', 'a', '', map(), toDateTime64('%s', 9), 1.0),
     ('beta',  'b', '', map(), toDateTime64('%s', 9), 1.0);`, ts, ts)
@@ -547,7 +596,7 @@ func TestLabelValues_DottedSource_ChDB(t *testing.T) {
 	// metricTables(), so the values still surface for Pin 1 — and the
 	// gauge / histogram tables are still created so each UNION arm
 	// targets a real table (chDB errors on missing-table reads).
-	seed := metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	seed := metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('cerberus_queries_total', '', '', map('cerberus.ql', 'promql',  'route', '/api/v1/query'),  toDateTime64('%s', 9), 1.0),
     ('cerberus_queries_total', '', '', map('cerberus.ql', 'logql',   'route', '/loki/api/query'), toDateTime64('%s', 9), 1.0),

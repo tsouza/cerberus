@@ -51,7 +51,7 @@ func projectionParitySeed() (seed string, want, excluded map[string]struct{}) {
 	// defaultMetadataLookback is 14d (internal/api/prom/metadata.go); seed one
 	// name just inside it (13d) and one well outside (20d) to pin the boundary.
 	const lookback = 14 * 24 * time.Hour
-	seed = metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(
+	seed = metaShapedMetricsDDL + fmt.Sprintf(
 		`
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('g_recent',      map('job', 'fresh'), toDateTime64('%s', 9), 1.0),
@@ -107,7 +107,7 @@ func labelValuesParitySeed() (seed string, want, excluded map[string]struct{}) {
 		return now.Add(-d).Format("2006-01-02 15:04:05.000000000")
 	}
 	const lookback = 14 * 24 * time.Hour
-	seed = metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(
+	seed = metaShapedMetricsDDL + fmt.Sprintf(
 		`
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('g_a', map('team', 'fresh'),   toDateTime64('%s', 9), 1.0),

@@ -111,9 +111,23 @@ var chdbLogsAnchor = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // the past so that BOTH anchoring styles cover them: the explicit
 // `time=${END_UNIX}` instant query (whole-second truncation would
 // otherwise place a now-anchored row just AFTER the requested instant)
-// and the request-time-anchored matcher paths. All three metric tables
-// are created — the metadata handler and the bare-histogram matcher
-// fan-out read every table regardless of which carry rows.
+// and the request-time-anchored matcher paths. All four metric tables
+// are created — the metadata handler, the bare-histogram matcher
+// fan-out, and the regex `__name__` companion fan-out
+// (lowerRegexHistogramSelector in internal/promql/regex_histogram_lower.go)
+// read every table regardless of which carry rows. The exp-histogram
+// table in particular is scanned by EVERY regex-name selector, since a
+// regex carries no literal name to route on, which is why it exists here
+// with no rows: the drilldown-* entries that reach it assert on the
+// gauge- and sum-stored metrics, and seeding an exp-histogram row would
+// add `<base>_count` / `<base>_sum` series to those recorded responses
+// without strengthening any predicate.
+//
+// Only the kind-specific columns are declared. Count / Sum (and
+// ResourceAttributes / ServiceName, as on the gauge table above) come
+// from chclienttest's backfilledColumns, which injects them with
+// DEFAULTs for exactly this case — a simplified seed whose read path
+// projects more columns than the fixture cares to spell out.
 //
 // otel_metrics_sum also carries a dedicated ServiceName column (one
 // value per cerberus_query_inflight row) so a label-values catalog
@@ -166,6 +180,19 @@ CREATE TABLE otel_metrics_histogram (
     Sum Float64,
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    MetricDescription String,
+    MetricUnit String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('` + ts + `', 9), 1.0);

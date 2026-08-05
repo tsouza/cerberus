@@ -25,6 +25,7 @@
 package spec
 
 import (
+	"slices"
 	"strings"
 )
 
@@ -200,26 +201,61 @@ func isIntLiteral(s string) bool {
 // helper tables stay untouched.
 const metricsTablePrefix = "otel_metrics_"
 
+// histogramCountSumTables are the OTel-CH metric tables that store the
+// scalar `Count` / `Sum` companion columns on the same row as the bucket
+// payload — the two tables a `<base>_count` / `<base>_sum` selector
+// lowers against. The gauge and sum tables carry no such columns in
+// production, so the backfill must NOT invent them there: a seed that
+// silently grew a `Count` column would mask a real bug where a query
+// projects a companion column off a table that cannot have one.
+var histogramCountSumTables = []string{
+	"otel_metrics_histogram",
+	"otel_metrics_exponential_histogram",
+}
+
 // backfilledColumn pairs a column name with the definition the backfill
 // injects for it. Every DEFAULT lets the existing positional INSERTs keep
 // their value count: the backfilled INSERTs carry an explicit column list
 // that omits these columns, so the defaults are filled — matching
 // production, where every metric table carries a (possibly empty)
-// ResourceAttributes map and a (possibly empty) ServiceName.
+// ResourceAttributes map and a (possibly empty) ServiceName. A nil
+// `tables` applies the column to every metric table; a non-nil one
+// restricts it to those tables, so the injected shape stays faithful to
+// the production DDL per table kind.
 type backfilledColumn struct {
-	name string
-	ddl  string
+	name   string
+	ddl    string
+	tables []string
+}
+
+// appliesTo reports whether this column belongs in `table` (already
+// lower-cased by the caller).
+func (c backfilledColumn) appliesTo(table string) bool {
+	if c.tables == nil {
+		return true
+	}
+	return slices.Contains(c.tables, table)
 }
 
 // backfilledColumns is the ordered registry of production OTel-CH metric
-// columns the spec fixtures' simplified seed DDL may omit. Both are read
-// unconditionally by the read path — ResourceAttributes by the resource
-// merge, ServiceName by the dedicated-column overlay — so a seed table
-// missing either fails with UNKNOWN_IDENTIFIER. Extend this slice when a
+// columns the spec fixtures' simplified seed DDL may omit. The first two
+// are read unconditionally by the read path — ResourceAttributes by the
+// resource merge, ServiceName by the dedicated-column overlay — so a seed
+// table missing either fails with UNKNOWN_IDENTIFIER. `Count` / `Sum` are
+// read the same way by the classic- and exp-histogram companion lowering,
+// which projects `toFloat64(Count)` / `toFloat64(Sum)` against those two
+// tables whenever a selector can name a `_count` / `_sum` series —
+// including the regex `__name__` fan-out, which reaches BOTH histogram
+// tables for any selector at all, so a seed that declares neither column
+// fails even when it seeds no histogram rows. Extend this slice when a
 // new column joins the unconditional projection.
+//
+// Keep in lock-step with internal/chclienttest/rewrite.go::backfilledColumns.
 var backfilledColumns = []backfilledColumn{
 	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
 	{name: "ServiceName", ddl: "ServiceName LowCardinality(String) DEFAULT ''"},
+	{name: "Count", ddl: "Count UInt64 DEFAULT 0", tables: histogramCountSumTables},
+	{name: "Sum", ddl: "Sum Float64 DEFAULT 0", tables: histogramCountSumTables},
 }
 
 // backfillMetricsColumns mirrors the production OTel-CH invariant — every
@@ -550,7 +586,7 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	}
 	missing := make([]string, 0, len(backfilledColumns))
 	for _, c := range backfilledColumns {
-		if !declared[c.name] {
+		if !declared[c.name] && c.appliesTo(name) {
 			missing = append(missing, c.ddl)
 		}
 	}

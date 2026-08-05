@@ -34,7 +34,7 @@ import (
 func regexNameSeed(t *testing.T) string {
 	t.Helper()
 	ts := time.Now().UTC().Format("2006-01-02 15:04:05.000")
-	return metaShapedGaugeDDL + metaShapedSumDDL + fmt.Sprintf(`
+	return metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('up', '', '', map('job', 'api'), toDateTime64('%[1]s', 9), 1.0);
 INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
@@ -50,7 +50,7 @@ INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attribu
 func dottedNameSeed(t *testing.T) string {
 	t.Helper()
 	ts := time.Now().UTC().Format("2006-01-02 15:04:05.000")
-	return metaShapedGaugeDDL + metaShapedSumDDL + fmt.Sprintf(`
+	return metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_gauge (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('container.cpu.usage',    '', '', map('core', '0'), toDateTime64('%[1]s', 9), 0.42),
     ('container.memory.usage', '', '', map('core', '0'), toDateTime64('%[1]s', 9), 1024.0);`,

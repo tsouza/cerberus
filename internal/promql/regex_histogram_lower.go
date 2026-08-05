@@ -61,18 +61,29 @@ func regexHistogramNamePredicate(names []*labels.Matcher, s schema.Metrics) chpl
 	return buildPredicate(names, s)
 }
 
-func regexHistogramScan(s schema.Metrics, matchers []*labels.Matcher) chplan.Node {
-	scan := &chplan.Scan{Table: s.HistogramTable}
+func regexHistogramScanTable(table string, s schema.Metrics, matchers []*labels.Matcher) chplan.Node {
+	scan := &chplan.Scan{Table: table}
 	if pred := buildPredicate(matchers, s); pred != nil {
 		return &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	return scan
 }
 
-func buildRegexHistogramCompanionArm(
-	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
+func regexHistogramScan(s schema.Metrics, matchers []*labels.Matcher) chplan.Node {
+	return regexHistogramScanTable(s.HistogramTable, s, matchers)
+}
+
+// buildRegexHistogramCompanionArmTable builds one companion arm (a `Count`
+// or `Sum` column projected as the synthesized `<base><suffix>` wire name)
+// scanning `table`. Shared by the classic-histogram companion arms
+// (table = s.HistogramTable) and the exp-histogram companion arms
+// (table = s.ExpHistogramTable, see buildRegexExpHistogramCompanionArm) —
+// both physical layouts store Count/Sum as columns on a single row under
+// the same synthetic-name convention, so only the source table differs.
+func buildRegexHistogramCompanionArmTable(
+	table string, s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
 ) chplan.Node {
-	input := regexHistogramScan(s, scanMatchers)
+	input := regexHistogramScanTable(table, s, scanMatchers)
 	project := &chplan.Project{
 		Input: input,
 		Projections: append([]chplan.Projection{
@@ -93,6 +104,47 @@ func buildRegexHistogramCompanionArm(
 		return &chplan.Filter{Input: project, Predicate: pred}
 	}
 	return project
+}
+
+// buildRegexHistogramCompanionArm builds a classic-histogram companion arm
+// (table = s.HistogramTable) — the thin wrapper the pre-#1549r1 call sites
+// use; see buildRegexHistogramCompanionArmTable for the shared body.
+func buildRegexHistogramCompanionArm(
+	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
+) chplan.Node {
+	return buildRegexHistogramCompanionArmTable(s.HistogramTable, s, cat, names, scanMatchers, suffix, sourceColumn)
+}
+
+// buildRegexExpHistogramCompanionArm builds an exp-histogram companion arm
+// (table = s.ExpHistogramTable) — the residue-1 fix for #1549. Consumes the
+// SAME suffix/column policy expHistogramSelectorRouting (lower.go) applies
+// to the pinned path — `_count`/`_sum` only, via
+// s.HistogramCompanionColumn — rather than re-deriving it: both physical
+// layouts (classic and exp-histogram) store Count/Sum as columns on a
+// single row, keyed by the bare metric name, so the only thing that
+// differs between the two arms is the source table. Unlike the classic
+// path there is no bucket-fanout arm here: an exp-histogram row carries no
+// ExplicitBounds ladder (Scale/PositiveBucketCounts/NegativeBucketCounts
+// instead), so `<base>_exp_hist_bucket` is not a wire-reachable series and
+// gets no arm — matching the pinned path, which never builds one either.
+//
+// A bare exp-histogram selector (`<base>_exp_hist`, no companion suffix)
+// also gets no arm here, for the same reason the pinned path (lower.go's
+// expHistogramSelectorRouting) rejects it outside histogram_quantile() /
+// histogram_count() / histogram_sum(): that row shape has no scalar Value
+// column. Unlike the pinned path this is not a hard error — a regex
+// `__name__` matcher fans across every metric it matches, most of which
+// are ordinary Gauge/Sum/classic-histogram series the query is perfectly
+// well-formed for, so rejecting the whole selector because ONE possible
+// match is a bare exp-histogram name would be wrong; that portion of the
+// union simply contributes zero rows, the same way a regex matching a
+// bare CLASSIC-histogram name already does (that name isn't Prom-wire
+// visible either, and gets no arm in buildRegexMetricArm/
+// buildRegexHistogramCompanionArm).
+func buildRegexExpHistogramCompanionArm(
+	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
+) chplan.Node {
+	return buildRegexHistogramCompanionArmTable(s.ExpHistogramTable, s, cat, names, scanMatchers, suffix, sourceColumn)
 }
 
 func buildRegexHistogramBucketArm(
@@ -143,6 +195,20 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 		inputs = append(inputs, buildRegexHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn))
 	}
 	inputs = append(inputs, buildRegexHistogramBucketArm(s, ctx.catalog, names, scanMatchers, leMatchers))
+
+	// Exp-histogram companion arms (#1549 residue 1): same `_count`/`_sum`
+	// suffix set as the classic arms above, read from ExpHistogramTable
+	// instead — see buildRegexExpHistogramCompanionArm. No bucket arm: an
+	// exp-histogram row has no ExplicitBounds ladder to fan.
+	if s.ExpHistogramTable != "" {
+		for _, suffix := range s.HistogramCompanionSuffixes() {
+			_, sourceColumn, ok := s.HistogramCompanionColumn("base" + suffix)
+			if !ok {
+				continue
+			}
+			inputs = append(inputs, buildRegexExpHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn))
+		}
+	}
 
 	selectorInput := chplan.Node(&chplan.UnionAll{Inputs: inputs})
 	anchor, err := selectorAnchor(v, ctx)

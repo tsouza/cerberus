@@ -28,17 +28,24 @@ import (
 )
 
 // syntheticNameSeed seeds one classic-histogram family (stored under its bare
-// base name, with the bucket arrays a `_bucket` selector fans out) plus one
-// plain sum-table counter. The counter is the control: it proves the regex
-// machinery itself works on this seed, so an empty histogram result cannot be
-// dismissed as "the regex matched nothing".
+// base name, with the bucket arrays a `_bucket` selector fans out), one
+// EXPONENTIAL-histogram family, and one plain sum-table counter. The counter
+// is the control: it proves the regex machinery itself works on this seed, so
+// an empty histogram result cannot be dismissed as "the regex matched
+// nothing".
+//
+// The exp-histogram row carries the same `route` attribute as the classic one
+// so the negated-regex shape (which selects on `route` rather than on a name
+// substring) sweeps both physical layouts in one assertion.
 func syntheticNameSeed(t *testing.T, ts string) string {
 	t.Helper()
-	return metaShapedGaugeDDL + metaShapedSumDDL + metaShapedHistogramDDL + fmt.Sprintf(`
+	return metaShapedMetricsDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_sum (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Value) VALUES
     ('synth_requests_total', '', '', map('route', '/a'), toDateTime64('%[1]s', 9), 7.0);
 INSERT INTO otel_metrics_histogram (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds) VALUES
-    ('synth_latency_seconds', '', '', map('route', '/a'), toDateTime64('%[1]s', 9), 3, 1.5, [1, 1, 1], [0.1, 0.5]);`,
+    ('synth_latency_seconds', '', '', map('route', '/a'), toDateTime64('%[1]s', 9), 3, 1.5, [1, 1, 1], [0.1, 0.5]);
+INSERT INTO otel_metrics_exponential_histogram (MetricName, MetricDescription, MetricUnit, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES
+    ('synth_expo_seconds', '', '', map('route', '/a'), toDateTime64('%[1]s', 9), 5, 2.5, 0, 0, 0, [2, 3], 0, []);`,
 		ts)
 }
 
@@ -217,9 +224,56 @@ func TestLabels_RegexNameMatcher_Histogram_ChDB(t *testing.T) {
 	}
 }
 
+// TestSeries_RegexNameMatcher_ExpHistogramSynthetic_ChDB is the
+// exp-histogram twin of the core pin above: an exponential histogram is
+// likewise stored as ONE row under a bare base name, so a regex `__name__`
+// matcher must resolve it to its synthetic companion series.
+//
+// The expected set is `_count` / `_sum` and nothing else. There is no
+// `_bucket`: an exp-histogram row carries no ExplicitBounds ladder to fan out
+// (Scale / PositiveBucketCounts instead), so no per-boundary series exists.
+// The BARE name must not appear either — it is not Prom-wire visible, and the
+// unknown-name scan (TablesForUnknownName) covers only the gauge and sum
+// tables, so nothing should surface it.
+func TestSeries_RegexNameMatcher_ExpHistogramSynthetic_ChDB(t *testing.T) {
+	ts, start, end := syntheticNameWindow()
+	srv, _ := newChDBServer(t, syntheticNameSeed(t, ts))
+
+	got := seriesNames(t, metadataGet(t, srv.URL, "/api/v1/series",
+		`{__name__=~".*synth_expo_seconds.*"}`, start, end))
+	want := []string{
+		"synth_expo_seconds_count",
+		"synth_expo_seconds_sum",
+	}
+	if !equalStringSlice(got, want) {
+		t.Fatalf("regex __name__ over an exp-histogram family: got %v, want %v", got, want)
+	}
+}
+
+// TestLabelValues_MetricName_RegexNameMatcher_ExpHistogram_ChDB pins the same
+// resolution on the /api/v1/label/__name__/values surface — the list Grafana's
+// metric picker renders. A name the series surface serves must be advertised
+// here, and the bare base name must not be.
+func TestLabelValues_MetricName_RegexNameMatcher_ExpHistogram_ChDB(t *testing.T) {
+	ts, start, end := syntheticNameWindow()
+	srv, _ := newChDBServer(t, syntheticNameSeed(t, ts))
+
+	got := decodeStringData(t, metadataGet(t, srv.URL, "/api/v1/label/__name__/values",
+		`{__name__=~".*synth_expo.*"}`, start, end))
+	want := []string{
+		"synth_expo_seconds_count",
+		"synth_expo_seconds_sum",
+	}
+	if !equalStringSlice(got, want) {
+		t.Fatalf("regex __name__ values over an exp-histogram: got %v, want %v", got, want)
+	}
+}
+
 // TestSeries_NegatedRegexNameMatcher_ChDB pins the negated shape: `!~` is the
 // same non-equality class, so the histogram family must surface whenever the
-// pattern does not exclude it.
+// pattern does not exclude it. The selector excludes only the counter, so
+// BOTH histogram layouts answer — the classic family with its bucket fan-out,
+// the exponential one with its two companions.
 func TestSeries_NegatedRegexNameMatcher_ChDB(t *testing.T) {
 	ts, start, end := syntheticNameWindow()
 	srv, _ := newChDBServer(t, syntheticNameSeed(t, ts))
@@ -227,6 +281,8 @@ func TestSeries_NegatedRegexNameMatcher_ChDB(t *testing.T) {
 	got := seriesNames(t, metadataGet(t, srv.URL, "/api/v1/series",
 		`{__name__!~".*requests.*",route="/a"}`, start, end))
 	want := []string{
+		"synth_expo_seconds_count",
+		"synth_expo_seconds_sum",
 		"synth_latency_seconds_bucket",
 		"synth_latency_seconds_bucket",
 		"synth_latency_seconds_bucket",
