@@ -98,28 +98,36 @@ func stripBucketSuffix(matchers []*labels.Matcher) []*labels.Matcher {
 // Matcher order is preserved so an all-pinned, `le`-free selector folds
 // to exactly the predicate `buildPredicate(stripBucketSuffix(...))`
 // produced before the unpinned arm and the `le` split existed.
+//
+// Classification is delegated to wireArms (#1756): WireArmWireBound picks
+// out the `le` split, WireArmWireNameUnpinned picks out the synthetic-name
+// arm, and WireArmWireNamePinned's ResolveName call reproduces the strict
+// bare-name rejection below — DecisionUnsatisfiable short-circuits exactly
+// like the pre-migration inline check did.
 func histogramQuantileMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) (chplan.Expr, []*labels.Matcher) {
 	bucketWireName := func() chplan.Expr { return syntheticMetricNameExpr(s, bucketSuffix) }
 	stripped := stripBucketSuffix(matchers)
+	w := wireArms(matchers)
 	var out chplan.Expr
 	var leMatchers []*labels.Matcher
 	for i, m := range matchers {
-		if m.Name == "le" {
+		switch w.Arms[i] {
+		case WireArmWireBound:
 			leMatchers = append(leMatchers, m)
-			continue
-		}
-		if m.Name == model.MetricNameLabel && m.Type != labels.MatchEqual {
+		case WireArmWireNameUnpinned:
 			out = andExpr(out, metricNamePredicateOn(m, s, bucketWireName))
-			continue
+		case WireArmWireNamePinned:
+			if decision, _ := w.ResolveName(i, bucketSuffix); decision == DecisionUnsatisfiable {
+				// Strict bare-name rejection (#1483, MAINTAINER DECISION 1):
+				// short-circuit the whole predicate to unsatisfiable rather
+				// than let a bare-name pin resolve against the OTel-CH
+				// storage row.
+				return &chplan.LitBool{V: false}, nil
+			}
+			out = andExpr(out, matcherToExpr(stripped[i], s))
+		default: // WireArmStorage
+			out = andExpr(out, matcherToExpr(stripped[i], s))
 		}
-		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && !strings.HasSuffix(m.Value, bucketSuffix) {
-			// Strict bare-name rejection (#1483, MAINTAINER DECISION 1):
-			// short-circuit the whole predicate to unsatisfiable rather
-			// than let a bare-name pin resolve against the OTel-CH
-			// storage row.
-			return &chplan.LitBool{V: false}, nil
-		}
-		out = andExpr(out, matcherToExpr(stripped[i], s))
 	}
 	return out, leMatchers
 }

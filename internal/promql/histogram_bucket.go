@@ -3,7 +3,6 @@ package promql
 import (
 	"strings"
 
-	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -55,14 +54,28 @@ func isClassicBucketSelector(metricName string, s schema.Metrics) (bare string, 
 //
 // Copy-on-write semantics mirror stripBucketSuffix / rewriteMetricName:
 // the input slice + entries are never mutated.
+//
+// Classification is delegated to wireArms (#1756): WireArmWireBound picks
+// out the `le` split, and WireArmWireNamePinned is the one arm this
+// caller ever expects a `__name__` matcher to land in — the caller
+// (resolveSelectorRouting) only reaches splitBucketMatchers after
+// isClassicBucketSelector has already confirmed the selector's name is a
+// pinned, `_bucket`-suffixed literal. An unpinned `__name__` matcher
+// classifies WireArmWireNameUnpinned and — matching the pre-migration
+// behaviour, which had no branch for it either — passes through into
+// scanMatchers unchanged alongside WireArmStorage.
 func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatchers, leMatchers []*labels.Matcher) {
 	scanMatchers = make([]*labels.Matcher, 0, len(matchers))
-	for _, m := range matchers {
-		if m.Name == "le" {
+	w := wireArms(matchers)
+	for i, m := range matchers {
+		switch w.Arms[i] {
+		case WireArmWireBound:
 			leMatchers = append(leMatchers, m)
-			continue
-		}
-		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && m.Value != bareName {
+		case WireArmWireNamePinned:
+			if m.Value == bareName {
+				scanMatchers = append(scanMatchers, m)
+				continue
+			}
 			copied, err := labels.NewMatcher(m.Type, m.Name, bareName)
 			if err != nil {
 				// labels.NewMatcher only fails on regex compile for the
@@ -73,9 +86,9 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 				continue
 			}
 			scanMatchers = append(scanMatchers, copied)
-			continue
+		default: // WireArmStorage, WireArmWireNameUnpinned
+			scanMatchers = append(scanMatchers, m)
 		}
-		scanMatchers = append(scanMatchers, m)
 	}
 	return scanMatchers, leMatchers
 }
