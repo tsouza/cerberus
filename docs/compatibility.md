@@ -358,9 +358,9 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 745 / 745    |
-| loki       | 124 / 124    |
-| tempo      | 67 / 67      |
+| prometheus | 746 / 746    |
+| loki       | 127 / 127    |
+| tempo      | 68 / 68      |
 | tempo-grpc | 64 / 64      |
 
 The baseline records **full parity** for every head — the ratchet asserts
