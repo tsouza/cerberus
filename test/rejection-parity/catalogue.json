@@ -564,7 +564,7 @@
       "message": "promql: %q is an exponential histogram metric; only histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
       "trigger_query": "rate(demo_exp_hist[5m])",
-      "tracking_issue": 1759,
+      "tracking_issue": 1777,
       "since": "2026-08-05"
     },
     {
