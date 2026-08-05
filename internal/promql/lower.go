@@ -336,6 +336,164 @@ func lowerHistogramSelectorInput(
 	return scan, pred, false
 }
 
+// expHistogramSelectorRouting resolves how lowerVectorSelector should
+// handle a selector that names (or companion-suffixes) an exp-histogram
+// metric — split out of lowerVectorSelector's if/else chain to keep that
+// function's cyclomatic complexity in check (see #1704).
+//
+// ok is false when metricName has nothing to do with an exp-histogram
+// metric at all, and the caller's existing classic-histogram / bucket
+// handling applies unchanged.
+//
+// When ok is true and err is nil, the `_count` / `_sum` companion suffix
+// is in play: the OTel-CH exp-histogram exporter writes Count/Sum as
+// columns on a single row keyed by the bare `<base>_exp_hist` name, the
+// same companion convention the classic-histogram path serves — just
+// reading from ExpHistogramTable instead of HistogramTable. Unlike the
+// classic case there is no hostmetrics/standalone-gauge name collision to
+// fan across: `_exp_hist` is cerberus's own synthetic marker suffix, not
+// an upstream naming convention any other emitter could produce, so this
+// is always a single-arm projection (the caller never routes it through
+// the multi-table companion union).
+//
+// When ok is true and err is non-nil, every other shape over a pinned
+// exp-histogram selector — a bare selector, or one wrapped in
+// rate()/resets()/changes()/sum()/etc. — has no scalar Value column to
+// read: the exp-histogram row shape (Sum/Count/Scale/PositiveCounts/
+// NegativeCounts) is disjoint from the Sample contract these functions
+// reduce over. histogram_quantile()/histogram_count()/histogram_sum()
+// detect this shape themselves before ever reaching lowerVectorSelector
+// (see their own s.IsExpHistogramMetric checks), and the companion arm
+// above is the one column-backed exception — so any selector that
+// reaches here is a shape none of those paths recognise. err rejects it
+// explicitly rather than silently matching zero rows against the
+// Gauge/Sum tables.
+//
+// Metadata enumeration (/series, /labels — ctx.metadataFullRange) is
+// exempted: it doesn't consume a Value column, only MetricName +
+// Attributes, so a hard error there would break legitimate series/label
+// discovery for a real metric. It still resolves against Gauge/Sum like
+// before this function existed — the exp-histogram table can't join that
+// merge() fan-out (disjoint row shape, see TablesForUnknownName) — a
+// separate, already-documented gap this function doesn't newly introduce.
+func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerCtx, matchers []*labels.Matcher) (tables []string, newMatchers []*labels.Matcher, companionValueColumn, companionBare string, ok bool, err error) {
+	if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion && s.IsExpHistogramMetric(bare) && s.ExpHistogramTable != "" {
+		return []string{s.ExpHistogramTable}, rewriteMetricName(matchers, bare), col, bare, true, nil
+	}
+	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
+		return nil, nil, "", "", true, fmt.Errorf(
+			"promql: %q is an exponential histogram metric; only histogram_quantile(), "+
+				"histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
+			metricName, metricName+"_count", metricName+"_sum",
+		)
+	}
+	return nil, nil, "", "", false, nil
+}
+
+// selectorRouting is resolveSelectorRouting's result: the physical
+// table(s) + matcher rewrite lowerVectorSelector's LWR/range-vector
+// pipeline should scan, plus whichever companion/bucket bookkeeping
+// downstream steps (lowerHistogramSelectorInput, needCompanionUnion)
+// need to pick the right Project/UnionAll shape.
+type selectorRouting struct {
+	tables                []string
+	matchers              []*labels.Matcher
+	companionValueColumn  string
+	bucketSuffixed        string
+	bucketLeMatchers      []*labels.Matcher
+	companionSuffixed     string
+	companionBare         string
+	expHistogramCompanion bool
+}
+
+// resolveSelectorRouting picks which physical table(s) a vector selector
+// scans and how its matchers should be rewritten, covering the
+// `_bucket` classic-histogram fan-out, the exp-histogram companion /
+// rejection routing (expHistogramSelectorRouting), and the classic
+// `_count`/`_sum` histogram-companion suffix — in that priority order.
+// Split out of lowerVectorSelector to keep that function's cyclomatic
+// complexity in check (see #1704); defaultTables is the TablesFor /
+// TablesForUnknownName result the caller already resolved, used as-is
+// when none of the three special cases match.
+func resolveSelectorRouting(metricName string, s schema.Metrics, ctx lowerCtx, defaultTables []string, matchers []*labels.Matcher) (selectorRouting, error) {
+	route := selectorRouting{tables: defaultTables, matchers: matchers}
+
+	// `<base>_bucket` takes a parallel-but-distinct path: the OTel-CH
+	// histogram row stores per-bucket counts as the `BucketCounts` array
+	// with `ExplicitBounds` carrying the bucket edges. Prom exposes the
+	// same data as N+1 separate series under `<base>_bucket{le=<bound>}`,
+	// so the bare-selector lowering fans the array into N+1 Sample-shape
+	// rows via arrayJoin. See wrapHistogramBucketFanout for the plan
+	// shape. The bucket suffix is detected via isClassicBucketSelector;
+	// the matcher-strip + `le` matcher split happens in splitBucketMatchers.
+	if bareBucket, ok := isClassicBucketSelector(metricName, s); ok {
+		route.tables = []string{s.HistogramTable}
+		route.bucketSuffixed = metricName
+		scanMatchers, leMatchers := splitBucketMatchers(matchers, bareBucket)
+		route.matchers = scanMatchers
+		route.bucketLeMatchers = leMatchers
+		return route, nil
+	}
+
+	if expTables, expMatchers, expCol, expBare, expOK, expErr := expHistogramSelectorRouting(metricName, s, ctx, matchers); expOK {
+		if expErr != nil {
+			return selectorRouting{}, expErr
+		}
+		route.tables = expTables
+		route.matchers = expMatchers
+		route.expHistogramCompanion = true
+		route.companionValueColumn = expCol
+		route.companionSuffixed = metricName
+		route.companionBare = expBare
+		return route, nil
+	}
+
+	// Classic-histogram companion routing: `<base>_count` / `<base>_sum`
+	// are Prom-convention companion names whose data lives, in the OTel-CH
+	// layout, as `Count` / `Sum` columns on rows written under the bare
+	// `<base>` name in the histogram table. Reroute the scan + strip the
+	// suffix off the `__name__` matcher + alias the column as `Value` so
+	// the downstream Sample-row contract holds. Mirrors stripBucketSuffix
+	// (PR #637) for the `_bucket` companion, and the exemplars handler's
+	// routing in internal/api/prom/exemplars.go::exemplarsTableFor.
+	//
+	// Two physical layouts may carry the matching rows:
+	//
+	//   1. The OTel-CH histogram exporter writes Count/Sum as columns on
+	//      a single row keyed by the BARE `<base>` name in the histogram
+	//      table.
+	//   2. The OTel-hostmetrics / sqlquery emitters write the suffixed
+	//      name (`system_cpu_logical_count`, `system_processes_count`,
+	//      `system_filesystem_inodes_count`,
+	//      `system_processes_created_count`, …) as a cumulative Sum
+	//      under the suffixed name in the sum table.
+	//
+	// When Sum is configured and distinct from Histogram, the caller
+	// fans the scan across both layouts via a UnionAll of per-arm
+	// Projects (needCompanionUnion / lowerCompanionUnion), keyed off
+	// companionValueColumn / companionSuffixed / companionBare below.
+	// When the union path doesn't apply (no Sum table configured, or Sum
+	// equals Histogram by config), the caller falls back to the
+	// single-arm histogram projection — same shape as before this
+	// multi-table fan-out.
+	if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
+		route.tables = []string{s.HistogramTable}
+		route.companionValueColumn = col
+		route.companionSuffixed = metricName
+		route.companionBare = bare
+		// The single-arm fallback rewrites matchers in-place to the bare
+		// name so the legacy histogram-companion-only emit shape stays
+		// byte-stable — but ONLY when there is no distinct Sum/Gauge value
+		// table to scan under the literal suffixed name (else the union path
+		// owns the rewrite per-arm).
+		if len(literalCompanionValueTables(s)) == 0 {
+			route.matchers = rewriteMetricName(matchers, bare)
+		}
+	}
+
+	return route, nil
+}
+
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	if metricName == "" && hasUnpinnedMetricNameMatcher(v.LabelMatchers) && s.HistogramTable != "" {
@@ -369,81 +527,29 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 		tables = s.TablesFor(metricName)
 	}
 
-	// Classic-histogram companion routing: `<base>_count` / `<base>_sum`
-	// are Prom-convention companion names whose data lives, in the OTel-CH
-	// layout, as `Count` / `Sum` columns on rows written under the bare
-	// `<base>` name in the histogram table. Reroute the scan + strip the
-	// suffix off the `__name__` matcher + alias the column as `Value` so
-	// the downstream Sample-row contract holds. Mirrors stripBucketSuffix
-	// (PR #637) for the `_bucket` companion, and the exemplars handler's
-	// routing in internal/api/prom/exemplars.go::exemplarsTableFor.
-	//
-	// `<base>_bucket` takes a parallel-but-distinct path: the OTel-CH
-	// histogram row stores per-bucket counts as the `BucketCounts` array
-	// with `ExplicitBounds` carrying the bucket edges. Prom exposes the
-	// same data as N+1 separate series under `<base>_bucket{le=<bound>}`,
-	// so the bare-selector lowering fans the array into N+1 Sample-shape
-	// rows via arrayJoin. See wrapHistogramBucketFanout for the plan
-	// shape. The bucket suffix is detected via isClassicBucketSelector;
-	// the matcher-strip + `le` matcher split happens in splitBucketMatchers.
-	matchers := v.LabelMatchers
-	var companionValueColumn string
-	var bucketSuffixed string
-	var bucketLeMatchers []*labels.Matcher
-	var companionSuffixed string
-	var companionBare string
-	if bareBucket, ok := isClassicBucketSelector(metricName, s); ok {
-		tables = []string{s.HistogramTable}
-		bucketSuffixed = metricName
-		var scanMatchers []*labels.Matcher
-		scanMatchers, bucketLeMatchers = splitBucketMatchers(matchers, bareBucket)
-		matchers = scanMatchers
-	} else if bare, col, ok := s.HistogramCompanionColumn(metricName); ok && s.HistogramTable != "" {
-		// `<base>_count` / `<base>_sum` — a classic-histogram companion
-		// suffix. Two physical layouts may carry the matching rows:
-		//
-		//   1. The OTel-CH histogram exporter writes Count/Sum as
-		//      columns on a single row keyed by the BARE `<base>` name
-		//      in the histogram table.
-		//   2. The OTel-hostmetrics / sqlquery emitters write the
-		//      suffixed name (`system_cpu_logical_count`,
-		//      `system_processes_count`, `system_filesystem_inodes_count`,
-		//      `system_processes_created_count`, …) as a cumulative Sum
-		//      under the suffixed name in the sum table.
-		//
-		// When Sum is configured and distinct from Histogram, fan the
-		// scan across both layouts via a UnionAll of per-arm Projects.
-		// Each arm bakes its own MetricName filter so the union arms
-		// hold disjoint row sets by construction. The non-MetricName
-		// matchers (attribute / service equality / regex matchers) are
-		// applied inside each arm so the optimizer's PREWHERE promotion
-		// path still sees a Filter-over-Scan shape per arm.
-		//
-		// `companionValueColumn` / `companionSuffixed` / `companionBare`
-		// drive the per-arm Project-shape decision below. When the union
-		// path doesn't apply (no Sum table configured, or Sum equals
-		// Histogram by config), fall back to the single-arm histogram
-		// projection — same shape as before this multi-table fan-out.
-		tables = []string{s.HistogramTable}
-		companionValueColumn = col
-		companionSuffixed = metricName
-		companionBare = bare
-		// The single-arm fallback rewrites matchers in-place to the bare
-		// name so the legacy histogram-companion-only emit shape stays
-		// byte-stable — but ONLY when there is no distinct Sum/Gauge value
-		// table to scan under the literal suffixed name (else the union path
-		// below owns the rewrite per-arm).
-		if len(literalCompanionValueTables(s)) == 0 {
-			matchers = rewriteMetricName(matchers, bare)
-		}
+	// Resolve the `_bucket` / exp-histogram / classic-histogram-companion
+	// routing (see resolveSelectorRouting's doc comment for the full
+	// per-case rationale) and apply it to the scan tables + matchers
+	// before building the LWR / range-vector pipeline below.
+	route, err := resolveSelectorRouting(metricName, s, ctx, tables, v.LabelMatchers)
+	if err != nil {
+		return nil, err
 	}
+	tables = route.tables
+	matchers := route.matchers
+	companionValueColumn := route.companionValueColumn
+	bucketSuffixed := route.bucketSuffixed
+	bucketLeMatchers := route.bucketLeMatchers
+	companionSuffixed := route.companionSuffixed
+	companionBare := route.companionBare
+	expHistogramCompanion := route.expHistogramCompanion
 
 	// Multi-arm companion union: when both histogram + sum tables are
 	// in play for a `_count` / `_sum` selector, hand off to the
 	// dedicated builder which assembles the per-arm Projects, stitches
 	// them with chplan.UnionAll, and wraps the union with the right
 	// LWR / range-vector shape for ctx.
-	if needCompanionUnion(s, companionValueColumn, companionSuffixed, companionBare) {
+	if !expHistogramCompanion && needCompanionUnion(s, companionValueColumn, companionSuffixed, companionBare) {
 		return lowerCompanionUnion(
 			v, s, ctx, matchers,
 			companionBare, companionSuffixed, companionValueColumn,

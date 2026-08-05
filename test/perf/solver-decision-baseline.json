@@ -1490,6 +1490,16 @@
     "outer_range": "1h0m0s"
   },
   {
+    "query": "histogram_mean_latency_exp",
+    "routed": false,
+    "k": 0,
+    "reason": "below-threshold",
+    "n_anchors": 241,
+    "fanout": 4,
+    "cumulative_d": "2m0s",
+    "outer_range": "1h0m0s"
+  },
+  {
     "query": "histogram_quantile_agg_empty",
     "routed": false,
     "k": 0,
