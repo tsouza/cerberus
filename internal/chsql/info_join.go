@@ -14,18 +14,6 @@ import (
 // sample's identity and only grows its data labels).
 const infoMetricNameLabel = "__name__"
 
-// InfoConflictingLabelMessage is raised when two info metrics matched by
-// one base sample contribute the same data label with DIFFERENT values.
-// The reference engine fails the query there rather than picking a winner
-// (promql/info.go::combineWithInfoVector's `conflicting label: %s`).
-//
-// Upstream names the offending label; this message cannot, because
-// ClickHouse requires `throwIf`'s message to be a constant string and the
-// conflicting name is only known per row. The observable behaviour — the
-// query fails instead of returning an arbitrary one of the two values —
-// is what the divergence was about.
-const InfoConflictingLabelMessage = "conflicting label"
-
 // chExceptionPrefix is what ClickHouse puts in front of a `throwIf`
 // message when it surfaces the abort to the client:
 // `Code: 395. DB::Exception: <message>: while executing …`.
@@ -40,7 +28,7 @@ const chExceptionPrefix = "DB::Exception: "
 // alongside the message so a query that merely mentions the phrase in a
 // label value cannot be mistaken for one.
 func IsInfoConflictingLabelError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), chExceptionPrefix+InfoConflictingLabelMessage)
+	return err != nil && strings.Contains(err.Error(), chExceptionPrefix+chplan.InfoConflictingLabelMessage)
 }
 
 // infoExtrasKeyElement / infoExtrasValueElement are the 1-based tuple
@@ -156,7 +144,7 @@ func infoConflictGuardFrag(j *chplan.InfoJoin) Frag {
 	distinctPairs := Call("length", Call("arrayDistinct", pairs))
 	distinctKeys := Call("length", Call("arrayDistinct", infoPairElementFrag(pairs, infoExtrasKeyElement)))
 	return Eq(
-		Call("throwIf", Neq(distinctPairs, distinctKeys), InlineLit(InfoConflictingLabelMessage)),
+		Call("throwIf", Neq(distinctPairs, distinctKeys), InlineLit(chplan.InfoConflictingLabelMessage)),
 		InlineLit(int64(0)),
 	)
 }
