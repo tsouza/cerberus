@@ -7469,6 +7469,39 @@
     "uncountable_levels": 0
   },
   {
+    "fixture": "traceql/edge_attr_dotted_duration_collision",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/edge_attr_dotted_name_collision",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
+    "fixture": "traceql/edge_attr_dotted_status_collision",
+    "fan_factor": 1,
+    "scan_rows": 1,
+    "peak_intermediate": 1,
+    "has_cross_join": false,
+    "has_array_join": false,
+    "has_recursive_cte": false,
+    "max_recursion_depth": 0,
+    "uncountable_levels": 0
+  },
+  {
     "fixture": "traceql/edge_attr_resource_le",
     "fan_factor": 1,
     "scan_rows": 2,

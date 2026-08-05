@@ -880,8 +880,8 @@
       ]
     },
     "tempo": {
-      "passed": 62,
-      "total": 62,
+      "passed": 63,
+      "total": 63,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -901,6 +901,7 @@
         "search | descendant_op_payments_to_consumer",
         "search | direct_child_op_client_under_checkout",
         "search | direct_parent_op_checkout_to_child",
+        "search | dotted_attr_name_collision",
         "search | duration_gt_100ms",
         "search | duration_lt_300ms",
         "search | kind_eq_server",
@@ -948,8 +949,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 59,
-      "total": 59,
+      "passed": 60,
+      "total": 60,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -969,6 +970,7 @@
         "search | descendant_op_payments_to_consumer",
         "search | direct_child_op_client_under_checkout",
         "search | direct_parent_op_checkout_to_child",
+        "search | dotted_attr_name_collision",
         "search | duration_gt_100ms",
         "search | duration_lt_300ms",
         "search | kind_eq_server",
