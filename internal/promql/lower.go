@@ -1840,8 +1840,16 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	// `quantile_over_time(phi, v[range])` takes a scalar first; the
 	// range-vector lives at c.Args[1]. Route it before the generic
-	// "is c.Args[0] a MatrixSelector?" check below.
+	// "is c.Args[0] a MatrixSelector?" check below — including the
+	// subquery form `quantile_over_time(phi, rate(m[5m])[1h:5m])`, whose
+	// range-vector arg is a SubqueryExpr rather than a MatrixSelector and
+	// so needs its own outer-reducer dispatch (#1456).
 	if c.Func.Name == "quantile_over_time" {
+		if len(c.Args) == 2 {
+			if sq, ok := c.Args[1].(*parser.SubqueryExpr); ok {
+				return lowerOuterRangeFnOverSubquery(c, sq, s, ctx)
+			}
+		}
 		return lowerQuantileOverTime(c, s, ctx)
 	}
 	if len(c.Args) >= 1 {
