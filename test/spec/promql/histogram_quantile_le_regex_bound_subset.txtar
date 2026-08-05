@@ -1,0 +1,117 @@
+-- query.promql --
+histogram_quantile(0.5, http_server_request_duration_bucket{le=~"1|2.5|\\+Inf"})
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 5, 2, 1, 1], [0.05, 0.1, 1.0, 2.5]);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 0.625]
+]
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.5 groupBy=[Attributes AS Attributes]
+    Aggregate groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[argMax(BucketCounts, TimeUnix) AS BucketCounts, argMax(ExplicitBounds, TimeUnix) AS ExplicitBounds]
+      Project * REPLACE [if(not((has(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1))), length(BucketCounts)) AND (length(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))) >= 2))), arraySlice(arrayMap((cur, prev) -> (cur - prev), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), BucketCounts))[i], arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))), if((length(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))) = 0), emptyArrayFloat64(), arrayConcat(array(0), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), BucketCounts))[i], arraySlice(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1))), 1, greatest((length(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))) - 1), 0)))))), 1, 0), arrayMap((cur, prev) -> (cur - prev), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), BucketCounts))[i], arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))), if((length(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))) = 0), emptyArrayFloat64(), arrayConcat(array(0), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), BucketCounts))[i], arraySlice(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1))), 1, greatest((length(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))) - 1), 0))))))) AS BucketCounts, arrayMap(i -> ExplicitBounds[i], arraySlice(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1))), 1, greatest((length(arrayFilter(i -> (if((i > length(ExplicitBounds)), "+Inf", toString(ExplicitBounds[i])) =~ "^(?:1|2.5|\\+Inf)$"), range(1, (length(BucketCounts) + 1)))) - 1), 0))) AS ExplicitBounds]
+        Filter predicate=(((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_histogram)
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = ""
+[7] string = "service_name"
+[8] string = "+Inf"
+[9] string = "^(?:1|2.5|\\+Inf)$"
+[10] int64 = 1
+[11] int64 = 1
+[12] string = "+Inf"
+[13] string = "^(?:1|2.5|\\+Inf)$"
+[14] int64 = 1
+[15] int64 = 1
+[16] int64 = 2
+[17] string = "+Inf"
+[18] string = "^(?:1|2.5|\\+Inf)$"
+[19] int64 = 1
+[20] int64 = 1
+[21] string = "+Inf"
+[22] string = "^(?:1|2.5|\\+Inf)$"
+[23] int64 = 1
+[24] int64 = 1
+[25] int64 = 0
+[26] float64 = 0
+[27] string = "+Inf"
+[28] string = "^(?:1|2.5|\\+Inf)$"
+[29] int64 = 1
+[30] int64 = 1
+[31] int64 = 1
+[32] string = "+Inf"
+[33] string = "^(?:1|2.5|\\+Inf)$"
+[34] int64 = 1
+[35] int64 = 1
+[36] int64 = 1
+[37] int64 = 0
+[38] int64 = 1
+[39] int64 = 0
+[40] string = "+Inf"
+[41] string = "^(?:1|2.5|\\+Inf)$"
+[42] int64 = 1
+[43] int64 = 1
+[44] string = "+Inf"
+[45] string = "^(?:1|2.5|\\+Inf)$"
+[46] int64 = 1
+[47] int64 = 1
+[48] int64 = 0
+[49] float64 = 0
+[50] string = "+Inf"
+[51] string = "^(?:1|2.5|\\+Inf)$"
+[52] int64 = 1
+[53] int64 = 1
+[54] int64 = 1
+[55] string = "+Inf"
+[56] string = "^(?:1|2.5|\\+Inf)$"
+[57] int64 = 1
+[58] int64 = 1
+[59] int64 = 1
+[60] int64 = 0
+[61] string = "+Inf"
+[62] string = "^(?:1|2.5|\\+Inf)$"
+[63] int64 = 1
+[64] int64 = 1
+[65] int64 = 1
+[66] string = "+Inf"
+[67] string = "^(?:1|2.5|\\+Inf)$"
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] int64 = 0
+[72] string = "http_server_request_duration"
+[73] string = "http.server.request.duration"
+[74] string = "http.server.request/duration"
+[75] string = "http.server.request_duration"
+[76] string = "http.server/request/duration"
+[77] string = "http.server/request_duration"
+[78] string = "http.server_request.duration"
+[79] string = "http.server_request_duration"
+[80] string = "http/server/request/duration"
+[81] string = "http/server/request_duration"
+[82] string = "http/server_request_duration"
+[83] string = "http_server.request.duration"
+[84] string = "http_server.request_duration"
+[85] string = "http_server_request.duration"
+[86] string = "2026-01-01 00:00:01.000000000"
+[87] int64 = 9
+[88] string = "2026-01-01 00:00:01.000000000"
+[89] int64 = 9
+[90] int64 = 300000000000
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = length(arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))), arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[length(arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1))))], if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1 AND arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[1] <= 0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[1], (if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1]) + (arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1))))] - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])) * ((0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])) / (arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1))))] - if(arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> c >= (0.5 * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1]))))))))) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`BucketCounts`, `TimeUnix`) AS `BucketCounts`, argMax(`ExplicitBounds`, `TimeUnix`) AS `ExplicitBounds` FROM (SELECT * REPLACE (if(not((has(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?))), length(`BucketCounts`)) AND (length(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))) >= ?))), arraySlice(arrayMap((cur, prev) -> (cur - prev), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))), if((length(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))) = ?), emptyArrayFloat64(), arrayConcat(array(toFloat64(?)), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arraySlice(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?))), ?, greatest((length(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))) - ?), ?)))))), ?, ?), arrayMap((cur, prev) -> (cur - prev), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))), if((length(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))) = ?), emptyArrayFloat64(), arrayConcat(array(toFloat64(?)), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arraySlice(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?))), ?, greatest((length(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))) - ?), ?))))))) AS `BucketCounts`, arrayMap(i -> `ExplicitBounds`[i], arraySlice(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?))), ?, greatest((length(arrayFilter(i -> match(if((i > length(`ExplicitBounds`)), ?, toString(`ExplicitBounds`[i])), ?), range(?, (length(`BucketCounts`) + ?)))) - ?), ?))) AS `ExplicitBounds`) FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `Attributes`))

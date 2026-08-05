@@ -2,7 +2,7 @@
 #
 # This file is a near-verbatim copy of
 # compatibility/prometheus/upstream/promql/promql-test-queries.yml
-# (prometheus/compliance @ 7e28242) with three edits:
+# (prometheus/compliance @ 7e28242) with a handful of cerberus-owned edits:
 #
 # 1. The PromLabs "demo service" preamble (lines 1-31 of the upstream file)
 #    is stripped — it documents docker-run instructions for the prometheus-
@@ -27,6 +27,11 @@
 #    discriminates cerberus's own lowering bug — reference Prometheus has
 #    nothing to diverge on — but it is the corpus's only case that would
 #    have caught it, so it stays alongside the other two documented edits.
+# 5. Two more cerberus-owned cases pin classic-histogram lowering bugs found
+#    by inspection rather than by upstream: a `histogram_quantile` over the
+#    bare (non-`_bucket`) storage name must answer empty (#1483), and one
+#    over `sum by(le)(<bucket-selector>)` with no wrapping rate/increase/
+#    sum_over_time must still answer (#1692).
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -41,10 +46,19 @@
 # family the seeder cannot produce, so a query can never again compare empty
 # against empty and record a PASS it never earned.
 #
-# The one exemption is explicit and closed: a query may reference a name
-# prefixed `nonexistent` precisely because the family must NOT exist. The gate
-# asserts that prefix in both directions — such a name is never seeded, and an
-# unseeded name must carry it.
+# Two exemptions are explicit and closed:
+#
+#   - a query may reference a name prefixed `nonexistent` precisely because
+#     the family must NOT exist. The gate asserts that prefix in both
+#     directions — such a name is never seeded, and an unseeded name must
+#     carry it;
+#   - a query may reference a seeded classic-histogram family's BARE storage
+#     name (no `_bucket` / `_count` / `_sum` suffix) precisely because that
+#     spelling must resolve empty even though the family IS seeded (#1483):
+#     the OTel-CH layout stores the row under that name, but it is not a
+#     Prom-wire series name, so cerberus never serves it. The gate tracks
+#     every seeded histogram family's bare name itself and exempts exactly
+#     those, so this is a real regression pin, not a hollow comparison.
 #
 # Pointer-to-upstream: re-sync this file by re-copying the upstream and
 # re-applying the edit above. Track in a follow-up issue so this
@@ -339,6 +353,17 @@ test_cases:
     query: 'histogram_quantile(0.9, demo_memory_usage_bytes)'
   - # Missing "le" label only in some series of the same grouping.
     query: 'histogram_quantile(0.9, {__name__=~"demo_api_request_duration_seconds_.+"})'
+  - # #1483: the bare classic-histogram name (the OTel-CH *storage* name, no
+    # `_bucket` suffix) is not a Prom-wire series name — a classic histogram
+    # only exposes `<base>_bucket` / `_count` / `_sum`. Reference answers
+    # empty; this pins that cerberus does too instead of over-answering by
+    # scanning the same rows the `_bucket` spelling would.
+    query: 'histogram_quantile(0.9, demo_api_request_duration_seconds)'
+  - # #1692: `histogram_quantile(phi, sum by(le)(<bucket-selector>))` with no
+    # wrapping rate()/increase()/sum_over_time() is still valid PromQL — the
+    # instant vector's own sample values ARE the bucket counts. This must
+    # answer, not silently fold to empty.
+    query: 'histogram_quantile(0.9, sum by (le) (demo_api_request_duration_seconds_bucket))'
   - query: 'count_values("value", demo_api_request_duration_seconds_bucket)'
   - query: 'absent(demo_memory_usage_bytes)'
   - query: 'absent(nonexistent_metric_name)'

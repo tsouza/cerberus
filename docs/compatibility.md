@@ -56,10 +56,10 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
   template-expanded to concrete cases, plus a small cerberus-owned tail for
-  shapes upstream cannot express (resource-attribute grouping) — 746 in all.
-- **Today**: **746/746** cases pass; no allow-list exists. This is the
+  shapes upstream cannot express (resource-attribute grouping) — 748 in all.
+- **Today**: **748/748** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 746/746 is a
+  a real reference. (Parity drift is report-only in CI; the 748/748 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -122,7 +122,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 746/746, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 748/748, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -358,7 +358,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 746 / 746    |
+| prometheus | 748 / 748    |
 | loki       | 127 / 127    |
 | tempo      | 68 / 68      |
 | tempo-grpc | 65 / 65      |

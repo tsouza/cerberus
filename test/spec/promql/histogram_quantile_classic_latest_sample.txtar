@@ -8,7 +8,7 @@
 # row and the same series comes back twice, once per sample.
 
 -- query.promql --
-histogram_quantile(0.95, http_server_request_duration{service="api"})
+histogram_quantile(0.95, http_server_request_duration_bucket{service="api"})
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,

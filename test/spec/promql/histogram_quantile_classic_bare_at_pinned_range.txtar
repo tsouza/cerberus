@@ -8,7 +8,7 @@
 # Six identical rows are the pin surviving.
 
 -- query.promql --
-histogram_quantile(0.95, http_server_request_duration{service="api"} @ 1767225600)
+histogram_quantile(0.95, http_server_request_duration_bucket{service="api"} @ 1767225600)
 -- range_step --
 60s
 -- seed --

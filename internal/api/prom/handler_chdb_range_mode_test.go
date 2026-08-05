@@ -1044,7 +1044,7 @@ func TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB(t *testing.T) {
 	srv, _ := newChDBServer(t, seed)
 
 	matrix := runRangeModeQueryRange(t, srv.URL,
-		"histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration[5m])))",
+		"histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration_bucket[5m])))",
 		start, end, step)
 	if len(matrix) == 0 {
 		t.Fatalf("expected at least 1 series; got 0")

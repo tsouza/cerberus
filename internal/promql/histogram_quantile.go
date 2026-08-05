@@ -73,21 +73,55 @@ func stripBucketSuffix(matchers []*labels.Matcher) []*labels.Matcher {
 // matches no row, answering the empty vector where the reference
 // answers a quantile.
 //
-// Matcher order is preserved so an all-pinned selector folds to exactly
-// the predicate `buildPredicate(stripBucketSuffix(...))` produced before
-// the unpinned arm existed.
-func histogramQuantileMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
+// A PINNED `__name__=` matcher additionally enforces the strict wire
+// contract (#1483): the bare classic-histogram spelling `<base>` (no
+// `_bucket` / `_count` / `_sum` suffix) is not a queryable series at
+// all — reference Prometheus's classic-histogram wire surface is exactly
+// the `<base>_bucket` / `<base>_count` / `<base>_sum` triple, and
+// histogram_quantile additionally drops every input series without an
+// `le` label, so of that triple only `<base>_bucket` ever reaches
+// interpolation. A pin naming anything else (including the bare base
+// name, which no Prom wire series exposes) must resolve to zero rows —
+// not fall through to the OTel-CH storage row, which DOES live under the
+// bare name and would over-answer with a real quantile the reference
+// never computes.
+//
+// A `le` matcher is split out rather than folded into the row predicate:
+// OTel-CH classic-histogram rows carry no `le` column (the bucket ladder
+// lives in the parallel BucketCounts / ExplicitBounds arrays), so
+// resolving it the way every other label resolves — an Attributes-map
+// lookup — matches no row. The caller narrows BucketCounts /
+// ExplicitBounds to the matched buckets instead (see
+// [classicBucketLeRestriction]); this function only reports which
+// matchers those are.
+//
+// Matcher order is preserved so an all-pinned, `le`-free selector folds
+// to exactly the predicate `buildPredicate(stripBucketSuffix(...))`
+// produced before the unpinned arm and the `le` split existed.
+func histogramQuantileMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) (chplan.Expr, []*labels.Matcher) {
 	bucketWireName := func() chplan.Expr { return syntheticMetricNameExpr(s, bucketSuffix) }
 	stripped := stripBucketSuffix(matchers)
 	var out chplan.Expr
+	var leMatchers []*labels.Matcher
 	for i, m := range matchers {
+		if m.Name == "le" {
+			leMatchers = append(leMatchers, m)
+			continue
+		}
 		if m.Name == model.MetricNameLabel && m.Type != labels.MatchEqual {
 			out = andExpr(out, metricNamePredicateOn(m, s, bucketWireName))
 			continue
 		}
+		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && !strings.HasSuffix(m.Value, bucketSuffix) {
+			// Strict bare-name rejection (#1483, MAINTAINER DECISION 1):
+			// short-circuit the whole predicate to unsatisfiable rather
+			// than let a bare-name pin resolve against the OTel-CH
+			// storage row.
+			return &chplan.LitBool{V: false}, nil
+		}
 		out = andExpr(out, matcherToExpr(stripped[i], s))
 	}
-	return out
+	return out, leMatchers
 }
 
 // phiArg carries histogram_quantile's phi argument in either literal
@@ -171,7 +205,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	// shapes whose underlying terminal is a bare VectorSelector; anything
 	// else falls through to today's bare-selector path (which still emits
 	// the existing error message if the shape isn't recognised).
-	shape, matched := matchHistogramAggIdiom(c.Args[1])
+	shape, matched := matchHistogramAggIdiom(c.Args[1], s)
 	if matched {
 		// The per-`le` rung fold is resolved here rather than in the
 		// matcher because `quantile`'s parameter may be a computed
@@ -308,7 +342,7 @@ func lowerHistogramQuantileClassicBare(
 	// `__name__` matcher so a Grafana query of
 	// `rate(<X>_bucket[5m])` filters against `MetricName='<X>'`.
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
+	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
 	if err != nil {
 		return nil, err
@@ -317,6 +351,7 @@ func lowerHistogramQuantileClassicBare(
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
+	input = classicBucketLeRestriction(input, leMatchers, s)
 
 	hq := &chplan.HistogramQuantile{
 		Input:                latestSampleAgg(input, classicBucketLatestAggs(s), s),
@@ -771,7 +806,7 @@ func histogramAggShapeLowerable(shape histogramAggShape, s schema.Metrics) bool 
 	return shape.classicFold != nil
 }
 
-func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
+func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape, bool) {
 	e = peelWrappers(e)
 
 	// Try an outer aggregation wrapper. Which operators actually have a
@@ -781,6 +816,43 @@ func matchHistogramAggIdiom(e parser.Expr) (histogramAggShape, bool) {
 	if a, ok := e.(*parser.AggregateExpr); ok {
 		agg = a
 		e = peelWrappers(a.Expr)
+	}
+
+	// #1692: `histogram_quantile(phi, sum by(le)(<bucket-selector>))` with
+	// NO wrapping rate / increase / sum_over_time. This form only exists
+	// here when an aggregation DID wrap the selector — with no aggregation
+	// at all, `e` is already a bare VectorSelector that the caller's own
+	// unwrapVectorSelector fallback routes through lowerHistogramQuantileClassicBare
+	// / the native bare-selector path; matching it again here would just
+	// duplicate that routing. windowFn="" is the sentinel this shape
+	// carries: histogramWindowFold treats it as ordinary instant-vector
+	// "latest sample in the staleness lookback" semantics (latestSampleFold)
+	// rather than a windowed rate/increase/sum_over_time reduction, and
+	// windowRange is set to instantLookback (Prom's 5m default) so the SQL
+	// time-window filter matches what a bare selector would use.
+	//
+	// Gated on the same strict wire-name test #1483 enforces downstream
+	// (histogramQuantileMatcherPredicate): a PINNED `__name__` that names
+	// neither a `_bucket`-suffixed classic series nor a registered
+	// exp-histogram metric can never carry bucket data, so it must keep
+	// falling through to the "unrecognised inner shape" empty-Filter
+	// fallback below — matching it here would wrongly route provably
+	// non-bucket aggregations like `sum(up)` through the histogram
+	// machinery instead of the compile-time-empty shape that pins.
+	// An UNPINNED name (regex / negated matcher, vs.Name == "") is left
+	// to the same downstream wire-name handling the rate/increase/
+	// sum_over_time arm already relies on without a name check here.
+	if agg != nil {
+		if vs, ok := e.(*parser.VectorSelector); ok {
+			if vs.Name == "" || strings.HasSuffix(vs.Name, bucketSuffix) || s.IsExpHistogramMetric(vs.Name) {
+				return histogramAggShape{
+					selector:    vs,
+					windowRange: instantLookback,
+					windowFn:    "",
+					agg:         agg,
+				}, true
+			}
+		}
 	}
 
 	// Inner must be a rate/increase call over a MatrixSelector.
@@ -873,7 +945,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// the rate's [range] adds the time-bound window. `_bucket` suffix
 	// strip mirrors the bare-selector path — see stripBucketSuffix.
 	scan := &chplan.Scan{Table: s.HistogramTable}
-	pred := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
+	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {
@@ -897,6 +969,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
+	input = classicBucketLeRestriction(input, leMatchers, s)
 
 	// Stage 1: reduce each SERIES' in-window samples to one row, applying
 	// the range-vector function's own reduction and its per-series sample
