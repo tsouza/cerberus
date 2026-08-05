@@ -886,8 +886,8 @@
       ]
     },
     "tempo": {
-      "passed": 63,
-      "total": 63,
+      "passed": 67,
+      "total": 67,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -914,6 +914,7 @@
         "search | kind_not_nil",
         "search | kind_not_nil_unspecified_carrier",
         "search | name_not_nil",
+        "search | negated_kind_not_client",
         "search | resource_deployment_env_eq_compat_test",
         "search | resource_deployment_env_not_nil",
         "search | resource_service_name_eq_checkout",
@@ -929,6 +930,9 @@
         "search | scoped_span_name_regex",
         "search | scoped_span_parent_id_not_nil",
         "search | scoped_span_status_error",
+        "search | scoped_trace_duration_gt",
+        "search | scoped_trace_root_name_regex",
+        "search | scoped_trace_root_service",
         "search | set_and_checkout_and_status_error",
         "search | set_or_two_kinds",
         "search | set_or_two_services",
@@ -955,8 +959,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 60,
-      "total": 60,
+      "passed": 64,
+      "total": 64,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -983,6 +987,7 @@
         "search | kind_not_nil",
         "search | kind_not_nil_unspecified_carrier",
         "search | name_not_nil",
+        "search | negated_kind_not_client",
         "search | resource_deployment_env_eq_compat_test",
         "search | resource_deployment_env_not_nil",
         "search | resource_service_name_eq_checkout",
@@ -998,6 +1003,9 @@
         "search | scoped_span_name_regex",
         "search | scoped_span_parent_id_not_nil",
         "search | scoped_span_status_error",
+        "search | scoped_trace_duration_gt",
+        "search | scoped_trace_root_name_regex",
+        "search | scoped_trace_root_service",
         "search | set_and_checkout_and_status_error",
         "search | set_or_two_kinds",
         "search | set_or_two_services",

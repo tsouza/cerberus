@@ -1,5 +1,5 @@
 -- query.traceql --
-{ !(kind = server) }
+{ !(!(kind = server)) }
 -- seed --
 CREATE TABLE otel_traces (
     SpanId String,
@@ -10,11 +10,13 @@ INSERT INTO otel_traces (SpanId, SpanKind) VALUES
     ('bbbb', 'Client'),
     ('cccc', 'Internal');
 -- expected_rows --
-[]
+[
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "aaaa", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
+]
 -- args --
-[0] bool = false
+[0] string = "Server"
 -- chplan --
-Filter predicate=false
+Filter predicate=(SpanKind = "Server")
   Scan(otel_traces)
 -- sql --
-SELECT * FROM `otel_traces` WHERE ?
+SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)
