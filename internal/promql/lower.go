@@ -1025,26 +1025,45 @@ func selectorAttributesExpr(ctx lowerCtx, s schema.Metrics) chplan.Expr {
 	return canonicalAttributesExpr(base)
 }
 
-// rewriteMetricName returns a copy of matchers where any
-// `__name__=<X>` (MatchEqual) matcher carries the supplied bare name in
-// place of `<X>`. Used by the classic-histogram companion rewrite to
-// strip the `_count` / `_sum` suffix from the `__name__` matcher so the
-// emitted filter resolves against the bare metric name OTel-CH writes.
+// rewriteMetricName returns a copy of matchers where the pinned
+// `__name__` matcher (WireArmWireNamePinned) carries the supplied name
+// in place of its original value. Used by the exp-histogram / classic
+// -histogram companion routing (expHistogramSelectorRouting,
+// resolveSelectorRouting, buildHistogramCompanionArm,
+// buildLiteralNameCompanionArm) to redirect the scan-side `__name__`
+// filter onto whichever physical table's stored name the caller has
+// already resolved — the bare base name for a histogram-table arm, the
+// literal suffixed name for a companion Sum/Gauge arm.
+//
+// This is a TABLE-ROUTING rewrite, not a wire-domain classification
+// decision: unlike WireArms.ResolveName (which trims a caller-supplied
+// wire suffix off a pinned matcher's existing value, or reports
+// DecisionUnsatisfiable when the value doesn't carry it),
+// rewriteMetricName unconditionally substitutes the caller's target
+// name regardless of the matcher's original value. It only shares
+// WireArms's PINNED-MATCHER CLASSIFICATION (m.Name == "__name__" &&
+// m.Type == MatchEqual) — the exact predicate #1756 centralized after
+// finding it reimplemented, subtly-inconsistently, at multiple call
+// sites (see wireArms's doc comment). Deriving that classification from
+// wireArms here, instead of re-checking m.Name/m.Type inline, is what
+// #1761 migrates: this was the fourth independent reimplementation of
+// that same pinned-name predicate.
 //
 // Non-`__name__` matchers and non-Equal `__name__` matchers (e.g.
-// `__name__=~"foo|bar"`) flow through unchanged: the bare-name strip
-// only applies to a single equality matcher, which is the only shape
+// `__name__=~"foo|bar"`) flow through unchanged: the rewrite only
+// applies to a single equality matcher, which is the only shape
 // `metricNameFromMatchers` recognises in the first place.
 //
 // Copy-on-write semantics mirror stripBucketSuffix: a fresh slice +
 // fresh matcher are allocated, the input is never mutated. The parser
 // can reuse the matcher slice across lowering passes and a mutation
 // here would silently bleed back into later passes.
-func rewriteMetricName(matchers []*labels.Matcher, bareName string) []*labels.Matcher {
+func rewriteMetricName(matchers []*labels.Matcher, name string) []*labels.Matcher {
 	out := make([]*labels.Matcher, len(matchers))
+	w := wireArms(matchers)
 	for i, m := range matchers {
-		if m.Name == model.MetricNameLabel && m.Type == labels.MatchEqual && m.Value != bareName {
-			copied, err := labels.NewMatcher(m.Type, m.Name, bareName)
+		if w.Arms[i] == WireArmWireNamePinned && m.Value != name {
+			copied, err := labels.NewMatcher(m.Type, m.Name, name)
 			if err != nil {
 				out[i] = m
 				continue
