@@ -174,29 +174,52 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 
 // compareRootLookup builds the per-trace root-span relation:
 //
-//	SELECT <TraceId>, any(<SpanName>) AS __root_name,
-//	       any(<ServiceName>) AS __root_service_name
-//	FROM <spans> WHERE <ParentSpanId> = '' GROUP BY <TraceId>
+//	SELECT <TraceId>, argMin(<SpanName>, <Timestamp>)    AS __root_name,
+//	       argMin(<ServiceName>, <Timestamp>)            AS __root_service_name
+//	FROM <spans> WHERE <ParentSpanId> IN ('', '00…0') GROUP BY <TraceId>
 //
 // One row per trace; the compare emitter LEFT JOINs it on TraceId so
 // every span row carries its trace's rootName / rootServiceName —
 // mirroring vparquet's trace-level RootSpanName / RootServiceName
 // columns. Orphan traces (no root span in the scanned window) fall out
 // of the LEFT JOIN as empty strings.
+//
+// The root test is traceScopedRootSpanCond — the same "empty OR all-zero
+// hex ParentSpanId" predicate the `{ rootName = … }` spanset filter
+// (lower.go's traceScopedValueNode) and the /api/search root-lookup
+// decoration (internal/api/tempo/root_lookup.go) use, so all three
+// resolvers agree on what a root span is; a trace whose exporter writes
+// the all-zero spelling used to resolve to an empty rootName here while
+// the other two resolved it correctly. argMin keyed on Timestamp picks
+// the EARLIEST root-flagged span rather than an arbitrary one, so a
+// trace carrying more than one root-flagged row (a partial/merged trace)
+// gets a stable answer instead of one that changes between runs of the
+// same query — the `any()` nondeterminism of issue #1481, which this
+// relation shared with the spanset-aggregate path that issue cites.
 func compareRootLookup(s schema.Traces) chplan.Node {
 	return &chplan.Aggregate{
 		Input: &chplan.Filter{
-			Input: &chplan.Scan{Table: s.SpansTable},
-			Predicate: &chplan.Binary{
-				Op:    chplan.OpEq,
-				Left:  &chplan.ColumnRef{Name: s.ParentSpanIDColumn},
-				Right: &chplan.LitString{V: ""},
-			},
+			Input:     &chplan.Scan{Table: s.SpansTable},
+			Predicate: traceScopedRootSpanCond(s),
 		},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanNameColumn}}, Alias: rootNameAlias},
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ServiceNameColumn}}, Alias: rootServiceAlias},
+			{
+				Name: "argMin",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.SpanNameColumn},
+					&chplan.ColumnRef{Name: s.TimestampColumn},
+				},
+				Alias: rootNameAlias,
+			},
+			{
+				Name: "argMin",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.ServiceNameColumn},
+					&chplan.ColumnRef{Name: s.TimestampColumn},
+				},
+				Alias: rootServiceAlias,
+			},
 		},
 	}
 }
