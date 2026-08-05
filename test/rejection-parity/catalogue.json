@@ -70,7 +70,8 @@
       "message": "logql: label_replace: %w",
       "class": "divergence",
       "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
-      "tracking_issue": 1768
+      "tracking_issue": 1768,
+      "since": "2026-08-05"
     },
     {
       "head": "logql",
@@ -519,7 +520,8 @@
       "message": "promql: label_replace: %w",
       "class": "divergence",
       "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
-      "tracking_issue": 1768
+      "tracking_issue": 1768,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -562,7 +564,8 @@
       "message": "promql: %q is an exponential histogram metric; only histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
       "trigger_query": "rate(demo_exp_hist[5m])",
-      "tracking_issue": 1772
+      "tracking_issue": 1772,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -654,7 +657,8 @@
       "message": "promql: %s K must be a scalar literal or scalar(\u003cvector\u003e); computed-K with other shapes is not yet supported",
       "class": "divergence",
       "trigger_query": "topk(scalar(up) * 2, up)",
-      "tracking_issue": 1766
+      "tracking_issue": 1766,
+      "since": "2026-08-05"
     },
     {
       "head": "promql",
@@ -716,22 +720,22 @@
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#0ff3d8b3",
       "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
-      "class": "internal",
-      "rationale": "unreachable via the PromQL lowering dispatch: double_exponential_smoothing is gated as experimental at lowerRangeVectorCall (reference-parity reject) before lowerHoltWinters runs, so this boundary check fires only from the package-internal mutation tests that call lowerHoltWinters directly"
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(http_requests_total[10m], 1.5, 0.5)"
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#15e82804",
       "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
-      "class": "internal",
-      "rationale": "unreachable via the PromQL lowering dispatch: double_exponential_smoothing is gated as experimental at lowerRangeVectorCall (reference-parity reject) before lowerHoltWinters runs, so this scalar-literal check fires only from the package-internal mutation tests that call lowerHoltWinters directly"
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(http_requests_total[10m], scalar(up), 0.5)"
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#2db9f2aa",
       "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
-      "class": "internal",
-      "rationale": "unreachable via the PromQL lowering dispatch: double_exponential_smoothing is gated as experimental at lowerRangeVectorCall (reference-parity reject) before lowerHoltWinters runs, so this boundary check fires only from the package-internal mutation tests that call lowerHoltWinters directly"
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(http_requests_total[10m], 0.5, 1.5)"
     },
     {
       "head": "promql",
