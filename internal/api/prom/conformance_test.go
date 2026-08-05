@@ -514,52 +514,104 @@ func TestConformance_FormatQueryWire(t *testing.T) {
 	}
 }
 
-// TestConformance_ParseQueryWire — `/api/v1/parse_query` returns
-// `data: {type, node}` — cerberus's minimal AST shape.
+// TestConformance_ParseQueryWire — `/api/v1/parse_query` returns the
+// SAME recursive node tree upstream Prometheus's `/api/v1/parse_query`
+// does (upstream's unexported `translateAST`, ported verbatim in
+// `internal/api/prom/parse_query_ast.go`), not a flattened `{type,
+// node}` stub — Grafana's query-builder tree view depends on the real
+// shape (#1440).
 func TestConformance_ParseQueryWire(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
-		path string
-	}{
-		{"identifier", "/api/v1/parse_query?query=up"},
-		{"function", "/api/v1/parse_query?query=rate(up%5B5m%5D)"},
-		{"binary", "/api/v1/parse_query?query=up%2Bdown"},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			srv := newServer(&stubQuerier{})
-			t.Cleanup(srv.Close)
+	t.Run("identifier", func(t *testing.T) {
+		t.Parallel()
+		data := decodeParseQuery(t, "/api/v1/parse_query?query=up")
+		if got := data["type"]; got != "vectorSelector" {
+			t.Fatalf("type: got %v, want vectorSelector; data=%+v", got, data)
+		}
+		if got := data["name"]; got != "up" {
+			t.Errorf("name: got %v, want up", got)
+		}
+		matchers, ok := data["matchers"].([]any)
+		if !ok || len(matchers) != 1 {
+			t.Fatalf("matchers: got %+v, want one __name__ matcher", data["matchers"])
+		}
+		m, ok := matchers[0].(map[string]any)
+		if !ok || m["name"] != "__name__" || m["value"] != "up" {
+			t.Errorf("matcher[0]: got %+v, want __name__=up", matchers[0])
+		}
+	})
 
-			resp, err := http.Get(srv.URL + tc.path)
-			if err != nil {
-				t.Fatalf("GET: %v", err)
-			}
-			body := readBody(t, resp)
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
-			}
-			var env struct {
-				Status string `json:"status"`
-				Data   struct {
-					Type string `json:"type"`
-					Node string `json:"node"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal([]byte(body), &env); err != nil {
-				t.Fatalf("decode: %v body=%s", err, body)
-			}
-			if env.Status != "success" {
-				t.Errorf("status: got %q, want success", env.Status)
-			}
-			if env.Data.Type == "" || env.Data.Node == "" {
-				t.Errorf("expected non-empty Type+Node, got %+v", env.Data)
-			}
-		})
+	t.Run("function", func(t *testing.T) {
+		t.Parallel()
+		data := decodeParseQuery(t, "/api/v1/parse_query?query=rate(up%5B5m%5D)")
+		if got := data["type"]; got != "call" {
+			t.Fatalf("type: got %v, want call; data=%+v", got, data)
+		}
+		fn, ok := data["func"].(map[string]any)
+		if !ok || fn["name"] != "rate" {
+			t.Fatalf("func.name: got %+v, want rate", data["func"])
+		}
+		args, ok := data["args"].([]any)
+		if !ok || len(args) != 1 {
+			t.Fatalf("args: got %+v, want one matrixSelector arg", data["args"])
+		}
+		arg, ok := args[0].(map[string]any)
+		if !ok || arg["type"] != "matrixSelector" || arg["name"] != "up" {
+			t.Fatalf("args[0]: got %+v, want matrixSelector(up)", args[0])
+		}
+		const fiveMinutesMillis = float64(5 * time.Minute / time.Millisecond)
+		if got := arg["range"]; got != fiveMinutesMillis {
+			t.Errorf("args[0].range: got %v, want %v (5m in ms)", got, fiveMinutesMillis)
+		}
+	})
+
+	t.Run("binary", func(t *testing.T) {
+		t.Parallel()
+		data := decodeParseQuery(t, "/api/v1/parse_query?query=up%2Bdown")
+		if got := data["type"]; got != "binaryExpr" {
+			t.Fatalf("type: got %v, want binaryExpr; data=%+v", got, data)
+		}
+		if got := data["op"]; got != "+" {
+			t.Errorf("op: got %v, want +", got)
+		}
+		lhs, ok := data["lhs"].(map[string]any)
+		if !ok || lhs["type"] != "vectorSelector" || lhs["name"] != "up" {
+			t.Errorf("lhs: got %+v, want vectorSelector(up)", data["lhs"])
+		}
+		rhs, ok := data["rhs"].(map[string]any)
+		if !ok || rhs["type"] != "vectorSelector" || rhs["name"] != "down" {
+			t.Errorf("rhs: got %+v, want vectorSelector(down)", data["rhs"])
+		}
+	})
+}
+
+// decodeParseQuery issues a GET against `path` and returns the decoded
+// `data` object of a `/api/v1/parse_query` response.
+func decodeParseQuery(t *testing.T, path string) map[string]any {
+	t.Helper()
+	srv := newServer(&stubQuerier{})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
 	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var env struct {
+		Status string         `json:"status"`
+		Data   map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if env.Status != "success" {
+		t.Fatalf("status: got %q, want success", env.Status)
+	}
+	return env.Data
 }
 
 // TestConformance_PromExemplarsBasic pins the populated-data envelope
