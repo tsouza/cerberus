@@ -353,11 +353,14 @@ func renderMatrix(b *strings.Builder, in docInput) error {
 	b.WriteString("shards**, each a separate statement over a slice of the grid; no shard sees ")
 	b.WriteString("more than ~1/K of the fan-out, so each one stays under the per-query memory ")
 	b.WriteString("cap.\n")
-	b.WriteString("- **Native rate** (`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`) makes the fan-out ")
+	b.WriteString("- **Native rate** (`ts_grid_range` in `CERBERUS_CH_OPTIMIZATIONS`, or the ")
+	b.WriteString("soft-deprecated `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` alias) makes the fan-out ")
 	b.WriteString("*vanish*. ClickHouse's native `timeSeriesRateToGrid` aggregate computes every ")
 	b.WriteString("grid point's rate in a single pass with **no row fan-out at all** — it never ")
-	b.WriteString("builds the `(sample, anchor)` matrix. It needs ClickHouse ≥ 25.6 (the ")
-	b.WriteString("substrate here is 25.8).\n\n")
+	b.WriteString("builds the `(sample, anchor)` matrix. It is auto-enabled on ClickHouse ≥ 25.9 ")
+	b.WriteString("(the aggregate shipped at 25.6 but used a closed membership window that ")
+	b.WriteString("diverged from PromQL until the 25.9 left-open fix, PR #86588; the 25.8 ")
+	b.WriteString("substrate here forces the native path explicitly to isolate the engine cost).\n\n")
 
 	b.WriteString("Because native rate *removes* the fan-out, the two levers do not stack: with ")
 	b.WriteString("native rate on there is no fan-out spine left for the sharded solver to slice, ")
@@ -572,11 +575,15 @@ func renderScaling(b *strings.Builder, in docInput) error {
 	}
 
 	b.WriteString("> **Note.** The `setop_chain` curve runs through the optimizer, so the ")
-	b.WriteString("`FlattenVectorSetOp` rule collapses the left-assoc `a or b or c …` nesting into ")
-	b.WriteString("one N-ary `UNION ALL` under a single window pass — the chain is one scan, not K ")
-	b.WriteString("nested window passes, so **both** the wall and the cardinality axis are flat in ")
-	b.WriteString("chain depth and the harness hard-gates both. (`unless` is not associative, so an ")
-	b.WriteString("`unless` chain keeps its binary nesting by construction.)\n\n")
+	b.WriteString("`FlattenVectorSetOp` rule (#840) collapses the left-assoc `a or b or c …` nesting ")
+	b.WriteString("into one N-ary `UNION ALL` under a single window pass — the chain is one scan, not ")
+	b.WriteString("K nested window passes. That makes the **cardinality** axis flat: the peak ")
+	b.WriteString("intermediate stays a tiny constant (the disjoint-arm row count), never `rows × K`. ")
+	b.WriteString("The **wall** axis instead tracks K roughly linearly — the single pass still touches ")
+	b.WriteString("all K arms once, so O(K) compute is the optimal shape, not a residual regression; ")
+	b.WriteString("the harness hard-gates both axes against their expected shape (flat cardinality, ")
+	b.WriteString("linear-not-super-linear wall). (`unless` is not associative, so an `unless` chain ")
+	b.WriteString("keeps its binary nesting by construction.)\n\n")
 	return nil
 }
 
@@ -635,6 +642,8 @@ func renderMicro(b *strings.Builder, in docInput) {
 	b.WriteString("a fast query. `allocs/op` and `B/op` are deterministic; `ns/op` is indicative. ")
 	b.WriteString("Read the `package` column as the stage: `promql`/`logql`/`traceql` parse + ")
 	b.WriteString("lower, `optimizer` rewrites the plan, `chsql` emits SQL, `chplan` is the IR, ")
+	b.WriteString("`solver` is the sharded-pushdown slicer (`Slice/K=*` measures one `unpinSpine` ")
+	b.WriteString("plus K `ReanchorRange` calls on the copy-on-write off-spine sharing path), ")
 	b.WriteString("`api/*` is the wire layer.\n\n")
 
 	var rows [][]string

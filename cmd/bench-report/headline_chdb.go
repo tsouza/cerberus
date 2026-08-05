@@ -15,6 +15,33 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// metricEnvelopeColumnsDDL declares every envelope column the real
+// otel_metrics_{gauge,sum} tables carry beyond the (MetricName, Attributes,
+// TimeUnix, Value) metric-row quadruple (see metrics_gauge_table.sql /
+// metrics_sum_table.sql in the tsouza/opentelemetry-collector-contrib
+// clickhouseexporter fork). scanTableFrag's merge(currentDatabase(), regex)
+// table function (internal/chsql/emit_node.go) unions the gauge and sum
+// tables for a bare/untyped selector and projects only their common
+// columns; the default schema's resource-label promotion (PromResourceLabels,
+// on by default — see internal/promql/resource_attributes.go) then
+// unconditionally references ResourceAttributes in the emitted SQL for
+// every metrics query, gauge or sum. A synthetic bench table standing in
+// for one of the merge members must carry this same column set or CH
+// rejects the merged query with UNKNOWN_IDENTIFIER. Types are simplified
+// (no CODEC/LowCardinality/indexes — irrelevant to correctness); values
+// seeded via defaults are fine since no bench dataset seeds resource
+// labels.
+const metricEnvelopeColumnsDDL = `,
+  ResourceAttributes Map(String,String), ResourceSchemaUrl String,
+  ScopeName String, ScopeVersion String, ScopeAttributes Map(String,String),
+  ScopeDroppedAttrCount UInt32, ScopeSchemaUrl String, ServiceName String,
+  MetricDescription String, MetricUnit String, StartTimeUnix DateTime64(9),
+  Flags UInt32,
+  Exemplars Nested (
+    FilteredAttributes Map(String,String), TimeUnix DateTime64(9),
+    Value Float64, SpanId String, TraceId String
+  )`
+
 // headlineWin is one before/after optimization measurement. The numbers
 // pair a hand-written NAIVE shape (the documented pre-fix SQL) against
 // the OPTIMIZED shape cerberus actually emits (driven through the real
@@ -103,9 +130,9 @@ func measureRangeLWR(s *session, iters int) (headlineWin, error) {
 	seed := `DROP TABLE IF EXISTS bench_lwr_gauge;
 CREATE TABLE bench_lwr_gauge (
   MetricName String, Attributes Map(String,String),
-  TimeUnix DateTime64(9), Value Float64
+  TimeUnix DateTime64(9), Value Float64` + metricEnvelopeColumnsDDL + `
 ) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO bench_lwr_gauge SELECT
+INSERT INTO bench_lwr_gauge (MetricName, Attributes, TimeUnix, Value) SELECT
   '` + rangeLWRMetric + `',
   map('instance', concat('i', toString(number % 200))),
   toDateTime64('2026-01-01 00:00:00', 9) + toIntervalSecond((intDiv(number, 200)) * 96),
@@ -259,13 +286,13 @@ func measureSetOp(s *session, iters int) (headlineWin, error) {
 	b.WriteString("DROP TABLE IF EXISTS bench_setop_sum;")
 	b.WriteString(`CREATE TABLE bench_setop_sum (
   MetricName String, Attributes Map(String,String),
-  TimeUnix DateTime64(9), Value Float64
+  TimeUnix DateTime64(9), Value Float64` + metricEnvelopeColumnsDDL + `
 ) ENGINE = MergeTree() ORDER BY (MetricName, Attributes, TimeUnix);`)
 	ts := evalTime.Add(-time.Second).UTC().Format("2006-01-02 15:04:05.000000000")
 	// Each arm holds many rows (a realistic series count) so the per-arm
 	// re-scan the naive shape pays is non-trivial.
 	for i := 0; i <= nArms; i++ {
-		fmt.Fprintf(&b, "\nINSERT INTO bench_setop_sum SELECT 'setop.chain.metric.%d', "+
+		fmt.Fprintf(&b, "\nINSERT INTO bench_setop_sum (MetricName, Attributes, TimeUnix, Value) SELECT 'setop.chain.metric.%d', "+
 			"map('arm','%d','series',concat('s',toString(number))), toDateTime64('%s',9), toFloat64(number) "+
 			"FROM numbers(2000);", i, i, ts)
 	}
@@ -319,9 +346,13 @@ func measureSetOp(s *session, iters int) (headlineWin, error) {
 		OptStruct:   optScan,
 		StructRatio: ratioI(naiveScan, optScan),
 		Primary:     "structural",
-		WallNote: "the optimized single-pass shape still carries the unrelated " +
-			"left-assoc K-nesting residual (#90), so the wall ratio understates the win; " +
-			"the deterministic re-execution ratio is the headline",
+		WallNote: "the naive comparator here is a lightweight synthetic model of the " +
+			"pre-#810/#814 exponential duplication (a plain UNION-ALL of raw table scans), " +
+			"not real cerberus SQL, so at this K it executes fast despite modelling more " +
+			"scanned rows; the optimized shape's window-function overhead dominates at this " +
+			"scale, so the wall ratio understates the win — the deterministic re-execution " +
+			"ratio (arm rows scanned) is the true headline, and the setop_chain scaling " +
+			"curve above confirms the optimized shape's cardinality stays flat as K grows",
 	}, nil
 }
 

@@ -27,7 +27,7 @@
 //     K nested binary levels, each wrapping the prior level's whole relation in
 //     ANOTHER `UNION ALL` + window-partition pass, so the COMPUTE (wall) tracked
 //     K structurally (~2.6x/level) even though the intermediate stayed tiny.
-//   - Gen #90 (current main): N-ARY LINEARISATION. The optimizer's
+//   - Gen #840 (current main): N-ARY LINEARISATION. The optimizer's
 //     FlattenVectorSetOp rule collapses the left-assoc nested binary chain into
 //     ONE chplan.NaryVectorSetOp, and the emitter renders it as a SINGLE
 //     `UNION ALL` over all K arms with per-arm `_setop_side` tags + ONE
@@ -77,7 +77,7 @@ func init() {
 		// scan keeps the intermediate well within a small multiple while an
 		// exponential re-materialisation regression blows straight past.
 		CardinalityBound: float64(maxK + 2),
-		// Post-#90 the chain flattens into ONE NaryVectorSetOp single-pass (one
+		// Post-#840 the chain flattens into ONE NaryVectorSetOp single-pass (one
 		// UNION ALL over all K arms + one window partition). The intermediate
 		// CARDINALITY is flat (3->9 rows, disjoint arms — the hard
 		// CardinalityBound axis), but the single pass still SCANS all K+1 arms,
@@ -178,9 +178,9 @@ func emitSetOpChainSQL(t *testing.T, op string, k int) (string, []any) {
 	if err != nil {
 		t.Fatalf("LowerAt(%q): %v", q, err)
 	}
-	// Run the optimizer so FlattenVectorSetOp (#90) linearises the left-assoc
+	// Run the optimizer so FlattenVectorSetOp (#840) linearises the left-assoc
 	// nested binary chain into one NaryVectorSetOp single-pass — the whole
-	// point of this harness post-#90. Mirrors the prom handler's pipeline
+	// point of this harness post-#840. Mirrors the prom handler's pipeline
 	// (LowerAt -> optimizer.Default().Run -> chsql.Emit).
 	plan = optimizer.Default().Run(context.Background(), plan)
 	sqlText, args, err := chsql.Emit(context.Background(), plan)
