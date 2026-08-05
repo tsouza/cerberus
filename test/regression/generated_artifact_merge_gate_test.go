@@ -153,9 +153,9 @@ const catalogueShardExt = ".json"
 // rosterArtifacts returns the hand-written roster with the catalogue's shards
 // expanded into one entry apiece. Enumerating them beats hard-coding thirty
 // paths that turn over whenever a lowering file gains or loses its last
-// guard — and it is strictly stronger than the name-based net below, which
-// never sees a shard at all (a shard's BASENAME carries no generated-artefact
-// marker; only its directory does).
+// guard. The net below independently reaches the shards through their
+// directory name, so the two overlap here by design: this roster additionally
+// pins the regeneration command, which the net cannot.
 func rosterArtifacts(t *testing.T) []generatedArtifact {
 	t.Helper()
 
@@ -223,7 +223,8 @@ func TestGeneratedArtifactsRefuseLineMerge(t *testing.T) {
 // generatedNameMarkers are the naming families cerberus gives its generated data
 // artefacts. They are the net for artefacts added AFTER this gate landed: the
 // roster above can only cover what its author knew about, so anything committed
-// under one of these names has to be classified here one way or the other.
+// under one of these names has to be classified here one way or the other. A
+// family name on the DIRECTORY counts — see looksGenerated.
 var generatedNameMarkers = []string{"baseline", "inventory", "catalogue", ".pin."}
 
 // generatedDataExtensions restrict the net to DATA files. The same words appear
@@ -310,13 +311,19 @@ func TestNoGeneratedArtifactEscapesTheMergeGate(t *testing.T) {
 }
 
 // looksGenerated reports whether a tracked path is named like a generated data
-// artefact.
+// artefact. The markers are matched against the WHOLE path, not just the
+// basename: a sharded artefact carries the family name on its directory
+// (test/rejection-parity/catalogue/internal__promql__lower.go.json), so a
+// basename-only net would let every shard through — neither `-merge` gated nor
+// recorded as hand-authored — which is the silent-blend shape this gate exists
+// to prevent. The extension check stays on the basename, since only the file
+// itself decides whether it is a data file.
 func looksGenerated(path string) bool {
-	name := strings.ToLower(filepath.Base(path))
+	lower := strings.ToLower(path)
 
 	var dataFile bool
 	for _, ext := range generatedDataExtensions {
-		if strings.HasSuffix(name, ext) {
+		if strings.HasSuffix(filepath.Base(lower), ext) {
 			dataFile = true
 
 			break
@@ -327,12 +334,47 @@ func looksGenerated(path string) bool {
 	}
 
 	for _, marker := range generatedNameMarkers {
-		if strings.Contains(name, marker) {
+		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// TestLooksGeneratedReadsTheWholePath pins the directory half of the net. The
+// net was basename-only when it landed, which meant a generated artefact whose
+// family name sat on its DIRECTORY — the shape every sharded artefact takes —
+// was classified as neither generated nor hand-authored, and merged silently
+// with every check green. That is the #1422 failure the gate exists to make
+// loud, so the distinction is pinned rather than left to the roster to cover
+// incidentally.
+func TestLooksGeneratedReadsTheWholePath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"marker on the basename", "test/perf/cardinality-baseline.json", true},
+		{"marker on the directory only", "test/rejection-parity/catalogue/internal__promql__lower.go.json", true},
+		{"marker on a directory further up", "test/rejection-parity/catalogue/nested/shard.json", true},
+		{"marker anywhere, uppercased", "test/Rejection-Parity/CATALOGUE/Shard.JSON", true},
+		{"no marker at all", "test/spec/promql/rate.json", false},
+		{"marker present but not a data file", "test/rejection-parity/catalogue.go", false},
+		{"marker on the directory, non-data extension", "test/rejection-parity/catalogue/shard.md", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := looksGenerated(tc.path); got != tc.want {
+				t.Errorf("looksGenerated(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
 }
 
 // readGitattributes loads the gate, failing loudly if it has gone missing —

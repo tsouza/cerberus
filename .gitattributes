@@ -137,7 +137,8 @@ test/e2e/migration/expected/schema/*.sql                 -merge
 # Regenerate: `CERBERUS_UPDATE_INVENTORY=1 go test <package>`. Each is a sorted
 # flat array of rows behind a small wrapper object — the wrapper does not help,
 # the hazard lives one level down. The `-exclusions.json` siblings of the
-# ql-inventory files are hand-authored and deliberately absent from this list.
+# ql-inventory files are hand-authored and deliberately absent from this list —
+# they are recorded in the hand-authored section at the bottom instead.
 # CERBERUS_UPDATE_INVENTORY=1 go test ./test/oracle/inventory/...
 test/e2e/grafana/ql-inventory/promql-feature-inventory.json   -merge
 test/e2e/grafana/ql-inventory/logql-feature-inventory.json    -merge
@@ -174,6 +175,13 @@ test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 #   migration-e2e.mjs only reads it and errors telling you to reconcile.
 # hand-authored: test/e2e/migration/pass-assertions.pin.json — deliberately has
 #   no regeneration mode; the gate re-derives each sha256 before comparing.
+# hand-authored: test/e2e/grafana/ql-inventory/promql-feature-exclusions.json —
+#   curated exclusions, not regenerated; each entry names a feature the crawl
+#   must not expect, and a blended one fails the crawl it guards.
+# hand-authored: test/e2e/grafana/ql-inventory/logql-feature-exclusions.json —
+#   same, for the LogQL crawl.
+# hand-authored: test/e2e/grafana/ql-inventory/traceql-feature-exclusions.json —
+#   same, for the TraceQL crawl.
 #
 # Two further families are deliberately left ungated, for the same "a blend is
 # loud, not silent" reason:
