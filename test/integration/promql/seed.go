@@ -93,6 +93,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	b.WriteString(gaugeDDL())
 	b.WriteString(sumDDL())
 	b.WriteString(histogramDDL())
+	b.WriteString(expHistogramDDL())
 
 	var series []property.SeriesData
 
@@ -194,6 +195,33 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 		}
 		b.WriteString(histogramInsert("demo_api_request_duration_seconds", lbls, si))
 		series = append(series, histogramModelSeries("demo_api_request_duration_seconds", lbls, si)...)
+	}
+
+	// --- Native (exponential) histogram (otel_metrics_exponential_histogram). ---
+	// demo_request_latency_exp_hist{instance,job}. Unlike the classic
+	// histogram above, cerberus reads native-histogram rows via
+	// argMax(..., TimeUnix) — only the LATEST snapshot per series matters,
+	// not a windowed sum of deltas — so each step's bucket counts are
+	// stored as an absolute (growing) snapshot, not a delta.
+	//
+	// Two series: one positive-bucket-only (mirrors every txtar fixture in
+	// test/spec/promql/), one with real negative buckets AND a populated
+	// zero bucket — the region of the bucket-walk algorithm no repo
+	// fixture exercises on a bare selector, so this is the only place the
+	// negative-region formula gets cross-checked against real chDB +
+	// cerberus rather than just self-consistency with the oracle's own
+	// hand-derivation (see histogram_native_test.go's
+	// TestNativeHistogramQuantile_NegativeBuckets doc comment).
+	for i, inst := range instances[:2] {
+		lbls := map[string]string{"instance": inst, "job": "demo"}
+		var pts []property.Point
+		if i == 0 {
+			pts = expHistogramValues(0, 0, []uint64{1, 2, 3}, 0, nil, 0)
+		} else {
+			pts = expHistogramValues(0, 0, []uint64{2, 3}, 1, []uint64{1, 2}, 4)
+		}
+		b.WriteString(expHistogramInsert("demo_request_latency_exp_hist", lbls, pts))
+		series = append(series, mkSeries("demo_request_latency_exp_hist", lbls, pts))
 	}
 
 	return b.String(), &property.MetricsModel{Series: series}
@@ -306,6 +334,24 @@ func histogramDDL() string {
 `
 }
 
+func expHistogramDDL() string {
+	return `CREATE OR REPLACE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix);
+`
+}
+
 func gaugeInsert(name string, lbls map[string]string, points []property.Point) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES ")
@@ -350,6 +396,66 @@ func histogramInsert(name string, lbls map[string]string, si int) string {
 		fmt.Fprintf(&b, "('%s', %s, %s, %d, %s, %s, %s)",
 			name, renderMap(lbls), tsLiteral(stepTsMs(step)),
 			count, formatFloat(sum), renderUintArray(deltas), renderFloatArray(histoBounds))
+	}
+	b.WriteString(";\n")
+	return b.String()
+}
+
+// expHistogramValues produces seedSteps native-histogram snapshots whose
+// bucket counts grow linearly with the step index (each row is a full
+// snapshot at that TimeUnix, not a delta — see RichSeed's doc comment on
+// why growth here mirrors OTel cumulative temporality rather than
+// bucketDeltas's delta convention). Sum is a deterministic function of the
+// total count; it isn't the "physically correct" sum of bucket midpoints,
+// but the seed only needs Count/Sum to be internally consistent across
+// steps, and chDB + the oracle read the exact same generated value either
+// way.
+func expHistogramValues(scale, posOffset int32, posBase []uint64, negOffset int32, negBase []uint64, zeroCount uint64) []property.Point {
+	out := make([]property.Point, 0, seedSteps)
+	for i := 0; i < seedSteps; i++ {
+		pos := make([]uint64, len(posBase))
+		var total uint64
+		for j, c := range posBase {
+			pos[j] = c + uint64(i)
+			total += pos[j]
+		}
+		neg := make([]uint64, len(negBase))
+		for j, c := range negBase {
+			neg[j] = c + uint64(i)
+			total += neg[j]
+		}
+		total += zeroCount
+		h := property.NativeHistogram{
+			Count:                total,
+			Sum:                  float64(total) * 1.5,
+			Scale:                scale,
+			ZeroCount:            zeroCount,
+			PositiveOffset:       posOffset,
+			PositiveBucketCounts: pos,
+			NegativeOffset:       negOffset,
+			NegativeBucketCounts: neg,
+		}
+		out = append(out, property.Point{TimestampMs: stepTsMs(i), Histogram: &h})
+	}
+	return out
+}
+
+// expHistogramInsert renders points (each carrying a Histogram payload —
+// see expHistogramValues) as an otel_metrics_exponential_histogram INSERT.
+func expHistogramInsert(name string, lbls map[string]string, points []property.Point) string {
+	var b strings.Builder
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " +
+		"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, " +
+		"PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES ")
+	for i, p := range points {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		h := p.Histogram
+		fmt.Fprintf(&b, "('%s', %s, %s, %d, %s, %d, %d, %d, %s, %d, %s)",
+			name, renderMap(lbls), tsLiteral(p.TimestampMs),
+			h.Count, formatFloat(h.Sum), h.Scale, h.ZeroCount, h.PositiveOffset,
+			renderUintArray(h.PositiveBucketCounts), h.NegativeOffset, renderUintArray(h.NegativeBucketCounts))
 	}
 	b.WriteString(";\n")
 	return b.String()

@@ -30,14 +30,12 @@ func (c exoticCase) ts() int64 {
 // ALL oracle-evaluated and exercised below (cat3Aggregators, cat4SetOps,
 // cat8ScalarVector, cat11TrendFunctions, cat12SubqueriesAndLabelTransforms)
 // — count_values/limitk/limit_ratio were closed by #1693, the trend
-// functions by #1695, subqueries/label_replace/label_join by #1694.
+// functions by #1695, subqueries/label_replace/label_join by #1694, and
+// native (exponential) histograms by #1696 (bare-selector shapes only —
+// see cat13NativeHistograms's doc comment for the scope boundary).
 // limitk is exact-match only at its two iteration-order-independent
 // endpoints (see cat3Aggregators's doc comment); count_values and
-// limit_ratio are exact-match throughout. The remaining categories the
-// oracle can't yet evaluate are each tracked by its own open issue, not
-// by prose:
-//   - native (exponential) histograms — #1696
-//
+// limit_ratio are exact-match throughout.
 // @ start()/end() determinism for range queries and stale/NaN handling are
 // NOT oracle gaps — they're covered by the Layer 2a txtar goldens under
 // test/spec/promql/ (at_start_basic.txtar, at_end_basic.txtar,
@@ -67,6 +65,7 @@ var ExoticMatrix = func() []exoticCase {
 	m = append(m, cat10ScalarOps()...)
 	m = append(m, cat11TrendFunctions()...)
 	m = append(m, cat12SubqueriesAndLabelTransforms()...)
+	m = append(m, cat13NativeHistograms()...)
 	return m
 }()
 
@@ -427,6 +426,52 @@ func cat12SubqueriesAndLabelTransforms() []exoticCase {
 		// Subquery + offset: shifts the subquery's own end anchor back,
 		// independent of any offset inside the inner expression.
 		{name: "cat12/subquery_with_offset", promql: `avg_over_time(` + used + `[3m:1m] offset 1m)`},
+	}
+}
+
+// cat13NativeHistograms exercises the native (OTel exponential) histogram
+// oracle support added for #1696: histogram_quantile over a bare native-
+// histogram selector, and the histogram_count/_sum/_avg/_stddev/_stdvar/
+// _fraction value-function family.
+//
+// SCOPE: both the oracle and cerberus's own emitter
+// (internal/promql/histogram_value_fns.go) restrict the six value
+// functions to bare VectorSelector arguments — any wrapping expression
+// (aggregation, rate(), arithmetic) folds to an always-empty vector in
+// cerberus, so bare-selector-only oracle coverage is a COMPLETE match for
+// those six, not a partial one. histogram_quantile is WIDER in cerberus:
+// it also accepts rate()/sum by(...)-wrapped arguments via a separate
+// scale-fold merge algorithm (internal/chsql/histogram_quantile_native.go)
+// that this oracle does NOT implement — that merge path stays an
+// uncovered gap here, tracked by
+// https://github.com/tsouza/cerberus/issues/1696 remaining open for that
+// narrower follow-up scope.
+//
+// demo_request_latency_exp_hist{instance=...:10000} is positive-bucket-
+// only (mirrors every existing test/spec/promql/*.txtar fixture);
+// {instance=...:10001} adds real negative buckets AND a populated zero
+// bucket, the one region no repo fixture exercises on a bare selector —
+// see RichSeed's doc comment on why this pairing is the actual live
+// cross-check for the bucket-walk's negative-region formula.
+func cat13NativeHistograms() []exoticCase {
+	const h = "demo_request_latency_exp_hist"
+	posOnly := h + `{instance="demo.promlabs.com:10000"}`
+	withNeg := h + `{instance="demo.promlabs.com:10001"}`
+	return []exoticCase{
+		{name: "cat13/hq_p50_positive_only", promql: "histogram_quantile(0.5, " + posOnly + ")"},
+		{name: "cat13/hq_p99_positive_only", promql: "histogram_quantile(0.99, " + posOnly + ")"},
+		{name: "cat13/hq_p50_with_negative", promql: "histogram_quantile(0.5, " + withNeg + ")"},
+		{name: "cat13/hq_p95_with_negative", promql: "histogram_quantile(0.95, " + withNeg + ")"},
+		{name: "cat13/hq_phi_neg", promql: "histogram_quantile(-0.1, " + posOnly + ")"},
+		{name: "cat13/hq_phi_over1", promql: "histogram_quantile(1.01, " + posOnly + ")"},
+		{name: "cat13/hq_multi_series", promql: `histogram_quantile(0.9, ` + h + `{instance=~".+"})`},
+		{name: "cat13/histogram_count", promql: "histogram_count(" + withNeg + ")"},
+		{name: "cat13/histogram_sum", promql: "histogram_sum(" + withNeg + ")"},
+		{name: "cat13/histogram_avg", promql: "histogram_avg(" + withNeg + ")"},
+		{name: "cat13/histogram_stddev", promql: "histogram_stddev(" + withNeg + ")"},
+		{name: "cat13/histogram_stdvar", promql: "histogram_stdvar(" + withNeg + ")"},
+		{name: "cat13/histogram_fraction_positive_bounds", promql: "histogram_fraction(0.5, 3, " + withNeg + ")"},
+		{name: "cat13/histogram_fraction_negative_bounds", promql: "histogram_fraction(-3, 3, " + withNeg + ")"},
 	}
 }
 
