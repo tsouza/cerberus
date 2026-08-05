@@ -102,12 +102,26 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			}
 			return &chplan.ScalarSubquery{Input: scalarValuePlan(inner, s)}, nil
 		case "time":
-			// Mirrors lowerTime's instant value expression: the eval
-			// anchor as Unix seconds with the fraction preserved.
+			// Mirrors lowerTime's value expression. In range mode
+			// (ctx.step > 0) lowerTime binds per-step via
+			// chplan.NowNano() + rewriteAnchorRefs, a rewrite pass that
+			// only fires inside syntheticScalarVector — lowerScalarArg's
+			// embedding sites (nested inside round()/clamp()/quantile()
+			// etc.) never go through that path. The Sample contract
+			// guarantees TimeUnix == anchor_ts on every row in range
+			// mode (see chplan/range_lwr.go, promql/lower.go's
+			// wrapRangeLatestPerSeries), so reading the row's own
+			// TimeUnix column reproduces the same per-step binding
+			// without the rewrite pass. Instant mode (ctx.step == 0)
+			// is untouched, so every existing golden stays
+			// byte-identical.
 			var anchor chplan.Expr
-			if !ctx.end.IsZero() {
+			switch {
+			case ctx.step > 0:
+				anchor = &chplan.ColumnRef{Name: s.TimestampColumn}
+			case !ctx.end.IsZero():
 				anchor = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
-			} else {
+			default:
 				anchor = anchorBaseExpr(evalAnchor{})
 			}
 			return &chplan.FuncCall{
