@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -580,6 +581,85 @@ func TestMetadata_NoMonotonicColumnFallsBackToCounter(t *testing.T) {
 	}
 	if sumCalls[0].kind != "counter" {
 		t.Errorf("fallback sum arm reported type %q, want counter", sumCalls[0].kind)
+	}
+}
+
+// matchSelectorRejectedShapes are match[] values upstream Prometheus
+// rejects at the ParseMetricSelector boundary — a range-vector call, the
+// offset modifier, the @ modifier, and an aggregation — because that
+// grammar entrypoint only accepts a bare instant vector selector. #1487:
+// cerberus used to parse match[] with the general ParseExpr grammar,
+// which accepts every one of these, walks down to the inner vector
+// selector, and silently drops whatever wrapped it (the range, the
+// offset, the @ timestamp, the aggregation) — turning a caller mistake
+// into a wrong 200 instead of upstream's 400.
+var matchSelectorRejectedShapes = []string{
+	"rate(http_requests_total[5m])",
+	"foo offset 1h",
+	"foo @ 1600000000",
+	"sum(foo)",
+}
+
+func TestLabels_MatchSelectorRejectsNonSelector(t *testing.T) {
+	t.Parallel()
+
+	for _, m := range matchSelectorRejectedShapes {
+		t.Run(m, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/v1/labels?" + url.Values{"match[]": {m}}.Encode())
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("match[]=%q: expected 400, got %d body=%s", m, resp.StatusCode, readBody(t, resp))
+			}
+		})
+	}
+}
+
+func TestLabelValues_MatchSelectorRejectsNonSelector(t *testing.T) {
+	t.Parallel()
+
+	for _, m := range matchSelectorRejectedShapes {
+		t.Run(m, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/v1/label/job/values?" + url.Values{"match[]": {m}}.Encode())
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("match[]=%q: expected 400, got %d body=%s", m, resp.StatusCode, readBody(t, resp))
+			}
+		})
+	}
+}
+
+func TestSeries_MatchSelectorRejectsNonSelector(t *testing.T) {
+	t.Parallel()
+
+	for _, m := range matchSelectorRejectedShapes {
+		t.Run(m, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(&stubQuerier{})
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/v1/series?" + url.Values{"match[]": {m}}.Encode())
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("match[]=%q: expected 400, got %d body=%s", m, resp.StatusCode, readBody(t, resp))
+			}
+		})
 	}
 }
 

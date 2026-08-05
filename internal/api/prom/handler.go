@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -715,6 +716,57 @@ func (h *Handler) parseExpr(ctx context.Context, query string) (promparser.Expr,
 		return nil, err
 	}
 	return expr, nil
+}
+
+// parseMatchSelector parses one `match[]` value the way upstream Prometheus
+// parses it on the metadata / series endpoints: with ParseMetricSelector,
+// the grammar entrypoint that accepts a bare vector selector only and
+// rejects everything else — aggregations, calls, binary expressions, and
+// the offset / `@` modifiers — at the parse boundary. This is deliberately
+// narrower than parseExpr (the general-expression grammar `/query` and
+// `/query_range` use): a match[] selector that upstream rejects must fail
+// here too, rather than being walked down to a vector selector that
+// silently discards whatever wrapped it.
+//
+// ParseMetricSelector's grammar alone accepts `{}` (or a selector whose
+// matchers all match the empty string) — the "no non-empty matcher"
+// rejection is not a parser rule, it's a check upstream's own HTTP layer
+// applies afterwards (web/api/v1's matchersParam), so requireNonEmptyMatcher
+// mirrors it here rather than relying on the grammar to catch it.
+//
+// The result is wrapped back into a *parser.VectorSelector so callers can
+// keep feeding it through the existing Expr-shaped lowering path
+// (promql.LowerMetadataRange / lowerVectorSelector), which derives the
+// metric name from LabelMatchers and never reads the modifier fields
+// ParseMetricSelector's grammar can't produce anyway.
+func (h *Handler) parseMatchSelector(ctx context.Context, matcher string) (promparser.Expr, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
+		trace.WithAttributes(cerbtrace.ParseAttrs("promql", matcher)...))
+	defer span.End()
+	matchers, err := h.parser.ParseMetricSelector(normalizeDottedSelectors(matcher))
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	if err := requireNonEmptyMatcher(matchers); err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	return &promparser.VectorSelector{LabelMatchers: matchers}, nil
+}
+
+// requireNonEmptyMatcher rejects a match[] selector whose matchers all
+// match the empty string (including the trivial `{}` selector), matching
+// upstream Prometheus's web/api/v1 matchersParam check: without it, a
+// selector like `{}` implicitly selects every metric — almost always a
+// caller typo rather than intent.
+func requireNonEmptyMatcher(matchers []*labels.Matcher) error {
+	for _, m := range matchers {
+		if m != nil && !m.Matches("") {
+			return nil
+		}
+	}
+	return errors.New("match[] must contain at least one non-empty matcher")
 }
 
 // scalarPoint renders the [<unix_seconds_float>, "<value_string>"]
