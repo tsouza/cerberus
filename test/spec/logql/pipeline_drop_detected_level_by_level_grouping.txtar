@@ -1,0 +1,36 @@
+-- query.logql --
+sum by (detected_level) (count_over_time({job="api"} | drop detected_level [5m]))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), 'a', 'INFO', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:00', 9), 'b', 'WARN', map('job', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'c', 'ERROR', map('job', 'api'));
+-- expected_rows --
+[
+  ["", {"detected_level": ""}, "2026-01-01T00:00:01Z", 3]
+]
+-- args --
+[0] string = ""
+[1] string = "detected_level"
+[2] int64 = 9
+[3] string = "detected_level"
+[4] string = "detected_level"
+[5] int64 = 1
+[6] string = "job"
+[7] string = "api"
+-- chplan --
+Project ["" AS MetricName, map("detected_level", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[ResourceAttributes["detected_level"] AS gkey_0] funcs=[sum(Value) AS Value]
+    RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+      Project [mapSort(mapFilter((k, v) -> not((k = "detected_level")), ResourceAttributes)) AS ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=(ResourceAttributes["job"] = "api")
+          Scan(otel_logs)
+-- sql --
+SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapFilter((k, v) -> not((k = ?)), `ResourceAttributes`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`) GROUP BY `gkey_0`)
