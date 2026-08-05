@@ -1,7 +1,7 @@
 // Command rejection-parity is the differential harness for cerberus's
 // deliberate rejections. It consumes the rejection catalogue
-// (test/rejection-parity/catalogue.json — see that package's doc for
-// the full mechanism) and, for every class=rejection or
+// (the shard directory test/rejection-parity/catalogue/ — see that
+// package's doc for the full mechanism) and, for every class=rejection or
 // class=divergence entry of the selected head, sends the entry's
 // trigger query to BOTH the reference backend and cerberus, then
 // compares the *status class* — never message text, because the two
@@ -138,7 +138,7 @@ func (r Report) Fatal() bool {
 func run() error {
 	var (
 		head      = flag.String("head", "", "head to run: promql | logql | traceql")
-		catalogue = flag.String("catalogue", "test/rejection-parity/catalogue.json", "path to the rejection catalogue")
+		catalogue = flag.String("catalogue", "test/rejection-parity/catalogue", "path to the rejection-catalogue shard directory")
 		refURL    = flag.String("ref", "", "reference backend base URL")
 		cerbURL   = flag.String("cerberus", "", "cerberus base URL")
 		report    = flag.String("report", "", "JSON report output path")

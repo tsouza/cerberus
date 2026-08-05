@@ -1,0 +1,46 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:logqlBinaryOp#5dca11c4",
+      "message": "logql: unknown binary op %s",
+      "class": "internal",
+      "rationale": "unreachable: the parser produces only the 12 arithmetic/comparison ops (all mapped) plus and/or/unless, which lowerBinary routes to lowerVectorSetOp before this map is consulted"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:logqlVectorSetOpKind#a8c6abd9",
+      "message": "logql: not a vector set operator: %s",
+      "class": "internal",
+      "rationale": "unreachable: only called when syntax.IsLogicalBinOp(op) is true, and the three logical ops are all mapped"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerBinary#4879747f",
+      "message": "logql: binary expression has nil leg(s)",
+      "class": "internal",
+      "rationale": "internal invariant: the pinned parser never yields a binary expression with nil legs"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerBinary#e16a89f2",
+      "message": "logql: scalar-only binary expression not folded (op %s) — internal invariant violation",
+      "class": "internal",
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:vectorMatchingFromOpts#64179012",
+      "message": "logql: unsupported vector-matching cardinality %d",
+      "class": "internal",
+      "rationale": "LogQL's VectorMatchCardinality enum stops at CardOneToMany; no parser-producible value reaches the default arm"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:vectorMatchingFromOpts#89d11456",
+      "message": "logql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
+      "class": "internal",
+      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible"
+    }
+  ]
+}

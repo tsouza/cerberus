@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:ipLabelFilterExpr#dd5ced4f",
+      "message": "logql: ip: invalid operation for label filter (only = and != support ip())",
+      "class": "internal",
+      "rationale": "unreachable: the LogQL grammar only builds IPLabelFilter for = and != (syntax.y: IDENTIFIER EQ/NEQ IP OPEN_PARENTHESIS ...)"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:ipLineFilterExpr#298688ca",
+      "message": "logql: ip: invalid operation for line filter (only |= and != support ip())",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |~ ip(\"127.0.0.1\")"
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:parseIPPattern#a3ece11b",
+      "message": "logql: ip: invalid pattern %q",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |= ip(\"not-an-ip\")"
+    }
+  ]
+}

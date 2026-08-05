@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_compare.go:lowerMetricsCompare#14f543c1",
+      "message": "traceql: compare() selection filter lowered to no predicate",
+      "class": "internal",
+      "rationale": "every parseable compare() selection filter (including `{}` and constant-true filters) lowers to a predicate"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_compare.go:lowerMetricsCompare#23f37ac7",
+      "message": "traceql: compare() requires a selection spanset filter",
+      "class": "internal",
+      "rationale": "the grammar requires a spanset-filter argument on compare(); Filter() is never nil for a parseable query"
+    }
+  ]
+}

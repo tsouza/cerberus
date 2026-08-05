@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/sort.go:lowerSort#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces sort()/sort_desc()'s single-argument arity at parse time."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/sort.go:lowerSortByLabel#8f9fe409",
+      "message": "promql: %s expects at least 2 arguments (vector, label[, label…]), got %d",
+      "class": "divergence",
+      "trigger_query": "sort_by_label(demo_memory_usage_bytes)",
+      "tracking_issue": 1783,
+      "since": "2026-08-05"
+    }
+  ]
+}

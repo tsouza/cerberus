@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:anchorFromSelector#394bcda7",
+      "message": "promql: `@ end()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:anchorFromSelector#91490634",
+      "message": "promql: `@ start()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:anchorFromSelector#df7f6e9a",
+      "message": "promql: unexpected StartOrEnd token %v",
+      "class": "internal",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd"
+    }
+  ]
+}

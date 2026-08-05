@@ -1,0 +1,27 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#afa8cb1f",
+      "message": "promql: histogram_quantile expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins histogram_quantile at exactly two arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#1cf264f6",
+      "message": "promql: histogram_quantiles requires literal phi arguments for the %q label, got %T",
+      "class": "divergence",
+      "trigger_query": "histogram_quantiles(demo_api_request_duration_seconds, \"quantile\", scalar(vector(0.9)))",
+      "tracking_issue": 1765,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#b20609dc",
+      "message": "promql: histogram_quantiles expects at least %d arguments (vector, label, phi...), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced minimum arity: histogram_quantiles is declared with 4 ArgTypes (vector, string, scalar, scalar) and Variadic:9, so the parser rejects fewer than len(ArgTypes)-1 = 3 arguments (\"expected at least 3 argument(s)\") before lowering runs."
+    }
+  ]
+}

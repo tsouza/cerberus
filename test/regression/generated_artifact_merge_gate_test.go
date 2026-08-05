@@ -131,12 +131,55 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/e2e/grafana/ql-inventory/promql-feature-inventory.json", inventoryUpdateEnv},
 	{"test/e2e/grafana/ql-inventory/logql-feature-inventory.json", inventoryUpdateEnv},
 	{"test/e2e/grafana/ql-inventory/traceql-feature-inventory.json", inventoryUpdateEnv},
-	{"test/rejection-parity/catalogue.json", inventoryUpdateEnv},
 	{"test/surface-parity/inventory.json", inventoryUpdateEnv},
 	{"test/surface-parity/promql-reference-verdicts.json", "promql-surface-gate.mjs"},
 
 	{"test/e2e/playwright/crawl/grafana-surface-inventory.compose.json", crawlInventorySpec},
 	{"test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json", crawlInventorySpec},
+}
+
+// catalogueShardDir is the rejection catalogue, stored as one shard per
+// lowering SOURCE FILE (test/rejection-parity/catalogue.go's shardName owns
+// the mapping). Sharding is itself a merge measure — two branches fixing
+// guards in different lowering files write different shards — but it does not
+// retire this gate: two branches touching the SAME lowering file still meet in
+// one shard, which is the #1422 shape again at shard granularity.
+const catalogueShardDir = "test/rejection-parity/catalogue"
+
+// catalogueShardExt is the suffix every shard file carries; the directory
+// holds nothing else.
+const catalogueShardExt = ".json"
+
+// rosterArtifacts returns the hand-written roster with the catalogue's shards
+// expanded into one entry apiece. Enumerating them beats hard-coding thirty
+// paths that turn over whenever a lowering file gains or loses its last
+// guard — and it is strictly stronger than the name-based net below, which
+// never sees a shard at all (a shard's BASENAME carries no generated-artefact
+// marker; only its directory does).
+func rosterArtifacts(t *testing.T) []generatedArtifact {
+	t.Helper()
+
+	dir := filepath.Join(repoRoot, filepath.FromSlash(catalogueShardDir))
+	des, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v. The rejection catalogue is a directory of per-source-file shards; if it "+
+			"moved, this gate and %s have to move with it.", catalogueShardDir, err, gitattributesPath)
+	}
+
+	out := make([]generatedArtifact, 0, len(generatedArtifacts)+len(des))
+	out = append(out, generatedArtifacts...)
+	for _, de := range des {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), catalogueShardExt) {
+			continue
+		}
+		out = append(out, generatedArtifact{catalogueShardDir + "/" + de.Name(), inventoryUpdateEnv})
+	}
+	if len(out) == len(generatedArtifacts) {
+		t.Fatalf("%s holds no %s shard. An empty catalogue directory would make this gate vacuous for "+
+			"every rejection site in the tree.", catalogueShardDir, catalogueShardExt)
+	}
+
+	return out
 }
 
 // TestGeneratedArtifactsRefuseLineMerge asserts every generated artefact is
@@ -148,7 +191,7 @@ func TestGeneratedArtifactsRefuseLineMerge(t *testing.T) {
 
 	attrBody := readGitattributes(t)
 
-	for _, artifact := range generatedArtifacts {
+	for _, artifact := range rosterArtifacts(t) {
 		t.Run(artifact.path, func(t *testing.T) {
 			t.Parallel()
 
@@ -204,9 +247,10 @@ func TestNoGeneratedArtifactEscapesTheMergeGate(t *testing.T) {
 	// actually NAMED like a generated artefact — the migration goldens are
 	// gated by path pattern instead and never match it. Counting that subset
 	// here is what makes the reachability check below compare like with like.
-	rostered := make(map[string]struct{}, len(generatedArtifacts))
+	roster := rosterArtifacts(t)
+	rostered := make(map[string]struct{}, len(roster))
 	var rosteredMatchingNet int
-	for _, artifact := range generatedArtifacts {
+	for _, artifact := range roster {
 		rostered[artifact.path] = struct{}{}
 		if looksGenerated(artifact.path) {
 			rosteredMatchingNet++

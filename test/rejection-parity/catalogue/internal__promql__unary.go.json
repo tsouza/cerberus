@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/unary.go:lowerUnary#518e89c7",
+      "message": "promql: unary operand: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped rejection is catalogued at its origin"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/unary.go:lowerUnary#fe35064b",
+      "message": "promql: unsupported unary op %v",
+      "class": "internal",
+      "rationale": "the parser yields only +/- unary operators"
+    }
+  ]
+}

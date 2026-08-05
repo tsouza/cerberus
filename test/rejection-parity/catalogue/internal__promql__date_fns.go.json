@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFn#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFn#ab4896c1",
+      "message": "promql: %s expects 0 or 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the date functions are declared variadic 0..1 in parser.Functions (\"expected at most 1 argument(s)\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFnNoArg#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here"
+    }
+  ]
+}

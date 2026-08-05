@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_args.go:lowerScalarArg#29d3d126",
+      "message": "promql: %s() is not a supported scalar argument",
+      "class": "internal",
+      "rationale": "The parser's type checker admits only scalar() / time() / pi() as scalar-returning calls; pi() folds via TryFoldScalar before this dispatch, and the other two are handled — the arm guards future upstream scalar functions."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_args.go:lowerScalarArg#7acf48a0",
+      "message": "promql: unsupported scalar argument %T",
+      "class": "internal",
+      "rationale": "The scalar-typed expression space is closed by the parser's type checker: literal trees fold, Paren/Unary/Binary recurse, and the three scalar-returning calls are handled — no parseable scalar argument reaches the default arm."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_args.go:lowerScalarArg#a14c0271",
+      "message": "promql: scalar() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces scalar()'s single-argument arity at parse time."
+    }
+  ]
+}

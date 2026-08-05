@@ -1,0 +1,53 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsAggregate#c5a17af0",
+      "message": "traceql: quantile_over_time requires at least one quantile",
+      "class": "internal",
+      "rationale": "the grammar requires at least one quantile argument on quantile_over_time"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsGroupBy#26b9b81a",
+      "message": "traceql: empty by(...) group key",
+      "class": "internal",
+      "rationale": "the grammar rejects an empty by() group key as a parse error"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsHistogramOverTime#3fe5309b",
+      "message": "traceql: histogram_over_time requires an attribute operand",
+      "class": "internal",
+      "rationale": "the grammar admits only attribute operands inside histogram_over_time(...)"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsPipeline#d4c9f593",
+      "message": "traceql: metrics pipeline element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every metrics pipeline element type the pinned grammar produces is handled"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#a456c01c",
+      "message": "traceql: histogram_over_time must lower via lowerMetricsHistogramOverTime",
+      "class": "internal",
+      "rationale": "internal routing invariant: histogram_over_time is dispatched to lowerMetricsHistogramOverTime before this mapper"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#e363ec48",
+      "message": "traceql: metrics aggregate op %s is unsupported",
+      "class": "internal",
+      "rationale": "every metrics aggregate op the pinned grammar produces is mapped"
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:metricsAggregateAttr#937cdd96",
+      "message": "traceql: %s requires an attribute operand",
+      "class": "internal",
+      "rationale": "the grammar admits only attribute operands inside the *_over_time(...) metrics aggregates"
+    }
+  ]
+}

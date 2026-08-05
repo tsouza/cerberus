@@ -3,6 +3,7 @@ package rejectionparity
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,52 +19,199 @@ import (
 )
 
 const (
-	repoRoot      = "../.."
-	cataloguePath = "catalogue.json"
+	repoRoot = "../.."
+	// catalogueDir is the shard directory (relative to this package's
+	// directory), one shard per source file — see catalogue.go's
+	// shardPathSeparator doc comment for the naming rule.
+	catalogueDir = "catalogue"
 )
 
 // TestCatalogueIsRegenerable rescans the three lowering packages and
-// diffs the regenerated catalogue byte-for-byte against the checked-in
-// JSON. Set CERBERUS_UPDATE_INVENTORY=1 to rewrite the artifact (the
-// same update-via-env convention as test/inventory). Regeneration
-// preserves the curated fields of surviving sites; new sites land
-// unclassified (and then fail TestCatalogueEntriesAreClassified until
-// curated), removed sites drop out. Both directions are deliberate,
-// reviewable diffs — a rejection site can neither appear nor vanish
-// without the catalogue (and therefore the parity corpus) moving in
-// lock-step.
+// diffs the regenerated shards byte-for-byte against the checked-in
+// directory — content drift, a missing shard, and a lingering shard
+// whose source file lost its last catalogued site are all failures.
+// Set CERBERUS_UPDATE_INVENTORY=1 to rewrite the artifact (the same
+// update-via-env convention as test/inventory). Regeneration preserves
+// the curated fields of surviving sites; new sites land unclassified
+// (and then fail TestCatalogueEntriesAreClassified until curated),
+// removed sites drop out. Both directions are deliberate, reviewable
+// diffs — a rejection site can neither appear nor vanish without the
+// catalogue (and therefore the parity corpus) moving in lock-step.
 func TestCatalogueIsRegenerable(t *testing.T) {
 	t.Parallel()
 
-	prev, err := LoadCatalogue(cataloguePath)
+	prev, err := LoadCatalogue(catalogueDir)
 	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("load %s: %v", cataloguePath, err)
+		t.Fatalf("load %s: %v", catalogueDir, err)
 	}
 	cat, err := Generate(repoRoot, prev)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want, err := MarshalCatalogue(cat)
-	if err != nil {
-		t.Fatalf("MarshalCatalogue: %v", err)
-	}
 
 	if os.Getenv("CERBERUS_UPDATE_INVENTORY") != "" {
-		if err := os.WriteFile(cataloguePath, want, 0o644); err != nil {
-			t.Fatalf("write %s: %v", cataloguePath, err)
+		if err := WriteCatalogue(catalogueDir, cat); err != nil {
+			t.Fatalf("write %s: %v", catalogueDir, err)
 		}
-		t.Logf("rewrote %s (%d entries)", cataloguePath, len(cat.Entries))
+		t.Logf("rewrote %s (%d entries)", catalogueDir, len(cat.Entries))
 		return
 	}
 
-	got, err := os.ReadFile(cataloguePath)
+	want, err := ShardCatalogue(cat)
 	if err != nil {
-		t.Fatalf("read %s (rerun with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", cataloguePath, err)
+		t.Fatalf("ShardCatalogue: %v", err)
 	}
-	if string(got) != string(want) {
+	diffs, err := DiffShards(catalogueDir, want)
+	if err != nil {
+		t.Fatalf("DiffShards(%s) (rerun with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", catalogueDir, err)
+	}
+	if len(diffs) > 0 {
 		t.Fatalf("%s is stale relative to the lowering sources — rerun with "+
-			"CERBERUS_UPDATE_INVENTORY=1, curate any new entries, and commit the diff.\n"+
-			"--- want %d bytes, got %d bytes", cataloguePath, len(want), len(got))
+			"CERBERUS_UPDATE_INVENTORY=1, curate any new entries, and commit the diff.\n%s",
+			catalogueDir, strings.Join(diffs, "\n"))
+	}
+}
+
+// TestShardNamesRoundTrip pins the shard-naming rule: every source file
+// the scan reaches maps to a shard name that maps back to the same
+// path, and the mapping refuses a path it could not represent
+// reversibly. Injectivity is the load-bearing half — two source files
+// sharing a shard would let one file's regeneration silently delete the
+// other's entries.
+func TestShardNamesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cat := loadCatalogue(t)
+	owners := map[string]string{}
+	for _, e := range cat.Entries {
+		src, err := siteSourceFile(e.Site.Site)
+		if err != nil {
+			t.Fatalf("siteSourceFile(%q): %v", e.Site.Site, err)
+		}
+		name, err := shardName(src)
+		if err != nil {
+			t.Fatalf("shardName(%q): %v", src, err)
+		}
+		if prev, ok := owners[name]; ok && prev != src {
+			t.Fatalf("shard %s is claimed by both %s and %s — the mapping is not injective, so one "+
+				"source file's regeneration would drop the other's entries", name, prev, src)
+		}
+		owners[name] = src
+		back, err := shardSourcePath(name)
+		if err != nil {
+			t.Fatalf("shardSourcePath(%q): %v", name, err)
+		}
+		if back != src {
+			t.Fatalf("shard %s reverses to %s, want %s", name, back, src)
+		}
+	}
+	if len(owners) == 0 {
+		t.Fatal("no shard names derived — the catalogue lost its entries")
+	}
+}
+
+// TestShardNameRejectsAmbiguousPaths proves the injectivity guard is
+// not hollow: a path component carrying the separator, or an empty
+// component, is refused rather than aliased onto another file's shard.
+func TestShardNameRejectsAmbiguousPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, bad := range []string{
+		"internal/promql/sub" + shardPathSeparator + "query.go",
+		"internal//lower.go",
+		"",
+	} {
+		if name, err := shardName(bad); err == nil {
+			t.Errorf("shardName(%q) = %q, want an error — the mapping cannot represent it reversibly", bad, name)
+		}
+	}
+	if _, err := shardSourcePath("internal__promql__lower.go"); err == nil {
+		t.Error("shardSourcePath accepted a name with no .json suffix, which is not a shard file")
+	}
+	if _, err := siteSourceFile("no-colon-here"); err == nil {
+		t.Error("siteSourceFile accepted a key with no source-path prefix")
+	}
+}
+
+// TestWriteCataloguePrunesEmptiedShards is the pruning pin: when the
+// last catalogued site in a source file goes away, its shard must be
+// REMOVED, not left on disk. A lingering shard is a silent correctness
+// hole — LoadCatalogue merges whatever it finds, so the deleted site
+// would go on being asserted against the reference backend while
+// nothing in the tree still constructs it.
+func TestWriteCataloguePrunesEmptiedShards(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	before := &Catalogue{Entries: []Entry{
+		{Site: Site{Head: "promql", Site: "internal/promql/a.go:fnA#0000aaaa", Message: "promql: a"}, Class: ClassInternal, Rationale: "unit-test fixture"},
+		{Site: Site{Head: "promql", Site: "internal/promql/b.go:fnB#0000bbbb", Message: "promql: b"}, Class: ClassInternal, Rationale: "unit-test fixture"},
+	}}
+	if err := WriteCatalogue(dir, before); err != nil {
+		t.Fatalf("WriteCatalogue(before): %v", err)
+	}
+	gone := filepath.Join(dir, "internal__promql__b.go.json")
+	if _, err := os.Stat(gone); err != nil {
+		t.Fatalf("shard for internal/promql/b.go was not written: %v", err)
+	}
+
+	after := &Catalogue{Entries: before.Entries[:1]}
+	if err := WriteCatalogue(dir, after); err != nil {
+		t.Fatalf("WriteCatalogue(after): %v", err)
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Fatalf("stat %s = %v, want a not-exist error — a shard whose source file lost its last "+
+			"catalogued site must be pruned, or LoadCatalogue keeps merging entries no lowering "+
+			"constructs any more", gone, err)
+	}
+
+	reloaded, err := LoadCatalogue(dir)
+	if err != nil {
+		t.Fatalf("LoadCatalogue: %v", err)
+	}
+	if len(reloaded.Entries) != len(after.Entries) {
+		t.Fatalf("reloaded %d entries, want %d — the pruned shard is still contributing", len(reloaded.Entries), len(after.Entries))
+	}
+
+	// The same emptied-shard state must be a FAILURE for the
+	// regenerate-and-diff test, not merely repaired by regeneration.
+	if err := os.WriteFile(gone, []byte(`{"entries":[]}`+"\n"), shardFileMode); err != nil {
+		t.Fatalf("re-plant stale shard: %v", err)
+	}
+	want, err := ShardCatalogue(after)
+	if err != nil {
+		t.Fatalf("ShardCatalogue: %v", err)
+	}
+	diffs, err := DiffShards(dir, want)
+	if err != nil {
+		t.Fatalf("DiffShards: %v", err)
+	}
+	if len(diffs) != 1 || !strings.Contains(diffs[0], "stale shard") {
+		t.Fatalf("DiffShards reported %v, want exactly one stale-shard difference", diffs)
+	}
+}
+
+// TestLoadCatalogueMergesShardsInSiteOrder pins the invariant every
+// downstream consumer rests on: the merged value is sorted by site key
+// regardless of which shard each entry came from, so BuildCases and the
+// classification gate see one flat, ordered catalogue exactly as they
+// did when the artifact was a single file.
+func TestLoadCatalogueMergesShardsInSiteOrder(t *testing.T) {
+	t.Parallel()
+
+	cat := loadCatalogue(t)
+	for i := 1; i < len(cat.Entries); i++ {
+		if cat.Entries[i].Site.Site <= cat.Entries[i-1].Site.Site {
+			t.Fatalf("entries out of site order at index %d: %q then %q",
+				i, cat.Entries[i-1].Site.Site, cat.Entries[i].Site.Site)
+		}
+	}
+	shards, err := listShards(catalogueDir)
+	if err != nil {
+		t.Fatalf("listShards: %v", err)
+	}
+	if len(shards) < 2 {
+		t.Fatalf("found %d shard(s) in %s — the merge path is not being exercised", len(shards), catalogueDir)
 	}
 }
 
@@ -268,12 +416,12 @@ func lowerTrigger(t *testing.T, e Entry) string {
 
 func loadCatalogue(t *testing.T) *Catalogue {
 	t.Helper()
-	cat, err := LoadCatalogue(cataloguePath)
+	cat, err := LoadCatalogue(catalogueDir)
 	if err != nil {
-		t.Fatalf("load %s (rerun TestCatalogueIsRegenerable with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", cataloguePath, err)
+		t.Fatalf("load %s (rerun TestCatalogueIsRegenerable with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", catalogueDir, err)
 	}
 	if len(cat.Entries) == 0 {
-		t.Fatalf("%s is empty", cataloguePath)
+		t.Fatalf("%s is empty", catalogueDir)
 	}
 	return cat
 }

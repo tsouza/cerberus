@@ -1,0 +1,32 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsent#079d2385",
+      "message": "promql: absent() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins absent at exactly one argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsentOverTime#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsentOverTime#e8585e71",
+      "message": "promql: absent_over_time() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins absent_over_time at exactly one argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsentOverTime#fef55d6c",
+      "message": "promql: absent_over_time() argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+    }
+  ]
+}

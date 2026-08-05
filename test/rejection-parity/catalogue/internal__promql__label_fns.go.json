@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelJoin#c71ab88a",
+      "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: label_join requires at least three arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelReplace#8c37a823",
+      "message": "promql: label_replace expects 5 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: label_replace requires exactly five arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:lowerLabelReplace#d11e3df4",
+      "message": "promql: label_replace: %w",
+      "class": "divergence",
+      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
+      "tracking_issue": 1768,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:stringArg#4c3f7595",
+      "message": "promql: %s(%s) requires a string literal, got %T",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only string literals in string-typed argument slots (PromQL has no other string-producing expression)"
+    }
+  ]
+}

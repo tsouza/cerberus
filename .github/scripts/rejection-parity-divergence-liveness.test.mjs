@@ -13,8 +13,47 @@ import test from 'node:test';
 import {
   divergenceEntries,
   livenessViolation,
+  mergeShards,
+  readCatalogue,
   structuralViolation,
 } from './rejection-parity-divergence-liveness.mjs';
+
+// --- mergeShards / readCatalogue ---------------------------------------------
+
+test('mergeShards concatenates every shard\'s entries', () => {
+  const merged = mergeShards([
+    { path: 'internal__promql__lower.go.json', doc: { entries: [{ site: 'p', class: 'divergence' }] } },
+    { path: 'internal__traceql__select.go.json', doc: { entries: [{ site: 't', class: 'internal' }] } },
+  ]);
+  assert.deepEqual(merged.entries.map((e) => e.site), ['p', 't']);
+});
+
+test('mergeShards rejects a shard with no entries array rather than skipping it', () => {
+  assert.throws(
+    () => mergeShards([{ path: 'internal__promql__lower.go.json', doc: {} }]),
+    /malformed or wrong file/,
+  );
+});
+
+test('readCatalogue reads only .json shards, in name order', () => {
+  const files = {
+    'internal__promql__a.go.json': JSON.stringify({ entries: [{ site: 'a', class: 'divergence' }] }),
+    'internal__promql__b.go.json': JSON.stringify({ entries: [{ site: 'b', class: 'rejection' }] }),
+    'README.md': 'not a shard',
+  };
+  const cat = readCatalogue('cat', {
+    readDir: () => ['internal__promql__b.go.json', 'README.md', 'internal__promql__a.go.json'],
+    readFile: (p) => files[p.split('/').pop()],
+  });
+  assert.deepEqual(cat.entries.map((e) => e.site), ['a', 'b']);
+});
+
+// A directory the gate cannot read must never look like a clean catalogue with
+// no divergence entries — that is the shape in which this gate would report
+// green while checking nothing.
+test('readCatalogue throws on a directory holding no shards', () => {
+  assert.throws(() => readCatalogue('cat', { readDir: () => [], readFile: () => '' }), /holds no \.json shard/);
+});
 
 // --- divergenceEntries -------------------------------------------------------
 

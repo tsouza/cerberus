@@ -1,0 +1,191 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
+      "message": "promql: subquery over %s aggregation is not supported",
+      "class": "internal",
+      "rationale": "the caller (lowerSubqueryOverAggregate) pre-filters to the supported aggregation op set before consulting this builder"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
+      "message": "promql: %s does not accept a subquery argument",
+      "class": "divergence",
+      "trigger_query": "mad_over_time(demo_memory_usage_bytes[5m:1m])",
+      "tracking_issue": 1784,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubquery#2174bfb8",
+      "message": "promql: subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubquery#91084197",
+      "message": "promql: subquery step must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery steps (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubquery#a374d4b2",
+      "message": "promql: subquery over %T is unsupported",
+      "class": "internal",
+      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryInnerMatrix#3a78d724",
+      "message": "promql: subquery over aggregation of %T is unsupported",
+      "class": "internal",
+      "rationale": "An aggregation's argument must type-check as an instant vector, and every instant-vector AST shape is dispatched (paren, call, selector, binary, unary, nested aggregate); scalar- and string-typed inners are parse-time type errors."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverAbsent#c311e6be",
+      "message": "promql: subquery over absent() requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "The HTTP handlers always thread eval times via LowerAt / LowerAtRange; only the raw Lower() entrypoint (tests / tooling) can present a zero eval anchor to this guard."
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
+      "message": "promql: subquery over %s aggregation is not supported",
+      "class": "divergence",
+      "trigger_query": "max_over_time(limit_ratio(0.5, demo_memory_usage_bytes)[5m:1m])",
+      "tracking_issue": 1786,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#1796796f",
+      "message": "promql: subquery inner %s expects exactly 1 argument, got %d",
+      "class": "divergence",
+      "trigger_query": "max_over_time(double_exponential_smoothing(demo_memory_usage_bytes[5m], 0.5, 0.5)[10m:1m])",
+      "tracking_issue": 1785,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
+      "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
+      "class": "divergence",
+      "trigger_query": "max_over_time(info(demo_memory_usage_bytes)[5m:1m])",
+      "tracking_issue": 1785,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
+      "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
+      "message": "promql: %s does not accept a subquery argument",
+      "class": "divergence",
+      "trigger_query": "max_over_time(mad_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
+      "tracking_issue": 1784,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCountValues#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCountValues#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "max_over_time(count_values(\"\", up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#1455acf5",
+      "message": "promql: subquery over %s requires a scalar literal K",
+      "class": "rejection",
+      "trigger_query": "max_over_time(topk(scalar(up), up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:requirePositiveInnerRange#4050ccb7",
+      "message": "promql: inner subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:subqueryAnchor#1306ccfc",
+      "message": "promql: subquery `@ start()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:subqueryAnchor#92800419",
+      "message": "promql: subquery `@ end()` modifier requires query range context (use LowerAt)",
+      "class": "internal",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:subqueryAnchor#a34bee25",
+      "message": "promql: unexpected subquery StartOrEnd token %v",
+      "class": "internal",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#0ff3d8b3",
+      "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], 1.5, 0.5)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#15e82804",
+      "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
+      "class": "divergence",
+      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], scalar(vector(0.5)), 0.5)",
+      "tracking_issue": 1782,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2b0de462",
+      "message": "promql: predict_linear expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2db9f2aa",
+      "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], 0.5, 1.5)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#682124f4",
+      "message": "promql: quantile_over_time expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#ceef5c3b",
+      "message": "promql: holt_winters expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments, so the subquery-argument lowering path can never observe a call with a different count"
+    }
+  ]
+}

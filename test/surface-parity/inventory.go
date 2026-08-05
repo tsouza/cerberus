@@ -166,7 +166,8 @@ func LoadInventory(path string) (*Inventory, error) {
 
 // MarshalInventory renders the canonical on-disk JSON form (2-space
 // indent + trailing newline) so the regenerate-and-diff test compares
-// byte-for-byte. Mirrors test/rejection-parity.MarshalCatalogue.
+// byte-for-byte. Mirrors test/rejection-parity.ShardCatalogue's
+// per-shard rendering.
 func MarshalInventory(inv *Inventory) ([]byte, error) {
 	b, err := json.MarshalIndent(inv, "", "  ")
 	if err != nil {

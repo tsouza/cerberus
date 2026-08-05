@@ -17,8 +17,14 @@
 //     `errors.New("<head>: ...")` construction site in the three
 //     lowering packages via go/ast — the mechanical universe of
 //     rejection candidates.
-//  2. catalogue.json classifies every site into one of three classes —
-//     `rejection`, `internal`, or `divergence` (see below).
+//  2. The catalogue/ shard directory classifies every site into one of
+//     three classes — `rejection`, `internal`, or `divergence` (see
+//     below). It is stored as one shard per lowering SOURCE FILE
+//     (catalogue/internal__promql__subquery.go.json and friends), so two
+//     PRs fixing guards in different lowering files never write the same
+//     file and never blend into one another; LoadCatalogue merges the
+//     shards back into a single site-sorted value, and nothing
+//     downstream of it knows the artefact is sharded.
 //  3. The meta-tests in catalogue_test.go pin the three-way ratchet:
 //     scanned-site set == catalogue set (regenerable via
 //     CERBERUS_UPDATE_INVENTORY=1), every `rejection`/`divergence`

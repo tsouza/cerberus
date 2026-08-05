@@ -1,0 +1,62 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#0ff3d8b3",
+      "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 1.5, 0.5)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#15e82804",
+      "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
+      "class": "divergence",
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], scalar(vector(0.5)), 0.5)",
+      "tracking_issue": 1782,
+      "since": "2026-08-05"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#2db9f2aa",
+      "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 0.5, 1.5)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#ceef5c3b",
+      "message": "promql: holt_winters expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerPredictLinear#2b0de462",
+      "message": "promql: predict_linear expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerQuantileOverTime#682124f4",
+      "message": "promql: quantile_over_time expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:matrixAndSelector#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:matrixAndSelector#ce0c72b5",
+      "message": "promql: %s first argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+    }
+  ]
+}

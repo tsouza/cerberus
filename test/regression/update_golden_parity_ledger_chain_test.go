@@ -28,7 +28,7 @@ const dockerBackedVerdicts = "promql-reference-verdicts.json"
 //
 // test/surface-parity/inventory.json records every symbol the three parsers
 // expose together with cerberus's in-process verdict for each, and
-// test/rejection-parity/catalogue.json records every rejection site in
+// test/rejection-parity/catalogue/ records every rejection site in
 // internal/{promql,logql,traceql}. Both re-probe the parsers directly, so they
 // drift on a parser-surface change — a different trigger from the TXTAR
 // goldens, but the identical failure shape #1573 fixed for the migration
