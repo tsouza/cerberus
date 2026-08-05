@@ -3331,7 +3331,7 @@ func TestWriteOptQualCol_QualifierBranch(t *testing.T) {
 		t.Parallel()
 		b := &Builder{}
 		writeOptQualCol(b, "", "Timestamp")
-		got, _ := b.Build()
+		got, _, _ := b.Build()
 		if got != "`Timestamp`" {
 			t.Errorf("empty qual must render bare `Timestamp`, got %q", got)
 		}
@@ -3340,7 +3340,7 @@ func TestWriteOptQualCol_QualifierBranch(t *testing.T) {
 		t.Parallel()
 		b := &Builder{}
 		writeOptQualCol(b, "t", "Timestamp")
-		got, _ := b.Build()
+		got, _, _ := b.Build()
 		if got != "`t`.`Timestamp`" {
 			t.Errorf("qual=t must render `t`.`Timestamp`, got %q", got)
 		}

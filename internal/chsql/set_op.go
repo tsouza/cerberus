@@ -103,16 +103,14 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 
 	switch s.Op {
 	case chplan.SetIntersect:
-		e.emitSelect(intersectQuery(s, leftFrag, rightFrag, e.nextCTESeq()))
-		return nil
+		return e.emitSelect(intersectQuery(s, leftFrag, rightFrag, e.nextCTESeq()))
 	case chplan.SetUnion:
 		sb := NewQuery().
 			Select(verbatim("*")).
 			From(Paren(UnionAll(leftFrag, rightFrag))).
 			Limit(unionDedupLimitPerIdentity).
 			LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	}
 	return fmt.Errorf("%w: set op %q", ErrUnsupported, s.Op)
 }

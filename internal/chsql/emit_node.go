@@ -44,20 +44,34 @@ func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
 // emitSelect runs the assembled QueryBuilder and splices its rendered
 // SQL + args into the emitter's output. Centralises the splice
 // boilerplate so the per-node emitters stay focused on slot assembly.
-func (e *emitter) emitSelect(sb *QueryBuilder) {
-	sql, args := sb.Build()
+//
+// Returns sb's sticky first-error (see Builder.err, #1449) instead of
+// silently dropping it — callers propagate it via `return e.emitSelect(sb)`
+// rather than the old pre-flight-render-then-discard-and-render-again
+// pattern.
+func (e *emitter) emitSelect(sb *QueryBuilder) error {
+	sql, args, err := sb.subquerySQL()
+	if err != nil {
+		return err
+	}
 	e.b.WriteString(sql)
 	e.args = append(e.args, args...)
+	return nil
 }
 
 // splice drains b's accumulated SQL + args into the emitter. Retained
 // for the emitters in vector_join.go / structural_join.go that still
 // compose SQL fragments through a free-standing *Builder before
-// flushing to the shared emitter state.
-func (e *emitter) splice(b *Builder) {
-	sql, args := b.Build()
+// flushing to the shared emitter state. Returns b's sticky first-error
+// (see Builder.err, #1449).
+func (e *emitter) splice(b *Builder) error {
+	sql, args, err := b.Build()
+	if err != nil {
+		return err
+	}
 	e.b.WriteString(sql)
 	e.args = append(e.args, args...)
+	return nil
 }
 
 func (e *emitter) emitScan(s *chplan.Scan) error {
@@ -74,8 +88,7 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 		cols = append(cols, Col(c))
 	}
 	sb.Select(cols...)
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // validateScanShape enforces the mutual exclusion between Scan.Table and
@@ -102,8 +115,7 @@ func validateScanShape(s *chplan.Scan) error {
 // expressions for MetricName / Attributes / TimeUnix / Value.
 func (e *emitter) emitOneRow(_ *chplan.OneRow) error {
 	sb := NewQuery().Select(InlineLit(int64(1)))
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // emitStepGrid renders a single-column SELECT that fans out one row
@@ -137,8 +149,7 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 		sb := NewQuery().Select(As(func(b *Builder) {
 			b.DateTime64Lit(g.Start)
 		}, "anchor_ts"))
-		e.emitSelect(sb)
-		return nil
+		return e.emitSelect(sb)
 	}
 	stepNS := g.Step.Nanoseconds()
 	// End-inclusive anchor count: anchors at Start, Start+Step, …
@@ -165,8 +176,7 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 		),
 		"anchor_ts",
 	))
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // emitUnionAll renders an N-way UNION ALL of the per-arm subtrees.
@@ -200,8 +210,7 @@ func (e *emitter) emitUnionAll(u *chplan.UnionAll) error {
 	}
 	b := NewBuilder()
 	UnionAll(arms...)(b)
-	e.splice(b)
-	return nil
+	return e.splice(b)
 }
 
 // emitCrossJoin renders an unconditional Cartesian product as
@@ -231,8 +240,7 @@ func (e *emitter) emitCrossJoin(j *chplan.CrossJoin) error {
 	}
 	sb := NewQuery().From(aliasedFrag(leftSub, "L")).
 		Join(CrossJoin, aliasedFrag(rightSub, "R"), nil)
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // scanTableFrag returns the Frag that renders the Scan's table reference.
@@ -331,13 +339,6 @@ func regexQuoteMeta(s string) string {
 }
 
 func (e *emitter) emitFilter(f *chplan.Filter) error {
-	// Pre-flight the predicate so a chplan error surfaces here, not
-	// inside the Where-render callback (where the error has no path
-	// to the caller without re-introducing splice plumbing).
-	if err := (&Builder{}).Expr(f.Predicate); err != nil {
-		return err
-	}
-
 	// Filter(Scan(table)) is the case the codegen specialises: emit
 	// `SELECT * FROM <table> [PREWHERE …] WHERE …` directly. This is
 	// the only shape where CH's PREWHERE granule-skipping fires —
@@ -352,8 +353,7 @@ func (e *emitter) emitFilter(f *chplan.Filter) error {
 		return err
 	}
 	pred := func(b *Builder) { _ = b.Expr(f.Predicate) }
-	e.emitSelect(NewQuery().From(sub).Where(pred))
-	return nil
+	return e.emitSelect(NewQuery().From(sub).Where(pred))
 }
 
 // emitFilterScan renders a Filter directly above a Scan as the fused
@@ -421,8 +421,7 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 	if len(whereExprs) > 0 {
 		sb.Where(conjunctionFrag(whereExprs))
 	}
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // conjunctionFrag returns a Frag that renders exprs joined with " AND ".
@@ -454,15 +453,8 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 		return err
 	}
 	sb := NewQuery().From(sub)
-	// Pre-flight every projection expression so a chplan error surfaces
-	// synchronously rather than from inside the Frag render. An empty
-	// Projections slice leaves the SELECT list empty, which renders as
-	// the bare `SELECT *` — no length guard needed.
-	for _, pr := range p.Projections {
-		if err := (&Builder{}).Expr(pr.Expr); err != nil {
-			return err
-		}
-	}
+	// An empty Projections slice leaves the SELECT list empty, which
+	// renders as the bare `SELECT *` — no length guard needed.
 	for _, pr := range p.Projections {
 		expr := pr.Expr
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias)
@@ -470,42 +462,15 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 	if len(p.Projections) == 0 && len(p.Replacements) > 0 {
 		reps := make([]Frag, 0, len(p.Replacements))
 		for _, pr := range p.Replacements {
-			if err := (&Builder{}).Expr(pr.Expr); err != nil {
-				return err
-			}
 			expr := pr.Expr
 			reps = append(reps, As(func(b *Builder) { _ = b.Expr(expr) }, pr.Alias))
 		}
 		sb.Select(StarReplace(reps))
 	}
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
-	// Pre-flight all expressions so chplan errors surface synchronously.
-	for _, g := range a.GroupBy {
-		if err := (&Builder{}).Expr(g); err != nil {
-			return err
-		}
-	}
-	for _, af := range a.AggFuncs {
-		for _, p := range af.Params {
-			if err := (&Builder{}).Expr(p); err != nil {
-				return err
-			}
-		}
-		for _, ar := range af.Args {
-			if err := (&Builder{}).Expr(ar); err != nil {
-				return err
-			}
-		}
-	}
-	if a.Having != nil {
-		if err := (&Builder{}).Expr(a.Having); err != nil {
-			return err
-		}
-	}
 	if len(a.GroupBy) == 0 && len(a.AggFuncs) == 0 {
 		return fmt.Errorf("%w: Aggregate with no GroupBy keys and no AggFuncs", ErrUnsupported)
 	}
@@ -550,8 +515,7 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 		having := a.Having
 		sb.Having(func(b *Builder) { _ = b.Expr(having) })
 	}
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // emitAggregateNoGroup renders the `Aggregate(GroupBy=[], …)` shape as
@@ -594,8 +558,7 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 		outer.Select(c)
 	}
 	outer.Where(Gt(Col(guardAlias), InlineLit(int64(0))))
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // intReturningAggregates names the CH aggregates whose natural return
@@ -657,8 +620,7 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 	// hasLimit = n > 0), so a zero / negative Count renders no LIMIT
 	// clause without an explicit guard.
 	sb.Limit(l.Count)
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }
 
 // emitTopK renders `SELECT * FROM (<input>) ORDER BY <sortExpr> [DESC]
@@ -685,7 +647,7 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // entirely: the result is K *arbitrary* rows per partition, no ranking.
 // CH's `LIMIT K BY <by>` already returns the first K rows it encounters
 // per group, which is exactly limitk's "any K series" contract. SortExpr
-// is nil in this shape, so the pre-flight and ORDER BY clause are skipped.
+// is nil in this shape, so the ORDER BY clause is skipped.
 func (e *emitter) emitTopK(t *chplan.TopK) error {
 	if !t.Unordered && t.SortExpr == nil {
 		return fmt.Errorf("%w: TopK with nil SortExpr", ErrUnsupported)
@@ -702,18 +664,6 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 	if t.KExpr != nil && t.K > 0 {
 		return fmt.Errorf("%w: TopK with both literal K=%d and KExpr set", ErrUnsupported, t.K)
 	}
-	// Pre-flight expressions so chplan errors surface synchronously.
-	if t.SortExpr != nil {
-		if err := (&Builder{}).Expr(t.SortExpr); err != nil {
-			return err
-		}
-	}
-	for _, by := range t.By {
-		if err := (&Builder{}).Expr(by); err != nil {
-			return err
-		}
-	}
-
 	if t.KExpr != nil {
 		return e.emitTopKComputed(t)
 	}
@@ -760,8 +710,7 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 		}
 		outer.Select(cols...)
 	}
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // emitTopKComputed renders the computed-K variant of TopK. CH's LIMIT
@@ -838,8 +787,7 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		}
 		outer.Select(cols...)
 	}
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // emitOrderBy renders `SELECT * FROM (<input>) ORDER BY <k1> [DESC], …`
@@ -848,13 +796,6 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
 	if len(o.Keys) == 0 {
 		return fmt.Errorf("%w: OrderBy with no keys", ErrUnsupported)
-	}
-	// Pre-flight every key expression so chplan errors surface
-	// synchronously rather than from inside the Frag render.
-	for _, k := range o.Keys {
-		if err := (&Builder{}).Expr(k.Expr); err != nil {
-			return err
-		}
 	}
 	sub, err := e.subqueryFrag(o.Input)
 	if err != nil {
@@ -865,6 +806,5 @@ func (e *emitter) emitOrderBy(o *chplan.OrderBy) error {
 		expr := k.Expr
 		sb.OrderBy(func(b *Builder) { _ = b.Expr(expr) }, k.Desc)
 	}
-	e.emitSelect(sb)
-	return nil
+	return e.emitSelect(sb)
 }

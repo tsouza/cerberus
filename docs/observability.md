@@ -193,6 +193,9 @@ each one so a rename cannot ship silently.
 | `cerberus_clickhouse_rows_read`            | histogram | `cerberus_ql`                                                                               |
 | `cerberus_clickhouse_bytes_read`           | histogram | `cerberus_ql`                                                                               |
 | `cerberus_query_inflight`                  | gauge     | `cerberus_ql`                                                                               |
+| `cerberus_tempo_exemplar_failures_total`   | counter   | `stage`                                                                                     |
+
+`cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
 
 #### ClickHouse connection lifecycle
 

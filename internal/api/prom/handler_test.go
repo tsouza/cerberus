@@ -547,9 +547,10 @@ func TestFormatQuery(t *testing.T) {
 	}
 }
 
-// TestParseQuery — `/api/v1/parse_query` returns the AST type +
-// stringified node. Minimal shape; enough for Grafana's inline
-// syntax check.
+// TestParseQuery — `/api/v1/parse_query` returns the same recursive
+// AST node tree upstream Prometheus's endpoint does (#1440), not a
+// flattened `{type, node}` stub. `up` parses to a single
+// `vectorSelector` node carrying one `__name__` matcher.
 func TestParseQuery(t *testing.T) {
 	t.Parallel()
 
@@ -566,11 +567,8 @@ func TestParseQuery(t *testing.T) {
 	}
 
 	var parsed struct {
-		Status string `json:"status"`
-		Data   struct {
-			Type string `json:"type"`
-			Node string `json:"node"`
-		} `json:"data"`
+		Status string         `json:"status"`
+		Data   map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
@@ -578,11 +576,19 @@ func TestParseQuery(t *testing.T) {
 	if parsed.Status != "success" {
 		t.Fatalf("status: got %q, want success", parsed.Status)
 	}
-	if parsed.Data.Type == "" {
-		t.Errorf("expected non-empty Type; got %q", parsed.Data.Type)
+	if got := parsed.Data["type"]; got != "vectorSelector" {
+		t.Errorf("expected type=vectorSelector; got %v (data=%+v)", got, parsed.Data)
 	}
-	if parsed.Data.Node != "up" {
-		t.Errorf("expected Node=`up`; got %q", parsed.Data.Node)
+	if got := parsed.Data["name"]; got != "up" {
+		t.Errorf("expected name=up; got %v", got)
+	}
+	matchers, ok := parsed.Data["matchers"].([]any)
+	if !ok || len(matchers) != 1 {
+		t.Fatalf("expected one matcher; got %+v", parsed.Data["matchers"])
+	}
+	m, ok := matchers[0].(map[string]any)
+	if !ok || m["name"] != "__name__" || m["value"] != "up" {
+		t.Errorf("expected __name__=up matcher; got %+v", matchers[0])
 	}
 }
 

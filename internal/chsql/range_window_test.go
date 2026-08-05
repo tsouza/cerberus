@@ -105,9 +105,11 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 			name: "changes",
 			fn:   "changes",
 			wantSubstrs: []string{
-				// Change detection: per-adjacent-pair `if(c != p, 1, 0)`.
-				"if(c != p, 1, 0)",
-				"arraySum(arrayMap((p, c) -> if(c != p, 1, 0), arrayPopBack(window_vals), arrayPopFront(window_vals)))",
+				// Change detection: per-adjacent-pair `if(c != p AND NOT
+				// (isNaN(c) AND isNaN(p)), 1, 0)` — Prom's funcChanges
+				// carve-out for NaN-on-both-sides pairs (#1489).
+				"if(c != p AND NOT (isNaN(c) AND isNaN(p)), 1, 0)",
+				"arraySum(arrayMap((p, c) -> if(c != p AND NOT (isNaN(c) AND isNaN(p)), 1, 0), arrayPopBack(window_vals), arrayPopFront(window_vals)))",
 				"CAST(arraySum",
 				"AS Float64)",
 			},

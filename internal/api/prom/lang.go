@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/promql"
@@ -115,7 +116,16 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}
 	}
-	return plan, engine.Meta{IsMetric: true}, nil
+	meta := engine.Meta{IsMetric: true}
+	// Step is non-zero only on the /api/v1/query_range path (see the lang
+	// doc), which is the only PromQL caller that reaches engine.QueryCursor —
+	// executeInstant always goes through the eager engine.Query, which never
+	// reads ResponseShape. Declaring the matrix shape here lets chclient's
+	// columnar decode confirm caller intent as defense-in-depth (#1429).
+	if l.Step > 0 {
+		meta.ResponseShape = chclient.ResponseShapeMatrix
+	}
+	return plan, meta, nil
 }
 
 // ProjectSamples wraps plan with the Sample-shape Project via

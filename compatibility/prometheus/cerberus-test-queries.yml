@@ -2,7 +2,7 @@
 #
 # This file is a near-verbatim copy of
 # compatibility/prometheus/upstream/promql/promql-test-queries.yml
-# (prometheus/compliance @ 7e28242) with two edits:
+# (prometheus/compliance @ 7e28242) with three edits:
 #
 # 1. The PromLabs "demo service" preamble (lines 1-31 of the upstream file)
 #    is stripped — it documents docker-run instructions for the prometheus-
@@ -13,7 +13,13 @@
 #    has no resource attributes; the OTel-CH schema stores them apart from
 #    the datapoint attributes, so the aggregated fan-out has a grouping key
 #    no upstream case can reach.
-# 3. One cerberus-owned case is added to the vector-selector block: a regex
+# 3. One cerberus-owned case is appended next to the existing `changes(...)`
+#    case: `changes(demo_gauge_with_nan_run[{{.range}}])`. Upstream's demo
+#    fixture never seeds a NaN sample, so it can't discriminate the
+#    changes() NaN-both-sides carve-out (#1489) against a real reference
+#    Prometheus — only against chDB. See demo_gauge_with_nan_run in
+#    cmd/seed/main.go.
+# 4. One cerberus-owned case is added to the vector-selector block: a regex
 #    label matcher with no wildcards/anchors that is a strict PREFIX of an
 #    actual label value (`job=~"dem"` against the seeded `job="demo"`).
 #    ClickHouse's match() is a substring search; Prometheus regex matchers
@@ -316,6 +322,12 @@ test_cases:
   - query: 'resets(demo_cpu_usage_seconds_total[{{.range}}])'
     variant_args: ['range']
   - query: 'changes(demo_batch_last_success_timestamp_seconds[{{.range}}])'
+    variant_args: ['range']
+    # A NaN-NaN run inside the lookback window: pins the changes() Prom
+    # parity carve-out for NaN-on-both-sides pairs (#1489) against a real
+    # reference Prometheus, not just chDB. See demo_gauge_with_nan_run in
+    # cmd/seed/main.go.
+  - query: 'changes(demo_gauge_with_nan_run[{{.range}}])'
     variant_args: ['range']
   - query: 'vector(1.23)'
   - query: 'vector(time())'

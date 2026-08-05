@@ -662,12 +662,13 @@ func TestRangeLWRRejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestRangeBucketFanoutRejectsBadAggExpr pins the per-AggFunc pre-flight
-// that synchronously surfaces chplan Expr errors from BOTH the Params and
-// the Args lists (the `(&Builder{}).Expr(...)` loops). A nil Expr element
-// hits Builder.Expr's default branch (ErrUnsupported), so a fan-out whose
-// AggFunc carries a nil Param / nil Arg must error — covering and killing
-// the mutants on those two pre-flight loops.
+// TestRangeBucketFanoutRejectsBadAggExpr pins that a bad chplan Expr in
+// EITHER an AggFunc's Params or its Args list surfaces as an Emit error,
+// from both the Params and the Args render paths. A nil Expr element hits
+// Builder.Expr's default branch (ErrUnsupported), which Builder.err's
+// first-error-wins state carries through to the final Build/subquerySQL
+// call (see #1449) — so a fan-out whose AggFunc carries a nil Param / nil
+// Arg must error, covering and killing the mutants on both render paths.
 func TestRangeBucketFanoutRejectsBadAggExpr(t *testing.T) {
 	t.Parallel()
 

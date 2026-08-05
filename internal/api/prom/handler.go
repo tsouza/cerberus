@@ -261,10 +261,10 @@ func (h *Handler) handleFormatQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleParseQuery implements `/api/v1/parse_query`. Takes a `query`
-// param, parses it, and returns the AST. Upstream Prometheus returns
-// a rich nested-node tree; cerberus returns a minimal shape that
-// signals "parsed OK" via the Type field — enough for Grafana's
-// inline syntax check.
+// param, parses it, and returns the recursive AST — the exact node
+// shape upstream Prometheus's `/api/v1/parse_query` returns (see
+// [translatePromQLAST]), which Grafana's query-builder tree view
+// depends on.
 func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with POST form-encoded body
 	// (auto-calling ParseForm). Matches the consistent surface used by
@@ -281,10 +281,7 @@ func (h *Handler) handleParseQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
-		Data: map[string]any{
-			"type": fmt.Sprintf("%T", expr),
-			"node": expr.String(),
-		},
+		Data:   translatePromQLAST(expr),
 	})
 }
 

@@ -138,5 +138,9 @@ func chaosSleepWrap(ctx context.Context, sql string, args []any) (string, []any)
 		From(Subquery(PreRenderedSQL{SQL: sql, Args: args})).
 		Where(Gte(Subquery(sleepSubquery), InlineLit(int64(0))))
 
-	return wrapped.Build()
+	// wrapped never calls Expr (only Call/InlineLit/Star/Gte/Subquery over
+	// a PreRenderedSQL + a literal-only subquery), so its sticky error is
+	// always nil here; see Builder.err.
+	wsql, wargs, _ := wrapped.subquerySQL()
+	return wsql, wargs
 }

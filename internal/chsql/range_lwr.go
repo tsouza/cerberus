@@ -156,8 +156,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	outer.Select(As(verbatim("anchor_ts"), r.TimestampCol))
 	outer.Select(As(verbatim(lwrValueAlias), r.ValueCol))
 
-	e.emitSelect(outer)
-	return nil
+	return e.emitSelect(outer)
 }
 
 // lwrAnchorFanoutFrag renders the LWR sample-side anchor fan-out:

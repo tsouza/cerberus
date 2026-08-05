@@ -36,7 +36,8 @@ import (
 // logsDDL is the minimal otel_logs schema the patterns handler reads.
 // The full upstream OTel exporter DDL has many more columns than the
 // handler touches — this projection covers exactly what
-// buildPatternsSQL selects (Timestamp, Body) plus the matcher target
+// buildPatternsSQL selects (Timestamp, Body, SeverityText — the last
+// added for #1434's per-level bucketing) plus the matcher target
 // (ResourceAttributes). Engine = Memory keeps the seed fast and avoids
 // MergeTree's PREWHERE / sort-key constraints; the patterns SQL does
 // not depend on either (it's a straight SELECT ... ORDER BY Timestamp
@@ -44,6 +45,7 @@ import (
 const logsDDL = `CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
+    SeverityText String,
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;`
 
@@ -124,7 +126,7 @@ func TestPatterns_ChDB_DrainRoundtrip(t *testing.T) {
 	}
 
 	var inserts strings.Builder
-	inserts.WriteString("INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES\n")
+	inserts.WriteString("INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES\n")
 	for i, row := range seedRows {
 		ts := base.Add(row.dt).Format(tsFmt)
 		comma := ","
@@ -132,7 +134,7 @@ func TestPatterns_ChDB_DrainRoundtrip(t *testing.T) {
 			comma = ";"
 		}
 		fmt.Fprintf(&inserts,
-			"    (toDateTime64('%s', 9), '%s', map('job', 'api'))%s\n",
+			"    (toDateTime64('%s', 9), '%s', 'INFO', map('job', 'api'))%s\n",
 			ts, row.body, comma)
 	}
 
@@ -234,8 +236,8 @@ func TestPatterns_ChDB_EmptyWindow(t *testing.T) {
 	ts := base.Format(tsFmt)
 
 	seed := logsDDL + fmt.Sprintf(`
-INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
-    (toDateTime64('%s', 9), 'GET /api/foo status=200 latency=5ms', map('job', 'api'));`, ts)
+INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES
+    (toDateTime64('%s', 9), 'GET /api/foo status=200 latency=5ms', 'INFO', map('job', 'api'));`, ts)
 
 	srv, _ := newChDBPatternsServer(t, seed)
 

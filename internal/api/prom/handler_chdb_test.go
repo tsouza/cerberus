@@ -437,11 +437,8 @@ func TestParseQuery_ChDB(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
 	var parsed struct {
-		Status string `json:"status"`
-		Data   struct {
-			Type string `json:"type"`
-			Node string `json:"node"`
-		} `json:"data"`
+		Status string         `json:"status"`
+		Data   map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -449,7 +446,7 @@ func TestParseQuery_ChDB(t *testing.T) {
 	if parsed.Status != "success" {
 		t.Fatalf("status=%q", parsed.Status)
 	}
-	if parsed.Data.Type == "" || parsed.Data.Node != "up" {
+	if parsed.Data["type"] != "vectorSelector" || parsed.Data["name"] != "up" {
 		t.Errorf("unexpected parse data: %+v", parsed.Data)
 	}
 }

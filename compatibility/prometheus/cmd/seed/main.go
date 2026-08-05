@@ -88,6 +88,16 @@ const (
 // series by instance deterministically instead of by an accident of ties.
 const intermittentInstanceOffset = 1000
 
+// nanRunStartStep / nanRunSteps carve a 2-sample NaN-NaN run out of
+// demo_gauge_with_nan_run. Two consecutive NaN samples are required to
+// exercise Prometheus's changes() NaN-both-sides carve-out (#1489) — a
+// single NaN surrounded by finite values only exercises the ordinary
+// (already-agreeing) finite<->NaN transition.
+const (
+	nanRunStartStep = 100
+	nanRunSteps     = 2
+)
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(logger); err != nil {
@@ -201,6 +211,8 @@ func insertFixture(ctx context.Context, conn driver.Conn) error {
 			clickhouse.Named("intermittent_gap_start_step", uint64(intermittentGapStartStep)),
 			clickhouse.Named("intermittent_gap_end_step", uint64(intermittentGapStartStep+intermittentGapSteps)),
 			clickhouse.Named("intermittent_instance_offset", uint64(intermittentInstanceOffset)),
+			clickhouse.Named("nan_run_start_step", uint64(nanRunStartStep)),
+			clickhouse.Named("nan_run_steps", uint64(nanRunSteps)),
 		); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
@@ -676,6 +688,31 @@ var fixtureInserts = []namedStmt{
                 ) AS instance
             ) AS i
         )`,
+	},
+	// demo_gauge_with_nan_run: 1 instance, gauge carrying a 2-sample
+	// NaN-NaN run in the middle of the window. `changes()`'s Prom-parity
+	// carve-out (#1489) only fires on a NaN-adjacent-to-NaN pair — a lone
+	// NaN surrounded by finite values already agreed with Prometheus, so
+	// that shape proves nothing. Placed well inside the window (not at
+	// either edge) so every {{.range}} variant's lookback can observe it
+	// from some evaluation timestamp within the tester's scan.
+	{
+		name: "demo_gauge_with_nan_run",
+		sql: `INSERT INTO otel_metrics_gauge
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_gauge_with_nan_run',
+            'Gauge with a NaN-NaN run, pinning the changes() carve-out (#1489) against a real Prometheus backend',
+            '1',
+            map('instance', 'demo.promlabs.com:10000', 'job', 'demo'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            if(step >= {nan_run_start_step:UInt64} AND step < {nan_run_start_step:UInt64} + {nan_run_steps:UInt64},
+                nan,
+                toFloat64(step))
+        FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s`,
 	},
 }
 

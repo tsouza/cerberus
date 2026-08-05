@@ -1,5 +1,5 @@
 -- query.traceql --
-{ traceDuration > 100ms }
+{ span:childCount > 1 }
 -- seed --
 CREATE TABLE otel_traces (
     SpanId String

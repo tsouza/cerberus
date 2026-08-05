@@ -258,9 +258,9 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 	return out, nil
 }
 
-// QueryTimestampedLines runs sql and decodes a (DateTime64, String)
-// two-column result set into chclient.TimestampedLine tuples. Used by
-// /loki/api/v1/patterns to feed the drain template miner.
+// QueryTimestampedLines runs sql and decodes a (DateTime64, String,
+// String) three-column result set into chclient.TimestampedLine tuples.
+// Used by /loki/api/v1/patterns to feed the drain template miner.
 func (c *Client) QueryTimestampedLines(ctx context.Context, query string, args ...any) ([]chclient.TimestampedLine, error) {
 	if c.err != nil {
 		return nil, c.err
@@ -274,13 +274,14 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, query string, args .
 	var out []chclient.TimestampedLine
 	for rows.Next() {
 		var (
-			ts   time.Time
-			body string
+			ts       time.Time
+			body     string
+			severity string
 		)
-		if err := rows.Scan(&ts, &body); err != nil {
+		if err := rows.Scan(&ts, &body, &severity); err != nil {
 			return nil, fmt.Errorf("chclienttest: scan: %w", err)
 		}
-		out = append(out, chclient.TimestampedLine{Timestamp: ts, Body: body})
+		out = append(out, chclient.TimestampedLine{Timestamp: ts, Body: body, Severity: severity})
 	}
 	if err := tolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)

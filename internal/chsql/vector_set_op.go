@@ -109,8 +109,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(inner.Frag())
-		e.emitSelect(outer)
-		return nil
+		return e.emitSelect(outer)
 	case chplan.VectorSetUnless:
 		// SELECT MetricName, Attributes, TimeUnix, Value
 		//   FROM (SELECT MetricName, Attributes, TimeUnix, Value FROM (<A>) WHERE <sig> NOT IN (SELECT DISTINCT <sig> FROM (<B>)))
@@ -121,8 +120,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 		outer := NewQuery().
 			Select(vectorSetOpOutputCols(s)...).
 			From(inner.Frag())
-		e.emitSelect(outer)
-		return nil
+		return e.emitSelect(outer)
 	case chplan.VectorSetOr:
 		// `A or B`: every LHS sample, plus every RHS sample whose match-
 		// key signature does NOT appear in A. Rendered as a SINGLE pass
@@ -201,8 +199,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 				Eq(Col(setOpSideCol), InlineLit(0)),
 				Eq(Col(setOpHasLeftCol), InlineLit(0)),
 			))
-		e.emitSelect(outer)
-		return nil
+		return e.emitSelect(outer)
 	}
 	return fmt.Errorf("%w: vector set op %q", ErrUnsupported, s.Op)
 }

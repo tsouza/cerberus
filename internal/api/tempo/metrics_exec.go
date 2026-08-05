@@ -235,7 +235,12 @@ func (h *Handler) runMetricsWindow(
 // attachMetricsExemplars enriches series in place, best-effort: an emit
 // or execute failure keeps the empty Exemplars slice toMetricsSeries
 // already attached, so the wire envelope stays well-formed either way.
-// Both failures warn rather than degrade silently.
+// Both failures warn AND increment telemetry.ExemplarFailuresTotal
+// (#1460) — a log line alone left a systematic exemplar outage
+// wire-indistinguishable from "no exemplars in this window", visible
+// only by reading logs rather than on a dashboard. Shared by both the
+// HTTP and gRPC Tempo metrics entrypoints via execMetricsRange, so one
+// counter covers both transports.
 func (h *Handler) attachMetricsExemplars(
 	ctx context.Context,
 	series []MetricsSeries,
@@ -246,11 +251,13 @@ func (h *Handler) attachMetricsExemplars(
 		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, exemplarsPerSeries, h.Schema.SpansTable)
 	if exErr != nil {
 		h.Logger.Warn("cerberus tempo metrics exemplars emit failed (matrix returns without exemplars)", "err", exErr)
+		telemetry.RecordTempoExemplarFailure(ctx, telemetry.StageEmit)
 		return
 	}
 	exSamples, qErr := h.Client.Query(ctx, exSQL, exArgs...)
 	if qErr != nil {
 		h.Logger.Warn("cerberus tempo metrics exemplars query failed (matrix returns without exemplars)", "err", qErr)
+		telemetry.RecordTempoExemplarFailure(ctx, telemetry.StageExecute)
 		return
 	}
 	attachExemplars(series, exSamples, metrics)

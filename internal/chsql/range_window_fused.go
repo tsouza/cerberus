@@ -265,8 +265,7 @@ func (e *emitter) emitFusedInstantSubquery(
 	outerQ.Select(As(reduce(BareIdent("vals")), r.ValueColumn))
 	outerQ.Where(Gt(Call("length", BareIdent("vals")), InlineLit(int64(0))))
 
-	e.emitSelect(outerQ)
-	return nil
+	return e.emitSelect(outerQ)
 }
 
 // tupleElemFrag renders `tupleElement(<t>, <idx>)` — the 1-based tuple
