@@ -260,15 +260,26 @@ fi
 # Rejection-parity pass: every deliberate 422 in internal/promql must
 # also be rejected by reference Prometheus (status-class comparison,
 # never message text). The corpus is the rejection catalogue itself —
-# see test/rejection-parity/ and docs/compatibility.md. Report-only:
-# wrong_rejection verdicts land in the JSON report; only driver-level
-# infrastructure failures propagate (set -e).
+# see test/rejection-parity/ and docs/compatibility.md. The driver exits
+# non-zero on a wrong_rejection / divergence_resolved / divergence_closed
+# verdict — the catalogue's own claims turning out false — so `set -e`
+# fails this harness on one. Only stale_catalogue and hard_error stay
+# non-fatal.
+#
+# -eval-time pins the driver onto the same instant the compliance tester
+# above uses. The fixture is seeded into a fixed past hour, so a driver
+# left at wall-clock now reads empty selectors from BOTH backends and
+# upstream's eval-time per-series guards (double_exponential_smoothing's
+# smoothing/trend-factor bounds, for one) never run — the reference then
+# answers 200 for a query it would reject over real data. See
+# test/regression/compat_rejection_parity_reference_test.go.
 echo "==> running rejection-parity driver (promql)"
 (cd "$ROOT_DIR/../.." && go run ./compatibility/cmd/rejection-parity \
     -head promql \
     -catalogue test/rejection-parity/catalogue.json \
     -ref http://localhost:29090 \
     -cerberus http://localhost:29091 \
+    -eval-time "$END_TIME" \
     -report "$ROOT_DIR/rejection-parity.json")
 echo "==> rejection-parity report written to $ROOT_DIR/rejection-parity.json"
 

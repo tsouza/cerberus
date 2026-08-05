@@ -213,8 +213,9 @@ var promModifiers = []struct {
 // The reference oracle was previously a hardcoded
 // `if fn.Experimental { ref = reject }` stand-in. That assumption — that
 // the reference rejects every experimental fn — only held for a reference
-// started WITHOUT --enable-feature=promql-experimental-functions (the
-// flag-OFF compat reference). With the flag ON, the reference ACCEPTS
+// started WITHOUT --enable-feature=promql-experimental-functions. Every
+// reference in this repository runs the flag, and with the flag ON the
+// reference ACCEPTS
 // every experimental fn it actually implements, so an unimplemented fn
 // cerberus rejected could masquerade as a "parity rejection" while a fn
 // cerberus accepted looked like a "wrong-accept". referenceVerdictPromQL

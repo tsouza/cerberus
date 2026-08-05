@@ -278,9 +278,23 @@ real bug rather than a silent wrong-rejection:
 
    Reports land at `compatibility/prometheus/rejection-parity.json`,
    `compatibility/loki/reports/rejection-parity.json`, and
-   `compatibility/tempo/reports/rejection-parity.json`. Like the main
-   testers, the driver is report-only: verdicts never change the exit
-   code; only infrastructure failures do.
+   `compatibility/tempo/reports/rejection-parity.json`. Unlike the main
+   testers, this driver is **not** report-only: a `wrong_rejection`,
+   `divergence_resolved` or `divergence_closed` verdict — the catalogue's
+   own claims turning out false — exits non-zero and fails the harness
+   under `set -e`. Only `stale_catalogue` and `hard_error` stay non-fatal.
+
+   Two harness conditions make the PromQL verdicts meaningful, both pinned
+   by `test/regression/compat_rejection_parity_reference_test.go`:
+
+   - the reference Prometheus runs with
+     `--enable-feature=promql-experimental-functions`, matching cerberus's
+     own parser config, so a "both 4xx" verdict can never record agreement
+     about a feature flag instead of about the guard under test;
+   - the driver is given `-eval-time` inside the seeded fixture window, so
+     upstream guards that validate per series (for example
+     `double_exponential_smoothing`'s smoothing / trend factors) actually
+     run instead of short-circuiting on an empty selector.
 
 ## CI integration
 

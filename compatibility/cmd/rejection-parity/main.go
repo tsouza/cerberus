@@ -143,10 +143,15 @@ func run() error {
 		cerbURL   = flag.String("cerberus", "", "cerberus base URL")
 		report    = flag.String("report", "", "JSON report output path")
 		timeout   = flag.Duration("timeout", 30*time.Second, "per-request HTTP timeout")
+		evalTime  = flag.String("eval-time", "", "RFC3339 evaluation time (default: now) — point it inside the harness fixture's window so data-dependent reference guards fire")
 	)
 	flag.Parse()
 	if *head == "" || *refURL == "" || *cerbURL == "" || *report == "" {
 		return fmt.Errorf("-head, -ref, -cerberus and -report are all required")
+	}
+	now, err := resolveEvalTime(*evalTime)
+	if err != nil {
+		return err
 	}
 
 	cat, err := rejectionparity.LoadCatalogue(*catalogue)
@@ -162,7 +167,6 @@ func run() error {
 	}
 
 	client := &http.Client{Timeout: *timeout}
-	now := time.Now().UTC()
 	rep := Report{Head: *head, Total: len(cases)}
 	for _, c := range cases {
 		res := runCase(client, c, *refURL, *cerbURL, now)
@@ -280,9 +284,36 @@ func divergenceVerdict(cerbStatus, refStatus int, refBody, cerbBody []byte) (str
 	}
 }
 
-// buildURL composes the per-endpoint query URL. The window is ±1h
-// around now — rejection parity is shape-based, not data-based, so
-// the window only needs to be syntactically valid.
+// resolveEvalTime parses the -eval-time flag, defaulting to now.
+//
+// Most rejections are shape-based: both backends decide at parse /
+// type-check time, so any syntactically valid window works. Some
+// reference guards are NOT — upstream Prometheus range-checks
+// `double_exponential_smoothing`'s smoothing and trend factors inside
+// the per-series evaluation, so with no series in the lookback window
+// the check never runs and the reference answers 200. Evaluating at a
+// wall-clock "now" against a harness whose fixture is anchored in a
+// fixed past window therefore makes those guards structurally
+// unreachable, and a `rejection` entry covering one of them would be
+// scored `wrong_rejection` for a data reason rather than a semantic
+// one. Pointing -eval-time inside the fixture window closes that hole;
+// it can only ever ADD reference rejections (data lets eval-time
+// guards fire), never remove one.
+func resolveEvalTime(s string) (time.Time, error) {
+	if strings.TrimSpace(s) == "" {
+		return time.Now().UTC(), nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("-eval-time %q is not RFC3339: %w", s, err)
+	}
+	return t.UTC(), nil
+}
+
+// buildURL composes the per-endpoint query URL, anchored at the
+// resolved evaluation time (see resolveEvalTime): an instant query at
+// `now` for promql, a ±1h window ending at `now` for the range/search
+// endpoints.
 func buildURL(base string, c rejectionparity.Case, now time.Time) string {
 	start := now.Add(-1 * time.Hour)
 	end := now

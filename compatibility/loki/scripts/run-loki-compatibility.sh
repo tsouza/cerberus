@@ -178,9 +178,11 @@ set -e
 # Rejection-parity pass: every deliberate 422 in internal/logql must
 # also be rejected by reference Loki (status-class comparison, never
 # message text). The corpus is the rejection catalogue itself — see
-# test/rejection-parity/ and docs/compatibility.md. Report-only:
-# wrong_rejection verdicts land in the JSON report; only driver-level
-# infrastructure failures propagate (set -e).
+# test/rejection-parity/ and docs/compatibility.md. The driver exits
+# non-zero on a wrong_rejection / divergence_resolved /
+# divergence_closed verdict — the catalogue's own claims turning out
+# false — so `set -e` fails this harness on one. Only stale_catalogue
+# and hard_error stay non-fatal.
 echo "==> running rejection-parity driver (logql)"
 (cd "$REPO_ROOT" && go run ./compatibility/cmd/rejection-parity \
     -head logql \

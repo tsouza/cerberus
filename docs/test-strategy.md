@@ -342,6 +342,18 @@ gating on every PR through `check`:
   the reference is caught even when the accept/reject verdict agrees.
   `catalogue.json` + `catalogue_test.go` ratchet it the same way.
 
+  Two harness conditions make that diff mean something, and both are pinned
+  by `test/regression/compat_rejection_parity_reference_test.go`: the
+  reference Prometheus runs **flag-ON**
+  (`--enable-feature=promql-experimental-functions`), matching cerberus's own
+  parser config, so "both 4xx" can never record agreement about a feature
+  flag instead of about the guard under test; and the driver evaluates at
+  `-eval-time` inside the seeded fixture window, so upstream guards that
+  validate per series (`double_exponential_smoothing`'s smoothing / trend
+  factors) actually run instead of short-circuiting on an empty selector.
+  The same test pins every PromQL trigger query onto a family the compat
+  seeder writes.
+
 - **`test/oracle/inventory/`** — per-head capability inventories
   (`{promql,logql,traceql}_test.go`), regenerable under the same
   `CERBERUS_UPDATE_INVENTORY=1` convention.
@@ -350,8 +362,8 @@ The user-facing translation of this ledger — every function / operator /
 intrinsic with its support status — lives in
 [`coverage.md`](coverage.md), which is generated from `inventory.json` and
 presents the ledger classes in honest support language (an experimental fn
-cerberus implements that the flag-OFF reference would reject is "Supported
-(experimental)", not a raw "wrong-accept").
+cerberus implements that a reference *without* the experimental-functions
+flag would reject is "Supported (experimental)", not a raw "wrong-accept").
 
 ### Layer 7 — HTTP handler conformance
 

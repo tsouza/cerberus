@@ -7,10 +7,11 @@ machine-readable conformance LEDGER: every grammar symbol the three upstream
 parsers expose, paired with cerberus's accept/reject verdict and the reference
 backend's verdict, classified four ways (parity-accept / parity-reject /
 wrong-reject / wrong-accept). That vocabulary is correct for the test ratchet
-but wrong for a human reader — a flag-ON experimental function cerberus
-implements but the flag-OFF reference would reject is a SUPPORTED function, not
-a "wrong-accept". This script performs that translation and emits the tables
-between the AUTOGEN markers in docs/coverage.md.
+but wrong for a human reader — an experimental function cerberus implements is
+a SUPPORTED function, and range()/step() land in "wrong-accept" only because
+the ledger probes them as bare top-level calls, a shape the reference rejects
+for query-context reasons. This script performs that translation and emits the
+tables between the AUTOGEN markers in docs/coverage.md.
 
 Usage:  python3 scripts/gen-coverage.py        # rewrites docs/coverage.md tables
         python3 scripts/gen-coverage.py --check # exit 1 if the doc is stale
@@ -68,7 +69,7 @@ def status(entry):
         # query-context fns (start/end) this is a real intentional gate.
         return "Rejected (parity with reference)"
     if cls == "wrong-accept":
-        # Cerberus accepts, the flag-OFF probe's reference rejects. For
+        # Cerberus accepts, the probe's reference rejects. For
         # range()/step() this is a faithful experimental implementation the
         # bare-call probe can't see; surface it as supported-experimental.
         if is_exp:

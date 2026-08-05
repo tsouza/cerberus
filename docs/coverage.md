@@ -32,10 +32,20 @@ conformance **ledger** in [`test/surface-parity/`](../test/surface-parity/)
 ([Layer 6d](test-strategy.md#layer-6d--function-surface-parity-ledger) of the
 test map). The ledger classifies each symbol four ways — `parity-accept`,
 `parity-reject`, `wrong-reject`, `wrong-accept` — which is the right vocabulary
-for the test ratchet but the wrong one for a reader: an experimental function
-cerberus implements that a *flag-OFF* reference would reject reads as
-"wrong-accept" in the ledger yet is genuinely **Supported (experimental)** for
-a user. The table above performs that translation.
+for the test ratchet but the wrong one for a reader: `range()` / `step()` read
+as "wrong-accept" in the ledger — the probe drives them as bare top-level
+calls, a shape the reference rejects for query-context reasons — yet they are
+genuinely **Supported (experimental)** for a user. The table above performs
+that translation.
+
+The ledger is **symbol-level**: it records whether cerberus accepts a symbol at
+all, not which argument *shapes* of that symbol it accepts. A function listed
+as Supported here can still reject a specific argument shape the reference
+accepts (a computed rather than literal scalar, say). Those narrower gaps are
+tracked one-per-entry as `class: "divergence"` rows in
+[`test/rejection-parity/catalogue.json`](../test/rejection-parity/catalogue.json),
+each citing an open issue and held to a count ceiling plus an age cap — see
+[`test/rejection-parity/doc.go`](../test/rejection-parity/doc.go).
 
 ## Coverage at a glance
 
@@ -71,9 +81,9 @@ These two query-context functions are experimental upstream and **Supported**
 in cerberus: it constant-folds them per query exactly as the reference engine
 does (`range()` → eval-range seconds, `step()` → the query_range step). They
 appear as a `cerberus extension` in the raw ledger only because the
-surface-parity probe drives them as bare top-level calls, a form the
-flag-OFF HTTP reference rejects — an artifact of the probe shape, not a
-correctness divergence. In real PromQL usage they match upstream.
+surface-parity probe drives them as bare top-level calls, a form the HTTP
+reference rejects outside a query context — an artifact of the probe shape,
+not a correctness divergence. In real PromQL usage they match upstream.
 
 ## Per-symbol tables
 
