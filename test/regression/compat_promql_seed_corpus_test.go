@@ -103,6 +103,18 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 	m := schema.DefaultOTelMetrics()
 	fixtures := parseSeedFixtures(t)
 	servable := map[string]bool{}
+	// bareHistogramNames collects every seeded classic-histogram family's
+	// OTel-CH storage name — the spelling with none of the `_bucket` /
+	// `_count` / `_sum` wire suffixes. #1483 pins that this spelling must
+	// resolve empty even though the seeder DOES write rows under it (the
+	// physical storage name and the Prom-wire series name are different
+	// things for a classic histogram). A corpus query using one is
+	// therefore neither "servable" (per the loop above) nor a hollow
+	// comparison against an unseeded name: it is a real regression pin,
+	// so it gets its own exemption arm rather than being forced through
+	// the unrelated absentMetricPrefix convention (which a seeded family's
+	// synthetic names are themselves forbidden from carrying, below).
+	bareHistogramNames := map[string]bool{}
 	sawBucketExpansion := false
 	for _, f := range fixtures {
 		switch f.table {
@@ -126,6 +138,7 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 				}
 				servable[name] = true
 			}
+			bareHistogramNames[f.name] = true
 		case m.GaugeTable, m.SumTable:
 			servable[f.name] = true
 		default:
@@ -159,10 +172,15 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 	}
 
 	sawAbsentReference := false
+	sawBareHistogramReference := false
 	var missing []string
 	for _, name := range sortedSetKeys(referenced) {
 		if strings.HasPrefix(name, absentMetricPrefix) {
 			sawAbsentReference = true
+			continue
+		}
+		if bareHistogramNames[name] {
+			sawBareHistogramReference = true
 			continue
 		}
 		if !servable[name] {
@@ -172,6 +190,11 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 	if !sawAbsentReference {
 		t.Error("no corpus query references a name with the " + absentMetricPrefix +
 			" prefix; the exemption arm of this gate is dead and should be removed")
+	}
+	if !sawBareHistogramReference {
+		t.Error("no corpus query references a seeded classic-histogram family's bare " +
+			"(non-suffixed) name; the #1483 bare-name exemption arm of this gate is dead " +
+			"and should be removed")
 	}
 	if len(missing) > 0 {
 		t.Errorf("corpus queries reference metric families the seeder cannot produce: %v\n"+

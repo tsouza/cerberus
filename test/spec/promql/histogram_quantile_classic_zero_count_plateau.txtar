@@ -20,7 +20,7 @@
 # 0.0 + (0.1-0.0)*((0.4*5)-0.0)/(2-0.0) = 0.1.
 
 -- query.promql --
-histogram_quantile(0.4, http_server_request_duration)
+histogram_quantile(0.4, http_server_request_duration_bucket)
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,

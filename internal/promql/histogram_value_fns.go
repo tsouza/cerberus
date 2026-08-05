@@ -230,7 +230,7 @@ func lowerHistogramValueFnRange(
 	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
 
 	agg := buildHistogramBucketFanout(
-		scan, pred, windowFor(vs, instantLookback),
+		scan, pred, nil, windowFor(vs, instantLookback),
 		[]chplan.Expr{histogramIdentityExpr(s)},
 		[]string{s.AttributesColumn},
 		histogramValueLatestAggs(s), s, ctx,

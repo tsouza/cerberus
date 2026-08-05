@@ -104,12 +104,52 @@ type classicBucketWindowFold func(values, order chplan.Expr) chplan.Expr
 // without consulting the schema's AggregationTemporality column either.
 // Making delta-temporality counters a first-class case is a cross-cutting
 // change across every range-vector lowering, tracked in #1628.
+//
+// The empty string is the #1692 sentinel: `histogram_quantile(phi,
+// sum by(le)(<bucket-selector>))` with no range-vector wrapper at all.
+// There's no window to reduce — the shape means "ordinary instant-vector
+// selector", which resolves to at most the single newest sample per
+// series in the staleness lookback — so it gets its own fold rather than
+// falling into the sum_over_time default.
 func histogramWindowFold(fn string) classicBucketWindowFold {
-	if fn == "rate" || fn == "increase" {
+	switch fn {
+	case "rate", "increase":
 		return counterIncreaseFold
+	case "":
+		return latestSampleFold
+	default:
+		return func(values, _ chplan.Expr) chplan.Expr {
+			return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}}
+		}
 	}
-	return func(values, _ chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}}
+}
+
+// latestSampleFold reduces one `le` rung's per-row cumulative counts to
+// the value from the row with the LATEST timestamp — the per-rung
+// analogue of an ordinary instant-vector selector's "most recent sample
+// in the staleness lookback" rule (#1692). A classic-histogram row's
+// BucketCounts / ExplicitBounds are captured together at one TimeUnix, so
+// every rung of the row with the latest timestamp shares that same
+// timestamp: this fold therefore recovers exactly that one row's ladder,
+// not a cross-time blend, whenever a series' bucket layout is stable
+// across the window — the only realistic case for OTel-CH classic
+// histograms (a series' ExplicitBounds essentially never changes between
+// scrapes). The rarer case of a genuine mid-window layout change is
+// handled the same best-effort way sum_over_time / rate already handle
+// it: classicBucketWindowLadderExpr's union-of-bounds construction, not
+// this fold.
+func latestSampleFold(values, order chplan.Expr) chplan.Expr {
+	sorted := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramCurrCum, paramRowTime},
+			Body:   &chplan.BareIdent{Name: paramRowTime},
+		},
+		values,
+		order,
+	}}
+	return &chplan.Subscript{
+		Container: sorted,
+		Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sorted}},
 	}
 }
 

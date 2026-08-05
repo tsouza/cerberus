@@ -8,7 +8,7 @@
 # jump to the larger upper bound. Six identical rows are the pin surviving.
 
 -- query.promql --
-histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration[5m] @ 1767225600)))
+histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration_bucket[5m] @ 1767225600)))
 -- range_step --
 60s
 -- seed --
