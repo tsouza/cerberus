@@ -46,6 +46,65 @@ func TestRewriteMapProjections(t *testing.T) {
 			in:   "INSERT INTO `otel_metrics_gauge` VALUES (1)",
 			want: "INSERT INTO `otel_metrics_gauge` VALUES (1)",
 		},
+		{
+			// A relational CTE head hides the outer SELECT from a prefix
+			// match. Its body is a subquery, so its own Map columns stay raw.
+			name: "relational with head",
+			in: "WITH c AS (SELECT `Attributes` FROM `t`) " +
+				"SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM `c`",
+			want: "WITH c AS (SELECT `Attributes` FROM `t`) " +
+				"SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, `Value` FROM `c`",
+		},
+		{
+			// The scalar trace-scope binding chsql hoists onto the outermost
+			// statement: `WITH (SELECT …) AS <alias>` heads the SELECT and its
+			// body carries a nested `FROM (…)` whose parens must not be
+			// mistaken for the end of the head.
+			name: "scalar with head",
+			in: "WITH (SELECT groupArray(`TraceId`) FROM (SELECT `TraceId` FROM `otel_traces`)) AS _cerberus_trace_scope " +
+				"SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM `otel_traces`",
+			want: "WITH (SELECT groupArray(`TraceId`) FROM (SELECT `TraceId` FROM `otel_traces`)) AS _cerberus_trace_scope " +
+				"SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, `Value` FROM `otel_traces`",
+		},
+		{
+			// `SELECT * FROM (<plan>)` — the emitter's binding wrapper. The
+			// star hides the alias, so the wrap has to happen one level down;
+			// the star then forwards the String column out under the same name.
+			name: "star over subquery",
+			in: "SELECT * FROM (SELECT `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`)) AS `Attributes`, " +
+				"`TimeUnix`, `Value` FROM `otel_traces`)",
+			want: "SELECT * FROM (SELECT `MetricName`, toJSONString(mapConcat(`ResourceAttributes`, map(?, `TraceId`))) AS `Attributes`, " +
+				"`TimeUnix`, `Value` FROM `otel_traces`)",
+		},
+		{
+			// Both together — the exact shape chsql.Emit renders for the
+			// Drilldown structure-tab search once the repeated top-N gates
+			// collapse onto one binding.
+			name: "scalar with head over star wrapper",
+			in: "WITH (SELECT groupArray(`TraceId`) FROM (SELECT `TraceId` FROM `otel_traces`)) AS _cerberus_trace_scope " +
+				"SELECT * FROM (SELECT `SpanName` AS `MetricName`, `ResourceAttributes` AS `Attributes`, " +
+				"`Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM `otel_traces` " +
+				"WHERE has(_cerberus_trace_scope, `TraceId`))",
+			want: "WITH (SELECT groupArray(`TraceId`) FROM (SELECT `TraceId` FROM `otel_traces`)) AS _cerberus_trace_scope " +
+				"SELECT * FROM (SELECT `SpanName` AS `MetricName`, toJSONString(`ResourceAttributes`) AS `Attributes`, " +
+				"`Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM `otel_traces` " +
+				"WHERE has(_cerberus_trace_scope, `TraceId`))",
+		},
+		{
+			// A star the wrapper rule must NOT claim: the FROM operand does
+			// not run to the end of the statement, so the columns the outer
+			// clause sorts on are not the subquery's alone.
+			name: "star over subquery with trailing clause",
+			in:   "SELECT * FROM (SELECT `Attributes` FROM `t`) ORDER BY `Attributes`['h']",
+			want: "SELECT * FROM (SELECT `Attributes` FROM `t`) ORDER BY `Attributes`['h']",
+		},
+		{
+			// A star over a join takes columns from more than the first
+			// relation; rewriting one arm on a guess would be wrong.
+			name: "star over join untouched",
+			in:   "SELECT * FROM (SELECT `Attributes` FROM `t`) AS L INNER JOIN (SELECT `Attributes` FROM `u`) AS R ON L.`k` = R.`k`",
+			want: "SELECT * FROM (SELECT `Attributes` FROM `t`) AS L INNER JOIN (SELECT `Attributes` FROM `u`) AS R ON L.`k` = R.`k`",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
