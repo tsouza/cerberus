@@ -57,7 +57,8 @@ func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	// handler's toStreamsWithTransform path groups by the
 	// CanonicalKey of the (post-format) labels — match that here.
 	//
-	// Each row's labels also carry the synthesized `detected_level`,
+	// Each row's labels carry its folded structured metadata (see
+	// [foldStructuredMetadata]) plus the synthesized `detected_level`,
 	// resolved via cerberus's detected_level cascade (see
 	// [detectedLevel] — structured-metadata `detected_level` /
 	// `level` / `log.level` / `severity` / `severity_text` keys in the
@@ -153,8 +154,11 @@ func normaliseLogLevel(severity string) string {
 // that survive the pipeline. The pipeline order is:
 //
 //  1. Stream-selector matchers filter records that lack the matched
-//     ResourceAttribute pair.
-//  2. Each pipeline stage runs over the surviving records left-to-
+//     ResourceAttribute pair. The selector sees indexed labels only —
+//     cerberus resolves it in SQL against the ResourceAttributes map.
+//  2. Each surviving record's structured metadata folds into its label
+//     set (see [foldStructuredMetadata]).
+//  3. Each pipeline stage runs over the surviving records left-to-
 //     right. Filter stages drop records; format stages mutate the
 //     per-record label set (and, for `| line_format`, the body — not
 //     yet implemented).
@@ -164,13 +168,72 @@ func normaliseLogLevel(severity string) string {
 func applyExpr(expr syntax.Expr, records []property.LogRecord) ([]property.LogRecord, error) {
 	switch v := expr.(type) {
 	case *syntax.MatchersExpr:
-		return applyMatchers(v.Mts, records), nil
+		return foldStructuredMetadata(applyMatchers(v.Mts, records)), nil
 	case *syntax.PipelineExpr:
-		filtered := applyMatchers(v.Left.Mts, records)
+		filtered := foldStructuredMetadata(applyMatchers(v.Left.Mts, records))
 		return applyStages(v.MultiStages, filtered)
 	default:
 		return nil, fmt.Errorf("oracle/logql: unsupported expression %T (metric-form queries are out of scope for the MVP)", expr)
 	}
+}
+
+// foldStructuredMetadata merges each record's structured metadata (the
+// OTel-CH `LogAttributes` map) into its stream-identity labels,
+// mirroring cerberus's [internal/api/loki.foldStructuredMetadata].
+//
+// Structured metadata is an ordinary member of a record's label set in
+// reference Loki: two lines on the same stream that differ only in a
+// metadata value are two streams. Cerberus folds it on the log-stream
+// path for every client that does not ask for the `categorize-labels`
+// response encoding, which is the posture the property harness queries
+// under. An indexed label wins a key collision, so the SQL-synthesized
+// `detected_level` [Evaluate] stamps afterwards keeps its normalised
+// cascade value rather than the raw metadata one.
+//
+// Records are mutated in place: [applyMatchers] already returned a
+// fresh slice, and each fold allocates a new label map rather than
+// writing through to the dataset's own.
+func foldStructuredMetadata(records []property.LogRecord) []property.LogRecord {
+	for i := range records {
+		md := normaliseMetadataKeys(records[i].LogAttributes)
+		if len(md) == 0 {
+			continue
+		}
+		merged := make(map[string]string, len(records[i].ResourceAttributes)+len(md))
+		for k, v := range md {
+			merged[k] = v
+		}
+		for k, v := range records[i].ResourceAttributes {
+			merged[k] = v
+		}
+		records[i].ResourceAttributes = merged
+	}
+	return records
+}
+
+// normaliseMetadataKeys mirrors cerberus's `normalizeMetadata` over the
+// generator's key domain: empty values are dropped (they carry no
+// identity), and an OTel dotted key is rewritten to its Prometheus
+// underscored form — unless the underscored form is already present on
+// the record, in which case the natural form wins and the dotted key is
+// dropped entirely. `log.level` → `log_level` is the only rewrite the
+// generated key pool exercises (see gen.LogStructuredMetadataKeys).
+func normaliseMetadataKeys(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for _, k := range sortedKeys(in) {
+		v := in[k]
+		if v == "" {
+			continue
+		}
+		n := strings.ReplaceAll(k, ".", "_")
+		if n != k {
+			if _, ok := in[n]; ok {
+				continue
+			}
+		}
+		out[n] = v
+	}
+	return out
 }
 
 // applyMatchers keeps only records whose ResourceAttributes satisfy
@@ -376,11 +439,9 @@ func copyLabels(in map[string]string) map[string]string {
 	return out
 }
 
-// sortedKeys returns m's keys in sorted order. Used for deterministic
-// labelKey output in failure logs.
-//
-// Reserved for future test-helper use; kept here so the oracle's
-// helper surface is colocated.
+// sortedKeys returns m's keys in sorted order, so a map walk that can
+// resolve a key collision ([normaliseMetadataKeys]) does so the same
+// way on every run.
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -389,6 +450,3 @@ func sortedKeys(m map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
-
-// _ silences the unused-function lint on sortedKeys.
-var _ = sortedKeys
