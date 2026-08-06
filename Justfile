@@ -107,6 +107,22 @@ migrate *ARGS:
 
 # === Test ===
 
+# Every `go test` below that CI runs carries an explicit `-timeout`, and it is
+# always shorter than the `timeout-minutes` of the job that runs it.
+#
+# Both halves matter. `go test` stops a binary after 10 minutes when the command
+# line does not say otherwise, so a job declaring a longer budget advertises
+# headroom the tests can never reach — the binary panics at 10:00 and the job
+# fails at half its stated budget with nothing in the log explaining the gap.
+# Raising the job's number looks like a fix and is not. And the ordering is what
+# makes a red lane useful: Go's abort dumps every goroutine's stack, naming the
+# test that hung; the runner's kill takes the container away and uploads
+# nothing.
+#
+# `test/regression/go_test_timeout_budget_test.go` derives the pairing from
+# these recipes and the workflows and fails on any drift, so the numbers below
+# do not have to be remembered.
+
 # Run unit + spec tests with race detector, then type-check the build-tagged
 # lanes no other recipe compiles. This is the whole `check` gate in one
 # command, which is what you want locally; CI splits it across two concurrent
@@ -119,7 +135,7 @@ test: test-unit vet-tagged
 # quick type-check/build work would serialise two things that have no reason to
 # wait on each other.
 test-unit:
-    go test -race ./...
+    go test -timeout 15m -race ./...
 
 # Type-check the build-tagged migration lanes no other recipe compiles. `go vet`
 # typechecks, so a rename in an untagged package that breaks a `migration_tier1`
@@ -150,7 +166,7 @@ test-agpl-oracle:
 # Docker.
 schema-ddl-test:
     @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}}
-    go test -race -tags=integration ./internal/schema/ddl/...
+    go test -timeout 20m -race -tags=integration ./internal/schema/ddl/...
 
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion
 # layer enabled. Requires libchdb.so (see `just chdb-install`). The
@@ -181,7 +197,7 @@ spec-chdb:
 # of how a real engine resolves a name against an Enum8, and no shape assertion
 # over the emitted SQL can prove that.
 test-chdb:
-    go test -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
@@ -196,9 +212,11 @@ property:
 # fan-out round-trip baseline. Requires libchdb.so (see `just chdb-install`).
 # Mirrors the `perf-guards` CI job in chdb.yml. Distinct from the
 # informational `perf-benchmark.yml` lane, which only reports benchstat
-# deltas and never gates.
+# deltas and never gates. The lane sits around 8 minutes and the ratchet grows
+# with the corpus, so the `-timeout` is the one number here with real slack
+# behind it: `perf-guards` budgets 20 minutes and this takes 15 of them.
 perf-chdb:
-    go test -tags chdb -count=1 ./test/perf/...
+    go test -timeout 15m -tags chdb -count=1 ./test/perf/...
 
 # Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
 # Component B). Walks every executable fixture under test/spec/** (those
@@ -218,7 +236,7 @@ perf-profile OUT="perf-profile.json" TOP="40":
 # build tag so regular `just test` doesn't pull in Docker.
 chclient-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -race -tags=integration ./internal/chclient/...
+    go test -timeout 15m -race -tags=integration ./internal/chclient/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the
@@ -230,7 +248,7 @@ chclient-integration:
 # .github/workflows/strict-scan.yml.
 strict-scan-test:
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
-    go test -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
+    go test -timeout 15m -tags=integration -count=1 -run TestStrictScanDifferential ./test/spec/...
 
 # Run the router-corpus real-CH integration tests: the offline corpus WRITE
 # path (optcorpus.CHTableSink: real CREATE DDL + columnar Enum8 batch) and READ
@@ -243,7 +261,7 @@ strict-scan-test:
 # internal/routerrules/realch_integration_test.go and strict-scan.yml.
 router-corpus-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
+    go test -timeout 15m -tags=integration -count=1 -run 'RealClickHouse' ./internal/routerrules/... ./internal/optcorpus/...
 
 # Run the TraceQL spans-scan resource-bound real-CH guard (PR #1154): lowers +
 # emits the Grafana Traces Drilldown Structure + Comparison queries through the
@@ -256,7 +274,7 @@ router-corpus-integration:
 # test/spec/traces_scan_resource_bound_integration_test.go and strict-scan.yml.
 traces-scan-bound-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
+    go test -timeout 15m -tags=integration -count=1 -run TestTracesScanResourceBoundRealCH ./test/spec/...
 
 # Run the Tempo HTTP traces-scan WINDOW real-CH guard (#1509): drives the
 # real /api/search + /api/metrics/query_range handlers against a REAL
@@ -274,7 +292,7 @@ traces-scan-bound-integration:
 # strict-scan.yml.
 traces-scan-window-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run TestTracesScanWindowRealCH ./internal/api/tempo/...
+    go test -timeout 15m -tags=integration -count=1 -run TestTracesScanWindowRealCH ./internal/api/tempo/...
 
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is
@@ -287,7 +305,7 @@ traces-scan-window-integration:
 # internal/solver/executor_realch_integration_test.go and strict-scan.yml.
 solver-memory-apportion-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
+    go test -timeout 15m -tags=integration -count=1 -run TestExecutor_PerShardMaxMemoryUsage_RealClickHouse ./internal/solver/...
 
 # Run the route-B real-CH result differential: the IDENTICAL query_range
 # request answered through the REAL production PromQL lowering + emitter,
@@ -303,7 +321,7 @@ solver-memory-apportion-integration:
 # strict-scan.yml.
 route-b-differential-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run TestRouteB_MatchesRouteA_RealClickHouse ./internal/api/prom/...
+    go test -timeout 15m -tags=integration -count=1 -run TestRouteB_MatchesRouteA_RealClickHouse ./internal/api/prom/...
 
 # Run the Loki + Prometheus metadata/label-values endpoints real-CH
 # differential: /loki/api/v1/{series,labels,label/*/values,index/stats,
@@ -322,7 +340,7 @@ route-b-differential-integration:
 # and strict-scan.yml.
 metadata-endpoints-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run TestMetadataEndpoints_RealClickHouse ./test/spec/...
+    go test -timeout 15m -tags=integration -count=1 -run TestMetadataEndpoints_RealClickHouse ./test/spec/...
 
 # Run the histogram real-exporter-schema differential (#1642): provisions the
 # table shapes the REAL upstream clickhouseexporter creates — LowCardinality-
@@ -339,7 +357,7 @@ metadata-endpoints-integration:
 # internal/api/prom/handler_histogram_integration_test.go and strict-scan.yml.
 histogram-realexporter-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -tags=integration -count=1 -run TestHistogram_RealExporterSchema_Integration ./internal/api/prom/...
+    go test -timeout 15m -tags=integration -count=1 -run TestHistogram_RealExporterSchema_Integration ./internal/api/prom/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
@@ -370,11 +388,11 @@ coverage:
     # require the `covdata` tool on toolchains that ship without it).
     # The cover.out profile is still written for every package that
     # compiled, which is all production code in internal/**.
-    go test -coverprofile=cover.out ./... || true
+    go test -timeout 25m -coverprofile=cover.out ./... || true
     @test -s cover.out
     @if [ -e /usr/local/lib/libchdb.so ]; then \
         echo "==> chdb-tagged coverage"; \
-        go test -tags chdb -coverprofile=cover-chdb.out ./... || true; \
+        go test -timeout 25m -tags chdb -coverprofile=cover-chdb.out ./... || true; \
         echo "==> merging profiles"; \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
@@ -1263,7 +1281,7 @@ e2e-run:
         CH_DATABASE=otel \
         CH_USERNAME=cerberus \
         CH_PASSWORD=cerberus \
-        go test -tags=e2e ./test/e2e/...
+        go test -timeout 35m -tags=e2e ./test/e2e/...
 
 # A godog suite driving `cerberus migrate` over committed fixtures — no
 # Docker, no backend, seconds.
