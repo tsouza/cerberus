@@ -119,6 +119,7 @@ import {
   resolveInitRaceConsoleTwins,
   sweepDepth,
   tolerateRepaintFlicker,
+  UNREADABLE_BODY_SENTINEL,
 } from '../helpers/index.js';
 import {
   ALERT_ERROR_PATTERNS,
@@ -589,6 +590,51 @@ test.describe('crawl: canonicalization pins', () => {
   });
 });
 
+/**
+ * The wire capture reads response bodies to feed oracles 2a/2b. Grafana's
+ * Drilldown apps leave streaming responses open across a navigation, so a
+ * body read can never complete — and the capture's `stop()` awaits every
+ * read before the crawl advances. Without a bound the crawl parks on that
+ * one response until the test timeout and emits no inventory at all.
+ */
+test.describe('crawl: wire-capture body reads are bounded', () => {
+  /** Short enough to keep the unit lane fast; the production bound is
+   * WIRE_BODY_READ_TIMEOUT_MS. */
+  const PROBE_BOUND_MS = 50;
+
+  test('a body that never settles rejects at the bound instead of hanging', async () => {
+    const neverSettles = {
+      text: () => new Promise<string>(() => {}),
+    } as unknown as Response;
+
+    await expect(
+      readBodyWithin(neverSettles, PROBE_BOUND_MS),
+    ).rejects.toThrow(/did not settle/);
+  });
+
+  test('a body that settles is returned unchanged', async () => {
+    const settles = {
+      text: async () => '{"results":{}}',
+    } as unknown as Response;
+
+    expect(await readBodyWithin(settles, PROBE_BOUND_MS)).toBe(
+      '{"results":{}}',
+    );
+  });
+
+  test('a body read that throws propagates so the caller records the sentinel', async () => {
+    const throws = {
+      text: async () => {
+        throw new Error('target page closed');
+      },
+    } as unknown as Response;
+
+    await expect(readBodyWithin(throws, PROBE_BOUND_MS)).rejects.toThrow(
+      /target page closed/,
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The crawl
 // ---------------------------------------------------------------------------
@@ -929,6 +975,38 @@ type CapturedDsResponse = {
 };
 
 /**
+ * Ceiling on one captured response-body read. Grafana's Drilldown apps
+ * leave streaming responses open across a navigation, and `resp.text()`
+ * on one of those never settles: an unbounded `Promise.all` over the
+ * reads then parks the whole crawl until the test timeout, which yields
+ * NO inventory and NO verdict rather than a bad one. A read that blows
+ * the ceiling records the same UNREADABLE_BODY_SENTINEL a read that
+ * throws already records, so the reconciler's semantics are unchanged.
+ */
+const WIRE_BODY_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * `resp.text()` bounded by `ms` — rejects rather than hanging when the
+ * response body never completes.
+ */
+async function readBodyWithin(resp: Response, ms: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      resp.text(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`response body did not settle within ${ms}ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Wire the datasource-API response capture — the same surface
  * families every existing sweep watches. Deliberately NOT all of
  * /api/: e.g. Grafana fires /api/datasources/uid/cerberus-tempo/health
@@ -938,7 +1016,9 @@ type CapturedDsResponse = {
  * compose_grafana_smoke.spec.ts).
  *
  * Returns the live capture array and an async stop that detaches the
- * listener and settles every in-flight body read.
+ * listener and settles every in-flight body read — each one bounded by
+ * WIRE_BODY_READ_TIMEOUT_MS, so a response that never finishes cannot
+ * wedge the crawl.
  */
 function startWireCapture(
   page: Page,
@@ -967,9 +1047,9 @@ function startWireCapture(
         // (the tunneled-error oracle needs them).
         if (status < 200 || status > 299 || isDsQuery) {
           try {
-            body = await resp.text();
+            body = await readBodyWithin(resp, WIRE_BODY_READ_TIMEOUT_MS);
           } catch {
-            body = '<unreadable>';
+            body = UNREADABLE_BODY_SENTINEL;
           }
         }
         captured.push({
