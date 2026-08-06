@@ -243,17 +243,41 @@ func epochFloor(t time.Time, step time.Duration) time.Time {
 // `TimeUnix` is kept alongside `anchor_ts` so the shape is ALSO a valid
 // top-level answer (`(time() - m)[1m:10s]` evaluated on its own) rather
 // than only an input to an outer `*_over_time`.
+//
+// `MetricName` leads the projection whenever the inner relation still
+// holds a real per-series name. Arithmetic inners never do — PromQL
+// drops `__name__` on every binary/unary value rewrite, and
+// `projectValueOverInner` materialises that as the empty literal — but
+// the SET operators do: `or` / `and` / `unless` filter and union
+// existing samples rather than deriving new ones, so each surviving
+// row keeps its own name. Omitting the column there is what left
+// `(a or b)[10m:1m]` (and any outer reducer over it) reporting no
+// `__name__` at all, since the enclosing reducer reads its name off
+// THIS relation.
 func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
+	projections := make([]chplan.Projection, 0, subqueryAnchorShapeMaxCols)
+	if nodeCarriesMetricName(inner, s) {
+		projections = append(projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: s.MetricNameColumn},
+			Alias: s.MetricNameColumn,
+		})
+	}
 	return &chplan.Project{
 		Input: inner,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: chplan.RangeWindowAnchorColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
+		Projections: append(
+			projections,
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: chplan.RangeWindowAnchorColumn},
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		),
 	}
 }
+
+// subqueryAnchorShapeMaxCols is the widest [subqueryAnchorShape]
+// projection: the four matrix-contract columns plus the optional
+// leading MetricName.
+const subqueryAnchorShapeMaxCols = 5
 
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
 // The most common shape is `rate(m[5m])[1h:5m]`. Lowers to a single
@@ -356,6 +380,25 @@ func lowerSubqueryOverCall(
 	value, replaceValue, err := threadOuterRangeFnScalars(call, rw, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	// Same name-drop collision boundary lowerRangeVectorCall guards, one
+	// level in: `rate({__name__=~"a|b"}[5m])[10m:1m]` strips `__name__` from
+	// two series that share an attribute set exactly as the un-nested call
+	// does. Guarding here rather than only at the top level is what makes
+	// the abort reach an OUTER reducer's input — once the inner window has
+	// merged the two series there is no identity left for any later stage to
+	// notice, which is why upstream errors at the inner call too.
+	//
+	// The value expression folds through the guard's OWN projection rather
+	// than a projectValueOverInner layer stacked on top of it: the guard
+	// returns a Project, so that helper would take its non-RangeWindow branch
+	// and drop the `anchor_ts` column a matrix-shaped window owes its
+	// enclosing reducer. wrapRangeWindowAtBroadcast folds the same
+	// substitution into its own projection for the `@`-pinned shape, and for
+	// the same reason.
+	if rangeFnCollidesOnNameDrop(call.Func.Name, vs.LabelMatchers, inner, s) {
+		appendNameGroupKey(rw, s)
+		return wrapDropNameCollisionGuard(rw, s, dropNameGuardAnchor(rw, rw), value), nil
 	}
 	if replaceValue {
 		// quantile_over_time's out-of-range literal phi: the inner
@@ -744,6 +787,47 @@ func lowerOuterRangeFnOverSubquery(
 // entirely for the empty string — so "empty string" IS "name dropped",
 // end to end, and `dropName || inputDropName` falls out of carrying the
 // column and letting the outer function decide whether to project it.
+// wrapBareSubqueryName re-attaches `__name__` to a BARE subquery — one
+// with no outer range function to consume it, e.g. `up[5m:1m]` posted
+// straight at /api/v1/query.
+//
+// A bare subquery is a RAW range vector: reference Prometheus applies no
+// reducer to it, so there is no `dropName` to apply either and every
+// series keeps its own name (`promql/engine.go` only computes
+// `dropName` for a *Call over a matrix). Cerberus lowers the shape to an
+// Identity RangeWindow whose grouping key is Attributes alone; the
+// windowed-array emitter projects exactly the grouping keys, so
+// MetricName never reaches the emitted relation and the HTTP layer's
+// `isDerivedShape` branch stamps `” AS MetricName` over it. The result
+// is a wire answer with no `__name__` — and, worse, two metrics sharing
+// an attribute set collapsed into one series.
+//
+// The fix is the same two-step the outer-reducer path already uses:
+// widen every window between here and the name-bearing relation onto the
+// MetricName key, then re-expose the canonical 4-column Sample shape so
+// `wrapWithSampleProjection` takes its canonical branch instead. Only
+// the RangeWindow root is handled: the grid-evaluated inner
+// ([subqueryAnchorShape]) already projects MetricName itself, and every
+// other bare shape (absent, aggregate) genuinely has no per-series name.
+//
+// Name-DROPPING inners fall out for free — `rate(m[5m])[1h:5m]` roots at
+// a reducing window and `(a - b)[5m:1m]` at a Project holding the empty
+// literal, both of which [subquerySpineNameWindows] declines.
+func wrapBareSubqueryName(plan chplan.Node, s schema.Metrics) chplan.Node {
+	rw, ok := plan.(*chplan.RangeWindow)
+	if !ok || s.MetricNameColumn == "" {
+		return plan
+	}
+	windows, ok := subquerySpineNameWindows(rw, s)
+	if !ok {
+		return plan
+	}
+	for _, w := range windows {
+		appendNameGroupKey(w, s)
+	}
+	return wrapRangeWindowPreserveName(rw, s, &chplan.ColumnRef{Name: s.MetricNameColumn})
+}
+
 func subqueryPreservedNameExpr(inner chplan.Node, outerFn string, s schema.Metrics) chplan.Expr {
 	if !rangeFnPreservesName(outerFn) {
 		return nil
@@ -854,7 +938,95 @@ func subquerySpineNameWindows(n chplan.Node, s schema.Metrics) ([]*chplan.RangeW
 		}
 		return windows, true
 	}
-	return nil, false
+	// Grouping-free relations that still expose a name — the set
+	// operators and the LWR collapse — answer through the shared
+	// predicate. They contribute no window because they have no
+	// grouping key to widen.
+	return nil, nodeCarriesMetricName(n, s)
+}
+
+// nodeCarriesMetricName reports whether n's output relation exposes a
+// MetricName column holding a REAL per-series name (as opposed to the
+// empty string every derived-sample shape stamps, which internal/api/
+// format/metric.go reads as "no `__name__`").
+//
+// It answers for the GROUPING-FREE half of the plan vocabulary — the
+// nodes that pass rows through without re-keying them:
+//
+//   - Scan — the base metrics relation; MetricName is one of its own
+//     columns, so a selector that reaches the emitter without a shaping
+//     Project (the native-eligible shape) still carries the name.
+//   - Filter / RangeLWR / RangeWindowResample — transparent; none
+//     reshapes the column set. RangeLWR and RangeWindowResample are the
+//     fan-out and native (timeSeriesResampleToGridWithStaleness) halves of
+//     the SAME staleness lowering, chosen per deployment by
+//     [RangeLowerers.Staleness], and the native emitter selects and groups
+//     by MetricName exactly as the fan-out one does. Listing only one of
+//     them would make `__name__` survive a subquery on a ClickHouse old
+//     enough to lack ts_grid and vanish on a newer one — the same query,
+//     two answers, decided by the server version.
+//   - Project — terminal, via [projectCarriesMetricName]. A Project that
+//     names MetricName with the empty literal has dropped it and is NOT
+//     walked through; one that names it at all is authoritative.
+//   - UnionAll — every arm must carry a name, or the union's column is
+//     only partly populated.
+//   - VectorSetOp / NaryVectorSetOp — set operators forward each
+//     surviving row's own labels, so the name survives exactly when the
+//     arms that CONTRIBUTE rows carry one. `or` unions both sides; `and`
+//     and `unless` emit LHS rows only, so the RHS is irrelevant there.
+//     internal/chsql/vector_set_op.go's `vectorSetOpArmIsDerivedShape`
+//     makes the same call on the emit side — an arm it classifies as
+//     derived gets `” AS MetricName` stamped, which is why a
+//     RangeWindow / Aggregate arm is rejected here rather than walked.
+//
+// Everything else — RangeWindow, Aggregate, TopK, CrossJoin, StepGrid,
+// … — reshapes labels in ways that either group the name away or need a
+// window widened first, which is [subquerySpineNameWindows]'s job.
+func nodeCarriesMetricName(n chplan.Node, s schema.Metrics) bool {
+	if s.MetricNameColumn == "" {
+		return false
+	}
+	switch v := n.(type) {
+	case *chplan.Scan:
+		return true
+	case *chplan.Filter:
+		return nodeCarriesMetricName(v.Input, s)
+	case *chplan.RangeLWR:
+		return nodeCarriesMetricName(v.Input, s)
+	case *chplan.RangeWindowResample:
+		return nodeCarriesMetricName(v.Input, s)
+	case *chplan.Project:
+		return projectCarriesMetricName(v, s)
+	case *chplan.UnionAll:
+		if len(v.Inputs) == 0 {
+			return false
+		}
+		for _, in := range v.Inputs {
+			if !nodeCarriesMetricName(in, s) {
+				return false
+			}
+		}
+		return true
+	case *chplan.VectorSetOp:
+		if v.Op == chplan.VectorSetOr && !nodeCarriesMetricName(v.Right, s) {
+			return false
+		}
+		return nodeCarriesMetricName(v.Left, s)
+	case *chplan.NaryVectorSetOp:
+		if len(v.Arms) == 0 {
+			return false
+		}
+		if v.Op != chplan.VectorSetOr {
+			return nodeCarriesMetricName(v.Arms[0], s)
+		}
+		for _, arm := range v.Arms {
+			if !nodeCarriesMetricName(arm, s) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // projectCarriesMetricName reports whether p outputs a MetricName column
@@ -1035,8 +1207,10 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 // (OuterRange > 0) modes. Subquery-argument lowering only fires for
 // these. predict_linear / holt_winters / quantile_over_time carry extra
 // scalar arguments beyond the subquery itself; threadOuterRangeFnScalars
-// (called from lowerOuterRangeFnOverSubquery) threads them onto the
-// RangeWindow the same way range_fns.go's non-subquery lowerers do (#1456).
+// (called from lowerOuterRangeFnOverSubquery for the outer reducer and
+// from lowerSubqueryOverRangeFnCall for the subquery inner) threads them
+// onto the RangeWindow the same way range_fns.go's non-subquery lowerers
+// do (#1456).
 // Both "holt_winters" and "double_exponential_smoothing" are listed even
 // though the upstream parser only ever produces the latter today — same
 // forward-compat rationale as lowerRangeVectorCall's two-spelling case.

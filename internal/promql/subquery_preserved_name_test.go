@@ -310,15 +310,57 @@ func TestSubqueryPreservedNameExpr_EmptyUnionAllRejected(t *testing.T) {
 // any other reshaping node) has no MetricName slot — PromQL drops the
 // name across an aggregation anyway — so the default arm must reject
 // rather than walk blindly into it.
+//
+// A bare Scan is deliberately NOT the exemplar here: MetricName is one of
+// the metrics table's own columns, so the walk recognises it and carries
+// the name (see nodeCarriesMetricName's Scan arm, which is what lets a
+// native-eligible selector — Filter over Scan, no shaping Project — keep
+// its name). Aggregate is the node that genuinely exposes no name slot.
 func TestSubqueryPreservedNameExpr_UnknownNodeRejected(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
-	identity := attrOnlySubqueryWindow("", &chplan.Scan{Table: "otel_metrics_gauge"}, s)
+	agg := &chplan.Aggregate{
+		Input:          &chplan.Scan{Table: "otel_metrics_gauge"},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases: []string{s.AttributesColumn},
+		AggFuncs: []chplan.AggFunc{{
+			Name:  "sum",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+			Alias: s.ValueColumn,
+		}},
+	}
+	identity := attrOnlySubqueryWindow("", agg, s)
 
 	if got := subqueryPreservedNameExpr(identity, "last_over_time", s); got != nil {
-		t.Fatalf("name expr over a bare Scan: got %#v, want nil", got)
+		t.Fatalf("name expr over an Aggregate: got %#v, want nil", got)
 	}
 	assertAttrOnlyGroupKey(t, identity, s)
+}
+
+// TestSubqueryPreservedNameExpr_BareScanCarriesName is the positive twin
+// of the case above, and the reason the Scan arm exists at all: a
+// `{__name__=~"a|b"}` selector that resolves to ONE table lowers to
+// Filter-over-Scan with no shaping Project, the shape the native ts_grid
+// path requires. MetricName is a real column of that relation, so the name
+// must ride the window's grouping key rather than be synthesised away.
+func TestSubqueryPreservedNameExpr_BareScanCarriesName(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	identity := attrOnlySubqueryWindow("", &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  &chplan.ColumnRef{Name: s.MetricNameColumn},
+			Right: &chplan.LitString{V: "cpu_temp"},
+		},
+	}, s)
+
+	got := subqueryPreservedNameExpr(identity, "last_over_time", s)
+	ref, ok := got.(*chplan.ColumnRef)
+	if !ok || ref.Name != s.MetricNameColumn {
+		t.Fatalf("name expr over Filter-over-Scan: got %#v, want a %s ColumnRef",
+			got, s.MetricNameColumn)
+	}
 }
 
 // TestSubqueryPreservedNameExpr_SchemaWithoutMetricNameColumn: no

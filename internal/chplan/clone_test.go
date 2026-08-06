@@ -24,6 +24,15 @@ func allNodeKinds() []chplan.Node {
 			GroupBy:        []chplan.Expr{expr},
 			GroupByAliases: []string{"g0"},
 			AggFuncs:       []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
+			// Having carries the duplicate-labelset / conflicting-label aborts,
+			// and a zero-valued fixture field is equal on both sides of a
+			// dropped copy — so leaving it nil made the Equal assertion below
+			// blind to exactly the bug that shipped.
+			Having: &chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  &chplan.FuncCall{Name: "throwIf", Args: []chplan.Expr{&chplan.LitBool{V: false}, &chplan.LitString{V: "boom"}}},
+				Right: &chplan.LitInt{V: 0},
+			},
 		},
 		&chplan.RangeWindow{
 			Input: leaf, Func: "rate", Range: 5 * time.Minute, Step: time.Minute,

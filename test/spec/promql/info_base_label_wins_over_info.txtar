@@ -80,7 +80,7 @@ InfoJoin identity=[instance, job]
           Filter predicate=(MetricName = "up")
             Scan(merge(otel_metrics_gauge|otel_metrics_sum))
   Project [MetricName AS MetricName, _cerberus_info_winner_attrs AS Attributes, _cerberus_info_winner_ts AS TimeUnix, _cerberus_info_winner_value AS Value]
-    Aggregate groupBy=[MetricName AS MetricName, Attributes["instance"] AS _cerberus_info_sig_0, Attributes["job"] AS _cerberus_info_sig_1] funcs=[argMax(Attributes, TimeUnix) AS _cerberus_info_winner_attrs, max(TimeUnix) AS _cerberus_info_winner_ts, argMax(Value, TimeUnix) AS _cerberus_info_winner_value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes["instance"] AS _cerberus_info_sig_0, Attributes["job"] AS _cerberus_info_sig_1] funcs=[argMax(Attributes, TimeUnix) AS _cerberus_info_winner_attrs, max(TimeUnix) AS _cerberus_info_winner_ts, argMax(Value, TimeUnix) AS _cerberus_info_winner_value] having=(throwIf((countEqual(groupArray(TimeUnix), max(TimeUnix)) > 1), "conflicting label") = 0)
       Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
         Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
           Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
