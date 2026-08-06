@@ -102,10 +102,12 @@ per-layer "catches X / misses Y" guidance.
 5. **No speculative pre-flight, but a red check is reproduced locally before the next push.** These
    are two halves of one rule, and the second half wins wherever they meet.
    - *Before* a push, do not run `just test`, `just lint`, `go test`, `golangci-lint run`,
-     `go build`, or `markdownlint-cli2` as a ritual over the whole tree. `lefthook.yml` is layered:
-     `pre-commit` runs sub-second formatters on staged files, `commit-msg` runs commitlint, and
-     `pre-push` mirrors the CI `check` + `lint` + `forbid-skip` jobs. `LEFTHOOK=0 git push` bypasses
-     for WIP branches.
+     `go build`, or `markdownlint-cli2` as a ritual over the whole tree. `lefthook.yml` is layered
+     and every layer is cheap: `pre-commit` runs sub-second formatters on staged files, `commit-msg`
+     runs commitlint on the message being written, and `pre-push` runs the `forbid-skip` and
+     `repo-hygiene` scans plus `actionlint` in about a second. Compilation, whole-tree walks and
+     containers belong to CI, which runs them once on the commit that merges. `LEFTHOOK=0 git push`
+     bypasses for WIP branches.
    - *After* CI reports a red check, **reproduce that exact failure locally, narrowed to the thing
      that failed**, and confirm the fix locally before pushing again. Pushing a speculative fix and
      waiting on CI to find out is forbidden: a full run is ~19 checks and ~40 minutes, so a
