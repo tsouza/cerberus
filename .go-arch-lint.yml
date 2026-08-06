@@ -34,6 +34,10 @@
 #     api-health      — readiness probe.
 #     schema-ddl      — OTel-CH DDL helpers (config consumes; isolated).
 #     chclienttest    — chclient test helpers.
+#     testsql         — textual SQL/DDL rewrites the test substrates apply
+#                       around an already-emitted query. Depends on
+#                       nothing; both chclienttest and test/spec consume
+#                       it so the chDB workarounds have one owner.
 #
 # Deviations from the strictest "domain layers only" interpretation of
 # the proposed rules:
@@ -137,6 +141,7 @@ components:
   # the CH driver. Declared explicitly with its own deps block instead.
   api-reqctx:     { in: api/reqctx }
   chclienttest:   { in: chclienttest }
+  testsql:        { in: testsql }
   qlcommon:       { in: qlcommon }
   # Clean-room in-house Drain log-template miner (replaces the AGPL
   # grafana/loki pkg/pattern/drain). Stdlib-only leaf; the loki `/patterns`
@@ -412,9 +417,13 @@ deps:
     mayDependOn:
       - chplan
       - spansscan
+  # chclienttest drives a chDB-backed fake, so it needs the same textual
+  # Map-column and seed-DDL rewrites the TXTAR round-trip runner applies.
+  # Both consume `testsql` rather than carrying private copies.
   chclienttest:
     mayDependOn:
       - chclient
+      - testsql
   # api-reqctx resolves the per-request query budget and threads it onto
   # the context, so it needs chclient for the WithQueryTimeout carrier
   # (the `?timeout=` parse itself comes from the api-format

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/test/spec"
+	"github.com/tsouza/cerberus/test/spec/traceqlwrap"
 )
 
 func TestRoundTripChDB(t *testing.T) {
@@ -27,6 +28,6 @@ func TestRoundTripChDB(t *testing.T) {
 	spec.Walk(t, dir, func(t *testing.T, c *spec.Case) {
 		// LoadRoundTrip + IsRoundTrip is the opt-in gate; fixtures
 		// without seed/expected_rows are silent no-ops.
-		spec.RunRoundTrip(t, c)
+		spec.RunRoundTrip(t, c, spec.WithSQLReconstructor(traceqlwrap.ReconstructSearchWrap))
 	})
 }

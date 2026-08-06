@@ -3,7 +3,7 @@
 // Exploratory window-vs-freshness sweep for the Prometheus metadata
 // endpoints (/series, /labels, /label/<name>/values). This is the
 // metadata analogue of the rc.9 eval-instant sweep
-// (test/spec/eval_instant_sweep.go): it seeds series at sample times
+// (test/spec/promqlsweep): it seeds series at sample times
 // anchored a couple of hours in the past, then varies the REQUEST window
 // [start,end] independently of wall-clock and asserts each endpoint
 // returns exactly the series/labels/values whose sample falls in the
