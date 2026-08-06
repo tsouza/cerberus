@@ -29,15 +29,17 @@
 //     - total = 0 → NaN.
 //     - phi < 0 → -Inf (out of domain).
 //     - phi > 1 → +Inf (out of domain).
-//     - phi == 0 → lower edge of the lowest bucket (in domain):
-//     `-pow(base, NegativeOffset + length(Negative))` if any
-//     negative observations exist; otherwise 0 (the convention for
-//     non-negative distributions).
-//     - phi == 1 → upper edge of the highest bucket (in domain):
-//     `pow(base, PositiveOffset + length(Positive))` when positive
-//     observations exist; else `ZeroThreshold` when zero bucket is
-//     non-empty; else `-pow(base, NegativeOffset)` (upper edge of
-//     the least-negative bucket).
+//     - phi == 0 → lower edge of the lowest POPULATED bucket (in
+//     domain), and phi == 1 → upper edge of the highest populated
+//     one. Both saturate to a bucket some observation fell in,
+//     because the reference rank walk skips zero-count buckets
+//     (quantile.go: `if bucket.Count == 0 { continue }`) and a
+//     bucket array may carry zeros anywhere — the offsets describe
+//     only the leading gap. Each is the step-7 interpolation for
+//     whichever region that bucket lies in, evaluated at
+//     fraction = 0 (lower) / 1 (upper), with idx replaced by
+//     `arrayFirstIndex` / `arrayLastIndex` of a non-zero count over
+//     the same concatenated walk order.
 //  7. Interpolation, by region:
 //     - Negative bucket (idx ≤ nlen). Original-array 0-based index
 //     within Negative is `nlen - idx`; absolute exp-bucket index is
@@ -121,35 +123,50 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	po := h.PositiveOffsetColumn
 	no := h.NegativeOffsetColumn
-	zc := h.ZeroCountColumn
 	w := newHQNativeWriters(h)
 
-	// `nan` is a CH-portable shape token, not data — InlineLit would
-	// quote it. `0.0` similarly can't ride InlineLit (FormatFloat
-	// canonicalises it to `0`). Both ride verbatim (the IfNonZero
+	// `nan` / `-inf` / `inf` are CH-portable shape tokens, not data —
+	// InlineLit would quote them, so they ride verbatim (the IfNonZero
 	// precedent in builder.go).
 	nan := verbatim("nan")
 	negInf := verbatim("-inf")
 	posInf := verbatim("inf")
-	zeroF := verbatim("0.0")
 
-	// phi == 0 → smallest-bucket lower edge:
-	//   if(nlen > 0, -pow(base, no + nlen), 0.0)
+	// phi == 0 → the lower edge of the lowest POPULATED bucket, and
+	// phi == 1 → the upper edge of the highest populated one. Both walk
+	// to a populated bucket rather than to an end of the array, because
+	// reference Prometheus's rank walk skips zero-count buckets
+	// (quantile.go: `if bucket.Count == 0 { continue }`). A bucket array
+	// may carry zeros anywhere — the offsets describe only the leading
+	// gap — so an array end can be an interval no observation fell in,
+	// and answering from it reports a value the histogram never saw.
+	//
+	// Both edges are the interpolation formulas further down evaluated
+	// at fraction = 0 (lower) / 1 (upper), so each bucket family's
+	// geometry stays written down in exactly one place per edge.
+	//
+	//   phiLow  = if(first <= nlen,   -pow(base, no + (nlen - first) + 1),
+	//               if(first = nlen+1, -zt,
+	//                                  pow(base, po + (first - nlen - 2))))
 	phiLow := If(
-		Gt(w.nLen(), InlineLit(0)),
-		Neg(Call("pow", w.base(), Add(Col(no), w.nLen()))),
-		zeroF,
-	)
-	// phi == 1 → largest-bucket upper edge:
-	//   if(plen > 0, pow(base, po + plen),
-	//      if(zc > 0, zt, -pow(base, no)))
-	phiHigh := If(
-		Gt(w.pLen(), InlineLit(0)),
-		Call("pow", w.base(), Add(Col(po), w.pLen())),
+		Lte(w.firstPopulated(), w.nLen()),
+		Neg(Call("pow", w.base(), Add(Add(Col(no), Paren(Sub(w.nLen(), w.firstPopulated()))), InlineLit(1)))),
 		If(
-			Gt(Col(zc), InlineLit(0)),
+			Eq(w.firstPopulated(), Add(w.nLen(), InlineLit(1))),
+			Neg(w.zt()),
+			Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(w.firstPopulated(), w.nLen()), InlineLit(2))))),
+		),
+	)
+	//   phiHigh = if(last <= nlen,    -pow(base, no + (nlen - last)),
+	//               if(last = nlen+1,  zt,
+	//                                  pow(base, po + (last - nlen - 1))))
+	phiHigh := If(
+		Lte(w.lastPopulated(), w.nLen()),
+		Neg(Call("pow", w.base(), Add(Col(no), Paren(Sub(w.nLen(), w.lastPopulated()))))),
+		If(
+			Eq(w.lastPopulated(), Add(w.nLen(), InlineLit(1))),
 			w.zt(),
-			Neg(Call("pow", w.base(), Col(no))),
+			Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(w.lastPopulated(), w.nLen()), InlineLit(1))))),
 		),
 	)
 	// Negative bucket interp (idx <= nlen):
@@ -216,16 +233,18 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 // re-emits its own `?` placeholders, matching the legacy emitter's
 // per-position re-emission.
 type hqNativeWriters struct {
-	phi      func() Frag
-	base     func() Frag
-	cum      func() Frag
-	total    func() Frag
-	idx      func() Frag
-	cumAt    func(offsetMinusOne bool) Frag
-	nLen     func() Frag
-	pLen     func() Frag
-	zt       func() Frag
-	fraction func() Frag
+	phi            func() Frag
+	base           func() Frag
+	buckets        func() Frag
+	cum            func() Frag
+	total          func() Frag
+	idx            func() Frag
+	cumAt          func(offsetMinusOne bool) Frag
+	nLen           func() Frag
+	zt             func() Frag
+	fraction       func() Frag
+	firstPopulated func() Frag
+	lastPopulated  func() Frag
 }
 
 func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
@@ -249,18 +268,17 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	w.base = func() Frag {
 		return Call("pow", InlineLit(2), Call("pow", InlineLit(2), Neg(Col(scale))))
 	}
-	// cum = arrayCumSum(arrayConcat(
-	//         arrayReverse(NegativeBucketCounts),
-	//         [ZeroCount],
-	//         PositiveBucketCounts)).
+	// buckets = arrayConcat(
+	//             arrayReverse(NegativeBucketCounts),
+	//             [ZeroCount],
+	//             PositiveBucketCounts).
+	// The single walk order every index in this file is expressed in.
 	// arrayReverse on an empty array yields [], so the walk collapses to
 	// the positive-only shape when NegativeBucketCounts is empty.
-	w.cum = func() Frag {
-		return Call(
-			"arrayCumSum",
-			Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc)),
-		)
+	w.buckets = func() Frag {
+		return Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc))
 	}
+	w.cum = func() Frag { return Call("arrayCumSum", w.buckets()) }
 	// total = cum[length(cum)] — last element of cum.
 	w.total = func() Frag {
 		return Subscript(w.cum(), Call("length", w.cum()))
@@ -291,7 +309,19 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 		return Subscript(w.cum(), key)
 	}
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
-	w.pLen = func() Frag { return Call("length", Col(pbc)) }
+	// first / last POPULATED position in the same concatenated walk order
+	// `cum` uses, so they index into the identical bucket geometry the
+	// interpolation branches read. Reference Prometheus's rank walk skips
+	// empty buckets, so a saturating phi (0 / 1) must land on a bucket an
+	// observation actually fell in — not on an array end that may be a
+	// trailing or leading zero.
+	populated := func(fn string) func() Frag {
+		return func() Frag {
+			return Call(fn, Lambda1("c", Gt(BareIdent("c"), InlineLit(0))), w.buckets())
+		}
+	}
+	w.firstPopulated = populated("arrayFirstIndex")
+	w.lastPopulated = populated("arrayLastIndex")
 	// Zero-bucket upper edge. With a configured ZeroThreshold column the
 	// edge is the stored per-row value; an empty column name means the
 	// physical schema doesn't persist the OTLP zero_threshold (the

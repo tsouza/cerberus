@@ -3,8 +3,8 @@
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
-      "passed": 787,
-      "total": 787,
+      "passed": 788,
+      "total": 788,
       "cases": [
         "\"a string literal\"",
         "(1 * 2 + 4 / 6 - (10%7)^2) != demo_memory_usage_bytes",
@@ -340,6 +340,7 @@
         "histogram_fraction(0.2, 0.8, demo_memory_usage_bytes)",
         "histogram_fraction(3, 12, demo_latency_exp_hist)",
         "histogram_quantile(-0.5, rate(demo_api_request_duration_seconds_bucket[1m]))",
+        "histogram_quantile(0, demo_latency_exp_hist)",
         "histogram_quantile(0.1, demo_latency_exp_hist)",
         "histogram_quantile(0.1, rate(demo_api_request_duration_seconds_bucket[1m]))",
         "histogram_quantile(0.5, demo_latency_exp_hist)",

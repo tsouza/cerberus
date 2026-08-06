@@ -58,10 +58,10 @@ branch as shields.io badge JSON; the README shows them live. On
   template-expanded to concrete cases, plus a small cerberus-owned tail for
   shapes upstream cannot express — resource-attribute grouping, and native
   histograms, whose data upstream's float-only demo fixture never carries
-  — 787 in all.
-- **Today**: **787/787** cases pass; no allow-list exists. This is the
+  — 788 in all.
+- **Today**: **788/788** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 787/787 is a
+  a real reference. (Parity drift is report-only in CI; the 788/788 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -124,7 +124,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 787/787, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 788/788, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -381,7 +381,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 787 / 787    |
+| prometheus | 788 / 788    |
 | loki       | 130 / 130    |
 | tempo      | 72 / 72      |
 | tempo-grpc | 69 / 69      |
