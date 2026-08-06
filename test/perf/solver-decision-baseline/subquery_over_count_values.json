@@ -1,0 +1,10 @@
+{
+  "query": "subquery_over_count_values",
+  "routed": true,
+  "k": 6,
+  "reason": "routed",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "10m0s",
+  "outer_range": "1h0m0s"
+}

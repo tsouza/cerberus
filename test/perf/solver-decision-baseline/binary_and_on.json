@@ -1,0 +1,10 @@
+{
+  "query": "binary_and_on",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "10m0s",
+  "outer_range": "1h0m0s"
+}

@@ -1,0 +1,10 @@
+{
+  "query": "map_key_order_exp_histogram_count",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

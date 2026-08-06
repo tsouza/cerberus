@@ -1,0 +1,11 @@
+{
+  "fixture": "traceql/trace_scoped_intrinsic_constant_false",
+  "fan_factor": 0,
+  "scan_rows": 0,
+  "peak_intermediate": 0,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

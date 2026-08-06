@@ -1,0 +1,11 @@
+{
+  "fixture": "traceql/select_nested_set_drilldown_unbounded_noop",
+  "fan_factor": null,
+  "scan_rows": 8,
+  "peak_intermediate": 8,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": true,
+  "max_recursion_depth": 8,
+  "uncountable_levels": 2
+}

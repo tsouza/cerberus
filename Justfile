@@ -414,8 +414,8 @@ update-coverage-floor:
 # `just update-golden` records every fixture-derived artefact in one shot:
 # the solver routing-DECISION baseline, the text/expected_rows goldens (this
 # body), and the cardinality fan-factor baseline. This closes the recurring
-# miss where a new TXTAR fixture regenerated its goldens but left
-# `cardinality-baseline.json` unrecorded, turning
+# miss where a new TXTAR fixture regenerated its goldens but left its
+# `cardinality-baseline/` shard unwritten, turning
 # `perf-guards` TestCardinalityRatchet red on main after merge (hit by #1096
 # native_resample_offset and #1098 increase_left_edge_scan_bound).
 #
@@ -470,7 +470,7 @@ update-coverage-floor:
 #   Pure Go, no build tags, ~2s.
 #
 # All five are no-ops on a corpus already in sync (zero diff).
-# Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/*-baseline.json
+# Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/
 # test/surface-parity/ test/rejection-parity/` before committing.
 update-golden: update-solver-decision-baseline migration-golden update-parity-ledgers && update-cardinality-baseline
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; without it the chdb-tagged -- expected_rows -- sections (and the cardinality baseline) cannot regenerate and go stale" >&2; exit 1; }
@@ -522,7 +522,8 @@ update-parity-ledgers:
 # Regenerate the cardinality/fan-factor ratchet baseline (perf-assessment
 # Component C) from the current corpus profile. Re-profiles every executable
 # TXTAR fixture under test/spec/** in-process via chDB and rewrites
-# test/perf/cardinality-baseline.json (deterministic, sorted by fixture).
+# test/perf/cardinality-baseline/<head>/<name>.json — one shard per fixture,
+# with the shards of fixtures the corpus no longer holds pruned.
 # Requires libchdb.so (`just chdb-install`). Run this — and review the diff —
 # whenever the ratchet test reports a NEW/REMOVED fixture or a deliberately
 # intended fan_factor change; the diff is the built-in cost review (it shows
@@ -533,7 +534,7 @@ update-cardinality-baseline:
     UPDATE_CARDINALITY_BASELINE=1 go test -tags chdb -count=1 -run TestCardinalityRatchet ./test/perf/
     @echo
     @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/cardinality-baseline.json || true
+    @git --no-pager diff --stat test/perf/cardinality-baseline/ || true
 
 # Regenerate the routing-DECISION ratchet baseline (perf-assessment
 # Component D) from the current PromQL corpus. Parses every `-- query.promql --`
@@ -541,7 +542,8 @@ update-cardinality-baseline:
 # (end=2026-01-01T00:00:00Z, range=1h, step=15s), optimizes it, and records the
 # solver Planner's routing decision {routed, K, reason} plus the classifier's
 # cost grid {n_anchors, fanout, cumulative_d, outer_range} under Mode=auto into
-# test/perf/solver-decision-baseline.json (deterministic, sorted by query).
+# test/perf/solver-decision-baseline/<name>.json — one shard per query, with
+# the shards of queries the corpus no longer holds pruned.
 # Pure Go — NO chDB — so it runs in the standard `check`/`just test` lane.
 # Run this — and REVIEW THE DIFF — whenever the ratchet test reports drift or a
 # NEW/REMOVED query. The diff classifies each moved row as ADVANCEMENT vs
@@ -553,7 +555,7 @@ update-solver-decision-baseline:
     UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1 -run TestSolverDecisionRatchet ./test/perf/
     @echo
     @echo "Diff of regenerated baseline:"
-    @git --no-pager diff --stat test/perf/solver-decision-baseline.json || true
+    @git --no-pager diff --stat test/perf/solver-decision-baseline/ || true
 
 # Regenerate the SCALE-WALL pin baseline — the perf guard for the wall /
 # scan-amplification regression classes the cardinality ratchet is blind to

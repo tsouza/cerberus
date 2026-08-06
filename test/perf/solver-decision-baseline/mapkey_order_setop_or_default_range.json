@@ -1,0 +1,10 @@
+{
+  "query": "mapkey_order_setop_or_default_range",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "10m0s",
+  "outer_range": "1h0m0s"
+}

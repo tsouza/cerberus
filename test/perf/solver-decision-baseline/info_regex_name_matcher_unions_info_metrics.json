@@ -1,0 +1,10 @@
+{
+  "query": "info_regex_name_matcher_unions_info_metrics",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "10m0s",
+  "outer_range": "1h0m0s"
+}

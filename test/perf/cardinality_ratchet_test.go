@@ -8,7 +8,8 @@
 // fan-out shows up as a step-summary outlier, not a merge block. This test
 // turns that measurement into a per-PR ratchet: it re-profiles the corpus
 // in-process via chDB and diffs every fixture against a committed baseline
-// (`cardinality-baseline.json`). It runs inside the `perf-guards` job
+// (`cardinality-baseline/`, one JSON shard per fixture — see
+// baseline_shards_test.go). It runs inside the `perf-guards` job
 // (`just perf-chdb` → `go test -tags chdb ./test/perf/...`), which is a
 // REQUIRED status check on `main`, so a regression blocks the merge rather
 // than colouring one non-blocking lane red.
@@ -132,7 +133,6 @@
 package perf
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -145,8 +145,19 @@ import (
 // (test/perf → test/spec).
 const specDir = "../spec"
 
-// baselinePath is the committed ratchet baseline, relative to this package.
-const baselinePath = "cardinality-baseline.json"
+// baselinePath is the committed ratchet baseline, relative to this package. It
+// is a TREE of one shard per fixture, not a single file — see
+// baseline_shards_test.go for why the roster is stored that way.
+const baselinePath = "cardinality-baseline"
+
+// cardinalityShardDepth is how many path segments a fixture id maps to: a
+// fixture is keyed "<head>/<name>", so its shard is
+// cardinality-baseline/<head>/<name>.json.
+const cardinalityShardDepth = 2
+
+// cardinalityRegen is the recipe that rewrites the tree, quoted in the failure
+// messages the shard store raises.
+const cardinalityRegen = "just update-cardinality-baseline"
 
 // updateEnv, when set to "1", regenerates the baseline from the current
 // corpus profile instead of asserting against it. Mirrors the repo's
@@ -173,9 +184,9 @@ type baselineEntry struct {
 	// carried through so a reviewer can see WHY a fixture is unmeasured
 	// without re-running the profiler. Never compared by the ratchet: it
 	// is a symptom count, not a budget, and it is only meaningful when
-	// FanFactor is nil. No `omitempty`: the baseline file's structural
-	// guard (.github/scripts/generated-baseline-structural-guard.mjs)
-	// requires every record to carry the same field set, so a
+	// FanFactor is nil. No `omitempty`: the baseline's structural guard
+	// (.github/scripts/generated-baseline-structural-guard.mjs) requires
+	// every shard in the tree to carry the same field set, so a
 	// zero-valued 0 must serialize explicitly rather than vanish —
 	// otherwise measured and unmeasured records blend into two
 	// distinct key sets and the guard's self-test fails the build.
@@ -360,43 +371,25 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 }
 
-// writeBaseline serialises the current profile as a deterministically-ordered
-// JSON array (sorted by fixture id) so the committed file diffs cleanly.
-func writeBaseline(t *testing.T, entries map[string]baselineEntry) {
-	t.Helper()
-	ids := make([]string, 0, len(entries))
-	for id := range entries {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	ordered := make([]baselineEntry, 0, len(ids))
-	for _, id := range ids {
-		ordered = append(ordered, entries[id])
-	}
-	buf, err := json.MarshalIndent(ordered, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal baseline: %v", err)
-	}
-	buf = append(buf, '\n')
-	if err := os.WriteFile(baselinePath, buf, 0o644); err != nil {
-		t.Fatalf("write baseline: %v", err)
-	}
+// cardinalityShards is the committed baseline's shard store: one file per
+// fixture, keyed by the fixture id, with the tree pruned on regeneration so a
+// removed fixture cannot leave a row behind that the ratchet keeps honouring.
+var cardinalityShards = baselineShards[baselineEntry]{
+	dir:   baselinePath,
+	depth: cardinalityShardDepth,
+	keyOf: func(e baselineEntry) string { return e.Fixture },
+	regen: cardinalityRegen,
 }
 
-// loadBaseline reads the committed baseline into a fixture-keyed map.
+// writeBaseline rewrites the shard tree from the current profile.
+func writeBaseline(t *testing.T, entries map[string]baselineEntry) {
+	t.Helper()
+	cardinalityShards.mustWrite(t, entries)
+}
+
+// loadBaseline reads the committed shard tree into a fixture-keyed map.
 func loadBaseline(t *testing.T) map[string]baselineEntry {
 	t.Helper()
-	buf, err := os.ReadFile(baselinePath)
-	if err != nil {
-		t.Fatalf("read baseline %s: %v — run `just update-cardinality-baseline` to create it", baselinePath, err)
-	}
-	var entries []baselineEntry
-	if err := json.Unmarshal(buf, &entries); err != nil {
-		t.Fatalf("parse baseline %s: %v", baselinePath, err)
-	}
-	m := make(map[string]baselineEntry, len(entries))
-	for _, e := range entries {
-		m[e.Fixture] = e
-	}
-	return m
+
+	return cardinalityShards.mustLoad(t)
 }

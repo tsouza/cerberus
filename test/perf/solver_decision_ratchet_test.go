@@ -50,8 +50,9 @@
 //
 // # The ratchet semantics (bidirectional, no escape hatch)
 //
-// The committed baseline (`solver-decision-baseline.json`) is the reviewed
-// snapshot of every query's decision. The test FAILS on ANY drift — route
+// The committed baseline (`solver-decision-baseline/`, one JSON shard per
+// query — see baseline_shards_test.go) is the reviewed snapshot of every
+// query's decision. The test FAILS on ANY drift — route
 // flipped, K changed, or reason changed — in EITHER direction. There is NO
 // allow-list, NO tolerance band, NO "expected drift" set: a silent change to a
 // routing decision must never pass.
@@ -97,7 +98,6 @@ package perf
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -119,8 +119,17 @@ import (
 const promqlSpecDir = "../spec/promql"
 
 // decisionBaselinePath is the committed routing-decision snapshot, relative to
-// this package.
-const decisionBaselinePath = "solver-decision-baseline.json"
+// this package. It is a TREE of one shard per query, not a single file — see
+// baseline_shards_test.go for why the roster is stored that way.
+const decisionBaselinePath = "solver-decision-baseline"
+
+// decisionShardDepth is how many path segments a query id maps to: the id is a
+// bare fixture name, so its shard is solver-decision-baseline/<name>.json.
+const decisionShardDepth = 1
+
+// decisionRegen is the recipe that rewrites the tree, quoted in the failure
+// messages the shard store raises.
+const decisionRegen = "just update-solver-decision-baseline"
 
 // updateDecisionEnv, when set to "1", regenerates the baseline from the
 // current corpus classification instead of asserting against it. Mirrors the
@@ -391,48 +400,26 @@ func classifyDrift(base, cur decisionEntry) string {
 	}
 }
 
-// writeDecisionBaseline serialises the current classification as a
-// deterministically-ordered JSON array (sorted by query id) so the committed
-// file diffs cleanly.
-func writeDecisionBaseline(t *testing.T, entries map[string]decisionEntry) {
-	t.Helper()
-	ids := make([]string, 0, len(entries))
-	for id := range entries {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	ordered := make([]decisionEntry, 0, len(ids))
-	for _, id := range ids {
-		ordered = append(ordered, entries[id])
-	}
-	buf, err := json.MarshalIndent(ordered, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal baseline: %v", err)
-	}
-	buf = append(buf, '\n')
-	if err := os.WriteFile(decisionBaselinePath, buf, 0o600); err != nil {
-		t.Fatalf("write baseline: %v", err)
-	}
+// decisionShards is the committed baseline's shard store: one file per corpus
+// query, keyed by the query id, with the tree pruned on regeneration so a
+// fixture dropped from the corpus cannot leave a decision row behind.
+var decisionShards = baselineShards[decisionEntry]{
+	dir:   decisionBaselinePath,
+	depth: decisionShardDepth,
+	keyOf: func(e decisionEntry) string { return e.Query },
+	regen: decisionRegen,
 }
 
-// loadDecisionBaseline reads the committed baseline into a query-keyed map.
+// writeDecisionBaseline rewrites the shard tree from the current
+// classification.
+func writeDecisionBaseline(t *testing.T, entries map[string]decisionEntry) {
+	t.Helper()
+	decisionShards.mustWrite(t, entries)
+}
+
+// loadDecisionBaseline reads the committed shard tree into a query-keyed map.
 func loadDecisionBaseline(t *testing.T) map[string]decisionEntry {
 	t.Helper()
-	buf, err := os.ReadFile(decisionBaselinePath)
-	if err != nil {
-		t.Fatalf("read baseline %s: %v — run `just update-solver-decision-baseline` to create it",
-			decisionBaselinePath, err)
-	}
-	var entries []decisionEntry
-	if err := json.Unmarshal(buf, &entries); err != nil {
-		t.Fatalf("parse baseline %s: %v", decisionBaselinePath, err)
-	}
-	m := make(map[string]decisionEntry, len(entries))
-	for _, e := range entries {
-		m[e.Query] = e
-	}
-	if len(m) == 0 {
-		t.Fatalf("baseline %s is empty", decisionBaselinePath)
-	}
-	return m
+
+	return decisionShards.mustLoad(t)
 }

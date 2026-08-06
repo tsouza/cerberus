@@ -10,7 +10,7 @@
 # result still parses as valid JSON with a plausible length while every entry in
 # the blended region is wrong.
 #
-# That happened on PR #1422 to test/perf/cardinality-baseline.json: the whole
+# That happened on PR #1422 to the cardinality ratchet baseline: the whole
 # traceql block came out off by one, and so did the promql
 # histogram_quantile_classic_* block from the other side. A ratchet fed a
 # silently blended baseline is worse than no ratchet — it reports green while
@@ -37,9 +37,8 @@
 # whether a PR shows conflict-free) honours it too went unverified until
 # #1568. It does not: verified empirically 2026-08-04 by pushing two
 # throwaway branches to this repo that each inserted one new record at a
-# different, non-overlapping line offset into
-# test/perf/solver-decision-baseline.json off the same base commit, and
-# opening a throwaway PR between them. `gh pr view --json mergeable` reported
+# different, non-overlapping line offset into one `-merge` path off the same
+# base commit, and opening a throwaway PR between them. `gh pr view --json mergeable` reported
 # `"mergeable":"MERGEABLE"` for that PR, while a LOCAL `git merge` of the
 # identical branch pair refused with "Cannot merge binary files" / `CONFLICT
 # (content)` — exactly the behaviour this file exists to force. The throwaway
@@ -62,9 +61,11 @@
 #      setting, not a code change, and is recommended to the maintainer
 #      rather than flipped by the PR that added this note.
 # generated-baseline-structural-guard.mjs additionally adds a fast, always-on
-# structural pre-filter (unique key, sorted order, consistent field shape)
-# over the subset of paths below whose shape was hand-verified — a cheap
-# second signal, not a replacement for the regenerate-and-diff ratchets.
+# structural pre-filter over the subset of paths below whose shape was
+# hand-verified — unique key, sorted order and consistent field shape for the
+# whole-file targets, and for the sharded trees the invariant only a tree can
+# state: every shard's key field equals the path it is filed under. It is a
+# cheap second signal, not a replacement for the regenerate-and-diff ratchets.
 
 # --- Perf ratchet baselines -------------------------------------------------
 # Regenerate: `just update-cardinality-baseline`
@@ -72,15 +73,21 @@
 #    -run TestCardinalityRatchet ./test/perf/ — needs libchdb.so via
 #   `just chdb-install`). Also reached by `just update-golden`, which chains it
 #   as a SUBSEQUENT dep so it profiles the freshly rewritten `-- sql --`.
-#   Top-level flat array of 805 fixture records: the shape that bit us.
-test/perf/cardinality-baseline.json          -merge
+#   One shard per profiled FIXTURE, filed under its head:
+#   cardinality-baseline/<head>/<name>.json is the record whose `fixture` is
+#   "<head>/<name>". Two branches adding different fixtures therefore write
+#   different paths and never meet; `-merge` covers the residual case of two
+#   branches moving the SAME fixture's record.
+test/perf/cardinality-baseline/**/*.json     -merge
 
 # Regenerate: `just update-solver-decision-baseline`
 #   (UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1
 #    -run TestSolverDecisionRatchet ./test/perf/ — pure Go, no chDB). Also
 #   reached by `just update-golden`, which chains it as a PRIOR dep.
-#   Top-level flat array of 452 query records — same shape, same hazard.
-test/perf/solver-decision-baseline.json      -merge
+#   One shard per corpus QUERY — solver-decision-baseline/<name>.json holds
+#   the record whose `query` is "<name>" — for the same reason, with the same
+#   residual case left to `-merge`.
+test/perf/solver-decision-baseline/*.json    -merge
 
 # Regenerate: `just update-scale-wall-baseline`
 #   (UPDATE_SCALE_WALL_BASELINE=1 go test -tags chdb -count=1

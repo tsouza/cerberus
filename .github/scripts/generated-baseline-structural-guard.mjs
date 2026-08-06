@@ -21,7 +21,7 @@
 //
 // It does not. Verified empirically 2026-08-04: two throwaway branches in
 // this repo, each inserting one new record at a different, non-overlapping
-// line offset into test/perf/solver-decision-baseline.json off the same
+// line offset into one `-merge` path off the same
 // base commit, were reported `"mergeable":"MERGEABLE"` by the GitHub API
 // (`gh pr view --json mergeable,mergeStateStatus`) for a throwaway PR
 // between them — while a LOCAL `git merge` of the identical branch pair
@@ -229,22 +229,82 @@ function runShardedTarget(t, { readFile, readDir }) {
   return problems;
 }
 
+// runRecordShardedTarget is the ONE-RECORD-PER-FILE directory variant: the
+// target names a tree (test/perf/cardinality-baseline/) whose every .json file
+// holds a single record object rather than an array.
+//
+// Uniqueness and sort order — the two things checkArray asserts about a flat
+// array — do not survive the split, and pretending otherwise would leave a
+// guard that asserts nothing. Uniqueness is now enforced by the filesystem: two
+// records cannot share a path. Sort order does not exist: a directory has no
+// order, and the shards' names ARE the keys, so `git ls-files` already returns
+// them sorted with no invariant to check.
+//
+// What replaces them is an invariant the flat array could not express at all —
+// a shard's `key` field must equal the path it is filed under. In an array a
+// record's position carries no information, so nothing could contradict its
+// key; in a tree the path is a second, independent statement of the same fact,
+// and a record filed under someone else's name is exactly what a hand edit or a
+// bad cherry-pick produces. The uniform-field-shape check carries over
+// unchanged, applied ACROSS the tree: with one record per file, "every record
+// has the same field set" is a cross-shard property.
+function runRecordShardedTarget(t, { readFile, readDirRecursive }) {
+  const rels = readDirRecursive(t.path).filter((n) => n.endsWith(SHARD_EXT)).sort();
+  if (rels.length === 0) {
+    return [`${t.path}: holds no ${SHARD_EXT} shard — a sharded target that reads nothing checks nothing`];
+  }
+
+  const problems = [];
+  const shapes = new Map();
+  for (const rel of rels) {
+    const shardPath = `${t.path}/${rel}`;
+    const record = JSON.parse(readFile(shardPath));
+    if (record == null || typeof record !== 'object' || Array.isArray(record)) {
+      problems.push(`${shardPath}: expected one record object, got ${Array.isArray(record) ? 'array' : typeof record}`);
+      continue;
+    }
+
+    const want = rel.slice(0, -SHARD_EXT.length);
+    const got = record[t.key];
+    if (got !== want) {
+      problems.push(
+        `${shardPath}: ${JSON.stringify(t.key)} is ${JSON.stringify(got)} but the shard is filed as ` +
+          `${JSON.stringify(want)}. A shard's path IS its key — a record filed under a name that is not ` +
+          'its own is served to the ratchet as the fixture it is named after, not the one it describes.',
+      );
+    }
+
+    if (t.uniformShape) {
+      const shape = JSON.stringify(Object.keys(record).sort());
+      if (!shapes.has(shape)) shapes.set(shape, shardPath);
+    }
+  }
+
+  if (t.uniformShape && shapes.size > 1) {
+    problems.push(
+      `${t.path}: ${shapes.size} distinct field sets across shards — expected exactly one. Examples: ` +
+        `${[...shapes.values()].slice(0, 2).join(', ')}. Every record in this tree is written by one ` +
+        'generator from one struct, so a shard with a different field set was not written by it.',
+    );
+  }
+
+  return problems;
+}
+
 // TARGETS — every entry's shape was checked by hand against the committed
 // file before being added here (see the file doc above for the ones left
 // out and why). `arrayPath` / `dictPath` are lists of keys to descend from
 // the parsed JSON root; an empty array means "the root itself".
 export const TARGETS = [
   {
-    path: 'test/perf/cardinality-baseline.json',
-    kind: 'array',
-    arrayPath: [],
+    path: 'test/perf/cardinality-baseline',
+    kind: 'record-shards',
     key: 'fixture',
     uniformShape: true,
   },
   {
-    path: 'test/perf/solver-decision-baseline.json',
-    kind: 'array',
-    arrayPath: [],
+    path: 'test/perf/solver-decision-baseline',
+    kind: 'record-shards',
     key: 'query',
     uniformShape: true,
   },
@@ -311,9 +371,32 @@ export const TARGETS = [
   },
 ];
 
-export function runTarget(t, { readFile = (p) => readFileSync(p, 'utf8'), readDir = readdirSync } = {}) {
+// readDirRecursiveSync lists every FILE under `dir`, as paths relative to it
+// with `/` separators. The record-sharded perf baselines nest one level (the
+// query head), so a flat readdir would see only directories.
+function readDirRecursiveSync(dir, prefix = '') {
+  const out = [];
+  for (const de of readdirSync(`${dir}/${prefix}`.replace(/\/$/, ''), { withFileTypes: true })) {
+    const rel = prefix === '' ? de.name : `${prefix}/${de.name}`;
+    if (de.isDirectory()) {
+      out.push(...readDirRecursiveSync(dir, rel));
+    } else {
+      out.push(rel);
+    }
+  }
+
+  return out;
+}
+
+export function runTarget(
+  t,
+  { readFile = (p) => readFileSync(p, 'utf8'), readDir = readdirSync, readDirRecursive = readDirRecursiveSync } = {},
+) {
   if (t.kind === 'array-shards') {
     return runShardedTarget(t, { readFile, readDir });
+  }
+  if (t.kind === 'record-shards') {
+    return runRecordShardedTarget(t, { readFile, readDirRecursive });
   }
   if (t.kind === 'lines') {
     const text = readFile(t.path);
@@ -472,6 +555,47 @@ function selfTest() {
   const noShards = runTarget(shardTarget, { readFile: shardRead, readDir: () => [] });
   assert.equal(noShards.length, 1);
   assert.match(noShards[0], /holds no \.json shard/);
+
+  // 'record-shards': one record per file, nested a level deep. Clean first,
+  // then the three failure modes this shape has — a record filed under a name
+  // that is not its own (the invariant a flat array could not state at all), a
+  // shard whose field set differs from the rest of the tree, and an empty tree.
+  const recordShards = {
+    'base/promql/rate.json': JSON.stringify({ fixture: 'promql/rate', scan_rows: 1 }),
+    'base/traceql/spans.json': JSON.stringify({ fixture: 'traceql/spans', scan_rows: 2 }),
+  };
+  const recordRead = (p) => {
+    if (!(p in recordShards)) throw new Error(`unexpected read: ${p}`);
+    return recordShards[p];
+  };
+  const recordRels = () => ['promql/rate.json', 'traceql/spans.json'];
+  const recordTarget = { path: 'base', kind: 'record-shards', key: 'fixture', uniformShape: true };
+  assert.deepEqual(
+    runTarget(recordTarget, { readFile: recordRead, readDirRecursive: recordRels }),
+    [],
+  );
+
+  const misfiled = runTarget(recordTarget, {
+    readFile: (p) =>
+      p === 'base/traceql/spans.json'
+        ? JSON.stringify({ fixture: 'promql/rate', scan_rows: 2 })
+        : recordRead(p),
+    readDirRecursive: recordRels,
+  });
+  assert.equal(misfiled.length, 1);
+  assert.match(misfiled[0], /but the shard is filed as/);
+
+  const mixedShape = runTarget(recordTarget, {
+    readFile: (p) =>
+      p === 'base/traceql/spans.json' ? JSON.stringify({ fixture: 'traceql/spans' }) : recordRead(p),
+    readDirRecursive: recordRels,
+  });
+  assert.equal(mixedShape.length, 1);
+  assert.match(mixedShape[0], /distinct field sets across shards/);
+
+  const noRecordShards = runTarget(recordTarget, { readFile: recordRead, readDirRecursive: () => [] });
+  assert.equal(noRecordShards.length, 1);
+  assert.match(noRecordShards[0], /holds no \.json shard/);
 
   // Every configured TARGET is currently clean against the real committed
   // files in this tree — the guard itself must not be a standing failure.

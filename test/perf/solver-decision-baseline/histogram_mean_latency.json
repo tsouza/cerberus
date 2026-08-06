@@ -1,0 +1,10 @@
+{
+  "query": "histogram_mean_latency",
+  "routed": false,
+  "k": 0,
+  "reason": "below-threshold",
+  "n_anchors": 241,
+  "fanout": 4,
+  "cumulative_d": "2m0s",
+  "outer_range": "1h0m0s"
+}

@@ -1,0 +1,10 @@
+{
+  "query": "subquery_time_minus_aggregate_offset",
+  "routed": false,
+  "k": 0,
+  "reason": "grid-mismatch",
+  "n_anchors": 366,
+  "fanout": 30,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m50s"
+}

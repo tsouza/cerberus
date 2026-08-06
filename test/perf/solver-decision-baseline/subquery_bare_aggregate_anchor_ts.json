@@ -1,0 +1,10 @@
+{
+  "query": "subquery_bare_aggregate_anchor_ts",
+  "routed": false,
+  "k": 0,
+  "reason": "instant",
+  "n_anchors": 7,
+  "fanout": 30,
+  "cumulative_d": "5m0s",
+  "outer_range": "1m0s"
+}

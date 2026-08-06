@@ -1,0 +1,10 @@
+{
+  "query": "subquery_quantile_over_time_out_of_range_phi",
+  "routed": false,
+  "k": 0,
+  "reason": "high-D",
+  "n_anchors": 241,
+  "fanout": 240,
+  "cumulative_d": "1h5m0s",
+  "outer_range": "1h0m0s"
+}

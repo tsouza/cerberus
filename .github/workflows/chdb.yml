@@ -290,7 +290,7 @@ jobs:
   #     wall-clock companion (internal/solver.BenchmarkSlice) is informational
   #     in perf-benchmark.yml; this is the gating arm.
   #   - TestCardinalityRatchet: the corpus-wide compute-fan-out ratchet, every
-  #     executable TXTAR fixture diffed against test/perf/cardinality-baseline.json.
+  #     executable TXTAR fixture diffed against its test/perf/cardinality-baseline/ shard.
   #   - TestScaleWallPin: the scan-amplification scale-wall pin.
   #
   # REQUIRED STATUS CHECK on `main`, and named in release.yml's

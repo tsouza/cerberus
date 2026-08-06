@@ -1,0 +1,10 @@
+{
+  "query": "edge_quantile_over_time_at_pinned_phi_above_one",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 0,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

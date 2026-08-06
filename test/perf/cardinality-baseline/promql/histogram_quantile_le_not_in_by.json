@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/histogram_quantile_le_not_in_by",
+  "fan_factor": 0,
+  "scan_rows": 0,
+  "peak_intermediate": 0,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

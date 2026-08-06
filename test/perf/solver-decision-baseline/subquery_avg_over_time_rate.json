@@ -1,0 +1,10 @@
+{
+  "query": "subquery_avg_over_time_rate",
+  "routed": false,
+  "k": 0,
+  "reason": "below-threshold",
+  "n_anchors": 241,
+  "fanout": 8,
+  "cumulative_d": "3m0s",
+  "outer_range": "1h0m0s"
+}
