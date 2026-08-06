@@ -173,8 +173,9 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCall#682975f8",
       "message": "promql: function %s is not a recognized lowering target",
-      "class": "internal",
-      "rationale": "Every PromQL function the reference parser produces is dispatched by an explicit case in lowerCall or by the instantFnCH table; start()/end() have their own dedicated parity-reject case. This generic fall-through guards against a parser-accepted function with no lowering, of which there are currently none, so no wire query reaches it.",
+      "class": "divergence",
+      "trigger_query": "rate((demo_memory_usage_bytes[5m]))",
+      "tracking_issue": 1896,
       "evidence": {
         "guard": [
           "past returning if c.Func.Name == \"quantile_over_time\"",
@@ -183,12 +184,11 @@
         ],
         "callers": [
           "lower",
-          "lowerSubqueryOverCall"
-        ],
-        "cited": [
-          "lowerCall"
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverInstantCall"
         ]
-      }
+      },
+      "since": "2026-08-06"
     },
     {
       "head": "promql",
@@ -203,7 +203,8 @@
         ],
         "callers": [
           "lower",
-          "lowerSubqueryOverCall"
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverInstantCall"
         ]
       }
     },

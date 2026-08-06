@@ -174,33 +174,37 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#9b8454a6",
       "message": "promql: subquery inner %s expects exactly %d argument(s), got %d",
-      "class": "divergence",
-      "trigger_query": "max_over_time(histogram_quantile(0.9, demo_memory_usage_bytes)[5m:1m])",
-      "tracking_issue": 1866,
+      "class": "internal",
+      "rationale": "the rangeVectorFn membership gate above this check routes every non-reducer call to lowerSubqueryOverInstantCall, so only rangeVectorFn members reach it, and subqueryInnerRangeFnShape reports each of their true PromQL arities; none of them is variadic, so the upstream parser has already rejected any call whose argument count differs before lowering begins",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
+          "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
           "if len(call.Args) != arity"
         ],
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
+        ],
+        "cited": [
+          "lowerSubqueryOverInstantCall",
+          "subqueryInnerRangeFnShape"
         ]
-      },
-      "since": "2026-08-06"
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
       "class": "divergence",
-      "trigger_query": "max_over_time(vector(1)[5m:1m])",
-      "tracking_issue": 1866,
+      "trigger_query": "max_over_time(rate((demo_memory_usage_bytes[5m]))[10m:1m])",
+      "tracking_issue": 1896,
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
+          "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
           "past returning if len(call.Args) != arity",
           "past returning if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok",
           "if !ok"
@@ -217,11 +221,12 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
       "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "rationale": "the parser only ever builds a MatrixSelector around a VectorSelector, so the inner assertion cannot fail on any parseable query",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
+          "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
           "past returning if len(call.Args) != arity",
           "past returning if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok",
           "past returning if !ok",
@@ -237,18 +242,19 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
-      "class": "divergence",
-      "trigger_query": "max_over_time(absent_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
-      "tracking_issue": 1867,
+      "class": "internal",
+      "rationale": "lowerSubqueryOverCall is the only caller and dispatches here only after its own rangeVectorFn membership gate has admitted the call, so the name is already in the map by the time this check runs",
       "evidence": {
         "guard": [
           "if _, ok := rangeVectorFn[call.Func.Name]; !ok"
         ],
         "callers": [
           "lowerSubqueryOverCall"
+        ],
+        "cited": [
+          "lowerSubqueryOverCall"
         ]
-      },
-      "since": "2026-08-06"
+      }
     },
     {
       "head": "promql",
@@ -278,6 +284,29 @@
         ],
         "callers": [
           "lowerSubqueryOverAggregate"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverInstantCall#64810e23",
+      "message": "promql: subquery inner %s is evaluated per anchor and requires a query evaluation time (use LowerAt)",
+      "class": "internal",
+      "rationale": "subqueryGridCtx reports no grid only when no evaluation anchor was threaded through, which the HTTP handlers never do: every wire query lowers through LowerAt, LowerAtRange or LowerAtRangeOpts, and only the bare Lower entry point used by package tests leaves the anchor unset",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSubqueryOverCall"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange",
+          "LowerAtRangeOpts",
+          "subqueryGridCtx"
         ]
       }
     },
