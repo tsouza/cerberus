@@ -1,0 +1,10 @@
+{
+  "query": "subquery_inner_quantile_over_time",
+  "routed": false,
+  "k": 0,
+  "reason": "high-D",
+  "n_anchors": 241,
+  "fanout": 120,
+  "cumulative_d": "35m0s",
+  "outer_range": "1h0m0s"
+}

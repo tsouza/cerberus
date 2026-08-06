@@ -647,16 +647,15 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // entirely: the result is K *arbitrary* rows per partition, no ranking.
 // CH's `LIMIT K BY <by>` already returns the first K rows it encounters
 // per group, which is exactly limitk's "any K series" contract. SortExpr
-// is nil in this shape, so the ORDER BY clause is skipped.
+// is nil in this shape, so the ORDER BY clause is skipped. Unordered
+// composes with either K binding: a computed-K `limitk(scalar(x), v)`
+// routes to emitTopKComputed with an empty window ORDER BY.
 func (e *emitter) emitTopK(t *chplan.TopK) error {
 	if !t.Unordered && t.SortExpr == nil {
 		return fmt.Errorf("%w: TopK with nil SortExpr", ErrUnsupported)
 	}
 	if t.Unordered && t.SortExpr != nil {
 		return fmt.Errorf("%w: limitk TopK must not carry a SortExpr", ErrUnsupported)
-	}
-	if t.Unordered && t.KExpr != nil {
-		return fmt.Errorf("%w: limitk TopK does not support computed K", ErrUnsupported)
 	}
 	if t.KExpr == nil && t.K <= 0 {
 		return fmt.Errorf("%w: TopK with non-positive K=%d", ErrUnsupported, t.K)
@@ -723,7 +722,8 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 //	) WHERE _rn <= (SELECT toUInt64(`Value`) FROM (<KExpr>) LIMIT 1)
 //
 // `By` empty omits PARTITION BY (the rank fires across the whole
-// result). `_rn` is a CH-safe synthetic alias the emitter pins; the
+// result); `SortExpr` nil (the Unordered / limitk shape) omits the
+// window ORDER BY. `_rn` is a CH-safe synthetic alias the emitter pins; the
 // canonical PromQL Sample shape (MetricName/Attributes/TimeUnix/Value)
 // does not use leading-underscore columns, so the alias does not
 // collide with the inner subquery's columns.
@@ -745,8 +745,17 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		return err
 	}
 
-	sortExpr := t.SortExpr
-	sortFrag := func(b *Builder) { _ = b.Expr(sortExpr) }
+	// topk/bottomk rank by SortExpr; limitk (Unordered, SortExpr nil)
+	// ranks by nothing — `row_number() OVER (PARTITION BY <by>)` numbers
+	// each partition's rows in whatever order CH encounters them, which
+	// is exactly limitk's "any K series per group" contract and the same
+	// arbitrary selection the literal-K `LIMIT K BY <by>` shape makes.
+	var orderKeys []OrderKey
+	if t.SortExpr != nil {
+		sortExpr := t.SortExpr
+		sortFrag := func(b *Builder) { _ = b.Expr(sortExpr) }
+		orderKeys = []OrderKey{{Expr: sortFrag, Desc: t.Desc}}
+	}
 
 	partitionBy := make([]Frag, 0, len(t.By))
 	for _, by := range t.By {
@@ -754,11 +763,11 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		partitionBy = append(partitionBy, func(b *Builder) { _ = b.Expr(byExpr) })
 	}
 
-	// `row_number() OVER (PARTITION BY <by> ORDER BY <sortExpr> [DESC])`.
+	// `row_number() OVER (PARTITION BY <by> [ORDER BY <sortExpr> [DESC]])`.
 	rankFrag := Window(
 		Call("row_number"),
 		partitionBy,
-		[]OrderKey{{Expr: sortFrag, Desc: t.Desc}},
+		orderKeys,
 	)
 
 	// Inner SELECT projects all input columns + the synthetic rank alias.
@@ -770,11 +779,20 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		As(rankFrag, "_rn"),
 	)
 
-	// K subquery: `(SELECT toUInt64(Value) FROM (<k_subtree>) LIMIT 1)`.
+	// K subquery:
+	// `(SELECT toUInt64(if(Value < 0, 0, Value)) FROM (<k_subtree>) LIMIT 1)`.
 	// The toUInt64 cast handles fractional scalars (PromQL truncates K to
 	// int); LIMIT 1 enforces single-row scalar-subquery semantics.
+	//
+	// The `if(Value < 0, 0, Value)` floor exists because CH's Float64 →
+	// UInt64 conversion wraps: `toUInt64(-1.0)` is 2^64-1, which would
+	// let every row past the `_rn <= K` filter. Reference Prometheus
+	// returns an EMPTY vector for K < 1, which `_rn <= 0` reproduces.
+	// NaN deliberately survives the floor (`NaN < 0` is false) so
+	// `toUInt64` still raises — reference Prometheus rejects a NaN K as
+	// not convertible to int64 rather than answering it.
 	kSelect := NewQuery().
-		Select(Call("toUInt64", Col("Value"))).
+		Select(Call("toUInt64", If(Lt(Col("Value"), InlineLit(0)), InlineLit(0), Col("Value")))).
 		From(kSub).
 		Limit(1)
 	kSubquery := Subquery(kSelect)

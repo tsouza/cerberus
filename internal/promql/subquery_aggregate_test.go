@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -28,9 +29,13 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "topk K must be scalar literal",
-			query:   `max_over_time(topk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "requires a scalar literal K",
+			// `scalar(<vector>)` K is accepted (see
+			// TestLowerSubqueryTopK_ComputedK); arithmetic AROUND the
+			// scalar subquery still needs constant folding cerberus does
+			// not model, so it stays rejected here.
+			name:    "topk computed K beyond scalar() is rejected",
+			query:   `max_over_time(topk(scalar(up) * 2, rate(http_requests_total[1m]))[1h:30s])`,
+			wantErr: "computed-K with other shapes is not yet supported",
 		},
 		{
 			// Reference Prometheus errors on a NaN K; K < 1 shapes are
@@ -47,9 +52,9 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 			wantErr: "overflows int64",
 		},
 		{
-			name:    "bottomk K must be scalar literal",
-			query:   `max_over_time(bottomk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "requires a scalar literal K",
+			name:    "bottomk computed K beyond scalar() is rejected",
+			query:   `max_over_time(bottomk(scalar(up) + 1, rate(http_requests_total[1m]))[1h:30s])`,
+			wantErr: "computed-K with other shapes is not yet supported",
 		},
 		{
 			name:    "count_values requires non-empty label",
@@ -119,4 +124,60 @@ func TestLowerSubquery_Aggregate_ComputedPhi(t *testing.T) {
 	if _, err := promql.Lower(context.Background(), expr, s); err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
+}
+
+// TestLowerSubqueryTopK_ComputedK pins the computed-K acceptance on the
+// subquery-over-topk/bottomk/limitk paths. Reference Prometheus
+// type-checks K as scalar-valued and answers these; cerberus routes
+// them through chplan.TopK's KExpr slot (rank filter), so the lowered
+// tree is a TopK with KExpr set and no literal K.
+func TestLowerSubqueryTopK_ComputedK(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	// limitk is experimental, so this case needs the experimental parser;
+	// topk / bottomk parse under either.
+	p := experimentalParser()
+
+	for _, q := range []string{
+		`max_over_time(topk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
+		`max_over_time(bottomk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
+		`max_over_time(limitk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
+	} {
+		expr, err := p.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+		node, err := promql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
+		topk := findTopK(node)
+		if topk == nil {
+			t.Fatalf("Lower(%q): no chplan.TopK in the lowered tree", q)
+		}
+		if topk.KExpr == nil {
+			t.Fatalf("Lower(%q): TopK.KExpr is nil, want the computed-K subtree", q)
+		}
+		if topk.K != 0 {
+			t.Fatalf("Lower(%q): TopK.K = %d, want 0 (KExpr and K are exclusive)", q, topk.K)
+		}
+	}
+}
+
+// findTopK walks a lowered plan tree and returns the first chplan.TopK
+// it finds, or nil.
+func findTopK(n chplan.Node) *chplan.TopK {
+	var found *chplan.TopK
+	chplan.Walk(n, func(node chplan.Node) bool {
+		if found != nil {
+			return false
+		}
+		if t, ok := node.(*chplan.TopK); ok {
+			found = t
+			return false
+		}
+		return true
+	})
+	return found
 }

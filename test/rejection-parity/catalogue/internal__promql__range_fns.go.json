@@ -2,23 +2,14 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/range_fns.go:lowerHoltWinters#0ff3d8b3",
+      "site": "internal/promql/range_fns.go:holtWintersFactors#0ff3d8b3",
       "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
       "class": "rejection",
       "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 1.5, 0.5)"
     },
     {
       "head": "promql",
-      "site": "internal/promql/range_fns.go:lowerHoltWinters#15e82804",
-      "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
-      "class": "divergence",
-      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], scalar(vector(0.5)), 0.5)",
-      "tracking_issue": 1782,
-      "since": "2026-08-05"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/range_fns.go:lowerHoltWinters#2db9f2aa",
+      "site": "internal/promql/range_fns.go:holtWintersFactors#2db9f2aa",
       "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
       "class": "rejection",
       "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 0.5, 1.5)"

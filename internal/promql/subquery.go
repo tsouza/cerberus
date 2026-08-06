@@ -296,19 +296,20 @@ func lowerSubqueryOverCall(
 	if call.Func.Name == "absent" {
 		return lowerSubqueryOverAbsent(sub, call, step, s, ctx)
 	}
-	if len(call.Args) != 1 {
-		return nil, fmt.Errorf("promql: subquery inner %s expects exactly 1 argument, got %d",
-			call.Func.Name, len(call.Args))
+	arity, matrixArg := subqueryInnerRangeFnShape(call.Func.Name)
+	if len(call.Args) != arity {
+		return nil, fmt.Errorf("promql: subquery inner %s expects exactly %d argument(s), got %d",
+			call.Func.Name, arity, len(call.Args))
 	}
-	if innerSub, ok := call.Args[0].(*parser.SubqueryExpr); ok {
+	if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok {
 		// Nested subquery: `<fn>(<inner-sub>)[<outer-range>:<step>]`.
 		// e.g. `max_over_time(rate(m[1m])[5m:30s])[1h:5m]`.
 		return lowerSubqueryOverCallSubquery(sub, call, innerSub, step, s, ctx)
 	}
-	ms, ok := call.Args[0].(*parser.MatrixSelector)
+	ms, ok := call.Args[matrixArg].(*parser.MatrixSelector)
 	if !ok {
 		return nil, fmt.Errorf("promql: subquery inner %s must wrap a MatrixSelector, got %T",
-			call.Func.Name, call.Args[0])
+			call.Func.Name, call.Args[matrixArg])
 	}
 	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
 	if !ok {
@@ -336,9 +337,9 @@ func lowerSubqueryOverCall(
 		return nil, err
 	}
 
-	return &chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           inner,
-		Func:            call.Func.Name,
+		Func:            canonicalRangeWindowFunc(call.Func.Name),
 		Range:           ms.Range,
 		OuterRange:      sub.Range,
 		Step:            step,
@@ -348,7 +349,50 @@ func lowerSubqueryOverCall(
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	// predict_linear / double_exponential_smoothing / quantile_over_time
+	// carry extra scalar arguments; bind them exactly as the outer-reducer
+	// path does (see lowerOuterRangeFnOverSubquery).
+	value, replaceValue, err := threadOuterRangeFnScalars(call, rw, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if replaceValue {
+		// quantile_over_time's out-of-range literal phi: the inner
+		// aggregate ran on the in-domain sentinel and the spec's ±Inf /
+		// NaN constant replaces the Value column. rw.OuterRange > 0 here,
+		// so the Project keeps the matrix (Attributes, anchor_ts,
+		// TimeUnix, Value) shape the enclosing reducer reads.
+		return projectValueOverInner(rw, s, value), nil
+	}
+	return rw, nil
+}
+
+// subqueryInnerRangeFnShape answers, for a range-vector function used as
+// a SUBQUERY INNER, how many arguments the call carries and which
+// position holds the range vector. Everything not listed is a plain
+// one-argument reducer (`rate(m[5m])[1h:5m]`).
+//
+// The positions are the PromQL signatures themselves:
+// `predict_linear(v[r], t)` and
+// `double_exponential_smoothing(v[r], sf, tf)` put the range vector
+// first with the scalars after it, while `quantile_over_time(phi, v[r])`
+// puts phi first. [threadOuterRangeFnScalars] reads those SAME positions
+// off the SAME *parser.Call, which is what lets the subquery-inner and
+// outer-reducer paths share one scalar binder — and what keeps
+// `double_exponential_smoothing(m[5m], 0.5, 0.5)[10m:1m]` (a shape
+// reference Prometheus answers) from being rejected as "expects exactly
+// 1 argument".
+func subqueryInnerRangeFnShape(fn string) (arity, matrixArg int) {
+	switch fn {
+	case "predict_linear":
+		return 2, 0
+	case "holt_winters", "double_exponential_smoothing":
+		return 3, 0
+	case "quantile_over_time":
+		return 2, 1
+	}
+	return 1, 0
 }
 
 // lowerSubqueryOverBinary — `(<vec> op <scalar>)[range:step]` /
@@ -698,6 +742,21 @@ func subqueryPreservedNameExpr(inner chplan.Node, outerFn string, s schema.Metri
 	if !rangeFnPreservesName(outerFn) {
 		return nil
 	}
+	return subqueryMatrixNameExpr(inner, s)
+}
+
+// subqueryMatrixNameExpr is subqueryPreservedNameExpr minus the outer
+// reducer's drop-name decision: it answers only "can this lowered
+// subquery relation deliver a per-series `__name__`?", widening the
+// spine's RangeWindow grouping keys when it can and returning the
+// MetricName ColumnRef to read it with (nil when it cannot).
+//
+// Split out because the drop-name gate is the OUTER function's
+// business, and not every consumer has one. `limit_ratio` inside a
+// subquery reads the name to reproduce `labels.Hash()` over the INNER
+// series' own label set — a question the wrapping reducer never enters
+// into.
+func subqueryMatrixNameExpr(inner chplan.Node, s schema.Metrics) chplan.Expr {
 	if s.MetricNameColumn == "" {
 		// A schema with no metric-name column has no per-series name to
 		// carry — same branch preservedNameExpr takes at the leaf.
@@ -885,18 +944,11 @@ func threadOuterRangeFnScalars(
 		if len(outer.Args) != 3 {
 			return nil, false, fmt.Errorf("promql: holt_winters expects 3 arguments, got %d", len(outer.Args))
 		}
-		sf, okSf := tryScalarLiteral(outer.Args[1])
-		tf, okTf := tryScalarLiteral(outer.Args[2])
-		if !okSf || !okTf {
-			return nil, false, fmt.Errorf("promql: holt_winters requires scalar-literal smoothing and trend factors")
+		sf, tf, sfExpr, tfExpr, ferr := holtWintersFactors(outer.Args[1], outer.Args[2], s, ctx)
+		if ferr != nil {
+			return nil, false, ferr
 		}
-		if sf <= 0 || sf >= 1 {
-			return nil, false, fmt.Errorf("promql: holt_winters smoothing factor must be in (0, 1), got %v", sf)
-		}
-		if tf <= 0 || tf >= 1 {
-			return nil, false, fmt.Errorf("promql: holt_winters trend factor must be in (0, 1), got %v", tf)
-		}
-		rw.Scalars = []float64{sf, tf}
+		bindHoltWintersFactors(rw, sf, tf, sfExpr, tfExpr)
 	case "quantile_over_time":
 		if len(outer.Args) != 2 {
 			return nil, false, fmt.Errorf("promql: quantile_over_time expects 2 arguments, got %d", len(outer.Args))
@@ -989,6 +1041,18 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 // unobservable for half of it. Both route through the emitter's shared
 // `emitRangeWindowOverTime` case, so the matrix and instant shapes are the
 // same code path `last_over_time` already exercises.
+//
+// "present_over_time" and "mad_over_time" are admitted on the same
+// grounds: both are plain reducers in the emitter's shared
+// `emitRangeWindowOverTime` case (internal/chsql/range_window.go), both
+// already lower over a bare matrix selector through
+// lowerRangeVectorCall's generic tail, and neither carries an extra
+// scalar argument. Withholding them here would reject
+// `mad_over_time(m[5m:1m])` while accepting `mad_over_time(m[5m])` — a
+// split reference Prometheus does not make. The generic "does not
+// accept a subquery argument" message stays for reducers with no
+// RangeWindow lowering at all (e.g. absent_over_time, which lowers to
+// its own node shape).
 var rangeVectorFn = map[string]struct{}{
 	"rate":                         {},
 	"irate":                        {},
@@ -1007,6 +1071,8 @@ var rangeVectorFn = map[string]struct{}{
 	"last_over_time":               {},
 	"stddev_over_time":             {},
 	"stdvar_over_time":             {},
+	"present_over_time":            {},
+	"mad_over_time":                {},
 	"predict_linear":               {},
 	"holt_winters":                 {},
 	"double_exponential_smoothing": {},
@@ -1034,6 +1100,12 @@ var instantTransformFns = map[string]struct{}{
 	"clamp_max":     {},
 	"label_replace": {},
 	"label_join":    {},
+	// `info(v[, {matchers}])` joins identity-matched labels off the
+	// info metric onto each of v's samples. It rewrites Attributes and
+	// leaves TimeUnix / Value untouched — the same sample-preserving
+	// contract label_replace / label_join satisfy — so the Identity wrap
+	// models `info(m)[5m:1m]` exactly as it models `label_replace(m,…)[5m:1m]`.
+	"info": {},
 }
 
 func isInstantTransformFn(name string) bool {
@@ -1256,10 +1328,12 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 // `without(...)` clause rather than the raw scan's Attributes map.
 //
 // Shape-changing aggregations (`topk` / `bottomk` / `limitk` /
-// `count_values`) are dispatched to dedicated helpers — topk/bottomk/
-// limitk preserve every input label and emit a TopK plan node (limitk
-// via the Unordered LIMIT-K-BY shape, no ranking), count_values builds
-// a synthetic label from the per-bucket value via toString().
+// `limit_ratio` / `count_values`) are dispatched to dedicated helpers —
+// topk/bottomk/limitk preserve every input label and emit a TopK plan
+// node (limitk via the Unordered LIMIT-K-BY shape, no ranking),
+// limit_ratio filters whole series by their label hash, and
+// count_values builds a synthetic label from the per-bucket value via
+// toString().
 func lowerSubqueryOverAggregate(
 	sub *parser.SubqueryExpr,
 	agg *parser.AggregateExpr,
@@ -1272,6 +1346,8 @@ func lowerSubqueryOverAggregate(
 		return lowerSubqueryOverTopK(sub, agg, step, s, ctx)
 	case parser.COUNT_VALUES:
 		return lowerSubqueryOverCountValues(sub, agg, step, s, ctx)
+	case parser.LIMIT_RATIO:
+		return lowerSubqueryOverLimitRatio(sub, agg, step, s, ctx)
 	case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX,
 		parser.STDDEV, parser.STDVAR, parser.GROUP, parser.QUANTILE:
 		// Per-bucket reducers — one value per (anchor, group-tuple) row.
@@ -1454,7 +1530,7 @@ func lowerSubqueryOverTopK(
 ) (chplan.Node, error) {
 	kF, ok := tryScalarLiteral(agg.Param)
 	if !ok {
-		return nil, fmt.Errorf("promql: subquery over %s requires a scalar literal K", agg.Op.String())
+		return lowerSubqueryOverTopKComputed(sub, agg, step, s, ctx)
 	}
 	k, empty, err := topKDomain(agg.Op, kF)
 	if err != nil {
@@ -1476,32 +1552,8 @@ func lowerSubqueryOverTopK(
 		}, nil
 	}
 
-	// Partition list: by/without keys (in TopK form — see lower.go's
-	// lowerTopK) PLUS anchor_ts so the LIMIT K BY fires per outer-anchor
-	// bucket. Without the anchor key, K series would be selected once
-	// across the whole matrix instead of K per evaluation step.
-	var by []chplan.Expr
-	switch {
-	case agg.Without && len(agg.Grouping) == 0:
-		by = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
-	case agg.Without:
-		by = []chplan.Expr{&chplan.MapWithoutKeys{
-			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
-			Keys: append([]string(nil), agg.Grouping...),
-		}}
-	default:
-		by = make([]chplan.Expr, 0, len(agg.Grouping))
-		for _, label := range agg.Grouping {
-			by = append(by, attributeLookup(s.AttributesColumn, label))
-		}
-	}
-	by = append(by, &chplan.ColumnRef{Name: "anchor_ts"})
-
-	columns := []string{
-		s.AttributesColumn,
-		"anchor_ts",
-		s.ValueColumn,
-	}
+	by := subqueryTopKPartition(agg, s)
+	columns := subqueryTopKColumns(s)
 
 	if agg.Op == parser.LIMITK {
 		// limitk: K arbitrary series per (partition, anchor) — no
@@ -1523,6 +1575,154 @@ func lowerSubqueryOverTopK(
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     agg.Op == parser.TOPK,
 		Columns:  columns,
+	}, nil
+}
+
+// subqueryTopKPartition builds the TopK partition list for a
+// topk/bottomk/limitk inside a subquery: the by/without keys (in TopK
+// form — see lower.go's lowerTopK) PLUS anchor_ts so the per-partition
+// truncation fires per outer-anchor bucket. Without the anchor key, K
+// series would be selected once across the whole matrix instead of K
+// per evaluation step.
+func subqueryTopKPartition(agg *parser.AggregateExpr, s schema.Metrics) []chplan.Expr {
+	var by []chplan.Expr
+	switch {
+	case agg.Without && len(agg.Grouping) == 0:
+		by = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	case agg.Without:
+		by = []chplan.Expr{&chplan.MapWithoutKeys{
+			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
+			Keys: append([]string(nil), agg.Grouping...),
+		}}
+	default:
+		by = make([]chplan.Expr, 0, len(agg.Grouping))
+		for _, label := range agg.Grouping {
+			by = append(by, attributeLookup(s.AttributesColumn, label))
+		}
+	}
+	const anchorAlias = "anchor_ts"
+	return append(by, &chplan.ColumnRef{Name: anchorAlias})
+}
+
+// subqueryTopKColumns is the canonical matrix row shape a subquery
+// TopK forwards, so a wrapping RangeWindow can window over anchor_ts /
+// Value without further reshaping.
+func subqueryTopKColumns(s schema.Metrics) []string {
+	const anchorAlias = "anchor_ts"
+	return []string{
+		s.AttributesColumn,
+		anchorAlias,
+		s.ValueColumn,
+	}
+}
+
+// lowerSubqueryOverTopKComputed — `(topk|bottomk|limitk)(scalar(<vector>),
+// <inner>)[<outer_range>:<step>]`, the computed-K case.
+//
+// Reference Prometheus type-checks K as scalar-valued and re-evaluates
+// the aggregation per step, so a scalar subquery is an ordinary K; only
+// a value that does not convert to int64 is rejected. Cerberus routes
+// it through chplan.TopK's KExpr slot, which the emitter renders as a
+// `row_number() OVER (PARTITION BY <by> …) <= K` rank filter — CH's
+// LIMIT clause takes a constant, so the literal path's `LIMIT K BY`
+// shape is not available here. The partition list and forwarded column
+// list are identical to the literal path, so the wrapping reducer sees
+// the same matrix shape either way.
+func lowerSubqueryOverTopKComputed(
+	sub *parser.SubqueryExpr,
+	agg *parser.AggregateExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	kExpr, err := lowerComputedK(agg.Op, agg.Param, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	unordered := agg.Op == parser.LIMITK
+	var sortExpr chplan.Expr
+	if !unordered {
+		sortExpr = &chplan.ColumnRef{Name: s.ValueColumn}
+	}
+	return &chplan.TopK{
+		Input:     matrix,
+		KExpr:     kExpr,
+		By:        subqueryTopKPartition(agg, s),
+		SortExpr:  sortExpr,
+		Desc:      agg.Op == parser.TOPK,
+		Unordered: unordered,
+		Columns:   subqueryTopKColumns(s),
+	}, nil
+}
+
+// lowerSubqueryOverLimitRatio — `limit_ratio(r, <inner>)[<outer_range>:<step>]`.
+//
+// limit_ratio keeps a deterministic ratio-sized subset of the input
+// SERIES: a series survives when `float64(labels.Hash())/2^64` falls in
+// the half-open interval `r` selects (see lower.go's `lowerLimitRatio`
+// for the exact reference rule). The predicate is per-series and
+// step-independent, so over a subquery matrix it is exactly a row
+// filter — the same series survive at every anchor, which is what the
+// reference engine does when it re-evaluates the aggregation per step.
+//
+// Unlike topk/bottomk/limitk there is no per-anchor partitioning to add:
+// nothing is ranked and nothing is counted, so `by(...)` / `without(...)`
+// are inert here (upstream's limit_ratio takes a grouping clause only
+// because every AggregateExpr does; the sampler hashes the FULL label
+// set regardless).
+//
+// The lowered tree is Project[Filter[matrix-RangeWindow]]. The Project
+// restores the canonical (Attributes, anchor_ts, TimeUnix, Value) shape
+// after the filter, dropping the MetricName column that name-carrying
+// spines gain — a wrapping reducer groups on Attributes and would
+// otherwise see an arity it does not expect.
+func lowerSubqueryOverLimitRatio(
+	sub *parser.SubqueryExpr,
+	agg *parser.AggregateExpr,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve `__name__` off the matrix spine. A name-preserving inner
+	// (bare selector, `last_over_time`) widens its windows to carry
+	// MetricName and hashes `Attributes + __name__`; a name-dropping
+	// inner (`rate(…)`, `sum(…)`) yields nil and hashes Attributes
+	// alone — which is precisely the label set the reference engine's
+	// series carries after the same drop.
+	carriesName := subqueryMatrixNameExpr(matrix, s) != nil
+	offset := func() chplan.Expr {
+		if !carriesName {
+			return ratioOffsetExpr(s, nil)
+		}
+		// Fresh ColumnRef per call — sibling predicate arms must not
+		// share chplan Expr pointers (the IR is a tree, not a DAG).
+		return ratioOffsetExpr(s, &chplan.ColumnRef{Name: s.MetricNameColumn})
+	}
+
+	pred, err := limitRatioPredicate(agg.Param, offset, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	const anchorAlias = "anchor_ts"
+	return &chplan.Project{
+		Input: &chplan.Filter{Input: matrix, Predicate: pred},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
+			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
 	}, nil
 }
 
@@ -1942,9 +2142,9 @@ func lowerSubqueryOverCallSubquery(
 		return nil, err
 	}
 
-	return &chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           wideInner,
-		Func:            call.Func.Name,
+		Func:            canonicalRangeWindowFunc(call.Func.Name),
 		Range:           innerSub.Range,
 		OuterRange:      sub.Range,
 		Step:            step,
@@ -1954,5 +2154,17 @@ func lowerSubqueryOverCallSubquery(
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}
+	// Same extra-scalar binding as the matrix-selector sibling: the fn of
+	// a nested subquery (`quantile_over_time(0.5,
+	// rate(m[1m])[5m:30s])[1h:5m]`) carries its scalars in the same
+	// argument positions.
+	value, replaceValue, err := threadOuterRangeFnScalars(call, rw, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if replaceValue {
+		return projectValueOverInner(rw, s, value), nil
+	}
+	return rw, nil
 }

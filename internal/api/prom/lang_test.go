@@ -114,22 +114,22 @@ func TestLang_Parse_ParseError(t *testing.T) {
 // form surfaces as a parseStageError tagged "lower". Verifies the parse →
 // lower split is preserved through the adapter.
 //
-// The example is `limitk` with a *computed* K (`limitk(scalar(up), up)`):
-// the aggregator itself lowers (the experimental-aggregator burndown wired
-// limitk → LIMIT K BY), but the lowering requires K to be a scalar
-// *literal* — a computed `scalar(<vector>)` K is genuinely unsupported and
-// rejected at the lowering stage. This is a stable parse→lower-split
-// example that doesn't depend on any function being globally unsupported.
+// The example is `limitk` with a NaN K (`limitk(NaN, up)`): the
+// aggregator itself lowers (the experimental-aggregator burndown wired
+// limitk → LIMIT K BY), but NaN does not convert to int64, so the K
+// domain check rejects it at the lowering stage.
 //
 // Earlier revisions keyed this on `first_over_time` /
-// `double_exponential_smoothing`, but both are now implemented (the
-// maintainer flipped them from gated to supported), so they lower cleanly
-// and can no longer exercise the lower-error path.
+// `double_exponential_smoothing` and then on a computed
+// `limitk(scalar(up), up)` K, but each was subsequently implemented and
+// stopped exercising the lower-error path. A NaN K cannot rot the same
+// way: reference Prometheus rejects it too, so it is a permanent
+// rejection rather than an unimplemented shape.
 func TestLang_Parse_LowerError(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	const q = `limitk(scalar(up), up)`
+	const q = `limitk(NaN, up)`
 	_, _, err := l.Parse(context.Background(), q)
 	if err == nil {
 		t.Fatalf("Parse(%q): expected lower failure, got nil", q)
@@ -141,8 +141,8 @@ func TestLang_Parse_LowerError(t *testing.T) {
 	if ps.stage != "lower" {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
-	if !strings.Contains(err.Error(), "must be a scalar literal") {
-		t.Errorf("err message: got %q, want it to mention the scalar-literal requirement", err.Error())
+	if !strings.Contains(err.Error(), "K must not be NaN") {
+		t.Errorf("err message: got %q, want it to mention the NaN K rejection", err.Error())
 	}
 }
 

@@ -160,11 +160,11 @@ func TestLower_LimitK_KDomain(t *testing.T) {
 	})
 }
 
-// TestLower_LimitK_Errors covers limitk's observable error contract:
-// NaN / overflow K (shared with topKDomain) and the computed-K
-// rejection (limitk(scalar(<vector>), v) is unsupported — CH's LIMIT
-// needs a constant and limitk's arbitrary-selection gives no natural
-// row_number() ordering to filter on).
+// TestLower_LimitK_Errors covers limitk's observable error contract.
+// NaN / overflow K are shared with topKDomain and match upstream, which
+// rejects a K that does not convert to int64. Computed-K shapes beyond
+// `scalar(<vector>)` are still rejected; the `scalar(<vector>)` shape
+// itself is accepted (see TestLower_LimitK_ComputedK).
 func TestLower_LimitK_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -187,9 +187,13 @@ func TestLower_LimitK_Errors(t *testing.T) {
 			wantErr: "overflows int64",
 		},
 		{
-			name:    "computed K rejected",
-			query:   `limitk(scalar(up), up)`,
-			wantErr: "computed-K",
+			// `scalar(<vector>)` K is accepted (see
+			// TestLower_LimitK_ComputedK); arithmetic AROUND the scalar
+			// subquery still needs constant folding cerberus does not
+			// model, so it stays rejected here.
+			name:    "computed K beyond scalar() is rejected",
+			query:   `limitk(scalar(up) * 2, up)`,
+			wantErr: "computed-K with other shapes is not yet supported",
 		},
 	}
 	for _, tc := range cases {
@@ -208,5 +212,43 @@ func TestLower_LimitK_Errors(t *testing.T) {
 				t.Fatalf("Lower(%q): error %q does not contain %q", tc.query, err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestLower_LimitK_ComputedK pins the accept side of the guard relaxed
+// for #1787: reference Prometheus answers `limitk(scalar(v), v)`, so
+// cerberus lowers it to a chplan.TopK carrying KExpr (the single-row
+// scalar relation) rather than the constant-folded K slot. Unordered
+// stays true — limitk's arbitrary-selection contract is independent of
+// how K is supplied.
+func TestLower_LimitK_ComputedK(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := experimentalParser()
+
+	expr, err := p.ParseExpr(`limitk(scalar(up), http_requests_total)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	topk := findTopK(plan)
+	if topk == nil {
+		t.Fatal("lowered plan has no chplan.TopK node")
+	}
+	if topk.KExpr == nil {
+		t.Fatal("TopK.KExpr is nil; computed K was not threaded into the plan")
+	}
+	if topk.K != 0 {
+		t.Fatalf("TopK.K = %d, want 0 (K and KExpr are mutually exclusive)", topk.K)
+	}
+	if !topk.Unordered {
+		t.Fatal("TopK.Unordered = false, want true for limitk")
+	}
+	if topk.SortExpr != nil {
+		t.Fatalf("TopK.SortExpr = %v, want nil for an unordered limitk", topk.SortExpr)
 	}
 }

@@ -104,23 +104,26 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 // samples in the lookback window and returns the smoothed value at the
 // window's anchor.
 //
-// IR: a RangeWindow with Func="holt_winters" and Scalars=[sf, tf]. The
-// chsql emitter renders the recurrence as an arrayMap lambda over the
-// windowed array.
+// IR: a RangeWindow with Func="holt_winters" and Scalars=[sf, tf], or
+// ScalarExprs=[sfExpr, tfExpr] when either factor is computed. The chsql
+// emitter renders the recurrence as an arrayFold over the windowed array.
+//
+// Factor domain: reference Prometheus's funcDoubleExponentialSmoothing
+// requires 0 < sf < 1 and 0 < tf < 1, and errors the QUERY when a factor
+// falls outside. A literal (or constant-foldable) factor is known at
+// lowering time, so cerberus rejects it here — the same accept/reject
+// boundary upstream draws, just moved earlier. A COMPUTED factor
+// (`double_exponential_smoothing(v[5m], scalar(x), 0.3)`) is not known
+// until execution, and upstream accepts that query shape and evaluates
+// it, so cerberus lowers it too; the (0, 1) check rides into SQL as a
+// per-row guard (see chsql.holtWintersFactorInDomain).
 func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 3 {
 		return nil, fmt.Errorf("promql: holt_winters expects 3 arguments, got %d", len(c.Args))
 	}
-	sf, okSf := tryScalarLiteral(c.Args[1])
-	tf, okTf := tryScalarLiteral(c.Args[2])
-	if !okSf || !okTf {
-		return nil, fmt.Errorf("promql: holt_winters requires scalar-literal smoothing and trend factors")
-	}
-	if sf <= 0 || sf >= 1 {
-		return nil, fmt.Errorf("promql: holt_winters smoothing factor must be in (0, 1), got %v", sf)
-	}
-	if tf <= 0 || tf >= 1 {
-		return nil, fmt.Errorf("promql: holt_winters trend factor must be in (0, 1), got %v", tf)
+	sf, tf, sfExpr, tfExpr, err := holtWintersFactors(c.Args[1], c.Args[2], s, ctx)
+	if err != nil {
+		return nil, err
 	}
 	ms, vs, err := matrixAndSelector(c, c.Args[0])
 	if err != nil {
@@ -152,11 +155,11 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 		Range:           ms.Range,
 		End:             anchor.End,
 		Offset:          anchor.Offset,
-		Scalars:         []float64{sf, tf},
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
+	bindHoltWintersFactors(rw, sf, tf, sfExpr, tfExpr)
 	switch rangeGridShapeFor(vs, ctx) {
 	case gridFanout:
 		// Fan across the request's step grid so each anchor in
@@ -169,6 +172,64 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 	case gridSingleAnchor:
 	}
 	return rw, nil
+}
+
+// holtWintersFactors resolves the smoothing and trend arguments of
+// `double_exponential_smoothing` (and its legacy `holt_winters`
+// spelling) to either a literal pair (sf, tf — both scalar-foldable) or
+// a computed pair (sfExpr, tfExpr — scalar-subquery expressions). The
+// two forms are mutually exclusive per factor slot, but the RangeWindow
+// carries the pair as a unit, so ONE computed factor promotes BOTH to
+// the expression binding: [chplan.RangeWindow.ScalarExprs] is positional
+// and the emitter reads index 0 as sf and index 1 as tf.
+//
+// A literal factor outside (0, 1) is rejected here — the exact boundary
+// reference Prometheus draws at eval time. A computed factor's value is
+// unknowable at lowering time, so it passes and the emitter's per-row
+// guard handles the domain.
+//
+// Shared by [lowerHoltWinters] (matrix-selector argument) and
+// threadOuterRangeFnScalars (subquery argument) so the two argument
+// forms cannot drift apart.
+func holtWintersFactors(sfArg, tfArg parser.Expr, s schema.Metrics, ctx lowerCtx) (sf, tf float64, sfExpr, tfExpr chplan.Expr, err error) {
+	sf, okSf := tryScalarLiteral(sfArg)
+	tf, okTf := tryScalarLiteral(tfArg)
+	if okSf && (sf <= 0 || sf >= 1) {
+		return 0, 0, nil, nil, fmt.Errorf("promql: holt_winters smoothing factor must be in (0, 1), got %v", sf)
+	}
+	if okTf && (tf <= 0 || tf >= 1) {
+		return 0, 0, nil, nil, fmt.Errorf("promql: holt_winters trend factor must be in (0, 1), got %v", tf)
+	}
+	if okSf && okTf {
+		return sf, tf, nil, nil, nil
+	}
+	// At least one factor is computed: lower BOTH into the expression
+	// slots so the positional ScalarExprs pair stays complete. A literal
+	// alongside a computed sibling lowers through the same
+	// scalar-argument path, which folds it straight back to a literal.
+	sfExpr, err = lowerScalarArg(sfArg, s, ctx)
+	if err != nil {
+		return 0, 0, nil, nil, err
+	}
+	tfExpr, err = lowerScalarArg(tfArg, s, ctx)
+	if err != nil {
+		return 0, 0, nil, nil, err
+	}
+	return 0, 0, sfExpr, tfExpr, nil
+}
+
+// bindHoltWintersFactors writes the factor pair [holtWintersFactors]
+// resolved onto the RangeWindow, choosing the literal Scalars slot or
+// the computed ScalarExprs slot. Extracted so the matrix-selector and
+// subquery lowerings bind the IR identically.
+func bindHoltWintersFactors(rw *chplan.RangeWindow, sf, tf float64, sfExpr, tfExpr chplan.Expr) {
+	if sfExpr != nil {
+		rw.ScalarExprs = []chplan.Expr{sfExpr, tfExpr}
+		rw.Scalars = nil
+		return
+	}
+	rw.Scalars = []float64{sf, tf}
+	rw.ScalarExprs = nil
 }
 
 // lowerQuantileOverTime handles `quantile_over_time(phi, v[range])`:

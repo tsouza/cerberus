@@ -128,8 +128,17 @@ func TestLower_PredictLinear_ComputedHorizon(t *testing.T) {
 	if len(rw.ScalarExprs) != 1 || len(rw.Scalars) != 0 {
 		t.Fatalf("ScalarExprs=%d Scalars=%d, want 1 / 0", len(rw.ScalarExprs), len(rw.Scalars))
 	}
-	if _, ok := rw.ScalarExprs[0].(*chplan.ScalarSubquery); !ok {
-		t.Fatalf("ScalarExprs[0] = %T, want *chplan.ScalarSubquery", rw.ScalarExprs[0])
+	// The horizon is `assumeNotNull(<scalar subquery>)`: ClickHouse types
+	// every scalar-subquery position Nullable, and the wrapper strips
+	// that inference (see promql.scalarSubqueryValue). Assert both
+	// layers, so dropping the wrapper is caught here rather than as a
+	// TYPE_MISMATCH from a downstream consumer.
+	wrap, ok := rw.ScalarExprs[0].(*chplan.FuncCall)
+	if !ok || wrap.Name != "assumeNotNull" || len(wrap.Args) != 1 {
+		t.Fatalf("ScalarExprs[0] = %#v, want assumeNotNull(<1 arg>)", rw.ScalarExprs[0])
+	}
+	if _, ok := wrap.Args[0].(*chplan.ScalarSubquery); !ok {
+		t.Fatalf("assumeNotNull arg = %T, want *chplan.ScalarSubquery", wrap.Args[0])
 	}
 	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
