@@ -884,7 +884,15 @@ func subquerySpineNameWindows(n chplan.Node, s schema.Metrics) ([]*chplan.RangeW
 //   - Scan — the base metrics relation; MetricName is one of its own
 //     columns, so a selector that reaches the emitter without a shaping
 //     Project (the native-eligible shape) still carries the name.
-//   - Filter / RangeLWR — transparent; neither reshapes the column set.
+//   - Filter / RangeLWR / RangeWindowResample — transparent; none
+//     reshapes the column set. RangeLWR and RangeWindowResample are the
+//     fan-out and native (timeSeriesResampleToGridWithStaleness) halves of
+//     the SAME staleness lowering, chosen per deployment by
+//     [RangeLowerers.Staleness], and the native emitter selects and groups
+//     by MetricName exactly as the fan-out one does. Listing only one of
+//     them would make `__name__` survive a subquery on a ClickHouse old
+//     enough to lack ts_grid and vanish on a newer one — the same query,
+//     two answers, decided by the server version.
 //   - Project — terminal, via [projectCarriesMetricName]. A Project that
 //     names MetricName with the empty literal has dropped it and is NOT
 //     walked through; one that names it at all is authoritative.
@@ -912,6 +920,8 @@ func nodeCarriesMetricName(n chplan.Node, s schema.Metrics) bool {
 	case *chplan.Filter:
 		return nodeCarriesMetricName(v.Input, s)
 	case *chplan.RangeLWR:
+		return nodeCarriesMetricName(v.Input, s)
+	case *chplan.RangeWindowResample:
 		return nodeCarriesMetricName(v.Input, s)
 	case *chplan.Project:
 		return projectCarriesMetricName(v, s)

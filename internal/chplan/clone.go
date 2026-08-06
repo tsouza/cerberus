@@ -20,6 +20,17 @@ import "fmt"
 // TestCloneNodeExhaustive in clone_test.go fail in lock-step, forcing the
 // author to extend the copy.
 //
+// Every arm starts from `c := *v` and then deep-copies the mutable fields,
+// never from a fresh composite literal enumerating the fields it knows about.
+// That shape is load-bearing, not stylistic: a literal silently DROPS any
+// field added to the struct later, and the drop is invisible — the clone still
+// type-checks, still executes, and merely answers a different question than the
+// original. `Aggregate.Having` was lost that way, which disarmed the
+// duplicate-labelset and info()-conflicting-label aborts on every sharded
+// (route B) plan while the single-shot plan kept them. With `c := *v` a new
+// field is carried by default, and the worst a missing deep-copy line can cost
+// is aliasing — which the isolation tests in clone_test.go do catch.
+//
 // CloneNode does NOT re-anchor anything — it is a pure copy. ReanchorRange
 // composes the copy with the grid rewrite.
 func CloneNode(n Node) Node {
@@ -33,25 +44,28 @@ func CloneNode(n Node) Node {
 		c.Columns = cloneStrings(v.Columns)
 		return &c
 	case *Filter:
-		return &Filter{Input: CloneNode(v.Input), Predicate: cloneExpr(v.Predicate)}
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.Predicate = cloneExpr(v.Predicate)
+		return &c
 	case *SearchTraceLimit:
 		c := *v
 		c.Input = CloneNode(v.Input)
 		return &c
 	case *Project:
-		return &Project{
-			Input:        CloneNode(v.Input),
-			Projections:  cloneProjections(v.Projections),
-			Replacements: cloneProjections(v.Replacements),
-		}
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.Projections = cloneProjections(v.Projections)
+		c.Replacements = cloneProjections(v.Replacements)
+		return &c
 	case *Aggregate:
-		return &Aggregate{
-			Input:              CloneNode(v.Input),
-			GroupBy:            cloneExprs(v.GroupBy),
-			GroupByAliases:     cloneStrings(v.GroupByAliases),
-			AggFuncs:           cloneAggFuncs(v.AggFuncs),
-			DropEmptyOnNoGroup: v.DropEmptyOnNoGroup,
-		}
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.GroupBy = cloneExprs(v.GroupBy)
+		c.GroupByAliases = cloneStrings(v.GroupByAliases)
+		c.AggFuncs = cloneAggFuncs(v.AggFuncs)
+		c.Having = cloneExpr(v.Having)
+		return &c
 	case *RangeWindow:
 		c := *v
 		c.Input = CloneNode(v.Input)
@@ -99,14 +113,21 @@ func CloneNode(n Node) Node {
 		c.Columns = cloneStrings(v.Columns)
 		return &c
 	case *Limit:
-		return &Limit{Input: CloneNode(v.Input), Count: v.Count}
+		c := *v
+		c.Input = CloneNode(v.Input)
+		return &c
 	case *OrderBy:
-		return &OrderBy{Input: CloneNode(v.Input), Keys: cloneOrderKeys(v.Keys)}
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.Keys = cloneOrderKeys(v.Keys)
+		return &c
 	case *OneRow:
 		c := *v
 		return &c
 	case *UnionAll:
-		return &UnionAll{Inputs: cloneNodes(v.Inputs)}
+		c := *v
+		c.Inputs = cloneNodes(v.Inputs)
+		return &c
 	default:
 		return cloneCompositeNode(n)
 	}
@@ -121,7 +142,10 @@ func CloneNode(n Node) Node {
 func cloneCompositeNode(n Node) Node {
 	switch v := n.(type) {
 	case *CrossJoin:
-		return &CrossJoin{Left: CloneNode(v.Left), Right: CloneNode(v.Right)}
+		c := *v
+		c.Left = CloneNode(v.Left)
+		c.Right = CloneNode(v.Right)
+		return &c
 	case *SetOperation:
 		c := *v
 		c.Left = CloneNode(v.Left)

@@ -3,8 +3,8 @@
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
-      "passed": 765,
-      "total": 765,
+      "passed": 768,
+      "total": 768,
       "cases": [
         "\"a string literal\"",
         "(1 * 2 + 4 / 6 - (10%7)^2) != demo_memory_usage_bytes",
@@ -425,6 +425,7 @@
         "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"nonexistent-src\", \"(.*)\")",
         "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"nonexistent-src\", \"source-value-(.*)\")",
         "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"src\", \"(.*\")",
+        "last_over_time((demo_memory_usage_bytes or demo_disk_usage_bytes)[10m:1m])",
         "last_over_time(demo_memory_usage_bytes[10m:1m] @ start())",
         "last_over_time(demo_memory_usage_bytes[10m:1m])",
         "last_over_time(demo_memory_usage_bytes[15m])",
@@ -618,6 +619,8 @@
         "rate(demo_cpu_usage_seconds_total[5m])",
         "rate(demo_cpu_usage_seconds_total[5m]) or rate(demo_http_requests_total[5m])",
         "rate(nonexistent_metric[5m])",
+        "rate({__name__=~\"demo_memory_usage_bytes|demo_disk_usage_bytes\"}[5m])",
+        "rate({__name__=~\"demo_memory_usage_bytes|demo_sparse_memory_bytes\"}[5m])",
         "resets(demo_cpu_usage_seconds_total[15m])",
         "resets(demo_cpu_usage_seconds_total[15s])",
         "resets(demo_cpu_usage_seconds_total[1h])",
