@@ -44,10 +44,10 @@ import (
 
 // SearchTags implements StreamingQuerier_SearchTagsServer. Mirrors
 // the HTTP /api/search/tags endpoint: returns the union of every
-// dynamic span- + resource-attribute key seen in the time window,
-// sorted ascending. Intrinsics are excluded by default (parity with
-// upstream Tempo); only the explicit `scope=intrinsic` request emits
-// the static intrinsic inventory.
+// dynamic attribute key seen in the time window across each scope the
+// request selects, sorted ascending. Intrinsics are excluded by
+// default (parity with upstream Tempo); only the explicit
+// `scope=intrinsic` request emits the static intrinsic inventory.
 func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.StreamingQuerier_SearchTagsServer) error {
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
@@ -58,14 +58,15 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	start, end := tempoTagsBounds(req.GetStart(), req.GetEnd())
-	resource, span, err := s.collectTagKeys(ctx, scope, start, end)
+	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, start, end)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
-	all := make([]string, 0, len(resource)+len(span)+len(tempo.IntrinsicTags()))
-	all = append(all, resource...)
-	all = append(all, span...)
-	// Default + scope=resource/span carve out intrinsics; only an
+	var all []string
+	for _, b := range buckets {
+		all = append(all, b.Tags...)
+	}
+	// Default + scoped attribute requests carve out intrinsics; only an
 	// explicit scope=intrinsic surfaces them on the V1 envelope
 	// (matches the HTTP handler's respondTags policy).
 	if scope == tempo.TagScopeIntrinsic {
@@ -75,10 +76,14 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 }
 
 // SearchTagsV2 implements StreamingQuerier_SearchTagsV2Server. Same
-// data as SearchTags, partitioned into resource / span / intrinsic
-// scope buckets so Grafana's autocomplete can surface each prefix
-// separately. The intrinsic bucket is always emitted on a `none`
-// request (the default); scoped requests filter to one bucket.
+// data as SearchTags, partitioned into one bucket per attribute scope
+// (resource / instrumentation / span / event / link) plus intrinsic,
+// so Grafana's autocomplete can surface each prefix separately. A
+// scope that carries no key in the window contributes no bucket —
+// upstream's tags-V2 combiner builds its scope list from the keys
+// storage actually reported, so an empty bucket never appears. The
+// intrinsic bucket is emitted on a `none` request (the default) and
+// on an explicit `scope=intrinsic`.
 func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.StreamingQuerier_SearchTagsV2Server) error {
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
@@ -89,16 +94,13 @@ func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.St
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	start, end := tempoTagsBounds(req.GetStart(), req.GetEnd())
-	resource, span, err := s.collectTagKeys(ctx, scope, start, end)
+	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, start, end)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
-	scopes := make([]*tempopb.SearchTagsV2Scope, 0, 3)
-	if scope == tempo.TagScopeNone || scope == tempo.TagScopeResource {
-		scopes = append(scopes, &tempopb.SearchTagsV2Scope{Name: tempo.TagScopeResource, Tags: tempo.SortedUnique(resource)})
-	}
-	if scope == tempo.TagScopeNone || scope == tempo.TagScopeSpan {
-		scopes = append(scopes, &tempopb.SearchTagsV2Scope{Name: tempo.TagScopeSpan, Tags: tempo.SortedUnique(span)})
+	scopes := make([]*tempopb.SearchTagsV2Scope, 0, len(buckets)+1)
+	for _, b := range buckets {
+		scopes = append(scopes, &tempopb.SearchTagsV2Scope{Name: b.Name, Tags: b.Tags})
 	}
 	if scope == tempo.TagScopeNone || scope == tempo.TagScopeIntrinsic {
 		scopes = append(scopes, &tempopb.SearchTagsV2Scope{Name: tempo.TagScopeIntrinsic, Tags: tempo.IntrinsicTags()})
@@ -152,27 +154,6 @@ func (s *Service) SearchTagValuesV2(req *tempopb.SearchTagValuesRequest, stream 
 		out = append(out, &tempopb.TagValue{Type: typ, Value: v})
 	}
 	return stream.Send(&tempopb.SearchTagValuesV2Response{TagValues: out})
-}
-
-// collectTagKeys runs the two attribute-map lookups (one per scope
-// bucket) the V1 + V2 tag-list endpoints both share. The boolean
-// branches mirror respondTags in search_tags.go so the gRPC and
-// HTTP surfaces agree on what data each scope returns: a scoped
-// request runs only one query, a `none` (default) request runs both.
-func (s *Service) collectTagKeys(ctx context.Context, scope string, start, end time.Time) (resource, span []string, err error) {
-	if scope == tempo.TagScopeNone || scope == tempo.TagScopeResource {
-		resource, err = s.Handler.FetchTagKeys(ctx, s.Handler.Schema.ResourceAttributesColumn, start, end)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	if scope == tempo.TagScopeNone || scope == tempo.TagScopeSpan {
-		span, err = s.Handler.FetchTagKeys(ctx, s.Handler.Schema.AttributesColumn, start, end)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	return resource, span, nil
 }
 
 // lookupTagValues encapsulates the parse-name + resolve-scope +

@@ -78,7 +78,15 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) (
 }
 
 func newServer(q tempo.Querier, version string) *httptest.Server {
-	h := tempo.New(q, schema.DefaultOTelTraces(), version, nil)
+	return newServerWithSchema(q, schema.DefaultOTelTraces(), version)
+}
+
+// newServerWithSchema is newServer for the tests that need a traces
+// schema other than the OTel default — e.g. one that points
+// ScopeAttributesColumn at a real column, which the upstream traces DDL
+// does not declare.
+func newServerWithSchema(q tempo.Querier, s schema.Traces, version string) *httptest.Server {
+	h := tempo.New(q, s, version, nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	return httptest.NewServer(mux)

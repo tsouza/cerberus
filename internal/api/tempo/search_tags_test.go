@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestSearchTags_UnionsDynamicAttributes — the V1 endpoint returns the
@@ -79,7 +80,7 @@ func TestSearchTags_SQLShape(t *testing.T) {
 	srv := newServer(q, "v1.0.0-test")
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/search/tags")
+	resp, err := http.Get(srv.URL + "/api/search/tags?scope=span")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -87,12 +88,50 @@ func TestSearchTags_SQLShape(t *testing.T) {
 	for _, want := range []string{
 		"SELECT DISTINCT",
 		"arrayJoin(",
-		"mapKeys(",
+		"mapKeys(`SpanAttributes`)",
 		"FROM `otel_traces`",
 	} {
 		if !strings.Contains(q.lastSQL, want) {
 			t.Errorf("SQL missing %q\n  got: %s", want, q.lastSQL)
 		}
+	}
+}
+
+// TestSearchTags_NestedScopeSQLShape — the `event` / `link` scopes read
+// their keys out of the OTel-CH Nested columns, whose Attributes
+// sub-column is Array(Map(String, String)) rather than a bare Map. One
+// extra arrayMap+arrayFlatten level collects the keys of every event /
+// link on the span row before arrayJoin unrolls them.
+//
+// The sub-column must be addressed as two backtick-quoted identifiers
+// joined by a dot (`Events`.`Attributes`) — the same spelling every
+// other Nested reference in the emitter uses. A single quoted
+// `Events.Attributes` is a different identifier to ClickHouse.
+func TestSearchTags_NestedScopeSQLShape(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		scope string
+		col   string
+	}{
+		{scope: "event", col: "`Events`.`Attributes`"},
+		{scope: "link", col: "`Links`.`Attributes`"},
+	} {
+		t.Run(tc.scope, func(t *testing.T) {
+			t.Parallel()
+			q := &stubQuerier{strings: []string{"a"}}
+			srv := newServer(q, "v1.0.0-test")
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/api/search/tags?scope=" + tc.scope)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			resp.Body.Close()
+			want := "SELECT DISTINCT arrayJoin(arrayFlatten(arrayMap(m -> mapKeys(m), " + tc.col + ")))"
+			if !strings.Contains(q.lastSQL, want) {
+				t.Errorf("SQL missing %q\n  got: %s", want, q.lastSQL)
+			}
+		})
 	}
 }
 
@@ -219,9 +258,8 @@ func TestSearchTags_EmptyArray(t *testing.T) {
 }
 
 // TestSearchTagsV2_ScopePartition — the V2 endpoint groups tags by
-// scope (resource / span / intrinsic). The two map lookups feed
-// distinct scope buckets, and the static intrinsic list lives in its
-// own.
+// scope. Each attribute-map lookup feeds its own scope bucket, and the
+// static intrinsic list lives in one of its own.
 func TestSearchTagsV2_ScopePartition(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{stringsBySQL: map[string][]string{
@@ -261,7 +299,7 @@ func TestSearchTagsV2_ScopePartition(t *testing.T) {
 // TestSearchTagsV2_ScopeFilter — the `?scope=` query parameter on
 // /api/v2/search/tags must restrict the response to the requested
 // bucket. Mirrors upstream Tempo's pkg/api.ParseSearchTagsRequest
-// semantics (resource / span / intrinsic / none-or-empty).
+// semantics across the full upstream scope vocabulary.
 // Before this fix the handler silently emitted every scope, so
 // Grafana's per-scope autocomplete iterated over irrelevant keys.
 func TestSearchTagsV2_ScopeFilter(t *testing.T) {
@@ -277,16 +315,20 @@ func TestSearchTagsV2_ScopeFilter(t *testing.T) {
 	}{
 		{name: "resource_only", query: "?scope=resource", wantScopes: []string{"resource"}, wantTag: "service.name"},
 		{name: "span_only", query: "?scope=span", wantScopes: []string{"span"}, wantTag: "http.method"},
+		{name: "event_only", query: "?scope=event", wantScopes: []string{"event"}, wantTag: "exception.type"},
+		{name: "link_only", query: "?scope=link", wantScopes: []string{"link"}, wantTag: "link.kind"},
 		{name: "intrinsic_only", query: "?scope=intrinsic", wantScopes: []string{"intrinsic"}, wantTag: "name"},
-		{name: "none_default", query: "", wantScopes: []string{"resource", "span", "intrinsic"}},
-		{name: "none_explicit", query: "?scope=none", wantScopes: []string{"resource", "span", "intrinsic"}},
+		{name: "none_default", query: "", wantScopes: []string{"resource", "span", "event", "link", "intrinsic"}},
+		{name: "none_explicit", query: "?scope=none", wantScopes: []string{"resource", "span", "event", "link", "intrinsic"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{stringsBySQL: map[string][]string{
-				"`ResourceAttributes`": {"service.name"},
-				"`SpanAttributes`":     {"http.method"},
+				"`ResourceAttributes`":  {"service.name"},
+				"`SpanAttributes`":      {"http.method"},
+				"`Events`.`Attributes`": {"exception.type"},
+				"`Links`.`Attributes`":  {"link.kind"},
 			}}
 			srv := newServer(q, "v1.0.0-test")
 			t.Cleanup(srv.Close)
@@ -407,6 +449,157 @@ func TestSearchTags_ScopeAllRejected(t *testing.T) {
 				t.Errorf("message = %q, want it to contain %q", er.Message, want)
 			}
 		})
+	}
+}
+
+// TestSearchTags_UpstreamScopeVocabulary — every value upstream Tempo
+// accepts on `?scope=` must be a 200 here too. Upstream's vocabulary is
+// the union of two sources:
+//
+//   - `traceql.AttributeScopeFromString` (pkg/traceql/
+//     enum_attributes.go): "", "none", "trace", "span", "resource",
+//     "event", "link", "instrumentation".
+//   - the `intrinsic` carve-out in `pkg/api.ParseSearchTagsRequest`.
+//
+// Cerberus used to accept only resource / span / intrinsic / none, so a
+// Grafana autocomplete that asked for `scope=event` got a 400 from
+// cerberus and a tag list from real Tempo. The differential harness
+// could not catch it — it only sends queries both backends accept.
+func TestSearchTags_UpstreamScopeVocabulary(t *testing.T) {
+	t.Parallel()
+	upstreamScopes := []string{
+		"", "none", "trace", "span", "resource", "event", "link",
+		"instrumentation", "intrinsic",
+	}
+	for _, path := range []string{"/api/search/tags", "/api/v2/search/tags"} {
+		for _, scope := range upstreamScopes {
+			t.Run(path+"/scope="+scope, func(t *testing.T) {
+				t.Parallel()
+				q := &stubQuerier{strings: []string{"a"}}
+				srv := newServer(q, "v1.0.0-test")
+				t.Cleanup(srv.Close)
+
+				resp, err := http.Get(srv.URL + path + "?scope=" + scope)
+				if err != nil {
+					t.Fatalf("GET: %v", err)
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("scope=%q: status=%d want 200 body=%s", scope, resp.StatusCode, readBody(t, resp))
+				}
+			})
+		}
+	}
+}
+
+// TestSearchTagsV2_TraceScopeEmptyEnvelope — `scope=trace` is a real
+// upstream scope keyword but no attribute family lives under it in
+// either backend: upstream's vparquet4 tag scan (block_search_tags.go)
+// branches on resource / instrumentation / span / event / link and
+// AttributeScopeTrace matches none of them, so storage reports nothing
+// and the combiner materialises no bucket. Cerberus answers the same
+// way — a 200 with an empty (never null) scope list, and no CH query.
+func TestSearchTagsV2_TraceScopeEmptyEnvelope(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"should.not.appear"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags?scope=trace")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if q.lastSQL != "" {
+		t.Errorf("scope=trace must not hit CH, got SQL=%q", q.lastSQL)
+	}
+	body := readBody(t, resp)
+	if strings.Contains(body, `"scopes":null`) {
+		t.Errorf("scope=trace emitted null `scopes` (must be `[]`): %s", body)
+	}
+	if !strings.Contains(body, `"scopes":[]`) {
+		t.Errorf("scope=trace must produce an empty scope list, got: %s", body)
+	}
+}
+
+// TestSearchTagsV2_EmptyScopeOmitted — a scope whose lookup returns no
+// key contributes NO bucket, rather than a present-but-empty one.
+// Upstream's tags-V2 combiner (modules/frontend/combiner/
+// search_tags.go) builds its scope list by ranging over the distinct
+// values storage reported, so a scope with nothing in the window never
+// reaches the wire. Emitting `{"name":"event","tags":[]}` here would put
+// cerberus one bucket ahead of reference Tempo on every fixture without
+// span events.
+func TestSearchTagsV2_EmptyScopeOmitted(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{stringsBySQL: map[string][]string{
+		"`SpanAttributes`": {"http.method"},
+	}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var body tempo.SearchTagsResponseV2
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := make([]string, 0, len(body.Scopes))
+	for _, s := range body.Scopes {
+		got = append(got, s.Name)
+	}
+	// resource / event / link all returned nothing; only span + the
+	// static intrinsic bucket survive.
+	want := []string{"span", "intrinsic"}
+	if len(got) != len(want) {
+		t.Fatalf("scope buckets=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("scope buckets=%v want=%v", got, want)
+		}
+	}
+}
+
+// TestSearchTagsV2_InstrumentationScope — the upstream OTel-CH traces
+// DDL declares no instrumentation-scope attribute map, so
+// schema.DefaultOTelTraces leaves ScopeAttributesColumn empty and the
+// `instrumentation` bucket never materialises on the default schema.
+// A deployment that points the override config at such a column gets
+// the bucket back, keyed off the same scope keyword upstream uses.
+func TestSearchTagsV2_InstrumentationScope(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+	s.ScopeAttributesColumn = "ScopeAttributes"
+	q := &stubQuerier{stringsBySQL: map[string][]string{
+		"`ScopeAttributes`": {"otel.scope.custom"},
+	}}
+	srv := newServerWithSchema(q, s, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tags?scope=instrumentation")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var body tempo.SearchTagsResponseV2
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Scopes) != 1 || body.Scopes[0].Name != "instrumentation" {
+		t.Fatalf("scopes=%+v want a single `instrumentation` bucket", body.Scopes)
+	}
+	if !contains(body.Scopes[0].Tags, "otel.scope.custom") {
+		t.Errorf("instrumentation bucket missing key: %+v", body.Scopes[0].Tags)
 	}
 }
 

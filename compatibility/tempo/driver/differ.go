@@ -822,8 +822,8 @@ func CompareTagNames(aBody, bBody []byte, aLabel, bLabel string, v2 bool) (Diff,
 
 	if v2 {
 		// Scope-set differences ride on top of the tag-name diff because
-		// they describe a different axis (cerberus today returns the same
-		// scope set regardless of ?scope=, real Tempo filters). Reporting
+		// they describe a different axis: two backends can agree on every
+		// tag name yet partition them into different buckets. Reporting
 		// the scope axis explicitly keeps the markdown report actionable.
 		addScopeDiff(&out, aScopes, bScopes, aLabel, bLabel)
 	}
