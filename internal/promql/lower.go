@@ -190,7 +190,11 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 				widenSubquerySpine(plan, a.End.Add(-e.Range), a.End)
 			}
 		}
-		return plan, nil
+		// A bare subquery is a raw range vector — no reducer, so no
+		// `dropName` — and must report each series' own `__name__`.
+		// Widening runs first: it walks RangeWindow spines and would not
+		// see past the canonical Project wrapBareSubqueryName adds.
+		return wrapBareSubqueryName(plan, s), nil
 	case *parser.MatrixSelector:
 		return lowerMatrixSelector(e, s, ctx)
 	case *parser.UnaryExpr:
@@ -2102,6 +2106,19 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
+	// Name-drop collision guard. When the function drops `__name__` and the
+	// selector spans several metrics, two source series that differ only by
+	// name land on one label set — the case reference Prometheus refuses
+	// (engine.go:2295) and cerberus used to answer with a silently merged
+	// series. Widening the window's grouping key with MetricName is what
+	// makes the collision observable at all; the wrap below re-collapses the
+	// widened rows and aborts on any group that held more than one name.
+	// This runs BEFORE the shape switch so the fan-out, native and
+	// `@`-broadcast lowerings all inherit the widened key.
+	guardNameCollision := rangeFnCollidesOnNameDrop(c.Func.Name, vs.LabelMatchers, inner, s)
+	if guardNameCollision {
+		appendNameGroupKey(rw, s)
+	}
 	shape := rangeGridShapeFor(vs, ctx)
 	// node is the lowering that flows to the name-preservation seam below.
 	// Outside range mode it is the fan-out RangeWindow rw; in plain range mode
@@ -2129,8 +2146,23 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		var nameExpr chplan.Expr
 		if rangeFnPreservesName(c.Func.Name) {
 			nameExpr = preservedNameExpr(rw, vs.LabelMatchers, s)
+		} else if guardNameCollision {
+			// The broadcast Project has to carry the widened key out of the
+			// pinned window, otherwise the guard below has no name column to
+			// count. It is blanked again by the guard's own projection, so the
+			// wire shape is unchanged.
+			nameExpr = &chplan.ColumnRef{Name: s.MetricNameColumn}
 		}
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr, &chplan.ColumnRef{Name: s.ValueColumn}), nil
+		broadcast := wrapRangeWindowAtBroadcast(rw, ctx, s, nameExpr, &chplan.ColumnRef{Name: s.ValueColumn})
+		if guardNameCollision {
+			// The broadcast relation is matrix-shaped whatever rw is: the
+			// CrossJoin fans the single pinned value across the step grid and
+			// projects `anchor_ts` from the grid side, already unshifted.
+			return wrapDropNameCollisionGuard(broadcast, s,
+				&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+				&chplan.ColumnRef{Name: s.ValueColumn}), nil
+		}
+		return broadcast, nil
 	case gridFanout:
 		// In range mode, fan the range function across the request's step
 		// grid: each anchor in [start, end] (spaced by step) emits one row
@@ -2215,6 +2247,10 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// window's grouping key instead.
 	if rangeFnPreservesName(c.Func.Name) {
 		return wrapRangeWindowPreserveName(rw, s, preservedNameExpr(rw, vs.LabelMatchers, s)), nil
+	}
+	if guardNameCollision {
+		return wrapDropNameCollisionGuard(node, s, dropNameGuardAnchor(node, rw),
+			&chplan.ColumnRef{Name: s.ValueColumn}), nil
 	}
 	return node, nil
 }
@@ -2671,6 +2707,168 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// rangeFnCollidesOnNameDrop reports whether a range-function call can
+// collapse two distinct series onto one label set by dropping `__name__`,
+// which is the condition reference Prometheus refuses to answer:
+//
+//	prometheus/prometheus@cerberus-parser/promql/engine.go:2295
+//	`if !ev.enableDelayedNameRemoval && mat.ContainsSameLabelset() {
+//	     ev.errorf("vector cannot contain metrics with the same labelset") }`
+//
+// Three conditions have to hold together, and each one that fails leaves
+// the query on the unchanged, unguarded path:
+//
+//   - The function drops the name. `last_over_time` / `first_over_time`
+//     keep it (rangeFnPreservesName), so their output series stay
+//     distinguishable and nothing can collide.
+//   - The selector is not pinned to ONE metric name. `rate(cpu[5m])`
+//     reads a single name, so after the drop every output row still comes
+//     from a distinct label set — there is nothing to collide with. Only a
+//     regex name matcher (`{__name__=~"a|b"}`) or a selector carrying no
+//     name matcher at all (`{job="x"}`) spans several names.
+//   - The window's input still exposes a real per-series name to compare
+//     (nodeCarriesMetricName). An inner that already dropped the name has
+//     no identity left for the guard to read, and inventing one would be
+//     worse than leaving the shape alone.
+func rangeFnCollidesOnNameDrop(fn string, ms []*labels.Matcher, inner chplan.Node, s schema.Metrics) bool {
+	return !rangeFnPreservesName(fn) &&
+		s.MetricNameColumn != "" &&
+		metricNameFromMatchers(ms) == "" &&
+		nodeCarriesMetricName(inner, s)
+}
+
+// duplicateLabelsetGuardExpr is the HAVING gate that aborts the query when
+// one output group was fed by more than one metric name.
+//
+// It rides as a real `chplan.Aggregate.Having` rather than an extra
+// SELECT-list column for the reason spelled out on that field: ClickHouse's
+// analyzer prunes a SELECT expression nothing downstream reads, `throwIf`
+// side effect included, so a column-shaped guard silently never fires.
+// `throwIf` returns 0 on success, so `= 0` is the gate — the same idiom
+// collapseInfoSeriesBySignature uses for the info() tie guard.
+func duplicateLabelsetGuardExpr(s schema.Metrics) chplan.Expr {
+	return &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Name: "throwIf",
+			Args: []chplan.Expr{
+				&chplan.Binary{
+					Op:    chplan.OpGt,
+					Left:  &chplan.FuncCall{Name: "uniqExact", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
+					Right: &chplan.LitInt{V: 1},
+				},
+				&chplan.InlineString{V: chplan.DuplicateLabelsetMessage},
+			},
+		},
+		Right: &chplan.LitInt{V: 0},
+	}
+}
+
+// wrapDropNameCollisionGuard re-collapses a name-dropping range function's
+// per-(label set, name) rows back onto the per-label-set rows PromQL
+// reports, aborting instead when a group was fed by more than one name.
+//
+// The caller has already widened the window's grouping key with MetricName
+// (appendNameGroupKey), which is what makes the collision observable at
+// all: without it ClickHouse's `GROUP BY Attributes` merges the two source
+// series inside the window and there is nothing left to detect — and the
+// merged value is wrong on its own terms, since it reduces two metrics'
+// interleaved samples as if they were one series.
+//
+// `anchorTS` is the expression this wrap reports as the sample timestamp,
+// or nil for the instant shape that exposes no per-row anchor (mirroring
+// wrapRangeWindowPreserveName's two branches). When it is non-nil the
+// window is matrix-shaped and `anchor_ts` joins the guard's grouping key,
+// so the check is per (label set, anchor) exactly like upstream's
+// per-timestamp Matrix scan.
+//
+// The output carries an EMPTY MetricName — the name really is dropped,
+// per `dropName` — over the same columns the unguarded window exposed:
+// the canonical Sample quadruple, plus the raw `anchor_ts` passthrough a
+// matrix window owes an enclosing reducer (an outer `*_over_time` over a
+// subquery reads its per-row anchor from that column, not from TimeUnix).
+// Naming all four canonical outputs is what lets the HTTP layer's
+// `projectionExposesCanonical` read the result through unchanged.
+//
+// `value` is the expression projected as the Value column. Callers that
+// forward the surviving row's own value pass `&chplan.ColumnRef{Name:
+// s.ValueColumn}`; a subquery-inner `quantile_over_time` with an
+// out-of-range literal phi passes the PromQL-spec ±Inf / NaN constant
+// instead, folding in the substitution `projectValueOverInner` performs on
+// the unguarded paths. Stacking that helper on top of this wrap instead
+// would take its non-RangeWindow branch and drop the `anchor_ts`
+// passthrough — the same reason wrapRangeWindowAtBroadcast takes a `value`.
+func wrapDropNameCollisionGuard(
+	node chplan.Node, s schema.Metrics, anchorTS, value chplan.Expr,
+) chplan.Node {
+	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
+	aliases := []string{s.AttributesColumn}
+	projections := []chplan.Projection{
+		{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+		{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+	}
+	tsExpr := anchorTS
+	if anchorTS == nil {
+		// Mirror wrapRangeWindowPreserveName's instant branch (and the
+		// handler's synthesizedAnchor()): no per-row anchor exists.
+		tsExpr = chplan.NowNanoMinusStaleness()
+	} else {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn})
+		aliases = append(aliases, chplan.RangeWindowAnchorColumn)
+		projections = append(projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+			Alias: chplan.RangeWindowAnchorColumn,
+		})
+	}
+	agg := &chplan.Aggregate{
+		Input:          node,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		// `any` is exact here, not a pick: the HAVING guard has already
+		// aborted every group that held more than one name, so a surviving
+		// group holds exactly one row.
+		AggFuncs: []chplan.AggFunc{{
+			Name:  "any",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+			Alias: s.ValueColumn,
+		}},
+		Having: duplicateLabelsetGuardExpr(s),
+	}
+	return &chplan.Project{
+		Input: agg,
+		Projections: append(
+			projections,
+			chplan.Projection{Expr: tsExpr, Alias: s.TimestampColumn},
+			chplan.Projection{Expr: value, Alias: s.ValueColumn},
+		),
+	}
+}
+
+// dropNameGuardAnchor picks the timestamp expression
+// [wrapDropNameCollisionGuard] reports for the fan-out / single-anchor
+// shapes, or nil when the window is instant-shaped and exposes no anchor.
+//
+// It mirrors wrapRangeWindowPreserveName exactly, including the offset
+// re-anchor: the fan-out matrix window keeps `anchor_ts` offset-SHIFTED for
+// the window math while PromQL reports a reducing window on the UNSHIFTED
+// grid. The native (timeSeries*ToGrid) node is the documented exception —
+// its anchor axis is already the unshifted request grid, so re-shifting it
+// here would double-shift `rate(m[r] offset o)`; this is the same carve-out
+// the handler's matrixWindowOffset makes.
+func dropNameGuardAnchor(node chplan.Node, rw *chplan.RangeWindow) chplan.Expr {
+	if rw.OuterRange <= 0 {
+		return nil
+	}
+	anchor := chplan.Expr(&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn})
+	if _, native := node.(*chplan.RangeWindowNative); native {
+		return anchor
+	}
+	if rw.Offset != 0 && !rw.Identity {
+		return chplan.OffsetReanchoredAnchorExpr(rw.Offset)
+	}
+	return anchor
 }
 
 // wrapRangeWindowAtBroadcast broadcasts an INSTANT-shape range-vector

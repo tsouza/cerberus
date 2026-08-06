@@ -111,8 +111,16 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		for i, f := range v.AggFuncs {
 			aggs[i] = printAggFunc(f)
 		}
-		fmt.Fprintf(b, "%sAggregate groupBy=[%s] funcs=[%s]\n",
+		fmt.Fprintf(b, "%sAggregate groupBy=[%s] funcs=[%s]",
 			indent, strings.Join(gb, ", "), strings.Join(aggs, ", "))
+		// HAVING carries the deliberate query aborts (the info() tie guard,
+		// the name-drop duplicate-labelset guard). Printing it is what makes
+		// a Layer 2a snapshot able to pin that a guard is present at all —
+		// the clause is invisible in the node's group-by/func summary.
+		if v.Having != nil {
+			fmt.Fprintf(b, " having=%s", printExpr(v.Having))
+		}
+		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
 	case *chplan.Limit:
 		fmt.Fprintf(b, "%sLimit %d\n", indent, v.Count)

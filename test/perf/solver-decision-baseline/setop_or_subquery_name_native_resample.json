@@ -1,0 +1,10 @@
+{
+  "query": "setop_or_subquery_name_native_resample",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 40,
+  "cumulative_d": "20m0s",
+  "outer_range": "1h0m0s"
+}

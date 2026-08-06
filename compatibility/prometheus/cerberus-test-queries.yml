@@ -40,7 +40,17 @@
 #    range-function inner each exercise a different carrier of that name
 #    through cerberus's subquery spine (#1602, #1778, #1794). Upstream's
 #    corpus reduces subqueries with `max_over_time`, which drops the name,
-#    so no upstream case can discriminate any of them.
+#    so no upstream case can discriminate any of them. The same block carries
+#    a set-operator subquery inner (#1810) — `or` / `and` / `unless` forward
+#    each surviving series' label set unchanged, so the name must survive
+#    both the set operation and the outer reducer — and a name-drop
+#    COLLISION pair (#1811): when a name-dropping range function is handed
+#    two families that share a label shape, upstream refuses the query
+#    outright, and the sibling case over families whose shapes differ pins
+#    that the rejection is the collision and not the class. The bare
+#    subquery half of #1809 has no case here: a bare subquery is
+#    matrix-typed, and the compliance tester drives /api/v1/query_range,
+#    where both backends reject a matrix-typed top-level expression.
 # 7. A cerberus-owned native-histogram block replaces upstream's
 #    `histogram_*` value-function cases. Upstream's demo fixture is
 #    float-only, so every one of those cases compared an empty vector
@@ -489,6 +499,27 @@ test_cases:
   # rate() has already stripped `__name__`, so a preserving outer function
   # must not resurrect it.
   - query: 'last_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])'
+  # Set-operator subquery inner. `or` / `and` / `unless` forward each
+  # surviving series' own label set unchanged — unlike arithmetic and
+  # comparison-with-`bool`, they do not drop the name — so the name has to
+  # survive both the set operation's projection and the outer reducer.
+  # The two families carry different label shapes (`type` vs `device`), so
+  # every series of both arms survives the match and the comparison sees
+  # sixteen distinct label sets rather than a merged handful.
+  - query: 'last_over_time((demo_memory_usage_bytes or demo_disk_usage_bytes)[10m:1m])'
+  # Dropping `__name__` off a selector that spans two families sharing one
+  # label shape collapses them onto the same label set, which upstream
+  # refuses ("vector cannot contain metrics with the same labelset") rather
+  # than merging. demo_memory_usage_bytes and demo_sparse_memory_bytes are
+  # seeded on an identical {instance, job, type} shape for exactly this, and
+  # the sparse family covers the first quarter of the window, so the early
+  # steps of the range put both families in the same 5m window.
+  - query: 'rate({__name__=~"demo_memory_usage_bytes|demo_sparse_memory_bytes"}[5m])'
+    should_fail: true
+  # The other side of that boundary: the same name-dropping shape over
+  # families whose label shapes DIFFER stays a legal query on both
+  # backends, so the rejection above cannot pass by rejecting the class.
+  - query: 'rate({__name__=~"demo_memory_usage_bytes|demo_disk_usage_bytes"}[5m])'
   # Native histograms. `demo_latency_exp_hist` is an OTel exponential
   # histogram in ClickHouse and a Prometheus native histogram on the
   # reference (cmd/seed/main.go seeds the first, cmd/seed/prom_remote.go
