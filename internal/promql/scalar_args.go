@@ -337,7 +337,19 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 					Name: "mapFromArrays",
 					Args: []chplan.Expr{
 						&chplan.ColumnRef{Name: scalarStepKeysAlias},
-						&chplan.ColumnRef{Name: scalarStepValuesAlias},
+						&chplan.FuncCall{
+							Name: "arrayMap",
+							Args: []chplan.Expr{
+								&chplan.Lambda{
+									Params: []string{scalarStepNullableParam},
+									Body: &chplan.FuncCall{
+										Name: "toNullable",
+										Args: []chplan.Expr{&chplan.BareIdent{Name: scalarStepNullableParam}},
+									},
+								},
+								&chplan.ColumnRef{Name: scalarStepValuesAlias},
+							},
+						},
 					},
 				},
 				Alias: s.ValueColumn,

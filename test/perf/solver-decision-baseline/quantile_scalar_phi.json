@@ -1,8 +1,8 @@
 {
   "query": "quantile_scalar_phi",
-  "routed": false,
-  "k": 0,
-  "reason": "scalar-heavy",
+  "routed": true,
+  "k": 8,
+  "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "5m0s",

@@ -1,8 +1,8 @@
 {
   "query": "subquery_quantile_scalar_phi",
-  "routed": false,
-  "k": 0,
-  "reason": "scalar-heavy",
+  "routed": true,
+  "k": 6,
+  "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "10m0s",
