@@ -110,23 +110,31 @@ type Entry struct {
 	TrackingIssue int `json:"tracking_issue,omitempty"`
 
 	// Evidence is the machine-DERIVED reachability evidence for the
-	// site: its guard chain, its intra-package reaching set, and the
-	// dispatch fabric one hop above it. Generate recomputes it from the
+	// site: its guard chain and its intra-package reaching set, plus
+	// the functions its own rationale names (Cited, which is derived
+	// from the prose and never diffed). Generate recomputes it from the
 	// go/ast scan on every regeneration and never carries the stored
 	// value forward, so it is a fact about the current source rather
 	// than a second declaration.
 	//
 	// It exists to hold class=internal Rationale claims to account.
 	// A rationale is prose asserting that no wire query reaches the
-	// site; that assertion always rests on the guard, on who can call
-	// the enclosing function, or on a sibling dispatch that intercepts
-	// first — the three things this field records. When any of them
+	// site; that assertion rests on the guard the site sits behind and
+	// on who can call the enclosing function — the two facts Guard and
+	// Callers record, both strictly local to the site. When either
 	// moves, Generate demotes the entry to unclassified and drops the
 	// rationale (reclassifyOnEvidenceDrift), so the claim must be
 	// re-made against the new source instead of being inherited. That
 	// is the leg #1738 was missing: three lowerHoltWinters rationales
 	// asserted a gate that no longer existed, and nothing re-derived
 	// the assertion.
+	//
+	// Claims about a SIBLING interception ("count_values is dispatched
+	// to lowerCountValues before buildAggFunc is consulted") are held to
+	// account by name instead, through Cited and
+	// TestInternalRationaleCitationsStillDispatch — not by storing the
+	// caller's neighbourhood, which would make one new function in a
+	// central dispatcher demote every rationale in the package.
 	//
 	// Evidence is recorded for EVERY entry, not just internal ones, so
 	// that it is always already present when an entry is reclassified —
@@ -308,7 +316,7 @@ func ScanSites(repoRoot string) ([]Site, error) {
 // deliberately — a guard chain and the reaching set that surrounds it
 // must always describe the same revision of the source.
 func scanLowerings(repoRoot string) (*pkgScan, error) {
-	out := &pkgScan{evidence: map[string]*Evidence{}}
+	out := &pkgScan{evidence: map[string]*Evidence{}, scopes: map[string]*astScope{}}
 	for dir, head := range heads {
 		one, err := scanDir(filepath.Join(repoRoot, dir), dir, head)
 		if err != nil {
@@ -318,6 +326,7 @@ func scanLowerings(repoRoot string) (*pkgScan, error) {
 		for k, v := range one.evidence {
 			out.evidence[k] = v
 		}
+		out.scopes[head] = one.scopes[head]
 	}
 	sort.Slice(out.sites, func(i, j int) bool { return out.sites[i].Site < out.sites[j].Site })
 	return out, nil
@@ -351,10 +360,10 @@ func scanDir(absDir, relDir, head string) (*pkgScan, error) {
 		files = append(files, f)
 		rels = append(rels, relDir+"/"+name)
 	}
-	declared, calls, callers := callGraph(files)
-	sc := &astScope{fset: fset, declared: declared, calls: calls, callers: callers}
+	declared, funcs, calls, callers := callGraph(files)
+	sc := &astScope{fset: fset, declared: declared, funcs: funcs, calls: calls, callers: callers}
 
-	out := &pkgScan{evidence: map[string]*Evidence{}}
+	out := &pkgScan{evidence: map[string]*Evidence{}, scopes: map[string]*astScope{head: sc}}
 	prefix := head + ": "
 	for i, f := range files {
 		for _, decl := range f.Decls {
@@ -412,9 +421,8 @@ func scanFunc(sc *astScope, fn *ast.FuncDecl, relPath, head, prefix string) ([]S
 		}
 		out = append(out, Site{Head: head, Site: key, Message: msg})
 		evidence[key] = &Evidence{
-			Guard:          guardChain(sc.fset, stack),
-			Callers:        callers,
-			CallerDispatch: dispatchOf(sc, callers),
+			Guard:   guardChain(sc.fset, stack),
+			Callers: callers,
 		}
 		return true
 	})
@@ -505,6 +513,7 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 			e.TrackingIssue = p.TrackingIssue
 			e.Since = p.Since
 			reclassifyOnEvidenceDrift(&e, p.Evidence)
+			e.Evidence.Cited = scan.citationsOf(s, e.Rationale, p.Evidence.citedNames())
 		}
 		out.Entries = append(out.Entries, e)
 	}

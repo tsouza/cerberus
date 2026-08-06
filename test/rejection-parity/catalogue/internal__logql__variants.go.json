@@ -12,17 +12,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -39,17 +28,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -67,17 +45,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     }

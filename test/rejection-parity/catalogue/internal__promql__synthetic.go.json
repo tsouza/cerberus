@@ -12,27 +12,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -49,27 +28,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -86,30 +44,6 @@
         "callers": [
           "lowerCall",
           "lowerVector"
-        ],
-        "caller_dispatch": [
-          "TryFoldScalar",
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarArg",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector",
-          "syntheticScalarVector"
         ]
       }
     },
@@ -125,27 +59,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     }

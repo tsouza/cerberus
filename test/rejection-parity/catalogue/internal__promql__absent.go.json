@@ -13,31 +13,6 @@
         "callers": [
           "lowerCall",
           "lowerSubqueryOverAbsent"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector",
-          "lowerVectorSelector",
-          "rangeMode",
-          "synthLabelsFromMatchers",
-          "unwrapParens"
         ]
       }
     },
@@ -55,23 +30,6 @@
         ],
         "callers": [
           "lowerRangeVectorCall"
-        ],
-        "caller_dispatch": [
-          "LowerChanges",
-          "LowerDeriv",
-          "LowerRate",
-          "LowerResets",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "lowerAbsentOverTime",
-          "lowerHoltWinters",
-          "lowerPredictLinear",
-          "lowerVectorSelector",
-          "preservedNameExpr",
-          "rangeFnPreservesName",
-          "rangeGridShapeFor",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -87,23 +45,6 @@
         ],
         "callers": [
           "lowerRangeVectorCall"
-        ],
-        "caller_dispatch": [
-          "LowerChanges",
-          "LowerDeriv",
-          "LowerRate",
-          "LowerResets",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "lowerAbsentOverTime",
-          "lowerHoltWinters",
-          "lowerPredictLinear",
-          "lowerVectorSelector",
-          "preservedNameExpr",
-          "rangeFnPreservesName",
-          "rangeGridShapeFor",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -121,22 +62,8 @@
         "callers": [
           "lowerRangeVectorCall"
         ],
-        "caller_dispatch": [
-          "LowerChanges",
-          "LowerDeriv",
-          "LowerRate",
-          "LowerResets",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "lowerAbsentOverTime",
-          "lowerHoltWinters",
-          "lowerPredictLinear",
-          "lowerVectorSelector",
-          "preservedNameExpr",
-          "rangeFnPreservesName",
-          "rangeGridShapeFor",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
+        "cited": [
+          "lowerOuterRangeFnOverSubquery"
         ]
       }
     }

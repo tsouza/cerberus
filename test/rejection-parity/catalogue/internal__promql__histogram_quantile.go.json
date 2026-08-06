@@ -13,32 +13,6 @@
         "callers": [
           "lowerCall",
           "lowerHistogramQuantiles"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarArg",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector",
-          "openMetricsFloatExpr",
-          "projectAttributesOverInner",
-          "stringArg",
-          "tryScalarLiteral"
         ]
       }
     },
@@ -54,27 +28,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     }

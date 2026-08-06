@@ -13,12 +13,9 @@
         "callers": [
           "lowerBinary"
         ],
-        "caller_dispatch": [
-          "binOpModifiers",
-          "logqlBinaryOp",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector"
+        "cited": [
+          "lowerBinary",
+          "lowerVectorSetOp"
         ]
       }
     },
@@ -34,12 +31,6 @@
         ],
         "callers": [
           "lowerVectorSetOp"
-        ],
-        "caller_dispatch": [
-          "binOpModifiers",
-          "logqlVectorSetOpKind",
-          "lower",
-          "sampleShapeOverLogInner"
         ]
       }
     },
@@ -55,17 +46,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -84,17 +64,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -111,12 +80,6 @@
         ],
         "callers": [
           "lowerVectorVector"
-        ],
-        "caller_dispatch": [
-          "isComparison",
-          "lower",
-          "sampleShapeOverLogInner",
-          "vectorMatchingFromOpts"
         ]
       }
     },
@@ -134,12 +97,6 @@
         ],
         "callers": [
           "lowerVectorVector"
-        ],
-        "caller_dispatch": [
-          "isComparison",
-          "lower",
-          "sampleShapeOverLogInner",
-          "vectorMatchingFromOpts"
         ]
       }
     }

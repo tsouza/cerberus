@@ -13,15 +13,8 @@
         "callers": [
           "lowerHistogramValueFn"
         ],
-        "caller_dispatch": [
-          "broadcastHistogramAtPin",
-          "histogramValueExpr",
-          "lower",
-          "lowerHistogramValueFnInstant",
-          "lowerHistogramValueFnPerSample",
-          "lowerHistogramValueFnRange",
-          "rangeGridShapeFor",
-          "unwrapParens"
+        "cited": [
+          "lowerCall"
         ]
       }
     },
@@ -38,27 +31,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -75,27 +47,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     }

@@ -14,16 +14,6 @@
         "callers": [
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     },
@@ -40,11 +30,6 @@
         ],
         "callers": [
           "jsonExpressionMergeLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExtractStringExpr",
-          "mergeParsedFields"
         ]
       }
     },
@@ -60,11 +45,6 @@
         ],
         "callers": [
           "jsonExpressionMergeLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExtractStringExpr",
-          "mergeParsedFields"
         ]
       }
     },
@@ -83,23 +63,6 @@
           "labelFiltererLower",
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "bytesLabelFilterExpr",
-          "durationLabelFilterExpr",
-          "gateMark",
-          "ipLabelFilterExpr",
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "labelMatcherToExpr",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "notExpr",
-          "numericLabelFilterExpr",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     },
@@ -116,10 +79,8 @@
         "callers": [
           "lineFilterPart"
         ],
-        "caller_dispatch": [
-          "ipLineFilterExpr",
-          "lineFilterOp",
-          "patternLineFilterExpr"
+        "cited": [
+          "lineFilterPart"
         ]
       }
     },
@@ -137,16 +98,6 @@
         "callers": [
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     },
@@ -169,26 +120,6 @@
           "lowerVectorVector",
           "lowerWithCtx",
           "sortableShapedInner"
-        ],
-        "caller_dispatch": [
-          "binOpModifiers",
-          "buildVectorAggFunc",
-          "isComparison",
-          "isMatrixRangeWindow",
-          "logSampleColumns",
-          "logqlVectorSetOpKind",
-          "lower",
-          "lowerSort",
-          "lowerTopK",
-          "matrixBucketColumn",
-          "projectValueOverLogInner",
-          "rangeMode",
-          "sampleShapeOverLogInner",
-          "variantSampleArm",
-          "vectorAggregationGroupBy",
-          "vectorMatchingFromOpts",
-          "withOuterByLabels",
-          "wrapVectorAggregateForSample"
         ]
       }
     },
@@ -204,12 +135,6 @@
         ],
         "callers": [
           "lowerPipelineWithLabels"
-        ],
-        "caller_dispatch": [
-          "FiltersErrorLabel",
-          "isDynamicLabelStage",
-          "lowerMatchers",
-          "lowerStage"
         ]
       }
     },
@@ -226,12 +151,6 @@
         ],
         "callers": [
           "lowerPipelineWithLabels"
-        ],
-        "caller_dispatch": [
-          "FiltersErrorLabel",
-          "isDynamicLabelStage",
-          "lowerMatchers",
-          "lowerStage"
         ]
       }
     },
@@ -250,16 +169,6 @@
         "callers": [
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     },
@@ -277,16 +186,6 @@
         "callers": [
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     },
@@ -305,16 +204,6 @@
         "callers": [
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     },
@@ -331,16 +220,6 @@
         "callers": [
           "lowerStage",
           "pipelineStageLabels"
-        ],
-        "caller_dispatch": [
-          "jsonBareMergeLabels",
-          "jsonExpressionMergeLabels",
-          "labelFiltererLower",
-          "logfmtExpressionMergeLabels",
-          "logfmtMergeLabels",
-          "lowerLineFilter",
-          "regexpMergeLabels",
-          "wrapLabelsWithMarks"
         ]
       }
     }

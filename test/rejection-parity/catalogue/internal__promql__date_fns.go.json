@@ -16,26 +16,8 @@
         "callers": [
           "lowerCall"
         ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
+        "cited": [
+          "lowerCall"
         ]
       }
     },
@@ -51,27 +33,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -88,13 +49,8 @@
         "callers": [
           "lowerDateFn"
         ],
-        "caller_dispatch": [
-          "asFloat64",
-          "dateFnExpr",
-          "lower",
-          "lowerDateFnNoArg",
-          "projectValueOverInner",
-          "valueAsDateTime"
+        "cited": [
+          "lowerCall"
         ]
       }
     }

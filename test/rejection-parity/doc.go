@@ -173,7 +173,7 @@
 // the rationales rest on parse-level facts the lowering package cannot
 // see at all. So the catalogue records REACHABILITY EVIDENCE instead,
 // and re-derives it. Evidence is machine-extracted by evidence.go, per
-// site, from the lowering source as it currently stands, in three
+// site, from the lowering source as it currently stands, in two stored
 // fields chosen because each corresponds to a way the surveyed
 // rationales actually argue:
 //
@@ -187,11 +187,34 @@
 //     site's function. A rationale saying "only reached from X, which
 //     already checked" is falsified precisely by a second caller
 //     appearing, which is what happened in #1456.
-//   - CallerDispatch — the callers of those callers. Rationales
-//     overwhelmingly cite a SIBLING interception ("count_values is
-//     dispatched to lowerCountValues before buildAggFunc is
-//     consulted"), and that interception lives one hop up, not at the
-//     site.
+//
+// Both are strictly local: the site's own function body and the direct
+// callers of that function. Nothing wider is stored, and that boundary
+// is deliberate. An earlier revision also stored the callers' own
+// callees — the dispatch neighbourhood one hop up — which read well
+// until an unrelated PR added one arm to a central dispatcher and moved
+// the evidence of 28 sites in six untouched files. Demotion clears the
+// class and the rationale, so a false positive costs a human
+// re-statement; 28 of them at once makes blanket regeneration the only
+// survivable answer, which is exactly the laundering this design
+// exists to prevent. Evidence must be the facts a rationale DEPENDS
+// ON, never a snapshot of its neighbourhood.
+//
+// Rationales that argue from a SIBLING interception ("count_values is
+// dispatched to lowerCountValues before buildAggFunc is consulted") are
+// therefore held to account BY NAME. citedFunctions reads the prose,
+// resolves each identifier it names against the lowering package's own
+// declarations, and TestInternalRationaleCitationsStillDispatch fails
+// when a cited function no longer exists or no longer has a caller.
+// The cited set is derived from the rationale rather than from the
+// code, so it depends on that one sibling and not on the other
+// fourteen. It is recorded in the entry for review, and deliberately
+// excluded from Equal and Diff: comparing it would mean that re-stating
+// a rationale moved the evidence, and the demotion would erase the
+// sentence just written. The gate is live instead — it re-derives
+// citations on every run and cannot be regenerated past, because
+// regeneration remembers a name that used to be cited until the prose
+// itself is rewritten.
 //
 // The gate is TestInternalRationalesRestOnCurrentEvidence: it re-derives
 // evidence from the current source and diffs it against what the entry

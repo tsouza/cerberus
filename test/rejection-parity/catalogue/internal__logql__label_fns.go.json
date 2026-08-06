@@ -15,17 +15,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       },
       "since": "2026-08-05"
@@ -42,17 +31,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     }

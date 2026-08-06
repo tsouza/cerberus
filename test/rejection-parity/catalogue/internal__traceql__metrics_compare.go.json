@@ -14,11 +14,6 @@
         ],
         "callers": [
           "lowerMetricsPipeline"
-        ],
-        "caller_dispatch": [
-          "lowerAverageOverTime",
-          "lowerMetricsAggregate",
-          "lowerMetricsCompare"
         ]
       }
     },
@@ -34,11 +29,6 @@
         ],
         "callers": [
           "lowerMetricsPipeline"
-        ],
-        "caller_dispatch": [
-          "lowerAverageOverTime",
-          "lowerMetricsAggregate",
-          "lowerMetricsCompare"
         ]
       }
     }

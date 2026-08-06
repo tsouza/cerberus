@@ -14,21 +14,6 @@
         "callers": [
           "lower",
           "lowerSubqueryOverUnary"
-        ],
-        "caller_dispatch": [
-          "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "subqueryAnchor",
-          "subqueryAnchorShape",
-          "subqueryGridCtx",
-          "widenSubquerySpine",
-          "wrapSubqueryIdentity"
         ]
       }
     },
@@ -45,21 +30,6 @@
         "callers": [
           "lower",
           "lowerSubqueryOverUnary"
-        ],
-        "caller_dispatch": [
-          "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "subqueryAnchor",
-          "subqueryAnchorShape",
-          "subqueryGridCtx",
-          "widenSubquerySpine",
-          "wrapSubqueryIdentity"
         ]
       }
     }

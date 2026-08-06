@@ -12,11 +12,6 @@
         ],
         "callers": [
           "patternLineFilterExpr"
-        ],
-        "caller_dispatch": [
-          "expr",
-          "notExpr",
-          "parsePatternLineFilter"
         ]
       }
     },
@@ -34,11 +29,6 @@
         ],
         "callers": [
           "patternLineFilterExpr"
-        ],
-        "caller_dispatch": [
-          "expr",
-          "notExpr",
-          "parsePatternLineFilter"
         ]
       }
     }

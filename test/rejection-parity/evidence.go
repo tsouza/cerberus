@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -18,11 +19,24 @@ import (
 // A rationale says "this site cannot be reached from the wire". Every
 // such claim rests on two things and only two things: the conditions
 // that must hold for the error to be constructed at all (Guard), and
-// how control arrives at the function that constructs it (Callers,
-// CallerDispatch). When either moves, the ground under the prose has
-// moved with it, and Generate demotes the entry to unclassified so the
-// claim has to be re-made by a human rather than silently inherited —
-// see reclassifyOnEvidenceDrift.
+// which functions can arrive at the one that constructs it (Callers).
+// When either moves, the ground under the prose has moved with it, and
+// Generate demotes the entry to unclassified so the claim has to be
+// re-made by a human rather than silently inherited — see
+// reclassifyOnEvidenceDrift.
+//
+// Both fields are deliberately LOCAL to the site: the conditions inside
+// its own function, and the direct callers of that function. Evidence
+// must be the facts a rationale DEPENDS ON, never a snapshot of its
+// neighbourhood — an earlier revision of this type also stored the union
+// of everything those callers call, which meant adding one function to a
+// central dispatcher demoted rationales package-wide. False demotions
+// are not merely noisy: each one costs a human re-statement, so enough
+// of them make blanket regeneration the only survivable response, which
+// is exactly the laundering the demotion exists to prevent. What that
+// field was reaching for — a rationale citing a specific sibling
+// interception — is checked directly instead, by name, against the
+// rationale that cites it: see unsupportedCitations.
 type Evidence struct {
 	// Guard is the chain of conditions, outermost first, that must hold
 	// for the error construction to be reached inside its own function:
@@ -43,16 +57,25 @@ type Evidence struct {
 	// under.
 	Callers []string `json:"callers"`
 
-	// CallerDispatch is the sorted union of the package-declared
-	// functions those callers themselves call — the dispatch fabric one
-	// hop above the site. Rationales overwhelmingly cite a SIBLING
-	// dispatch ("count_values is intercepted by lowerCountValues before
-	// buildAggFunc is consulted"): the interception lives in the caller,
-	// not in the site's own function, so neither Guard nor Callers moves
-	// when it is removed. This field does move, which is what turns
-	// "X routes to Y first" from an unchecked assertion into a fact the
-	// regeneration re-derives.
-	CallerDispatch []string `json:"caller_dispatch"`
+	// Cited is the lowering functions the entry's own Rationale names —
+	// the gates it argues from ("intercepted by lowerCountValues
+	// before..."). It is derived from the PROSE rather than from the
+	// site, so it is deliberately excluded from Equal and Diff: it is not
+	// a fact about the source that can drift, it is the list of names
+	// TestInternalRationaleCitationsStillDispatch has to keep resolving.
+	// Comparing it would also be circular — re-stating a rationale would
+	// move it, and the demotion would then clear the sentence that had
+	// just been written.
+	Cited []string `json:"cited,omitempty"`
+}
+
+// citedNames returns the recorded citations, nil receiver included, so a
+// caller can carry them forward without a nil check.
+func (e *Evidence) citedNames() []string {
+	if e == nil {
+		return nil
+	}
+	return e.Cited
 }
 
 // Equal reports whether two evidence values were derived from
@@ -62,8 +85,7 @@ func (e *Evidence) Equal(o *Evidence) bool {
 		return e == nil && o == nil
 	}
 	return equalStrings(e.Guard, o.Guard) &&
-		equalStrings(e.Callers, o.Callers) &&
-		equalStrings(e.CallerDispatch, o.CallerDispatch)
+		equalStrings(e.Callers, o.Callers)
 }
 
 // Diff renders the human-readable difference between the stored
@@ -82,7 +104,6 @@ func (e *Evidence) Diff(o *Evidence) []string {
 	}{
 		{"guard", e.Guard, o.Guard},
 		{"callers", e.Callers, o.Callers},
-		{"caller_dispatch", e.CallerDispatch, o.CallerDispatch},
 	} {
 		if equalStrings(f.have, f.want) {
 			continue
@@ -113,6 +134,10 @@ type pkgScan struct {
 	sites []Site
 	// evidence is keyed by site key.
 	evidence map[string]*Evidence
+	// scopes is keyed by head, and keeps the parsed package around after
+	// the scan so a rationale's citations can be resolved against the
+	// same revision the evidence was derived from.
+	scopes map[string]*astScope
 }
 
 // astScope carries the per-package state guard derivation needs: the
@@ -121,6 +146,13 @@ type pkgScan struct {
 type astScope struct {
 	fset     *token.FileSet
 	declared map[string]bool
+	// funcs is the subset of declared that are package-level functions
+	// rather than methods. Citations resolve against it, not against
+	// declared: a rationale naming the LabelFilterer type `String` or
+	// tempo's `Parse` must not be read as citing some unrelated method
+	// that happens to share the name. The call graph keeps using the
+	// wider set, where over-approximating an edge is the safe direction.
+	funcs map[string]bool
 	// calls maps a declaring function name to the sorted set of
 	// package-declared function names its body calls.
 	calls map[string][]string
@@ -357,12 +389,17 @@ func renderNode(fset *token.FileSet, n ast.Node) string {
 // contributes an edge), which is the safe direction: an extra edge can
 // only ever demand a re-verification that was not strictly required,
 // never hide one that was.
-func callGraph(files []*ast.File) (declared map[string]bool, calls, callers map[string][]string) {
-	declared = map[string]bool{}
+func callGraph(files []*ast.File) (declared, funcs map[string]bool, calls, callers map[string][]string) {
+	declared, funcs = map[string]bool{}, map[string]bool{}
 	for _, f := range files {
 		for _, decl := range f.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-				declared[fn.Name.Name] = true
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			declared[fn.Name.Name] = true
+			if fn.Recv == nil {
+				funcs[fn.Name.Name] = true
 			}
 		}
 	}
@@ -401,7 +438,7 @@ func callGraph(files []*ast.File) (declared map[string]bool, calls, callers map[
 	for callee := range callers {
 		sort.Strings(callers[callee])
 	}
-	return declared, calls, callers
+	return declared, funcs, calls, callers
 }
 
 // calleeName extracts the identifier a call expression names.
@@ -417,16 +454,116 @@ func calleeName(fun ast.Expr) (string, bool) {
 	return "", false
 }
 
-// dispatchOf returns the sorted union of everything the given callers
-// call — the dispatch fabric one hop above a site.
-func dispatchOf(sc *astScope, callers []string) []string {
-	union := map[string]bool{}
-	for _, c := range callers {
-		for _, callee := range sc.calls[c] {
-			union[callee] = true
+// citationPattern matches identifier tokens in rationale prose, keeping
+// a trailing "(" so a call can be told from a bare word.
+var citationPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\(?`)
+
+// citedFunctions returns, sorted, the lowering functions a rationale
+// names. Rationales argue by naming the gate that intercepts first —
+// "count_values is intercepted by lowerCountValues before buildAggFunc
+// is consulted" — and that claim depends on THAT function, not on the
+// other fourteen its caller happens to call. So the name is read back
+// out of the prose and checked directly.
+//
+// A token is a citation when it is written code-shaped: it carries an
+// interior capital (the camelCase of every lowering function) or it is
+// written with a call's parentheses, `Lower()`. Bare all-lowercase words
+// are never citations, because several lowering functions are named
+// after ordinary verbs — `lower`, `unwrap`, `record` — that prose uses
+// in their ordinary sense. The set is deliberately NOT filtered by what
+// the package currently declares: a name that has stopped being declared
+// is the single most important thing this check has to catch.
+func citedFunctions(rationale string) []string {
+	cited := map[string]bool{}
+	for _, tok := range citationPattern.FindAllString(rationale, -1) {
+		name := strings.TrimSuffix(tok, "(")
+		if strings.HasSuffix(tok, "(") || name != strings.ToLower(name) {
+			cited[name] = true
 		}
 	}
-	return sortedSet(union)
+	return sortedSet(cited)
+}
+
+// citationsOf resolves which of a rationale's code-shaped tokens are
+// citations of a lowering function. A token counts when some lowering
+// package declares it — OR when the catalogue already recorded it as a
+// citation, which is what keeps a DELETED function from quietly ceasing
+// to be one. Without that second clause the strongest drift in this
+// family would be the one that slipped through: rename or remove the
+// gate a rationale names, and the name would stop resolving, so nothing
+// would be left to check. Here it stays a citation until the prose that
+// names it is rewritten — which is the human re-statement the whole gate
+// exists to force.
+func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []string {
+	sc := p.scopes[s.Head]
+	if sc == nil {
+		return nil
+	}
+	remembered := map[string]bool{}
+	for _, n := range prevCited {
+		remembered[n] = true
+	}
+	var out []string
+	for _, name := range citedFunctions(rationale) {
+		if sc.funcs[name] || remembered[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// siteFunc extracts the enclosing function name from a site key, which
+// is "internal/<head>/<file>.go:<func>#<hash8>[-<n>]".
+func siteFunc(key string) string {
+	colon := strings.LastIndex(key, ":")
+	hash := strings.LastIndex(key, "#")
+	if colon < 0 || hash < colon {
+		return ""
+	}
+	return key[colon+1 : hash]
+}
+
+// unsupportedCitations returns the lowering functions a rationale cites
+// that the current source no longer supports it in citing: the gate that
+// was renamed, deleted, or left declared with every call to it removed,
+// under a claim that still names it as the thing that intercepts first.
+//
+// The predicate is deliberately about the CITED function alone — it must
+// still be declared in the site's lowering package, and, unless it is an
+// exported entry point (whose callers are outside the package by
+// definition), something in the package must still call it. It is not
+// about the shape of the neighbourhood around the site, because a
+// rationale does not depend on that shape: an earlier cut of this gate
+// asserted the citation stood within two hops of the site and failed 12
+// sound rationales that cite an entry point or a grandcaller instead.
+//
+// A prose token that names nothing in any lowering package is not a
+// citation and is not reported: rationales legitimately name AST types,
+// upstream parser functions and HTTP endpoints, and a check that cannot
+// tell those from a lowering function would fail on English. What
+// remains is exact: once a rationale names a function of its own package,
+// that function has to keep existing and keep being called.
+//
+// This is a LIVE assertion. Nothing about it is stored in the catalogue,
+// so regenerating cannot clear it — only editing the code back, or
+// re-stating the rationale to describe what the code now does.
+func (p *pkgScan) unsupportedCitations(s Site, cited []string) []string {
+	sc := p.scopes[s.Head]
+	if sc == nil {
+		return nil
+	}
+	var out []string
+	for _, name := range cited {
+		if sc.funcs[name] && (isExported(name) || len(sc.callers[name]) > 0) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func isExported(name string) bool {
+	return name != "" && name[:1] == strings.ToUpper(name[:1])
 }
 
 func sortedSet(m map[string]bool) []string {

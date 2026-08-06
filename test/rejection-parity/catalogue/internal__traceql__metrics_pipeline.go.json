@@ -17,11 +17,6 @@
         ],
         "callers": [
           "lowerMetricsPipeline"
-        ],
-        "caller_dispatch": [
-          "lowerAverageOverTime",
-          "lowerMetricsAggregate",
-          "lowerMetricsCompare"
         ]
       }
     },
@@ -40,13 +35,6 @@
           "lowerAverageOverTime",
           "lowerMetricsAggregate",
           "lowerMetricsHistogramOverTime"
-        ],
-        "caller_dispatch": [
-          "lowerAttribute",
-          "lowerMetricsGroupBy",
-          "lowerMetricsHistogramOverTime",
-          "mapMetricsAggregateOp",
-          "metricsAggregateAttr"
         ]
       }
     },
@@ -62,12 +50,6 @@
         ],
         "callers": [
           "lowerMetricsAggregate"
-        ],
-        "caller_dispatch": [
-          "lowerMetricsGroupBy",
-          "lowerMetricsHistogramOverTime",
-          "mapMetricsAggregateOp",
-          "metricsAggregateAttr"
         ]
       }
     },
@@ -85,12 +67,6 @@
         ],
         "callers": [
           "lowerRoot"
-        ],
-        "caller_dispatch": [
-          "foldTrailingGroupByIntoMetrics",
-          "lowerMetricsPipeline",
-          "lowerMetricsSecondStage",
-          "lowerPipeline"
         ]
       }
     },
@@ -107,11 +83,8 @@
         "callers": [
           "lowerMetricsAggregate"
         ],
-        "caller_dispatch": [
-          "lowerMetricsGroupBy",
-          "lowerMetricsHistogramOverTime",
-          "mapMetricsAggregateOp",
-          "metricsAggregateAttr"
+        "cited": [
+          "lowerMetricsHistogramOverTime"
         ]
       }
     },
@@ -127,12 +100,6 @@
         ],
         "callers": [
           "lowerMetricsAggregate"
-        ],
-        "caller_dispatch": [
-          "lowerMetricsGroupBy",
-          "lowerMetricsHistogramOverTime",
-          "mapMetricsAggregateOp",
-          "metricsAggregateAttr"
         ]
       }
     },
@@ -150,12 +117,6 @@
         "callers": [
           "lowerAverageOverTime",
           "lowerMetricsAggregate"
-        ],
-        "caller_dispatch": [
-          "lowerMetricsGroupBy",
-          "lowerMetricsHistogramOverTime",
-          "mapMetricsAggregateOp",
-          "metricsAggregateAttr"
         ]
       }
     }

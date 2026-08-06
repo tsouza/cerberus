@@ -12,16 +12,6 @@
         ],
         "callers": [
           "labelFiltererLower"
-        ],
-        "caller_dispatch": [
-          "bytesLabelFilterExpr",
-          "durationLabelFilterExpr",
-          "gateMark",
-          "ipLabelFilterExpr",
-          "labelFiltererLower",
-          "labelMatcherToExpr",
-          "notExpr",
-          "numericLabelFilterExpr"
         ]
       }
     },
@@ -37,11 +27,6 @@
         ],
         "callers": [
           "lineFilterPart"
-        ],
-        "caller_dispatch": [
-          "ipLineFilterExpr",
-          "lineFilterOp",
-          "patternLineFilterExpr"
         ]
       }
     },
@@ -61,11 +46,6 @@
           "MatchesIPPattern",
           "ipLabelFilterExpr",
           "ipLineFilterExpr"
-        ],
-        "caller_dispatch": [
-          "ipSubjectMatchExpr",
-          "notExpr",
-          "parseIPPattern"
         ]
       }
     }

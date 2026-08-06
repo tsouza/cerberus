@@ -301,11 +301,10 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 // TestInternalRationalesRestOnCurrentEvidence is the drift gate for the
 // 161 class=internal rationales. A rationale is prose asserting that no
 // wire query reaches a site; the assertion always rests on the site's
-// guard chain, on which functions can reach the one that constructs the
-// error, or on a sibling dispatch that intercepts first. Those three
-// facts are re-derived from the current lowering source here and
-// compared against the evidence stored beside the rationale, so a
-// change that moves any of them fails NAMING the site instead of
+// guard chain and on which functions can reach the one that constructs
+// the error. Both facts are re-derived from the current lowering source
+// here and compared against the evidence stored beside the rationale, so
+// a change that moves either one fails NAMING the site instead of
 // leaving the claim standing unexamined — which is what #1738 was: three
 // lowerHoltWinters rationales asserting a gate that did not exist, with
 // nothing in the tree able to tell.
@@ -370,7 +369,7 @@ func TestEvidenceDriftDemotesInternalEntries(t *testing.T) {
 	}{
 		{"internal, guard moved", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 3"}, Callers: []string{"lowerCall"}}, "", ""},
 		{"internal, new caller", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall", "threadOuterRangeFnScalars"}}, "", ""},
-		{"internal, dispatch moved", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall"}, CallerDispatch: []string{"lowerCountValues"}}, "", ""},
+		{"internal, caller lost", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall", "lowerCountValues"}}, "", ""},
 		{"internal, no stored evidence", ClassInternal, nil, "", ""},
 		{"internal, unchanged", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall"}}, ClassInternal, "because"},
 		{"rejection, guard moved", ClassRejection, &Evidence{Guard: []string{"if len(c.Args) != 3"}}, ClassRejection, "because"},
@@ -436,8 +435,8 @@ func unwrap(v any) (int, error) {
 	if err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	declared, calls, callers := callGraph([]*ast.File{f})
-	sc := &astScope{fset: fset, declared: declared, calls: calls, callers: callers}
+	declared, funcs, calls, callers := callGraph([]*ast.File{f})
+	sc := &astScope{fset: fset, declared: declared, funcs: funcs, calls: calls, callers: callers}
 
 	got := map[string][]string{}
 	for _, decl := range f.Decls {
@@ -461,6 +460,192 @@ func unwrap(v any) (int, error) {
 			t.Errorf("%s guard chain = %q, want %q", fn, got[fn], wantGuard)
 		}
 	}
+}
+
+// TestInternalRationaleCitationsStillDispatch is the second half of the
+// #1769 gate, and the half that cannot be regenerated past.
+//
+// A large family of rationales argues by naming a SIBLING interception:
+// "count_values is dispatched to lowerCountValues before buildAggFunc is
+// consulted". That claim depends on lowerCountValues standing on the
+// site's dispatch path — and on nothing else in the neighbourhood. So
+// the cited name is read back out of the prose and resolved against the
+// current call graph; if the interception was deleted, renamed, or moved
+// off the path, the entry fails here NAMING the function it still cites.
+//
+// Unlike the evidence diff, nothing about this is stored, so
+// regenerating the catalogue does not clear it. Only editing the code
+// back, or re-stating the rationale to describe what the code now does,
+// makes it pass.
+func TestInternalRationaleCitationsStillDispatch(t *testing.T) {
+	t.Parallel()
+
+	cat := loadCatalogue(t)
+	scan, err := scanLowerings(repoRoot)
+	if err != nil {
+		t.Fatalf("scan lowerings: %v", err)
+	}
+	cited := 0
+	for _, e := range cat.Entries {
+		if e.Class != ClassInternal {
+			continue
+		}
+		names := scan.citationsOf(e.Site, e.Rationale, e.Evidence.citedNames())
+		cited += len(names)
+		missing := scan.unsupportedCitations(e.Site, names)
+		if len(missing) == 0 {
+			continue
+		}
+		t.Errorf("site %s: its rationale cites %s, which the lowering package no longer declares and calls.\n  rationale: %s\n"+
+			"The gate it argues from was renamed, removed, or orphaned — re-verify the claim against the source and re-state it.",
+			e.Site.Site, strings.Join(missing, ", "), e.Rationale)
+	}
+	if cited == 0 {
+		t.Fatal("no rationale cited a lowering function by name — the citation gate is inert")
+	}
+}
+
+// TestUnrelatedPackageChurnDoesNotDemote pins the property whose absence
+// made the first cut of this gate unusable: evidence is the facts a
+// rationale DEPENDS ON, not a snapshot of its neighbourhood. Adding an
+// unrelated function to the package — and calling it from the site's own
+// caller, which is what a dispatcher gaining a case looks like — must
+// leave every site's evidence exactly where it was. When it did not, one
+// unrelated PR demoted ~28 rationales at once, and blanket regeneration
+// became the only survivable response to a gate meant to prevent exactly
+// that.
+//
+// The complementary direction is asserted too: a change that genuinely
+// reaches the site — a NEW caller of the site's own function — must
+// still move the evidence, so the property above is not bought by making
+// the gate blind.
+func TestUnrelatedPackageChurnDoesNotDemote(t *testing.T) {
+	t.Parallel()
+
+	const base = `package p
+
+import "fmt"
+
+func lowerCall(name string) error {
+	if name == "rate" {
+		return nil
+	}
+	return siteFn(name)
+}
+
+func siteFn(name string) error {
+	if name == "" {
+		return fmt.Errorf("promql: empty function name")
+	}
+	return nil
+}
+`
+	// churn adds a function to the package and a call to it from the
+	// site's caller — dispatcher growth, entirely beside the site.
+	const churn = `package p
+
+import "fmt"
+
+func lowerCall(name string) error {
+	if name == "rate" {
+		return nil
+	}
+	if name == "irate" {
+		return lowerIrate(name)
+	}
+	return siteFn(name)
+}
+
+func lowerIrate(name string) error {
+	return fmt.Errorf("promql: irate unsupported %s", name)
+}
+
+func siteFn(name string) error {
+	if name == "" {
+		return fmt.Errorf("promql: empty function name")
+	}
+	return nil
+}
+`
+	// reaching adds a SECOND caller of the site's own function, which is
+	// a new way to arrive at the site and must move the evidence.
+	const reaching = `package p
+
+import "fmt"
+
+func lowerCall(name string) error {
+	if name == "rate" {
+		return nil
+	}
+	return siteFn(name)
+}
+
+func lowerSubquery(name string) error {
+	return siteFn(name)
+}
+
+func siteFn(name string) error {
+	if name == "" {
+		return fmt.Errorf("promql: empty function name")
+	}
+	return nil
+}
+`
+	const siteKey = "internal/promql/p.go:siteFn#df9420a6"
+
+	baseEv := evidenceOfFixture(t, base)
+	if _, ok := baseEv[siteKey]; !ok {
+		t.Fatalf("fixture site not found; scanned %v", baseEv)
+	}
+	for _, tc := range []struct {
+		name     string
+		src      string
+		wantSame bool
+	}{
+		{"unrelated function added and dispatched to", churn, true},
+		{"new caller of the site's own function", reaching, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := evidenceOfFixture(t, tc.src)
+			same := baseEv[siteKey].Equal(got[siteKey])
+			if same == tc.wantSame {
+				return
+			}
+			if tc.wantSame {
+				t.Errorf("evidence moved on an unrelated change, which would demote the rationale:\n  %s",
+					strings.Join(baseEv[siteKey].Diff(got[siteKey]), "\n  "))
+				return
+			}
+			t.Errorf("evidence did not move when a new caller reached the site — the gate is blind to the change #1456 made")
+		})
+	}
+}
+
+// evidenceOfFixture derives the evidence of every site in a synthetic
+// single-file lowering package, keyed by site key.
+func evidenceOfFixture(t *testing.T, src string) map[string]*Evidence {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	declared, funcs, calls, callers := callGraph([]*ast.File{f})
+	sc := &astScope{fset: fset, declared: declared, funcs: funcs, calls: calls, callers: callers}
+	out := map[string]*Evidence{}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		_, ev := scanFunc(sc, fn, "internal/promql/p.go", "promql", "promql: ")
+		for k, v := range ev {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // TestRejectionTriggersExerciseSites is the centrepiece pin: for every

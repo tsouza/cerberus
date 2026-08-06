@@ -13,24 +13,6 @@
         "callers": [
           "lowerAbsentOverTime",
           "lowerRangeAggregation"
-        ],
-        "caller_dispatch": [
-          "absentSynthLabels",
-          "applyUnwrapRowSemantics",
-          "canonicalIdentityExpr",
-          "detectedLevelIdentityExpr",
-          "errorBypassIdentityExpr",
-          "hasParserMergedLabels",
-          "lowerAbsentOverTime",
-          "lowerLogRange",
-          "narrowIdentityByProjection",
-          "rangeAggregationGroupBy",
-          "rangeFuncName",
-          "rangeMode",
-          "rangeValueExpr",
-          "rangeValueExprFromMerged",
-          "withDetectedLevelAndColumns",
-          "withMatcherWindowExtension"
         ]
       }
     },
@@ -54,17 +36,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -80,17 +51,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -107,22 +67,8 @@
         "callers": [
           "lowerRangeAggregation"
         ],
-        "caller_dispatch": [
-          "applyUnwrapRowSemantics",
-          "canonicalIdentityExpr",
-          "detectedLevelIdentityExpr",
-          "errorBypassIdentityExpr",
-          "hasParserMergedLabels",
-          "lowerAbsentOverTime",
-          "lowerLogRange",
-          "narrowIdentityByProjection",
-          "rangeAggregationGroupBy",
-          "rangeFuncName",
-          "rangeMode",
-          "rangeValueExpr",
-          "rangeValueExprFromMerged",
-          "withDetectedLevelAndColumns",
-          "withMatcherWindowExtension"
+        "cited": [
+          "lowerAbsentOverTime"
         ]
       }
     },
@@ -139,23 +85,6 @@
         ],
         "callers": [
           "lowerRangeAggregation"
-        ],
-        "caller_dispatch": [
-          "applyUnwrapRowSemantics",
-          "canonicalIdentityExpr",
-          "detectedLevelIdentityExpr",
-          "errorBypassIdentityExpr",
-          "hasParserMergedLabels",
-          "lowerAbsentOverTime",
-          "lowerLogRange",
-          "narrowIdentityByProjection",
-          "rangeAggregationGroupBy",
-          "rangeFuncName",
-          "rangeMode",
-          "rangeValueExpr",
-          "rangeValueExprFromMerged",
-          "withDetectedLevelAndColumns",
-          "withMatcherWindowExtension"
         ]
       }
     },
@@ -173,23 +102,6 @@
         ],
         "callers": [
           "lowerRangeAggregation"
-        ],
-        "caller_dispatch": [
-          "applyUnwrapRowSemantics",
-          "canonicalIdentityExpr",
-          "detectedLevelIdentityExpr",
-          "errorBypassIdentityExpr",
-          "hasParserMergedLabels",
-          "lowerAbsentOverTime",
-          "lowerLogRange",
-          "narrowIdentityByProjection",
-          "rangeAggregationGroupBy",
-          "rangeFuncName",
-          "rangeMode",
-          "rangeValueExpr",
-          "rangeValueExprFromMerged",
-          "withDetectedLevelAndColumns",
-          "withMatcherWindowExtension"
         ]
       }
     },
@@ -207,23 +119,6 @@
         ],
         "callers": [
           "lowerRangeAggregation"
-        ],
-        "caller_dispatch": [
-          "applyUnwrapRowSemantics",
-          "canonicalIdentityExpr",
-          "detectedLevelIdentityExpr",
-          "errorBypassIdentityExpr",
-          "hasParserMergedLabels",
-          "lowerAbsentOverTime",
-          "lowerLogRange",
-          "narrowIdentityByProjection",
-          "rangeAggregationGroupBy",
-          "rangeFuncName",
-          "rangeMode",
-          "rangeValueExpr",
-          "rangeValueExprFromMerged",
-          "withDetectedLevelAndColumns",
-          "withMatcherWindowExtension"
         ]
       }
     },
@@ -239,23 +134,6 @@
         ],
         "callers": [
           "lowerRangeAggregation"
-        ],
-        "caller_dispatch": [
-          "applyUnwrapRowSemantics",
-          "canonicalIdentityExpr",
-          "detectedLevelIdentityExpr",
-          "errorBypassIdentityExpr",
-          "hasParserMergedLabels",
-          "lowerAbsentOverTime",
-          "lowerLogRange",
-          "narrowIdentityByProjection",
-          "rangeAggregationGroupBy",
-          "rangeFuncName",
-          "rangeMode",
-          "rangeValueExpr",
-          "rangeValueExprFromMerged",
-          "withDetectedLevelAndColumns",
-          "withMatcherWindowExtension"
         ]
       }
     },
@@ -272,9 +150,6 @@
         "callers": [
           "rangeValueExpr",
           "rangeValueExprFromMerged"
-        ],
-        "caller_dispatch": [
-          "unwrapValueExpr"
         ]
       }
     },
@@ -292,9 +167,6 @@
         "callers": [
           "rangeValueExpr",
           "rangeValueExprFromMerged"
-        ],
-        "caller_dispatch": [
-          "unwrapValueExpr"
         ]
       }
     }

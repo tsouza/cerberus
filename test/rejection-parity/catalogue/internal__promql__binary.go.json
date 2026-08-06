@@ -16,22 +16,6 @@
         "callers": [
           "lower",
           "lowerSubqueryOverBinary"
-        ],
-        "caller_dispatch": [
-          "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "subqueryAnchor",
-          "subqueryAnchorShape",
-          "subqueryGridCtx",
-          "subqueryOffsetCtx",
-          "widenSubquerySpine",
-          "wrapSubqueryIdentity"
         ]
       }
     },
@@ -48,16 +32,6 @@
         ],
         "callers": [
           "lowerBinary"
-        ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
         ]
       }
     },
@@ -76,16 +50,6 @@
         ],
         "callers": [
           "lowerBinary"
-        ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
         ]
       }
     },
@@ -101,16 +65,6 @@
         ],
         "callers": [
           "lowerBinary"
-        ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
         ]
       }
     },
@@ -129,15 +83,8 @@
         "callers": [
           "lowerBinary"
         ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
+        "cited": [
+          "lowerVectorSetOp"
         ]
       }
     },
@@ -155,16 +102,6 @@
         ],
         "callers": [
           "lowerBinary"
-        ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
         ]
       }
     },
@@ -183,21 +120,8 @@
           "lowerBinary",
           "lowerScalarArg"
         ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "anchorBaseExpr",
-          "isComparison",
-          "lower",
-          "lowerScalarArg",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "scalarSubqueryValue",
-          "scalarValuePlan",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
+        "cited": [
+          "lowerVectorSetOp"
         ]
       }
     },
@@ -216,21 +140,8 @@
           "lowerBinary",
           "lowerScalarArg"
         ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "anchorBaseExpr",
-          "isComparison",
-          "lower",
-          "lowerScalarArg",
-          "lowerVectorScalar",
-          "lowerVectorSetOp",
-          "lowerVectorVector",
-          "promBinaryOp",
-          "scalarSubqueryValue",
-          "scalarValuePlan",
-          "syntheticScalarVector",
-          "tryScalarLiteral"
+        "cited": [
+          "lowerVectorSetOp"
         ]
       }
     },
@@ -246,10 +157,6 @@
         ],
         "callers": [
           "lowerVectorSetOp"
-        ],
-        "caller_dispatch": [
-          "lower",
-          "promVectorSetOpKind"
         ]
       }
     }

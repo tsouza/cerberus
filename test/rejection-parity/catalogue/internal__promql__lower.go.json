@@ -13,17 +13,10 @@
         "callers": [
           "lowerAggregate"
         ],
-        "caller_dispatch": [
-          "aggregateGroupBy",
+        "cited": [
           "buildAggFunc",
-          "groupKeyAliases",
-          "lower",
           "lowerCountValues",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerTopK",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
+          "lowerSubqueryOverCountValues"
         ]
       }
     },
@@ -40,18 +33,6 @@
         ],
         "callers": [
           "lowerAggregate"
-        ],
-        "caller_dispatch": [
-          "aggregateGroupBy",
-          "buildAggFunc",
-          "groupKeyAliases",
-          "lower",
-          "lowerCountValues",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerTopK",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
         ]
       }
     },
@@ -68,18 +49,6 @@
         ],
         "callers": [
           "lowerAggregate"
-        ],
-        "caller_dispatch": [
-          "aggregateGroupBy",
-          "buildAggFunc",
-          "groupKeyAliases",
-          "lower",
-          "lowerCountValues",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerTopK",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
         ]
       }
     },
@@ -96,17 +65,9 @@
         "callers": [
           "lowerAggregate"
         ],
-        "caller_dispatch": [
-          "aggregateGroupBy",
+        "cited": [
           "buildAggFunc",
-          "groupKeyAliases",
-          "lower",
-          "lowerCountValues",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerTopK",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
+          "lowerAggregate"
         ]
       }
     },
@@ -124,13 +85,6 @@
         ],
         "callers": [
           "resolveSelectorRouting"
-        ],
-        "caller_dispatch": [
-          "expHistogramSelectorRouting",
-          "isClassicBucketSelector",
-          "literalCompanionValueTables",
-          "rewriteMetricName",
-          "splitBucketMatchers"
         ]
       },
       "since": "2026-08-05"
@@ -149,13 +103,6 @@
         "callers": [
           "lowerLimitRatio",
           "lowerSubqueryOverLimitRatio"
-        ],
-        "caller_dispatch": [
-          "limitRatioPredicate",
-          "lower",
-          "lowerSubqueryInnerMatrix",
-          "ratioOffsetExpr",
-          "subqueryMatrixNameExpr"
         ]
       }
     },
@@ -172,13 +119,6 @@
         "callers": [
           "lowerLimitRatio",
           "lowerSubqueryOverLimitRatio"
-        ],
-        "caller_dispatch": [
-          "limitRatioPredicate",
-          "lower",
-          "lowerSubqueryInnerMatrix",
-          "ratioOffsetExpr",
-          "subqueryMatrixNameExpr"
         ]
       }
     },
@@ -187,7 +127,7 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire.",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
@@ -203,6 +143,7 @@
           "lowerCountValues",
           "lowerDateFn",
           "lowerHistogramQuantile",
+          "lowerHistogramQuantileClassicFloat",
           "lowerHistogramValueFn",
           "lowerInfo",
           "lowerInstantFn",
@@ -222,89 +163,9 @@
           "lowerVectorSetOp",
           "lowerVectorVector"
         ],
-        "caller_dispatch": [
-          "String",
-          "TryFoldScalar",
-          "absentAttrsMap",
-          "aggregateGroupBy",
-          "anchorBaseExpr",
-          "asFloat64",
-          "attributeLookup",
-          "broadcastHistogramAtPin",
-          "buildAggFunc",
-          "classicBucketLadderFold",
-          "dateFnExpr",
-          "effectiveInfoNameMatchers",
-          "emptyAttrsMap",
-          "foldSyntheticBinary",
-          "foldSyntheticVectorBinary",
-          "groupKeyAliases",
-          "histogramAggShapeLowerable",
-          "histogramValueExpr",
-          "infoEnrichablePredicate",
-          "infoIgnorePredicate",
-          "isComparison",
-          "isDefaultMatching",
-          "isNaNExpr",
-          "isSyntheticScalarPlan",
-          "isVectorTypedSyntheticOperand",
-          "limitRatioPredicate",
+        "cited": [
           "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerCountValues",
-          "lowerDateFnNoArg",
-          "lowerHistogramQuantileAgg",
-          "lowerHistogramQuantileClassicAggRange",
-          "lowerHistogramQuantileClassicBare",
-          "lowerHistogramQuantileClassicBareRange",
-          "lowerHistogramQuantileNative",
-          "lowerHistogramQuantileNativeAgg",
-          "lowerHistogramQuantileNativeAggRange",
-          "lowerHistogramQuantileNativeBareRange",
-          "lowerHistogramValueFnInstant",
-          "lowerHistogramValueFnPerSample",
-          "lowerHistogramValueFnRange",
-          "lowerInfoJoin",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerMatrixSelector",
-          "lowerRoundToNearest",
-          "lowerScalarArg",
-          "lowerSubquery",
-          "lowerTopK",
-          "lowerTopKComputed",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "matchHistogramAggIdiom",
-          "matchesEveryNameMatcher",
-          "mergedLabelValueExpr",
-          "nanIfExpr",
-          "naturalSortKeyExpr",
-          "projectAttributesOverInner",
-          "projectValueOverInner",
-          "promBinaryOp",
-          "promVectorSetOpKind",
-          "rangeGridShapeFor",
-          "ratioOffsetExpr",
-          "scalarSubqueryValue",
-          "scalarValuePlan",
-          "staticBaseMetricName",
-          "stringArg",
-          "subqueryAnchor",
-          "topKDomain",
-          "topKDomainExpr",
-          "topKPartition",
-          "tryScalarLiteral",
-          "tryStringLiteral",
-          "unwrapParens",
-          "unwrapVectorSelector",
-          "valueAsDateTime",
-          "widenSubquerySpine",
-          "withDefaults",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
+          "lowerHistogramQuantileClassicFloat"
         ]
       }
     },
@@ -324,26 +185,8 @@
           "lower",
           "lowerSubqueryOverCall"
         ],
-        "caller_dispatch": [
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapSubqueryIdentity"
+        "cited": [
+          "lowerCall"
         ]
       }
     },
@@ -361,27 +204,6 @@
         "callers": [
           "lower",
           "lowerSubqueryOverCall"
-        ],
-        "caller_dispatch": [
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapSubqueryIdentity"
         ]
       }
     },
@@ -397,18 +219,6 @@
         ],
         "callers": [
           "lowerAggregate"
-        ],
-        "caller_dispatch": [
-          "aggregateGroupBy",
-          "buildAggFunc",
-          "groupKeyAliases",
-          "lower",
-          "lowerCountValues",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerTopK",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
         ]
       }
     },
@@ -425,18 +235,6 @@
         ],
         "callers": [
           "lowerAggregate"
-        ],
-        "caller_dispatch": [
-          "aggregateGroupBy",
-          "buildAggFunc",
-          "groupKeyAliases",
-          "lower",
-          "lowerCountValues",
-          "lowerLimitK",
-          "lowerLimitRatio",
-          "lowerTopK",
-          "wrapAggregateForSample",
-          "wrapQuantilePhiGuard"
         ]
       }
     },
@@ -452,18 +250,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lower",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "subqueryAnchor",
-          "widenSubquerySpine"
         ]
       }
     },
@@ -480,27 +266,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -519,27 +284,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -558,26 +302,8 @@
         "callers": [
           "lowerCall"
         ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
+        "cited": [
+          "lowerOuterRangeFnOverSubquery"
         ]
       }
     },
@@ -594,13 +320,8 @@
         "callers": [
           "buildAggFunc"
         ],
-        "caller_dispatch": [
-          "String",
-          "lowerScalarArg",
-          "outOfRangePhiInf",
-          "plainAggCH",
-          "sanitizedPhiParamExpr",
-          "tryScalarLiteral"
+        "cited": [
+          "buildAggFunc"
         ]
       }
     },
@@ -618,19 +339,6 @@
           "lowerLimitK",
           "lowerSubqueryOverTopK",
           "lowerTopK"
-        ],
-        "caller_dispatch": [
-          "String",
-          "lower",
-          "lowerScalarArg",
-          "lowerSubqueryInnerMatrix",
-          "lowerTopKComputed",
-          "subqueryTopKColumns",
-          "subqueryTopKPartition",
-          "topKDomain",
-          "topKDomainExpr",
-          "topKPartition",
-          "tryScalarLiteral"
         ]
       }
     },
@@ -648,19 +356,6 @@
           "lowerLimitK",
           "lowerSubqueryOverTopK",
           "lowerTopK"
-        ],
-        "caller_dispatch": [
-          "String",
-          "lower",
-          "lowerScalarArg",
-          "lowerSubqueryInnerMatrix",
-          "lowerTopKComputed",
-          "subqueryTopKColumns",
-          "subqueryTopKPartition",
-          "topKDomain",
-          "topKDomainExpr",
-          "topKPartition",
-          "tryScalarLiteral"
         ]
       }
     }

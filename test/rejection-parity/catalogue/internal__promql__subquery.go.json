@@ -13,16 +13,8 @@
         "callers": [
           "lowerSubqueryOverAggregate"
         ],
-        "caller_dispatch": [
-          "String",
-          "buildAttributesFromAggregate",
-          "buildSubqueryAggFunc",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverCountValues",
-          "lowerSubqueryOverLimitRatio",
-          "lowerSubqueryOverTopK",
-          "subqueryAggregateGroupBy",
-          "wrapSubqueryQuantilePhiGuard"
+        "cited": [
+          "lowerSubqueryOverAggregate"
         ]
       }
     },
@@ -38,22 +30,6 @@
         ],
         "callers": [
           "lowerOuterRangeFnOverSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerSubquery",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "subqueryAnchor",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -71,26 +47,8 @@
         "callers": [
           "lowerCall"
         ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
+        "cited": [
+          "lowerAbsentOverTimeOverSubquery"
         ]
       }
     },
@@ -111,37 +69,6 @@
           "lowerSubquery",
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "lower",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapAbsentOverTimeAtBroadcast",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -163,37 +90,6 @@
           "lowerSubquery",
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "lower",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapAbsentOverTimeAtBroadcast",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -216,37 +112,6 @@
           "lowerSubquery",
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "lower",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapAbsentOverTimeAtBroadcast",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -266,33 +131,6 @@
           "lowerSubqueryOverCountValues",
           "lowerSubqueryOverLimitRatio",
           "lowerSubqueryOverTopK"
-        ],
-        "caller_dispatch": [
-          "String",
-          "attributeLookup",
-          "buildAttributesFromAggregate",
-          "buildSubqueryAggFunc",
-          "limitRatioPredicate",
-          "lowerScalarArg",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverCountValues",
-          "lowerSubqueryOverLimitRatio",
-          "lowerSubqueryOverTopK",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector",
-          "ratioOffsetExpr",
-          "subqueryAggregateGroupBy",
-          "subqueryMatrixNameExpr",
-          "subqueryTopKColumns",
-          "subqueryTopKPartition",
-          "topKDomain",
-          "topKDomainExpr",
-          "tryScalarLiteral",
-          "tryStringLiteral",
-          "wrapSubqueryQuantilePhiGuard"
         ]
       }
     },
@@ -309,19 +147,10 @@
         "callers": [
           "lowerSubqueryOverCall"
         ],
-        "caller_dispatch": [
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lowerCall",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "threadOuterRangeFnScalars",
-          "wrapSubqueryIdentity"
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange"
         ]
       }
     },
@@ -338,16 +167,6 @@
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
-        ],
-        "caller_dispatch": [
-          "lowerSubquery",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector"
         ]
       }
     },
@@ -367,16 +186,6 @@
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
-        ],
-        "caller_dispatch": [
-          "lowerSubquery",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector"
         ]
       },
       "since": "2026-08-06"
@@ -399,16 +208,6 @@
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
-        ],
-        "caller_dispatch": [
-          "lowerSubquery",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector"
         ]
       },
       "since": "2026-08-06"
@@ -431,16 +230,6 @@
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
-        ],
-        "caller_dispatch": [
-          "lowerSubquery",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverAggregate",
-          "lowerSubqueryOverBinary",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverSubquery",
-          "lowerSubqueryOverUnary",
-          "lowerSubqueryOverVectorSelector"
         ]
       }
     },
@@ -457,20 +246,6 @@
         ],
         "callers": [
           "lowerSubqueryOverCall"
-        ],
-        "caller_dispatch": [
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lowerCall",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "threadOuterRangeFnScalars",
-          "wrapSubqueryIdentity"
         ]
       },
       "since": "2026-08-06"
@@ -487,17 +262,6 @@
         ],
         "callers": [
           "lowerSubqueryOverAggregate"
-        ],
-        "caller_dispatch": [
-          "String",
-          "buildAttributesFromAggregate",
-          "buildSubqueryAggFunc",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverCountValues",
-          "lowerSubqueryOverLimitRatio",
-          "lowerSubqueryOverTopK",
-          "subqueryAggregateGroupBy",
-          "wrapSubqueryQuantilePhiGuard"
         ]
       }
     },
@@ -514,17 +278,6 @@
         ],
         "callers": [
           "lowerSubqueryOverAggregate"
-        ],
-        "caller_dispatch": [
-          "String",
-          "buildAttributesFromAggregate",
-          "buildSubqueryAggFunc",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverCountValues",
-          "lowerSubqueryOverLimitRatio",
-          "lowerSubqueryOverTopK",
-          "subqueryAggregateGroupBy",
-          "wrapSubqueryQuantilePhiGuard"
         ]
       }
     },
@@ -541,17 +294,6 @@
         ],
         "callers": [
           "lowerSubqueryOverAggregate"
-        ],
-        "caller_dispatch": [
-          "String",
-          "buildAttributesFromAggregate",
-          "buildSubqueryAggFunc",
-          "lowerSubqueryInnerMatrix",
-          "lowerSubqueryOverCountValues",
-          "lowerSubqueryOverLimitRatio",
-          "lowerSubqueryOverTopK",
-          "subqueryAggregateGroupBy",
-          "wrapSubqueryQuantilePhiGuard"
         ]
       }
     },
@@ -568,14 +310,6 @@
         "callers": [
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery"
-        ],
-        "caller_dispatch": [
-          "canonicalRangeWindowFunc",
-          "lowerSubquery",
-          "projectValueOverInner",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "threadOuterRangeFnScalars"
         ]
       }
     },
@@ -601,37 +335,8 @@
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "epochFloor",
-          "isInstantTransformCall",
-          "lower",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapAbsentOverTimeAtBroadcast",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName",
-          "wrapSubqueryIdentity"
+        "cited": [
+          "LowerAtRange"
         ]
       }
     },
@@ -657,37 +362,8 @@
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "epochFloor",
-          "isInstantTransformCall",
-          "lower",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapAbsentOverTimeAtBroadcast",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName",
-          "wrapSubqueryIdentity"
+        "cited": [
+          "LowerAtRange"
         ]
       }
     },
@@ -711,38 +387,6 @@
           "lowerSubqueryOverVectorSelector",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "epochFloor",
-          "isInstantTransformCall",
-          "lower",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerAggregate",
-          "lowerBinary",
-          "lowerCall",
-          "lowerMatrixSelector",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerUnary",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapAbsentOverTimeAtBroadcast",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName",
-          "wrapSubqueryIdentity"
         ]
       }
     },
@@ -761,31 +405,6 @@
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerCall",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName",
-          "wrapSubqueryIdentity"
         ]
       }
     },
@@ -804,31 +423,6 @@
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerCall",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName",
-          "wrapSubqueryIdentity"
         ]
       }
     },
@@ -847,31 +441,6 @@
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery"
-        ],
-        "caller_dispatch": [
-          "appendNameGroupKey",
-          "canonicalRangeWindowFunc",
-          "isInstantTransformCall",
-          "lowerAbsentOverTimeOverSubquery",
-          "lowerCall",
-          "lowerSubquery",
-          "lowerSubqueryOverAbsent",
-          "lowerSubqueryOverCallSubquery",
-          "lowerVectorSelector",
-          "projectValueOverInner",
-          "rangeFnPreservesName",
-          "rangeMode",
-          "requirePositiveInnerRange",
-          "subqueryAnchor",
-          "subqueryInnerRangeFnShape",
-          "subqueryInstantSafe",
-          "subqueryPinned",
-          "subqueryPreservedNameExpr",
-          "threadOuterRangeFnScalars",
-          "widenSubquerySpine",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName",
-          "wrapSubqueryIdentity"
         ]
       }
     }

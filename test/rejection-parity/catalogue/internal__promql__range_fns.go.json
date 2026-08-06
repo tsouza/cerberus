@@ -13,19 +13,6 @@
         "callers": [
           "lowerHoltWinters",
           "threadOuterRangeFnScalars"
-        ],
-        "caller_dispatch": [
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "bindHoltWintersFactors",
-          "holtWintersFactors",
-          "lowerScalarArg",
-          "lowerVectorSelector",
-          "matrixAndSelector",
-          "outOfRangePhiInf",
-          "rangeGridShapeFor",
-          "tryScalarLiteral",
-          "wrapRangeWindowAtBroadcast"
         ]
       }
     },
@@ -43,19 +30,6 @@
         "callers": [
           "lowerHoltWinters",
           "threadOuterRangeFnScalars"
-        ],
-        "caller_dispatch": [
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "bindHoltWintersFactors",
-          "holtWintersFactors",
-          "lowerScalarArg",
-          "lowerVectorSelector",
-          "matrixAndSelector",
-          "outOfRangePhiInf",
-          "rangeGridShapeFor",
-          "tryScalarLiteral",
-          "wrapRangeWindowAtBroadcast"
         ]
       }
     },
@@ -71,23 +45,6 @@
         ],
         "callers": [
           "lowerRangeVectorCall"
-        ],
-        "caller_dispatch": [
-          "LowerChanges",
-          "LowerDeriv",
-          "LowerRate",
-          "LowerResets",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "lowerAbsentOverTime",
-          "lowerHoltWinters",
-          "lowerPredictLinear",
-          "lowerVectorSelector",
-          "preservedNameExpr",
-          "rangeFnPreservesName",
-          "rangeGridShapeFor",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -103,23 +60,6 @@
         ],
         "callers": [
           "lowerRangeVectorCall"
-        ],
-        "caller_dispatch": [
-          "LowerChanges",
-          "LowerDeriv",
-          "LowerRate",
-          "LowerResets",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "lowerAbsentOverTime",
-          "lowerHoltWinters",
-          "lowerPredictLinear",
-          "lowerVectorSelector",
-          "preservedNameExpr",
-          "rangeFnPreservesName",
-          "rangeGridShapeFor",
-          "wrapRangeWindowAtBroadcast",
-          "wrapRangeWindowPreserveName"
         ]
       }
     },
@@ -135,27 +75,6 @@
         ],
         "callers": [
           "lowerCall"
-        ],
-        "caller_dispatch": [
-          "lowerAbsent",
-          "lowerClamp",
-          "lowerDateFn",
-          "lowerHistogramQuantile",
-          "lowerHistogramQuantiles",
-          "lowerHistogramValueFn",
-          "lowerInfo",
-          "lowerInstantFn",
-          "lowerLabelJoin",
-          "lowerLabelReplace",
-          "lowerOuterRangeFnOverSubquery",
-          "lowerQuantileOverTime",
-          "lowerQueryContextFold",
-          "lowerRangeVectorCall",
-          "lowerScalarTopLevel",
-          "lowerSort",
-          "lowerSortByLabel",
-          "lowerTime",
-          "lowerVector"
         ]
       }
     },
@@ -174,21 +93,6 @@
           "lowerHoltWinters",
           "lowerPredictLinear",
           "lowerQuantileOverTime"
-        ],
-        "caller_dispatch": [
-          "LowerPredictLinear",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "bindHoltWintersFactors",
-          "holtWintersFactors",
-          "lowerScalarArg",
-          "lowerVectorSelector",
-          "matrixAndSelector",
-          "outOfRangePhiInf",
-          "projectValueOverInner",
-          "rangeGridShapeFor",
-          "tryScalarLiteral",
-          "wrapRangeWindowAtBroadcast"
         ]
       }
     },
@@ -207,20 +111,8 @@
           "lowerPredictLinear",
           "lowerQuantileOverTime"
         ],
-        "caller_dispatch": [
-          "LowerPredictLinear",
-          "anchorFromSelector",
-          "applyStepGridFanout",
-          "bindHoltWintersFactors",
-          "holtWintersFactors",
-          "lowerScalarArg",
-          "lowerVectorSelector",
-          "matrixAndSelector",
-          "outOfRangePhiInf",
-          "projectValueOverInner",
-          "rangeGridShapeFor",
-          "tryScalarLiteral",
-          "wrapRangeWindowAtBroadcast"
+        "cited": [
+          "lowerOuterRangeFnOverSubquery"
         ]
       }
     }

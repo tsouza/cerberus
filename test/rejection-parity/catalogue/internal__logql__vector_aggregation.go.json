@@ -13,17 +13,9 @@
         "callers": [
           "lowerVectorAggregation"
         ],
-        "caller_dispatch": [
-          "buildVectorAggFunc",
-          "isMatrixRangeWindow",
-          "lower",
+        "cited": [
           "lowerSort",
-          "lowerTopK",
-          "matrixBucketColumn",
-          "rangeMode",
-          "vectorAggregationGroupBy",
-          "withOuterByLabels",
-          "wrapVectorAggregateForSample"
+          "lowerTopK"
         ]
       }
     },
@@ -41,17 +33,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -67,17 +48,6 @@
         ],
         "callers": [
           "lower"
-        ],
-        "caller_dispatch": [
-          "lowerBinary",
-          "lowerLabelReplace",
-          "lowerLiteral",
-          "lowerMatchers",
-          "lowerMultiVariant",
-          "lowerPipeline",
-          "lowerRangeAggregation",
-          "lowerVector",
-          "lowerVectorAggregation"
         ]
       }
     },
@@ -95,10 +65,8 @@
           "lowerSort",
           "lowerTopK"
         ],
-        "caller_dispatch": [
-          "rangeMode",
-          "sortableShapedInner",
-          "topKPartition"
+        "cited": [
+          "lowerVectorAggregation"
         ]
       }
     }

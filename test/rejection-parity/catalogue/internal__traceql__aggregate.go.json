@@ -15,14 +15,6 @@
         "callers": [
           "lowerFollowingElement",
           "lowerScalarExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerCoalesce",
-          "lowerGroup",
-          "lowerScalarFilter",
-          "lowerSelect",
-          "lowerStatic"
         ]
       }
     },
@@ -38,17 +30,6 @@
         ],
         "callers": [
           "lowerAggregate"
-        ],
-        "caller_dispatch": [
-          "annotateNestedSet",
-          "anyAggFunc",
-          "coerceMapNumericAggInput",
-          "lowerFieldExpr",
-          "mapAggregateOp",
-          "minAggFunc",
-          "nestedSetColumnForFieldExpr",
-          "traceEndNsAggFunc",
-          "traceStartNsAggFunc"
         ]
       }
     }

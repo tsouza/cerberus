@@ -12,10 +12,6 @@
         ],
         "callers": [
           "rootnessReduction"
-        ],
-        "caller_dispatch": [
-          "evalIntCmp",
-          "nonRootCmpConstant"
         ]
       }
     },
@@ -32,12 +28,6 @@
         ],
         "callers": [
           "lowerFieldExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAttributeExpr",
-          "lowerBinaryOperation",
-          "lowerStatic",
-          "lowerUnaryOperation"
         ]
       }
     },
@@ -54,12 +44,6 @@
         ],
         "callers": [
           "lowerFieldExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAttributeExpr",
-          "lowerBinaryOperation",
-          "lowerStatic",
-          "lowerUnaryOperation"
         ]
       }
     },
@@ -76,11 +60,6 @@
         ],
         "callers": [
           "lowerMetricsSecondStage"
-        ],
-        "caller_dispatch": [
-          "lowerChainedSecondStage",
-          "lowerMetricsFilter",
-          "lowerTopKBottomK"
         ]
       }
     },
@@ -96,11 +75,6 @@
         ],
         "callers": [
           "lowerMetricsSecondStage"
-        ],
-        "caller_dispatch": [
-          "lowerChainedSecondStage",
-          "lowerMetricsFilter",
-          "lowerTopKBottomK"
         ]
       }
     },
@@ -124,38 +98,6 @@
           "lowerNestedSetBinary",
           "lowerTraceScopedBinary",
           "lowerUnaryMinus"
-        ],
-        "caller_dispatch": [
-          "annotateNestedSet",
-          "anyAggFunc",
-          "asUnaryOperation",
-          "coerceFieldAccess",
-          "coerceMapNumericAggInput",
-          "coerceNumericFieldAccess",
-          "compareAttrPairsExpr",
-          "compareRootLookup",
-          "fieldExprAttribute",
-          "fieldExprStatic",
-          "flipComparisonOp",
-          "groupAggregate",
-          "isRootSpanFilter",
-          "isTraceScopedIntrinsic",
-          "lowerFieldExpr",
-          "lowerUnaryNot",
-          "mapAggregateOp",
-          "minAggFunc",
-          "nestedAttrTarget",
-          "nestedIntrinsicGroupTarget",
-          "nestedIntrinsicTarget",
-          "nestedScopedAttr",
-          "nestedSetColumn",
-          "nestedSetColumnForFieldExpr",
-          "nestedSetIntrinsicAttr",
-          "rootnessReduction",
-          "traceEndNsAggFunc",
-          "traceScopedInSubquery",
-          "traceScopedValueNode",
-          "traceStartNsAggFunc"
         ]
       }
     },
@@ -171,10 +113,6 @@
         ],
         "callers": [
           "lowerPipeline"
-        ],
-        "caller_dispatch": [
-          "lowerFollowingElement",
-          "lowerPipelineElement"
         ]
       }
     },
@@ -191,19 +129,6 @@
         ],
         "callers": [
           "lowerBinaryOperation"
-        ],
-        "caller_dispatch": [
-          "coerceBoolFieldAccess",
-          "coerceNumericFieldAccess",
-          "foldTrivialBoolConjunct",
-          "lowerAbsentFieldBinary",
-          "lowerBooleanFieldExpr",
-          "lowerInOperation",
-          "lowerNestedAttrBinary",
-          "lowerNestedIntrinsicBinary",
-          "lowerNestedSetBinary",
-          "lowerTraceScopedBinary",
-          "mapBinaryOp"
         ]
       }
     },
@@ -219,19 +144,6 @@
         ],
         "callers": [
           "lowerBinaryOperation"
-        ],
-        "caller_dispatch": [
-          "coerceBoolFieldAccess",
-          "coerceNumericFieldAccess",
-          "foldTrivialBoolConjunct",
-          "lowerAbsentFieldBinary",
-          "lowerBooleanFieldExpr",
-          "lowerInOperation",
-          "lowerNestedAttrBinary",
-          "lowerNestedIntrinsicBinary",
-          "lowerNestedSetBinary",
-          "lowerTraceScopedBinary",
-          "mapBinaryOp"
         ]
       }
     },
@@ -249,10 +161,6 @@
         ],
         "callers": [
           "lowerNilComparison"
-        ],
-        "caller_dispatch": [
-          "lowerIntrinsicNilComparison",
-          "nestedAttrTarget"
         ]
       }
     },
@@ -269,10 +177,6 @@
         ],
         "callers": [
           "lowerNilComparison"
-        ],
-        "caller_dispatch": [
-          "lowerIntrinsicNilComparison",
-          "nestedAttrTarget"
         ]
       }
     },
@@ -288,10 +192,6 @@
         ],
         "callers": [
           "lowerNilComparison"
-        ],
-        "caller_dispatch": [
-          "lowerIntrinsicNilComparison",
-          "nestedAttrTarget"
         ]
       }
     },
@@ -309,10 +209,6 @@
         ],
         "callers": [
           "lowerNilComparison"
-        ],
-        "caller_dispatch": [
-          "lowerIntrinsicNilComparison",
-          "nestedAttrTarget"
         ]
       }
     },
@@ -330,10 +226,8 @@
         "callers": [
           "lowerMetricsSecondStage"
         ],
-        "caller_dispatch": [
-          "lowerChainedSecondStage",
-          "lowerMetricsFilter",
-          "lowerTopKBottomK"
+        "cited": [
+          "isThresholdBinaryOp"
         ]
       }
     },
@@ -349,11 +243,6 @@
         ],
         "callers": [
           "lowerMetricsSecondStage"
-        ],
-        "caller_dispatch": [
-          "lowerChainedSecondStage",
-          "lowerMetricsFilter",
-          "lowerTopKBottomK"
         ]
       }
     },
@@ -370,12 +259,6 @@
         "callers": [
           "lowerChainedSecondStage",
           "lowerRoot"
-        ],
-        "caller_dispatch": [
-          "foldTrailingGroupByIntoMetrics",
-          "lowerMetricsPipeline",
-          "lowerMetricsSecondStage",
-          "lowerPipeline"
         ]
       }
     },
@@ -392,18 +275,8 @@
         "callers": [
           "lowerBinaryOperation"
         ],
-        "caller_dispatch": [
-          "coerceBoolFieldAccess",
-          "coerceNumericFieldAccess",
-          "foldTrivialBoolConjunct",
-          "lowerAbsentFieldBinary",
-          "lowerBooleanFieldExpr",
-          "lowerInOperation",
-          "lowerNestedAttrBinary",
-          "lowerNestedIntrinsicBinary",
-          "lowerNestedSetBinary",
-          "lowerTraceScopedBinary",
-          "mapBinaryOp"
+        "cited": [
+          "nestedSetColumn"
         ]
       }
     },
@@ -422,12 +295,6 @@
         ],
         "callers": [
           "lowerUnaryOperation"
-        ],
-        "caller_dispatch": [
-          "fieldExprAttribute",
-          "lowerNilComparison",
-          "lowerUnaryMinus",
-          "lowerUnaryNot"
         ]
       }
     },
@@ -444,12 +311,6 @@
         ],
         "callers": [
           "lowerUnaryOperation"
-        ],
-        "caller_dispatch": [
-          "fieldExprAttribute",
-          "lowerNilComparison",
-          "lowerUnaryMinus",
-          "lowerUnaryNot"
         ]
       }
     },
@@ -467,12 +328,8 @@
           "lowerRoot",
           "lowerSpansetOperand"
         ],
-        "caller_dispatch": [
-          "foldTrailingGroupByIntoMetrics",
-          "lowerMetricsPipeline",
-          "lowerMetricsSecondStage",
-          "lowerPipeline",
-          "spanGranularOperand"
+        "cited": [
+          "lowerRoot"
         ]
       }
     },
@@ -488,10 +345,6 @@
         ],
         "callers": [
           "lowerPipeline"
-        ],
-        "caller_dispatch": [
-          "lowerFollowingElement",
-          "lowerPipelineElement"
         ]
       }
     },
@@ -508,15 +361,6 @@
         ],
         "callers": [
           "Lower"
-        ],
-        "caller_dispatch": [
-          "lowerRoot",
-          "searchTraceLimit",
-          "searchWindowFromCtx",
-          "stampNestedSetTraceLimit",
-          "stampRecursiveScanWindow",
-          "stampSearchTraceLimit",
-          "stampSearchWindow"
         ]
       }
     },
@@ -532,15 +376,6 @@
         ],
         "callers": [
           "Lower"
-        ],
-        "caller_dispatch": [
-          "lowerRoot",
-          "searchTraceLimit",
-          "searchWindowFromCtx",
-          "stampNestedSetTraceLimit",
-          "stampRecursiveScanWindow",
-          "stampSearchTraceLimit",
-          "stampSearchWindow"
         ]
       }
     },
@@ -556,10 +391,6 @@
         ],
         "callers": [
           "lowerScalarFilter"
-        ],
-        "caller_dispatch": [
-          "lowerScalarExpr",
-          "mapBinaryOp"
         ]
       }
     },
@@ -579,13 +410,6 @@
         ],
         "callers": [
           "lowerFollowingElement"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerCoalesce",
-          "lowerGroup",
-          "lowerScalarFilter",
-          "lowerSelect"
         ]
       }
     },
@@ -604,13 +428,6 @@
         ],
         "callers": [
           "lowerFollowingElement"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerCoalesce",
-          "lowerGroup",
-          "lowerScalarFilter",
-          "lowerSelect"
         ]
       }
     },
@@ -626,14 +443,6 @@
         ],
         "callers": [
           "lowerSpansetOperation"
-        ],
-        "caller_dispatch": [
-          "alignUnionArms",
-          "candidatePrefilterEligible",
-          "lowerSpansetExpr",
-          "mapSetOp",
-          "mapStructuralOp",
-          "structuralExtraProjectionColumns"
         ]
       }
     },
@@ -651,13 +460,6 @@
         "callers": [
           "lowerFieldExpr",
           "lowerScalarExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerAttributeExpr",
-          "lowerBinaryOperation",
-          "lowerStatic",
-          "lowerUnaryOperation"
         ]
       }
     },
@@ -674,13 +476,6 @@
         "callers": [
           "lowerFieldExpr",
           "lowerScalarExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerAttributeExpr",
-          "lowerBinaryOperation",
-          "lowerStatic",
-          "lowerUnaryOperation"
         ]
       }
     },
@@ -698,13 +493,6 @@
         "callers": [
           "lowerFieldExpr",
           "lowerScalarExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerAttributeExpr",
-          "lowerBinaryOperation",
-          "lowerStatic",
-          "lowerUnaryOperation"
         ]
       }
     },
@@ -723,16 +511,6 @@
         ],
         "callers": [
           "lowerInOperation"
-        ],
-        "caller_dispatch": [
-          "absentAttributePredicate",
-          "fieldExprAttribute",
-          "fieldExprStatic",
-          "lowerAttribute",
-          "lowerStaticArray",
-          "stringifyListForMap",
-          "traceScopedInSubquery",
-          "traceScopedValueNode"
         ]
       }
     },
@@ -750,11 +528,6 @@
         ],
         "callers": [
           "lowerMetricsSecondStage"
-        ],
-        "caller_dispatch": [
-          "lowerChainedSecondStage",
-          "lowerMetricsFilter",
-          "lowerTopKBottomK"
         ]
       }
     },
@@ -770,12 +543,6 @@
         ],
         "callers": [
           "lowerFieldExpr"
-        ],
-        "caller_dispatch": [
-          "lowerAttributeExpr",
-          "lowerBinaryOperation",
-          "lowerStatic",
-          "lowerUnaryOperation"
         ]
       }
     },
@@ -794,20 +561,8 @@
           "lowerMetricsFilter",
           "lowerScalarFilter"
         ],
-        "caller_dispatch": [
-          "coerceBoolFieldAccess",
-          "coerceNumericFieldAccess",
-          "foldTrivialBoolConjunct",
-          "isThresholdBinaryOp",
-          "lowerAbsentFieldBinary",
-          "lowerBooleanFieldExpr",
-          "lowerInOperation",
-          "lowerNestedAttrBinary",
-          "lowerNestedIntrinsicBinary",
-          "lowerNestedSetBinary",
-          "lowerScalarExpr",
-          "lowerTraceScopedBinary",
-          "mapBinaryOp"
+        "cited": [
+          "lowerUnaryOperation"
         ]
       }
     },
@@ -823,9 +578,6 @@
         ],
         "callers": [
           "lowerTopKBottomK"
-        ],
-        "caller_dispatch": [
-          "mapSecondStageOp"
         ]
       }
     },
@@ -841,14 +593,6 @@
         ],
         "callers": [
           "lowerSpansetOperation"
-        ],
-        "caller_dispatch": [
-          "alignUnionArms",
-          "candidatePrefilterEligible",
-          "lowerSpansetExpr",
-          "mapSetOp",
-          "mapStructuralOp",
-          "structuralExtraProjectionColumns"
         ]
       }
     }

@@ -12,13 +12,6 @@
         ],
         "callers": [
           "lowerFollowingElement"
-        ],
-        "caller_dispatch": [
-          "lowerAggregate",
-          "lowerCoalesce",
-          "lowerGroup",
-          "lowerScalarFilter",
-          "lowerSelect"
         ]
       }
     }
