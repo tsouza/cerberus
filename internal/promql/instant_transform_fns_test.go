@@ -52,6 +52,7 @@ var instantTransformSubqueryProbe = map[string]string{
 	// Label rewrites.
 	"label_replace": `max_over_time(label_replace(temperature, "copy", "$1", "host", "(.*)")[5m:1m])`,
 	"label_join":    `max_over_time(label_join(temperature, "joined", "-", "host")[5m:1m])`,
+	"info":          `max_over_time(info(temperature)[5m:1m])`,
 
 	// Date components + timestamp, one-argument form.
 	"year":          `max_over_time(year(temperature)[5m:1m])`,

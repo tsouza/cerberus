@@ -119,6 +119,7 @@ import {
   resolveInitRaceConsoleTwins,
   sweepDepth,
   tolerateRepaintFlicker,
+  UNREADABLE_BODY_SENTINEL,
 } from '../helpers/index.js';
 import {
   ALERT_ERROR_PATTERNS,
@@ -389,8 +390,9 @@ test.describe('crawl: canonicalization pins', () => {
 
   test('structural params join the canonical key; defaults and session params drop', () => {
     // The maintainer-found gap: var-groupBy selects WHICH query the
-    // breakdown fires — a consumption mode, hence a surface. Boot
-    // defaults (actionView=breakdown, var-metric=rate,
+    // breakdown fires — a consumption mode, hence a surface. The
+    // ATTRIBUTE NAME is data-derived, so the value parameterizes.
+    // Boot defaults (actionView=breakdown, var-metric=rate,
     // var-groupBy=resource.service.name) drop so the app rewriting
     // its defaults into the URL can't re-key the bare surface.
     expect(
@@ -399,7 +401,7 @@ test.describe('crawl: canonicalization pins', () => {
         base,
         scope,
       ),
-    ).toBe('/a/grafana-exploretraces-app/explore?var-groupBy=kind');
+    ).toBe('/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}');
     // Two pinned params sort by name — pairwise-terminal state.
     expect(
       canonicalizeURL(
@@ -408,7 +410,7 @@ test.describe('crawl: canonicalization pins', () => {
         scope,
       ),
     ).toBe(
-      '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+      '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}',
     );
     // All-defaults URL keys the bare surface.
     expect(
@@ -447,18 +449,90 @@ test.describe('crawl: canonicalization pins', () => {
     ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/logs');
   });
 
+  test('parameterizing var-groupBy absorbs data churn but still catches real coverage change', () => {
+    // #1825: one added resource attribute reshuffled the breakdown's
+    // option list, so the sweep's representative moved from
+    // resource.service.version to resource.service.namespace and the
+    // ratchet fired BOTH halves at once for a pure data change. Under
+    // the parameterized rule the two states key one surface.
+    const asVersion = canonicalizeURL(
+      '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version',
+      base,
+      scope,
+    );
+    const asNamespace = canonicalizeURL(
+      '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.namespace',
+      base,
+      scope,
+    );
+    expect(asVersion).toBe(asNamespace);
+
+    const stack = activeStack();
+    const groupBySurface = asNamespace!;
+    const inventory = {
+      doc: '',
+      stack: stack.name,
+      surfaces: [
+        { url: '/a/grafana-exploretraces-app/explore', lean: true },
+        { url: groupBySurface, lean: true },
+      ],
+    };
+    const noExclusions = { doc: '', exclusions: [] };
+
+    // Data churn alone: the ratchet is silent.
+    expect(
+      diffInventory(
+        new Set(['/a/grafana-exploretraces-app/explore', groupBySurface]),
+        inventory,
+        noExclusions,
+        'lean',
+        stack,
+      ),
+    ).toEqual([]);
+
+    // The gate is NOT dead — a genuinely unvisited surface still fails.
+    // If the sweep stopped driving the groupBy control entirely, no
+    // value of it can key groupBySurface, so this is exactly the
+    // regression the collapse must still catch.
+    const shrank = diffInventory(
+      new Set(['/a/grafana-exploretraces-app/explore']),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(shrank).toHaveLength(1);
+    expect(shrank[0]).toContain('coverage shrank');
+    expect(shrank[0]).toContain(groupBySurface);
+
+    // …and a genuinely new surface still fails.
+    const grew = diffInventory(
+      new Set([
+        '/a/grafana-exploretraces-app/explore',
+        groupBySurface,
+        '/a/grafana-exploretraces-app/explore?actionView=comparison',
+      ]),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(grew).toHaveLength(1);
+    expect(grew[0]).toContain('coverage grew');
+  });
+
   test('pinned structural-param counting (the pairwise depth bound)', () => {
     expect(
       pinnedStructuralParamCount('/a/grafana-exploretraces-app/explore'),
     ).toBe(0);
     expect(
       pinnedStructuralParamCount(
-        '/a/grafana-exploretraces-app/explore?var-groupBy=kind',
+        '/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}',
       ),
     ).toBe(1);
     expect(
       pinnedStructuralParamCount(
-        '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+        '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}',
       ),
     ).toBe(2);
     expect(
@@ -586,6 +660,51 @@ test.describe('crawl: canonicalization pins', () => {
     expect(canonicalizeURL('/api/search', base, scope)).toBeNull();
     expect(canonicalizeURL('https://grafana.com/docs', base, scope)).toBeNull();
     expect(canonicalizeURL('mailto:x@example.com', base, scope)).toBeNull();
+  });
+});
+
+/**
+ * The wire capture reads response bodies to feed oracles 2a/2b. Grafana's
+ * Drilldown apps leave streaming responses open across a navigation, so a
+ * body read can never complete — and the capture's `stop()` awaits every
+ * read before the crawl advances. Without a bound the crawl parks on that
+ * one response until the test timeout and emits no inventory at all.
+ */
+test.describe('crawl: wire-capture body reads are bounded', () => {
+  /** Short enough to keep the unit lane fast; the production bound is
+   * WIRE_BODY_READ_TIMEOUT_MS. */
+  const PROBE_BOUND_MS = 50;
+
+  test('a body that never settles rejects at the bound instead of hanging', async () => {
+    const neverSettles = {
+      text: () => new Promise<string>(() => {}),
+    } as unknown as Response;
+
+    await expect(
+      readBodyWithin(neverSettles, PROBE_BOUND_MS),
+    ).rejects.toThrow(/did not settle/);
+  });
+
+  test('a body that settles is returned unchanged', async () => {
+    const settles = {
+      text: async () => '{"results":{}}',
+    } as unknown as Response;
+
+    expect(await readBodyWithin(settles, PROBE_BOUND_MS)).toBe(
+      '{"results":{}}',
+    );
+  });
+
+  test('a body read that throws propagates so the caller records the sentinel', async () => {
+    const throws = {
+      text: async () => {
+        throw new Error('target page closed');
+      },
+    } as unknown as Response;
+
+    await expect(readBodyWithin(throws, PROBE_BOUND_MS)).rejects.toThrow(
+      /target page closed/,
+    );
   });
 });
 
@@ -929,6 +1048,38 @@ type CapturedDsResponse = {
 };
 
 /**
+ * Ceiling on one captured response-body read. Grafana's Drilldown apps
+ * leave streaming responses open across a navigation, and `resp.text()`
+ * on one of those never settles: an unbounded `Promise.all` over the
+ * reads then parks the whole crawl until the test timeout, which yields
+ * NO inventory and NO verdict rather than a bad one. A read that blows
+ * the ceiling records the same UNREADABLE_BODY_SENTINEL a read that
+ * throws already records, so the reconciler's semantics are unchanged.
+ */
+const WIRE_BODY_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * `resp.text()` bounded by `ms` — rejects rather than hanging when the
+ * response body never completes.
+ */
+async function readBodyWithin(resp: Response, ms: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      resp.text(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`response body did not settle within ${ms}ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Wire the datasource-API response capture — the same surface
  * families every existing sweep watches. Deliberately NOT all of
  * /api/: e.g. Grafana fires /api/datasources/uid/cerberus-tempo/health
@@ -938,7 +1089,9 @@ type CapturedDsResponse = {
  * compose_grafana_smoke.spec.ts).
  *
  * Returns the live capture array and an async stop that detaches the
- * listener and settles every in-flight body read.
+ * listener and settles every in-flight body read — each one bounded by
+ * WIRE_BODY_READ_TIMEOUT_MS, so a response that never finishes cannot
+ * wedge the crawl.
  */
 function startWireCapture(
   page: Page,
@@ -967,9 +1120,9 @@ function startWireCapture(
         // (the tunneled-error oracle needs them).
         if (status < 200 || status > 299 || isDsQuery) {
           try {
-            body = await resp.text();
+            body = await readBodyWithin(resp, WIRE_BODY_READ_TIMEOUT_MS);
           } catch {
-            body = '<unreadable>';
+            body = UNREADABLE_BODY_SENTINEL;
           }
         }
         captured.push({

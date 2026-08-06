@@ -370,7 +370,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing label name"))
 		return
 	}
-	if !validLabelName(name) {
+	if !format.IsPromLabelName(name) {
 		writeError(w, http.StatusBadRequest, ErrBadData,
 			fmt.Errorf("invalid label name %q", name))
 		return
@@ -1876,24 +1876,4 @@ func normalizeMetricValues(in []string) []string {
 		out = append(out, n)
 	}
 	return out
-}
-
-// validLabelName mirrors the Prometheus label-name grammar: [a-zA-Z_][a-zA-Z0-9_]*.
-// The synthetic `__name__` matches this pattern naturally.
-func validLabelName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z':
-		case c >= 'A' && c <= 'Z':
-		case c == '_':
-		case c >= '0' && c <= '9' && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
 }

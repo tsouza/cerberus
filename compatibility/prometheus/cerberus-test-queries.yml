@@ -539,10 +539,14 @@ test_cases:
   # the case discriminates the in-bucket exponential interpolation rather
   # than only the whole-bucket sums a boundary-aligned pair would reach.
   - query: 'histogram_fraction(3, 12, demo_latency_exp_hist)'
-  # Quantile interpolation across the distribution: a low phi that lands
-  # exactly on a bucket edge for one instance and inside a bucket for the
-  # other, one in a middle bucket, one in the top bucket, and phi = 1 (the
-  # upper edge of the highest populated bucket, taken without interpolating).
+  # Quantile interpolation across the distribution: phi = 0 (the lower edge
+  # of the lowest populated bucket, taken without interpolating — 1 for the
+  # offset-0 instance and 2 for the offset-1 one, so the two disagree and a
+  # constant answer for either cannot pass), a low phi that lands exactly on
+  # a bucket edge for one instance and inside a bucket for the other, one in
+  # a middle bucket, one in the top bucket, and phi = 1 (the upper edge of
+  # the highest populated bucket, likewise uninterpolated).
+  - query: 'histogram_quantile(0, demo_latency_exp_hist)'
   - query: 'histogram_quantile(0.1, demo_latency_exp_hist)'
   - query: 'histogram_quantile(0.5, demo_latency_exp_hist)'
   - query: 'histogram_quantile(0.9, demo_latency_exp_hist)'

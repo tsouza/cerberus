@@ -1,0 +1,68 @@
+# mad_over_time over a subquery (#1784): the function was missing from
+# rangeVectorFn, so the outer reducer rejected a subquery argument that
+# reference Prometheus answers. Same shape as any other *_over_time
+# reducer chained over a subquery matrix.
+#
+# The seed is shaped so the six subquery anchors carry six DISTINCT rates
+# — 0.5, 0.25, 1.0, 0.75, 2.0, 1.5 per second, all exact in binary. Their
+# median is 0.875 and the median of their absolute deviations is 0.5, so
+# the MAD and the median of the values are different numbers and the
+# fixture fails if the emitter ever reduces one to the other.
+#
+# The counter starts at 1000 rather than 0 on purpose. rate() clamps its
+# backwards extrapolation to `sampled_interval * first_val / delta` — a
+# counter whose first in-window sample is 0 cannot have been running
+# before that sample — so a zero-based seed drops the 23:35 anchor from
+# 0.5 to 0.4 and the whole rate set stops being the round one above.
+-- query.promql --
+mad_over_time(rate(http_requests_total[5m])[30m:5m])
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:29:00', 9), 1000.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:31:00', 9), 1000.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:33:00', 9), 1060.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:35:00', 9), 1120.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:37:00', 9), 1120.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:39:00', 9), 1150.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:41:00', 9), 1150.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:43:00', 9), 1270.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:45:00', 9), 1390.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:47:00', 9), 1390.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:49:00', 9), 1480.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:51:00', 9), 1480.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:53:00', 9), 1720.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:00', 9), 1960.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 1960.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 2140.0);
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = ""
+[5] string = "service_name"
+[6] string = "http_requests_total"
+[7] string = "http.requests.total"
+[8] string = "http.requests/total"
+[9] string = "http.requests_total"
+[10] string = "http/requests/total"
+[11] string = "http/requests_total"
+[12] string = "http_requests.total"
+-- chplan --
+RangeWindow func=mad_over_time range=30m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  RangeWindow func=rate range=5m0s step=5m0s outerRange=30m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:30:01Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes`, if(length(window_vals) > 0, (arraySort(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals))[toUInt32(floor((0.5 * toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1)) - floor((0.5 * toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1))))) + arraySort(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals))[toUInt32(least(toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1), floor((0.5 * toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1)) - floor((0.5 * toFloat64(length(arrayMap(x -> abs(x - (arraySort(window_vals)[toUInt32(floor((0.5 * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((0.5 * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((0.5 * toFloat64(length(window_vals) - 1)) - floor((0.5 * toFloat64(length(window_vals) - 1)))))), window_vals)) - 1))))), nan) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1800000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`anchor_ts`, `Value`))) AS `series_array` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, counter_delta * (sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300, nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, `anchor_ts`, arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(window_pairs))) AS `window_pairs` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000) - toIntervalNanosecond(i * 300000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)) - 300000000000, toInt64(300000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)) - 300000000000, toInt64(300000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)), toInt64(300000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)), toInt64(300000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:30:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`)))) WHERE length(`window_vals`) >= 2) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1800000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1
+-- expected_rows --
+[
+  [{"job": "api"}, 0.5]
+]

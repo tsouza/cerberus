@@ -39,6 +39,20 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/lower.go:limitRatioPredicate#a75ec376",
+      "message": "promql: limit_ratio ratio value is NaN",
+      "class": "rejection",
+      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:limitRatioPredicate#afc83b92",
+      "message": "promql: limit_ratio ratio: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
@@ -74,20 +88,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:lowerLimitRatio#a75ec376",
-      "message": "promql: limit_ratio ratio value is NaN",
-      "class": "rejection",
-      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerLimitRatio#afc83b92",
-      "message": "promql: limit_ratio ratio: %w",
-      "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:lowerMatrixSelector#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
@@ -113,13 +113,6 @@
       "message": "promql: %s argument must be a range-vector selector, got %T",
       "class": "internal",
       "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerTopKComputed#9dcfc5e7",
-      "message": "promql: %s K: %w",
-      "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
     },
     {
       "head": "promql",

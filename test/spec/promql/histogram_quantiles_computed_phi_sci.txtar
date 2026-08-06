@@ -1,0 +1,460 @@
+# histogram_quantiles with a computed phi small enough to render in
+# scientific notation (#1765). The sibling fixture pins phi = 0.5, which
+# leaves the formatter's fixed-notation arm; this one crosses the
+# `abs(v) < 1e-4` boundary and renders through the scientific arm, the
+# only arm that derives an exponent.
+#
+# Prometheus formats the label with strconv.FormatFloat(f, 'g', -1, 64):
+# 1e-05 has decimal exponent -5, outside [-4, 21), so Go writes scientific
+# notation and pads the exponent to two digits — "1e-05", never "1e-5".
+# The mantissa is a single digit, so no ".0" is appended (the string
+# already carries an 'e').
+#
+# What this fixture is for is the LABEL, not the quantile: the value at
+# this phi is the ordinary first-bucket interpolation the phi = 0.5
+# fixture already covers. The exponent arm was reachable only after the
+# computed-phi guard came down, and it was the arm whose integer
+# sub-expressions had no common ClickHouse supertype.
+-- query.promql --
+histogram_quantiles(http_server_request_duration_bucket, "q", scalar(phi_k))
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('phi_k', map(), toDateTime64('2026-01-01 00:00:00', 9), 0.00001);
+-- expected_rows --
+[
+  ["", {"job": "api", "q": "1e-05"}, "2026-01-01T00:00:01Z", 0.000006000000000000001]
+]
+-- args --
+[0] string = "q"
+[1] float64 = 1
+[2] float64 = 0
+[3] float64 = -1
+[4] float64 = 0
+[5] float64 = 0.0001
+[6] float64 = 1e+21
+[7] float64 = 0
+[8] int64 = 0
+[9] int64 = 1
+[10] int64 = 1
+[11] int64 = 1
+[12] int64 = 0
+[13] int64 = 1
+[14] int64 = 1
+[15] int64 = 0
+[16] int64 = 1
+[17] int64 = 1
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 0
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 2
+[24] int64 = 0
+[25] int64 = 1
+[26] int64 = 0
+[27] int64 = 1
+[28] int64 = 1
+[29] int64 = 0
+[30] int64 = 0
+[31] int64 = 1
+[32] int64 = 1
+[33] int64 = 1
+[34] int64 = 0
+[35] int64 = 1
+[36] int64 = 1
+[37] int64 = 0
+[38] int64 = 1
+[39] int64 = 1
+[40] int64 = 0
+[41] int64 = 1
+[42] int64 = 1
+[43] int64 = 1
+[44] int64 = 0
+[45] int64 = 0
+[46] int64 = 1
+[47] int64 = 0
+[48] int64 = 1
+[49] int64 = 1
+[50] int64 = 0
+[51] int64 = 0
+[52] int64 = 1
+[53] int64 = 1
+[54] int64 = 1
+[55] int64 = 0
+[56] int64 = 1
+[57] int64 = 1
+[58] int64 = 0
+[59] int64 = 1
+[60] int64 = 1
+[61] int64 = 0
+[62] int64 = 1
+[63] int64 = 1
+[64] int64 = 1
+[65] int64 = 10
+[66] int64 = 0
+[67] int64 = 1
+[68] int64 = 0
+[69] int64 = 1
+[70] int64 = 1
+[71] int64 = 0
+[72] int64 = 0
+[73] int64 = 1
+[74] int64 = 1
+[75] int64 = 1
+[76] int64 = 0
+[77] int64 = 1
+[78] int64 = 1
+[79] int64 = 0
+[80] int64 = 1
+[81] int64 = 1
+[82] int64 = 0
+[83] int64 = 1
+[84] int64 = 1
+[85] int64 = 1
+[86] int64 = 0
+[87] int64 = 1
+[88] int64 = 0
+[89] int64 = 1
+[90] int64 = 1
+[91] int64 = 0
+[92] int64 = 0
+[93] int64 = 1
+[94] int64 = 1
+[95] int64 = 1
+[96] int64 = 0
+[97] int64 = 1
+[98] int64 = 1
+[99] int64 = 0
+[100] int64 = 1
+[101] int64 = 1
+[102] int64 = 0
+[103] int64 = 1
+[104] int64 = 1
+[105] int64 = 1
+[106] float64 = 0
+[107] int64 = 0
+[108] int64 = 1
+[109] int64 = 1
+[110] int64 = 0
+[111] int64 = 1
+[112] string = "service.name"
+[113] string = "service_name"
+[114] string = "service.name"
+[115] string = "service_name"
+[116] string = ""
+[117] string = "service_name"
+[118] string = "phi_k"
+[119] string = "phi.k"
+[120] string = "phi/k"
+[121] string = "2026-01-01 00:00:01.000000000"
+[122] int64 = 9
+[123] string = "2026-01-01 00:00:01.000000000"
+[124] int64 = 9
+[125] int64 = 300000000000
+[126] int64 = 1
+[127] string = "service.name"
+[128] string = "service_name"
+[129] string = "service.name"
+[130] string = "service_name"
+[131] string = ""
+[132] string = "service_name"
+[133] string = "phi_k"
+[134] string = "phi.k"
+[135] string = "phi/k"
+[136] string = "2026-01-01 00:00:01.000000000"
+[137] int64 = 9
+[138] string = "2026-01-01 00:00:01.000000000"
+[139] int64 = 9
+[140] int64 = 300000000000
+[141] int64 = 1
+[142] string = ""
+[143] int64 = 9
+[144] int64 = 1
+[145] string = "service.name"
+[146] string = "service_name"
+[147] string = "service.name"
+[148] string = "service_name"
+[149] string = ""
+[150] string = "service_name"
+[151] string = "phi_k"
+[152] string = "phi.k"
+[153] string = "phi/k"
+[154] string = "2026-01-01 00:00:01.000000000"
+[155] int64 = 9
+[156] string = "2026-01-01 00:00:01.000000000"
+[157] int64 = 9
+[158] int64 = 300000000000
+[159] int64 = 1
+[160] string = "service.name"
+[161] string = "service_name"
+[162] string = "service.name"
+[163] string = "service_name"
+[164] string = ""
+[165] string = "service_name"
+[166] string = "phi_k"
+[167] string = "phi.k"
+[168] string = "phi/k"
+[169] string = "2026-01-01 00:00:01.000000000"
+[170] int64 = 9
+[171] string = "2026-01-01 00:00:01.000000000"
+[172] int64 = 9
+[173] int64 = 300000000000
+[174] int64 = 1
+[175] string = "service.name"
+[176] string = "service_name"
+[177] string = "service.name"
+[178] string = "service_name"
+[179] string = ""
+[180] string = "service_name"
+[181] string = "phi_k"
+[182] string = "phi.k"
+[183] string = "phi/k"
+[184] string = "2026-01-01 00:00:01.000000000"
+[185] int64 = 9
+[186] string = "2026-01-01 00:00:01.000000000"
+[187] int64 = 9
+[188] int64 = 300000000000
+[189] int64 = 1
+[190] string = "service.name"
+[191] string = "service_name"
+[192] string = "service.name"
+[193] string = "service_name"
+[194] string = ""
+[195] string = "service_name"
+[196] string = "phi_k"
+[197] string = "phi.k"
+[198] string = "phi/k"
+[199] string = "2026-01-01 00:00:01.000000000"
+[200] int64 = 9
+[201] string = "2026-01-01 00:00:01.000000000"
+[202] int64 = 9
+[203] int64 = 300000000000
+[204] int64 = 1
+[205] string = "service.name"
+[206] string = "service_name"
+[207] string = "service.name"
+[208] string = "service_name"
+[209] string = ""
+[210] string = "service_name"
+[211] string = "phi_k"
+[212] string = "phi.k"
+[213] string = "phi/k"
+[214] string = "2026-01-01 00:00:01.000000000"
+[215] int64 = 9
+[216] string = "2026-01-01 00:00:01.000000000"
+[217] int64 = 9
+[218] int64 = 300000000000
+[219] int64 = 1
+[220] string = "service.name"
+[221] string = "service_name"
+[222] string = "service.name"
+[223] string = "service_name"
+[224] string = ""
+[225] string = "service_name"
+[226] string = "phi_k"
+[227] string = "phi.k"
+[228] string = "phi/k"
+[229] string = "2026-01-01 00:00:01.000000000"
+[230] int64 = 9
+[231] string = "2026-01-01 00:00:01.000000000"
+[232] int64 = 9
+[233] int64 = 300000000000
+[234] int64 = 1
+[235] string = "service.name"
+[236] string = "service_name"
+[237] string = "service.name"
+[238] string = "service_name"
+[239] string = ""
+[240] string = "service_name"
+[241] string = "phi_k"
+[242] string = "phi.k"
+[243] string = "phi/k"
+[244] string = "2026-01-01 00:00:01.000000000"
+[245] int64 = 9
+[246] string = "2026-01-01 00:00:01.000000000"
+[247] int64 = 9
+[248] int64 = 300000000000
+[249] int64 = 1
+[250] string = "service.name"
+[251] string = "service_name"
+[252] string = "service.name"
+[253] string = "service_name"
+[254] string = ""
+[255] string = "service_name"
+[256] string = "phi_k"
+[257] string = "phi.k"
+[258] string = "phi/k"
+[259] string = "2026-01-01 00:00:01.000000000"
+[260] int64 = 9
+[261] string = "2026-01-01 00:00:01.000000000"
+[262] int64 = 9
+[263] int64 = 300000000000
+[264] int64 = 1
+[265] string = "service.name"
+[266] string = "service_name"
+[267] string = "service.name"
+[268] string = "service_name"
+[269] string = ""
+[270] string = "service_name"
+[271] string = "phi_k"
+[272] string = "phi.k"
+[273] string = "phi/k"
+[274] string = "2026-01-01 00:00:01.000000000"
+[275] int64 = 9
+[276] string = "2026-01-01 00:00:01.000000000"
+[277] int64 = 9
+[278] int64 = 300000000000
+[279] int64 = 1
+[280] string = "service.name"
+[281] string = "service_name"
+[282] string = "service.name"
+[283] string = "service_name"
+[284] string = ""
+[285] string = "service_name"
+[286] string = "phi_k"
+[287] string = "phi.k"
+[288] string = "phi/k"
+[289] string = "2026-01-01 00:00:01.000000000"
+[290] int64 = 9
+[291] string = "2026-01-01 00:00:01.000000000"
+[292] int64 = 9
+[293] int64 = 300000000000
+[294] int64 = 1
+[295] string = "service.name"
+[296] string = "service_name"
+[297] string = "service.name"
+[298] string = "service_name"
+[299] string = ""
+[300] string = "service_name"
+[301] string = "phi_k"
+[302] string = "phi.k"
+[303] string = "phi/k"
+[304] string = "2026-01-01 00:00:01.000000000"
+[305] int64 = 9
+[306] string = "2026-01-01 00:00:01.000000000"
+[307] int64 = 9
+[308] int64 = 300000000000
+[309] int64 = 1
+[310] string = "service.name"
+[311] string = "service_name"
+[312] string = "service.name"
+[313] string = "service_name"
+[314] string = ""
+[315] string = "service_name"
+[316] string = "phi_k"
+[317] string = "phi.k"
+[318] string = "phi/k"
+[319] string = "2026-01-01 00:00:01.000000000"
+[320] int64 = 9
+[321] string = "2026-01-01 00:00:01.000000000"
+[322] int64 = 9
+[323] int64 = 300000000000
+[324] int64 = 1
+[325] string = "service.name"
+[326] string = "service_name"
+[327] string = "service.name"
+[328] string = "service_name"
+[329] string = ""
+[330] string = "service_name"
+[331] string = "phi_k"
+[332] string = "phi.k"
+[333] string = "phi/k"
+[334] string = "2026-01-01 00:00:01.000000000"
+[335] int64 = 9
+[336] string = "2026-01-01 00:00:01.000000000"
+[337] int64 = 9
+[338] int64 = 300000000000
+[339] int64 = 1
+[340] string = "service.name"
+[341] string = "service_name"
+[342] string = "service.name"
+[343] string = "service_name"
+[344] string = ""
+[345] string = "service_name"
+[346] string = "phi_k"
+[347] string = "phi.k"
+[348] string = "phi/k"
+[349] string = "2026-01-01 00:00:01.000000000"
+[350] int64 = 9
+[351] string = "2026-01-01 00:00:01.000000000"
+[352] int64 = 9
+[353] int64 = 300000000000
+[354] int64 = 1
+[355] string = "service.name"
+[356] string = "service_name"
+[357] string = "service.name"
+[358] string = "service_name"
+[359] string = ""
+[360] string = "service_name"
+[361] string = "phi_k"
+[362] string = "phi.k"
+[363] string = "phi/k"
+[364] string = "2026-01-01 00:00:01.000000000"
+[365] int64 = 9
+[366] string = "2026-01-01 00:00:01.000000000"
+[367] int64 = 9
+[368] int64 = 300000000000
+[369] int64 = 1
+[370] string = "service.name"
+[371] string = "service_name"
+[372] string = "service.name"
+[373] string = "service_name"
+[374] string = ""
+[375] string = "service_name"
+[376] string = "phi_k"
+[377] string = "phi.k"
+[378] string = "phi/k"
+[379] string = "2026-01-01 00:00:01.000000000"
+[380] int64 = 9
+[381] string = "2026-01-01 00:00:01.000000000"
+[382] int64 = 9
+[383] int64 = 300000000000
+[384] string = "service.name"
+[385] string = "service_name"
+[386] string = "service.name"
+[387] string = "service_name"
+[388] string = ""
+[389] string = "service_name"
+[390] string = "http_server_request_duration"
+[391] string = "http.server.request.duration"
+[392] string = "http.server.request/duration"
+[393] string = "http.server.request_duration"
+[394] string = "http.server/request/duration"
+[395] string = "http.server/request_duration"
+[396] string = "http.server_request.duration"
+[397] string = "http.server_request_duration"
+[398] string = "http/server/request/duration"
+[399] string = "http/server/request_duration"
+[400] string = "http/server_request_duration"
+[401] string = "http_server.request.duration"
+[402] string = "http_server.request_duration"
+[403] string = "http_server_request.duration"
+[404] string = "2026-01-01 00:00:01.000000000"
+[405] int64 = 9
+[406] string = "2026-01-01 00:00:01.000000000"
+[407] int64 = 9
+[408] int64 = 300000000000
+-- chplan --
+Project [MetricName, mapConcat(Attributes, map("q", arrayMap((v, u) -> multiIf(isNaN(v), "NaN", (v = 1), "1.0", (v = 0), "0.0", (v = -1), "-1.0", (isInfinite(v) AND (v > 0)), "+Inf", isInfinite(v), "-Inf", ((abs(v) < 0.0001) OR (abs(v) >= 1e+21)), concat(if((v < 0), "-", ""), if((toInt64(length(replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""), "0+$", ""))) <= 1), replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""), "0+$", ""), concat(substring(replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""), "0+$", ""), 1, 1), ".", substring(replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""), "0+$", ""), 2))), "e", concat(if((if((toInt64(position(u, "e")) > 0), toInt64(substring(u, (toInt64(position(u, "e")) + 1))), ((if((toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) > 0), (toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) - 1), toInt64(length(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""))))) - 1)) < 0), "-", "+"), if((abs(if((toInt64(position(u, "e")) > 0), toInt64(substring(u, (toInt64(position(u, "e")) + 1))), ((if((toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) > 0), (toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) - 1), toInt64(length(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""))))) - 1))) < 10), concat("0", toString(abs(if((toInt64(position(u, "e")) > 0), toInt64(substring(u, (toInt64(position(u, "e")) + 1))), ((if((toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) > 0), (toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) - 1), toInt64(length(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""))))) - 1))))), toString(abs(if((toInt64(position(u, "e")) > 0), toInt64(substring(u, (toInt64(position(u, "e")) + 1))), ((if((toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) > 0), (toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) - 1), toInt64(length(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".", ""), "^0+", ""))))) - 1))))))), concat(if((v < 0), "-", ""), if((toInt64(position(if((toInt64(position(u, "e")) > 0), substring(u, 1, (toInt64(position(u, "e")) - 1)), u), ".")) > 0), u, concat(u, ".0")))), array(assumeNotNull(scalarSubquery{Project [if((_cerb_scnt = 1), _cerb_sval, NaN) AS Value] ; Aggregate groupBy=[] funcs=[count() AS _cerb_scnt, any(Value) AS _cerb_sval] ; Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value] ; Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value] ; Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000)))) ; Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value] ; Filter predicate=(MetricName IN ("phi_k", "phi.k", "phi/k")) ; Scan(merge(otel_metrics_gauge|otel_metrics_sum))})), array(toString(abs(assumeNotNull(scalarSubquery{Project [if((_cerb_scnt = 1), _cerb_sval, NaN) AS Value] ; Aggregate groupBy=[] funcs=[count() AS _cerb_scnt, any(Value) AS _cerb_sval] ; Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value] ; Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value] ; Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000)))) ; Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value] ; Filter predicate=(MetricName IN ("phi_k", "phi.k", "phi/k")) ; Scan(merge(otel_metrics_gauge|otel_metrics_sum))})))))[1])) AS Attributes, TimeUnix, Value]
+  Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+    HistogramQuantile phi=assumeNotNull(scalarSubquery{Project [if((_cerb_scnt = 1), _cerb_sval, NaN) AS Value] ; Aggregate groupBy=[] funcs=[count() AS _cerb_scnt, any(Value) AS _cerb_sval] ; Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value] ; Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value] ; Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000)))) ; Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value] ; Filter predicate=(MetricName IN ("phi_k", "phi.k", "phi/k")) ; Scan(merge(otel_metrics_gauge|otel_metrics_sum))}) groupBy=[Attributes AS Attributes]
+      Aggregate groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[argMax(BucketCounts, TimeUnix) AS BucketCounts, argMax(ExplicitBounds, TimeUnix) AS ExplicitBounds]
+        Filter predicate=(((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_histogram)
+-- sql --
+SELECT `MetricName`, mapConcat(`Attributes`, map(?, arrayMap((v, u) -> multiIf(isNaN(v), 'NaN', (v = toFloat64(?)), '1.0', (v = toFloat64(?)), '0.0', (v = toFloat64(?)), '-1.0', (isInfinite(v) AND (v > toFloat64(?))), '+Inf', isInfinite(v), '-Inf', ((abs(v) < toFloat64(?)) OR (abs(v) >= toFloat64(?))), concat(if((v < toFloat64(?)), '-', ''), if((toInt64(length(replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''), '0+$', ''))) <= ?), replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''), '0+$', ''), concat(substring(replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''), '0+$', ''), ?, ?), '.', substring(replaceRegexpOne(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''), '0+$', ''), ?))), 'e', concat(if((if((toInt64(position(u, 'e')) > ?), toInt64(substring(u, (toInt64(position(u, 'e')) + ?))), ((if((toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) > ?), (toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) - ?), toInt64(length(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''))))) - ?)) < ?), '-', '+'), if((abs(if((toInt64(position(u, 'e')) > ?), toInt64(substring(u, (toInt64(position(u, 'e')) + ?))), ((if((toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) > ?), (toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) - ?), toInt64(length(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''))))) - ?))) < ?), concat('0', toString(abs(if((toInt64(position(u, 'e')) > ?), toInt64(substring(u, (toInt64(position(u, 'e')) + ?))), ((if((toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) > ?), (toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) - ?), toInt64(length(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''))))) - ?))))), toString(abs(if((toInt64(position(u, 'e')) > ?), toInt64(substring(u, (toInt64(position(u, 'e')) + ?))), ((if((toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) > ?), (toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) - ?), toInt64(length(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u)))) - (toInt64(length(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''))) - toInt64(length(replaceRegexpOne(replaceAll(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.', ''), '^0+', ''))))) - ?))))))), concat(if((v < toFloat64(?)), '-', ''), if((toInt64(position(if((toInt64(position(u, 'e')) > ?), substring(u, ?, (toInt64(position(u, 'e')) - ?)), u), '.')) > ?), u, concat(u, '.0')))), array(assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)))))), array(toString(abs(assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)))))))))[?])) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(isNaN(assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)))))), nan, if(length(`BucketCounts`) = 0, nan, if(arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`)) = 0, nan, if(assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) < 0, -inf, if(assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) > 1, inf, if(arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = length(arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))), arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[length(arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1))))], if(arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1 AND arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[1] <= 0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[1], (if(arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1]) + (arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1))))] - if(arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> `ExplicitBounds`[i], arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)))[arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])) * ((assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))) - if(arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])) / (arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1))))] - if(arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) = 1, 0.0, arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))[arrayFirstIndex(c -> (if(c >= (assumeNotNull((SELECT if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0)) AS `Value` FROM (SELECT toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))) * arraySum(arrayMap(x -> toFloat64(x), `BucketCounts`))), 1, 0) = 1), arrayMap(i -> arrayCumSum(arrayMap(x -> toFloat64(x), `BucketCounts`))[i], arrayConcat(arrayFilter(i -> i = length(`ExplicitBounds`) OR `ExplicitBounds`[i] != `ExplicitBounds`[i + 1], range(1, length(`ExplicitBounds`) + 1)), range(length(`ExplicitBounds`) + 1, length(arrayMap(x -> toFloat64(x), `BucketCounts`)) + 1)))) - 1])))))))))) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`BucketCounts`, `TimeUnix`) AS `BucketCounts`, argMax(`ExplicitBounds`, `TimeUnix`) AS `ExplicitBounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)))

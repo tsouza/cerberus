@@ -15,6 +15,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -1904,43 +1905,7 @@ func attributeLookupExpr(m chplan.Expr, key string) chplan.Expr {
 			Key: &chplan.LitString{V: key},
 		}
 	}
-	// Build the if-chain right-associatively so the leftmost candidate
-	// (the underscored input) wins when present:
-	//
-	//   if(mapContains(col, k0), col[k0],
-	//     if(mapContains(col, k1), col[k1],
-	//       ... col[kN-1]))
-	//
-	// The terminal branch is a bare MapAccess against the last
-	// candidate — when no candidate's key is present, the empty-string
-	// default matches Prom's "absent label" semantics for matcher
-	// comparison.
-	last := candidates[len(candidates)-1]
-	var chain chplan.Expr = &chplan.MapAccess{
-		Map: m,
-		Key: &chplan.LitString{V: last},
-	}
-	for i := len(candidates) - 2; i >= 0; i-- {
-		k := candidates[i]
-		chain = &chplan.FuncCall{
-			Name: "if",
-			Args: []chplan.Expr{
-				&chplan.FuncCall{
-					Name: "mapContains",
-					Args: []chplan.Expr{
-						m,
-						&chplan.LitString{V: k},
-					},
-				},
-				&chplan.MapAccess{
-					Map: m,
-					Key: &chplan.LitString{V: k},
-				},
-				chain,
-			},
-		}
-	}
-	return chain
+	return qlcommon.OTelDottedFallbackChain(m, candidates)
 }
 
 func matchOp(t labels.MatchType) chplan.BinaryOp {
@@ -2194,7 +2159,8 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 			// CrossJoin fans the single pinned value across the step grid and
 			// projects `anchor_ts` from the grid side, already unshifted.
 			return wrapDropNameCollisionGuard(broadcast, s,
-				&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}), nil
+				&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
+				&chplan.ColumnRef{Name: s.ValueColumn}), nil
 		}
 		return broadcast, nil
 	case gridFanout:
@@ -2283,7 +2249,8 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return wrapRangeWindowPreserveName(rw, s, preservedNameExpr(rw, vs.LabelMatchers, s)), nil
 	}
 	if guardNameCollision {
-		return wrapDropNameCollisionGuard(node, s, dropNameGuardAnchor(node, rw)), nil
+		return wrapDropNameCollisionGuard(node, s, dropNameGuardAnchor(node, rw),
+			&chplan.ColumnRef{Name: s.ValueColumn}), nil
 	}
 	return node, nil
 }
@@ -2824,7 +2791,18 @@ func duplicateLabelsetGuardExpr(s schema.Metrics) chplan.Expr {
 // subquery reads its per-row anchor from that column, not from TimeUnix).
 // Naming all four canonical outputs is what lets the HTTP layer's
 // `projectionExposesCanonical` read the result through unchanged.
-func wrapDropNameCollisionGuard(node chplan.Node, s schema.Metrics, anchorTS chplan.Expr) chplan.Node {
+//
+// `value` is the expression projected as the Value column. Callers that
+// forward the surviving row's own value pass `&chplan.ColumnRef{Name:
+// s.ValueColumn}`; a subquery-inner `quantile_over_time` with an
+// out-of-range literal phi passes the PromQL-spec ±Inf / NaN constant
+// instead, folding in the substitution `projectValueOverInner` performs on
+// the unguarded paths. Stacking that helper on top of this wrap instead
+// would take its non-RangeWindow branch and drop the `anchor_ts`
+// passthrough — the same reason wrapRangeWindowAtBroadcast takes a `value`.
+func wrapDropNameCollisionGuard(
+	node chplan.Node, s schema.Metrics, anchorTS, value chplan.Expr,
+) chplan.Node {
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	aliases := []string{s.AttributesColumn}
 	projections := []chplan.Projection{
@@ -2863,7 +2841,7 @@ func wrapDropNameCollisionGuard(node chplan.Node, s schema.Metrics, anchorTS chp
 		Projections: append(
 			projections,
 			chplan.Projection{Expr: tsExpr, Alias: s.TimestampColumn},
-			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+			chplan.Projection{Expr: value, Alias: s.ValueColumn},
 		),
 	}
 }
@@ -3357,28 +3335,55 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 	if err != nil {
 		return nil, err
 	}
+	// Instant context: the input relation is the canonical Sample shape,
+	// so `__name__` reads straight off the MetricName column.
+	offset := func() chplan.Expr {
+		return ratioOffsetExpr(s, &chplan.ColumnRef{Name: s.MetricNameColumn})
+	}
+	pred, err := limitRatioPredicate(a.Param, offset, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.Filter{Input: input, Predicate: pred}, nil
+}
 
+// limitRatioPredicate builds the row predicate implementing
+// HashRatioSampler's keep rule for ratio expression `param`, given a
+// factory that mints a fresh per-series offset expression.
+//
+// `offset` is a factory rather than a value because the computed-ratio
+// arm needs the offset in two sibling positions and chplan Expr trees
+// must stay trees (clone / walk invariants assume distinct nodes).
+//
+// Shared by the instant lowering (`lowerLimitRatio`) and the
+// subquery-matrix lowering (`lowerSubqueryOverLimitRatio`); the two
+// differ only in where the series' `__name__` comes from, which is
+// exactly what the factory closes over.
+func limitRatioPredicate(
+	param parser.Expr,
+	offset func() chplan.Expr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Expr, error) {
 	// Literal-ratio fast path (the common case: `limit_ratio(0.5, v)`,
 	// any scalar tree TryFoldScalar reduces). The ratio's sign is known
 	// at plan time, so a single comparison suffices and `r == 0` folds
-	// to a constant-false Filter (Prometheus returns early on all-zero
+	// to a constant-false predicate (Prometheus returns early on all-zero
 	// r), mirroring topk's K<1 degenerate arm.
-	if r, ok := tryScalarLiteral(a.Param); ok {
+	if r, ok := tryScalarLiteral(param); ok {
 		if math.IsNaN(r) {
 			return nil, fmt.Errorf("promql: limit_ratio ratio value is NaN")
 		}
-		if r == 0 {
-			return &chplan.Filter{Input: input, Predicate: &chplan.LitBool{V: false}}, nil
-		}
-		var pred chplan.Expr
-		if r > 0 {
+		switch {
+		case r == 0:
+			return &chplan.LitBool{V: false}, nil
+		case r > 0:
 			// keep offset < r
-			pred = &chplan.Binary{Op: chplan.OpLt, Left: ratioOffsetExpr(s), Right: &chplan.LitFloat{V: r}}
-		} else {
+			return &chplan.Binary{Op: chplan.OpLt, Left: offset(), Right: &chplan.LitFloat{V: r}}, nil
+		default:
 			// keep offset >= 1 + r (r < 0 here, so 1+r in [0,1))
-			pred = &chplan.Binary{Op: chplan.OpGe, Left: ratioOffsetExpr(s), Right: &chplan.LitFloat{V: 1.0 + r}}
+			return &chplan.Binary{Op: chplan.OpGe, Left: offset(), Right: &chplan.LitFloat{V: 1.0 + r}}, nil
 		}
-		return &chplan.Filter{Input: input, Predicate: pred}, nil
 	}
 
 	// Computed ratio (`limit_ratio(scalar(x), v)`, `limit_ratio(time()
@@ -3402,7 +3407,7 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 	// are structurally identical. A single error site covers all four.
 	rExprs := make([]chplan.Expr, 4)
 	for i := range rExprs {
-		e, err := lowerScalarArg(a.Param, s, ctx)
+		e, err := lowerScalarArg(param, s, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("promql: limit_ratio ratio: %w", err)
 		}
@@ -3411,17 +3416,14 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 	posArm := &chplan.Binary{
 		Op:    chplan.OpAnd,
 		Left:  &chplan.Binary{Op: chplan.OpGe, Left: rExprs[0], Right: zero},
-		Right: &chplan.Binary{Op: chplan.OpLt, Left: ratioOffsetExpr(s), Right: rExprs[1]},
+		Right: &chplan.Binary{Op: chplan.OpLt, Left: offset(), Right: rExprs[1]},
 	}
 	negArm := &chplan.Binary{
 		Op:    chplan.OpAnd,
 		Left:  &chplan.Binary{Op: chplan.OpLt, Left: rExprs[2], Right: zero},
-		Right: &chplan.Binary{Op: chplan.OpGe, Left: ratioOffsetExpr(s), Right: &chplan.Binary{Op: chplan.OpAdd, Left: one, Right: rExprs[3]}},
+		Right: &chplan.Binary{Op: chplan.OpGe, Left: offset(), Right: &chplan.Binary{Op: chplan.OpAdd, Left: one, Right: rExprs[3]}},
 	}
-	return &chplan.Filter{
-		Input:     input,
-		Predicate: &chplan.Binary{Op: chplan.OpOr, Left: posArm, Right: negArm},
-	}, nil
+	return &chplan.Binary{Op: chplan.OpOr, Left: posArm, Right: negArm}, nil
 }
 
 // ratioOffsetExpr builds the CH expression reproducing Prometheus's
@@ -3430,12 +3432,20 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 // encoding of the series label set, divided by float64(math.MaxUint64).
 //
 // The label set is reconstructed from the Attributes map with the
-// `__name__` label restored from MetricName (later-key-wins via
-// mapConcat so MetricName is authoritative). Keys are sorted ascending
+// `__name__` label restored from `nameExpr` (later-key-wins via
+// mapConcat so `nameExpr` is authoritative). Keys are sorted ascending
 // to match Prometheus's sorted-labels invariant, then each (name, value)
 // pair is emitted as lenPrefix(name)+name+lenPrefix(value)+value and the
 // whole run concatenated before hashing.
-func ratioOffsetExpr(s schema.Metrics) chplan.Expr {
+//
+// `nameExpr` nil means the input relation carries no per-series metric
+// name — the label set IS Attributes, with no `__name__` member at all,
+// and the overlay is skipped entirely. That is not a fallback but the
+// correct encoding: an input whose name was dropped upstream (`rate(…)`,
+// `sum by (…) (…)`) has a genuinely name-less label set in the reference
+// engine too, and overlaying `__name__=”` would hash a label set no
+// Prometheus series ever has.
+func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 	const (
 		mapKeysAlias = "k"
 		// float64(math.MaxUint64); the divisor Prometheus uses to map a
@@ -3444,42 +3454,40 @@ func ratioOffsetExpr(s schema.Metrics) chplan.Expr {
 	)
 
 	attrs := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
-	metricName := &chplan.ColumnRef{Name: s.MetricNameColumn}
 
-	// full = mapConcat(Attributes, map('__name__', MetricName))
+	// full = mapConcat(Attributes, map('__name__', <nameExpr>))
 	//
-	// The `__name__` label is restored from MetricName and overlaid onto
-	// the Attributes map. mapConcat is later-key-wins, so MetricName is
+	// The `__name__` label is restored from `nameExpr` and overlaid onto
+	// the Attributes map. mapConcat is later-key-wins, so `nameExpr` is
 	// authoritative if Attributes somehow already carried a `__name__`
 	// key (it never does in the OTel-CH schema).
 	//
-	// The overlay is unconditional. A genuinely name-less series (empty
-	// MetricName) would gain a spurious `__name__=""` entry that
-	// Prometheus's label set wouldn't have — but limit_ratio only ever
-	// sees an instant vector produced by a selector or a name-preserving
-	// function, so its input series always carry a metric name and that
-	// branch is unreachable in practice. An earlier
-	// `if(MetricName != '', map(...), <typed-empty-map>)` guard was
-	// dropped because every CH spelling of a typed empty-map fallback
-	// (`CAST(map(), ?)` binds the Map type as a `?` placeholder;
-	// `mapFilter(...)` over Attributes left the branch type
+	// The overlay is unconditional *within this branch*: whether a name
+	// exists at all is a plan-time question the caller has already
+	// answered by passing nil or not, so no CH-side conditional is
+	// needed. That matters — every CH spelling of a typed empty-map
+	// fallback (`CAST(map(), ?)` binds the Map type as a `?`
+	// placeholder; `mapFilter(...)` over Attributes left the branch type
 	// indeterminate) poisons ClickHouse's `concat`-vs-`arrayConcat`
 	// overload resolution downstream (Code 43) once the expression flows
 	// up through the inner aggregate's argMax/GROUP-BY aliasing.
-	full := &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			attrs,
-			&chplan.FuncCall{
-				Name: "map",
-				// `__name__` MUST be an inline literal, not a `?`-bound
-				// LitString: with the key bound as a placeholder CH can't
-				// resolve the map literal's key type at analysis time and
-				// mis-dispatches the downstream concat to arrayConcat
-				// (Code 43). See chplan.InlineString.
-				Args: []chplan.Expr{&chplan.InlineString{V: "__name__"}, metricName},
+	full := attrs
+	if nameExpr != nil {
+		full = &chplan.FuncCall{
+			Name: "mapConcat",
+			Args: []chplan.Expr{
+				attrs,
+				&chplan.FuncCall{
+					Name: "map",
+					// `__name__` MUST be an inline literal, not a `?`-bound
+					// LitString: with the key bound as a placeholder CH can't
+					// resolve the map literal's key type at analysis time and
+					// mis-dispatches the downstream concat to arrayConcat
+					// (Code 43). See chplan.InlineString.
+					Args: []chplan.Expr{&chplan.InlineString{V: "__name__"}, nameExpr},
+				},
 			},
-		},
+		}
 	}
 
 	// Sorted key list of the full map.
@@ -3785,7 +3793,7 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	kCtx.step = 0
 	kValue, err := lowerScalarArg(a.Param, s, kCtx)
 	if err != nil {
-		return nil, fmt.Errorf("promql: %s K: %w", a.Op.String(), err)
+		return nil, err
 	}
 	kExpr := &chplan.Project{
 		Input: &chplan.OneRow{},

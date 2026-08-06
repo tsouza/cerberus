@@ -20,6 +20,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -1322,32 +1323,7 @@ func attributeLookupExpr(labelsMap chplan.Expr, key string) chplan.Expr {
 	if len(candidates) <= 1 {
 		return &chplan.MapAccess{Map: labelsMap, Key: &chplan.LitString{V: key}}
 	}
-	last := candidates[len(candidates)-1]
-	var chain chplan.Expr = &chplan.MapAccess{
-		Map: labelsMap,
-		Key: &chplan.LitString{V: last},
-	}
-	for i := len(candidates) - 2; i >= 0; i-- {
-		k := candidates[i]
-		chain = &chplan.FuncCall{
-			Name: "if",
-			Args: []chplan.Expr{
-				&chplan.FuncCall{
-					Name: "mapContains",
-					Args: []chplan.Expr{
-						labelsMap,
-						&chplan.LitString{V: k},
-					},
-				},
-				&chplan.MapAccess{
-					Map: labelsMap,
-					Key: &chplan.LitString{V: k},
-				},
-				chain,
-			},
-		}
-	}
-	return chain
+	return qlcommon.OTelDottedFallbackChain(labelsMap, candidates)
 }
 
 // attributeLookupColumn is the column-name convenience wrapper for

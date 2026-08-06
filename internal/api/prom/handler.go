@@ -21,6 +21,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/api/httperr"
+	"github.com/tsouza/cerberus/internal/api/reqctx"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -693,41 +694,15 @@ func (h *Handler) respondRangeRetry(
 
 // applyQueryTimeout derives the request context every query handler runs
 // under, honouring the standard Prometheus `?timeout=<duration>` query
-// param. It resolves the effective per-query wall-clock budget — the
-// configured default (h.QueryTimeout) min'd with the request's ?timeout=
-// (Prometheus uses the smaller of the two), treating 0 on either side as
-// "no cap from that source" — and, when the budget is positive, threads
-// it onto the returned context as BOTH:
-//
-//   - a context deadline (context.WithTimeout), so a query that hangs
-//     past the budget unblocks the handler and releases its admit slot +
-//     pooled connection even if the server-side cap somehow doesn't fire;
-//     and
-//   - chclient.WithQueryTimeout, so the data-plane query's ClickHouse
-//     max_execution_time is narrowed to the same budget and the server
-//     aborts the query with TIMEOUT_EXCEEDED (code 159) → *QueryTimeoutError.
-//
-// The returned cancel MUST be deferred by the caller (it is a no-op when
-// no deadline was installed). A malformed ?timeout= is a 400 bad_data
-// (matching upstream Prometheus); ok=false signals the caller already
-// wrote the error and must return.
+// param via the shared [reqctx.ApplyQueryTimeout]. A malformed ?timeout=
+// is a 400 bad_data (matching upstream Prometheus); ok=false signals the
+// caller already wrote the error and must return.
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
-	ctx := r.Context()
-	budget := h.QueryTimeout
-	if raw := r.FormValue("timeout"); raw != "" {
-		reqTimeout, err := format.ParseDuration(raw)
-		if err != nil || reqTimeout < 0 {
-			writeError(w, http.StatusBadRequest, ErrBadData,
-				fmt.Errorf("invalid parameter 'timeout': %w", err))
-			return ctx, func() {}, false
-		}
-		budget = format.MinPositiveDuration(budget, reqTimeout)
+	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return r.Context(), func() {}, false
 	}
-	if budget <= 0 {
-		return ctx, func() {}, true
-	}
-	ctx = chclient.WithQueryTimeout(ctx, budget)
-	ctx, cancel := context.WithTimeout(ctx, budget)
 	return ctx, cancel, true
 }
 

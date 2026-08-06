@@ -369,13 +369,51 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 // recurrence.
 //
 // PromQL behaviour: < 2 samples → NaN.
+//
+// The two factors arrive either as literals (Scalars — the common
+// `double_exponential_smoothing(v[5m], 0.5, 0.3)` shape, whose (0, 1)
+// domain the lowerer already checked at compile time) or as computed
+// expressions (ScalarExprs — `double_exponential_smoothing(v[5m],
+// scalar(x), 0.3)`, whose value is only known at execution time). The
+// computed shape carries the domain check into SQL: a factor outside
+// (0, 1) — NaN included, since every comparison against NaN is false —
+// yields NaN for that row rather than a plausible-looking number from a
+// recurrence whose contraction assumption no longer holds.
 func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
-	if len(r.Scalars) != 2 {
-		return fmt.Errorf("%w: holt_winters requires 2 scalars (sf, tf), got %d", ErrUnsupported, len(r.Scalars))
+	switch {
+	case len(r.ScalarExprs) == 2:
+		sfExpr, tfExpr := r.ScalarExprs[0], r.ScalarExprs[1]
+		sf := Frag(func(b *Builder) { _ = b.Expr(sfExpr) })
+		tf := Frag(func(b *Builder) { _ = b.Expr(tfExpr) })
+		smoothed := holtWintersValueFrag(
+			sf, Paren(Sub(InlineLit(1.0), sf)),
+			tf, Paren(Sub(InlineLit(1.0), tf)),
+		)
+		return e.emitWindowedArray(r, Call(
+			"if",
+			And(holtWintersFactorInDomain(sf), holtWintersFactorInDomain(tf)),
+			smoothed,
+			BareIdent("nan"),
+		), 2)
+	case len(r.Scalars) == 2:
+		sf, tf := r.Scalars[0], r.Scalars[1]
+		return e.emitWindowedArray(r, holtWintersValueFrag(
+			InlineLit(sf), InlineLit(1-sf),
+			InlineLit(tf), InlineLit(1-tf),
+		), 2)
+	default:
+		return fmt.Errorf("%w: holt_winters requires 2 scalars (sf, tf), got %d literals + %d exprs",
+			ErrUnsupported, len(r.Scalars), len(r.ScalarExprs))
 	}
-	sf := r.Scalars[0]
-	tf := r.Scalars[1]
-	return e.emitWindowedArray(r, holtWintersValueFrag(sf, tf), 2)
+}
+
+// holtWintersFactorInDomain renders `(f > 0) AND (f < 1)` — reference
+// Prometheus's `sf <= 0 || sf >= 1` rejection predicate, negated. It is
+// only needed on the computed-factor path; a literal factor is checked
+// at lowering time (see promql.lowerHoltWinters) and never reaches SQL
+// out of domain.
+func holtWintersFactorInDomain(f Frag) Frag {
+	return And(Gt(f, InlineLit(0.0)), Lt(f, InlineLit(1.0)))
 }
 
 // holtWintersValueExpr renders the per-window Holt-Winters value
@@ -388,18 +426,16 @@ func (e *emitter) emitRangeWindowHoltWinters(r *chplan.RangeWindow) error {
 //
 // The expression returns NaN when the window has < 2 samples (Prom
 // emits NaN there).
-func holtWintersValueFrag(sf, tf float64) Frag {
+//
+// The four factor Frags are supplied by the caller rather than derived
+// here so the literal path can pass PRE-FOLDED complements
+// (`InlineLit(1-sf)`, one inline query-shape literal, no `?` binding —
+// byte-identical to the pinned goldens) while the computed path passes
+// the `(1 - <scalar expr>)` shape that only ClickHouse can evaluate.
+func holtWintersValueFrag(sfL, oneMinusSf, tfL, oneMinusTf Frag) Frag {
 	// We seed with the first two samples, then fold over the slice
 	// `window_vals[3:]` applying the recurrence. CH's arrayFold takes
 	// (lambda, array, initialAcc) and the lambda is (acc, elem).
-	//
-	// The smoothing constants ride InlineLit so they stay inline
-	// query-shape literals (no `?` binding) and format identically to the
-	// pinned goldens.
-	sfL := InlineLit(sf)
-	oneMinusSf := InlineLit(1 - sf)
-	tfL := InlineLit(tf)
-	oneMinusTf := InlineLit(1 - tf)
 	accS := Call("tupleElement", BareIdent("acc"), InlineLit(int64(1)))
 	accB := Call("tupleElement", BareIdent("acc"), InlineLit(int64(2)))
 	// new_s = sf*x + (1-sf)*(acc.s + acc.b). A factory because it appears
@@ -2246,6 +2282,15 @@ func varPopTwoPassFrag() Frag {
 // windows. `arr` is any Array(Float64) expression; it is sorted here, so
 // callers pass the raw values (the absolute-deviation array for the
 // outer median) without pre-sorting.
+//
+// The result is PARENTHESISED. `lower*(1-w) + upper*w` is a sum and
+// binOp emits no parens of its own, so an unwrapped return standing as
+// the right operand of mad_over_time's `x - median` rebinds to
+// `x - lower*(1-w) + upper*w` — the deviation array comes out shifted by
+// `2*w*upper` and, when the two middle samples are equal, degenerates to
+// the value array outright. An odd-length window has weight 0 and hides
+// this entirely; an even-length one returns a wrong number, never an
+// error. mad_over_time_even_window.txtar pins the difference.
 func medianOverArrayFrag(arr Frag) Frag {
 	const medianPhi = 0.5
 	sorted := Call("arraySort", arr)
@@ -2260,7 +2305,7 @@ func medianOverArrayFrag(arr Frag) Frag {
 	weight := func() Frag { return Paren(Sub(rank(), floorRank())) }
 	lowerTerm := Mul(Subscript(sorted, lowerIdx), Paren(Sub(InlineLit(int64(1)), weight())))
 	upperTerm := Mul(Subscript(sorted, upperIdx), weight())
-	return Add(lowerTerm, upperTerm)
+	return Paren(Add(lowerTerm, upperTerm))
 }
 
 // emitRangeWindowTsOfOverTime emits SQL for the experimental timestamp

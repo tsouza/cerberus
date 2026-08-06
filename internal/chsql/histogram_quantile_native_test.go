@@ -152,7 +152,11 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		"arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)",
 		"arrayFirstIndex(c -> c >= (0.95",
 		"length(`NegativeBucketCounts`)",
-		"`PositiveOffset` + length(`PositiveBucketCounts`)",
+		// phi == 0 / phi == 1 saturate to the lowest / highest POPULATED
+		// bucket, so each walks the concatenated counts for a non-zero
+		// entry rather than taking an array end.
+		"arrayFirstIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))",
+		"arrayLastIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))",
 		"0.95 < 0",
 		"0.95 > 1",
 		"0.95 = 0",

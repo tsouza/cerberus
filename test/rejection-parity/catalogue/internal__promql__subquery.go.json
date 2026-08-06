@@ -18,10 +18,8 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
-      "class": "divergence",
-      "trigger_query": "mad_over_time(demo_memory_usage_bytes[5m:1m])",
-      "tracking_issue": 1784,
-      "since": "2026-08-05"
+      "class": "internal",
+      "rationale": "unreachable: every PromQL function taking a range-vector argument is either a member of rangeVectorFn or is absent_over_time, which the arm above this guard routes to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it"
     },
     {
       "head": "promql",
@@ -62,28 +60,26 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
-      "class": "divergence",
-      "trigger_query": "max_over_time(limit_ratio(0.5, demo_memory_usage_bytes)[5m:1m])",
-      "tracking_issue": 1786,
-      "since": "2026-08-05"
+      "class": "internal",
+      "rationale": "every parser aggregation op is dispatched by the switch above this default arm (the eight per-bucket reducers plus quantile, topk/bottomk/limitk, limit_ratio and count_values), so no parseable query reaches it"
     },
     {
       "head": "promql",
-      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#1796796f",
-      "message": "promql: subquery inner %s expects exactly 1 argument, got %d",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#9b8454a6",
+      "message": "promql: subquery inner %s expects exactly %d argument(s), got %d",
       "class": "divergence",
-      "trigger_query": "max_over_time(double_exponential_smoothing(demo_memory_usage_bytes[5m], 0.5, 0.5)[10m:1m])",
-      "tracking_issue": 1785,
-      "since": "2026-08-05"
+      "trigger_query": "max_over_time(histogram_quantile(0.9, demo_memory_usage_bytes)[5m:1m])",
+      "tracking_issue": 1866,
+      "since": "2026-08-06"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
       "class": "divergence",
-      "trigger_query": "max_over_time(info(demo_memory_usage_bytes)[5m:1m])",
-      "tracking_issue": 1785,
-      "since": "2026-08-05"
+      "trigger_query": "max_over_time(vector(1)[5m:1m])",
+      "tracking_issue": 1866,
+      "since": "2026-08-06"
     },
     {
       "head": "promql",
@@ -97,9 +93,9 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "divergence",
-      "trigger_query": "max_over_time(mad_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
-      "tracking_issue": 1784,
-      "since": "2026-08-05"
+      "trigger_query": "max_over_time(absent_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
+      "tracking_issue": 1867,
+      "since": "2026-08-06"
     },
     {
       "head": "promql",
@@ -152,33 +148,10 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#0ff3d8b3",
-      "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], 1.5, 0.5)"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#15e82804",
-      "message": "promql: holt_winters requires scalar-literal smoothing and trend factors",
-      "class": "divergence",
-      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], scalar(vector(0.5)), 0.5)",
-      "tracking_issue": 1782,
-      "since": "2026-08-05"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2b0de462",
       "message": "promql: predict_linear expects 2 arguments, got %d",
       "class": "internal",
       "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2db9f2aa",
-      "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(rate(demo_cpu_usage_seconds_total[5m])[1h:5m], 0.5, 1.5)"
     },
     {
       "head": "promql",

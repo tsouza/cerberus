@@ -11,7 +11,7 @@
       "lean": true
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=All",
+      "url": "/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}",
       "lean": false
     },
     {
@@ -19,47 +19,15 @@
       "lean": true
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=All&var-metric=duration",
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=All&var-metric=errors",
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}&var-metric=duration",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=kind",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=name",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=resource.deployment.environment",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=resource.service.version",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=rootName",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=rootServiceName",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=span.http.status_code",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=status",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy=statusMessage",
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}&var-metric=errors",
       "lean": false
     },
     {
@@ -79,11 +47,11 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy=All&var-metric=duration",
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy={var-groupBy}&var-metric=duration",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy=All&var-metric=errors",
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy={var-groupBy}&var-metric=errors",
       "lean": false
     },
     {
@@ -99,155 +67,27 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=kind",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=kind&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=kind#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=kind#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=name",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=name&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=name#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=name#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.deployment.environment",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.deployment.environment&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.deployment.environment#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.deployment.environment#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version",
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}",
       "lean": true
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version&var-metric=duration",
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=duration",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version&var-metric=errors",
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=errors",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version&var-primarySignal=true",
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=true",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version#radio[Single|Grid|Rows]=Single",
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#radio[Single|Grid|Rows]=Single",
       "lean": false
     },
     {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootName",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootName&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootName#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootName#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootServiceName",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootServiceName&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootServiceName#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=rootServiceName#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=span.http.status_code",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=span.http.status_code&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=span.http.status_code#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=span.http.status_code#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=status",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=status&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=status#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=status#tabs[Favorites|All|Resource|Span]=All",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=statusMessage",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=statusMessage&var-primarySignal=true",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=statusMessage#radio[Single|Grid|Rows]=Single",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-exploretraces-app/explore?var-groupBy=statusMessage#tabs[Favorites|All|Resource|Span]=All",
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#tabs[Favorites|All|Resource|Span]=All",
       "lean": false
     },
     {

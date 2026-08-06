@@ -170,6 +170,10 @@ func TestLowerSubqueryInner_InstantTransforms(t *testing.T) {
 		`max_over_time(abs(sort(http_requests_total))[5m:1m])`,
 		`max_over_time(deg(atan(http_requests_total))[5m:1m])`,
 		`max_over_time(sort_by_label(clamp_min(http_requests_total, 0), "job")[5m:1m])`,
+		// `info` rewrites Attributes per sample and leaves TimeUnix /
+		// Value untouched, so it rides the Identity wrap exactly as the
+		// other label rewrites do.
+		`max_over_time(info(http_requests_total)[5m:1m])`,
 	}
 	for _, query := range accepted {
 		t.Run("accept/"+query, func(t *testing.T) {
@@ -185,12 +189,11 @@ func TestLowerSubqueryInner_InstantTransforms(t *testing.T) {
 
 	// The exclusions. Each names a family from the membership rule:
 	// anchor-synthesising (zero-arg date form, vector, time) and
-	// cross-sample (histogram_quantile's `le` fan-in, info's join).
+	// cross-sample (histogram_quantile's `le` fan-in).
 	rejected := []string{
 		`max_over_time(hour()[5m:1m])`,
 		`max_over_time(vector(1)[5m:1m])`,
 		`max_over_time(histogram_quantile(0.9, http_request_duration_seconds_bucket)[5m:1m])`,
-		`max_over_time(info(http_requests_total)[5m:1m])`,
 	}
 	for _, query := range rejected {
 		t.Run("reject/"+query, func(t *testing.T) {

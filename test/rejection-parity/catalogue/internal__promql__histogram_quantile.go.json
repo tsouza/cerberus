@@ -9,15 +9,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#1cf264f6",
-      "message": "promql: histogram_quantiles requires literal phi arguments for the %q label, got %T",
-      "class": "divergence",
-      "trigger_query": "histogram_quantiles(demo_api_request_duration_seconds, \"quantile\", scalar(vector(0.9)))",
-      "tracking_issue": 1765,
-      "since": "2026-08-05"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#b20609dc",
       "message": "promql: histogram_quantiles expects at least %d arguments (vector, label, phi...), got %d",
       "class": "internal",
