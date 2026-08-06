@@ -263,37 +263,68 @@ func pinnedMetricName(e parser.Expr) string {
 // group key reads the REWRITTEN Attributes — grouping the pre-rewrite
 // column would check the wrong label set.
 func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chplan.Node {
+	if rw, ok := rewritten.Input.(*chplan.RangeWindow); ok && rw.OuterRange > 0 {
+		// A MATRIX RangeWindow emits one row per (series, anchor) and
+		// publishes the anchor under `anchor_ts`, which
+		// api/prom.wrapWithSampleProjection reads back to bucket each
+		// series' points. Reaching it means walking the plan root past the
+		// Projects above the window (api/prom.isMatrixRangeWindow), and an
+		// Aggregate is not one of the nodes that walk crosses — so wrapping
+		// this shape in the guard would silently reclassify the query as
+		// non-matrix and answer an EMPTY matrix.
+		//
+		// Guarding this shape needs the classifier to be able to see
+		// through a shape-preserving Aggregate, which is a change to the
+		// plan-shape contract rather than to this guard. Tracked in #1899.
+		return rewritten
+	}
+
 	cols := canonicalSampleColumns(s)
 	canonical := chplan.ProjectExposesCanonical(rewritten, cols)
+	keyOnStep := guardKeysOnTimestamp(rewritten, s)
 
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	aliases := []string{s.AttributesColumn}
 	aggs := []chplan.AggFunc{
 		{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
 	}
-	if canonical {
-		// The rewrite preserved the name, so it is part of the output
-		// identity and belongs in the key rather than in an `any()`.
-		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.MetricNameColumn})
-		aliases = append(aliases, s.MetricNameColumn)
-	}
 
-	// Same per-step boundary as the name-drop half, derived the same way —
-	// see [guardKeysOnTimestamp]. The extra `tsInScope` conjunct is this
-	// half's own concern: the rewrite Project over a derived-shape input
-	// need not expose a timestamp column at all, and a key cannot name a
-	// column that is not there.
-	tsInScope := canonical || projectExposesTimestamp(rewritten, s)
-	switch {
-	case tsInScope && guardKeysOnTimestamp(rewritten, s):
-		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
-		aliases = append(aliases, s.TimestampColumn)
-	case tsInScope:
-		aggs = append(aggs, chplan.AggFunc{
-			Name:  "any",
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
-			Alias: s.TimestampColumn,
-		})
+	// Which columns the guard has to carry is DERIVED from the rewrite's
+	// own projection list rather than assumed, because the list differs by
+	// input shape: a canonical rewrite exposes the four Sample columns, a
+	// rewrite over a matrix RangeWindow exposes (Attributes, anchor_ts,
+	// TimeUnix, Value), and one over an instant RangeWindow exposes only
+	// (Attributes, Value). An Aggregate outputs exactly its key plus its
+	// aggregates, so any column left out here is DROPPED — and dropping
+	// `anchor_ts` silently empties the matrix response, because
+	// wrapWithSampleProjection reads that column back to bucket each
+	// series' points by anchor.
+	for _, proj := range rewritten.Projections {
+		switch name := chplan.ProjectionOutputName(proj); name {
+		case s.AttributesColumn, s.ValueColumn, "":
+			// Already placed above, or a computed projection that names no
+			// output column and so cannot be referenced by the wrapper.
+		case s.MetricNameColumn:
+			// The rewrite preserved the name, so it is part of the output
+			// identity and belongs in the key rather than in an `any()`.
+			groupBy = append(groupBy, &chplan.ColumnRef{Name: name})
+			aliases = append(aliases, name)
+		default:
+			// A step-identifying column: the schema timestamp, or the
+			// RangeWindow per-anchor grid column. Whether it belongs in the
+			// key is the same question the name-drop half asks — see
+			// [guardKeysOnTimestamp].
+			if keyOnStep {
+				groupBy = append(groupBy, &chplan.ColumnRef{Name: name})
+				aliases = append(aliases, name)
+				continue
+			}
+			aggs = append(aggs, chplan.AggFunc{
+				Name:  "any",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
+				Alias: name,
+			})
+		}
 	}
 
 	guarded := chplan.Node(&chplan.Aggregate{
@@ -304,10 +335,10 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 		Having:         duplicateLabelsetRowCountGuardExpr(),
 	})
 	if !canonical {
-		// A derived-shape rewrite (over an instant RangeWindow) exposes
-		// only (Attributes, Value); the Aggregate exposes the same two, and
-		// an Aggregate is already classified derived, so the shape a
-		// consumer sees is unchanged.
+		// A derived-shape rewrite exposes no MetricName; the Aggregate
+		// exposes the same columns it was given, and an Aggregate is
+		// already classified derived, so the shape a consumer sees is
+		// unchanged.
 		return guarded
 	}
 	// A canonical rewrite must STAY canonical: an Aggregate is classified
@@ -323,18 +354,6 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 		},
 	}
-}
-
-// projectExposesTimestamp reports whether p names the schema timestamp
-// column among its outputs — the one column the label-rewrite guard needs
-// but a derived-shape rewrite may not carry.
-func projectExposesTimestamp(p *chplan.Project, s schema.Metrics) bool {
-	for _, proj := range p.Projections {
-		if chplan.ProjectionOutputsColumn(proj, s.TimestampColumn) {
-			return true
-		}
-	}
-	return false
 }
 
 // duplicateLabelsetRowCountGuardExpr is the HAVING gate for a shape whose

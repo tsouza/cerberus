@@ -355,3 +355,82 @@ func TestQueryRange_InstantNameDrop_DistinctLabelsets_ChDB(t *testing.T) {
 		}
 	}
 }
+
+// TestQueryRange_LabelRewriteOverMatrixWindow_Intact_ChDB pins the shape
+// the label-rewrite guard deliberately does NOT wrap: a rewrite over a
+// matrix RangeWindow (#1899).
+//
+// It is a control against a specific, silent failure mode rather than a
+// restatement of "label_replace works". A matrix RangeWindow publishes its
+// per-anchor timestamp as `anchor_ts`, and the endpoint finds that window
+// by walking the plan root past the Projects above it — a walk that does
+// not cross an Aggregate. Wrapping this shape in the guard's Aggregate
+// therefore does not fail loudly; it reclassifies the query as non-matrix
+// and answers `"result":[]` with status 200, which no status-code
+// assertion anywhere would notice.
+//
+// So this asserts the payload: both series survive, each carries the
+// rewritten label, and each keeps every point. An earlier revision of the
+// guard returned an empty matrix here and passed every other test in this
+// file.
+func TestQueryRange_LabelRewriteOverMatrixWindow_Intact_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
+	srv, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+
+	wantSteps := int(end.Sub(start)/step) + 1
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantCores map[string]string
+	}{
+		{
+			name:      "label_replace_over_rate",
+			query:     `label_replace(rate(cpu_temp[5m]), "core", "all", "host", ".*")`,
+			wantCores: map[string]string{"a": "all", "b": "all"},
+		},
+		{
+			name:      "label_join_over_rate",
+			query:     `label_join(rate(cpu_temp[5m]), "core", "-", "host")`,
+			wantCores: map[string]string{"a": "a", "b": "b"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := getBody(t, fmt.Sprintf(
+				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				srv.URL, url.QueryEscape(tc.query), start.Unix(), end.Unix(), int(step.Seconds()),
+			))
+			if status != http.StatusOK {
+				t.Fatalf("%s: status: got %d, want 200; body=%s", tc.query, status, body)
+			}
+
+			var got struct {
+				Data struct {
+					Result []prom.MatrixSample `json:"result"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &got); err != nil {
+				t.Fatalf("%s: decode: %v; body=%s", tc.query, err, body)
+			}
+			if len(got.Data.Result) != len(tc.wantCores) {
+				t.Fatalf("%s: got %d series, want %d — an Aggregate between the "+
+					"endpoint and the matrix window silently empties this result; body=%s",
+					tc.query, len(got.Data.Result), len(tc.wantCores), body)
+			}
+			for _, series := range got.Data.Result {
+				host := series.Metric["host"]
+				want, ok := tc.wantCores[host]
+				if !ok {
+					t.Fatalf("%s: unexpected series %v", tc.query, series.Metric)
+				}
+				if got := series.Metric["core"]; got != want {
+					t.Errorf("%s: series host=%s: core = %q, want %q", tc.query, host, got, want)
+				}
+				if len(series.Values) != wantSteps {
+					t.Errorf("%s: series host=%s: %d points, want %d",
+						tc.query, host, len(series.Values), wantSteps)
+				}
+			}
+		})
+	}
+}
