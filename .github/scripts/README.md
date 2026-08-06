@@ -1137,7 +1137,7 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
 
 - **`compose-smoke-matrix.mjs`** — `e2e.yml`, the `compose-smoke-setup` job.
-  Single source of truth for how the `compose-smoke` required PR gate fans its
+  Single source of truth for how the `compose-smoke` release gate fans its
   10 Playwright spec files out across a balanced matrix of isolated-compose-
   stack shards. The three heaviest specs are each one indivisible async
   `test()` (Playwright's native `--shard` can't split them), so the
