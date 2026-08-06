@@ -99,12 +99,29 @@ per-layer "catches X / misses Y" guidance.
    There is no tolerance file and no exemption list.
 4. **Conventional Commits**, enforced by `commitlint` (`.commitlintrc.json`). Subject ≤ 100
    characters.
-5. **No manual pre-flight; lefthook + CI own it.** Do not run `just test`, `just lint`, `go test`,
-   `golangci-lint run`, `go build`, or `markdownlint-cli2` by hand before pushing. `lefthook.yml` is
-   layered: `pre-commit` runs sub-second formatters on staged files, `commit-msg` runs commitlint,
-   and `pre-push` mirrors the CI `check` + `lint` + `forbid-skip` jobs. `LEFTHOOK=0 git push`
-   bypasses for WIP branches. CI runs the full suite plus the compat / e2e / mutation lanes the local
-   hook intentionally does not.
+5. **No speculative pre-flight, but a red check is reproduced locally before the next push.** These
+   are two halves of one rule, and the second half wins wherever they meet.
+   - *Before* a push, do not run `just test`, `just lint`, `go test`, `golangci-lint run`,
+     `go build`, or `markdownlint-cli2` as a ritual over the whole tree. `lefthook.yml` is layered:
+     `pre-commit` runs sub-second formatters on staged files, `commit-msg` runs commitlint, and
+     `pre-push` mirrors the CI `check` + `lint` + `forbid-skip` jobs. `LEFTHOOK=0 git push` bypasses
+     for WIP branches.
+   - *After* CI reports a red check, **reproduce that exact failure locally, narrowed to the thing
+     that failed**, and confirm the fix locally before pushing again. Pushing a speculative fix and
+     waiting on CI to find out is forbidden: a full run is ~19 checks and ~40 minutes, so a
+     guess-and-wait loop burns CI credits and wall-clock for feedback a targeted local run gives in
+     seconds. Narrow to the failing unit — `go test -run '^TestName$/^subtest$' ./internal/<pkg>/`,
+     or the single `node .github/scripts/<gate>.mjs`. Never re-run a whole recipe to check one test,
+     and never invoke `go test` directly where a recipe exists; the recipe carries the build tags,
+     the race flag and the timeouts, and bypassing it produces failures the recipe would not have.
+
+   Three lanes genuinely cannot be settled locally, and only these three justify a CI round-trip:
+   `lint` (golangci-lint in an agent worktree reports "No issues found" without analysing — a local
+   green is not evidence), `strict-scan` and the compat lanes (need a real ClickHouse, not chDB), and
+   `e2e` / `compose-smoke` / crawl (need k3d or Docker Compose). For those, read the CI log for the
+   exact rule, `file:line`, or assertion and reason about it directly. Concurrency hazard: this repo
+   has no per-worktree Docker Compose project-name isolation, so a compose run from one worktree
+   corrupts another's containers — never start compose while another agent is live.
 6. **Tests assert or are removed.** Never `t.Skip`, soft-assert, silent-recover, or `should_skip` a
    test. A feature that cannot run on the CI substrate (for example a CH function above the chDB
    floor) is gated at runtime and validated elsewhere, never skipped. `forbid-skip` enforces this
