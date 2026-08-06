@@ -1,0 +1,10 @@
+{
+  "query": "edge_max_over_time_subquery_at_pinned",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 5,
+  "cumulative_d": "15m0s",
+  "outer_range": "1h0m0s"
+}

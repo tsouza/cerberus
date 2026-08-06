@@ -37,8 +37,8 @@ import (
 // file reuses that pattern purely to source the SQL text; the actual
 // fan-factor / scan_rows measurement runs through the SAME [Profiler] every
 // other fixture uses, so the resulting [Record]s slot into
-// cardinality-baseline.json next to the TXTAR-derived rows with no special
-// casing in the ratchet.
+// the cardinality-baseline tree next to the TXTAR-derived shards with no
+// special casing in the ratchet.
 
 // metadataProfileDays is the day-partition spread the seed scatters rows
 // across. It must stay comfortably inside the handler's default 14-day
@@ -334,7 +334,7 @@ func captureMetadataFixtures() []metadataFixture {
 // endpoints from issue #1530 (see the package-level doc above) through the
 // SAME [Profiler] ProfileCorpus uses, so their [Record]s carry the same
 // fan_factor / scan_rows / operator-flag signal as every TXTAR-derived
-// fixture and slot into cardinality-baseline.json without special-casing.
+// fixture and slot into the cardinality-baseline tree without special-casing.
 func ProfileMetadataEndpoints() ([]Record, error) {
 	p, err := NewProfiler()
 	if err != nil {

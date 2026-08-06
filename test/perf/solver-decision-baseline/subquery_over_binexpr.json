@@ -1,0 +1,10 @@
+{
+  "query": "subquery_over_binexpr",
+  "routed": false,
+  "k": 0,
+  "reason": "below-threshold",
+  "n_anchors": 241,
+  "fanout": 10,
+  "cumulative_d": "6m0s",
+  "outer_range": "1h0m0s"
+}

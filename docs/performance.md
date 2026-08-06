@@ -176,11 +176,12 @@ every PR) to *broad* (corpus-wide, nightly).
 4. **Cardinality ratchet** — `test/perf/cardinality_ratchet_test.go`, in the
    required `perf-guards` chDB job (runs on every PR). Pins every
    fixture's fan factor + structural flags + recursion depth in
-   `test/perf/cardinality-baseline.json` and fails the run on an **upward**
+   `test/perf/cardinality-baseline/<head>/<name>.json` — one shard per
+   fixture — and fails the run on an **upward**
    fan-factor regression, a new CROSS JOIN / `WITH RECURSIVE` where the baseline
    had none, a deeper recursion, or any change at all to `scan_rows` /
    `has_array_join` (structural identity, no better direction). A new fixture
-   must add a baseline row, so a new construct's absolute fan factor lands in
+   must add a baseline shard, so a new construct's absolute fan factor lands in
    the diff as a built-in cost review.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the

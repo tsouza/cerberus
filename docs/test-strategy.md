@@ -459,21 +459,21 @@ for the strategy):
 - **Cardinality + scale-wall ratchets** (`test/perf/cardinality_ratchet_test.go`,
   `scale_wall_pin_chdb_test.go`, chdb `perf-guards` job) — pin every
   fixture's fan factor + structural flags + recursion depth in
-  `cardinality-baseline.json` / `scale-wall-baseline.json` and fail on an
-  upward regression, a new unbounded shape, or a deeper recursion. A
+  `cardinality-baseline/<head>/<name>.json` / `scale-wall-baseline.json` and
+  fail on an upward regression, a new unbounded shape, or a deeper recursion. A
   decrease never blocks; the ceiling tightens only on a deliberate
-  `just update-cardinality-baseline` — which `just update-golden` now
+  `just update-cardinality-baseline` — which `just update-golden`
   chains automatically, so adding a TXTAR fixture records its ratchet
-  entry in the same pass that fills the goldens (closing the recurring
+  shard in the same pass that fills the goldens (closing the recurring
   "unrecorded fixture → red `perf-guards` on main" miss). `scan_rows` and
   `has_array_join` are compared for exact equality rather than ratcheted:
-  neither has a "better" direction, so a change is the row ceasing to describe
-  its fixture, and a stored field nothing compares is a hole rather than soft
-  coverage.
+  neither has a "better" direction, so a change is the shard ceasing to
+  describe its fixture, and a stored field nothing compares is a hole rather
+  than soft coverage.
 - **Solver-decision ratchet** (`test/perf/solver_decision_ratchet_test.go`,
   chDB-free, in `check`) — pins the per-fixture route A/B classification
-  against `solver-decision-baseline.json` so a routing-heuristic change
-  surfaces in the diff.
+  against `solver-decision-baseline/<query>.json` so a routing-heuristic
+  change surfaces in the diff.
 - **Corpus-wide fan-out profiler** (`test/perf/profile`, the `perf-profile`
   workflow, nightly + push, informational) — profiles every executable
   TXTAR fixture via in-process chDB `EXPLAIN` + per-subquery `count()`,
@@ -1008,7 +1008,7 @@ adding the gate above).
 
 They do not. Verified empirically 2026-08-04: two throwaway branches pushed
 to this repo, each inserting one new record at a different, non-overlapping
-line offset into `test/perf/solver-decision-baseline.json` off the same base
+line offset into one `-merge`-guarded generated baseline off the same base
 commit, produced a throwaway PR that `gh pr view --json mergeable` reported
 as `"mergeable":"MERGEABLE"` — while a LOCAL `git merge` of the identical
 branch pair, run in a scratch worktree, refused with "Cannot merge binary
@@ -1041,9 +1041,11 @@ unilaterally.
 
 `.github/scripts/generated-baseline-structural-guard.mjs`, wired into the
 required `forbid-skip` job, adds a fast, dependency-free structural
-pre-filter (unique key, sorted order, and — where verified uniform — one
-consistent field set) over the subset of `-merge` paths whose shape was
-hand-checked against the committed content. It is a cheap, always-on second
+pre-filter over the subset of `-merge` paths whose shape was hand-checked
+against the committed content: for a flat array, a unique key in sorted
+order; for a sharded tree, the invariant only a tree can state — every
+shard's key field equals the path it is filed under — and, on both shapes
+where the records were verified uniform, one consistent field set. It is a cheap, always-on second
 signal, not a replacement for the content-exact ratchets above — a
 structural check cannot tell a value that is merely out of place from one
 that is subtly wrong. One family was found to have weaker per-PR coverage:

@@ -1,0 +1,10 @@
+{
+  "query": "instant_sum_over_suffixed_count_delta_sum",
+  "routed": true,
+  "k": 8,
+  "reason": "routed",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

@@ -1,0 +1,10 @@
+{
+  "query": "edge_rate_at_timestamp_range_pinned",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 0,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

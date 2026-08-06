@@ -1,0 +1,10 @@
+{
+  "query": "at_modifier_range_mode_collapse",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 0,
+  "cumulative_d": "0s",
+  "outer_range": "1h0m0s"
+}

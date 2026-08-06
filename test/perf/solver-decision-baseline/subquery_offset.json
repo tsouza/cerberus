@@ -1,0 +1,10 @@
+{
+  "query": "subquery_offset",
+  "routed": false,
+  "k": 0,
+  "reason": "instant",
+  "n_anchors": 6,
+  "fanout": 5,
+  "cumulative_d": "5m0s",
+  "outer_range": "5m0s"
+}

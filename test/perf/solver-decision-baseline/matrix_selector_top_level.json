@@ -1,0 +1,10 @@
+{
+  "query": "matrix_selector_top_level",
+  "routed": false,
+  "k": 0,
+  "reason": "extraction-failed",
+  "n_anchors": 0,
+  "fanout": 0,
+  "cumulative_d": "0s",
+  "outer_range": "0s"
+}

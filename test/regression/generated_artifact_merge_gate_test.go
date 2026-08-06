@@ -1,6 +1,7 @@
 package regression
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,8 +12,8 @@ import (
 // This file pins the `.gitattributes` gate that stops git from three-way
 // line-merging a GENERATED artefact.
 //
-// PR #1422 merged test/perf/cardinality-baseline.json — a sorted array of
-// per-fixture records — with NO conflict. Both sides had inserted entries at
+// PR #1422 merged the cardinality ratchet baseline — a roster of per-fixture
+// records — with NO conflict. Both sides had inserted entries at
 // nearby offsets, git's line-based merge shifted the record boundaries, and
 // fixture names ended up paired with the next record's metrics: the whole
 // traceql block came out off by one, and so did the promql
@@ -87,8 +88,6 @@ const parityBaselineSync = "compat-baseline-sync.mjs"
 // generatedArtifacts is the canonical roster of committed generated artefacts.
 // Every entry must be `-merge` gated and documented in `.gitattributes`.
 var generatedArtifacts = []generatedArtifact{
-	{"test/perf/cardinality-baseline.json", "just update-cardinality-baseline"},
-	{"test/perf/solver-decision-baseline.json", "just update-solver-decision-baseline"},
 	{"test/perf/scale-wall-baseline.json", "just update-scale-wall-baseline"},
 	{"test/coverage-floor.json", "just update-coverage-floor"},
 
@@ -138,45 +137,78 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json", crawlInventorySpec},
 }
 
-// catalogueShardDir is the rejection catalogue, stored as one shard per
-// lowering SOURCE FILE (test/rejection-parity/catalogue.go's shardName owns
-// the mapping). Sharding is itself a merge measure — two branches fixing
-// guards in different lowering files write different shards — but it does not
-// retire this gate: two branches touching the SAME lowering file still meet in
-// one shard, which is the #1422 shape again at shard granularity.
-const catalogueShardDir = "test/rejection-parity/catalogue"
+// shardExt is the suffix every shard file carries; a shard tree holds nothing
+// else.
+const shardExt = ".json"
 
-// catalogueShardExt is the suffix every shard file carries; the directory
-// holds nothing else.
-const catalogueShardExt = ".json"
+// shardTree is a generated artefact stored as a DIRECTORY of one shard per
+// record rather than as a single file. Sharding is itself a merge measure —
+// two branches touching different records write different paths and never
+// meet — but it does not retire this gate: two branches moving the SAME record
+// still meet in one shard, which is the #1422 shape again at shard
+// granularity.
+type shardTree struct {
+	// dir is the tree root, repo-root-relative.
+	dir string
+	// regen is the fragment of the regeneration instruction
+	// `.gitattributes` must carry, exactly as for a single-file artefact.
+	regen string
+	// what names the tree in the failure message that fires when it is
+	// empty, so the reader knows what stopped being gated.
+	what string
+}
 
-// rosterArtifacts returns the hand-written roster with the catalogue's shards
-// expanded into one entry apiece. Enumerating them beats hard-coding thirty
-// paths that turn over whenever a lowering file gains or loses its last
-// guard. The net below independently reaches the shards through their
-// directory name, so the two overlap here by design: this roster additionally
-// pins the regeneration command, which the net cannot.
+// shardTrees is the roster of sharded generated artefacts. Each is expanded
+// into one roster entry per shard below.
+var shardTrees = []shardTree{
+	// The rejection catalogue: one shard per lowering SOURCE FILE
+	// (test/rejection-parity/catalogue.go's shardName owns the mapping).
+	{"test/rejection-parity/catalogue", inventoryUpdateEnv, "rejection site"},
+	// The two perf ratchet baselines: one shard per RECORD — a profiled
+	// fixture, filed under its head, and a classified corpus query
+	// (test/perf/baseline_shards_test.go owns both mappings).
+	{"test/perf/cardinality-baseline", "just update-cardinality-baseline", "profiled fixture"},
+	{"test/perf/solver-decision-baseline", "just update-solver-decision-baseline", "classified query"},
+}
+
+// rosterArtifacts returns the hand-written roster with every shard tree
+// expanded into one entry per shard. Enumerating them beats hard-coding
+// hundreds of paths that turn over whenever a fixture or a lowering guard is
+// added or dropped. The net below independently reaches the shards through
+// their directory name, so the two overlap here by design: this roster
+// additionally pins the regeneration command, which the net cannot.
 func rosterArtifacts(t *testing.T) []generatedArtifact {
 	t.Helper()
 
-	dir := filepath.Join(repoRoot, filepath.FromSlash(catalogueShardDir))
-	des, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v. The rejection catalogue is a directory of per-source-file shards; if it "+
-			"moved, this gate and %s have to move with it.", catalogueShardDir, err, gitattributesPath)
-	}
-
-	out := make([]generatedArtifact, 0, len(generatedArtifacts)+len(des))
+	out := make([]generatedArtifact, 0, len(generatedArtifacts))
 	out = append(out, generatedArtifacts...)
-	for _, de := range des {
-		if de.IsDir() || !strings.HasSuffix(de.Name(), catalogueShardExt) {
-			continue
+
+	for _, tree := range shardTrees {
+		root := filepath.Join(repoRoot, filepath.FromSlash(tree.dir))
+		before := len(out)
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(d.Name(), shardExt) {
+				return nil
+			}
+			rel, rerr := filepath.Rel(repoRoot, path)
+			if rerr != nil {
+				return rerr
+			}
+			out = append(out, generatedArtifact{filepath.ToSlash(rel), tree.regen})
+
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v. It is a directory of per-record shards; if it moved, this gate "+
+				"and %s have to move with it.", tree.dir, err, gitattributesPath)
 		}
-		out = append(out, generatedArtifact{catalogueShardDir + "/" + de.Name(), inventoryUpdateEnv})
-	}
-	if len(out) == len(generatedArtifacts) {
-		t.Fatalf("%s holds no %s shard. An empty catalogue directory would make this gate vacuous for "+
-			"every rejection site in the tree.", catalogueShardDir, catalogueShardExt)
+		if len(out) == before {
+			t.Fatalf("%s holds no %s shard. An empty shard tree would make this gate vacuous for "+
+				"every %s in the tree.", tree.dir, shardExt, tree.what)
+		}
 	}
 
 	return out
@@ -191,7 +223,14 @@ func TestGeneratedArtifactsRefuseLineMerge(t *testing.T) {
 
 	attrBody := readGitattributes(t)
 
-	for _, artifact := range rosterArtifacts(t) {
+	roster := rosterArtifacts(t)
+	paths := make([]string, 0, len(roster))
+	for _, artifact := range roster {
+		paths = append(paths, artifact.path)
+	}
+	states := mergeAttrs(t, paths)
+
+	for _, artifact := range roster {
 		t.Run(artifact.path, func(t *testing.T) {
 			t.Parallel()
 
@@ -201,7 +240,7 @@ func TestGeneratedArtifactsRefuseLineMerge(t *testing.T) {
 					"the gate pointing at nothing.", artifact.path, err, gitattributesPath)
 			}
 
-			if got := mergeAttr(t, artifact.path); got != mergeAttrUnset {
+			if got := states[artifact.path]; got != mergeAttrUnset {
 				t.Errorf("%s has merge=%s, want %s. It is written by %q, so a three-way line "+
 					"merge of it is never a correct resolution — and when both sides insert "+
 					"records at nearby offsets git produces NO conflict, shifts the record "+
@@ -265,14 +304,17 @@ func TestNoGeneratedArtifactEscapesTheMergeGate(t *testing.T) {
 		t.Fatalf("git ls-files: %v", err)
 	}
 
-	var matched int
+	var candidates []string
 	for _, tracked := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if !looksGenerated(tracked) {
-			continue
+		if looksGenerated(tracked) {
+			candidates = append(candidates, tracked)
 		}
-		matched++
+	}
+	states := mergeAttrs(t, candidates)
 
-		gated := mergeAttr(t, tracked) == mergeAttrUnset
+	matched := len(candidates)
+	for _, tracked := range candidates {
+		gated := states[tracked] == mergeAttrUnset
 		if _, ok := rostered[tracked]; ok {
 			if !gated {
 				// The per-artefact test above reports this in full; counting it
@@ -357,7 +399,8 @@ func TestLooksGeneratedReadsTheWholePath(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"marker on the basename", "test/perf/cardinality-baseline.json", true},
+		{"marker on the basename", "test/perf/scale-wall-baseline.json", true},
+		{"marker on a nested shard directory", "test/perf/cardinality-baseline/promql/rate.json", true},
 		{"marker on the directory only", "test/rejection-parity/catalogue/internal__promql__lower.go.json", true},
 		{"marker on a directory further up", "test/rejection-parity/catalogue/nested/shard.json", true},
 		{"marker anywhere, uppercased", "test/Rejection-Parity/CATALOGUE/Shard.JSON", true},
@@ -390,23 +433,45 @@ func readGitattributes(t *testing.T) string {
 	return string(buf)
 }
 
-// mergeAttr returns the state git resolves the `merge` attribute to for path.
-func mergeAttr(t *testing.T, path string) string {
+// mergeAttrs returns the state git resolves the `merge` attribute to for every
+// given path, in ONE `git check-attr` invocation. The sharded artefacts put
+// well over a thousand paths through this gate, and a subprocess apiece turned
+// a millisecond check into a minute of process churn; `--stdin` resolves the
+// whole set against the same attribute stack in a single pass. Git writes one
+// result line per input line, in input order, which is what pairs the states
+// back to the paths — a path may itself contain a colon, so the state is read
+// from the LAST separator rather than by splitting the line into fields.
+func mergeAttrs(t *testing.T, paths []string) map[string]string {
 	t.Helper()
 
-	cmd := exec.Command("git", "check-attr", "merge", "--", path)
+	if len(paths) == 0 {
+		return map[string]string{}
+	}
+
+	cmd := exec.Command("git", "check-attr", "merge", "--stdin")
 	cmd.Dir = repoRoot
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git check-attr merge -- %s: %v", path, err)
+		t.Fatalf("git check-attr merge --stdin (%d paths): %v", len(paths), err)
 	}
 
-	line := strings.TrimSpace(string(out))
-	idx := strings.LastIndex(line, checkAttrSeparator)
-	if idx < 0 {
-		t.Fatalf("git check-attr merge -- %s printed %q, which carries no %q separator",
-			path, line, checkAttrSeparator)
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) != len(paths) {
+		t.Fatalf("git check-attr merge --stdin printed %d line(s) for %d path(s); the result lines "+
+			"are paired back to the paths by position, so a mismatch means every state read here "+
+			"could belong to the wrong file.", len(lines), len(paths))
 	}
 
-	return line[idx+len(checkAttrSeparator):]
+	states := make(map[string]string, len(paths))
+	for i, line := range lines {
+		idx := strings.LastIndex(line, checkAttrSeparator)
+		if idx < 0 {
+			t.Fatalf("git check-attr merge printed %q for %s, which carries no %q separator",
+				line, paths[i], checkAttrSeparator)
+		}
+		states[paths[i]] = line[idx+len(checkAttrSeparator):]
+	}
+
+	return states
 }

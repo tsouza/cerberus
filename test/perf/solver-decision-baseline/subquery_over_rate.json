@@ -1,0 +1,10 @@
+{
+  "query": "subquery_over_rate",
+  "routed": false,
+  "k": 0,
+  "reason": "instant",
+  "n_anchors": 13,
+  "fanout": 1,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}
