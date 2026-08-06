@@ -320,6 +320,30 @@ func lowerSubqueryOverCall(
 	if call.Func.Name == "absent" {
 		return lowerSubqueryOverAbsent(sub, call, step, s, ctx)
 	}
+	// Everything below models a RangeWindow reducer over a range vector,
+	// so the shape table may only be consulted for a call the reducer
+	// table actually owns. Every OTHER call is an instant-vector shape
+	// whose argument is not a range vector at all — a differently-arity'd
+	// instant fn (`histogram_quantile(0.9, m)`), an anchor-synthesising
+	// zero-arg form (`day_of_month()`, `vector(1)`), or a transform over a
+	// collapsing subtree (`sort(sum(m))`). Reading those through
+	// [subqueryInnerRangeFnShape] rejected them on arity or on "must wrap
+	// a MatrixSelector" while reference Prometheus simply evaluates them
+	// at each anchor, so they route to the per-anchor grid lowering
+	// instead (issue #1866).
+	//
+	// `absent_over_time` is the one range-vector function deliberately
+	// outside [rangeVectorFn] — it lowers to its own chplan.AbsentOverTime
+	// node rather than a RangeWindow — and it takes the same exit: the
+	// reducer path used to build a RangeWindow the emitter has no case
+	// for, which failed at emit time with `unsupported: range function
+	// "absent_over_time"` for the plain-matrix form and at lowering with
+	// "does not accept a subquery argument" for the nested subquery form
+	// (issue #1867). Routing through lowerCall reaches the dedicated
+	// absent lowerings for BOTH argument shapes.
+	if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer {
+		return lowerSubqueryOverInstantCall(sub, call, step, s, ctx)
+	}
 	arity, matrixArg := subqueryInnerRangeFnShape(call.Func.Name)
 	if len(call.Args) != arity {
 		return nil, fmt.Errorf("promql: subquery inner %s expects exactly %d argument(s), got %d",
@@ -436,6 +460,60 @@ func subqueryInnerRangeFnShape(fn string) (arity, matrixArg int) {
 		return 2, 1
 	}
 	return 1, 0
+}
+
+// lowerSubqueryOverInstantCall — `<call>[<range>:<step>]` for every call
+// that is neither sample-preserving (the Identity wrap of
+// [lowerSubqueryOverCall]'s first arm) nor a RangeWindow reducer over a
+// range vector.
+//
+// PromQL defines `<expr>[<range>:<step>]` as "re-evaluate <expr> as an
+// INSTANT query at every grid anchor", and for these calls that is the
+// only faithful reading: `histogram_quantile(0.9, m)` fans in across the
+// `le` series at a shared anchor, `vector(1)` and the zero-arg date
+// forms synthesise a row stamped with the anchor itself, and
+// `sort(sum(m))` collapses many samples into one row per anchor. None of
+// them carries a stored sample's timestamp forward, so the Identity wrap
+// has nothing to select on — and none of them takes a range vector, so
+// the reducer path's "must wrap a MatrixSelector" contract never applied
+// to them in the first place.
+//
+// The lowering is the same two-step every arithmetic subquery inner
+// takes ([lowerSubqueryOverUnary], [lowerSubqueryOverBinary]): hand the
+// call a plain instant-mode context whose grid IS the subquery's anchor
+// grid ([subqueryGridCtx]), lower it there through the ordinary
+// [lowerCall] dispatch — which is what routes `absent_over_time` to its
+// own plan node for both the matrix-selector and the nested-subquery
+// argument shapes — and re-expose the result under the matrix column
+// contract an enclosing reducer reads ([subqueryAnchorShape]).
+//
+// A missing eval anchor is a hard error rather than a fallback: these
+// shapes are defined ONLY relative to the grid, so with no query time
+// threaded through there is no set of anchors to evaluate at. The
+// sample-preserving arms can fall back to the raw stream precisely
+// because they are grid-free; this one cannot.
+func lowerSubqueryOverInstantCall(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf(
+			"promql: subquery inner %s is evaluated per anchor and requires a query evaluation time (use LowerAt)",
+			call.Func.Name,
+		)
+	}
+	inner, err := lowerCall(call, s, grid)
+	if err != nil {
+		return nil, err
+	}
+	return subqueryAnchorShape(inner, s), nil
 }
 
 // lowerSubqueryOverBinary — `(<vec> op <scalar>)[range:step]` /
