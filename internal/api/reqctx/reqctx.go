@@ -31,8 +31,8 @@ import (
 //     max_execution_time is narrowed to the same budget and the server
 //     aborts the query with TIMEOUT_EXCEEDED (code 159) → *QueryTimeoutError.
 //
-// The returned cancel MUST be deferred by the caller (it is a no-op when
-// no deadline was installed). A malformed `?timeout=` yields a non-nil
+// The caller MUST defer the returned cancel (a no-op when no deadline
+// was installed). A malformed `?timeout=` yields a non-nil
 // error the caller reports as 400 bad_data (matching upstream); on that
 // path the returned context is the bare request context and cancel is a
 // no-op.
