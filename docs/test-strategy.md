@@ -238,7 +238,12 @@ section (the deterministic IR pretty-printer output from
 not the SQL surface here.
 
 Use the `/cerberus:add-fixture` skill to scaffold; run `just
-update-golden` after the lowering lands to fill in the expected text.
+update-golden <shard>...` after the lowering lands to fill in the
+expected text. The shard argument is required and has no default —
+`just update-golden solver promql cardinality` for a PromQL fixture,
+`logql cardinality` or `traceql cardinality` for the other two heads.
+Name too few and the recipe refuses to start, naming the ones it
+computed from the branch's own diff.
 
 ### Layer 2b — Lowering edge cases
 
@@ -274,11 +279,11 @@ idempotency.
 Fixtures with both `-- seed --` and `-- expected_rows --` sections run
 under the `chdb` build tag. The runner DDL-applies the OTel-CH schema,
 loads the seed rows, executes the emitted SQL, and compares the result
-set to `expected_rows`. `just update-golden` regenerates this layer too
-— it runs a second, chdb-tagged pass over `./test/spec/...` so
-`expected_rows` cells can never go stale behind a `-- sql --` change
-(it requires libchdb.so; see `just chdb-install`). Use `just spec-chdb`
-to verify locally without rewriting.
+set to `expected_rows`. Each head's `just update-golden` shard
+regenerates this layer too — it runs a second, chdb-tagged pass over
+that head's corpus so `expected_rows` cells can never go stale behind a
+`-- sql --` change (it requires libchdb.so; see `just chdb-install`).
+Use `just spec-chdb` to verify locally without rewriting.
 
 Both sections are load-bearing: a fixture with a `-- seed --` but no
 `-- expected_rows --` is **inert** — the runner returns before it touches
@@ -462,10 +467,11 @@ for the strategy):
   `cardinality-baseline/<head>/<name>.json` / `scale-wall-baseline.json` and
   fail on an upward regression, a new unbounded shape, or a deeper recursion. A
   decrease never blocks; the ceiling tightens only on a deliberate
-  `just update-cardinality-baseline` — which `just update-golden`
-  chains automatically, so adding a TXTAR fixture records its ratchet
-  shard in the same pass that fills the goldens (closing the recurring
-  "unrecorded fixture → red `perf-guards` on main" miss). `scan_rows` and
+  `just update-cardinality-baseline` — which is `just update-golden`'s
+  `cardinality` shard, demanded by the recipe's coverage check the moment a
+  TXTAR fixture moves, so adding one records its ratchet shard in the same
+  pass that fills the goldens (closing the recurring "unrecorded fixture →
+  red `perf-guards` on main" miss). `scan_rows` and
   `has_array_join` are compared for exact equality rather than ratcheted:
   neither has a "better" direction, so a change is the shard ceasing to
   describe its fixture, and a stored field nothing compares is a hole rather

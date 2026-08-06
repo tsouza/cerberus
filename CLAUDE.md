@@ -26,7 +26,7 @@ toolchain.
 - `just lint-actions` — `actionlint` over the workflow files.
 - `just lint-md` / `just fmt-md` — markdownlint-cli2 verify / auto-fix.
 - `just fmt` — `gofumpt` + `goimports -local` over the tree.
-- `just update-golden` — regenerate every generated artefact (see invariant 9).
+- `just update-golden <shard>...` — regenerate the named generated artefacts (see invariant 9).
 - `just coverage` — coverage profile + floor check.
 - `just property` — rapid-based property tests (needs chDB).
 - `just mutate` / `just mutate-pkg PATH` — gremlins mutation run.
@@ -136,10 +136,15 @@ per-layer "catches X / misses Y" guidance.
 8. **"Pre-existing" is not an escape hatch.** Diagnosing a bug as pre-existing routes *which*
    branch or PR fixes it; it never decides *whether* it gets fixed. The same applies to "adjacent"
    and "out of scope". Never label a real failure a flake without evidence and a fix.
-9. **Never hand-edit a generated artefact — regenerate it.** `just update-golden` rewrites the TXTAR
-   goldens, the migration goldens, the solver decision baseline, the parity ledgers, and the
-   cardinality baseline. It needs `libchdb.so` (`just chdb-install`), without which the chdb-tagged
-   `-- expected_rows --` cells go stale. Every generated path is marked `-merge` in `.gitattributes`
+9. **Never hand-edit a generated artefact — regenerate it.** `just update-golden <shard>...` rewrites
+   the TXTAR goldens, the migration goldens, the solver decision baseline, the parity ledgers, and
+   the cardinality baseline. The shard argument is **required** — `promql`, `logql`, `traceql`,
+   `chsql`, `optimizer`, `codegen`, `migration`, `parity`, `solver`, `cardinality`, or `all` — and a
+   bare invocation errors and prints the vocabulary. Naming too few is safe rather than a trap: the
+   recipe derives the shards the branch's own diff implies are stale and refuses to start until the
+   set covers them, printing the exact command. It needs `libchdb.so` (`just chdb-install`), without
+   which the chdb-tagged `-- expected_rows --` cells go stale. Every generated path is marked
+   `-merge` in `.gitattributes`
    precisely because line-merging one produces a file that still parses and is silently wrong.
    Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/ test/surface-parity/
    test/rejection-parity/` before committing. A few ledgers sit outside `update-golden` because they
@@ -190,8 +195,8 @@ what a spec must contain.
 ## Common workflows
 
 - **Add a TXTAR fixture** — `.claude/skills/cerberus-add-fixture.md`. Creates
-  `test/spec/<ql>/<name>.txtar` with the right section headers; run `just update-golden` once the
-  implementation lands to fill in the expected sections.
+  `test/spec/<ql>/<name>.txtar` with the right section headers; run `just update-golden <shard>...`
+  once the implementation lands to fill in the expected sections.
 - **Add an optimizer rule** — `.claude/skills/cerberus-add-optimizer-rule.md`. Scaffolds
   `internal/optimizer/<name>.go` plus its test and fixtures.
 - **Add a property test** — add a row to `test/property/{gen,oracle}/` and a case to
