@@ -822,3 +822,79 @@ func anyContains(warns []string, sub string) bool {
 	}
 	return false
 }
+
+// The periodic re-resolution swaps the live set only when Equal reports a
+// genuine transition, so both of Equal's arms decide whether a running server
+// churns its optimizer state and its logs. Each arm is pinned on its own: a
+// size difference, and a same-size set whose ids differ.
+func TestEnabledSetEqual(t *testing.T) {
+	resolve := func(selection string, server Version) EnabledSet {
+		t.Helper()
+		set, _, err := Resolve(Config{Optimizations: selection, Capability: CapabilityAvailable}, server)
+		if err != nil {
+			t.Fatalf("Resolve(%q, %v): %v", selection, server, err)
+		}
+		return set
+	}
+
+	cases := []struct {
+		name string
+		a, b EnabledSet
+		want bool
+	}{
+		{
+			name: "same selection on the same server re-probes to the same set",
+			a:    resolve("aggregation_in_order,condition_cache", v(25, 8)),
+			b:    resolve("aggregation_in_order,condition_cache", v(25, 8)),
+			want: true,
+		},
+		{
+			name: "both empty",
+			a:    resolve("off", v(25, 9)),
+			b:    resolve("off", v(25, 8)),
+			want: true,
+		},
+		{
+			name: "different sizes",
+			a:    resolve("aggregation_in_order,condition_cache", v(25, 8)),
+			b:    resolve("aggregation_in_order", v(25, 8)),
+			want: false,
+		},
+		{
+			// Same cardinality, disjoint ids: the length check passes and only
+			// the membership loop can tell these apart.
+			name: "same size, different ids",
+			a:    resolve("aggregation_in_order", v(25, 8)),
+			b:    resolve("condition_cache", v(25, 8)),
+			want: false,
+		},
+		{
+			name: "empty versus non-empty",
+			a:    resolve("off", v(25, 8)),
+			b:    resolve("aggregation_in_order", v(25, 8)),
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.a.Equal(tc.b); got != tc.want {
+				t.Errorf("a.Equal(b) = %v; want %v (a=%v b=%v)", got, tc.want, tc.a.IDs(), tc.b.IDs())
+			}
+			// Equality is symmetric, and the loop only ever walks the receiver:
+			// checking one direction alone would miss a subset-shaped bug.
+			if got := tc.b.Equal(tc.a); got != tc.want {
+				t.Errorf("b.Equal(a) = %v; want %v (a=%v b=%v)", got, tc.want, tc.a.IDs(), tc.b.IDs())
+			}
+		})
+	}
+}
+
+func TestModeString(t *testing.T) {
+	if got := Enforcing.String(); got != "enforcing" {
+		t.Errorf("Enforcing.String() = %q; want %q", got, "enforcing")
+	}
+	if got := Permissive.String(); got != "permissive" {
+		t.Errorf("Permissive.String() = %q; want %q", got, "permissive")
+	}
+}
