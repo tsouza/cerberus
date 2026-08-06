@@ -5,91 +5,223 @@
       "site": "internal/logql/lower.go:jsonExpressionMergeLabels#9cb94bcf",
       "message": "logql: `| json` expression has empty identifier",
       "class": "internal",
-      "rationale": "the grammar requires a non-empty identifier on `| json foo=...` expression stages; an empty identifier is a parse error"
+      "rationale": "the grammar requires a non-empty identifier on `| json foo=...` expression stages; an empty identifier is a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if len(exprs) == 0",
+          "if ext.Identifier == \"\""
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:jsonExtractStringExpr#427e92de",
       "message": "logql: unsupported JSON path segment type %T in %q",
       "class": "internal",
-      "rationale": "the upstream jsonpath parser produces only string and array-index segments, both handled"
+      "rationale": "the upstream jsonpath parser produces only string and array-index segments, both handled",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "default of switch v := seg.(type) over [case string; case int; default]"
+        ],
+        "callers": [
+          "jsonExpressionMergeLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:jsonExtractStringExpr#e6040681",
       "message": "logql: invalid `| json` path %q: %w",
       "class": "rejection",
-      "trigger_query": "{app=\"x\"} | json foo=\"bar[\""
+      "trigger_query": "{app=\"x\"} | json foo=\"bar[\"",
+      "evidence": {
+        "guard": [
+          "if err != nil"
+        ],
+        "callers": [
+          "jsonExpressionMergeLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:labelFiltererLower#6274bc0d",
       "message": "logql: unsupported label filterer %T",
       "class": "internal",
-      "rationale": "unreachable: all seven parser-producible LabelFilterer types are handled (String, LineFilter, Binary, Numeric, Duration, Bytes, IP); NoopLabelFilter only arises from stage-building (ReduceAndLabelFilter on an empty list), never from the AST"
+      "rationale": "unreachable: all seven parser-producible LabelFilterer types are handled (String, LineFilter, Binary, Numeric, Duration, Bytes, IP); NoopLabelFilter only arises from stage-building (ReduceAndLabelFilter on an empty list), never from the AST",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := lf.(type) over [case *syntax.StringLabelFilter; case *syntax.BinaryLabelFilter; case *syntax.NumericLabelFilter; case *syntax.DurationLabelFilter; case *syntax.BytesLabelFilter; case *syntax.IPLabelFilter]"
+        ],
+        "callers": [
+          "applyUnwrapPostFilters",
+          "labelFiltererLower",
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:lineFilterOp#e051286a",
       "message": "logql: unknown line-filter match type %s",
       "class": "internal",
-      "rationale": "unreachable: all six parser-producible LineMatchTypes are handled (the four substring/regex arms here; pattern and ip route out of lineFilterPart earlier)"
+      "rationale": "unreachable: all six parser-producible LineMatchTypes are handled (the four substring/regex arms here; pattern and ip route out of lineFilterPart earlier)",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch t over [case syntax.LineMatchEqual; case syntax.LineMatchNotEqual; case syntax.LineMatchRegexp; case syntax.LineMatchNotRegexp]"
+        ],
+        "callers": [
+          "lineFilterPart"
+        ],
+        "cited": [
+          "lineFilterPart"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:logfmtExpressionMergeLabels#dcff5a88",
       "message": "logql: `| logfmt` expression has empty identifier",
       "class": "internal",
-      "rationale": "the grammar requires a non-empty identifier on `| logfmt foo=...` expression stages; an empty identifier is a parse error"
+      "rationale": "the grammar requires a non-empty identifier on `| logfmt foo=...` expression stages; an empty identifier is a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if len(exprs) == 0",
+          "if ext.Identifier == \"\""
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:lower#5da77ba7",
       "message": "logql: unsupported expression %T",
       "class": "internal",
-      "rationale": "type-switch default: every top-level expression the pinned parser produces is handled (matchers / pipeline / range- and vector-aggregation / literal / vector / binop / label_replace / multi-variant); the default arm is unreachable from any wire query"
+      "rationale": "type-switch default: every top-level expression the pinned parser produces is handled (matchers / pipeline / range- and vector-aggregation / literal / vector / binop / label_replace / multi-variant); the default arm is unreachable from any wire query",
+      "evidence": {
+        "guard": [
+          "default of switch e := expr.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr; case *syntax.RangeAggregationExpr; case *syntax.VectorAggregationExpr; case *syntax.LiteralExpr; case *syntax.VectorExpr; case *syntax.BinOpExpr; case *syntax.LabelReplaceExpr; case *syntax.MultiVariantExpr; default]"
+        ],
+        "callers": [
+          "lowerLabelReplace",
+          "lowerMultiVariant",
+          "lowerVectorAggregation",
+          "lowerVectorScalar",
+          "lowerVectorSetOp",
+          "lowerVectorVector",
+          "lowerWithCtx",
+          "sortableShapedInner"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:lowerStage#0809f4e6",
       "message": "logql: pipeline stage %T is not yet supported",
       "class": "internal",
-      "rationale": "type-switch default: every pipeline-stage type the pinned parser produces is handled"
+      "rationale": "type-switch default: every pipeline-stage type the pinned parser produces is handled",
+      "evidence": {
+        "guard": [
+          "default of switch st := stage.(type) over [case *syntax.LineFilterExpr; case *syntax.LabelFilterExpr; case *syntax.LineFmtExpr; case *syntax.DecolorizeExpr; case *syntax.LabelFmtExpr; case *syntax.LineParserExpr; case *syntax.LogfmtParserExpr; case *syntax.JSONExpressionParserExpr; case *syntax.LogfmtExpressionParserExpr; case *syntax.DropLabelsExpr; case *syntax.KeepLabelsExpr; default]"
+        ],
+        "callers": [
+          "lowerPipelineWithLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:lowerStage#a7242d58",
       "message": "logql: parser stage `| %s` is not yet supported",
       "class": "internal",
-      "rationale": "every LineParserExpr op the pinned grammar produces (json / regexp / unpack / pattern) is handled; bare `| logfmt` parses as LogfmtParserExpr"
+      "rationale": "every LineParserExpr op the pinned grammar produces (json / regexp / unpack / pattern) is handled; bare `| logfmt` parses as LogfmtParserExpr",
+      "evidence": {
+        "guard": [
+          "case *syntax.LineParserExpr of switch st := stage.(type)",
+          "past exhaustive switch st.Op over [case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern; case syntax.OpParserTypeJSON; case syntax.OpParserTypeRegexp]"
+        ],
+        "callers": [
+          "lowerPipelineWithLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:regexpMergeLabels#6038cf5d",
       "message": "logql: `| regexp` pattern %q has no named captures",
       "class": "internal",
-      "rationale": "the parser pre-validates capture-less regexp patterns as a parse error"
+      "rationale": "the parser pre-validates capture-less regexp patterns as a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if pattern == \"\"",
+          "past returning if err != nil",
+          "if len(named) == 0"
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:regexpMergeLabels#83255883",
       "message": "logql: invalid `| regexp` pattern %q: %w",
       "class": "internal",
-      "rationale": "the parser pre-validates the regexp; a compile failure is a parse error"
+      "rationale": "the parser pre-validates the regexp; a compile failure is a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if pattern == \"\"",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:regexpMergeLabels#e2424d2e",
       "message": "logql: `| regexp` pattern has duplicate named capture %q",
       "class": "internal",
-      "rationale": "the parser pre-validates duplicate named captures as a parse error"
+      "rationale": "the parser pre-validates duplicate named captures as a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if pattern == \"\"",
+          "past returning if err != nil",
+          "if _, dup := seen[n]; dup"
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/lower.go:regexpMergeLabels#fabd1568",
       "message": "logql: `| regexp` requires a non-empty pattern",
       "class": "internal",
-      "rationale": "the parser pre-validates `| regexp \"\"` (\"at least one named capture must be supplied\") as a parse error"
+      "rationale": "the parser pre-validates `| regexp \"\"` (\"at least one named capture must be supplied\") as a parse error",
+      "evidence": {
+        "guard": [
+          "if pattern == \"\""
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
     }
   ]
 }

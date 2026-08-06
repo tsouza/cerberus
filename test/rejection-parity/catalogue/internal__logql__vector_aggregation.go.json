@@ -5,28 +5,70 @@
       "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#3cb2166f",
       "message": "logql: aggregation operation %q is unsupported",
       "class": "internal",
-      "rationale": "every vector-aggregation op the LogQL grammar accepts is handled: sum/avg/min/max/count/stddev/stdvar build an AggFunc here, and topk/bottomk/sort/sort_desc/approx_topk route to lowerTopK/lowerSort before this switch. The only remaining op constant (__count_min_sketch__) is a shard-mapper internal the parser never yields from a wire query, so the default arm is unreachable."
+      "rationale": "every vector-aggregation op the LogQL grammar accepts is handled: sum/avg/min/max/count/stddev/stdvar build an AggFunc here, and topk/bottomk/sort/sort_desc/approx_topk route to lowerTopK/lowerSort before this switch. The only remaining op constant (__count_min_sketch__) is a shard-mapper internal the parser never yields from a wire query, so the default arm is unreachable.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch e.Operation over [case syntax.OpTypeSum; case syntax.OpTypeAvg; case syntax.OpTypeMin; case syntax.OpTypeMax; case syntax.OpTypeCount; case syntax.OpTypeStddev; case syntax.OpTypeStdvar]"
+        ],
+        "callers": [
+          "lowerVectorAggregation"
+        ],
+        "cited": [
+          "lowerSort",
+          "lowerTopK"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#4f64fcaa",
       "message": "logql: vector-aggregation inner is not an Expr (%T)",
       "class": "internal",
-      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr"
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left == nil",
+          "past exhaustive switch e.Operation over [case syntax.OpTypeTopK, syntax.OpTypeBottomK, syntax.OpTypeApproxTopK; case syntax.OpTypeSort, syntax.OpTypeSortDesc]",
+          "if !ok"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#9210acc4",
       "message": "logql: vector-aggregation has nil inner",
       "class": "internal",
-      "rationale": "internal invariant: the parser never yields a vector aggregation with a nil inner"
+      "rationale": "internal invariant: the parser never yields a vector aggregation with a nil inner",
+      "evidence": {
+        "guard": [
+          "if e.Left == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/vector_aggregation.go:sortableShapedInner#4f64fcaa",
       "message": "logql: vector-aggregation inner is not an Expr (%T)",
       "class": "internal",
-      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr (mirror of lowerVectorAggregation#4f64fcaa)"
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr (mirror of lowerVectorAggregation#4f64fcaa)",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSort",
+          "lowerTopK"
+        ],
+        "cited": [
+          "lowerVectorAggregation"
+        ]
+      }
     }
   ]
 }

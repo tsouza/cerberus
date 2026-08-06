@@ -5,14 +5,33 @@
       "site": "internal/promql/info_fn.go:lowerInfo#9e913846",
       "message": "promql: info expects 1 or 2 arguments, got %d",
       "class": "internal",
-      "rationale": "The PromQL parser pins info() arity via Variadic:1 over a two-vector ArgTypes signature, so a call with zero or three-plus arguments is rejected at parse time and never reaches lowering."
+      "rationale": "The PromQL parser pins info() arity via Variadic:1 over a two-vector ArgTypes signature, so a call with zero or three-plus arguments is rejected at parse time and never reaches lowering.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003c 1 || len(c.Args) \u003e 2"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/info_fn.go:lowerInfo#a1d855c7",
       "message": "promql: info(...) second argument must be a label selector, got %T",
       "class": "internal",
-      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast."
+      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast.",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) \u003c 1 || len(c.Args) \u003e 2",
+          "past returning if err != nil",
+          "if len(c.Args) == 2",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
     }
   ]
 }

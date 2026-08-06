@@ -5,35 +5,83 @@
       "site": "internal/promql/range_fns.go:lowerHoltWinters#ceef5c3b",
       "message": "promql: holt_winters expects 3 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments"
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 3"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerPredictLinear#2b0de462",
       "message": "promql: predict_linear expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments"
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerQuantileOverTime#682124f4",
       "message": "promql: quantile_over_time expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments"
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:matrixAndSelector#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:matrixAndSelector#ce0c72b5",
       "message": "promql: %s first argument must be a range-vector selector, got %T",
       "class": "internal",
-      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime"
+        ],
+        "cited": [
+          "lowerOuterRangeFnOverSubquery"
+        ]
+      }
     }
   ]
 }

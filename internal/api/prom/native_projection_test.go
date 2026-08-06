@@ -16,7 +16,8 @@ import (
 // experimental native rate-range path on a real ClickHouse (#104): the
 // native node's output schema is the SAME derived (group-keys…, anchor_ts,
 // value) shape the fan-out matrix RangeWindow produces — MetricName never
-// exists in that scope. Before the fix, isDerivedShape / isMatrixRangeWindow
+// exists in that scope. Before the fix, the derived-shape classifier and
+// isMatrixRangeWindow
 // lacked a *chplan.RangeWindowNative case, so wrapWithSampleProjection took
 // the canonical branch and emitted a bare `MetricName` column reference
 // against the native subquery, which ClickHouse rejects with
@@ -40,7 +41,7 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 
-	if !isDerivedShape(native, s) {
+	if !chplan.IsDerivedShape(native, sampleColumns(s)) {
 		t.Fatal("RangeWindowNative must be a derived shape (MetricName absent from its scope)")
 	}
 	if !isMatrixRangeWindow(native) {

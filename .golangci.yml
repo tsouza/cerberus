@@ -1,23 +1,24 @@
 # ---------------------------------------------------------------------------
 # Quality-metric linters (see `enable:` block below).
 #
-# Each linter measures a structural code-quality signal and is configured
-# with a threshold tuned to pass current main with headroom — the point is
-# enforcement going forward (block PRs that introduce new violations), not
-# punitive retroactive cleanup. Thresholds may be tightened later as the
-# called-out hotspots are refactored; raising thresholds is fine when a new
-# pattern needs it, but lowering should be the gradient.
+# Each linter measures a structural code-quality signal. Every threshold
+# sits ONE step above the tree's measured worst case, so the linted maximum
+# is also the budget: a function that gets more complex than today's worst
+# is a build failure, not a slow slide anyone has to notice in review. A
+# threshold is therefore never headroom to grow into — it is a ratchet, and
+# it drops again whenever the outlier it was sized around is refactored.
 #
 # - gocognit (cognitive complexity per function). Counts how hard a fn is
-#   to read: nesting, switches, jumps. Threshold 60 covers the SQL emitter
-#   dispatcher (`(*QueryBuilder).writeInto`, 59) which is intrinsically
-#   shaped like a big switch over node kinds. TODO: tighten to 30 once
-#   writeInto is broken up by emit_node.go.
+#   to read: nesting, switches, jumps. `min-complexity: 57` sits one above
+#   the SQL emitter dispatcher (`(*QueryBuilder).writeInto`, 56), which is
+#   intrinsically shaped like a big switch over node kinds; the next
+#   function down is `renderCase` at 43.
 #
 # - cyclop (cyclomatic complexity per function + package average). Counts
-#   branches. `max-complexity: 32` covers `writeInto` (30); `package-average:
-#   10.0` covers `engine` at ~4 with room. TODO: tighten max-complexity to
-#   25 once writeInto is decomposed.
+#   branches. `max-complexity: 31` sits one above the solver's plan walker
+#   (`(*Planner).walkNode`, 30); `writeInto` scores 29 here, so the two
+#   linters have different worst cases and neither threshold is set by the
+#   other's outlier. `package-average: 10.0` covers `engine` at ~4.
 #
 # - funlen (function length: lines + statements). Catches the "this got
 #   too long, split it" review comment. 150 lines / 80 statements clears
@@ -142,9 +143,9 @@ linters:
         - pattern: '^reflect\.Value\.FieldByName$'
           msg: 'reflect.FieldByName on parser AST is forbidden across internal/** — use the upstream-fork accessors instead.'
     gocognit:
-      min-complexity: 60
+      min-complexity: 57
     cyclop:
-      max-complexity: 32
+      max-complexity: 31
       package-average: 10.0
     funlen:
       lines: 150

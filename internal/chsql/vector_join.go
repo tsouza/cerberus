@@ -364,8 +364,8 @@ func aggAnyAs(col, alias string) Frag {
 }
 
 // vectorJoinOperandCarriesTimestamp reports whether the join operand n
-// projects a real per-row timestamp column named tsCol. It mirrors the
-// inverse of api/prom/handler.go isDerivedShape: RangeWindow /
+// projects a real per-row timestamp column named tsCol. It is the
+// timestamp-axis counterpart to chplan.IsDerivedShape: RangeWindow /
 // RangeWindowNative / Aggregate roots emit a [group-keys..., Value]
 // derived shape that carries no TimeUnix, while an LWR-style Project
 // that names the canonical timestamp output (or any other node) does.
@@ -391,7 +391,7 @@ func vectorJoinOperandCarriesTimestamp(n chplan.Node, tsCol string) bool {
 		return vectorJoinOperandCarriesTimestamp(v.Input, tsCol)
 	case *chplan.Project:
 		for _, p := range v.Projections {
-			if projectionOutputsColumn(p, tsCol) {
+			if chplan.ProjectionOutputsColumn(p, tsCol) {
 				return true
 			}
 		}
@@ -399,19 +399,6 @@ func vectorJoinOperandCarriesTimestamp(n chplan.Node, tsCol string) bool {
 	}
 	// Scan, LWR, and every other canonical-shape node carry TimeUnix.
 	return true
-}
-
-// projectionOutputsColumn reports whether projection p exposes an output
-// column named col — either via an explicit Alias or a bare ColumnRef to
-// col with no rewrite. Mirrors api/prom/handler.go projectionOutputName.
-func projectionOutputsColumn(p chplan.Projection, col string) bool {
-	if p.Alias != "" {
-		return p.Alias == col
-	}
-	if cr, ok := p.Expr.(*chplan.ColumnRef); ok {
-		return cr.Name == col
-	}
-	return false
 }
 
 // argMaxAs returns a Frag for `argMax(<valCol>, <byCol>) AS <alias>`.

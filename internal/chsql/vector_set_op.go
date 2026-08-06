@@ -272,7 +272,7 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 // derived emitter still passes Attributes + the schema-named
 // ValueColumn through).
 func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
-	derived := vectorSetOpArmIsDerivedShape(arm, s)
+	derived := chplan.IsDerivedShape(arm, vectorSetOpSampleColumns(s))
 	armTsCol, matrix := vectorSetOpArmTimestampCol(arm, s)
 
 	var metricNameFrag Frag
@@ -368,13 +368,13 @@ func vectorSetOpSynthesizedAnchorFrag() Frag {
 // `anchor_ts AS TimeUnix`, which ClickHouse rejects with code 47
 // "Unknown expression identifier". The two shape classifiers must agree
 // on where an arm's outer scope begins, so this one stops exactly where
-// vectorSetOpArmIsDerivedShape does.
+// chplan.IsDerivedShape does.
 //
 // Nested VectorSetOp arms are NOT matrix shape per se — but they emit
 // their own canonical 4-column SELECT (this very function's caller),
 // so the outer references TimeUnix by name regardless. They're
 // classified as canonical (not derived) by
-// vectorSetOpArmIsDerivedShape, so this helper isn't reached for them.
+// chplan.IsDerivedShape, so this helper isn't reached for them.
 func vectorSetOpArmTimestampCol(n chplan.Node, s *chplan.VectorSetOp) (string, bool) {
 	switch v := n.(type) {
 	case *chplan.RangeWindow:
@@ -384,7 +384,7 @@ func vectorSetOpArmTimestampCol(n chplan.Node, s *chplan.VectorSetOp) (string, b
 	case *chplan.RangeWindowNative:
 		return v.TimestampColumn, true
 	case *chplan.Project:
-		if vectorSetOpProjectExposesCanonical(v, s) {
+		if chplan.ProjectExposesCanonical(v, vectorSetOpSampleColumns(s)) {
 			return s.TimestampColumn, true
 		}
 		return vectorSetOpArmTimestampCol(v.Input, s)
@@ -394,82 +394,18 @@ func vectorSetOpArmTimestampCol(n chplan.Node, s *chplan.VectorSetOp) (string, b
 	return "", false
 }
 
-// vectorSetOpArmIsDerivedShape reports whether a VectorSetOp arm's
-// chplan output schema lacks the canonical MetricName column. Mirrors
-// `internal/api/prom/handler.go::isDerivedShape` but lives in the
-// chsql package so the emitter can decide per-arm without taking a
-// dependency on the HTTP-layer helper. The two functions must stay in
-// sync; both treat RangeWindow / RangeWindowNative / Aggregate /
-// MetricsAggregate / MetricsHistogramOverTime — and a Project that does
-// NOT expose all four canonical columns above one of those — as
-// derived. Their output schema is `(group keys…, timestamp, value)`:
-// MetricName never exists in that scope, so it must be synthesised as
-// the empty string rather than referenced (ClickHouse rejects the
-// reference with `Unknown expression identifier MetricName`).
-//
-// Nested VectorSetOp arms are canonical: the recursive emit wraps each
-// inner VectorSetOp in its own canonical-column SELECT, so a parent
-// arm can reference MetricName by name.
-func vectorSetOpArmIsDerivedShape(n chplan.Node, s *chplan.VectorSetOp) bool {
-	switch v := n.(type) {
-	case *chplan.RangeWindow,
-		*chplan.RangeWindowNative,
-		*chplan.Aggregate,
-		*chplan.MetricsAggregate,
-		*chplan.MetricsHistogramOverTime:
-		return true
-	case *chplan.Filter:
-		return vectorSetOpArmIsDerivedShape(v.Input, s)
-	case *chplan.Project:
-		if vectorSetOpProjectExposesCanonical(v, s) {
-			return false
-		}
-		return vectorSetOpArmIsDerivedShape(v.Input, s)
+// vectorSetOpSampleColumns names the canonical four-column sample shape
+// this set op's arms are canonicalised into, in the form the shared
+// chplan classifiers take. The set op carries the schema-configured
+// names on its own fields, so this is the one place the emitter converts
+// between the two spellings of the same four names.
+func vectorSetOpSampleColumns(s *chplan.VectorSetOp) chplan.SampleColumns {
+	return chplan.SampleColumns{
+		MetricName: s.MetricNameColumn,
+		Attributes: s.AttributesColumn,
+		Timestamp:  s.TimestampColumn,
+		Value:      s.ValueColumn,
 	}
-	return false
-}
-
-// vectorSetOpProjectExposesCanonical reports whether p's projections
-// name all four canonical Sample column outputs (MetricName /
-// Attributes / TimeUnix / Value). Mirrors
-// `internal/api/prom/handler.go::projectionExposesCanonical`; see that
-// docstring for the full canonical-shape definition. An output is
-// "named" when either Projection.Alias matches, or the Projection.Expr
-// is a bare ColumnRef to the canonical column name with no Alias
-// rewrite.
-func vectorSetOpProjectExposesCanonical(p *chplan.Project, s *chplan.VectorSetOp) bool {
-	needed := map[string]bool{
-		s.MetricNameColumn: false,
-		s.AttributesColumn: false,
-		s.TimestampColumn:  false,
-		s.ValueColumn:      false,
-	}
-	for _, proj := range p.Projections {
-		name := vectorSetOpProjectionOutputName(proj)
-		if _, ok := needed[name]; ok {
-			needed[name] = true
-		}
-	}
-	for _, ok := range needed {
-		if !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// vectorSetOpProjectionOutputName returns the column name a Projection
-// exposes: the explicit Alias when set, otherwise the bare-ColumnRef
-// name when the Expr is a column reference. Mirrors
-// `internal/api/prom/handler.go::projectionOutputName`.
-func vectorSetOpProjectionOutputName(p chplan.Projection) string {
-	if p.Alias != "" {
-		return p.Alias
-	}
-	if cr, ok := p.Expr.(*chplan.ColumnRef); ok {
-		return cr.Name
-	}
-	return ""
 }
 
 // vectorSetOpOutputCols returns the explicit projection list a vector

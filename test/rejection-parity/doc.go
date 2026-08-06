@@ -29,8 +29,10 @@
 //     scanned-site set == catalogue set (regenerable via
 //     CERBERUS_UPDATE_INVENTORY=1), every `rejection`/`divergence`
 //     entry's trigger query parses AND fails lowering with the site's
-//     message, and the parity-corpus case set is derived 1:1 from the
-//     `rejection` + `divergence` entries via BuildCases.
+//     message, the parity-corpus case set is derived 1:1 from the
+//     `rejection` + `divergence` entries via BuildCases, and every
+//     entry's reachability evidence still matches what evidence.go
+//     derives from the lowering source today (see below).
 //  4. compatibility/cmd/rejection-parity consumes BuildCases inside
 //     each compat harness and, per case, asserts the class's claim:
 //     for `rejection`, that the REFERENCE backend also rejects the
@@ -152,11 +154,95 @@
 //     refuses to let it become permanent without someone looking at it
 //     again.
 //
+// # Why `internal` is not an allow-list either: the evidence block
+//
+// `internal` is the largest class by a wide margin, and on its face it
+// is the weakest: its whole content is a sentence of prose asserting
+// that no wire query reaches the site. Prose does not decay when the
+// code beneath it does. #1738 is the proof — a rationale claiming
+// "every binary operator the parser produces maps to a chplan op"
+// stayed green after the operator set it described had moved, because
+// nothing re-read the switch it was describing. That is the exact
+// shape of an allow-list: 161 sentences someone once believed, with
+// no mechanism to notice when one stops being true.
+//
+// Full static wire-reachability would be the ideal check — prove from
+// the parsers' own grammars that no accepted input reaches the site —
+// but it is not tractable here: it needs whole-program exhaustiveness
+// analysis over three parsers' AST type sets, and roughly a third of
+// the rationales rest on parse-level facts the lowering package cannot
+// see at all. So the catalogue records REACHABILITY EVIDENCE instead,
+// and re-derives it. Evidence is machine-extracted by evidence.go, per
+// site, from the lowering source as it currently stands, in two stored
+// fields chosen because each corresponds to a way the surveyed
+// rationales actually argue:
+//
+//   - Guard — the conditions that must hold for control to arrive at
+//     the site: the enclosing if/else chain, the switch arm, and — for
+//     `default` arms and for the trailing return after an exhaustive
+//     switch — the full inventory of SIBLING arms. That inventory is
+//     the load-bearing part: "every op is mapped" is a claim about the
+//     arms, so an arm that disappears moves the evidence.
+//   - Callers — the set of functions in the package that call the
+//     site's function. A rationale saying "only reached from X, which
+//     already checked" is falsified precisely by a second caller
+//     appearing, which is what happened in #1456.
+//
+// Both are strictly local: the site's own function body and the direct
+// callers of that function. Nothing wider is stored, and that boundary
+// is deliberate. An earlier revision also stored the callers' own
+// callees — the dispatch neighbourhood one hop up — which read well
+// until an unrelated PR added one arm to a central dispatcher and moved
+// the evidence of 28 sites in six untouched files. Demotion clears the
+// class and the rationale, so a false positive costs a human
+// re-statement; 28 of them at once makes blanket regeneration the only
+// survivable answer, which is exactly the laundering this design
+// exists to prevent. Evidence must be the facts a rationale DEPENDS
+// ON, never a snapshot of its neighbourhood.
+//
+// Rationales that argue from a SIBLING interception ("count_values is
+// dispatched to lowerCountValues before buildAggFunc is consulted") are
+// therefore held to account BY NAME. citedFunctions reads the prose,
+// resolves each identifier it names against the lowering package's own
+// declarations, and TestInternalRationaleCitationsStillDispatch fails
+// when a cited function no longer exists or no longer has a caller.
+// The cited set is derived from the rationale rather than from the
+// code, so it depends on that one sibling and not on the other
+// fourteen. It is recorded in the entry for review, and deliberately
+// excluded from Equal and Diff: comparing it would mean that re-stating
+// a rationale moved the evidence, and the demotion would erase the
+// sentence just written. The gate is live instead — it re-derives
+// citations on every run and cannot be regenerated past, because
+// regeneration remembers a name that used to be cited until the prose
+// itself is rewritten.
+//
+// The gate is TestInternalRationalesRestOnCurrentEvidence: it re-derives
+// evidence from the current source and diffs it against what the entry
+// stores, failing with the site, its rationale, and the moved field.
+// Every entry carries evidence, including `rejection` and `divergence`
+// ones — no class is exempt from derivation, because an exempt class is
+// how a tolerance file starts.
+//
+// A fingerprint alone would still be waveable: regenerate, and the red
+// goes away with nobody re-reading anything. So regeneration does not
+// silently re-bless. When derived evidence differs from stored evidence
+// for an `internal` entry, Generate DEMOTES it — clears both the class
+// and the rationale — so the entry reappears as unclassified and
+// TestCatalogueEntriesAreClassified fails until a human states the
+// claim again against the code as it now stands. Deleting an evidence
+// block by hand does not dodge this: absent evidence never equals
+// derived evidence, so the demotion fires on the next regeneration.
+// The two tests together mean an `internal` entry is either currently
+// re-derivable or currently failing the build; it is never merely
+// tolerated.
+//
 // Adding a new rejection to a lowering therefore requires: a
 // catalogue entry (the regen test fails without it), a trigger query
 // (the exerciser test fails without it), and — by construction — a
 // parity-corpus case the next compat run diffs against the reference
 // backend. Reclassifying a `rejection` to `divergence` additionally
 // requires filing (or citing) an open tracking issue first — the
-// classification test fails without one.
+// classification test fails without one. Classifying anything as
+// `internal` requires a rationale that survives its own evidence being
+// re-derived from the source on every run.
 package rejectionparity

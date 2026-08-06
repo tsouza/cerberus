@@ -57,12 +57,13 @@ branch as shields.io badge JSON; the README shows them live. On
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
   template-expanded to concrete cases, plus a small cerberus-owned tail for
   shapes upstream cannot express — resource-attribute grouping, and native
-  histograms, whose data upstream's float-only demo fixture never carries
-  — 791 in all.
-- **Today**: **791/791** cases pass; no allow-list exists. This is the
+  histograms, whose data upstream's float-only demo fixture never carries.
+  The case count is `heads.prometheus.total` in
+  [`compatibility/parity-baseline.json`](../compatibility/parity-baseline.json).
+- **Today**: every case passes; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 791/791 is a
-  measured score, not a merge gate — see the note at the top of this
+  a real reference. (Parity drift is report-only in CI; the score is a
+  measurement, not a merge gate — see the note at the top of this
   page.)
 
 ### LogQL — `grafana/loki:pkg/logql/bench`
@@ -124,7 +125,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 791/791, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, full parity, no allow-list               |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -377,14 +378,15 @@ same reason the project has no allow-lists: "it wasn't passing before" is
 exactly the reasoning an allow-list encodes, and accepting it would let a
 corpus refresh import known-bad behaviour under a green check.
 
-The rosters today (`heads.<name>.{passed,total,cases}`):
-
-| head       | passed/total |
-| ---------- | ------------ |
-| prometheus | 791 / 791    |
-| loki       | 130 / 130    |
-| tempo      | 72 / 72      |
-| tempo-grpc | 69 / 69      |
+The rosters live in
+[`compatibility/parity-baseline.json`](../compatibility/parity-baseline.json)
+under `heads.<name>.{passed,total,cases}`, one entry per head
+(`prometheus`, `loki`, `tempo`, `tempo-grpc`). Their sizes are stated
+there and nowhere else: the file is regenerated from each run's
+`compat-cases.json`, so a second copy in this page would be a hand-typed
+restatement that every corpus-adding PR has to re-type — and that two
+such PRs conflict over. `doc-counts.mjs` fails the build if one comes
+back.
 
 The baseline records **full parity** for every head — the ratchet asserts
 `passed == total == cases.length`, so the file has no shape in which a

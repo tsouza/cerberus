@@ -5,49 +5,120 @@
       "site": "internal/traceql/metrics_pipeline.go:lowerMetricsAggregate#c5a17af0",
       "message": "traceql: quantile_over_time requires at least one quantile",
       "class": "internal",
-      "rationale": "the grammar requires at least one quantile argument on quantile_over_time"
+      "rationale": "the grammar requires at least one quantile argument on quantile_over_time",
+      "evidence": {
+        "guard": [
+          "past returning if op == traceql.MetricsAggregateHistogramOverTime",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if op == traceql.MetricsAggregateQuantileOverTime",
+          "if len(qs) == 0"
+        ],
+        "callers": [
+          "lowerMetricsPipeline"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/metrics_pipeline.go:lowerMetricsGroupBy#26b9b81a",
       "message": "traceql: empty by(...) group key",
       "class": "internal",
-      "rationale": "the grammar rejects an empty by() group key as a parse error"
+      "rationale": "the grammar rejects an empty by() group key as a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if len(attrs) == 0",
+          "if a == (traceql.Attribute{})"
+        ],
+        "callers": [
+          "lowerAverageOverTime",
+          "lowerMetricsAggregate",
+          "lowerMetricsHistogramOverTime"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/metrics_pipeline.go:lowerMetricsHistogramOverTime#3fe5309b",
       "message": "traceql: histogram_over_time requires an attribute operand",
       "class": "internal",
-      "rationale": "the grammar admits only attribute operands inside histogram_over_time(...)"
+      "rationale": "the grammar admits only attribute operands inside histogram_over_time(...)",
+      "evidence": {
+        "guard": [
+          "if attr == (traceql.Attribute{})"
+        ],
+        "callers": [
+          "lowerMetricsAggregate"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/metrics_pipeline.go:lowerMetricsPipeline#d4c9f593",
       "message": "traceql: metrics pipeline element %T is unsupported",
       "class": "internal",
-      "rationale": "type-switch default: every metrics pipeline element type the pinned grammar produces is handled"
+      "rationale": "type-switch default: every metrics pipeline element type the pinned grammar produces is handled",
+      "evidence": {
+        "guard": [
+          "past returning if v, ok := mp.(*traceql.MetricsAggregate); ok",
+          "past returning if v, ok := mp.(*traceql.AverageOverTimeAggregator); ok",
+          "past returning if v, ok := mp.(*traceql.MetricsCompare); ok"
+        ],
+        "callers": [
+          "lowerRoot"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#a456c01c",
       "message": "traceql: histogram_over_time must lower via lowerMetricsHistogramOverTime",
       "class": "internal",
-      "rationale": "internal routing invariant: histogram_over_time is dispatched to lowerMetricsHistogramOverTime before this mapper"
+      "rationale": "internal routing invariant: histogram_over_time is dispatched to lowerMetricsHistogramOverTime before this mapper",
+      "evidence": {
+        "guard": [
+          "case traceql.MetricsAggregateHistogramOverTime of switch op"
+        ],
+        "callers": [
+          "lowerMetricsAggregate"
+        ],
+        "cited": [
+          "lowerMetricsHistogramOverTime"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#e363ec48",
       "message": "traceql: metrics aggregate op %s is unsupported",
       "class": "internal",
-      "rationale": "every metrics aggregate op the pinned grammar produces is mapped"
+      "rationale": "every metrics aggregate op the pinned grammar produces is mapped",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.MetricsAggregateRate; case traceql.MetricsAggregateCountOverTime; case traceql.MetricsAggregateSumOverTime; case traceql.MetricsAggregateAvgOverTime; case traceql.MetricsAggregateMinOverTime; case traceql.MetricsAggregateMaxOverTime; case traceql.MetricsAggregateQuantileOverTime; case traceql.MetricsAggregateHistogramOverTime]"
+        ],
+        "callers": [
+          "lowerMetricsAggregate"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/metrics_pipeline.go:metricsAggregateAttr#937cdd96",
       "message": "traceql: %s requires an attribute operand",
       "class": "internal",
-      "rationale": "the grammar admits only attribute operands inside the *_over_time(...) metrics aggregates"
+      "rationale": "the grammar admits only attribute operands inside the *_over_time(...) metrics aggregates",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.MetricsAggregateRate, traceql.MetricsAggregateCountOverTime]",
+          "if attr == (traceql.Attribute{})"
+        ],
+        "callers": [
+          "lowerAverageOverTime",
+          "lowerMetricsAggregate"
+        ]
+      }
     }
   ]
 }

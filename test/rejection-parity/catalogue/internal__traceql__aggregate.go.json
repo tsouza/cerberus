@@ -5,14 +5,33 @@
       "site": "internal/traceql/aggregate.go:lowerAggregate#813b68dc",
       "message": "traceql: aggregate `%s` has nil inner expression",
       "class": "internal",
-      "rationale": "internal invariant: the parser never yields an aggregate with a nil inner expression"
+      "rationale": "internal invariant: the parser never yields an aggregate with a nil inner expression",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "else of if agg.Op() == traceql.AggregateCount",
+          "if inner == nil"
+        ],
+        "callers": [
+          "lowerFollowingElement",
+          "lowerScalarExpr"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/aggregate.go:mapAggregateOp#06d8a73f",
       "message": "traceql: aggregate op %q is unsupported",
       "class": "internal",
-      "rationale": "the grammar's aggregate ops (count / max / min / sum / avg) are all mapped; no parser-producible op reaches the default arm"
+      "rationale": "the grammar's aggregate ops (count / max / min / sum / avg) are all mapped; no parser-producible op reaches the default arm",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.AggregateCount; case traceql.AggregateMax; case traceql.AggregateMin; case traceql.AggregateSum; case traceql.AggregateAvg]"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ]
+      }
     }
   ]
 }

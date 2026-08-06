@@ -391,19 +391,19 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     collapsing 2a/2b/6d/7b to their integer = 14) and asserts the
     "N-layer test map" / "tested in N layers" claims in `CLAUDE.md`,
     `docs/test-strategy.md`, and `README.md` match.
-  - **compat parity floors** — reads the per-head `<passed>/<total>` floors
-    `compat-ratchet.mjs`'s header states (unwrapping `//` continuations) and
-    asserts each matches the `heads` block of
-    `compatibility/parity-baseline.json`, exactly once per head. `README.md`
-    and `docs/test-strategy.md` route readers to that header for the canonical
-    numbers, so it may not fall behind the file it explains.
-  - **compat parity roster table** — the same numbers restated as a markdown
-    table in `docs/compatibility.md` (`| <head> | <passed> / <total> |`),
-    asserted against the same baseline. Head names are matched as whole
-    table cells so `tempo` cannot read `tempo-grpc`'s row. Nothing checked
-    this table until #1819, and it had drifted below the baseline across
-    three consecutive corpus moves because each one bumped the header floor
-    the gate DID check.
+  - **compat parity by reference** — the per-head `<passed>/<total>` is
+    generated into `compatibility/parity-baseline.json`, and the two
+    hand-written descriptions of the parity gate (`compat-ratchet.mjs`'s
+    header and `docs/compatibility.md`) state it by pointing at that file
+    rather than copying it. The assertion is therefore an ABSENCE check:
+    neither site may write a baseline integer down as its own standalone
+    number, and each must still name `compatibility/parity-baseline.json`.
+    The `.mjs` is scanned through its `//` comment prose only, so an exit
+    code or an array index cannot read as a count. Copies had to go, not
+    just be compared: the roster table drifted below the baseline across
+    three consecutive corpus moves, and while a comparison caught that, it
+    left every corpus-adding PR hand-carrying two extra files and
+    conflicting with any other such PR.
   - **surface-parity glance table** — tallies the `class` field of
     `test/surface-parity/inventory.json` per head and asserts all sixteen
     cells of the "Coverage at a glance" table in `docs/coverage.md`. The fold
