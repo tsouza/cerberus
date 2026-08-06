@@ -86,7 +86,7 @@ single canonical probe, so a function that lowers `sort_by_label(v, "l")` and
 rejects `sort_by_label(v)` still counts as one supported symbol.
 
 Shape-level wrong-rejections are measured separately, by the rejection-parity
-catalogue: across all three heads it records **13** open argument-shape
+catalogue: across all three heads it records **7** open argument-shape
 divergences — queries the reference backend answers and cerberus rejects. Each
 is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
