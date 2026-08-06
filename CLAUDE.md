@@ -1,163 +1,203 @@
 # Cerberus — agent context
 
-Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Parses each query language (PromQL with the upstream Apache prometheus parser; LogQL and TraceQL with cerberus's own in-house Apache reimplementations), lowers into a shared plan IR (`internal/chplan`), applies a small rule-based optimizer, and emits parameterised ClickHouse SQL. The HTTP layer speaks the upstream Prom / Loki / Tempo wire format so Grafana sees cerberus as three drop-in datasources.
+<!-- AGENTS.md is a symlink to this file: both names resolve to these exact bytes, so this
+     context is shared with every agent tool rather than duplicated. There is deliberately no
+     `@AGENTS.md` import line — it would import this file into itself. -->
 
-## Hard rules (non-negotiable)
+Drop-in **Prometheus / Loki / Tempo** HTTP gateway for **ClickHouse**. Each query language is parsed
+(PromQL with the upstream Apache prometheus parser; LogQL and TraceQL with cerberus's own in-house
+Apache reimplementations), lowered into a shared plan IR (`internal/chplan`), rewritten by a
+rule-based optimizer, and emitted as parameterised ClickHouse SQL. The HTTP layer speaks the upstream
+Prom / Loki / Tempo wire format, so Grafana sees cerberus as three drop-in datasources.
 
-- **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Branch protection requires **20** status checks: `check`, `lint`, `forbid-skip`, `forbid-deferral`, `pr-body`, `chart-validate`, `probe`, `roundtrip (promql)`, `roundtrip (logql)`, `roundtrip (traceql)`, `perf-guards`, `compatibility/{prometheus,loki,tempo}`, `compatibility/prometheus-forced-route`, `coverage`, `mutation`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `strict-scan`, and `CodeQL`. All of them run on pull requests — including the `mutation` lane, a genuine PR gate rather than an informational one (on a PR it runs the gremlins legs whose scope that PR changed, and sweeps the full matrix on push / nightly / dispatch / `release/*` PRs). The three heavy substrate lanes — `compose-smoke`, `dashboard` (k3d + Grafana + Playwright), and `profile` — are **release** gates instead: they short-circuit to a green no-op on an ordinary PR, do their real work on the merge commit, and are named in release.yml's `RELEASE_REQUIRED_CHECKS`, so nothing publishes until each posts green on the commit being shipped (a `release/*` head branch still gets the full lane on the PR). `compose-smoke` narrows that short-circuit: it is the only lane that runs against a real ClickHouse server rather than chDB, so a PR touching `internal/chsql` / `internal/api` / `internal/chclient` / `cmd/cerberus` boots the stack on the PR itself (scope owned by `.github/scripts/compose-smoke-scope.mjs`). Treat `docs/test-strategy.md`'s CI-gate inventory as the canonical per-gate reference, and this API call as the source of truth for the required set itself: `gh api repos/tsouza/cerberus/branches/main/protection --jq '.required_status_checks.contexts[]'`. Every workflow owning one of those contexts also declares `merge_group:`, so the same check-runs — under byte-identical names — report on the projected trunk a merge queue builds, and a queued entry is held to the *pull-request* posture rather than the push posture (same short-circuits, same diff-scoped lane selection, read off the merge group's own `base_sha..head_sha`). `CodeQL` is the one context with no `merge_group` half: code-scanning default setup dispatches on `push` and `pull_request` only. `test/regression/merge_queue_test.go` pins both invariants — every required context posts on the queue, and no `cancel-in-progress:` reachable from a merge-group run can be true there, because GitHub reads a cancelled check-run as a failure and dequeues the PR. See `docs/test-strategy.md` → "Merge-queue posture". Force-push and deletion are off on `main`; the GitHub "Update branch" button (merge-commits) works for stale PRs. **Never use `gh pr merge --admin`** — every PR must merge cleanly with all required checks green. If a required check is failing, fix the code or fix the workflow; don't bypass. Branch protection has `enforce_admins: false`, so the no-`--admin` rule is policy discipline rather than a mechanical block — honour it regardless.
-- **No deferrals in PR prose — out-of-scope work becomes an Issue.** When work surfaces mid-PR that genuinely belongs outside that PR's scope, `gh issue create` it **before** arming auto-merge on the PR that found it. A sentence in a PR body that labels the work as somebody's later problem is not a resting place: the moment the PR merges, that sentence is invisible — it appears in no list, no gate reports on it, and nobody is assigned. An Issue stays open until someone closes it, which is the whole point. Verify the finding first (grep the site, read the function) — filing a phantom is as bad as dropping a real one. The PR body may *reference* the issue (`Follow-up tracked in #NNN`); it may never *substitute* for one. This is the same rule as ["Pre-existing" is not an escape hatch](#hard-rules-non-negotiable) seen from the other end: "adjacent" / "out of scope" decide **which** artefact fixes a bug, never **whether** it gets fixed. Issues are equally open to human contributors for bug reports, design discussions, and feature proposals. This rule is **enforced, not conventional**: the required `forbid-deferral` check (`.github/scripts/forbid-deferral.mjs`) scans a change's own additions — its description, the commit messages in its range, and the `+` lines of its diff — for the marker classes in that module's `DEFERRAL_MARKERS` table, and fails unless each one cites an issue in this repository that is **open** and is an issue rather than a pull request. It deliberately does not scan the tree at large: the same phrases are ordinary architecture prose elsewhere, and a gate that fired on those would get routed around. There is no tolerance file and no exemption list — the only resolution is to file the issue.
-- **A pushed branch gets a PR in the same breath.** The push and the `gh pr create` are one step, not two — never end a turn, hand back to an orchestrator, or continue to the next file with a branch pushed and no PR against it. A branch without a PR is invisible: it is not in `gh pr list`, no CI gate reports on it, no reviewer sees it, and if the work it belongs to merges without it, the commits are silently stranded. This has stranded real work more than once. If the branch genuinely is not ready to review, open it as a draft PR — "not ready" is a reason to mark the PR draft, never a reason to skip creating it. Two corollaries:
-  - **Branch off the current `origin/main`, and re-check the base before pushing.** Never branch off another in-flight branch. If the parent PR squash-merges while you work, your base no longer exists in `main`'s history and a PR from that branch shows a doubled diff — every file the parent touched, replayed. Recovery is to cherry-pick your own commits onto a fresh branch off `origin/main`, so avoid the situation instead.
-  - **Never push to the head branch of a PR that has already merged.** A merged PR is closed: it will not pick up the new commit, its head stops advancing, and the commit reaches no branch anyone reads. Confirm the PR is still open (`gh pr view <n> --json state`) before pushing to its head; if it has merged, cut a fresh branch off `origin/main` and open a follow-up PR.
-- **Conventional Commits**, enforced by `commitlint` (see `.commitlintrc.json`). The `subject-case` rule is relaxed so Dependabot's `Bump X from Y to Z` subjects pass.
-- **Justfile is the canonical task runner.** `just` lists every recipe. Don't reach for `go test ./...` directly when `just test` exists — the recipe sets the race flag, the cover profile, and the right toolchain.
-- **No manual pre-flight; lefthook + CI own it.** Don't run `just test`, `just lint`, `go test`, `golangci-lint run`, `go build`, or `markdownlint-cli2` manually before pushing. The repo's `lefthook.yml` is layered:
-  - `pre-commit` — sub-second formatters on staged files (`gofumpt` / `goimports` / `markdownlint-cli2 --fix`).
-  - `commit-msg` — Conventional-Commits via `commitlint`.
-  - `pre-push` — once-per-push gate that mirrors the CI `check` + `lint` + `forbid-skip` jobs: `golangci-lint run ./...`, `markdownlint-cli2` verify, and the discipline greps (`t.Skip*`, "not implemented" in prod code, soft-assertions / silent recovers, `should_skip` overlays, escape-hatch primitives). Bypass with `LEFTHOOK=0 git push` for WIP branches.
-  - CI runs the full test suite + the compat / e2e / mutation lanes the local hook intentionally doesn't.
-  - New contributors run `just hooks-install` once after cloning; agents trust the hooks + CI and don't pre-flight manually.
-- **Tests assert or are removed — never `t.Skip` / soft-assert / silent-recover / `should_skip` a test.** If a feature can't be exercised on the CI substrate (e.g. a CH function above the chDB floor), gate it at runtime and validate elsewhere (prod / e2e), never skip. The `forbid-skip` gate enforces this behaviourally; honest prose ("deferred", "skipped") describing correct version-gated code is fine — the removed `wording-tests` scan policed words, not behaviour.
-- **Compatibility is the source of truth for all three heads.** The unified `compatibility.yml` workflow runs on pull_request + push-to-main + nightly + manual dispatch. All three jobs — `compatibility/prometheus`, `compatibility/loki`, `compatibility/tempo` — are required status checks on `main` (gate flip completed 2026-05-19; verified on 2026-05-21 with 9/9 consecutive green runs after the standalone `tempo-compatibility.yml` workflow was deleted and consolidated into this one). There are **no allow-lists**: the old `expected-failures.json` mechanism is deleted, and every diff against a reference backend is a real bug to fix at the source. The only pinned exclusion set is `compatibility/loki/upstream-skip-baseline.txt`, which records the corpus entries *upstream itself* marks `skip: true` (no reference baseline exists for them); the harness fails on any drift in that set (see `docs/compatibility.md`).
-- **"Pre-existing" is not an escape hatch.** Diagnosing a bug as "pre-existing" (not introduced by the current change) is *only* a routing/triage step — it decides *which* branch/PR fixes the issue (spin the resolution out to a separate agent/branch/PR), never *whether* it gets fixed. Outside that routing scope an issue either exists or it doesn't; if it exists, it gets fixed. "Not my PR's fault" / "pre-existing" must never be used to skip, tolerate, ignore, or ship a known bug, nor to paper over a real failure as "flake/pre-existing" without evidence and a follow-up fix. Same family as the `t.Skip` / soft-assert and **no allow-lists** rules above — no escape hatch for known-bad behaviour, only an honest decision about where the fix lands.
-- **Non-trivial CI step logic lives in `.github/scripts/*.mjs`, not inline YAML.** Multi-line `bash` / `jq` / `awk` / `perl` embedded in a workflow `run:` block that encodes real logic (discipline greps, threshold gates, baseline/ref resolution, score-summary formatting) belongs in a dependency-light Node ESM module under `.github/scripts/` — env-driven inputs (documented at the top of the file), `::error::` / `::notice::` workflow commands, and `process.exit(1)` on failure / `0` on success, preserving the exact behaviour of the bash it replaces. Import only `node:` builtins (no npm deps, no `@actions/*`); `ubuntu-latest` ships node, so `run: node .github/scripts/<name>.mjs` needs no `setup-node`. Shared `::error::` / `git` / `lsFiles` helpers live in `.github/scripts/lib/gh.mjs`. This keeps step logic testable (run the `.mjs` locally), lintable, and reusable across jobs (e.g. the three compatibility heads share one summary script). **Trivial one-liners and official Actions usage stay inline.** See `.github/scripts/README.md` for the module + env-contract inventory.
-- **No raw SQL strings — typed chsql API only.** Use `internal/chsql.Builder` / `chsql.QueryBuilder` — the custom CH-flavored builder API. Compose clauses via typed `QueryBuilder` slots (`.Select` / `.From` / `.Where` / `.GroupBy` / `.OrderBy` / `.Limit` / `.Prewhere` / `.Join` / `.WithRecursive`) and expressions via typed Frags (`Eq` / `And` / `Or` / `Paren` / `Cast` / `In` / `Like` / `Add` / `Call` / `Array` / `Subscript` / `If` / `Lambda1` / `Subquery` / `BareIdent` / `InlineLit` / etc.). The typed-Frag surface is closed by construction: external packages cannot raw-write SQL. Add new typed constructors when a shape isn't covered; never compose SQL via string concatenation. Reviewer discipline + the typed API are the enforcement.
-  - **CI catches the token-writing primitives; reviewer discipline catches the semantic shape.** The `.github/scripts/forbid-sql-raw.mjs` gate (wired into CI and lefthook pre-push) scans `internal/chsql/` for raw token writes outside the known-good layer and fails the build if any appear. Writing SQL tokens into a `strings.Builder` (`b.sb.Write*`), `b.writeSQL(...)`, `fmt.Sprintf` of SQL, or `+`-concatenating SQL is **forbidden EVERYWHERE EXCEPT the Frag-primitive constructors in `internal/chsql/builder.go`** (`Call` / `binOp` / `Cast` / `Paren` / `InlineLit` / the QueryBuilder clause renderer — these *implement* the typed surface, so they legitimately write tokens). The domain emitters (`range_window.go`, `absent_over_time.go`, `range_lwr.go`, `emit_node.go`, `histogram_over_time.go`, `range_bucket_fanout.go`, `metrics_compare.go`, `histogram_quantile*.go`, `vector_join.go`, `structural_join.go`, …) build query/expression SHAPES and MUST compose Frags — any CH function is `Call("fn", args…)`, arithmetic is `Mul/Add/Sub/Div/Mod/Neg`, comparisons are `Lt/Gt/Eq/…`, lambdas are `Lambda1/Lambda2` with `BareIdent("i")` params. `verbatim(...)` is reserved for emitter-chosen synthetic tokens (alias names, pre-quoted literals, pre-rendered subquery SQL) — never for whole expression shapes.
-  - **Self-check before any chsql change:** `node .github/scripts/forbid-sql-raw.mjs` (run from the repo root) reports any raw token write outside `builder.go`, `emit_node.go`, and `emit.go`. The pre-push hook runs the same script automatically. If you need to inspect the allowlist manually: `grep -rn 'sb.Write\|writeSQL\|strings.Builder' internal/chsql/ | grep -v builder.go | grep -v _test.go` should surface nothing but the pre-rendered-subquery splice in `emit_node.go` (`subqueryFrag`), the emitter's own output-buffer field in `emit.go`, and the regex escaper `regexQuoteMeta`. A non-empty list anywhere else is a regression — recompose it as Frags.
-  - **Before/after** (the `epochAlignedEndFrag` / `durationToStart` shape): raw `b.sb.WriteString("fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano("); end(b); b.sb.WriteString(") / step) * step)")` → `Call("fromUnixTimestamp64Nano", Mul(Call("intDiv", Call("toUnixTimestamp64Nano", end), step), step))`. `Call`/binOp add no parens and `InlineLit(int64)` emits the bare integer, so the typed form is byte-identical to the hand-rolled string — regenerate goldens and confirm zero churn.
-- **No `unsafe.Pointer` / `reflect.FieldByName` against upstream parser internals — fork + accessors instead.** Cerberus's `internal/**` packages must never reach into unexported fields of `prometheus`, `loki`, or `tempo` parser ASTs via `unsafe.Pointer` or `reflect.Value.FieldByName`. When a parser doesn't expose what cerberus needs, add the accessor to the relevant `tsouza/*:cerberus-*` fork (see `docs/upstream-forks.md`), bump the `replace` in `go.mod`, and consume the typed accessor. The `forbidigo` linter enforces both patterns project-wide across `internal/**` (see `.golangci.yml`); the gate started life scoped to `internal/traceql/` + `internal/api/tempo/` (the original shim sites) and was widened to all of `internal/` as forward-looking hygiene — zero current violations exist, the gate exists to keep it that way.
-- **No magic constants.** A meaning-bearing numeric literal sitting inline — `x + 5_000_000_000`, `n > 200`, `now64(9)` — must be lifted to a named `const` with a short name that *is* the explanation. The name carries the meaning; ideally no comment block is needed at all (one terse line max if the value's rationale isn't obvious from the name). If you can't find a short, honest name for the number, that's the signal it's probably wrong or unnecessary — stop and rethink, don't paper over it with a comment. Out of scope: self-evident `+1`/`-1` (next index / 1-based / grid-anchor count), trivial `0`/`1`/`2` loop bounds, slice-capacity hints (`make([]T, 0, 64)`), and literals already named. Before/after: `if n > 200 { n = 200 }` → `const maxSearchRecentLimit = 200` then `if n > maxSearchRecentLimit { … }`.
-- **Subagent worktree isolation — stay in your assigned path.** When the harness dispatches you with an isolated worktree under `.claude/worktrees/agent-<id>/`, every git / filesystem operation you make MUST happen inside that path. **Never `cd /home/thiago/workspace/cerberus`** (or any other cerberus checkout) — the main checkout shares the same `.git` object store but is on a different branch, so a `git commit` or `git checkout` run from there will land your work on whichever branch another concurrent agent has checked out (see "Why this is a hard rule" below). Use the worktree path the runtime gave you verbatim: pass absolute paths to `Bash`, `Read`, `Write`, and `Edit` calls (or `cd` once at the top of a compound command). If a tool call resets cwd between invocations, re-anchor with an absolute path every time — don't trust the inherited cwd. See [Subagent worktree isolation](#subagent-worktree-isolation) for the recovery procedure if you suspect contamination has already happened.
+## Build and test commands
 
-## Architecture map
+`just` is the canonical task runner and lists every recipe. Never reach for a bare `go test ./...`
+when a recipe exists — the recipe sets the race flag, the cover profile, the build tags and the
+toolchain.
 
-```text
-internal/
-  api/{prom,loki,tempo}/    HTTP handlers per upstream API
-  promql/, logql/, traceql/ three heads: parse + lower
-  chplan/                    shared plan IR (Scan, Filter, Project, Aggregate, RangeWindow, Limit + Expr tree)
-  optimizer/                 rule-based, fixpoint driver. Pattern API + analyzer/optimizer rule split; transposes + PREWHERE promotion + late materialisation.
-  chsql/                     plan → ClickHouse SQL emitter
-  chclient/                  CH driver wrapper (clickhouse-go/v2)
-  schema/                    OTel-CH default + override config
-  config/                    runtime config (`cerberus.yaml` + `CERBERUS_*` env, env wins)
-cmd/cerberus/                main entrypoint
-test/spec/                   TXTAR golden tests (input QL → SQL/plan + `-- chplan --` IR snapshots + optional `-- seed --` / `-- expected_rows --` chDB roundtrip). `test/spec/chplan_print.go` is the deterministic IR pretty-printer used by Layer 2a snapshots.
-test/property/               oracle-based property tests (`pgregory.net/rapid` shrinking + chDB execution); `gen/` random data + query generators; `oracle/` from-scratch evaluator.
-test/regression/             meta-tests that pin past CI failures so they can't silently recur — goleak detectors across every handler entrypoint (added by #253), justfile-shape pins, seed-program invariants.
-test/e2e/                    k3d cluster + Grafana playwright smoke
-test/e2e/{k3s,grafana}/      k3d manifests + Grafana provisioning (datasources, dashboards) consumed by the smoke
-compatibility/prometheus/    prometheus/compliance Docker Compose harness — PromQL differential testing
-compatibility/loki/          LogQL differential harness vs reference Loki + vendored `grafana/loki:pkg/logql/bench` corpus
-compatibility/tempo/         TraceQL differential harness vs reference Tempo + vendored `cmd/tempo-vulture` / `pkg/httpclient` snapshot
-docs/                        engine.md, compatibility.md, test-strategy.md, observability.md, operations.md, upstream-forks.md, health.md, …
-```
+- `just` — list every recipe.
+- `just ci` — the CI entry point: `lint` + `test` + `build`.
+- `just test` — `test-unit` (race-detected unit + spec suite) plus `vet-tagged`.
+- `just test-unit` — `go test -race ./...`.
+- `just vet-tagged` — type-check the build-tagged migration lanes no other recipe compiles.
+- `just build` — build cerberus into `./bin`.
+- `just lint` — `golangci-lint run` over both the untagged and the tagged build configurations.
+- `just lint-actions` — `actionlint` over the workflow files.
+- `just lint-md` / `just fmt-md` — markdownlint-cli2 verify / auto-fix.
+- `just fmt` — `gofumpt` + `goimports -local` over the tree.
+- `just update-golden` — regenerate every generated artefact (see invariant 9).
+- `just coverage` — coverage profile + floor check.
+- `just property` — rapid-based property tests (needs chDB).
+- `just mutate` / `just mutate-pkg PATH` — gremlins mutation run.
+- `just chdb-install` — install `libchdb.so`, required by every chdb-tagged lane.
+- `just hooks-install` — one-shot after clone: install lefthook and activate the git hooks.
+- `just e2e` — full k3d + Grafana + Playwright smoke.
+- `just e2e-up` / `e2e-seed` / `e2e-run` / `e2e-down` — the e2e lane, one step at a time.
+- `just compat-promql` / `compat-logql` / `compat-traceql` / `compat-all` — differential harnesses
+  against the reference backends.
+- `just migration-tier1` / `migration-tier2` — the migration lane tiers.
+- `just deps-tidy` — `go mod tidy`.
 
-See [`docs/test-strategy.md`](docs/test-strategy.md) for the canonical 14-layer test map, the CI-gate inventory, the gremlins phased rollout, and the property-test phase plan.
+## Architecture decision tree
 
-Top-level reading order for any new contributor (human or agent):
+Where a change belongs, by the question it answers:
 
-1. `README.md` — what the project is, quick start.
-2. `docs/engine.md` — shared query pipeline (`internal/engine/`), the `Lang` contract, and the extension points each new head plugs into.
-3. `docs/operations.md` — runtime contract: configuration, lifecycle, scaling.
-4. `docs/test-strategy.md` — 14-layer test map + CI gate inventory.
-5. `internal/promql/lower.go` — the canonical lowering pattern; mirror it when adding LogQL / TraceQL slices.
+- **"The query language parses or rejects the wrong thing"** → `internal/promql/`,
+  `internal/logql/`, `internal/traceql/`. PromQL uses the upstream parser; LogQL parses in
+  `internal/logql/lsyntax` (with `internal/logql/logpattern` and `internal/drain`); TraceQL parses
+  in `internal/traceql/ast`.
+- **"The query lowers to the wrong plan"** → the same three packages' `lower.go`.
+  `internal/promql/lower.go` is the canonical pattern; mirror it for the other two heads.
+- **"The plan IR cannot express this"** → `internal/chplan/` (`Scan`, `Filter`, `Project`,
+  `Aggregate`, `RangeWindow`, `Limit`, and the `Expr` tree). Shared by all three heads.
+- **"The plan is correct but slow"** → `internal/optimizer/`, a rule-based fixpoint driver with a
+  Pattern API and an analyzer/optimizer rule split (transposes, PREWHERE promotion, late
+  materialisation).
+- **"The SQL is wrong"** → `internal/chsql/`, the plan → ClickHouse SQL emitter. Typed Frags only
+  (invariant 10).
+- **"The HTTP response shape is wrong"** → `internal/api/prom/`, `internal/api/loki/`,
+  `internal/api/tempo/`.
+- **"It talks to ClickHouse wrong"** → `internal/chclient/` (clickhouse-go/v2 wrapper).
+- **"The table or column layout is wrong"** → `internal/schema/` (OTel-CH default + override config).
+- **"A configuration knob is missing"** → `internal/config/` (`cerberus.yaml` + `CERBERUS_*` env,
+  env wins).
+- **Entrypoint** → `cmd/cerberus/`.
+
+Test layers, by what they pin:
+
+- `test/spec/` — TXTAR goldens: input QL → SQL, `-- chplan --` IR snapshots, optional `-- seed --` /
+  `-- expected_rows --` chDB roundtrip. The promql spec lane runs **pre-optimizer**, so an optimizer
+  rule is verified through the optimizer's own layer, not here.
+- `test/property/` — oracle-based property tests (`pgregory.net/rapid` + chDB execution).
+- `test/regression/` — meta-tests pinning past CI failures so they cannot silently recur.
+- `test/e2e/` — k3d cluster + Grafana Playwright smoke.
+- `compatibility/{prometheus,loki,tempo}/` — differential harnesses against the reference backends.
+
+`docs/test-strategy.md` holds the canonical 14-layer test map, the CI-gate inventory, and the
+per-layer "catches X / misses Y" guidance.
+
+## Hard invariants (non-negotiable)
+
+1. **PR-per-change.** Branch protection rejects direct pushes to `main` and requires a large set of
+   status checks. The source of truth for that set is
+   `gh api repos/tsouza/cerberus/branches/main/protection --jq '.required_status_checks.contexts[]'`;
+   `docs/test-strategy.md` is the per-gate reference. **Never `gh pr merge --admin`** — if a required
+   check is red, fix the code or fix the workflow. Ship with
+   `gh pr merge --squash --delete-branch`.
+2. **A pushed branch gets a PR in the same breath.** The push and the `gh pr create` are one step. A
+   branch with no PR is invisible: no gate reports on it, no reviewer sees it, and its commits get
+   stranded. "Not ready to review" is a reason to open the PR as a draft, never a reason to skip it.
+   Branch off the current `origin/main`, never off another in-flight branch, and never push to the
+   head branch of a PR that has already merged.
+3. **Out-of-scope work becomes a GitHub Issue, filed before the PR that found it merges.** A sentence
+   in a PR body is not a resting place — it is invisible the moment the PR merges. Verify the finding
+   first; a phantom issue is as bad as a dropped one. The required `forbid-deferral` check
+   (`.github/scripts/forbid-deferral.mjs`) scans a change's own additions — its description, the
+   commit messages in its range, and the `+` lines of its diff — and fails unless each deferral
+   marker cites an issue in this repository that is open and is an issue rather than a pull request.
+   There is no tolerance file and no exemption list.
+4. **Conventional Commits**, enforced by `commitlint` (`.commitlintrc.json`). Subject ≤ 100
+   characters.
+5. **No manual pre-flight; lefthook + CI own it.** Do not run `just test`, `just lint`, `go test`,
+   `golangci-lint run`, `go build`, or `markdownlint-cli2` by hand before pushing. `lefthook.yml` is
+   layered: `pre-commit` runs sub-second formatters on staged files, `commit-msg` runs commitlint,
+   and `pre-push` mirrors the CI `check` + `lint` + `forbid-skip` jobs. `LEFTHOOK=0 git push`
+   bypasses for WIP branches. CI runs the full suite plus the compat / e2e / mutation lanes the local
+   hook intentionally does not.
+6. **Tests assert or are removed.** Never `t.Skip`, soft-assert, silent-recover, or `should_skip` a
+   test. A feature that cannot run on the CI substrate (for example a CH function above the chDB
+   floor) is gated at runtime and validated elsewhere, never skipped. `forbid-skip` enforces this
+   behaviourally.
+7. **No allow-lists, no tolerance files, no expected-failure sets.** Compatibility is the source of
+   truth for all three heads, and every diff against a reference backend is a real bug to fix at the
+   source. The single pinned exclusion set is `compatibility/loki/upstream-skip-baseline.txt` — the
+   corpus entries upstream itself marks `skip: true`, for which no reference baseline exists — and
+   the harness fails on any drift in it.
+8. **"Pre-existing" is not an escape hatch.** Diagnosing a bug as pre-existing routes *which*
+   branch or PR fixes it; it never decides *whether* it gets fixed. The same applies to "adjacent"
+   and "out of scope". Never label a real failure a flake without evidence and a fix.
+9. **Never hand-edit a generated artefact — regenerate it.** `just update-golden` rewrites the TXTAR
+   goldens, the migration goldens, the solver decision baseline, the parity ledgers, and the
+   cardinality baseline. It needs `libchdb.so` (`just chdb-install`), without which the chdb-tagged
+   `-- expected_rows --` cells go stale. Every generated path is marked `-merge` in `.gitattributes`
+   precisely because line-merging one produces a file that still parses and is silently wrong.
+   Review `git diff test/spec/ test/e2e/migration/archetypes/ test/perf/ test/surface-parity/
+   test/rejection-parity/` before committing. A few ledgers sit outside `update-golden` because they
+   need Docker or the `agpl_oracle` tag; the recipe's own comments name each one and its regeneration
+   command.
+10. **No raw SQL strings — typed chsql API only.** Compose clauses via `chsql.QueryBuilder` slots and
+    expressions via typed Frags (`Eq` / `And` / `Call` / `Cast` / `Lambda1` / `Subquery` /
+    `InlineLit` and friends). Any CH function is `Call("fn", args…)`; arithmetic is
+    `Mul/Add/Sub/Div/Mod/Neg`. Writing SQL tokens into a `strings.Builder`, through `writeSQL(...)`,
+    through `fmt.Sprintf`, or by `+`-concatenation is forbidden everywhere except the Frag-primitive
+    constructors in `internal/chsql/builder.go`. `verbatim(...)` is for emitter-chosen synthetic
+    tokens (alias names, pre-quoted literals, pre-rendered subquery SQL), never for whole expression
+    shapes. Self-check before any chsql change: `node .github/scripts/forbid-sql-raw.mjs` from the
+    repo root. CI catches the token-writing primitives; reviewer discipline catches the semantic
+    shape.
+11. **No `unsafe.Pointer` / `reflect.FieldByName` against upstream parser internals.** When a parser
+    does not expose what cerberus needs, add the accessor to the relevant `tsouza/*:cerberus-*` fork
+    (`docs/upstream-forks.md`), bump the `replace` in `go.mod`, and consume the typed accessor. The
+    `forbidigo` linter enforces both patterns across all of `internal/**`.
+12. **No caching of query results.** Cerberus never caches the answer to a query. Internal
+    performance caches are acceptable only where staleness is proven output-safe.
+13. **No magic constants.** A meaning-bearing numeric literal must be a named `const` whose name *is*
+    the explanation: `if n > 200` becomes `const maxSearchRecentLimit = 200`. If no short honest name
+    fits, the number is probably wrong. Out of scope: self-evident `+1` / `-1`, trivial `0` / `1` /
+    `2` loop bounds, and slice-capacity hints.
+14. **No AGPL in the binary.** The upstream LogQL and TraceQL parsers are AGPLv3; the in-house
+    reimplementations exist so the Apache-2.0 binary never links them. They survive only as
+    test-only oracles behind the `agpl_oracle` build tag, quarantined in the `test/oracle` nested
+    module. The `agpl-clean` gate fails the build if any AGPL package reaches `cmd/cerberus`.
+15. **Non-trivial CI step logic lives in `.github/scripts/*.mjs`, not inline YAML.**
+    Dependency-light Node ESM, `node:` builtins only, env-driven inputs documented at the top of the
+    file, `::error::` / `::notice::` workflow commands, and `process.exit(1)` on failure. Trivial
+    one-liners and official Actions usage stay inline. See `.github/scripts/README.md`.
+16. **A new `internal/**` package must be declared in `.go-arch-lint.yml`.** The gate is CI-only, so
+    an undeclared package passes locally and fails on the PR.
+17. **Subagent worktree isolation.** Every git and filesystem operation happens inside the assigned
+    worktree path, passed absolutely on every call. Never operate on another checkout of this
+    repository — the object store is shared but the branch is not, so a stray `git commit` lands on
+    somebody else's branch. `docs/agent-workflow.md` has the recovery procedure.
+
+## Workflow for a non-trivial change
+
+Plan first, code last. Plan mode → requirements interview → a spec at `docs/specs/<feature>.md` → a
+numbered task list for owner review → only then implementation. Trivial changes (a typo, a one-line
+fix with an obvious test) skip straight to the PR. `docs/agent-workflow.md` describes each stage and
+what a spec must contain.
 
 ## Common workflows
 
-- **Add a TXTAR fixture** — use the `/cerberus:add-fixture` skill (under `.claude/skills/`). It creates `test/spec/<ql>/<name>.txtar` with the right section headers (`-- input --`, `-- sql --`, `-- chplan --`, optional `-- seed --` / `-- expected_rows --`); run `just update-golden` after the implementation lands to fill in expected sections — it covers both the default-tag text goldens and the chdb-tagged `-- expected_rows --` cells (requires libchdb.so via `just chdb-install`).
-- **Add an optimizer rule** — use the `/cerberus:add-optimizer-rule` skill. Scaffolds `internal/optimizer/<name>.go` + test + TXTAR fixtures.
-- **Add a property test** — add a row to the generator + oracle under `test/property/{gen,oracle}/` and a case to `test/property/promql_test.go`. The framework wires `rapid.Check` → dataset gen → chDB exec → oracle → comparator; you only swap the data shape + oracle. Build-tagged `chdb`; runs in the `chdb` workflow only.
-- **Bump parser deps** — use the `/cerberus:bump-parser-deps` skill. Runs `go get -u` on the three upstream parsers, runs `go mod tidy`, captures the diff for the PR description.
+- **Add a TXTAR fixture** — `.claude/skills/cerberus-add-fixture.md`. Creates
+  `test/spec/<ql>/<name>.txtar` with the right section headers; run `just update-golden` once the
+  implementation lands to fill in the expected sections.
+- **Add an optimizer rule** — `.claude/skills/cerberus-add-optimizer-rule.md`. Scaffolds
+  `internal/optimizer/<name>.go` plus its test and fixtures.
+- **Add a property test** — add a row to `test/property/{gen,oracle}/` and a case to
+  `test/property/promql_test.go`. Build-tagged `chdb`.
+- **Bump parser deps** — `.claude/skills/cerberus-bump-parser-deps.md`.
 - **Run E2E locally** — `just e2e-up && just e2e-seed && just e2e-run && just e2e-down`.
-- **Run the compatibility suite** — `just compat-promql`. Diffs cerberus against reference Prometheus on a deterministic OTel fixture.
-- **Find which test layer covers a class of bug** — see [`docs/test-strategy.md`](docs/test-strategy.md) for the layer map + per-layer "catches X / misses Y" guidance.
+- **Run a compatibility suite** — `just compat-promql` (or `compat-logql` / `compat-traceql`).
 
-## Toolchain notes
+## Reference docs
 
-- **Go version** — `go.mod` may pin a newer Go than what's installed system-wide. `GOTOOLCHAIN=auto` (the default) silently downloads the right version into `~/go/pkg/mod/golang.org/toolchain@...`. The `.envrc` (loaded by `direnv allow`) puts both the system Go and the downloaded toolchains on PATH.
-- **CGO** — left at the platform default so `go test -race` works. Goreleaser pins `CGO_ENABLED=0` for release builds independently.
-- **`golangci-lint` v2** — the config in `.golangci.yml` uses the v2 schema. `gofumpt` + `goimports` are configured under `formatters`, not `linters`. The v2 install path is `github.com/golangci/golangci-lint/v2/cmd/golangci-lint` (note the `/v2/`).
+Read these when the task touches them. They are deliberately linked as paths rather than imported,
+so they cost nothing until something needs them.
 
-## Parser deps — in-house LogQL/TraceQL, two upstream forks for the rest
-
-Cerberus parses its three query languages with a mix of an upstream parser and two in-house ones, and links **no AGPL code** into `cmd/cerberus`:
-
-- **PromQL** — the upstream Apache `prometheus/promql/parser`, consumed through the `tsouza/prometheus` fork (a pure Dependabot watch boundary, zero patches).
-- **LogQL** — cerberus's own clean-room Apache reimplementation: `internal/logql/lsyntax` (parser), `internal/logql/logpattern` (`pattern` parser), `internal/drain` (Drain miner). No upstream parser dep.
-- **TraceQL** — cerberus's own clean-room Apache reimplementation: `internal/traceql/ast`. No upstream parser dep.
-
-The upstream **LogQL** (`grafana/loki/v3/pkg/logql`) and **TraceQL** (`grafana/tempo/pkg/traceql`) parsers are **AGPLv3**; the in-house reimplementations exist so the Apache-2.0 binary never links them. They survive only as test-only oracles (`agpl_oracle`-tagged tests + the `compatibility/{loki,tempo}` harnesses), quarantined in the `test/oracle` nested module. The `agpl-clean` CI gate (`.github/scripts/agpl-clean.mjs`) fails the build if any AGPL package reaches `cmd/cerberus`; it is enforcing. The binary does link the **Apache** `grafana/tempo/pkg/tempopb` wire types.
-
-Two `go.mod` deps still route through `github.com/tsouza/*` forks pinned to **semver tags** (not pseudo-versions); `grafana/loki/v3` and `grafana/tempo` are now plain upstream requires (no fork):
-
-```text
-replace github.com/prometheus/prometheus                                                       => github.com/tsouza/prometheus                                                       v0.0.1-cerberus-parser
-replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter  => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter      v0.0.3-cerberus-ddl
-# (plus three sibling submodule replaces under the same fork)
-```
-
-The fork repos exist primarily as a **Dependabot watch boundary**: cerberus consumes only a narrow subtree of each upstream, so we don't want a Dependabot PR every time upstream cuts a release. Instead, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) runs a daily cron that rebases each `cerberus-*` branch onto `upstream/main`, runs subtree tests, and **only mints a new patch tag if commits touched the watched paths**. Dependabot in cerberus then sees a clean stream of "this is a change cerberus actually cares about" tags. See [`docs/upstream-forks.md`](docs/upstream-forks.md) for the full flow.
-
-- **`tsouza/opentelemetry-collector-contrib:cerberus-ddl`** carries the one real patch — it hoists the `sqltemplates` package out of `internal/` so cerberus's `internal/schema/ddl/` can consume the OTel-CH exporter's DDL templates directly.
-- **`tsouza/prometheus:cerberus-parser`** is unpatched — it exists solely as the Dependabot boundary.
-
-The `tsouza/loki` and `tsouza/tempo` parser forks were **retired** when the in-house parsers landed; `go.mod` no longer references them.
-
-## Tooling fork — gremlins (mutation testing)
-
-`mutation.yml` consumes the **`tsouza/gremlins`** fork (installed via `go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max-consume`) instead of upstream `go-gremlins/gremlins@v0.6.0`. The fork carries two fixes on top of `v0.6.0`, both of which exist because a mutation run that dies mid-flight is worse than one that reports a bad number — it reports *nothing*.
-
-**Fix 1 — `--on-shutdown-status` (cancelled-in-flight mutants).** Upstream's signal handler closes the channel that `os/signal` still writes to, so a second signal (typical CI runner sequence: SIGTERM → SIGKILL) panics with `send on closed channel` from `signal.process`. Worse, mutants whose `go test` subprocess is still running at cancellation time fall through `runTests` to the default `return mutator.Lived` branch (the per-test ctx is rooted in `context.Background()`, so only `DeadlineExceeded` is checked). The result on cerberus PR #664 / push-to-main run 26213450154: four untested mutants recorded as LIVED, deflating `test_efficacy`. The fork fixes both: the signal handler no longer self-closes, and the executor threads the engine's run ctx into the per-test ctx so cancelled-in-flight mutants are reported with the status from the new `--on-shutdown-status` flag. Cerberus passes `--on-shutdown-status=not-run` so those mutants land in `NOT_COVERED`, outside the `KILLED / (KILLED + LIVED)` efficacy formula entirely. Upstream PR: <https://github.com/go-gremlins/gremlins/pull/283>.
-
-**Fix 2 — `--timeout-max` (runaway mutants that kill the runner).** Upstream derives a mutant's test timeout as `timeout-coefficient × the package's baseline test duration`, which scales the leash by how *slow* a package's tests are — a quantity unrelated to how much damage a runaway mutant does in that time. A mutant that inverts a scanner's loop-advance (`i++` → `i--`) never terminates and allocates per iteration, so on a slow-baseline package it gets minutes to exhaust the runner's memory; the OOM killer then reaps the runner agent and the job dies with **no verdict at all**. Measured over 91 heavy runs on 2026-07-26: 55 of 55 runner deaths were stalled on a lexer/scanner mutant, and the worst leg failed 4 of its last 13 runs. `--timeout-max` is an absolute ceiling that bounds exposure independently of the baseline; cerberus passes `--timeout-max 15s`.
-
-Do **not** treat a recurrence as "exclude the file the log names" — excluding a file relocates its runaway mutants into whichever leg still owns it *and* burns real mutation coverage. `test/regression/mutation_timeout_max_test.go` pins the flag and the fork tag together, because the failure mode it prevents presents as flake rather than as a missing bound.
-
-The fork ships two parallel branches/tags by design:
-
-- **`cerberus-sigterm-fix` @ `v0.6.0-cerberus-timeout-max`** — the branch the upstream PR is built from. Keeps the upstream module path `github.com/go-gremlins/gremlins` so the diff stays clean and reviewable.
-- **`cerberus-sigterm-fix-consume` @ `v0.6.0-cerberus-timeout-max-consume`** — the branch cerberus's `mutation.yml` installs. Adds a single extra commit that renames the `go.mod` module path to `github.com/tsouza/gremlins` (and rewrites all internal imports), because `go install github.com/tsouza/gremlins/cmd/gremlins@...` rejects the module otherwise with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes themselves are identical to the upstream-PR branch.
-
-Unlike the two upstream-dep forks, this one is not on the Dependabot-watch flow — it's a build-time tool, not a Go module dep, and both branches will be retired once the upstream PR lands and a release tag is cut.
-
-## Transitive-dep gotcha (the one that bit us)
-
-`go.mod` has this entry:
-
-```text
-replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db
-```
-
-Grafana's Loki, Tempo, and `dskit` all use a forked memberlist internally (via their own `replace` directives). Those replaces **do not propagate** to consumers. Without our own replace, the build fails with `undefined: memberlist.NodeState`, `mlCfg.NodeSelection`, `mlCfg.PushPullNodes` from `dskit/kv/memberlist`. If you bump Loki / Tempo and the build breaks here, check whether they've updated their pinned memberlist version and bump ours in lock-step.
-
-## Pointers if you're lost
-
-- "How does this PR ship?" → branch + push + `gh pr create` → CI must pass → squash-merge with `gh pr merge --squash --delete-branch`.
-- "How are releases cut / which lines are still supported?" → `docs/operations.md` → "Release ritual (the ordered cycle)" (the canonical six-step cycle: merge everything → backport everything to every line that stays supported → settle the retirement set → audit the delta → publish backport patches → publish the head release last) + "Release pipeline (publish-on-merge)" + "Release support window / EOL policy" (latest 3 minor lines; older lines are EOL — branch deleted, no hotfixes, tags/Releases retained; enforced in `release-preflight.mjs`).
-- "Where do I add this feature?" → match the layer to the head: `internal/{promql,logql,traceql}/` for parse + lowering, `internal/chplan/` for the shared IR, `internal/optimizer/` for rewrites, `internal/chsql/` for SQL emission, `internal/api/{prom,loki,tempo}/` for HTTP handlers. Fixtures live in `test/spec/<head>/`.
-- "Where does work that isn't this PR's job get tracked?" → a GitHub issue, filed before this PR merges. Not a sentence in the PR body, not a doc note, not a Project board.
-
-## Subagent worktree isolation
-
-The dispatcher gives every subagent its own worktree under `.claude/worktrees/agent-<id>/`, on its own per-agent branch (typically `worktree-agent-<id>` or a task-specific branch you create off `origin/main`). The main checkout at `/home/thiago/workspace/cerberus` is itself a worktree of the same repo — it shares the `.git` object DB but is on whatever branch the maintainer last had checked out (often the most recent task branch — `git worktree list` showed e.g. `fix/tempo-search-traceid-zero-pad-emit` while three different subagents were running concurrently on unrelated tasks).
-
-### Why this is a hard rule
-
-Three separate post-mortems (issues #207, #209, #210) reported the same shape: an agent doing work in its isolation worktree somehow saw commits land on the main checkout's branch, or saw an unrelated branch's commits show up in their tree. The investigation under task #213 traced the root cause to subagents using `/home/thiago/workspace/cerberus` (the main checkout path) for git / file operations — the path their briefing pasted in as "the cerberus repo" — instead of their assigned `.claude/worktrees/agent-<id>/` path. When two agents both ran `git commit` from the main checkout, their commits stacked onto whichever branch was currently checked out there, contaminating an unrelated PR. The same root cause hits `Edit` and `Write` tool calls — if you pass `/home/thiago/workspace/cerberus/<file>` as `file_path`, the edit lands in the main checkout's working tree, not your worktree's.
-
-Git's worktree machinery itself does protect against the obvious failure modes — the same branch can't be checked out in two worktrees, and each worktree has its own `.git/worktrees/<id>/HEAD` ref — but **none of that helps if you run git from the wrong path.** The protection is path-based, not agent-based.
-
-### Recovery procedure (if contamination is suspected)
-
-1. `cd` into your assigned worktree path (`/home/thiago/workspace/cerberus/.claude/worktrees/agent-<your-id>/`).
-2. `git worktree list` — verify your worktree shows up with the expected branch name. If it doesn't, you have been operating in the wrong tree the whole time.
-3. From your assigned worktree, run `git log --oneline origin/main..HEAD` and compare against the work you actually did. Any commit you don't recognize is contamination.
-4. From the main checkout (`/home/thiago/workspace/cerberus`), run `git status` and `git log --oneline` on whichever branch is checked out there. Uncommitted edits or commits you authored that don't belong to that branch's PR are the bleed-through.
-5. If the bleed-through is uncommitted: from the main checkout, `git checkout -- <files>` to revert (only when you are certain nothing else is in flight there — when in doubt, ask the maintainer rather than `git checkout --` a shared tree). Then re-apply the change in the correct worktree using the correct absolute path.
-6. If the bleed-through is committed: cherry-pick contaminated commits onto the correct branch (`git cherry-pick <sha>` from inside the right worktree), then revert them from the wrong one (`git revert <sha>` + push). Don't `git reset --hard` a shared branch — that rewrites history other agents may have pushed.
-7. Open a follow-up note on task #213 with the contamination SHAs / file paths + which worktree paths were involved, so the pattern doesn't repeat silently.
-
-### Defence-in-depth (future work)
-
-Documentation is the cheapest fix and the one this section implements. A more durable option is for the dispatcher to use `git worktree add --detach .claude/worktrees/agent-<id>` then have the subagent create its own branch — that way no branch is shared between the main checkout and any worktree, and a stray `git commit` from the wrong path lands on a detached HEAD that's trivially recoverable. That structural change is tracked separately; until it lands, the rule above is the gate.
+- `docs/engine.md` — the shared query pipeline, the `Lang` contract, and the extension points a new
+  head plugs into.
+- `docs/test-strategy.md` — the 14-layer test map, the CI-gate inventory, the gremlins rollout.
+- `docs/operations.md` — runtime contract, configuration, lifecycle, scaling, the release ritual, and
+  the support window.
+- `docs/compatibility.md` — the three differential harnesses and their ratchets.
+- `docs/agent-workflow.md` — the PR ritual in detail, the deferral-to-issue rule, worktree isolation
+  and its recovery procedure, the plan-mode / spec workflow, and the checked-in Claude Code harness
+  (hooks and project subagents).
+- `docs/toolchain.md` — Go toolchain, CGO, golangci-lint v2, the gremlins mutation-testing fork, and
+  the dependency gotchas.
+- `docs/upstream-forks.md` — the `tsouza/*` fork boundary, the parser dependency map, and the
+  transitive-dependency `replace` entries.
+- `docs/observability.md`, `docs/health.md`, `docs/performance.md`, `docs/solver.md`,
+  `docs/coverage.md`, `docs/forbid-skip.md`, `docs/migration.md` — subsystem references.
