@@ -397,31 +397,6 @@ func TestSubqueryPreservedNameExpr_DoesNotDuplicateExistingKey(t *testing.T) {
 	assertNameGroupKey(t, identity, s)
 }
 
-// TestProjectionOutputName pins the alias-then-bare-ColumnRef rule: a
-// computed expression with no alias names no output column, so it must
-// never be mistaken for a MetricName projection.
-func TestProjectionOutputName(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		proj chplan.Projection
-		want string
-	}{
-		{"alias wins", chplan.Projection{Expr: &chplan.LitString{V: "x"}, Alias: "MetricName"}, "MetricName"},
-		{
-			"alias wins over column",
-			chplan.Projection{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "MetricName"},
-			"MetricName",
-		},
-		{"bare column passes through", chplan.Projection{Expr: &chplan.ColumnRef{Name: "MetricName"}}, "MetricName"},
-		{"computed and unaliased names nothing", chplan.Projection{Expr: &chplan.LitString{V: "x"}}, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := projectionOutputName(tc.proj); got != tc.want {
-				t.Fatalf("projectionOutputName: got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
+// The alias-then-bare-ColumnRef rule projectCarriesMetricName reads
+// through is chplan.ProjectionOutputName, pinned where that function now
+// lives: internal/chplan/derived_shape_test.go's TestProjectionOutputName.

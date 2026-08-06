@@ -23,31 +23,28 @@
 //      CLAUDE.md (and any prose layer-count claim in test-strategy.md /
 //      README.md) matches that live heading count.
 //
-//   3. compat parity floors — README.md and docs/test-strategy.md route
-//      readers to compat-ratchet.mjs's header for the canonical explanation of
-//      the parity gate, and that header states each head's committed floor
-//      ("prometheus 737/737"). The canonical numbers are the `heads` block of
-//      compatibility/parity-baseline.json; the gate asserts the header states
-//      exactly one floor per head and that each matches the baseline, so
-//      bumping a floor cannot leave the explanation behind.
+//   3. compat parity counts stay in ONE place — the per-head passed/total is
+//      generated into compatibility/parity-baseline.json by the compatibility
+//      run. Two hand-written descriptions used to copy it: compat-ratchet.mjs's
+//      header floors and docs/compatibility.md's roster table. Comparing three
+//      statements of one fact only ever moved the work — a corpus-adding PR had
+//      to hand-carry two files, and two such PRs conflicted in files neither
+//      changed the meaning of, which is how the table drifted below the
+//      baseline three corpus moves running (#1686 → #1717 → #1746). Both sites
+//      now state the counts BY REFERENCE, so this assertion inverts: neither
+//      may write a baseline integer down as its own standalone number, and each
+//      must still name compatibility/parity-baseline.json so a reader can reach
+//      the numbers it stopped printing. The .mjs is scanned through its `//`
+//      comment prose only, because a code literal (an exit code, an array
+//      index) restates nothing.
 //
-//   4. compat parity ROSTER TABLE — docs/compatibility.md prints the same
-//      per-head passed/total as a markdown table ("| <head> | <p> / <t> |"). It
-//      is the number a reader sees first, and until this assertion existed
-//      nothing compared it to anything: it drifted below the baseline across
-//      three consecutive corpus moves (#1686 → #1717 → #1746 left it reading
-//      120, 124 and 127 against baselines of 124, 126 and 129) because each PR
-//      updated the header floor the gate DID check and hand-carried the table.
-//      The gate asserts exactly one table row per head, each matching the
-//      baseline, so the two statements of the same fact cannot separate again.
-//
-//   5. forbid-skip workflow callers — every `CHECK:` value any workflow hands
+//   4. forbid-skip workflow callers — every `CHECK:` value any workflow hands
 //      forbid-skip.mjs must name a live registry entry (or `all`). A stale
 //      caller is not cosmetic drift: the invocation exits 1, and since the
 //      compatibility lane's `gate` is `needs:` for all three required
 //      compatibility heads, it reds every PR in the repository until fixed.
 //
-//   6. surface-parity "Coverage at a glance" — docs/coverage.md publishes a
+//   5. surface-parity "Coverage at a glance" — docs/coverage.md publishes a
 //      four-column per-head table (symbols probed / supported / intentionally
 //      rejected / wrong-rejected). Every cell is a tally over the `class` field
 //      of test/surface-parity/inventory.json, folded exactly the way
@@ -57,7 +54,7 @@
 //      re-derives all sixteen cells from the ledger, so the headline
 //      "wrong-rejections" figure a reader acts on cannot be hand-typed.
 //
-//   7. rejection-parity shape divergences — the surface-parity ledger is
+//   6. rejection-parity shape divergences — the surface-parity ledger is
 //      SYMBOL-level, so its wrong-rejection column says nothing about which
 //      argument SHAPES lower. That second measurement is the `class:
 //      "divergence"` rows of test/rejection-parity/catalogue/*.json, and
@@ -96,6 +93,16 @@ const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
 const COMPAT_DOC = join(REPO, 'docs', 'compatibility.md');
 const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline.json');
 const WORKFLOWS_DIR = join(REPO, '.github', 'workflows');
+
+// The repo-relative path a hand-written parity description must point at
+// instead of copying its numbers. It is the string the sites are checked to
+// contain, so it is spelled exactly as a reader would type it into `git show`.
+const PARITY_BASELINE_REF = 'compatibility/parity-baseline.json';
+
+// The per-head fields the baseline owns. `passed` and `total` are the two
+// integers a prose site used to restate; `cases` is the roster itself and is
+// not a count.
+const PARITY_BASELINE_FIELDS = ['passed', 'total'];
 const COVERAGE_DOC = join(REPO, 'docs', 'coverage.md');
 const SURFACE_INVENTORY = join(REPO, 'test', 'surface-parity', 'inventory.json');
 const REJECTION_CATALOGUE_DIR = join(REPO, 'test', 'rejection-parity', 'catalogue');
@@ -159,21 +166,60 @@ export function countTestLayers(src) {
   return { count: ints.size, ints: [...ints].sort((a, b) => a - b) };
 }
 
-// parityFloorClaims — the floors compat-ratchet.mjs's header states, one entry
-// per head name it is asked about. The source is line-comment prose, so a
-// claim can wrap across `//` continuations ("prometheus 737/737, loki\n//
-// 116/116"); comment markers are stripped and whitespace collapsed first so a
-// wrapped claim reads the same as an unwrapped one. Returns every match per
-// head, because "how many times is this claimed" is itself an assertion: zero
-// means the wording drifted out from under the gate.
-export function parityFloorClaims(src, heads) {
-  const prose = src.replace(/^[ \t]*\/\/[ \t]?/gm, ' ').replace(/\s+/g, ' ');
-  const out = {};
-  for (const head of heads) {
-    const re = new RegExp(`\\b${head}\\s+(\\d+)/(\\d+)\\b`, 'g');
-    out[head] = [...prose.matchAll(re)].map((m) => ({ passed: Number(m[1]), total: Number(m[2]) }));
+// parityBaselineIntegers — every integer compatibility/parity-baseline.json
+// states for a head: its `passed` and its `total`. These are the values a
+// hand-written prose site must not copy. Keyed by value so a hit can name
+// which head's number was written down (two heads can legitimately share a
+// size, hence a list).
+export function parityBaselineIntegers(baseline) {
+  const out = new Map();
+  for (const [head, entry] of Object.entries(baseline?.heads ?? {})) {
+    for (const field of PARITY_BASELINE_FIELDS) {
+      const value = entry?.[field];
+      if (typeof value !== 'number') continue;
+      if (!out.has(value)) out.set(value, []);
+      out.get(value).push(`${head}.${field}`);
+    }
   }
   return out;
+}
+
+// commentProse — the human-readable half of a .mjs source: its `//` comment
+// text with the markers stripped, one output line per input line so a hit
+// still reports the source line number. Code literals (exit codes, array
+// indices) restate nothing, so the scan below reads prose only and cannot
+// red the build over an unrelated `return 1`.
+export function commentProse(src) {
+  return src
+    .split('\n')
+    .map((line) => {
+      const m = /^[ \t]*\/\/[ \t]?(.*)$/.exec(line);
+      return m ? m[1] : '';
+    })
+    .join('\n');
+}
+
+// A standalone decimal integer: not glued to a word, a `#issue` reference, a
+// dotted version, a path segment or a percentage. That exclusion is what
+// keeps `#1714`, `24.x` and `1e-9` from reading as counts.
+const PARITY_INTEGER_TOKEN = /(?<![\w.#/-])(\d+)(?![\w.%/-])/g;
+
+// parityIntegerRestatements — every place `text` writes one of the baseline's
+// per-head integers down as its own standalone number. A hit IS the drift
+// this gate exists to prevent: the count belongs to the generated baseline,
+// and a second hand-typed copy is what made two independent corpus PRs
+// conflict over a file neither of them changed the meaning of.
+export function parityIntegerRestatements(text, values) {
+  const found = [];
+  text.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(PARITY_INTEGER_TOKEN)) {
+      const value = Number(m[1]);
+      if (values.has(value)) {
+        found.push({ line: i + 1, value, owners: values.get(value), text: line.trim() });
+      }
+    }
+  });
+  return found;
 }
 
 // The heads the surface-parity ledger probes, in the order docs/coverage.md
@@ -225,22 +271,6 @@ export function surfaceParityTotals(inventory) {
       row[key] += 1;
       out[SURFACE_TOTAL_ROW][key] += 1;
     }
-  }
-  return out;
-}
-
-// parityTableClaims — the passed/total docs/compatibility.md's roster table
-// prints for each head, one entry per matching row. The head name is matched as
-// a WHOLE table cell (`|` … `|`) rather than as a substring, because `tempo` is
-// a prefix of `tempo-grpc` and a substring match would read the wrong row for
-// one of them and report two claims for the other. Returns every match per head
-// for the same reason parityFloorClaims does: zero rows means the table stopped
-// stating a head at all, which is a drift the gate must catch rather than skip.
-export function parityTableClaims(src, heads) {
-  const out = {};
-  for (const head of heads) {
-    const re = new RegExp(`^\\|\\s*${head}\\s*\\|\\s*(\\d+)\\s*/\\s*(\\d+)\\s*\\|`, 'gm');
-    out[head] = [...src.matchAll(re)].map((m) => ({ passed: Number(m[1]), total: Number(m[2]) }));
   }
   return out;
 }
@@ -375,39 +405,38 @@ function assertClaims({ label, expected, docs, patterns }) {
   return ok;
 }
 
-// assertParityRestatement compares one restatement of the per-head parity
-// numbers against the committed baseline that owns them. `extract` pulls the
-// claims out of `source`; the rest is the same comparison for every restatement,
-// so a second place that prints the numbers costs one call rather than a second
-// copy of this loop. Exactly one claim per head: a second one is a
-// contradiction, and none means the restatement stopped stating what the gate
-// validates.
-function assertParityRestatement({ label, sourcePath, sourceName, extract, oncePerHeadWhy }) {
-  const baseline = JSON.parse(readFileSync(PARITY_BASELINE, 'utf8'));
-  const heads = Object.keys(baseline.heads ?? {});
-  if (heads.length === 0) {
-    error(`${label}: compatibility/parity-baseline.json declares no heads to validate against`);
+// assertParityByReference is the surviving half of what used to be two
+// stale-number comparisons. Both hand-written sites now state the parity
+// numbers BY REFERENCE, so the assertion inverts: neither may restate a
+// baseline integer, and each must still name the baseline so a reader can
+// reach the numbers it stopped printing.
+//
+// `report` is the failure sink so the self-test can prove rejection without
+// posting an ::error:: annotation on an otherwise-green job.
+export function assertParityByReference(baseline, sites, report = error) {
+  const values = parityBaselineIntegers(baseline);
+  if (values.size === 0) {
+    report('parity-by-reference: compatibility/parity-baseline.json states no per-head counts to protect');
     return false;
   }
-  const claims = extract(readFileSync(sourcePath, 'utf8'), heads);
   let ok = true;
-  for (const head of heads) {
-    const { passed, total } = baseline.heads[head];
-    const found = claims[head];
-    if (found.length !== 1) {
-      error(
-        `${label}: ${sourceName} states ${found.length} "${head} <passed>/<total>" entries, ` +
-          `expected exactly 1 — ${oncePerHeadWhy}`,
-        { file: sourceName },
+  for (const { name, src, proseOnly } of sites) {
+    for (const hit of parityIntegerRestatements(proseOnly ? commentProse(src) : src, values)) {
+      report(
+        `parity-by-reference: ${name}:${hit.line} writes ${hit.value}, which is ` +
+          `${hit.owners.join(' / ')} in ${PARITY_BASELINE_REF} — state it by reference. ` +
+          `A hand-typed copy of a generated count is what makes two unrelated ` +
+          `corpus-adding PRs conflict here: "${hit.text}"`,
+        { file: name, line: hit.line },
       );
       ok = false;
-      continue;
     }
-    if (found[0].passed !== passed || found[0].total !== total) {
-      error(
-        `${label}: ${sourceName} claims ${head} ${found[0].passed}/${found[0].total} but ` +
-          `compatibility/parity-baseline.json has ${passed}/${total}`,
-        { file: sourceName },
+    if (!src.includes(PARITY_BASELINE_REF)) {
+      report(
+        `parity-by-reference: ${name} no longer names ${PARITY_BASELINE_REF} — ` +
+          `it describes the parity contract without pointing at the numbers, ` +
+          `which leaves a reader nowhere to go`,
+        { file: name },
       );
       ok = false;
     }
@@ -453,35 +482,18 @@ function assertSurfaceParityGlance() {
   return compareGlance(live, glanceTableRows(readFileSync(COVERAGE_DOC, 'utf8')), error);
 }
 
-// assertParityFloors compares the floors stated in compat-ratchet.mjs's header
-// against the committed baseline it describes.
-function assertParityFloors() {
-  return assertParityRestatement({
-    label: 'parity-floor',
-    sourcePath: COMPAT_RATCHET_MJS,
-    sourceName: '.github/scripts/compat-ratchet.mjs',
-    extract: parityFloorClaims,
-    oncePerHeadWhy:
-      'README.md and docs/test-strategy.md send readers there for the canonical ' +
-      "numbers, so the header must state each head's floor once",
-  });
-}
-
-// assertParityTable compares docs/compatibility.md's roster table against the
-// same baseline. It is a separate assertion rather than a second pattern on the
-// floor one because the failure it catches is different: the header floor moved
-// with every corpus change and the table did not, so the two numbers describing
-// one fact were free to disagree.
-function assertParityTable() {
-  return assertParityRestatement({
-    label: 'parity-table',
-    sourcePath: COMPAT_DOC,
-    sourceName: 'docs/compatibility.md',
-    extract: parityTableClaims,
-    oncePerHeadWhy:
-      'the roster table is the numbers a reader meets first, and it prints one ' +
-      'row per head',
-  });
+// readParityReferenceSites loads the two hand-written descriptions of the
+// parity gate. `proseOnly` marks the .mjs, whose numbers live in comments —
+// its code literals are exit codes, not restatements.
+function readParityReferenceSites() {
+  return [
+    {
+      name: '.github/scripts/compat-ratchet.mjs',
+      src: readFileSync(COMPAT_RATCHET_MJS, 'utf8'),
+      proseOnly: true,
+    },
+    { name: 'docs/compatibility.md', src: readFileSync(COMPAT_DOC, 'utf8'), proseOnly: false },
+  ];
 }
 
 // assertForbidSkipCallers checks every workflow `CHECK:` value against the live
@@ -552,8 +564,13 @@ function runAssertions() {
     patterns: TEST_LAYER_CLAIM_PATTERNS,
   });
 
-  const parityOk = assertParityFloors();
-  const parityTableOk = assertParityTable();
+  const parityBaseline = JSON.parse(readFileSync(PARITY_BASELINE, 'utf8'));
+  const parityValues = parityBaselineIntegers(parityBaseline);
+  log(
+    `parity-baseline per-head integers (live): ` +
+      `[${[...parityValues].map(([v, owners]) => `${owners.join('/')}=${v}`).join(', ')}]`,
+  );
+  const parityOk = assertParityByReference(parityBaseline, readParityReferenceSites());
 
   const glanceOk = assertSurfaceParityGlance();
 
@@ -576,11 +593,12 @@ function runAssertions() {
   );
   const callersOk = assertForbidSkipCallers(fsNames, callers);
 
-  if (forbidOk && layerOk && parityOk && parityTableOk && glanceOk && divergenceOk && callersOk) {
+  if (forbidOk && layerOk && parityOk && glanceOk && divergenceOk && callersOk) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
-        `(forbid-skip=${fsCount}, test-layers=${layerCount}, parity floors and the ` +
-        `docs/compatibility.md roster table both match the baseline, ` +
+        `(forbid-skip=${fsCount}, test-layers=${layerCount}, ` +
+        `compat-ratchet.mjs and docs/compatibility.md state the per-head parity ` +
+        `counts by reference to ${PARITY_BASELINE_REF} rather than restating them, ` +
         `the coverage glance table matches the surface-parity ledger, ` +
         `shape-divergences=${divCount}, ` +
         `${callers.length} workflow CHECK callers all name a live scan)`,
@@ -711,23 +729,86 @@ function selfTest() {
     realLayerClaims.length > 0 && realLayerClaims.every((c) => c.value === realLayers),
   );
 
-  // 5. The parity-floor extractor reads a wrapped comment claim, and the gate
-  //    rejects both a drifted number and a claim that disappeared.
-  const heads = ['prometheus', 'loki', 'tempo'];
-  const wrapped = ['// floors are prometheus 718/718, loki', '// 116/116, tempo 48/48 — see the baseline.'].join('\n');
-  const wrappedClaims = parityFloorClaims(wrapped, heads);
+  // 5. The parity numbers live in ONE place. The gate is an absence check, so
+  //    the mutation it must catch is a hand-typed count creeping back into a
+  //    prose site — the restatement that made every corpus-adding PR conflict
+  //    in two files it did not change the meaning of.
+  const fakeBaseline = {
+    heads: {
+      prometheus: { passed: 788, total: 788 },
+      tempo: { passed: 72, total: 72 },
+    },
+  };
+  const fakeValues = parityBaselineIntegers(fakeBaseline);
   check(
-    'parity extractor reads a claim wrapped across // continuations',
-    wrappedClaims.loki.length === 1 && wrappedClaims.loki[0].passed === 116 && wrappedClaims.loki[0].total === 116,
+    'baseline deriver keys each per-head passed/total by value and names its owner',
+    fakeValues.get(788)?.join(',') === 'prometheus.passed,prometheus.total' && fakeValues.has(72),
   );
-  const driftedClaims = parityFloorClaims('// floors are prometheus 574/574.', heads);
   check(
-    'parity gate would REJECT a header claiming prometheus 574/574 against a 718/718 baseline',
-    driftedClaims.prometheus.length === 1 && driftedClaims.prometheus[0].passed !== 718,
+    'comment-prose reader keeps // text and drops code literals',
+    commentProse(['// the roster is 788 cases', 'const n = 788;'].join('\n')).trim() ===
+      'the roster is 788 cases',
   );
-  check('parity gate would REJECT a header that states no floor at all', driftedClaims.tempo.length === 0);
-  // The REAL header must match the REAL baseline — the assertion the gate runs.
-  check('real compat-ratchet.mjs floors match compatibility/parity-baseline.json', assertParityFloors());
+  const restated = parityIntegerRestatements('the roster is 788 cases', fakeValues);
+  check(
+    'restatement scanner flags a prose line that writes a baseline count',
+    restated.length === 1 && restated[0].value === 788 && restated[0].owners.includes('prometheus.total'),
+  );
+  check(
+    'restatement scanner does NOT flag an issue reference or a version that shares the digits',
+    parityIntegerRestatements(`see #788 and v1.788 and 78%`, fakeValues).length === 0,
+  );
+  const byReferenceSrc = `read heads.<head> out of ${PARITY_BASELINE_REF} for the counts`;
+  check(
+    'parity gate ACCEPTS a site that points at the baseline and states no count',
+    assertParityByReference(
+      fakeBaseline,
+      [{ name: 'fake.md', src: byReferenceSrc, proseOnly: false }],
+      () => {},
+    ),
+  );
+  check(
+    'parity gate REJECTS a site that restates a baseline count in prose',
+    !assertParityByReference(
+      fakeBaseline,
+      [{ name: 'fake.md', src: `${byReferenceSrc}\nprometheus passes 788 cases`, proseOnly: false }],
+      () => {},
+    ),
+  );
+  check(
+    'parity gate REJECTS a site that stopped naming the baseline at all',
+    !assertParityByReference(
+      fakeBaseline,
+      [{ name: 'fake.md', src: 'every head reaches full parity.', proseOnly: false }],
+      () => {},
+    ),
+  );
+  check(
+    'parity gate ignores a code literal in a proseOnly site but still reads its comments',
+    assertParityByReference(
+      fakeBaseline,
+      [{ name: 'fake.mjs', src: `// see ${PARITY_BASELINE_REF}\nprocess.exit(72);`, proseOnly: true }],
+      () => {},
+    ) &&
+      !assertParityByReference(
+        fakeBaseline,
+        [{ name: 'fake.mjs', src: `// see ${PARITY_BASELINE_REF}, tempo is 72`, proseOnly: true }],
+        () => {},
+      ),
+  );
+  check(
+    'parity gate REJECTS a baseline that states no per-head counts to protect',
+    !assertParityByReference({ heads: {} }, [{ name: 'fake.md', src: byReferenceSrc }], () => {}),
+  );
+  // The REAL sites must hold — the assertion the gate runs.
+  check(
+    'real compat-ratchet.mjs and docs/compatibility.md state the parity counts by reference',
+    assertParityByReference(
+      JSON.parse(readFileSync(PARITY_BASELINE, 'utf8')),
+      readParityReferenceSites(),
+      () => {},
+    ),
+  );
 
   // 6. The glance tally folds the ledger's four classes into the doc's four
   //    columns, and the comparison rejects a hand-typed wrong-rejection cell —
@@ -827,37 +908,6 @@ function selfTest() {
   const ceiling = JSON.parse(readFileSync(DIVERGENCE_CEILING, 'utf8')).max_entries;
   check('real rejection-parity catalogue derives a non-zero divergence count', realDiv > 0);
   check(`real divergence count ${realDiv} is within the ratchet ceiling ${ceiling}`, realDiv <= ceiling);
-
-  // 8. The roster-table extractor reads a markdown row, does NOT confuse a head
-  //    whose name prefixes another's, and rejects a row that drifted.
-  const tableHeads = ['prometheus', 'tempo', 'tempo-grpc'];
-  const table = [
-    '| head       | passed/total |',
-    '| ---------- | ------------ |',
-    '| prometheus | 748 / 748    |',
-    '| tempo      | 68 / 68      |',
-    '| tempo-grpc | 65 / 65      |',
-  ].join('\n');
-  const tableClaims = parityTableClaims(table, tableHeads);
-  check(
-    'table extractor reads a markdown roster row',
-    tableClaims.prometheus.length === 1 && tableClaims.prometheus[0].passed === 748,
-  );
-  check(
-    'table extractor keeps tempo and tempo-grpc apart',
-    tableClaims.tempo.length === 1 &&
-      tableClaims.tempo[0].total === 68 &&
-      tableClaims['tempo-grpc'].length === 1 &&
-      tableClaims['tempo-grpc'][0].total === 65,
-  );
-  const staleTable = tableClaims.prometheus[0].passed !== 747;
-  check('table gate would REJECT a row claiming 747/747 against a 748/748 baseline', staleTable);
-  check(
-    'table gate would REJECT a table that dropped a head row entirely',
-    parityTableClaims('| head | passed/total |', tableHeads).tempo.length === 0,
-  );
-  // The REAL table must match the REAL baseline — the assertion the gate runs.
-  check('real docs/compatibility.md roster table matches compatibility/parity-baseline.json', assertParityTable());
 
   if (failures === 0) {
     notice(`doc-counts --self-test: all ${'meta-assertions'} passed`);

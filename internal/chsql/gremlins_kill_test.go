@@ -3526,28 +3526,10 @@ func TestValidateVectorSetOpCols_EachEmptyErrors(t *testing.T) {
 	})
 }
 
-// TestVectorSetOpProjectionOutputName_AliasBranch kills the
-// CONDITIONALS_NEGATION at vector_set_op.go:343 (`if p.Alias != ""`).
-// An explicit Alias must win; a bare ColumnRef with no Alias yields the
-// column name; a non-ColumnRef with no Alias yields "".
-func TestVectorSetOpProjectionOutputName_AliasBranch(t *testing.T) {
-	t.Parallel()
-	if got := vectorSetOpProjectionOutputName(chplan.Projection{
-		Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "renamed",
-	}); got != "renamed" {
-		t.Errorf("aliased projection output name = %q, want renamed", got)
-	}
-	if got := vectorSetOpProjectionOutputName(chplan.Projection{
-		Expr: &chplan.ColumnRef{Name: "Value"},
-	}); got != "Value" {
-		t.Errorf("bare ColumnRef output name = %q, want Value", got)
-	}
-	if got := vectorSetOpProjectionOutputName(chplan.Projection{
-		Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
-	}); got != "" {
-		t.Errorf("non-ColumnRef unaliased projection output name = %q, want empty", got)
-	}
-}
+// The alias-branch mutants this file used to cover for the emitter's own
+// copy of the projection-output-name rule now live with the one copy, in
+// internal/chplan/derived_shape_test.go: a mutation runner scores a mutant
+// in the package that declares the code, so the test follows the function.
 
 // TestVectorSetOpArmTimestampCol_OuterRangeBoundary kills the
 // CONDITIONALS_BOUNDARY/NEGATION on `v.OuterRange > 0` in

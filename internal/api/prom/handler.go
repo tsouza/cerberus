@@ -1149,8 +1149,12 @@ func errContainsStage(msg, stage string) bool {
 //
 //  1. Scan / Filter(Scan) — the otel_metrics_* columns are available
 //     directly; project MetricName / Attributes / TimeUnix / Value.
-//  2. RangeWindow / Aggregate / Filter(Aggregate) — derived shapes
-//     whose inner SELECT exposes only (group-keys…, s.ValueColumn).
+//  2. Whatever chplan.IsDerivedShape classifies as derived — the
+//     reducing and metrics-pipeline shapes whose inner SELECT exposes
+//     only (group-keys…, s.ValueColumn). That classifier is the single
+//     definition of the set, deliberately not restated here: this
+//     docstring used to name three of the kinds while the emitter's copy
+//     of the switch handled five.
 //     The canonical MetricName doesn't exist in that scope; synthesise
 //     it as empty string. The matrix RangeWindow exposes the per-row
 //     anchor as the literal column `anchor_ts` (no inner alias to
@@ -1168,7 +1172,7 @@ func errContainsStage(msg, stage string) bool {
 // gate through; otherwise the canonical-shape branch would generate
 // `SELECT MetricName, TimeUnix, ... FROM (<two-column derived>)` and
 // real CH 24.x rejects the missing-column reference as 502. The
-// projectionExposesCanonical check distinguishes these "value-rewrite"
+// chplan.ProjectExposesCanonical check distinguishes these "value-rewrite"
 // Projects from the canonical-shape Projects upstream lowerings (LWR,
 // instant fns over `temperature`, etc.) emit.
 func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
@@ -1178,7 +1182,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 	}
-	if isDerivedShape(plan, s) {
+	if chplan.IsDerivedShape(plan, sampleColumns(s)) {
 		// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
 		// timestamp under the literal column `anchor_ts`, which the emitter
 		// keeps offset-SHIFTED (the window/rate math keys off the shifted
@@ -1280,87 +1284,17 @@ func synthesizedAnchor() chplan.Expr {
 	return chplan.NowNanoMinusStaleness()
 }
 
-// isDerivedShape reports whether the plan's output schema lacks the
-// canonical Sample columns (MetricName / TimeUnix / Value as-is) and
-// has only the (group-keys…, value) shape produced by RangeWindow,
-// Aggregate, or a Filter on top of one of those.
-//
-// A Project on top of a derived shape stays derived UNLESS its own
-// projections name all four canonical Sample columns as outputs —
-// that's the LWR `Project [MetricName, Attributes, TimeUnix, Value]`
-// shape lowered for canonical-shape consumers. The
-// projectValueOverInner Project (clamp / abs / instant fn over
-// RangeWindow, plus the quantile_over_time out-of-range fold from
-// PR #322) carries only `[Attributes, ..., Value]` over a derived
-// inner, and must not be classified as canonical because the inner
-// scope doesn't carry MetricName / TimeUnix — real CH 24.x rejects
-// the missing-column reference with a 502 on `query_range`.
-func isDerivedShape(plan chplan.Node, s schema.Metrics) bool {
-	switch v := plan.(type) {
-	case *chplan.RangeWindow, *chplan.Aggregate, *chplan.RangeWindowNative:
-		// RangeWindowNative emits the same derived (group-keys…, anchor_ts,
-		// value) shape as the fan-out RangeWindow — MetricName never exists
-		// in that scope, so it must be synthesised as the empty string
-		// rather than referenced as a bare column (CH would 502 with
-		// "Unknown expression identifier MetricName").
-		return true
-	case *chplan.Filter:
-		return isDerivedShape(v.Input, s)
-	case *chplan.Project:
-		if projectionExposesCanonical(v, s) {
-			return false
-		}
-		return isDerivedShape(v.Input, s)
+// sampleColumns names the canonical chclient.Sample shape in the form
+// the shared chplan classifiers take. The HTTP layer holds those four
+// names on schema.Metrics; this is the one place it converts between the
+// two spellings of the same four names.
+func sampleColumns(s schema.Metrics) chplan.SampleColumns {
+	return chplan.SampleColumns{
+		MetricName: s.MetricNameColumn,
+		Attributes: s.AttributesColumn,
+		Timestamp:  s.TimestampColumn,
+		Value:      s.ValueColumn,
 	}
-	return false
-}
-
-// projectionExposesCanonical reports whether p's projections name all
-// four canonical Sample column outputs (MetricName / Attributes /
-// TimeUnix / Value). An output is "named" when either Projection.Alias
-// matches, or the Projection.Expr is a bare ColumnRef to the canonical
-// column name with no Alias rewrite (the canonical column passes
-// through under its own name).
-//
-// We only treat this as canonical when ALL four names are present —
-// `projectValueOverInner` (RangeWindow case) emits a two-output
-// Project (`Attributes`, `Value`) over a derived inner, so missing
-// MetricName / TimeUnix correctly disqualifies it.
-func projectionExposesCanonical(p *chplan.Project, s schema.Metrics) bool {
-	needed := map[string]bool{
-		s.MetricNameColumn: false,
-		s.AttributesColumn: false,
-		s.TimestampColumn:  false,
-		s.ValueColumn:      false,
-	}
-	for _, proj := range p.Projections {
-		name := projectionOutputName(proj)
-		if _, ok := needed[name]; ok {
-			needed[name] = true
-		}
-	}
-	for _, ok := range needed {
-		if !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// projectionOutputName returns the column name a Projection exposes:
-// the explicit Alias when set, otherwise the bare-ColumnRef name when
-// the Expr is a column reference. Computed Exprs without an Alias
-// return "" — the caller treats that as "no canonical column exposed
-// at this slot", which is the conservative answer for the
-// projectExposesCanonical check.
-func projectionOutputName(p chplan.Projection) string {
-	if p.Alias != "" {
-		return p.Alias
-	}
-	if cr, ok := p.Expr.(*chplan.ColumnRef); ok {
-		return cr.Name
-	}
-	return ""
 }
 
 // toVector groups samples by label set, picks the latest value per series,
