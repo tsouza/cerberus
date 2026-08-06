@@ -405,12 +405,10 @@ func (m Metrics) IsExpHistogramMetric(metricName string) bool {
 // Disambiguation: in principle a deployment could expose a counter
 // under a name that happens to end in `_count` or `_sum`. The OTel-CH
 // counter convention uses `_total`, so the collision is rare in
-// practice, and the exemplars handler already adopts the same routing
-// (see internal/api/prom/exemplars.go::exemplarsTableFor). If
-// `_count` / `_sum` ever needs to fall back to the sum-table reading
-// for a deployment that doesn't follow OTel-CH conventions, that's a
-// future config-driven extension; for the v0.1 seed the routing is
-// unconditional.
+// practice. Both read paths resolve the ambiguity by fanning across
+// every physical layout that can carry the name rather than by
+// committing to one: [Metrics.TablesFor] for samples,
+// [Metrics.ExemplarSources] for exemplars.
 func (m Metrics) HistogramCompanionColumn(metricName string) (bareName, valueColumn string, ok bool) {
 	for _, c := range m.histogramCompanions() {
 		if hasSuffix(metricName, c.suffix) {
@@ -555,7 +553,7 @@ func (m Metrics) TablesFor(metricName string) []string {
 	// bucket-companion suffix the bucket-fan-out path rewrites at the
 	// lowering layer (which overrides the table to HistogramTable
 	// before emit; see isClassicBucketSelector).
-	for _, suf := range []string{"_total", "_bucket"} {
+	for _, suf := range []string{totalSuffix, bucketSuffix} {
 		if hasSuffix(metricName, suf) {
 			return []string{m.SumTable}
 		}
@@ -601,6 +599,135 @@ func (m Metrics) TablesForUnknownName() []string {
 		return []string{m.GaugeTable, m.SumTable}
 	}
 	return []string{m.GaugeTable}
+}
+
+// The Prom-convention metric-name suffixes this package routes on.
+// `_count` / `_sum` live in [Metrics.histogramCompanions] instead,
+// because each of those pairs a suffix with the histogram-row column
+// that serves it; `_total` and `_bucket` carry no column pairing.
+const (
+	totalSuffix  = "_total"
+	bucketSuffix = "_bucket"
+)
+
+// ExemplarSource is one candidate physical source for an exemplar lookup:
+// the table whose `Exemplars` Nested column may carry the rows, paired
+// with the MetricName those rows are keyed by IN THAT table.
+//
+// MetricName is not always the name the caller queried. The OTel-CH
+// histogram exporter writes a classic histogram as ONE row under the bare
+// `<base>` name and serves the Prom-convention `<base>_bucket` /
+// `<base>_count` / `<base>_sum` companion series off that row's columns —
+// so on a histogram-shaped table the row key is the bare name while on a
+// Sum or Gauge table it is the suffixed name the caller typed. A caller
+// that filters on `MetricName` must use the per-source value or the arm
+// matches nothing.
+//
+// MetricName is empty when the selector pinned no `__name__` equality
+// matcher; there is no name to rewrite to, and the caller's matchers pass
+// through to every source unchanged.
+type ExemplarSource struct {
+	Table      string
+	MetricName string
+}
+
+// ExemplarSources returns every (table, row key) pair an exemplar lookup
+// for metricName must read. Pass "" for a selector that pins no
+// `__name__` equality matcher — a regex name matcher, a negated one, or
+// no name matcher at all.
+//
+// This is the exemplar counterpart of [Metrics.TablesFor] /
+// [Metrics.TablesForUnknownName], and it delegates to them for the shared
+// suffix heuristics so the two read paths cannot drift. It differs in two
+// ways, both forced by what an exemplar row is:
+//
+//   - The histogram and exp-histogram tables join every non-bucket
+//     candidate set. They are absent from the plain-Sample candidate set
+//     because their row shape has no Value column, which the `merge()`
+//     fan-out requires — a constraint the exemplar projection does not
+//     share, since it reads the `Exemplars` Nested column that every
+//     non-summary table carries identically. Exemplars are predominantly
+//     a histogram concept and the histogram row is keyed by the BARE
+//     metric name, so leaving those tables out is what makes an
+//     unsuffixed histogram name (`http_server_duration`) answer empty.
+//   - The summary table is dropped: the upstream OTel-CH summary table
+//     has no `Exemplars` column at all, so a summary-only deployment
+//     yields an empty candidate set and the caller answers `data:[]`
+//     without a ClickHouse round trip.
+//
+// Two name shapes resolve to exactly one physical layout and skip the
+// fan-out: an exp-histogram name (only the exp-histogram table stores a
+// row under it) and a `<base>_bucket` name (buckets exist only on the
+// classic-histogram row, which carries the exemplars for every bucket of
+// the series).
+func (m Metrics) ExemplarSources(metricName string) []ExemplarSource {
+	tables := m.exemplarTablesFor(metricName)
+	out := make([]ExemplarSource, 0, len(tables))
+	for _, t := range tables {
+		out = append(out, ExemplarSource{Table: t, MetricName: m.exemplarRowName(metricName, t)})
+	}
+	return out
+}
+
+// exemplarTablesFor resolves the candidate table set behind
+// [Metrics.ExemplarSources]; see that method's doc for the rationale of
+// each branch.
+func (m Metrics) exemplarTablesFor(metricName string) []string {
+	if metricName != "" && m.IsExpHistogramMetric(metricName) {
+		return m.exemplarCarrying(m.ExpHistogramTable)
+	}
+	if metricName != "" && hasSuffix(metricName, bucketSuffix) {
+		return m.exemplarCarrying(m.HistogramTable)
+	}
+	sampleTables := m.TablesForUnknownName()
+	if metricName != "" {
+		sampleTables = m.TablesFor(metricName)
+	}
+	candidates := make([]string, 0, len(sampleTables)+2)
+	candidates = append(candidates, sampleTables...)
+	candidates = append(candidates, m.HistogramTable, m.ExpHistogramTable)
+	return m.exemplarCarrying(candidates...)
+}
+
+// exemplarCarrying keeps the configured, distinct, exemplar-carrying
+// tables among its arguments, in argument order. The summary table is
+// filtered out wherever it appears: the upstream OTel-CH summary DDL has
+// no `Exemplars` column, so reading exemplars from it is not a thin
+// result but a SQL error against a missing column.
+func (m Metrics) exemplarCarrying(tables ...string) []string {
+	candidates := distinctTables(tables...)
+	if m.SummaryTable == "" {
+		return candidates
+	}
+	out := make([]string, 0, len(candidates))
+	for _, t := range candidates {
+		if t == m.SummaryTable {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// exemplarRowName returns the MetricName that rows for the queried
+// metricName are keyed by in table — the bare base name on the
+// histogram-shaped tables for a Prom-convention companion name, the
+// queried name everywhere else. Returns "" for an unpinned name, which
+// leaves the caller's matchers untouched.
+func (m Metrics) exemplarRowName(metricName, table string) string {
+	if metricName == "" {
+		return ""
+	}
+	if table != m.HistogramTable && table != m.ExpHistogramTable {
+		return metricName
+	}
+	if bare, _, ok := m.HistogramCompanionColumn(metricName); ok {
+		return bare
+	}
+	if table == m.HistogramTable && hasSuffix(metricName, bucketSuffix) {
+		return metricName[:len(metricName)-len(bucketSuffix)]
+	}
+	return metricName
 }
 
 // distinctTables returns the non-empty table names in argument order with
