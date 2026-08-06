@@ -70,6 +70,11 @@ split:
     # (CERBERUS_CH_QUERY_MAX_MEMORY). Inherits top-level `query.chMaxMemory` when
     # null.
     chMaxMemory: null
+    # -- Per-query wall-clock timeout for the Prometheus head
+    # (CERBERUS_QUERY_TIMEOUT). Inherits top-level `query.timeout` when null.
+    # Prometheus queries are the short-lived ones — a tighter timeout here sheds
+    # a runaway dashboard refresh without touching Tempo's longer budget.
+    timeout: null
   loki:
     # -- Render the Loki head Deployment + Service in split mode.
     enabled: true
@@ -87,6 +92,9 @@ split:
     # (CERBERUS_CH_QUERY_MAX_MEMORY). Inherits top-level `query.chMaxMemory` when
     # null.
     chMaxMemory: null
+    # -- Per-query wall-clock timeout for the Loki head
+    # (CERBERUS_QUERY_TIMEOUT). Inherits top-level `query.timeout` when null.
+    timeout: null
   tempo:
     # -- Render the Tempo head Deployment + Service in split mode.
     enabled: true
@@ -105,6 +113,11 @@ split:
     # (CERBERUS_CH_QUERY_MAX_MEMORY). Inherits top-level `query.chMaxMemory` when
     # null. Tempo's heavy structural aggregations benefit from a fat cap here.
     chMaxMemory: null
+    # -- Per-query wall-clock timeout for the Tempo head
+    # (CERBERUS_QUERY_TIMEOUT). Inherits top-level `query.timeout` when null.
+    # Tempo's two-phase /api/search is the longest-lived request shape, so it is
+    # the head most likely to want a budget of its own.
+    timeout: null
 
 image:
   # -- cerberus container image repository.
