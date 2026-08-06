@@ -278,7 +278,7 @@ func OTelToPromLabel(s string) string {
 	if s == "" {
 		return ""
 	}
-	if isPromLabelName(s) {
+	if IsPromLabelName(s) {
 		return s
 	}
 	b := make([]byte, 0, len(s)+1)
@@ -335,11 +335,11 @@ func OTelToPromMetric(s string) string {
 	return string(b)
 }
 
-// isPromLabelName reports whether s already matches the Prom label-name
+// IsPromLabelName reports whether s already matches the Prom label-name
 // grammar `[a-zA-Z_][a-zA-Z0-9_]*`. Fast-path so already-normalised
 // keys pass through without allocation. The `__name__` synthetic label
 // matches naturally (double underscores are valid).
-func isPromLabelName(s string) bool {
+func IsPromLabelName(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -452,7 +452,7 @@ func NormalizeLabelNames(in []string) []string {
 	}
 	natural := make(map[string]struct{}, len(in))
 	for _, s := range in {
-		if isPromLabelName(s) {
+		if IsPromLabelName(s) {
 			natural[s] = struct{}{}
 		}
 	}

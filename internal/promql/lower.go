@@ -15,6 +15,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -1900,43 +1901,7 @@ func attributeLookupExpr(m chplan.Expr, key string) chplan.Expr {
 			Key: &chplan.LitString{V: key},
 		}
 	}
-	// Build the if-chain right-associatively so the leftmost candidate
-	// (the underscored input) wins when present:
-	//
-	//   if(mapContains(col, k0), col[k0],
-	//     if(mapContains(col, k1), col[k1],
-	//       ... col[kN-1]))
-	//
-	// The terminal branch is a bare MapAccess against the last
-	// candidate — when no candidate's key is present, the empty-string
-	// default matches Prom's "absent label" semantics for matcher
-	// comparison.
-	last := candidates[len(candidates)-1]
-	var chain chplan.Expr = &chplan.MapAccess{
-		Map: m,
-		Key: &chplan.LitString{V: last},
-	}
-	for i := len(candidates) - 2; i >= 0; i-- {
-		k := candidates[i]
-		chain = &chplan.FuncCall{
-			Name: "if",
-			Args: []chplan.Expr{
-				&chplan.FuncCall{
-					Name: "mapContains",
-					Args: []chplan.Expr{
-						m,
-						&chplan.LitString{V: k},
-					},
-				},
-				&chplan.MapAccess{
-					Map: m,
-					Key: &chplan.LitString{V: k},
-				},
-				chain,
-			},
-		}
-	}
-	return chain
+	return qlcommon.OTelDottedFallbackChain(m, candidates)
 }
 
 func matchOp(t labels.MatchType) chplan.BinaryOp {
