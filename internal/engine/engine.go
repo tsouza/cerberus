@@ -1034,8 +1034,8 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// gets the same gauge bump.
 	defer telemetry.ObserveQueryInflight(ctx, lang.Name())()
 
-	// Deferred value-domain checks, before anything else touches the main
-	// statement: a guard violation is a rejection of the whole query, so
+	// Scalar-parameter value domains, before anything else touches the
+	// main statement: a guard violation rejects the whole query, so
 	// running the query first and discarding it would be wasted work and
 	// would report the wrong thing on the way out.
 	if err := e.runGuards(ctx, lang, meta); err != nil {
@@ -1328,7 +1328,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// "in engine" anymore and shouldn't double-count.
 	defer telemetry.ObserveQueryInflight(ctx, lang.Name())()
 
-	// Deferred value-domain checks — symmetrical with QueryPlan, so the
+	// Scalar-parameter value domains — symmetrical with QueryPlan, so the
 	// streaming path rejects exactly what the eager path rejects.
 	if err := e.runGuards(ctx, lang, meta); err != nil {
 		return CursorResult{}, err

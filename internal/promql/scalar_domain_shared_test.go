@@ -99,7 +99,7 @@ func TestScalarParameterDomainsAreShared(t *testing.T) {
 			var guards []promql.ScalarGuard
 			if err := lowerForDomain(t, tc.computedQuery, &guards); err != nil {
 				t.Fatalf("computed spelling %q failed lowering with %v — the value is not knowable at lowering, "+
-					"so the domain must be deferred to a guard, not raised here", tc.computedQuery, err)
+					"so the domain must ride on a guard rather than be raised here", tc.computedQuery, err)
 			}
 			if len(guards) != 1 {
 				t.Fatalf("computed spelling %q registered %d scalar guards, want exactly 1 — "+
