@@ -1,0 +1,18 @@
+-- sql --
+(SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_histogram` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)) UNION ALL (SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_sum` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)) UNION ALL (SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_gauge` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0))
+-- args --
+[0] string = "http_request_duration_seconds"
+[1] string = "2026-01-01 00:00:00.000000000"
+[2] int64 = 9
+[3] string = "2026-01-01 01:00:00.000000000"
+[4] int64 = 9
+[5] string = "http_request_duration_seconds_count"
+[6] string = "2026-01-01 00:00:00.000000000"
+[7] int64 = 9
+[8] string = "2026-01-01 01:00:00.000000000"
+[9] int64 = 9
+[10] string = "http_request_duration_seconds_count"
+[11] string = "2026-01-01 00:00:00.000000000"
+[12] int64 = 9
+[13] string = "2026-01-01 01:00:00.000000000"
+[14] int64 = 9

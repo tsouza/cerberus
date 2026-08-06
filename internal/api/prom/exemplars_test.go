@@ -182,9 +182,10 @@ func TestQueryExemplars(t *testing.T) {
 // newServerWithSchema mounts a prom handler against a caller-supplied
 // schema.Metrics rather than the fixed schema.DefaultOTelMetrics() that
 // newServer wires — needed to exercise routing decisions
-// (exemplarsTableFor's per-family short-circuit) that only trigger when
-// a specific table isn't configured. Mirrors the newServerWith* family
-// in handler_subquery_budget_test.go / handler_query_timeout_test.go.
+// (schema.Metrics.ExemplarSources's candidate-set resolution) that only
+// trigger when a specific table isn't configured. Mirrors the
+// newServerWith* family in handler_subquery_budget_test.go /
+// handler_query_timeout_test.go.
 func newServerWithSchema(q prom.Querier, s schema.Metrics) *httptest.Server {
 	h := prom.New(q, s, nil)
 	mux := http.NewServeMux()
@@ -192,38 +193,26 @@ func newServerWithSchema(q prom.Querier, s schema.Metrics) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-// TestQueryExemplars_SummaryMetricShortCircuit pins the
-// exemplarsTableFor short-circuit documented at
-// internal/api/prom/exemplars.go:121-127 ("Summary metrics short-
-// circuit with data:[] since the OTel-CH summary table has no
-// Exemplars column upstream"). Nothing at the handler level asserted
-// this branch before (see issue #1436): exemplars_basic.txtar only
-// carries -- sql -- / -- args -- sections (never executes), and
-// neither exemplars_test.go nor exemplars_chdb_test.go mentioned
-// "summary".
+// TestQueryExemplars_NoExemplarCarryingTableShortCircuit pins the
+// empty-candidate-set short-circuit: a deployment whose only configured
+// metrics table is the summary table (the OTel-CH summary DDL has no
+// Exemplars column upstream) answers `data:[]` without a ClickHouse
+// round-trip, rather than erroring on a metric family that legitimately
+// has no exemplars.
 //
-// exemplarsTableFor has no dedicated SummaryTable case — the OTel-CH
-// summary table is never wired into the routing table at all, so a
-// summary metric's bare quantile-series name (no _bucket/_count/_sum/
-// _total suffix — summaries expose "quantile" as a LABEL, not a name
-// suffix) falls through to the GaugeTable branch. This test wires a
-// schema whose GaugeTable is unconfigured (the shape an operator
-// running only summary + counter instrumentation would have) so that
-// fallthrough resolves to `ok=false` and the handler takes the
-// short-circuit — the same outcome the doc comment promises for
-// summary metrics.
-//
-// The assertion that actually proves the short-circuit fired (rather
-// than a round-trip to CH that just happened to return zero rows,
-// which is what the other "empty result" cases in TestQueryExemplars
-// exercise) is that the stub Querier's QueryExemplars is never
-// invoked: q.lastSQL stays empty because handleQueryExemplars returns
-// before calling chsql.EmitQueryExemplars / h.Client.QueryExemplars.
-func TestQueryExemplars_SummaryMetricShortCircuit(t *testing.T) {
+// The load-bearing assertion is that the stub Querier's QueryExemplars
+// is never invoked: q.lastSQL stays empty because handleQueryExemplars
+// returns before reaching chsql.EmitQueryExemplarsUnion. The ordinary
+// empty-result path in TestQueryExemplars asserts the opposite (lastSQL
+// non-empty), so a regression in either direction is caught.
+func TestQueryExemplars_NoExemplarCarryingTableShortCircuit(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	s.GaugeTable = ""
+	s.SumTable = ""
+	s.HistogramTable = ""
+	s.ExpHistogramTable = ""
 
 	q := &stubQuerier{}
 	srv := newServerWithSchema(q, s)
@@ -251,20 +240,186 @@ func TestQueryExemplars_SummaryMetricShortCircuit(t *testing.T) {
 		t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
 	}
 	if len(parsed.Data) != 0 {
-		t.Fatalf("expected empty data slice for a summary-family metric, got %d entries", len(parsed.Data))
+		t.Fatalf("expected empty data slice, got %d entries", len(parsed.Data))
 	}
 	if !strings.Contains(body, `"data":[]`) {
 		t.Errorf("expected JSON to contain `\"data\":[]`; got %s", body)
 	}
-
-	// The load-bearing assertion: the short-circuit returns before ever
-	// calling QueryExemplars. If exemplarsTableFor's routing regressed
-	// to resolve a table for this schema/metric combination, the
-	// handler would instead reach CH (as the ordinary empty-result path
-	// does — see the "lastSQL is empty" check above) and this would
-	// fail even though the response body still looks like data:[].
 	if q.lastSQL != "" {
-		t.Errorf("expected the summary-metric short-circuit to skip CH entirely; got lastSQL=%q", q.lastSQL)
+		t.Errorf("expected the empty-candidate-set short-circuit to skip CH entirely; got lastSQL=%q", q.lastSQL)
+	}
+}
+
+// TestQueryExemplars_NeverReadsSummaryTable — the summary table carries
+// no Exemplars column, so no arm of the fan-out may name it whatever the
+// selector looks like. A summary metric's series name has no
+// _bucket/_count/_sum/_total suffix (summaries expose "quantile" as a
+// LABEL, not a name suffix), so it takes the widest candidate set there
+// is — the exact shape most at risk of sweeping the summary table in.
+func TestQueryExemplars_NeverReadsSummaryTable(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	if s.SummaryTable == "" {
+		t.Fatal("default schema has no SummaryTable; the assertion below would be vacuous")
+	}
+
+	q := &stubQuerier{}
+	srv := newServerWithSchema(q, s)
+	t.Cleanup(srv.Close)
+
+	query := url.Values{
+		"query": {`http_request_duration_seconds{quantile="0.99"}`},
+		"start": {"1717995600"},
+		"end":   {"1717999200"},
+	}
+	resp, err := http.Get(srv.URL + "/api/v1/query_exemplars?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if q.lastSQL == "" {
+		t.Fatal("exemplars handler did not reach CH; lastSQL is empty")
+	}
+	if strings.Contains(q.lastSQL, s.SummaryTable) {
+		t.Errorf("SQL reads the summary table %q, which has no Exemplars column:\n%s", s.SummaryTable, q.lastSQL)
+	}
+}
+
+// TestQueryExemplars_UnpinnedMetricName — a selector that pins no
+// `__name__` equality matcher is answered, not rejected. Before the
+// table fan-out, both shapes below returned 400 "metric name is
+// required" (issue #1435): resolution was keyed on a literal metric name
+// because a single table had to be guessed from it. Upstream Prometheus
+// queries its exemplar store with whatever matchers the request carries,
+// and so does cerberus now — the matchers do the filtering and the scan
+// fans across every exemplar-carrying table.
+func TestQueryExemplars_UnpinnedMetricName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{name: "no __name__ matcher at all", query: `{job="api"}`},
+		{name: "regex __name__ matcher", query: `{__name__=~"http_.*"}`},
+		{name: "negated __name__ matcher", query: `{__name__!="up",job="api"}`},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &stubQuerier{}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			query := url.Values{
+				"query": {tc.query},
+				"start": {"1717995600"},
+				"end":   {"1717999200"},
+			}
+			resp, err := http.Get(srv.URL + "/api/v1/query_exemplars?" + query.Encode())
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+			}
+
+			var parsed exemplarsResponse
+			if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+			}
+			if parsed.Status != "success" {
+				t.Fatalf("status: got %q, want success; err=%s", parsed.Status, parsed.Error)
+			}
+			// The query must actually be asked of ClickHouse — a 200
+			// produced by short-circuiting to data:[] would be the same
+			// rejection wearing a different status code.
+			if q.lastSQL == "" {
+				t.Fatal("exemplars handler did not reach CH; lastSQL is empty")
+			}
+			for _, table := range []string{
+				schema.DefaultOTelMetrics().GaugeTable,
+				schema.DefaultOTelMetrics().SumTable,
+				schema.DefaultOTelMetrics().HistogramTable,
+				schema.DefaultOTelMetrics().ExpHistogramTable,
+			} {
+				if !strings.Contains(q.lastSQL, table) {
+					t.Errorf("unpinned-name scan misses table %q:\n%s", table, q.lastSQL)
+				}
+			}
+		})
+	}
+}
+
+// TestQueryExemplars_CompanionSuffixFansOutAcrossLayouts — a
+// `<base>_count` name is ambiguous across three physical layouts (issue
+// #1705): the classic-histogram companion columns on the bare-named
+// histogram row, an OTel-hostmetrics cumulative Sum under the suffixed
+// name, and a standalone gauge literally named `<x>_count`. The scan
+// must read every one of them — the same candidate set
+// schema.Metrics.TablesFor resolves for the sample path — instead of
+// answering from whichever branch a suffix chain happened to pick.
+//
+// The histogram arm also has to filter on the BARE name: the OTel-CH
+// exporter writes no row under `<base>_count`, so an arm carrying the
+// suffixed matcher would be an inert arm that can never match.
+func TestQueryExemplars_CompanionSuffixFansOutAcrossLayouts(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	q := &stubQuerier{}
+	srv := newServerWithSchema(q, s)
+	t.Cleanup(srv.Close)
+
+	query := url.Values{
+		"query": {`http_request_duration_seconds_count{job="api"}`},
+		"start": {"1717995600"},
+		"end":   {"1717999200"},
+	}
+	resp, err := http.Get(srv.URL + "/api/v1/query_exemplars?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	if q.lastSQL == "" {
+		t.Fatal("exemplars handler did not reach CH; lastSQL is empty")
+	}
+
+	// Every table the sample path resolves for this name must appear in
+	// the exemplar scan — the two resolvers share the suffix heuristic.
+	for _, table := range s.TablesFor("http_request_duration_seconds_count") {
+		if !strings.Contains(q.lastSQL, table) {
+			t.Errorf("`_count` scan misses candidate table %q:\n%s", table, q.lastSQL)
+		}
+	}
+
+	// The histogram arm reads the bare-named row: the suffixed name is
+	// bound on the value-table arms, the bare name on the histogram arm.
+	var sawBare, sawSuffixed bool
+	for _, a := range q.lastArgs {
+		switch a {
+		case "http_request_duration_seconds":
+			sawBare = true
+		case "http_request_duration_seconds_count":
+			sawSuffixed = true
+		}
+	}
+	if !sawBare {
+		t.Errorf("no arm filters on the bare histogram row key; args=%v", q.lastArgs)
+	}
+	if !sawSuffixed {
+		t.Errorf("no arm filters on the queried suffixed name; args=%v", q.lastArgs)
 	}
 }
 
