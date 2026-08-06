@@ -106,6 +106,13 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		return nil, err
 	}
 
+	// Subquery-inner position: the enclosing Identity RangeWindow owns
+	// both the window and the per-anchor newest-sample selection, so this
+	// arm hands it one row per stored exp-histogram sample instead.
+	if ctx.inRangeVector {
+		return lowerHistogramValueFnPerSample(vs, value, s), nil
+	}
+
 	// Range mode: fan the per-series newest-sample selection across the
 	// request's step grid so the matrix pivot sees one row per (series,
 	// step) instead of N now64(9) rows. An absolute `@` pins one window
@@ -166,6 +173,44 @@ func lowerHistogramValueFnInstant(
 			{Expr: value, Alias: s.ValueColumn},
 		},
 	}, nil
+}
+
+// lowerHistogramValueFnPerSample is the subquery-inner lowering for the
+// native-histogram value functions: one output row per stored
+// exp-histogram sample, carrying that sample's OWN TimeUnix.
+//
+// It differs from the instant and range shapes in the two things it
+// deliberately omits, both of which the enclosing Identity RangeWindow
+// already performs and neither of which is idempotent:
+//
+//   - no instant-window predicate — the wrapper filters each anchor's
+//     own lookback window, and a second anchor-relative bound here would
+//     be the request anchor's window, not the subquery anchor's;
+//   - no argMax(<col>, TimeUnix) collapse — collapsing to the newest
+//     sample per series before the wrapper runs would leave every
+//     subquery anchor selecting from a single row.
+//
+// The value math is unchanged: histogramValueExpr reads schema-canonical
+// column names, which the raw scan supplies directly (the collapse paths
+// only alias them back to those same names).
+func lowerHistogramValueFnPerSample(
+	vs *parser.VectorSelector,
+	value chplan.Expr,
+	s schema.Metrics,
+) chplan.Node {
+	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	if pred := buildPredicate(vs.LabelMatchers, s); pred != nil {
+		input = &chplan.Filter{Input: input, Predicate: pred}
+	}
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: value, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // histogramValueLatestAggs renders the per-series newest-sample

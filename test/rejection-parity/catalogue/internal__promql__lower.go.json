@@ -74,15 +74,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:lowerLimitK#5ff80394",
-      "message": "promql: limitk K must be a scalar literal; computed-K (e.g. scalar(\u003cvector\u003e)) is not supported",
-      "class": "divergence",
-      "trigger_query": "limitk(scalar(vector(2)), demo_memory_usage_bytes)",
-      "tracking_issue": 1787,
-      "since": "2026-08-05"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:lowerLimitRatio#a75ec376",
       "message": "promql: limit_ratio ratio value is NaN",
       "class": "rejection",
@@ -125,24 +116,10 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:lowerTopKComputed#8af012e4",
-      "message": "promql: %s K must be a scalar literal or scalar(\u003cvector\u003e); computed-K with other shapes is not yet supported",
-      "class": "rejection",
-      "trigger_query": "topk(scalar(up) * 2, up)"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:lowerTopKComputed#9dcfc5e7",
       "message": "promql: %s K: %w",
       "class": "internal",
       "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerTopKComputed#e4c25bc2",
-      "message": "promql: %s K: scalar() expects 1 argument, got %d",
-      "class": "internal",
-      "rationale": "parser-enforced arity: scalar() is pinned at one argument in parser.Functions"
     },
     {
       "head": "promql",
