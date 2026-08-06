@@ -17,6 +17,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/api/httperr"
+	"github.com/tsouza/cerberus/internal/api/reqctx"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -437,32 +438,16 @@ func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
 // 502 with the right Loki errorType.
 // applyQueryTimeout derives the request context the /query and
 // /query_range handlers run under, honouring Loki's `timeout` query
-// param. It resolves the effective wall-clock budget — the configured
-// default (h.QueryTimeout) min'd with the request's ?timeout= (the
-// smaller wins; 0 on either side means "no cap from that source") — and,
-// when positive, threads it onto the returned context as both a context
-// deadline AND chclient.WithQueryTimeout (the ClickHouse
-// max_execution_time override). The caller MUST defer the returned
-// cancel (a no-op when no deadline was installed). A malformed ?timeout=
-// is a 400 bad_data; ok=false signals the caller already wrote the error
-// and must return.
+// param via the shared [reqctx.ApplyQueryTimeout]. The caller MUST defer
+// the returned cancel (a no-op when no deadline was installed). A
+// malformed ?timeout= is a 400 bad_data; ok=false signals the caller
+// already wrote the error and must return.
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
-	ctx := r.Context()
-	budget := h.QueryTimeout
-	if raw := r.FormValue("timeout"); raw != "" {
-		reqTimeout, err := format.ParseDuration(raw)
-		if err != nil || reqTimeout < 0 {
-			writeError(w, http.StatusBadRequest, ErrBadData,
-				fmt.Errorf("invalid parameter 'timeout': %w", err))
-			return ctx, func() {}, false
-		}
-		budget = format.MinPositiveDuration(budget, reqTimeout)
+	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return r.Context(), func() {}, false
 	}
-	if budget <= 0 {
-		return ctx, func() {}, true
-	}
-	ctx = chclient.WithQueryTimeout(ctx, budget)
-	ctx, cancel := context.WithTimeout(ctx, budget)
 	return ctx, cancel, true
 }
 

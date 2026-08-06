@@ -130,6 +130,12 @@ components:
   # cmd builds the static Snapshot from config/chopt/chclient and injects the
   # live closures, so this package imports no other internal layer.
   api-info:       { in: api/info }
+  # Neutral per-request plumbing every HTTP head runs identically (today
+  # the `?timeout=` budget → context deadline + chclient query-timeout
+  # wiring). NOT a commonComponent: it imports chclient, and listing it
+  # there would hand every component in the project a transitive edge to
+  # the CH driver. Declared explicitly with its own deps block instead.
+  api-reqctx:     { in: api/reqctx }
   chclienttest:   { in: chclienttest }
   qlcommon:       { in: qlcommon }
   # Clean-room in-house Drain log-template miner (replaces the AGPL
@@ -364,6 +370,7 @@ deps:
       - lsyntax
       - logpattern
       - drain
+      - api-reqctx
   api-prom:
     mayDependOn:
       - chplan
@@ -372,6 +379,7 @@ deps:
       - engine
       - optimizer
       - promql
+      - api-reqctx
   api-tempo:
     mayDependOn:
       - chplan
@@ -405,6 +413,14 @@ deps:
       - chplan
       - spansscan
   chclienttest:
+    mayDependOn:
+      - chclient
+  # api-reqctx resolves the per-request query budget and threads it onto
+  # the context, so it needs chclient for the WithQueryTimeout carrier
+  # (the `?timeout=` parse itself comes from the api-format
+  # commonComponent). It must NOT reach the engine / chsql / QL layers —
+  # it shapes a context, it does not run a query.
+  api-reqctx:
     mayDependOn:
       - chclient
   # preflight builds introspection SQL (chsql) and reads CH (chclient);
