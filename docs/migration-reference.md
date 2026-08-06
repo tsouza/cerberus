@@ -181,8 +181,7 @@ probes are corpus-**anchored**, not harvested: an unfiltered tag-name enumeratio
 runs once per head your corpus touches, and a tag-value probe runs once per
 distinct label or attribute key that head's own queries reference. Agreement is
 exact **set equality**, scoped where the wire contract scopes it — Tempo's v2
-tag-names surface is diffed per scope (resource, span, intrinsic), not as one
-flat set. The only exception is a reference response the reference itself
+tag-names surface is diffed per scope bucket, not as one flat set. The only exception is a reference response the reference itself
 reports as partial, which is declined by name with both job counts rather than
 diffed against cerberus's complete answer.
 

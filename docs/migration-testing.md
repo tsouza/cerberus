@@ -461,8 +461,8 @@ seven comparison modes, and no scenario mixes them silently:
 
 7. **Tag/label set equality — discovery, asymmetric on cardinality.** Tag-name
    and tag-value enumeration is set equality, scoped where the wire contract
-   scopes it (Tempo's v2 tag-names surface is diffed per scope — resource,
-   span, intrinsic — rather than as one flat set), but the two directions of
+   scopes it (Tempo's v2 tag-names surface is diffed per scope bucket rather
+   than as one flat set), but the two directions of
    "present on one side only" are not judged the same way. A tag or value the
    reference has but cerberus does not is always a real divergence: cerberus's
    own enumeration is one unbounded ClickHouse `DISTINCT`, complete-or-errored

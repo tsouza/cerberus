@@ -52,20 +52,20 @@ func IntrinsicTags() []string {
 }
 
 // ParseTagScope normalises the SearchTagsRequest.Scope proto field
-// against the upstream Tempo allowlist. Empty / "none" / "all" all
-// collapse to TagScopeNone (every scope). Returns an error suitable
-// for codes.InvalidArgument on any unrecognised value.
+// against the upstream Tempo vocabulary. Empty and "none" collapse to
+// TagScopeNone (every scope). Returns an error suitable for
+// codes.InvalidArgument on any unrecognised value.
 func ParseTagScope(raw string) (string, error) {
 	return parseTagScope(raw)
 }
 
-// FetchTagKeys runs the DISTINCT mapKeys lookup for the given
-// attribute map column (Handler.Schema.AttributesColumn for span
-// keys, Handler.Schema.ResourceAttributesColumn for resource keys).
-// The (sorted, de-duplicated) string slice is the same one the HTTP
-// V1 / V2 envelopes are built from.
-func (h *Handler) FetchTagKeys(ctx context.Context, mapCol string, start, end time.Time) ([]string, error) {
-	return h.fetchTagKeys(ctx, mapCol, start, end)
+// CollectAttributeTagScopes runs the key lookup for every
+// attribute-backed scope bucket the requested scope selects, and
+// returns the non-empty ones. Exported so the gRPC tag services build
+// their scope partition from the exact same buckets the HTTP V1 / V2
+// envelopes do — the two surfaces cannot drift on which scopes exist.
+func (h *Handler) CollectAttributeTagScopes(ctx context.Context, scope string, start, end time.Time) ([]TagScope, error) {
+	return h.collectAttributeTagScopes(ctx, scope, start, end)
 }
 
 // SortedUnique returns the de-duplicated, lexicographically sorted

@@ -675,11 +675,10 @@ tags_v2_resource
 tags_v2
 -- scope --
 resource
-# Cerberus today ignores ?scope= and always returns the full scope set,
-# so the differ will surface a scope-axis diff between cerberus and
-# Tempo here. The subset assertion still passes on both sides because
-# `service.name` lives in the resource scope on Tempo and cerberus
-# both surfaces it (from ResourceAttributes / static map).
+# `service.name` lives in the resource scope on both backends —
+# reference Tempo reads it off the resource-level parquet columns,
+# cerberus off ResourceAttributes — so both the scope axis and the
+# subset assertion pin to the same answer.
 -- expected_min_values --
 1
 -- expected_max_values --
@@ -735,12 +734,61 @@ all
 # parseTagScope rejects it the same way on purpose (see the comment on
 # parseTagScope — cerberus intentionally does NOT accept "all" so it
 # doesn't train clients into a shape real Tempo 400s). Both backends
-# reject with "invalid scope: all", so this proves the axis end-to-end
-# without touching the OPEN scope-widening bug (#1593, which is about
-# scope values upstream *accepts* and cerberus currently rejects —
-# the opposite direction from this case).
+# reject with "invalid scope: all", so this proves the axis end-to-end.
+# The four cases below pin the other direction: every scope upstream
+# *does* accept is a 200 here too.
 -- expect_status --
 400
+
+-- name --
+tags_v2_event
+-- endpoint --
+tags_v2
+-- scope --
+event
+# `event` is a first-class upstream scope (traceql.AttributeScopeEvent).
+# Cerberus enumerates it from the OTel-CH `Events`.`Attributes` Nested
+# column; reference Tempo from vparquet4's event-attribute branch. The
+# seeder writes no span events, so both sides report an empty scope list
+# — and this case pins that they agree on *empty*, not that cerberus
+# 400s where Tempo answers. No subset assertion: an
+# `-- expected_values --` here would be asserting against data the
+# fixture doesn't contain.
+
+-- name --
+tags_v2_link
+-- endpoint --
+tags_v2
+-- scope --
+link
+# Same shape as tags_v2_event one column over: cerberus reads
+# `Links`.`Attributes`, Tempo reads its link-attribute branch, and the
+# seeder writes no span links, so both report an empty scope list.
+
+-- name --
+tags_v2_trace
+-- endpoint --
+tags_v2
+-- scope --
+trace
+# `trace` parses to a real scope on both backends but no attribute
+# family lives under it: upstream's vparquet4 tag scan branches on
+# resource / instrumentation / span / event / link, and
+# AttributeScopeTrace matches none of them. Both backends therefore
+# answer 200 with an empty scope list — intrinsics are added only for
+# the "" / none / intrinsic requests.
+
+-- name --
+tags_v2_instrumentation
+-- endpoint --
+tags_v2
+-- scope --
+instrumentation
+# The seeder rides every span under an InstrumentationScope carrying a
+# name + version but no scope-level attributes, and the upstream OTel-CH
+# traces DDL declares no ScopeAttributes column at all — so both
+# backends report an empty scope list here. The scope keyword is still
+# accepted rather than rejected, which is what this case pins.
 
 -- name --
 tag_values_v1_service_name
