@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -128,19 +129,14 @@ func New(ctx context.Context, cfg Config) (*Providers, error) {
 		MeterProvider:  mp,
 		LoggerProvider: lp,
 		shutdown: func(ctx context.Context) error {
-			// Best-effort: try all three, return the first error so
-			// the operator still sees a signal but none blocks the
-			// others.
-			tErr := traceShutdown(ctx)
-			mErr := metricShutdown(ctx)
-			lErr := logShutdown(ctx)
-			if tErr != nil {
-				return tErr
-			}
-			if mErr != nil {
-				return mErr
-			}
-			return lErr
+			// Best-effort: run all three so one failure never blocks
+			// the others, and join every error so a second or third
+			// failure isn't masked by the first.
+			return errors.Join(
+				traceShutdown(ctx),
+				metricShutdown(ctx),
+				logShutdown(ctx),
+			)
 		},
 	}, nil
 }
