@@ -125,6 +125,7 @@ import {
   ALERT_ERROR_PATTERNS,
   PAGE_CRASH_PATTERNS,
   assertInventoryBootstrapped,
+  byCodepoint,
   canonicalTarget,
   canonicalizeURL,
   collectVisibleAlertBanners,
@@ -149,6 +150,7 @@ import {
   driveInteraction,
   interactionStateKey,
   planInteractions,
+  representativeOption,
   settleAdhocFilterBar,
   type PlannedInteraction,
 } from './interactions.js';
@@ -231,6 +233,51 @@ function makePageLease(browser: Browser): PageLease {
       page = null;
     },
   };
+}
+
+/**
+ * Budget for one crawl navigation to reach `domcontentloaded`. The
+ * render settle that follows is bounded separately.
+ */
+const NAVIGATION_TIMEOUT_MS = 90_000;
+
+/**
+ * Navigate with the SAME cold app state every time.
+ *
+ * Grafana's frontend and the first-party drilldown apps persist UI
+ * state in localStorage / sessionStorage — the docked-nav state, the
+ * Metrics Drilldown recent-metric list, the Traces Drilldown favourite
+ * attributes, and the scenes apps' restored variable and filter sets
+ * (the same persistence lib.ts documents on the exploretraces re-entry
+ * boot). One browser context reused across navigations therefore hands
+ * each surface a boot state that depends on which surfaces preceded it
+ * — and, because the context is recycled on a rolling navigation
+ * budget rather than a structural boundary, on how many interactions
+ * those surfaces happened to plan.
+ *
+ * That is a run-to-run coupling between unrelated surfaces: one
+ * control discovered a beat late early in the walk shifts the boot
+ * state of everything after it, so the crawl stops being a function of
+ * the application and starts being a function of its own history.
+ * Clearing both stores immediately before every navigation gives every
+ * surface — and every interaction state, whose provenance claim is
+ * "surface default plus exactly one control deviation" — the identical
+ * cold baseline that claim already assumed.
+ */
+async function gotoCold(page: Page, url: string): Promise<void> {
+  // A context that has not navigated yet sits on about:blank, where
+  // storage access throws SecurityError. Nothing is persisted there,
+  // so there is nothing to clear.
+  if (page.url().startsWith('http')) {
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+  }
+  await page.goto(url, {
+    waitUntil: 'domcontentloaded',
+    timeout: NAVIGATION_TIMEOUT_MS,
+  });
 }
 
 type CrawlFailure = {
@@ -551,6 +598,7 @@ test.describe('crawl: canonicalization pins', () => {
       forcedHighCardinality: forced,
       optionHints: Array.from({ length: n }, (_, i) => `opt${i}`),
       controlHint: '',
+      clickHops: 0,
     });
     // Structural controls enumerate fully (minus the selected option).
     const single = planInteractions([control('a', 4)], 0);
@@ -587,6 +635,66 @@ test.describe('crawl: canonicalization pins', () => {
         1,
       ),
     ).toThrow(/exceeding the pairwise cap/);
+  });
+
+  test('the high-cardinality representative is a function of the option SET, not its order', () => {
+    // The pick must not move when the app renders the same options in a
+    // different order — a data-backed list (label names, tag values,
+    // metric names) reorders as the stack ingests, and a first-in-DOM
+    // pick would drive a different option, mint a different surface,
+    // and make two runs of the same command disagree.
+    const options = ['zulu', 'alpha', 'mike'];
+    expect(representativeOption(options)).toBe('alpha');
+    expect(representativeOption([...options].reverse())).toBe('alpha');
+    expect(representativeOption(['mike', 'zulu', 'alpha'])).toBe('alpha');
+    // Codepoint order, not host-collation order: a locale-aware
+    // comparison would make the crawl a function of the runner's ICU
+    // data, which differs between a developer box and CI.
+    expect(representativeOption(['a', 'B'])).toBe('B');
+    // A one-option control still has a representative.
+    expect(representativeOption(['only'])).toBe('only');
+    // The same set drives the same plan whichever order it arrives in.
+    const forced = (options: string[]) => ({
+      kind: 'combobox' as const,
+      key: 'k',
+      options,
+      selectedIndex: -1,
+      forcedHighCardinality: true,
+      optionHints: options,
+      controlHint: '',
+      clickHops: 0,
+    });
+    expect(planInteractions([forced(['b', 'a', 'c'])], 0)[0]?.option).toBe(
+      planInteractions([forced(['c', 'a', 'b'])], 0)[0]?.option,
+    );
+  });
+
+  test('the inventory order is a function of the URLs, not of the host locale', () => {
+    // Surface keys are mostly punctuation — `#`, `?`, `=`, `{`, `"`,
+    // `-` — and a collating comparison ranks punctuation at a lower
+    // strength than letters, so it disagrees with codepoint order on
+    // exactly the strings this file is made of. Committing an artefact
+    // in collation order would make it a function of the regenerating
+    // machine's `LANG` and ICU build.
+    const urls = ['/a-b', '/ab', '/a/b', '/a#b', '/A/b'];
+    const surfaces = urls.map((url) => ({ url, lean: false }));
+    const marshalled = marshalInventory({ doc: 'd', stack: 'compose', surfaces });
+    expect(
+      (JSON.parse(marshalled) as SurfaceInventory).surfaces.map((s) => s.url),
+    ).toEqual([...urls].sort(byCodepoint));
+    // Pinned literally, so the expectation cannot drift with the
+    // comparator it exists to pin.
+    expect(
+      (JSON.parse(marshalled) as SurfaceInventory).surfaces.map((s) => s.url),
+    ).toEqual(['/A/b', '/a#b', '/a-b', '/a/b', '/ab']);
+    // Order in, same order out.
+    expect(marshalInventory({ doc: 'd', stack: 'compose', surfaces })).toBe(
+      marshalInventory({
+        doc: 'd',
+        stack: 'compose',
+        surfaces: [...surfaces].reverse(),
+      }),
+    );
   });
 
   test('explore collapses to a single surface', () => {
@@ -908,7 +1016,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // is the API-layer iterate-all-dashboards probes).
   const leanSet = new Set<string>(queue.map((q) => q.canonical));
   if (depth === 'full') {
-    for (const d of [...dashboards].sort((a, b) => a.uid.localeCompare(b.uid))) {
+    for (const d of [...dashboards].sort((a, b) => byCodepoint(a.uid, b.uid))) {
       queue.push({
         canonical: `/d/${d.uid}`,
         concrete: `/d/${d.uid}`,
@@ -970,7 +1078,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
           }
         }
         for (const [canonical, concrete] of [...canonicals.entries()].sort(
-          ([a], [b]) => a.localeCompare(b),
+          ([a], [b]) => byCodepoint(a, b),
         )) {
           queue.push({ canonical, concrete, via: entry.canonical });
           if (entry.canonical === '/') leanSet.add(canonical);
@@ -1402,10 +1510,7 @@ async function visitAndAudit(
   let harvested: string[] = [];
   try {
     lease.noteNavigation();
-    await page.goto(`${baseURL}${entry.concrete}`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 90_000,
-    });
+    await gotoCold(page, `${baseURL}${entry.concrete}`);
     await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
 
     harvested = await harvestLinks(page);
@@ -1518,10 +1623,7 @@ async function sweepInteractions(
   try {
     const page = await lease.acquire();
     lease.noteNavigation();
-    await page.goto(`${baseURL}${entry.concrete}`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 90_000,
-    });
+    await gotoCold(page, `${baseURL}${entry.concrete}`);
     await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 30_000 });
     if (needsAdhocBarSettle(entry.canonical)) await settleAdhocFilterBar(page);
     const controls = await discoverControls(page);
@@ -1554,10 +1656,7 @@ async function sweepInteractions(
     const page = await lease.acquire();
     try {
       lease.noteNavigation();
-      await page.goto(`${baseURL}${entry.concrete}`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 90_000,
-      });
+      await gotoCold(page, `${baseURL}${entry.concrete}`);
       await tolerateRepaintFlicker(page, { settleMs: 500, timeoutMs: 30_000 });
       if (needsAdhocBarSettle(entry.canonical)) await settleAdhocFilterBar(page);
     } catch (err) {

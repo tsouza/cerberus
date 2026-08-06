@@ -710,13 +710,31 @@ export function assertInventoryBootstrapped(
 }
 
 /**
+ * Order two strings by UTF-16 code unit — the ordering JS `<` gives —
+ * for everything whose order the crawl's OUTPUT depends on.
+ *
+ * `localeCompare` is what this replaces, and it is not reproducible
+ * across environments: its collation is chosen from the runtime's
+ * default locale (so `LANG` decides it) and implemented by the
+ * runtime's ICU data (so a Node upgrade can decide it). Collation also
+ * treats punctuation as a lower-strength difference, which is exactly
+ * what surface keys are made of — `#`, `?`, `=`, `{`, `"`, `-`. A
+ * committed artefact ordered that way is a function of the machine
+ * that regenerated it as much as of the application it describes.
+ */
+export function byCodepoint(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
  * Render the canonical serialized form of an inventory — sorted by
  * URL, two-space indent, trailing newline — so regeneration is
  * byte-for-byte reproducible (mirrors test/inventory/'s
  * MarshalInventory convention).
  */
 export function marshalInventory(inv: SurfaceInventory): string {
-  const sorted = [...inv.surfaces].sort((a, b) => a.url.localeCompare(b.url));
+  const sorted = [...inv.surfaces].sort((a, b) => byCodepoint(a.url, b.url));
   return `${JSON.stringify({ doc: inv.doc, stack: inv.stack, surfaces: sorted }, null, 2)}\n`;
 }
 
