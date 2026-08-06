@@ -186,11 +186,6 @@ func TestLower_LimitK_Errors(t *testing.T) {
 			query:   `limitk(1e300, up)`,
 			wantErr: "overflows int64",
 		},
-		{
-			name:    "computed K rejected",
-			query:   `limitk(scalar(up), up)`,
-			wantErr: "computed-K",
-		},
 	}
 	for _, tc := range cases {
 		tc := tc

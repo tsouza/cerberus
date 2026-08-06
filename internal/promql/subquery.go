@@ -281,7 +281,7 @@ func lowerSubqueryOverCall(
 	// (no range windows, aggregations, or synthetic time-anchored
 	// sources, whose instant lowerings collapse the per-sample
 	// timestamps the Identity wrapper needs).
-	if isInstantTransformFn(call.Func.Name) && subqueryInstantSafe(call) {
+	if isInstantTransformCall(call) && subqueryInstantSafe(call) {
 		rangeCtx := ctx
 		rangeCtx.inRangeVector = true
 		inner, err := lowerCall(call, s, rangeCtx)
@@ -497,6 +497,12 @@ func lowerOuterRangeFnOverSubquery(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	// absent_over_time is a range-vector function but not a RangeWindow
+	// reducer — it lowers to its own plan node, so it branches before the
+	// reducer table is consulted.
+	if outer.Func.Name == "absent_over_time" {
+		return lowerAbsentOverTimeOverSubquery(outer, sub, s, ctx)
+	}
 	if _, ok := rangeVectorFn[outer.Func.Name]; !ok {
 		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", outer.Func.Name)
 	}
@@ -989,6 +995,16 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 // unobservable for half of it. Both route through the emitter's shared
 // `emitRangeWindowOverTime` case, so the matrix and instant shapes are the
 // same code path `last_over_time` already exercises.
+//
+// The four `ts_of_*_over_time` reducers sit here for the same reason:
+// they route through the emitter's `emitRangeWindowTsOfOverTime` case,
+// which — like `emitRangeWindowOverTime` — reduces the per-anchor window
+// array and is agnostic about whether the rows underneath came from a
+// matrix selector or from a subquery's anchor grid. They differ from
+// `first_over_time` / `last_over_time` only in projecting the winning
+// sample's timestamp instead of its value, and they drop `__name__`
+// (rangeFnPreservesName returns false for them), matching reference
+// Prometheus.
 var rangeVectorFn = map[string]struct{}{
 	"rate":                         {},
 	"irate":                        {},
@@ -1007,6 +1023,10 @@ var rangeVectorFn = map[string]struct{}{
 	"last_over_time":               {},
 	"stddev_over_time":             {},
 	"stdvar_over_time":             {},
+	"ts_of_first_over_time":        {},
+	"ts_of_last_over_time":         {},
+	"ts_of_max_over_time":          {},
+	"ts_of_min_over_time":          {},
 	"predict_linear":               {},
 	"holt_winters":                 {},
 	"double_exponential_smoothing": {},
@@ -1014,31 +1034,125 @@ var rangeVectorFn = map[string]struct{}{
 }
 
 // instantTransformFns is the set of sample-preserving instant-vector
-// transforms whose subquery lowering rides the Identity wrap: each
-// rewrites per-sample Value / Attributes without touching the sample
-// timestamps, so "transform then take latest-in-window per anchor" is
-// exactly reference Prometheus's "re-evaluate at each anchor".
+// transforms whose subquery lowering rides the Identity wrap.
+//
+// Membership rule — a function belongs here iff BOTH hold:
+//
+//  1. cerberus already lowers it in instant position (surface parity),
+//     and its lowering is a PER-SAMPLE MAP: exactly one output row per
+//     input sample, carrying that sample's OWN timestamp, with Value
+//     and/or Attributes computed from that row alone. A pure reordering
+//     of the sample set counts — reference builds a matrix from each
+//     anchor's instant result, which discards order, so `sort` and its
+//     siblings are observationally identity here.
+//  2. re-evaluating it at every anchor therefore commutes with "take the
+//     latest sample in the anchor's window": transform-then-select and
+//     select-then-transform agree row for row, which is exactly what the
+//     Identity RangeWindow computes.
+//
+// Three families are excluded because they break (1):
+//
+//   - COLLAPSING — instant aggregations, `absent`, `scalar`, and the
+//     latest-per-series collapse: many samples in, one row out, so the
+//     per-sample timestamps the Identity wrap selects on are gone.
+//   - ANCHOR-SYNTHESISING — `time`, `vector`, `range`/`step`/`start`/`end`
+//     and the ZERO-ARG date forms: their row is stamped with the
+//     evaluation anchor rather than a stored sample's timestamp, so
+//     there is nothing for the wrap to carry forward. This is why the
+//     predicate is call-shaped rather than name-only ([isInstantTransformCall]):
+//     `hour(v)` is admissible, `hour()` is not.
+//   - CROSS-SAMPLE — `histogram_quantile` / `histogram_quantiles` fan in
+//     across the `le` series at a shared anchor, and `info` joins against
+//     target_info; both read rows other than the sample being mapped, so
+//     "latest per series first" is not the same query.
+//
+// The `histogram_*` VALUE accessors are admissible under (1) — each is
+// arithmetic over one exp-histogram row's own columns — but only through
+// [lowerHistogramValueFnPerSample], the inRangeVector arm that skips the
+// argMax collapse the instant and range shapes apply.
 var instantTransformFns = map[string]struct{}{
-	"abs":           {},
-	"ceil":          {},
-	"floor":         {},
-	"round":         {},
-	"sqrt":          {},
-	"exp":           {},
-	"ln":            {},
-	"log2":          {},
-	"log10":         {},
-	"sgn":           {},
-	"clamp":         {},
-	"clamp_min":     {},
-	"clamp_max":     {},
+	// Unary math + the multi-arg clamp/round shapes: pure Value maps.
+	"abs":       {},
+	"ceil":      {},
+	"floor":     {},
+	"round":     {},
+	"sqrt":      {},
+	"exp":       {},
+	"ln":        {},
+	"log2":      {},
+	"log10":     {},
+	"sgn":       {},
+	"clamp":     {},
+	"clamp_min": {},
+	"clamp_max": {},
+
+	// Trigonometric family + degree/radian conversion — the same
+	// per-row Value map as the block above (instantFnCH).
+	"acos":  {},
+	"acosh": {},
+	"asin":  {},
+	"asinh": {},
+	"atan":  {},
+	"atanh": {},
+	"cos":   {},
+	"cosh":  {},
+	"sin":   {},
+	"sinh":  {},
+	"tan":   {},
+	"tanh":  {},
+	"deg":   {},
+	"rad":   {},
+
+	// Label rewrites: per-sample Attributes maps, Value untouched.
 	"label_replace": {},
 	"label_join":    {},
+
+	// Date components and `timestamp`, in their ONE-ARGUMENT form only.
+	// `year(v)` maps the row's Value (or, for `timestamp`, the row's own
+	// TimeUnix) to a float; the zero-arg forms synthesise an
+	// anchor-stamped row instead and are rejected by the arity half of
+	// [isInstantTransformCall].
+	"year":          {},
+	"month":         {},
+	"day_of_month":  {},
+	"day_of_week":   {},
+	"day_of_year":   {},
+	"days_in_month": {},
+	"hour":          {},
+	"minute":        {},
+	"timestamp":     {},
+
+	// Sorting: reference discards the ordering when it folds each
+	// anchor's instant result into the subquery's matrix, so these are
+	// identity on the sample set.
+	"sort":               {},
+	"sort_desc":          {},
+	"sort_by_label":      {},
+	"sort_by_label_desc": {},
+
+	// Native-histogram value accessors: arithmetic over a single
+	// exp-histogram row's own columns.
+	"histogram_count":    {},
+	"histogram_sum":      {},
+	"histogram_avg":      {},
+	"histogram_stddev":   {},
+	"histogram_stdvar":   {},
+	"histogram_fraction": {},
 }
 
 func isInstantTransformFn(name string) bool {
 	_, ok := instantTransformFns[name]
 	return ok
+}
+
+// isInstantTransformCall applies the membership rule of
+// [instantTransformFns] to a concrete call site rather than to a bare
+// name. Every admissible member is a map over an instant-vector
+// argument, so a member invoked with NO arguments is by construction the
+// anchor-synthesising form (the zero-arg date functions, whose lowering
+// is [lowerDateFnNoArg]) and is not admissible.
+func isInstantTransformCall(c *parser.Call) bool {
+	return len(c.Args) > 0 && isInstantTransformFn(c.Func.Name)
 }
 
 // subqueryInstantSafe reports whether every node in the call's subtree
@@ -1049,10 +1163,13 @@ func isInstantTransformFn(name string) bool {
 //   - no AggregateExpr (instant aggregation collapses to one
 //     eval-anchored row — the aggregate path owns those shapes);
 //   - no Calls outside the instant-transform set except `pi()`
-//     (a parse-time constant). `time()` / `vector()` / date fns
+//     (a parse-time constant). `time()` / `vector()` / zero-arg date fns
 //     synthesise eval-anchored rows; `scalar()` binds an
 //     instant-anchored constant — all of which would diverge from the
 //     per-anchor re-evaluation reference performs.
+//
+// Nested calls are checked with the same call-shaped predicate the top
+// level uses, so `hour(hour(v))` is safe while `hour(hour())` is not.
 func subqueryInstantSafe(call *parser.Call) bool {
 	safe := true
 	parser.Inspect(call, func(n parser.Node, _ []parser.Node) error {
@@ -1060,7 +1177,7 @@ func subqueryInstantSafe(call *parser.Call) bool {
 		case *parser.MatrixSelector, *parser.SubqueryExpr, *parser.AggregateExpr:
 			safe = false
 		case *parser.Call:
-			if !isInstantTransformFn(v.Func.Name) && v.Func.Name != "pi" {
+			if !isInstantTransformCall(v) && v.Func.Name != "pi" {
 				safe = false
 			}
 		}
@@ -1183,6 +1300,88 @@ func lowerSubqueryOverAbsent(
 		return nil, err
 	}
 	return matrixShape(inner), nil
+}
+
+// lowerAbsentOverTimeOverSubquery — `absent_over_time(<inner>[<range>:<step>])`.
+//
+// Reference semantics (promql/engine.go, funcAbsentOverTime): the
+// argument is evaluated to a MATRIX first — for a subquery, by
+// re-evaluating `<inner>` as an instant query at every anchor of the
+// subquery's own grid — and the function emits `1` at each outer step
+// whose matrix came back empty. "Absent at outer anchor t" is therefore
+// exactly "the subquery produced no row in `(t − <range>, t]`", which is
+// the AbsentOverTime node's own contract with the subquery's matrix
+// relation standing in for the scan it usually reads.
+//
+// The synthesised series carries NO labels: upstream's
+// createLabelsForAbsentFunction lifts matchers only off a VectorSelector
+// or MatrixSelector argument and returns labels.EmptyLabels() for every
+// other shape, a SubqueryExpr included.
+func lowerAbsentOverTimeOverSubquery(
+	outer *parser.Call,
+	sub *parser.SubqueryExpr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if len(outer.Args) != 1 {
+		return nil, fmt.Errorf("promql: absent_over_time() expects 1 argument, got %d", len(outer.Args))
+	}
+	inner, err := lowerSubquery(sub, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	a := &chplan.AbsentOverTime{
+		// Every subquery lowering reports its per-row anchor under
+		// `anchor_ts`; rename it to the schema timestamp column so the
+		// emitter's own `anchor_ts` output aliases cannot collide with —
+		// or cyclically self-reference — the input relation's column of
+		// the same name.
+		Input: &chplan.Project{
+			Input: inner,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+				{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: s.TimestampColumn},
+				{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+			},
+		},
+		SynthLabels:      nil,
+		Range:            sub.Range,
+		End:              anchor.End,
+		Offset:           anchor.Offset,
+		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+	}
+
+	// Grid selection mirrors lowerOuterRangeFnOverSubquery's three arms:
+	// an `@`-pinned subquery evaluates ONE window and broadcasts the
+	// verdict, range mode fans one verdict per request step, instant mode
+	// keeps the single anchor. Each arm widens the inner spine by
+	// Offset+Range so every outer anchor's lookback finds inner anchors.
+	switch {
+	case ctx.rangeMode() && subqueryPinned(sub):
+		widenSubquerySpine(a.Input, anchor.End.Add(-a.Offset-sub.Range), anchor.End)
+		return wrapAbsentOverTimeAtBroadcast(a, ctx, s), nil
+	case ctx.rangeMode():
+		a.Start = ctx.start.UTC()
+		a.End = ctx.end.UTC()
+		a.Step = ctx.step
+		widenSubquerySpine(a.Input, ctx.start.Add(-a.Offset-sub.Range), ctx.end)
+	default:
+		if a.End.IsZero() && !ctx.end.IsZero() {
+			a.End = ctx.end.UTC()
+		}
+		if !a.End.IsZero() {
+			widenSubquerySpine(a.Input, a.End.Add(-a.Offset-sub.Range), a.End)
+		}
+	}
+	return a, nil
 }
 
 // subqueryPinned reports whether an `@` modifier fixes the subquery's
@@ -1452,13 +1651,36 @@ func lowerSubqueryOverTopK(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	kF, ok := tryScalarLiteral(agg.Param)
-	if !ok {
-		return nil, fmt.Errorf("promql: subquery over %s requires a scalar literal K", agg.Op.String())
-	}
-	k, empty, err := topKDomain(agg.Op, kF)
-	if err != nil {
-		return nil, err
+	// K binds either as a lowering-time constant (the literal fast path,
+	// which keeps CH's `LIMIT K BY`) or as a one-row relation the emitter
+	// compares the window rank against — the same two shapes lowerTopK
+	// and lowerTopKComputed split on in instant position, so a computed K
+	// is no less supported under a subquery than over a bare selector.
+	var (
+		k     int64
+		empty bool
+		kExpr chplan.Node
+	)
+	if kF, ok := tryScalarLiteral(agg.Param); ok {
+		var err error
+		if k, empty, err = topKDomain(agg.Op, kF); err != nil {
+			return nil, err
+		}
+	} else {
+		// Instant context for the K subtree: one value per evaluation,
+		// read once by the emitter's K subquery (see lowerTopKComputed).
+		kCtx := ctx
+		kCtx.step = 0
+		kValue, err := lowerScalarArg(agg.Param, s, kCtx)
+		if err != nil {
+			return nil, fmt.Errorf("promql: subquery over %s K: %w", agg.Op.String(), err)
+		}
+		kExpr = &chplan.Project{
+			Input: &chplan.OneRow{},
+			Projections: []chplan.Projection{
+				{Expr: topKDomainExpr(kValue), Alias: s.ValueColumn},
+			},
+		}
 	}
 
 	matrix, err := lowerSubqueryInnerMatrix(sub, agg.Expr, step, s, ctx)
@@ -1510,6 +1732,7 @@ func lowerSubqueryOverTopK(
 		return &chplan.TopK{
 			Input:     matrix,
 			K:         k,
+			KExpr:     kExpr,
 			By:        by,
 			Unordered: true,
 			Columns:   columns,
@@ -1519,6 +1742,7 @@ func lowerSubqueryOverTopK(
 	return &chplan.TopK{
 		Input:    matrix,
 		K:        k,
+		KExpr:    kExpr,
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     agg.Op == parser.TOPK,
