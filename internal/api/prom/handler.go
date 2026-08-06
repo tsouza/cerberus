@@ -1123,6 +1123,18 @@ func classifyEngineError(err error) error {
 			Status: http.StatusUnprocessableEntity,
 		}
 	}
+	// Same class again: a vector-vector binary operator found more than one
+	// series per matching key on the side that must carry exactly one.
+	// Upstream raises it while building its match groups, refusing to pick a
+	// winner, so it is a 422 errorType=execution here too with upstream's
+	// verbatim wording.
+	if chsql.IsManyToManyMatchError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.ManyToManyMatchMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
 	msg := err.Error()
 	switch {
 	case errContainsStage(msg, "emit"):

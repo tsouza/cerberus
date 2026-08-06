@@ -22,11 +22,25 @@ import (
 //   - group_right is the mirror.
 //   - One-to-one matching on a subset of labels (`on(...)` or
 //     `ignoring(...)`) embeds the runtime "many-to-many matching
-//     not allowed" guard via throwIf(uniqExact(mapSort(Attributes)) > 1, ...)
-//     so the cardinality violation surfaces as a CH error rather
-//     than a silent cross-product.
+//     not allowed" guard, so the cardinality violation surfaces as a
+//     CH error rather than a silent cross-product.
 //   - Default (full-Attributes) matching skips the runtime guard —
 //     uniqueness is guaranteed by construction.
+//
+// manyToManyGuardSQL is the emitted uniqueness guard, verbatim. Two details of
+// its shape are load-bearing and both are asserted by matching the whole
+// clause rather than a loose `throwIf` substring:
+//
+//   - It rides in HAVING, not in the per-side SELECT list. ClickHouse's
+//     analyzer prunes a subquery SELECT-list expression nothing outside the
+//     subquery reads, throwIf's side effect included, so a guard planted there
+//     never fires (#1734). A HAVING predicate decides which groups survive, so
+//     nothing can prune it; `throwIf` returns 0 on success, hence `= 0`.
+//   - The message is inlined rather than bound as `?`, because ClickHouse
+//     requires throwIf's message to be a compile-time constant.
+var manyToManyGuardSQL = "HAVING throwIf(uniqExact(mapSort(`Attributes`)) > 1, '" +
+	chplan.ManyToManyMatchMessage + "') = 0"
+
 func TestLower_VectorMatch_Cardinality(t *testing.T) {
 	t.Parallel()
 
@@ -122,13 +136,14 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if !strings.Contains(sql, "throwIf(uniqExact(mapSort(`Attributes`)) > 1, ?)") {
-			t.Errorf("expected throwIf-uniqExact guard in SQL; got:\n%s", sql)
+		if !strings.Contains(sql, manyToManyGuardSQL) {
+			t.Errorf("expected %q in SQL; got:\n%s", manyToManyGuardSQL, sql)
 		}
-		const wantMsg = "many-to-many matching not allowed: matching labels must be unique on one side"
+		// The message must NOT be bound: ClickHouse rejects a throwIf whose
+		// message is a query parameter rather than a compile-time constant.
 		argStrs := stringArgs(args)
-		if !containsAll(argStrs, []string{wantMsg}) {
-			t.Errorf("expected throwIf message in args; got %v", argStrs)
+		if containsAll(argStrs, []string{chplan.ManyToManyMatchMessage}) {
+			t.Errorf("guard message must be inlined, not bound; args = %v", argStrs)
 		}
 	})
 
@@ -146,8 +161,8 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if !strings.Contains(sql, "throwIf(uniqExact(mapSort(`Attributes`)) > 1, ?)") {
-			t.Errorf("expected throwIf-uniqExact guard in SQL; got:\n%s", sql)
+		if !strings.Contains(sql, manyToManyGuardSQL) {
+			t.Errorf("expected %q in SQL; got:\n%s", manyToManyGuardSQL, sql)
 		}
 	})
 
@@ -199,8 +214,14 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		}
 		// The "one" (right) side aggregates by the matching key with
 		// a uniqueness guard.
-		if !strings.Contains(sql, "throwIf(uniqExact(mapSort(`Attributes`)) > 1, ?)") {
-			t.Errorf("expected right-side cardinality guard; got:\n%s", sql)
+		if !strings.Contains(sql, manyToManyGuardSQL) {
+			t.Errorf("expected right-side cardinality guard %q; got:\n%s", manyToManyGuardSQL, sql)
+		}
+		// Only the "one" side carries it: `group_left` declares the left
+		// side may legitimately be many, so guarding it would reject the
+		// very shape the modifier exists to express.
+		if n := strings.Count(sql, manyToManyGuardSQL); n != 1 {
+			t.Errorf("cardinality guard appears %d times, want exactly 1 (the \"one\" side); got:\n%s", n, sql)
 		}
 	})
 
