@@ -5,28 +5,149 @@
       "site": "internal/promql/synthetic.go:lowerQueryContextFold#5004da30",
       "message": "promql: %s() takes no arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: range() / step() take no arguments"
+      "rationale": "parser-enforced arity: range() / step() take no arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 0"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/synthetic.go:lowerQueryContextFold#93eabf31",
       "message": "promql: %s is not a query-context function",
       "class": "internal",
-      "rationale": "unreachable default: the lowering switch routes only range / step into this helper"
+      "rationale": "unreachable default: the lowering switch routes only range / step into this helper",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 0",
+          "default of switch c.Func.Name over [case \"range\"; case \"step\"; default]"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/synthetic.go:lowerTime#99c84578",
       "message": "promql: time() takes no arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: time() takes no arguments"
+      "rationale": "parser-enforced arity: time() takes no arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 0"
+        ],
+        "callers": [
+          "lowerCall",
+          "lowerVector"
+        ],
+        "caller_dispatch": [
+          "TryFoldScalar",
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarArg",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector",
+          "syntheticScalarVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/synthetic.go:lowerVector#7cb6213b",
       "message": "promql: vector() expects 1 argument, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: vector() is pinned at one argument"
+      "rationale": "parser-enforced arity: vector() is pinned at one argument",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     }
   ]
 }

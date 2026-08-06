@@ -5,28 +5,140 @@
       "site": "internal/promql/absent.go:lowerAbsent#079d2385",
       "message": "promql: absent() expects 1 argument, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: parser.Functions pins absent at exactly one argument"
+      "rationale": "parser-enforced arity: parser.Functions pins absent at exactly one argument",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall",
+          "lowerSubqueryOverAbsent"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector",
+          "lowerVectorSelector",
+          "rangeMode",
+          "synthLabelsFromMatchers",
+          "unwrapParens"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/absent.go:lowerAbsentOverTime#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 1",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "caller_dispatch": [
+          "LowerChanges",
+          "LowerDeriv",
+          "LowerRate",
+          "LowerResets",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "lowerAbsentOverTime",
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerVectorSelector",
+          "preservedNameExpr",
+          "rangeFnPreservesName",
+          "rangeGridShapeFor",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/absent.go:lowerAbsentOverTime#e8585e71",
       "message": "promql: absent_over_time() expects 1 argument, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: parser.Functions pins absent_over_time at exactly one argument"
+      "rationale": "parser-enforced arity: parser.Functions pins absent_over_time at exactly one argument",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "caller_dispatch": [
+          "LowerChanges",
+          "LowerDeriv",
+          "LowerRate",
+          "LowerResets",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "lowerAbsentOverTime",
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerVectorSelector",
+          "preservedNameExpr",
+          "rangeFnPreservesName",
+          "rangeGridShapeFor",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/absent.go:lowerAbsentOverTime#fef55d6c",
       "message": "promql: absent_over_time() argument must be a range-vector selector, got %T",
       "class": "internal",
-      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 1",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "caller_dispatch": [
+          "LowerChanges",
+          "LowerDeriv",
+          "LowerRate",
+          "LowerResets",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "lowerAbsentOverTime",
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerVectorSelector",
+          "preservedNameExpr",
+          "rangeFnPreservesName",
+          "rangeGridShapeFor",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     }
   ]
 }

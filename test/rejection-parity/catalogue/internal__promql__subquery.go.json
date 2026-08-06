@@ -5,63 +5,351 @@
       "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "internal",
-      "rationale": "the caller (lowerSubqueryOverAggregate) pre-filters to the supported aggregation op set before consulting this builder"
+      "rationale": "the caller (lowerSubqueryOverAggregate) pre-filters to the supported aggregation op set before consulting this builder",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch a.Op over [case parser.SUM; case parser.COUNT; case parser.AVG; case parser.MIN; case parser.MAX; case parser.STDDEV; case parser.STDVAR; case parser.GROUP; case parser.QUANTILE]"
+        ],
+        "callers": [
+          "lowerSubqueryOverAggregate"
+        ],
+        "caller_dispatch": [
+          "String",
+          "buildAttributesFromAggregate",
+          "buildSubqueryAggFunc",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK",
+          "subqueryAggregateGroupBy",
+          "wrapSubqueryQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerAbsentOverTimeOverSubquery#e8585e71",
       "message": "promql: absent_over_time() expects 1 argument, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: absent_over_time() is pinned to one argument in parser.Functions"
+      "rationale": "parser-enforced arity: absent_over_time() is pinned to one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "if len(outer.Args) != 1"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerSubquery",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "subqueryAnchor",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "internal",
-      "rationale": "unreachable: every PromQL function taking a range-vector argument is either a member of rangeVectorFn or is absent_over_time, which the arm above this guard routes to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it"
+      "rationale": "unreachable: every PromQL function taking a range-vector argument is either a member of rangeVectorFn or is absent_over_time, which the arm above this guard routes to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it",
+      "evidence": {
+        "guard": [
+          "past returning if outer.Func.Name == \"absent_over_time\"",
+          "if _, ok := rangeVectorFn[outer.Func.Name]; !ok"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubquery#2174bfb8",
       "message": "promql: subquery range must be positive, got %s",
       "class": "internal",
-      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")",
+      "evidence": {
+        "guard": [
+          "if e.Range \u003c= 0"
+        ],
+        "callers": [
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubquery",
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapAbsentOverTimeAtBroadcast",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubquery#91084197",
       "message": "promql: subquery step must be positive, got %s",
       "class": "internal",
-      "rationale": "the parser rejects non-positive subquery steps (\"duration must be greater than 0\")"
+      "rationale": "the parser rejects non-positive subquery steps (\"duration must be greater than 0\")",
+      "evidence": {
+        "guard": [
+          "past returning if e.Range \u003c= 0",
+          "if step \u003c 0"
+        ],
+        "callers": [
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubquery",
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapAbsentOverTimeAtBroadcast",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubquery#a374d4b2",
       "message": "promql: subquery over %T is unsupported",
       "class": "internal",
-      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors."
+      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors.",
+      "evidence": {
+        "guard": [
+          "past returning if e.Range \u003c= 0",
+          "past returning if step \u003c 0",
+          "past exhaustive switch inner := e.Expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.ParenExpr; case *parser.AggregateExpr; case *parser.BinaryExpr; case *parser.UnaryExpr; case *parser.SubqueryExpr]"
+        ],
+        "callers": [
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubquery",
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapAbsentOverTimeAtBroadcast",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryInnerMatrix#3a78d724",
       "message": "promql: subquery over aggregation of %T is unsupported",
       "class": "internal",
-      "rationale": "An aggregation's argument must type-check as an instant vector, and every instant-vector AST shape is dispatched (paren, call, selector, binary, unary, nested aggregate); scalar- and string-typed inners are parse-time type errors."
+      "rationale": "An aggregation's argument must type-check as an instant vector, and every instant-vector AST shape is dispatched (paren, call, selector, binary, unary, nested aggregate); scalar- and string-typed inners are parse-time type errors.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch inner := expr.(type) over [case *parser.ParenExpr; case *parser.Call; case *parser.VectorSelector; case *parser.BinaryExpr; case *parser.UnaryExpr; case *parser.AggregateExpr]"
+        ],
+        "callers": [
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK"
+        ],
+        "caller_dispatch": [
+          "String",
+          "attributeLookup",
+          "buildAttributesFromAggregate",
+          "buildSubqueryAggFunc",
+          "limitRatioPredicate",
+          "lowerScalarArg",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector",
+          "ratioOffsetExpr",
+          "subqueryAggregateGroupBy",
+          "subqueryMatrixNameExpr",
+          "subqueryTopKColumns",
+          "subqueryTopKPartition",
+          "topKDomain",
+          "topKDomainExpr",
+          "tryScalarLiteral",
+          "tryStringLiteral",
+          "wrapSubqueryQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverAbsent#c311e6be",
       "message": "promql: subquery over absent() requires query eval-time context (use LowerAt)",
       "class": "internal",
-      "rationale": "The HTTP handlers always thread eval times via LowerAt / LowerAtRange; only the raw Lower() entrypoint (tests / tooling) can present a zero eval anchor to this guard."
+      "rationale": "The HTTP handlers always thread eval times via LowerAt / LowerAtRange; only the raw Lower() entrypoint (tests / tooling) can present a zero eval anchor to this guard.",
+      "evidence": {
+        "guard": [
+          "if ctx.end.IsZero()"
+        ],
+        "callers": [
+          "lowerSubqueryOverCall"
+        ],
+        "caller_dispatch": [
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lowerCall",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "threadOuterRangeFnScalars",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
       "message": "promql: subquery over %s aggregation is not supported",
       "class": "internal",
-      "rationale": "every parser aggregation op is dispatched by the switch above this default arm (the eight per-bucket reducers plus quantile, topk/bottomk/limitk, limit_ratio and count_values), so no parseable query reaches it"
+      "rationale": "every parser aggregation op is dispatched by the switch above this default arm (the eight per-bucket reducers plus quantile, topk/bottomk/limitk, limit_ratio and count_values), so no parseable query reaches it",
+      "evidence": {
+        "guard": [
+          "default of switch agg.Op over [case parser.TOPK, parser.BOTTOMK, parser.LIMITK; case parser.COUNT_VALUES; case parser.LIMIT_RATIO; case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR, parser.GROUP, parser.QUANTILE; default]"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "caller_dispatch": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector"
+        ]
+      }
     },
     {
       "head": "promql",
@@ -70,6 +358,27 @@
       "class": "divergence",
       "trigger_query": "max_over_time(histogram_quantile(0.9, demo_memory_usage_bytes)[5m:1m])",
       "tracking_issue": 1866,
+      "evidence": {
+        "guard": [
+          "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
+          "past returning if call.Func.Name == \"absent\"",
+          "if len(call.Args) != arity"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "caller_dispatch": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector"
+        ]
+      },
       "since": "2026-08-06"
     },
     {
@@ -79,6 +388,29 @@
       "class": "divergence",
       "trigger_query": "max_over_time(vector(1)[5m:1m])",
       "tracking_issue": 1866,
+      "evidence": {
+        "guard": [
+          "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
+          "past returning if call.Func.Name == \"absent\"",
+          "past returning if len(call.Args) != arity",
+          "past returning if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "caller_dispatch": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector"
+        ]
+      },
       "since": "2026-08-06"
     },
     {
@@ -86,7 +418,31 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
       "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
+          "past returning if call.Func.Name == \"absent\"",
+          "past returning if len(call.Args) != arity",
+          "past returning if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "caller_dispatch": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverBinary",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverUnary",
+          "lowerSubqueryOverVectorSelector"
+        ]
+      }
     },
     {
       "head": "promql",
@@ -95,6 +451,28 @@
       "class": "divergence",
       "trigger_query": "max_over_time(absent_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
       "tracking_issue": 1867,
+      "evidence": {
+        "guard": [
+          "if _, ok := rangeVectorFn[call.Func.Name]; !ok"
+        ],
+        "callers": [
+          "lowerSubqueryOverCall"
+        ],
+        "caller_dispatch": [
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lowerCall",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "threadOuterRangeFnScalars",
+          "wrapSubqueryIdentity"
+        ]
+      },
       "since": "2026-08-06"
     },
     {
@@ -102,70 +480,400 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCountValues#49c20b7b",
       "message": "promql: count_values requires a string-literal label name as the first arg",
       "class": "internal",
-      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument"
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSubqueryOverAggregate"
+        ],
+        "caller_dispatch": [
+          "String",
+          "buildAttributesFromAggregate",
+          "buildSubqueryAggFunc",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK",
+          "subqueryAggregateGroupBy",
+          "wrapSubqueryQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCountValues#fc5b1a1a",
       "message": "promql: count_values requires a non-empty label name",
       "class": "rejection",
-      "trigger_query": "max_over_time(count_values(\"\", up)[5m:1m])"
+      "trigger_query": "max_over_time(count_values(\"\", up)[5m:1m])",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if label == \"\""
+        ],
+        "callers": [
+          "lowerSubqueryOverAggregate"
+        ],
+        "caller_dispatch": [
+          "String",
+          "buildAttributesFromAggregate",
+          "buildSubqueryAggFunc",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK",
+          "subqueryAggregateGroupBy",
+          "wrapSubqueryQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#c28ffcca",
       "message": "promql: subquery over %s K: %w",
       "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin",
+      "evidence": {
+        "guard": [
+          "else of if kF, ok := tryScalarLiteral(agg.Param); ok",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerSubqueryOverAggregate"
+        ],
+        "caller_dispatch": [
+          "String",
+          "buildAttributesFromAggregate",
+          "buildSubqueryAggFunc",
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK",
+          "subqueryAggregateGroupBy",
+          "wrapSubqueryQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:requirePositiveInnerRange#4050ccb7",
       "message": "promql: inner subquery range must be positive, got %s",
       "class": "internal",
-      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")"
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")",
+      "evidence": {
+        "guard": [
+          "if innerSub.Range \u003c= 0"
+        ],
+        "callers": [
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery"
+        ],
+        "caller_dispatch": [
+          "canonicalRangeWindowFunc",
+          "lowerSubquery",
+          "projectValueOverInner",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "threadOuterRangeFnScalars"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:subqueryAnchor#1306ccfc",
       "message": "promql: subquery `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present"
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present",
+      "evidence": {
+        "guard": [
+          "case parser.START of switch e.StartOrEnd",
+          "if ctx.start.IsZero()"
+        ],
+        "callers": [
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverVectorSelector",
+          "subqueryGridCtx",
+          "wrapSubqueryIdentity"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "epochFloor",
+          "isInstantTransformCall",
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapAbsentOverTimeAtBroadcast",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:subqueryAnchor#92800419",
       "message": "promql: subquery `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present"
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present",
+      "evidence": {
+        "guard": [
+          "case parser.END of switch e.StartOrEnd",
+          "if ctx.end.IsZero()"
+        ],
+        "callers": [
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverVectorSelector",
+          "subqueryGridCtx",
+          "wrapSubqueryIdentity"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "epochFloor",
+          "isInstantTransformCall",
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapAbsentOverTimeAtBroadcast",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:subqueryAnchor#a34bee25",
       "message": "promql: unexpected subquery StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the parser yields only START / END / 0 in StartOrEnd"
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd",
+      "evidence": {
+        "guard": [
+          "default of switch e.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
+        ],
+        "callers": [
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery",
+          "lowerSubqueryOverVectorSelector",
+          "subqueryGridCtx",
+          "wrapSubqueryIdentity"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "epochFloor",
+          "isInstantTransformCall",
+          "lower",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapAbsentOverTimeAtBroadcast",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2b0de462",
       "message": "promql: predict_linear expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count"
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count",
+      "evidence": {
+        "guard": [
+          "case \"predict_linear\" of switch outer.Func.Name",
+          "if len(outer.Args) != 2"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerCall",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#682124f4",
       "message": "promql: quantile_over_time expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count"
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count",
+      "evidence": {
+        "guard": [
+          "case \"quantile_over_time\" of switch outer.Func.Name",
+          "if len(outer.Args) != 2"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerCall",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#ceef5c3b",
       "message": "promql: holt_winters expects 3 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments, so the subquery-argument lowering path can never observe a call with a different count"
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments, so the subquery-argument lowering path can never observe a call with a different count",
+      "evidence": {
+        "guard": [
+          "case \"holt_winters\", \"double_exponential_smoothing\" of switch outer.Func.Name",
+          "if len(outer.Args) != 3"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery"
+        ],
+        "caller_dispatch": [
+          "appendNameGroupKey",
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lowerAbsentOverTimeOverSubquery",
+          "lowerCall",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "rangeFnPreservesName",
+          "rangeMode",
+          "requirePositiveInnerRange",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "subqueryPinned",
+          "subqueryPreservedNameExpr",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName",
+          "wrapSubqueryIdentity"
+        ]
+      }
     }
   ]
 }

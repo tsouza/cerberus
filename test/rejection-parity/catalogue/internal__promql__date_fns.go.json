@@ -5,21 +5,98 @@
       "site": "internal/promql/date_fns.go:lowerDateFn#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "internal dispatch: lowerCall routes only the known date-function names here"
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) \u003e 1",
+          "past returning if len(c.Args) == 0",
+          "past returning if err != nil",
+          "if newValue == nil"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/date_fns.go:lowerDateFn#ab4896c1",
       "message": "promql: %s expects 0 or 1 argument, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: the date functions are declared variadic 0..1 in parser.Functions (\"expected at most 1 argument(s)\")"
+      "rationale": "parser-enforced arity: the date functions are declared variadic 0..1 in parser.Functions (\"expected at most 1 argument(s)\")",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003e 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/date_fns.go:lowerDateFnNoArg#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "internal dispatch: lowerCall routes only the known date-function names here"
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here",
+      "evidence": {
+        "guard": [
+          "if expr == nil"
+        ],
+        "callers": [
+          "lowerDateFn"
+        ],
+        "caller_dispatch": [
+          "asFloat64",
+          "dateFnExpr",
+          "lower",
+          "lowerDateFnNoArg",
+          "projectValueOverInner",
+          "valueAsDateTime"
+        ]
+      }
     }
   ]
 }

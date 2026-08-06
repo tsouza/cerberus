@@ -5,28 +5,110 @@
       "site": "internal/promql/lower.go:buildAggFunc#4353c2b3",
       "message": "promql: %s must be lowered by lowerCountValues, not the generic aggregate path",
       "class": "internal",
-      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted"
+      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted",
+      "evidence": {
+        "guard": [
+          "case parser.COUNT_VALUES of switch a.Op"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "caller_dispatch": [
+          "aggregateGroupBy",
+          "buildAggFunc",
+          "groupKeyAliases",
+          "lower",
+          "lowerCountValues",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerTopK",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:buildAggFunc#54d1c35e",
       "message": "promql: aggregation %s does not take a parameter",
       "class": "internal",
-      "rationale": "the parser rejects a parameter on non-parameterised aggregations (\"wrong number of arguments for aggregate expression\")"
+      "rationale": "the parser rejects a parameter on non-parameterised aggregations (\"wrong number of arguments for aggregate expression\")",
+      "evidence": {
+        "guard": [
+          "case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR of switch a.Op",
+          "if a.Param != nil"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "caller_dispatch": [
+          "aggregateGroupBy",
+          "buildAggFunc",
+          "groupKeyAliases",
+          "lower",
+          "lowerCountValues",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerTopK",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:buildAggFunc#80287dba",
       "message": "promql: group() does not take a parameter",
       "class": "internal",
-      "rationale": "the parser rejects a parameter on group() (\"wrong number of arguments for aggregate expression\")"
+      "rationale": "the parser rejects a parameter on group() (\"wrong number of arguments for aggregate expression\")",
+      "evidence": {
+        "guard": [
+          "case parser.GROUP of switch a.Op",
+          "if a.Param != nil"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "caller_dispatch": [
+          "aggregateGroupBy",
+          "buildAggFunc",
+          "groupKeyAliases",
+          "lower",
+          "lowerCountValues",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerTopK",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:buildAggFunc#a6e9df79",
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
-      "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered."
+      "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch a.Op over [case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR; case parser.GROUP; case parser.QUANTILE; case parser.COUNT_VALUES]"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "caller_dispatch": [
+          "aggregateGroupBy",
+          "buildAggFunc",
+          "groupKeyAliases",
+          "lower",
+          "lowerCountValues",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerTopK",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
@@ -35,6 +117,22 @@
       "class": "divergence",
       "trigger_query": "rate(demo_exp_hist[5m])",
       "tracking_issue": 1772,
+      "evidence": {
+        "guard": [
+          "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
+          "if s.IsExpHistogramMetric(metricName) \u0026\u0026 !ctx.metadataFullRange"
+        ],
+        "callers": [
+          "resolveSelectorRouting"
+        ],
+        "caller_dispatch": [
+          "expHistogramSelectorRouting",
+          "isClassicBucketSelector",
+          "literalCompanionValueTables",
+          "rewriteMetricName",
+          "splitBucketMatchers"
+        ]
+      },
       "since": "2026-08-05"
     },
     {
@@ -42,98 +140,529 @@
       "site": "internal/promql/lower.go:limitRatioPredicate#a75ec376",
       "message": "promql: limit_ratio ratio value is NaN",
       "class": "rejection",
-      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)"
+      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)",
+      "evidence": {
+        "guard": [
+          "if r, ok := tryScalarLiteral(param); ok",
+          "if math.IsNaN(r)"
+        ],
+        "callers": [
+          "lowerLimitRatio",
+          "lowerSubqueryOverLimitRatio"
+        ],
+        "caller_dispatch": [
+          "limitRatioPredicate",
+          "lower",
+          "lowerSubqueryInnerMatrix",
+          "ratioOffsetExpr",
+          "subqueryMatrixNameExpr"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:limitRatioPredicate#afc83b92",
       "message": "promql: limit_ratio ratio: %w",
       "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin",
+      "evidence": {
+        "guard": [
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerLimitRatio",
+          "lowerSubqueryOverLimitRatio"
+        ],
+        "caller_dispatch": [
+          "limitRatioPredicate",
+          "lower",
+          "lowerSubqueryInnerMatrix",
+          "ratioOffsetExpr",
+          "subqueryMatrixNameExpr"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire."
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire.",
+      "evidence": {
+        "guard": [
+          "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
+        ],
+        "callers": [
+          "Lower",
+          "LowerAtRangeOpts",
+          "LowerMetadataRange",
+          "lower",
+          "lowerAbsent",
+          "lowerAggregate",
+          "lowerClamp",
+          "lowerCountValues",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerMetadataCatalog",
+          "lowerRoundToNearest",
+          "lowerScalarArg",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTopK",
+          "lowerTopKComputed",
+          "lowerUnary",
+          "lowerVectorScalar",
+          "lowerVectorSetOp",
+          "lowerVectorVector"
+        ],
+        "caller_dispatch": [
+          "String",
+          "TryFoldScalar",
+          "absentAttrsMap",
+          "aggregateGroupBy",
+          "anchorBaseExpr",
+          "asFloat64",
+          "attributeLookup",
+          "broadcastHistogramAtPin",
+          "buildAggFunc",
+          "classicBucketLadderFold",
+          "dateFnExpr",
+          "effectiveInfoNameMatchers",
+          "emptyAttrsMap",
+          "foldSyntheticBinary",
+          "foldSyntheticVectorBinary",
+          "groupKeyAliases",
+          "histogramAggShapeLowerable",
+          "histogramValueExpr",
+          "infoEnrichablePredicate",
+          "infoIgnorePredicate",
+          "isComparison",
+          "isDefaultMatching",
+          "isNaNExpr",
+          "isSyntheticScalarPlan",
+          "isVectorTypedSyntheticOperand",
+          "limitRatioPredicate",
+          "lower",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerCountValues",
+          "lowerDateFnNoArg",
+          "lowerHistogramQuantileAgg",
+          "lowerHistogramQuantileClassicAggRange",
+          "lowerHistogramQuantileClassicBare",
+          "lowerHistogramQuantileClassicBareRange",
+          "lowerHistogramQuantileNative",
+          "lowerHistogramQuantileNativeAgg",
+          "lowerHistogramQuantileNativeAggRange",
+          "lowerHistogramQuantileNativeBareRange",
+          "lowerHistogramValueFnInstant",
+          "lowerHistogramValueFnPerSample",
+          "lowerHistogramValueFnRange",
+          "lowerInfoJoin",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerMatrixSelector",
+          "lowerRoundToNearest",
+          "lowerScalarArg",
+          "lowerSubquery",
+          "lowerTopK",
+          "lowerTopKComputed",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "matchHistogramAggIdiom",
+          "matchesEveryNameMatcher",
+          "mergedLabelValueExpr",
+          "nanIfExpr",
+          "naturalSortKeyExpr",
+          "projectAttributesOverInner",
+          "projectValueOverInner",
+          "promBinaryOp",
+          "promVectorSetOpKind",
+          "rangeGridShapeFor",
+          "ratioOffsetExpr",
+          "scalarSubqueryValue",
+          "scalarValuePlan",
+          "staticBaseMetricName",
+          "stringArg",
+          "subqueryAnchor",
+          "topKDomain",
+          "topKDomainExpr",
+          "topKPartition",
+          "tryScalarLiteral",
+          "tryStringLiteral",
+          "unwrapParens",
+          "unwrapVectorSelector",
+          "valueAsDateTime",
+          "widenSubquerySpine",
+          "withDefaults",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCall#682975f8",
       "message": "promql: function %s is not a recognized lowering target",
       "class": "internal",
-      "rationale": "Every PromQL function the reference parser produces is dispatched by an explicit case in lowerCall or by the instantFnCH table; start()/end() have their own dedicated parity-reject case. This generic fall-through guards against a parser-accepted function with no lowering, of which there are currently none, so no wire query reaches it."
+      "rationale": "Every PromQL function the reference parser produces is dispatched by an explicit case in lowerCall or by the instantFnCH table; start()/end() have their own dedicated parity-reject case. This generic fall-through guards against a parser-accepted function with no lowering, of which there are currently none, so no wire query reaches it.",
+      "evidence": {
+        "guard": [
+          "past returning if c.Func.Name == \"quantile_over_time\"",
+          "past exhaustive switch c.Func.Name over [case \"absent\"; case \"clamp\", \"clamp_min\", \"clamp_max\"; case \"histogram_quantile\"; case \"histogram_quantiles\"; case \"histogram_count\", \"histogram_sum\", \"histogram_avg\", \"histogram_stddev\", \"histogram_stdvar\", \"histogram_fraction\"; case \"label_replace\"; case \"label_join\"; case \"info\"; case \"time\"; case \"vector\"; case \"year\", \"month\", \"day_of_month\", \"day_of_week\", \"day_of_year\", \"days_in_month\", \"hour\", \"minute\", \"timestamp\"; case \"sort\", \"sort_desc\"; case \"sort_by_label\", \"sort_by_label_desc\"; case \"scalar\"; case \"range\", \"step\"; case \"start\", \"end\"; case \"pi\"]",
+          "past returning if chFn, ok := instantFnCH[c.Func.Name]; ok"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverCall"
+        ],
+        "caller_dispatch": [
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lower",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCall#87f33f63",
       "message": "promql: function %s() is only valid inside an @ modifier (e.g. up @ %s()), not as a standalone call",
       "class": "rejection",
-      "trigger_query": "start()"
+      "trigger_query": "start()",
+      "evidence": {
+        "guard": [
+          "past returning if c.Func.Name == \"quantile_over_time\"",
+          "case \"start\", \"end\" of switch c.Func.Name"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverCall"
+        ],
+        "caller_dispatch": [
+          "canonicalRangeWindowFunc",
+          "isInstantTransformCall",
+          "lower",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerSubqueryOverAbsent",
+          "lowerSubqueryOverCallSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "projectValueOverInner",
+          "subqueryAnchor",
+          "subqueryInnerRangeFnShape",
+          "subqueryInstantSafe",
+          "threadOuterRangeFnScalars",
+          "widenSubquerySpine",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCountValues#49c20b7b",
       "message": "promql: count_values requires a string-literal label name as the first arg",
       "class": "internal",
-      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument"
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "caller_dispatch": [
+          "aggregateGroupBy",
+          "buildAggFunc",
+          "groupKeyAliases",
+          "lower",
+          "lowerCountValues",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerTopK",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCountValues#fc5b1a1a",
       "message": "promql: count_values requires a non-empty label name",
       "class": "rejection",
-      "trigger_query": "count_values(\"\", up)"
+      "trigger_query": "count_values(\"\", up)",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if label == \"\""
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "caller_dispatch": [
+          "aggregateGroupBy",
+          "buildAggFunc",
+          "groupKeyAliases",
+          "lower",
+          "lowerCountValues",
+          "lowerLimitK",
+          "lowerLimitRatio",
+          "lowerTopK",
+          "wrapAggregateForSample",
+          "wrapQuantilePhiGuard"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerMatrixSelector#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "The PromQL parser only constructs MatrixSelector nodes whose VectorSelector field is a *parser.VectorSelector; the guard exists for programmatically-built ASTs."
+      "rationale": "The PromQL parser only constructs MatrixSelector nodes whose VectorSelector field is a *parser.VectorSelector; the guard exists for programmatically-built ASTs.",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lower"
+        ],
+        "caller_dispatch": [
+          "lower",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "subqueryAnchor",
+          "widenSubquerySpine"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerRangeVectorCall#064574ba",
       "message": "promql: %s expects exactly 1 argument, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: the range-vector functions are pinned at one argument in parser.Functions"
+      "rationale": "parser-enforced arity: the range-vector functions are pinned at one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch c.Func.Name over [case \"predict_linear\"; case \"holt_winters\", \"double_exponential_smoothing\"; case \"absent_over_time\"]",
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerRangeVectorCall#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch c.Func.Name over [case \"predict_linear\"; case \"holt_winters\", \"double_exponential_smoothing\"; case \"absent_over_time\"]",
+          "past returning if len(c.Args) != 1",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:lowerRangeVectorCall#ccda8b22",
       "message": "promql: %s argument must be a range-vector selector, got %T",
       "class": "internal",
-      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch c.Func.Name over [case \"predict_linear\"; case \"holt_winters\", \"double_exponential_smoothing\"; case \"absent_over_time\"]",
+          "past returning if len(c.Args) != 1",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:plainAggCH#a6e9df79",
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
-      "rationale": "the only caller (buildAggFunc) pre-filters to the seven operators this mapper handles"
+      "rationale": "the only caller (buildAggFunc) pre-filters to the seven operators this mapper handles",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.SUM; case parser.COUNT; case parser.AVG; case parser.MIN; case parser.MAX; case parser.STDDEV; case parser.STDVAR]"
+        ],
+        "callers": [
+          "buildAggFunc"
+        ],
+        "caller_dispatch": [
+          "String",
+          "lowerScalarArg",
+          "outOfRangePhiInf",
+          "plainAggCH",
+          "sanitizedPhiParamExpr",
+          "tryScalarLiteral"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:topKDomain#7f1f205b",
       "message": "promql: %s K must not be NaN",
       "class": "rejection",
-      "trigger_query": "topk(NaN, up)"
+      "trigger_query": "topk(NaN, up)",
+      "evidence": {
+        "guard": [
+          "case math.IsNaN(kF) of switch"
+        ],
+        "callers": [
+          "lowerLimitK",
+          "lowerSubqueryOverTopK",
+          "lowerTopK"
+        ],
+        "caller_dispatch": [
+          "String",
+          "lower",
+          "lowerScalarArg",
+          "lowerSubqueryInnerMatrix",
+          "lowerTopKComputed",
+          "subqueryTopKColumns",
+          "subqueryTopKPartition",
+          "topKDomain",
+          "topKDomainExpr",
+          "topKPartition",
+          "tryScalarLiteral"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/lower.go:topKDomain#ae02c31a",
       "message": "promql: %s K %v overflows int64",
       "class": "rejection",
-      "trigger_query": "topk(1e300, up)"
+      "trigger_query": "topk(1e300, up)",
+      "evidence": {
+        "guard": [
+          "case kF \u003e= float64(math.MaxInt64) of switch"
+        ],
+        "callers": [
+          "lowerLimitK",
+          "lowerSubqueryOverTopK",
+          "lowerTopK"
+        ],
+        "caller_dispatch": [
+          "String",
+          "lower",
+          "lowerScalarArg",
+          "lowerSubqueryInnerMatrix",
+          "lowerTopKComputed",
+          "subqueryTopKColumns",
+          "subqueryTopKPartition",
+          "topKDomain",
+          "topKDomainExpr",
+          "topKPartition",
+          "tryScalarLiteral"
+        ]
+      }
     }
   ]
 }

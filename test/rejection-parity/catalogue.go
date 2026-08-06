@@ -109,6 +109,32 @@ type Entry struct {
 	// issue, never left pointing at a closed one.
 	TrackingIssue int `json:"tracking_issue,omitempty"`
 
+	// Evidence is the machine-DERIVED reachability evidence for the
+	// site: its guard chain, its intra-package reaching set, and the
+	// dispatch fabric one hop above it. Generate recomputes it from the
+	// go/ast scan on every regeneration and never carries the stored
+	// value forward, so it is a fact about the current source rather
+	// than a second declaration.
+	//
+	// It exists to hold class=internal Rationale claims to account.
+	// A rationale is prose asserting that no wire query reaches the
+	// site; that assertion always rests on the guard, on who can call
+	// the enclosing function, or on a sibling dispatch that intercepts
+	// first — the three things this field records. When any of them
+	// moves, Generate demotes the entry to unclassified and drops the
+	// rationale (reclassifyOnEvidenceDrift), so the claim must be
+	// re-made against the new source instead of being inherited. That
+	// is the leg #1738 was missing: three lowerHoltWinters rationales
+	// asserted a gate that no longer existed, and nothing re-derived
+	// the assertion.
+	//
+	// Evidence is recorded for EVERY entry, not just internal ones, so
+	// that it is always already present when an entry is reclassified —
+	// a field that only appears once a class is chosen would need a
+	// bootstrap round-trip, and a bootstrap round-trip is a way to
+	// launder a drifted rationale past the gate.
+	Evidence *Evidence `json:"evidence,omitempty"`
+
 	// Since (class=divergence) is the date, in divergenceDateLayout
 	// ("2026-01-02"), the entry was first classified as a divergence —
 	// backdated to the PR that introduced or reclassified it, never
@@ -269,52 +295,78 @@ func BuildCases(cat *Catalogue, head string) ([]Case, error) {
 // Test files and testdata are excluded — they construct errors for
 // assertions, not for the wire.
 func ScanSites(repoRoot string) ([]Site, error) {
-	var out []Site
+	sc, err := scanLowerings(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	return sc.sites, nil
+}
+
+// scanLowerings parses all three lowering packages once and returns
+// both halves of the scan: the mechanical site inventory and the
+// derived evidence for each site. They come out of a single parse
+// deliberately — a guard chain and the reaching set that surrounds it
+// must always describe the same revision of the source.
+func scanLowerings(repoRoot string) (*pkgScan, error) {
+	out := &pkgScan{evidence: map[string]*Evidence{}}
 	for dir, head := range heads {
-		sites, err := scanDir(filepath.Join(repoRoot, dir), dir, head)
+		one, err := scanDir(filepath.Join(repoRoot, dir), dir, head)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, sites...)
+		out.sites = append(out.sites, one.sites...)
+		for k, v := range one.evidence {
+			out.evidence[k] = v
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Site < out[j].Site })
+	sort.Slice(out.sites, func(i, j int) bool { return out.sites[i].Site < out.sites[j].Site })
 	return out, nil
 }
 
-func scanDir(absDir, relDir, head string) ([]Site, error) {
+// scanDir parses every non-test source file of one lowering package
+// with a shared FileSet, builds the intra-package call graph over them,
+// and then extracts the error sites plus their evidence. The whole
+// package is parsed before any site is emitted because the reaching set
+// of a function in one file is written by callers in the others.
+func scanDir(absDir, relDir, head string) (*pkgScan, error) {
 	entries, err := os.ReadDir(absDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", absDir, err)
 	}
-	var out []Site
+	fset := token.NewFileSet()
+	var (
+		files []*ast.File
+		rels  []string
+	)
 	for _, de := range entries {
 		name := de.Name()
 		if de.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		sites, err := scanFile(filepath.Join(absDir, name), relDir+"/"+name, head)
+		absPath := filepath.Join(absDir, name)
+		f, err := parser.ParseFile(fset, absPath, nil, 0)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parse %s: %w", absPath, err)
 		}
-		out = append(out, sites...)
+		files = append(files, f)
+		rels = append(rels, relDir+"/"+name)
 	}
-	return out, nil
-}
+	declared, calls, callers := callGraph(files)
+	sc := &astScope{fset: fset, declared: declared, calls: calls, callers: callers}
 
-// scanFile parses one source file and extracts the prefixed
-// error-construction sites, assigning per-(func, message) ordinals.
-func scanFile(absPath, relPath, head string) ([]Site, error) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, absPath, nil, 0)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", absPath, err)
-	}
+	out := &pkgScan{evidence: map[string]*Evidence{}}
 	prefix := head + ": "
-	var out []Site
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if ok && fn.Body != nil {
-			out = append(out, scanFunc(fn, relPath, head, prefix)...)
+	for i, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			sites, ev := scanFunc(sc, fn, rels[i], head, prefix)
+			out.sites = append(out.sites, sites...)
+			for k, v := range ev {
+				out.evidence[k] = v
+			}
 		}
 	}
 	return out, nil
@@ -325,10 +377,22 @@ func scanFile(absPath, relPath, head string) ([]Site, error) {
 // unrelated error site is inserted earlier in the function; a repeat
 // ordinal is appended only for the rare case of the same message
 // constructed twice in the same function.
-func scanFunc(fn *ast.FuncDecl, relPath, head, prefix string) []Site {
+//
+// The walk keeps an ancestor stack so each site's guard chain — the
+// conditions that must hold for the error to be constructed — falls
+// out of the same traversal that discovers it.
+func scanFunc(sc *astScope, fn *ast.FuncDecl, relPath, head, prefix string) ([]Site, map[string]*Evidence) {
 	var out []Site
+	evidence := map[string]*Evidence{}
 	seen := map[string]int{}
+	callers := sc.callers[fn.Name.Name]
+	var stack []ast.Node
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
 		call, ok := n.(*ast.CallExpr)
 		if !ok || len(call.Args) == 0 {
 			return true
@@ -347,9 +411,14 @@ func scanFunc(fn *ast.FuncDecl, relPath, head, prefix string) []Site {
 			key = fmt.Sprintf("%s-%d", key, seen[msg])
 		}
 		out = append(out, Site{Head: head, Site: key, Message: msg})
+		evidence[key] = &Evidence{
+			Guard:          guardChain(sc.fset, stack),
+			Callers:        callers,
+			CallerDispatch: dispatchOf(sc, callers),
+		}
 		return true
 	})
-	return out
+	return out, evidence
 }
 
 // isErrorConstructor matches fmt.Errorf and errors.New selector calls.
@@ -409,8 +478,13 @@ func stringLiteral(e ast.Expr) (string, bool) {
 // new sites land with an empty class so the verify test demands
 // curation; sites that disappeared from the source are dropped.
 // Shrink and growth are both therefore deliberate, reviewable diffs.
+// Evidence is never carried forward: it is rederived from the scan on
+// every call, and a class=internal entry whose evidence MOVED loses its
+// classification and its rationale (see reclassifyOnEvidenceDrift), so
+// an unreachability claim can never outlive the source facts it was
+// made about.
 func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
-	sites, err := ScanSites(repoRoot)
+	scan, err := scanLowerings(repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -421,8 +495,8 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 		}
 	}
 	out := &Catalogue{}
-	for _, s := range sites {
-		e := Entry{Site: s}
+	for _, s := range scan.sites {
+		e := Entry{Site: s, Evidence: scan.evidence[s.Site]}
 		if p, ok := prevByKey[s.Site]; ok {
 			e.Class = p.Class
 			e.TriggerQuery = p.TriggerQuery
@@ -430,10 +504,33 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 			e.Rationale = p.Rationale
 			e.TrackingIssue = p.TrackingIssue
 			e.Since = p.Since
+			reclassifyOnEvidenceDrift(&e, p.Evidence)
 		}
 		out.Entries = append(out.Entries, e)
 	}
 	return out, nil
+}
+
+// reclassifyOnEvidenceDrift demotes a class=internal entry back to
+// unclassified when the evidence its rationale was written against no
+// longer matches the source. Regeneration therefore cannot be used to
+// wave a stale unreachability claim through: the entry comes out of it
+// with no class and no rationale, TestCatalogueEntriesAreClassified
+// fails on it by name, and a human has to look at the site again and
+// either re-state why it is still unreachable or reclassify it as the
+// wire-reachable rejection it has become.
+//
+// Only class=internal is demoted. A rejection or divergence entry
+// makes no unreachability claim to falsify — its trigger query is
+// re-executed against the lowering on every run of
+// TestRejectionTriggersExerciseSites, which is a stronger check than
+// any evidence diff and is unaffected by where the guard moved.
+func reclassifyOnEvidenceDrift(e *Entry, prevEvidence *Evidence) {
+	if e.Class != ClassInternal || e.Evidence.Equal(prevEvidence) {
+		return
+	}
+	e.Class = ""
+	e.Rationale = ""
 }
 
 // siteSourceFile returns the source-file half of a site key —

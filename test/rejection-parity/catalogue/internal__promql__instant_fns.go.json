@@ -5,28 +5,146 @@
       "site": "internal/promql/instant_fns.go:lowerClamp#dd15dfed",
       "message": "promql: clamp expects 3 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity for clamp (three arguments)"
+      "rationale": "parser-enforced arity for clamp (three arguments)",
+      "evidence": {
+        "guard": [
+          "case \"clamp\" of switch c.Func.Name",
+          "if len(c.Args) != 3"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/instant_fns.go:lowerClamp#e15d3cf4",
       "message": "promql: unknown clamp function %s",
       "class": "internal",
-      "rationale": "internal dispatch: lowerCall routes only clamp / clamp_min / clamp_max here"
+      "rationale": "internal dispatch: lowerCall routes only clamp / clamp_min / clamp_max here",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch c.Func.Name over [case \"clamp_max\", \"clamp_min\"; case \"clamp\"]"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/instant_fns.go:lowerClamp#f69a3fbc",
       "message": "promql: %s expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity for clamp_min / clamp_max (two arguments)"
+      "rationale": "parser-enforced arity for clamp_min / clamp_max (two arguments)",
+      "evidence": {
+        "guard": [
+          "case \"clamp_max\", \"clamp_min\" of switch c.Func.Name",
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/instant_fns.go:lowerInstantFn#ce14c98d",
       "message": "promql: %s with %d arguments is unsupported (instant math fns are unary)",
       "class": "internal",
-      "rationale": "parser-enforced arity: the unary instant math functions are pinned at one argument in parser.Functions"
+      "rationale": "parser-enforced arity: the unary instant math functions are pinned at one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     }
   ]
 }

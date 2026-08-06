@@ -5,21 +5,69 @@
       "site": "internal/logql/ip.go:ipLabelFilterExpr#dd5ced4f",
       "message": "logql: ip: invalid operation for label filter (only = and != support ip())",
       "class": "internal",
-      "rationale": "unreachable: the LogQL grammar only builds IPLabelFilter for = and != (syntax.y: IDENTIFIER EQ/NEQ IP OPEN_PARENTHESIS ...)"
+      "rationale": "unreachable: the LogQL grammar only builds IPLabelFilter for = and != (syntax.y: IDENTIFIER EQ/NEQ IP OPEN_PARENTHESIS ...)",
+      "evidence": {
+        "guard": [
+          "default of switch f.Ty over [case syntax.LabelFilterEqual, syntax.LabelFilterNotEqual; default]"
+        ],
+        "callers": [
+          "labelFiltererLower"
+        ],
+        "caller_dispatch": [
+          "bytesLabelFilterExpr",
+          "durationLabelFilterExpr",
+          "gateMark",
+          "ipLabelFilterExpr",
+          "labelFiltererLower",
+          "labelMatcherToExpr",
+          "notExpr",
+          "numericLabelFilterExpr"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/ip.go:ipLineFilterExpr#298688ca",
       "message": "logql: ip: invalid operation for line filter (only |= and != support ip())",
       "class": "rejection",
-      "trigger_query": "{app=\"x\"} |~ ip(\"127.0.0.1\")"
+      "trigger_query": "{app=\"x\"} |~ ip(\"127.0.0.1\")",
+      "evidence": {
+        "guard": [
+          "default of switch lf.Ty over [case syntax.LineMatchEqual, syntax.LineMatchNotEqual; default]"
+        ],
+        "callers": [
+          "lineFilterPart"
+        ],
+        "caller_dispatch": [
+          "ipLineFilterExpr",
+          "lineFilterOp",
+          "patternLineFilterExpr"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/ip.go:parseIPPattern#a3ece11b",
       "message": "logql: ip: invalid pattern %q",
       "class": "rejection",
-      "trigger_query": "{app=\"x\"} |= ip(\"not-an-ip\")"
+      "trigger_query": "{app=\"x\"} |= ip(\"not-an-ip\")",
+      "evidence": {
+        "guard": [
+          "past returning if addr, err := netip.ParseAddr(pattern); err == nil",
+          "past returning if pfx, err := netip.ParsePrefix(pattern); err == nil",
+          "past returning if r, err := netipx.ParseIPRange(pattern); err == nil"
+        ],
+        "callers": [
+          "MatchesIPPattern",
+          "ipLabelFilterExpr",
+          "ipLineFilterExpr"
+        ],
+        "caller_dispatch": [
+          "ipSubjectMatchExpr",
+          "notExpr",
+          "parseIPPattern"
+        ]
+      }
     }
   ]
 }

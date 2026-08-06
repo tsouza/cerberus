@@ -5,14 +5,42 @@
       "site": "internal/logql/pattern_filter.go:parsePatternLineFilter#ae95d17a",
       "message": "logql: invalid pattern line filter %q: %w",
       "class": "rejection",
-      "trigger_query": "{app=\"x\"} |\u003e \"\u003clevel\u003e error\""
+      "trigger_query": "{app=\"x\"} |\u003e \"\u003clevel\u003e error\"",
+      "evidence": {
+        "guard": [
+          "if _, err := logpattern.ParseLineFilter([]byte(match)); err != nil"
+        ],
+        "callers": [
+          "patternLineFilterExpr"
+        ],
+        "caller_dispatch": [
+          "expr",
+          "notExpr",
+          "parsePatternLineFilter"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/pattern_filter.go:parsePatternLineFilter#ae95d17a-2",
       "message": "logql: invalid pattern line filter %q: %w",
       "class": "internal",
-      "rationale": "unreachable: pattern.ParseLiterals re-parses with the same grammar that pattern.ParseLineFilter already accepted one line above; error propagation (%w) kept for defence"
+      "rationale": "unreachable: pattern.ParseLiterals re-parses with the same grammar that pattern.ParseLineFilter already accepted one line above; error propagation (%w) kept for defence",
+      "evidence": {
+        "guard": [
+          "past returning if _, err := logpattern.ParseLineFilter([]byte(match)); err != nil",
+          "past returning if match == \"\"",
+          "if err != nil"
+        ],
+        "callers": [
+          "patternLineFilterExpr"
+        ],
+        "caller_dispatch": [
+          "expr",
+          "notExpr",
+          "parsePatternLineFilter"
+        ]
+      }
     }
   ]
 }

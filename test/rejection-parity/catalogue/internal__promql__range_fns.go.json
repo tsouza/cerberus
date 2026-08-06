@@ -5,49 +5,224 @@
       "site": "internal/promql/range_fns.go:holtWintersFactors#0ff3d8b3",
       "message": "promql: holt_winters smoothing factor must be in (0, 1), got %v",
       "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 1.5, 0.5)"
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 1.5, 0.5)",
+      "evidence": {
+        "guard": [
+          "if okSf \u0026\u0026 (sf \u003c= 0 || sf \u003e= 1)"
+        ],
+        "callers": [
+          "lowerHoltWinters",
+          "threadOuterRangeFnScalars"
+        ],
+        "caller_dispatch": [
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "bindHoltWintersFactors",
+          "holtWintersFactors",
+          "lowerScalarArg",
+          "lowerVectorSelector",
+          "matrixAndSelector",
+          "outOfRangePhiInf",
+          "rangeGridShapeFor",
+          "tryScalarLiteral",
+          "wrapRangeWindowAtBroadcast"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:holtWintersFactors#2db9f2aa",
       "message": "promql: holt_winters trend factor must be in (0, 1), got %v",
       "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 0.5, 1.5)"
+      "trigger_query": "double_exponential_smoothing(demo_memory_usage_bytes[10m], 0.5, 1.5)",
+      "evidence": {
+        "guard": [
+          "past returning if okSf \u0026\u0026 (sf \u003c= 0 || sf \u003e= 1)",
+          "if okTf \u0026\u0026 (tf \u003c= 0 || tf \u003e= 1)"
+        ],
+        "callers": [
+          "lowerHoltWinters",
+          "threadOuterRangeFnScalars"
+        ],
+        "caller_dispatch": [
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "bindHoltWintersFactors",
+          "holtWintersFactors",
+          "lowerScalarArg",
+          "lowerVectorSelector",
+          "matrixAndSelector",
+          "outOfRangePhiInf",
+          "rangeGridShapeFor",
+          "tryScalarLiteral",
+          "wrapRangeWindowAtBroadcast"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerHoltWinters#ceef5c3b",
       "message": "promql: holt_winters expects 3 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments"
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 3"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "caller_dispatch": [
+          "LowerChanges",
+          "LowerDeriv",
+          "LowerRate",
+          "LowerResets",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "lowerAbsentOverTime",
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerVectorSelector",
+          "preservedNameExpr",
+          "rangeFnPreservesName",
+          "rangeGridShapeFor",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerPredictLinear#2b0de462",
       "message": "promql: predict_linear expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments"
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "caller_dispatch": [
+          "LowerChanges",
+          "LowerDeriv",
+          "LowerRate",
+          "LowerResets",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "lowerAbsentOverTime",
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerVectorSelector",
+          "preservedNameExpr",
+          "rangeFnPreservesName",
+          "rangeGridShapeFor",
+          "wrapRangeWindowAtBroadcast",
+          "wrapRangeWindowPreserveName"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:lowerQuantileOverTime#682124f4",
       "message": "promql: quantile_over_time expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments"
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "caller_dispatch": [
+          "lowerAbsent",
+          "lowerClamp",
+          "lowerDateFn",
+          "lowerHistogramQuantile",
+          "lowerHistogramQuantiles",
+          "lowerHistogramValueFn",
+          "lowerInfo",
+          "lowerInstantFn",
+          "lowerLabelJoin",
+          "lowerLabelReplace",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerQuantileOverTime",
+          "lowerQueryContextFold",
+          "lowerRangeVectorCall",
+          "lowerScalarTopLevel",
+          "lowerSort",
+          "lowerSortByLabel",
+          "lowerTime",
+          "lowerVector"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:matrixAndSelector#5fccc59e",
       "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector"
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime"
+        ],
+        "caller_dispatch": [
+          "LowerPredictLinear",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "bindHoltWintersFactors",
+          "holtWintersFactors",
+          "lowerScalarArg",
+          "lowerVectorSelector",
+          "matrixAndSelector",
+          "outOfRangePhiInf",
+          "projectValueOverInner",
+          "rangeGridShapeFor",
+          "tryScalarLiteral",
+          "wrapRangeWindowAtBroadcast"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/range_fns.go:matrixAndSelector#ce0c72b5",
       "message": "promql: %s first argument must be a range-vector selector, got %T",
       "class": "internal",
-      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise"
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerHoltWinters",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime"
+        ],
+        "caller_dispatch": [
+          "LowerPredictLinear",
+          "anchorFromSelector",
+          "applyStepGridFanout",
+          "bindHoltWintersFactors",
+          "holtWintersFactors",
+          "lowerScalarArg",
+          "lowerVectorSelector",
+          "matrixAndSelector",
+          "outOfRangePhiInf",
+          "projectValueOverInner",
+          "rangeGridShapeFor",
+          "tryScalarLiteral",
+          "wrapRangeWindowAtBroadcast"
+        ]
+      }
     }
   ]
 }

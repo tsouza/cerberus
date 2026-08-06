@@ -5,14 +5,63 @@
       "site": "internal/promql/unary.go:lowerUnary#518e89c7",
       "message": "promql: unary operand: %w",
       "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped rejection is catalogued at its origin"
+      "rationale": "error-propagation wrapper (%w): the wrapped rejection is catalogued at its origin",
+      "evidence": {
+        "guard": [
+          "case parser.SUB of switch u.Op",
+          "if err != nil"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverUnary"
+        ],
+        "caller_dispatch": [
+          "lower",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "subqueryAnchor",
+          "subqueryAnchorShape",
+          "subqueryGridCtx",
+          "widenSubquerySpine",
+          "wrapSubqueryIdentity"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/unary.go:lowerUnary#fe35064b",
       "message": "promql: unsupported unary op %v",
       "class": "internal",
-      "rationale": "the parser yields only +/- unary operators"
+      "rationale": "the parser yields only +/- unary operators",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch u.Op over [case parser.ADD; case parser.SUB]"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverUnary"
+        ],
+        "caller_dispatch": [
+          "lower",
+          "lowerAggregate",
+          "lowerBinary",
+          "lowerCall",
+          "lowerMatrixSelector",
+          "lowerSubquery",
+          "lowerUnary",
+          "lowerVectorSelector",
+          "subqueryAnchor",
+          "subqueryAnchorShape",
+          "subqueryGridCtx",
+          "widenSubquerySpine",
+          "wrapSubqueryIdentity"
+        ]
+      }
     }
   ]
 }

@@ -2,6 +2,9 @@ package rejectionparity
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,6 +257,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 				t.Errorf("rejection entry %s carries a since date — since dates belong to divergence entries", e.Site.Site)
 			}
 		case ClassInternal:
+			if e.Evidence == nil {
+				t.Errorf("internal entry %s carries no evidence block — a rationale with nothing derived beneath it is an unchecked assertion; regenerate with CERBERUS_UPDATE_INVENTORY=1", e.Site.Site)
+			}
 			if strings.TrimSpace(e.Rationale) == "" {
 				t.Errorf("internal entry %s carries no rationale — every internal classification must justify why the site is not wire-reachable", e.Site.Site)
 			}
@@ -288,6 +294,171 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			}
 		default:
 			t.Errorf("entry %s is unclassified (class=%q) — classify as rejection (with trigger query), internal (with rationale), or divergence (with trigger query + tracking issue)", e.Site.Site, e.Class)
+		}
+	}
+}
+
+// TestInternalRationalesRestOnCurrentEvidence is the drift gate for the
+// 161 class=internal rationales. A rationale is prose asserting that no
+// wire query reaches a site; the assertion always rests on the site's
+// guard chain, on which functions can reach the one that constructs the
+// error, or on a sibling dispatch that intercepts first. Those three
+// facts are re-derived from the current lowering source here and
+// compared against the evidence stored beside the rationale, so a
+// change that moves any of them fails NAMING the site instead of
+// leaving the claim standing unexamined — which is what #1738 was: three
+// lowerHoltWinters rationales asserting a gate that did not exist, with
+// nothing in the tree able to tell.
+//
+// The fix for a failure here is never to regenerate and move on: the
+// same regeneration DEMOTES the entry to unclassified and drops its
+// rationale (see reclassifyOnEvidenceDrift), so
+// TestCatalogueEntriesAreClassified fails next and the claim has to be
+// re-made against the source as it now stands — or the entry
+// reclassified as the wire-reachable rejection it has become.
+func TestInternalRationalesRestOnCurrentEvidence(t *testing.T) {
+	t.Parallel()
+
+	cat := loadCatalogue(t)
+	scan, err := scanLowerings(repoRoot)
+	if err != nil {
+		t.Fatalf("scan lowerings: %v", err)
+	}
+	checked := 0
+	for _, e := range cat.Entries {
+		derived, ok := scan.evidence[e.Site.Site]
+		if !ok {
+			t.Errorf("site %s is catalogued but the scan no longer finds it — regenerate with CERBERUS_UPDATE_INVENTORY=1", e.Site.Site)
+			continue
+		}
+		if e.Evidence.Equal(derived) {
+			checked++
+			continue
+		}
+		if e.Class == ClassInternal {
+			t.Errorf("site %s: the source facts its rationale rests on have moved.\n  rationale: %s\n  %s\n"+
+				"Re-verify the claim against the site as it now stands, then regenerate with "+
+				"CERBERUS_UPDATE_INVENTORY=1 and re-state the rationale (regeneration clears it).",
+				e.Site.Site, e.Rationale, strings.Join(e.Evidence.Diff(derived), "\n  "))
+			continue
+		}
+		t.Errorf("site %s (class %s): stored evidence is stale.\n  %s\nRegenerate with CERBERUS_UPDATE_INVENTORY=1.",
+			e.Site.Site, e.Class, strings.Join(e.Evidence.Diff(derived), "\n  "))
+	}
+	if checked == 0 {
+		t.Fatal("no entry's evidence was re-derived — the gate is inert")
+	}
+}
+
+// TestEvidenceDriftDemotesInternalEntries proves the demotion is real
+// rather than a comment: an internal entry whose evidence moved comes
+// out of regeneration unclassified and rationale-less (so the
+// classification gate fails on it by name), an entry whose evidence is
+// unchanged is untouched, and a rejection entry — which makes no
+// unreachability claim and is re-proved every run by its trigger query
+// — keeps its curation regardless.
+func TestEvidenceDriftDemotesInternalEntries(t *testing.T) {
+	t.Parallel()
+
+	derived := &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall"}}
+	for _, tc := range []struct {
+		name          string
+		class         string
+		prev          *Evidence
+		wantClass     string
+		wantRationale string
+	}{
+		{"internal, guard moved", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 3"}, Callers: []string{"lowerCall"}}, "", ""},
+		{"internal, new caller", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall", "threadOuterRangeFnScalars"}}, "", ""},
+		{"internal, dispatch moved", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall"}, CallerDispatch: []string{"lowerCountValues"}}, "", ""},
+		{"internal, no stored evidence", ClassInternal, nil, "", ""},
+		{"internal, unchanged", ClassInternal, &Evidence{Guard: []string{"if len(c.Args) != 2"}, Callers: []string{"lowerCall"}}, ClassInternal, "because"},
+		{"rejection, guard moved", ClassRejection, &Evidence{Guard: []string{"if len(c.Args) != 3"}}, ClassRejection, "because"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := Entry{Class: tc.class, Rationale: "because", Evidence: derived}
+			reclassifyOnEvidenceDrift(&e, tc.prev)
+			if e.Class != tc.wantClass {
+				t.Errorf("class = %q, want %q", e.Class, tc.wantClass)
+			}
+			if e.Rationale != tc.wantRationale {
+				t.Errorf("rationale = %q, want %q", e.Rationale, tc.wantRationale)
+			}
+		})
+	}
+}
+
+// TestGuardChainRecordsFallThroughArmInventory pins the derivation
+// shape the largest rationale family depends on. "Every op the grammar
+// produces is mapped, so the default arm is unreachable" is a claim
+// about the SIBLING arms of a switch, not about the error site, and the
+// site itself carries no lexical condition at all when the mapper is
+// written as a switch of returning cases followed by a trailing
+// `return fmt.Errorf(...)`. Both shapes must put the arm inventory in
+// the guard chain, or deleting a case would make the site reachable
+// while the evidence — and therefore the rationale — sat still.
+func TestGuardChainRecordsFallThroughArmInventory(t *testing.T) {
+	t.Parallel()
+
+	const src = `package p
+
+import "fmt"
+
+func mapOp(op string) (int, error) {
+	switch op {
+	case "add":
+		return 1, nil
+	case "sub":
+		return 2, nil
+	}
+	return 0, fmt.Errorf("promql: unknown op %s", op)
+}
+
+func mapKind(k any) (int, error) {
+	switch v := k.(type) {
+	case int:
+		return v, nil
+	default:
+		return 0, fmt.Errorf("promql: unsupported kind %T", k)
+	}
+}
+
+func unwrap(v any) (int, error) {
+	if i, ok := v.(int); ok {
+		return i, nil
+	}
+	return 0, fmt.Errorf("promql: not an int %T", v)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	declared, calls, callers := callGraph([]*ast.File{f})
+	sc := &astScope{fset: fset, declared: declared, calls: calls, callers: callers}
+
+	got := map[string][]string{}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		_, ev := scanFunc(sc, fn, "internal/promql/p.go", "promql", "promql: ")
+		for _, e := range ev {
+			got[fn.Name.Name] = e.Guard
+		}
+	}
+
+	want := map[string][]string{
+		"mapOp":   {`past exhaustive switch op over [case "add"; case "sub"]`},
+		"mapKind": {`default of switch v := k.(type) over [case int; default]`},
+		"unwrap":  {`past returning if i, ok := v.(int); ok`},
+	}
+	for fn, wantGuard := range want {
+		if !equalStrings(got[fn], wantGuard) {
+			t.Errorf("%s guard chain = %q, want %q", fn, got[fn], wantGuard)
 		}
 	}
 }
