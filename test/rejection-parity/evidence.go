@@ -512,17 +512,6 @@ func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []st
 	return out
 }
 
-// siteFunc extracts the enclosing function name from a site key, which
-// is "internal/<head>/<file>.go:<func>#<hash8>[-<n>]".
-func siteFunc(key string) string {
-	colon := strings.LastIndex(key, ":")
-	hash := strings.LastIndex(key, "#")
-	if colon < 0 || hash < colon {
-		return ""
-	}
-	return key[colon+1 : hash]
-}
-
 // unsupportedCitations returns the lowering functions a rationale cites
 // that the current source no longer supports it in citing: the gate that
 // was renamed, deleted, or left declared with every call to it removed,
