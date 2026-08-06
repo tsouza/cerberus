@@ -46,11 +46,12 @@ const (
 	// metric and grows no entries.
 	absentMetricPrefix = "nonexistent"
 
-	// fixtureInsertsVar / fixtureSourcesVar / histogramFixtureSourcesVar are
-	// the three package-level slices the seeder's two halves are declared in.
-	fixtureInsertsVar          = "fixtureInserts"
-	fixtureSourcesVar          = "fixtureSources"
-	histogramFixtureSourcesVar = "histogramFixtureSources"
+	// fixtureInsertsVar and the three mirror-list names are the package-level
+	// slices the seeder's two halves are declared in.
+	fixtureInsertsVar             = "fixtureInserts"
+	fixtureSourcesVar             = "fixtureSources"
+	histogramFixtureSourcesVar    = "histogramFixtureSources"
+	expHistogramFixtureSourcesVar = "expHistogramFixtureSources"
 
 	insertIntoKeyword = "INSERT INTO "
 )
@@ -115,6 +116,11 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 	// the unrelated absentMetricPrefix convention (which a seeded family's
 	// synthetic names are themselves forbidden from carrying, below).
 	bareHistogramNames := map[string]bool{}
+	// expHistogramNames collects every seeded exponential-histogram family.
+	// Unlike the classic layout the BARE name IS the wire series — a native
+	// histogram carries its whole distribution in the sample — so it is
+	// servable rather than exempt.
+	expHistogramNames := map[string]bool{}
 	sawBucketExpansion := false
 	for _, f := range fixtures {
 		switch f.table {
@@ -139,6 +145,23 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 				servable[name] = true
 			}
 			bareHistogramNames[f.name] = true
+		case m.ExpHistogramTable:
+			if !m.IsExpHistogramMetric(f.name) {
+				t.Fatalf("fixture %q inserts into the exponential-histogram table but its "+
+					"name does not carry the %q routing suffix, so cerberus would read it "+
+					"from a different table than the seeder writes it to",
+					f.name, m.ExpHistogramSuffix)
+			}
+			servable[f.name] = true
+			expHistogramNames[f.name] = true
+			// Cerberus also serves `<name>_count` / `<name>_sum` companions
+			// off an exp-histogram row, and those are deliberately NOT
+			// servable here. Prometheus has no companion series for a native
+			// histogram at all — the count and the sum are reached through
+			// histogram_count() / histogram_sum() — so a corpus query on one
+			// would compare cerberus's populated result against a structurally
+			// empty reference, a divergence the fixture invented rather than
+			// one either backend has.
 		case m.GaugeTable, m.SumTable:
 			servable[f.name] = true
 		default:
@@ -152,6 +175,12 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 	if !sawBucketExpansion {
 		t.Fatal("no seeded family expanded to a `_bucket` series; the histogram arm of " +
 			"this gate never fired, so it proves nothing about classic histograms")
+	}
+	if len(expHistogramNames) == 0 {
+		t.Fatal("no seeded family lands in the exponential-histogram table; the " +
+			"native-histogram arm of this gate never fired, and the corpus's " +
+			"histogram_count / histogram_sum / histogram_quantile cases would " +
+			"compare the empty vector against the empty vector")
 	}
 	for name := range servable {
 		if strings.HasPrefix(name, absentMetricPrefix) {
@@ -173,6 +202,7 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 
 	sawAbsentReference := false
 	sawBareHistogramReference := false
+	sawExpHistogramReference := false
 	var missing []string
 	for _, name := range sortedSetKeys(referenced) {
 		if strings.HasPrefix(name, absentMetricPrefix) {
@@ -182,6 +212,9 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 		if bareHistogramNames[name] {
 			sawBareHistogramReference = true
 			continue
+		}
+		if expHistogramNames[name] {
+			sawExpHistogramReference = true
 		}
 		if !servable[name] {
 			missing = append(missing, name)
@@ -195,6 +228,13 @@ func TestCompatCorpusReferencesOnlySeededMetrics(t *testing.T) {
 		t.Error("no corpus query references a seeded classic-histogram family's bare " +
 			"(non-suffixed) name; the #1483 bare-name exemption arm of this gate is dead " +
 			"and should be removed")
+	}
+	if !sawExpHistogramReference {
+		t.Error("no corpus query references a seeded exponential-histogram family; the " +
+			"native-histogram value functions (histogram_count / histogram_sum / " +
+			"histogram_avg / histogram_stddev / histogram_fraction / histogram_quantile) " +
+			"would then be exercised only against float series, which the reference " +
+			"skips — an empty-vs-empty comparison reporting parity it never established")
 	}
 	if len(missing) > 0 {
 		t.Errorf("corpus queries reference metric families the seeder cannot produce: %v\n"+
@@ -309,14 +349,16 @@ func insertTargetTable(t *testing.T, name, sql string) string {
 	return fields[0]
 }
 
-// parseMirrorSources reads the two remote_write source lists out of the
-// mirror's Go source. Both are declared with positional composite literals
-// of (metric name, table).
+// parseMirrorSources reads the remote_write source lists out of the mirror's
+// Go source. All are declared with positional composite literals of
+// (metric name, table).
 func parseMirrorSources(t *testing.T) []seedFixture {
 	t.Helper()
 
 	var out []seedFixture
-	for _, varName := range []string{fixtureSourcesVar, histogramFixtureSourcesVar} {
+	for _, varName := range []string{
+		fixtureSourcesVar, histogramFixtureSourcesVar, expHistogramFixtureSourcesVar,
+	} {
 		lit := findSliceLiteral(t, compatMirrorSource, varName)
 		for _, elt := range lit.Elts {
 			entry, ok := elt.(*ast.CompositeLit)

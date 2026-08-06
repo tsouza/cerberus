@@ -56,10 +56,12 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Corpus**: vendored
   [`prometheus/compliance/promql/promql-test-queries.yml`](https://github.com/prometheus/compliance),
   template-expanded to concrete cases, plus a small cerberus-owned tail for
-  shapes upstream cannot express (resource-attribute grouping) — 754 in all.
-- **Today**: **754/754** cases pass; no allow-list exists. This is the
+  shapes upstream cannot express — resource-attribute grouping, and native
+  histograms, whose data upstream's float-only demo fixture never carries
+  — 765 in all.
+- **Today**: **765/765** cases pass; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
-  a real reference. (Parity drift is report-only in CI; the 754/754 is a
+  a real reference. (Parity drift is report-only in CI; the 765/765 is a
   measured score, not a merge gate — see the note at the top of this
   page.)
 
@@ -122,7 +124,7 @@ they are:
 
 | Head    | Reference          | Corpus origin                                  | Numerical confidence                                                                        |
 | ------- | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 754/754, no allow-list                   |
+| PromQL  | real Prometheus    | third-party `prometheus/compliance` (CNCF)     | **Highest** — industry-standard conformance suite, 765/765, no allow-list                   |
 | LogQL   | real Loki          | Grafana's own `pkg/logql/bench` corpus         | **Solid** — real backend + real corpus, but a Grafana bench set, not a conformance standard |
 | TraceQL | real Tempo         | cerberus-owned author-written TXTAR            | **Lowest** — real backend, but no third-party suite; corpus breadth is author-bounded       |
 
@@ -379,7 +381,7 @@ The rosters today (`heads.<name>.{passed,total,cases}`):
 
 | head       | passed/total |
 | ---------- | ------------ |
-| prometheus | 754 / 754    |
+| prometheus | 765 / 765    |
 | loki       | 130 / 130    |
 | tempo      | 68 / 68      |
 | tempo-grpc | 65 / 65      |

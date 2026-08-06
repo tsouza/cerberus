@@ -28,6 +28,22 @@ DOC = os.path.join(ROOT, "docs", "coverage.md")
 BEGIN = "<!-- BEGIN AUTOGEN: coverage-tables (scripts/gen-coverage.py) -->"
 END = "<!-- END AUTOGEN: coverage-tables -->"
 
+GLANCE_BEGIN = "<!-- BEGIN AUTOGEN: coverage-glance (scripts/gen-coverage.py) -->"
+GLANCE_END = "<!-- END AUTOGEN: coverage-glance -->"
+
+HEAD_LABELS = [("promql", "PromQL"), ("logql", "LogQL"), ("traceql", "TraceQL")]
+
+# The glance table's four columns and the ledger classes each one tallies.
+# `wrong-accept` folds into Supported for the same reason status() surfaces it
+# that way: it is cerberus answering a shape the bare-call probe's reference
+# rejects, not a gap. `wrong-reject` gets a column of its own, headed with the
+# scope it actually measures — symbols, not argument shapes.
+GLANCE_COLUMNS = [
+    ("Supported (incl. experimental)", {"parity-accept", "wrong-accept"}),
+    ("Intentionally rejected (parity)", {"parity-reject"}),
+    ("Wrong-rejected symbols", {"wrong-reject"}),
+]
+
 # PromQL functions the upstream parser marks Experimental (gated behind
 # --enable-feature=promql-experimental-functions, which cerberus enables in its
 # prod parser config; internal/api/prom/handler.go). Kept in sync with the
@@ -126,25 +142,53 @@ def render_head(head, entries):
     return "\n".join(out)
 
 
+def build_glance(entries):
+    """Render the per-head summary counts. Every cell is a tally over the
+    ledger's `class` field, so the headline coverage figures a reader acts on
+    are derived rather than typed. An unknown class raises: a ledger that grew
+    a fourth verdict must not be able to shrink a column by falling through."""
+    known = {c for _, classes in GLANCE_COLUMNS for c in classes}
+    unknown = {x["class"] for x in entries} - known
+    if unknown:
+        raise SystemExit(f"gen-coverage: ledger class(es) {sorted(unknown)} "
+                         f"map to no glance column")
+    rows = []
+    totals = [0] * (1 + len(GLANCE_COLUMNS))
+    for head, label in HEAD_LABELS:
+        he = [x for x in entries if x["head"] == head]
+        counts = [len(he)] + [sum(1 for x in he if x["class"] in classes)
+                              for _, classes in GLANCE_COLUMNS]
+        totals = [t + c for t, c in zip(totals, counts)]
+        rows.append([label] + [str(c) for c in counts])
+    rows.append(["**Total**"] + [f"**{c}**" for c in totals])
+    header = ["Head", "Symbols probed"] + [c for c, _ in GLANCE_COLUMNS]
+    return "\n".join(aligned_table(header, rows)) + "\n"
+
+
 def build():
     with open(INVENTORY) as f:
         inv = json.load(f)
     e = inv["entries"]
     blocks = []
-    for head, label in [("promql", "PromQL"), ("logql", "LogQL"),
-                        ("traceql", "TraceQL")]:
+    for head, label in HEAD_LABELS:
         he = [x for x in e if x["head"] == head]
         blocks.append(f"### {label} ({len(he)} symbols)\n")
         blocks.append(render_head(head, he))
     return "\n".join(blocks).rstrip() + "\n"
 
 
+def splice(doc, begin, end, body):
+    return re.sub(re.escape(begin) + r".*?" + re.escape(end),
+                  begin + "\n\n" + body + "\n" + end, doc, flags=re.S)
+
+
 def main():
-    body = build()
+    with open(INVENTORY) as f:
+        entries = json.load(f)["entries"]
     with open(DOC) as f:
         doc = f.read()
-    new = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END),
-                 BEGIN + "\n\n" + body + "\n" + END, doc, flags=re.S)
+    new = splice(doc, GLANCE_BEGIN, GLANCE_END, build_glance(entries))
+    new = splice(new, BEGIN, END, build())
     if "--check" in sys.argv:
         sys.exit(0 if new == doc else 1)
     with open(DOC, "w") as f:

@@ -653,7 +653,9 @@ jobs:
       # that DESCRIBE source structures ("N forbid-skip checks", "N-layer
       # test map"); those literals rot the moment the structure grows. This
       # step derives each count LIVE from the source (the forbid-skip CHECK
-      # switch arms; the `### Layer N` headings in docs/test-strategy.md) and
+      # switch arms; the `### Layer N` headings in docs/test-strategy.md; the
+      # surface-parity ledger behind docs/coverage.md's glance table; the
+      # rejection-parity catalogue's `divergence` rows) and
       # fails on any doc that drifts from it. The `--self-test` run proves
       # each assertion still FAILS on a deliberate mismatch — see
       # .github/scripts/README.md.

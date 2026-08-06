@@ -7,7 +7,7 @@
 // so a count can never silently drift. It is assert-from-source, NOT a pinned
 // literal (which would just relocate the staleness into a second place).
 //
-// Five assertions:
+// The assertions:
 //
 //   1. forbid-skip CHECK count — the canonical number of discipline scans is
 //      the number of entries in the CHECKS registry in
@@ -47,6 +47,24 @@
 //      compatibility lane's `gate` is `needs:` for all three required
 //      compatibility heads, it reds every PR in the repository until fixed.
 //
+//   6. surface-parity "Coverage at a glance" — docs/coverage.md publishes a
+//      four-column per-head table (symbols probed / supported / intentionally
+//      rejected / wrong-rejected). Every cell is a tally over the `class` field
+//      of test/surface-parity/inventory.json, folded exactly the way
+//      scripts/gen-coverage.py folds it for the per-symbol tables
+//      (parity-accept + wrong-accept -> supported, parity-reject ->
+//      intentionally rejected, wrong-reject -> wrong-rejected). The gate
+//      re-derives all sixteen cells from the ledger, so the headline
+//      "wrong-rejections" figure a reader acts on cannot be hand-typed.
+//
+//   7. rejection-parity shape divergences — the surface-parity ledger is
+//      SYMBOL-level, so its wrong-rejection column says nothing about which
+//      argument SHAPES lower. That second measurement is the `class:
+//      "divergence"` rows of test/rejection-parity/catalogue/*.json, and
+//      docs/coverage.md states their count next to the symbol-level zero so
+//      neither number can be read as the other. The gate counts the live rows
+//      and asserts the stated integer equals them.
+//
 // Robustness: each count is parsed from the actual structure (switch arms /
 // markdown headings), never from a string match on the prose it validates, so
 // a doc edit can only make the gate go green by matching reality.
@@ -78,6 +96,10 @@ const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
 const COMPAT_DOC = join(REPO, 'docs', 'compatibility.md');
 const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline.json');
 const WORKFLOWS_DIR = join(REPO, '.github', 'workflows');
+const COVERAGE_DOC = join(REPO, 'docs', 'coverage.md');
+const SURFACE_INVENTORY = join(REPO, 'test', 'surface-parity', 'inventory.json');
+const REJECTION_CATALOGUE_DIR = join(REPO, 'test', 'rejection-parity', 'catalogue');
+const DIVERGENCE_CEILING = join(REPO, 'test', 'rejection-parity', 'divergence-ceiling.json');
 
 // The dispatch mode that runs every registered scan; a legal CHECK value that is
 // deliberately not a registry entry. Mirrors `ALL` in forbid-skip.mjs.
@@ -154,6 +176,59 @@ export function parityFloorClaims(src, heads) {
   return out;
 }
 
+// The heads the surface-parity ledger probes, in the order docs/coverage.md
+// tabulates them, plus the aggregate row that closes the table.
+const SURFACE_HEADS = ['promql', 'logql', 'traceql'];
+const SURFACE_TOTAL_ROW = 'total';
+
+// The four glance-table columns, keyed by the tally field and carrying the
+// column header the doc prints, so a mismatch names the cell a reader would
+// look at rather than an internal field name.
+const GLANCE_COLUMNS = [
+  ['probed', 'Symbols probed'],
+  ['supported', 'Supported (incl. experimental)'],
+  ['parityRejected', 'Intentionally rejected (parity)'],
+  ['wrongRejected', 'Wrong-rejected symbols'],
+];
+
+// How a ledger class folds into a glance column. This mirrors the translation
+// scripts/gen-coverage.py performs for the per-symbol tables: `wrong-accept` is
+// cerberus accepting a shape the bare-call probe's reference rejects (range() /
+// step() driven outside a query context), which is supported surface for a
+// reader, not a gap.
+const SURFACE_CLASS_COLUMN = {
+  'parity-accept': 'supported',
+  'wrong-accept': 'supported',
+  'parity-reject': 'parityRejected',
+  'wrong-reject': 'wrongRejected',
+};
+
+// surfaceParityTotals — the live per-head tallies behind docs/coverage.md's
+// "Coverage at a glance" table, derived from the pinned ledger. An unknown head
+// or class throws rather than silently landing in no column: a ledger that grew
+// a fourth verdict must not be able to shrink the wrong-rejection cell by
+// falling off the end of this map.
+export function surfaceParityTotals(inventory) {
+  const blank = () => ({ probed: 0, supported: 0, parityRejected: 0, wrongRejected: 0 });
+  const out = { [SURFACE_TOTAL_ROW]: blank() };
+  for (const head of SURFACE_HEADS) out[head] = blank();
+  for (const entry of inventory.entries ?? []) {
+    const row = out[entry.head];
+    if (!row || entry.head === SURFACE_TOTAL_ROW) {
+      throw new Error(`surface-parity inventory carries head "${entry.head}", which docs/coverage.md does not tabulate`);
+    }
+    const column = SURFACE_CLASS_COLUMN[entry.class];
+    if (!column) {
+      throw new Error(`surface-parity inventory carries class "${entry.class}", which maps to no glance column`);
+    }
+    for (const key of ['probed', column]) {
+      row[key] += 1;
+      out[SURFACE_TOTAL_ROW][key] += 1;
+    }
+  }
+  return out;
+}
+
 // parityTableClaims — the passed/total docs/compatibility.md's roster table
 // prints for each head, one entry per matching row. The head name is matched as
 // a WHOLE table cell (`|` … `|`) rather than as a substring, because `tempo` is
@@ -168,6 +243,53 @@ export function parityTableClaims(src, heads) {
     out[head] = [...src.matchAll(re)].map((m) => ({ passed: Number(m[1]), total: Number(m[2]) }));
   }
   return out;
+}
+
+// glanceTableRows — the four integers docs/coverage.md prints per head. Cells
+// are matched with their optional `**` bold markers and the padding
+// markdownlint's aligned-table style inserts, so reformatting the table cannot
+// hide a cell from the gate.
+export function glanceTableRows(src) {
+  const rows = {};
+  const cell = String.raw`\s*\*{0,2}(\d+)\*{0,2}\s*`;
+  const re = new RegExp(
+    String.raw`^\|\s*\*{0,2}(promql|logql|traceql|total)\*{0,2}\s*\|${cell}\|${cell}\|${cell}\|${cell}\|`,
+    'gim',
+  );
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const row = {};
+    GLANCE_COLUMNS.forEach(([key], i) => {
+      row[key] = Number(m[i + 2]);
+    });
+    rows[m[1].toLowerCase()] = row;
+  }
+  return rows;
+}
+
+// countShapeDivergences — the live number of `class: "divergence"` rows across
+// the rejection-parity catalogue shards: argument shapes the reference backend
+// answers and cerberus rejects. This is the SHAPE-level wrong-rejection count,
+// and it is a different measurement from the ledger's symbol-level one.
+export function countShapeDivergences(shards) {
+  let count = 0;
+  const byShard = {};
+  for (const { name, json } of shards) {
+    const n = (json.entries ?? []).filter((e) => e.class === 'divergence').length;
+    if (n > 0) byShard[name] = n;
+    count += n;
+  }
+  return { count, byShard };
+}
+
+function readCatalogueShards() {
+  return readdirSync(REJECTION_CATALOGUE_DIR)
+    .filter((f) => f.endsWith('.json'))
+    .sort()
+    .map((f) => ({
+      name: `test/rejection-parity/catalogue/${f}`,
+      json: JSON.parse(readFileSync(join(REJECTION_CATALOGUE_DIR, f), 'utf8')),
+    }));
 }
 
 // --- doc-claim extraction (the "doc-stated integer" half) ------------------
@@ -200,6 +322,13 @@ const FORBID_SKIP_CLAIM_PATTERNS = [
   /(?:scan|check|pattern)\s+count[^.\n]*?[:*\s]\**(\d+)\**/i,
   /\**(\d+)\**\s+(?:active\s+)?(?:CHECK\s+)?(?:checks?|scans?|categories|discipline scans?)\b/i,
   /\**(\d+)\**\s+patterns?\s+total\b/i,
+];
+
+// shape-divergence doc claims: docs/coverage.md must state the catalogue's live
+// `divergence` count in the same breath as the ledger's symbol-level zero, so a
+// reader cannot take one number for the other.
+const SHAPE_DIVERGENCE_CLAIM_PATTERNS = [
+  /\**(\d+)\**\s+open\s+argument-shape\s+divergences?/i,
 ];
 
 // test-layer doc claims: "N-layer test map", "N layers", "tested in N layers".
@@ -284,6 +413,44 @@ function assertParityRestatement({ label, sourcePath, sourceName, extract, onceP
     }
   }
   return ok;
+}
+
+// compareGlance diffs the doc's published table against the live ledger tallies,
+// cell by cell. A row the doc stopped printing is a failure in its own right —
+// the headline coverage number vanishing is exactly the drift this catches.
+// `report` is the failure sink, so the self-test can prove rejection without
+// posting an ::error:: annotation on a green job.
+export function compareGlance(live, rows, report = error) {
+  let ok = true;
+  for (const head of [...SURFACE_HEADS, SURFACE_TOTAL_ROW]) {
+    const row = rows[head];
+    if (!row) {
+      report(
+        `surface-parity-glance: docs/coverage.md prints no "${head}" row in the ` +
+          `"Coverage at a glance" table — the published coverage figures must state ` +
+          `one row per head plus the total`,
+        { file: 'docs/coverage.md' },
+      );
+      ok = false;
+      continue;
+    }
+    for (const [key, column] of GLANCE_COLUMNS) {
+      if (row[key] !== live[head][key]) {
+        report(
+          `surface-parity-glance: docs/coverage.md says ${head} "${column}" = ${row[key]} but ` +
+            `test/surface-parity/inventory.json tallies ${live[head][key]}`,
+          { file: 'docs/coverage.md' },
+        );
+        ok = false;
+      }
+    }
+  }
+  return ok;
+}
+
+function assertSurfaceParityGlance() {
+  const live = surfaceParityTotals(JSON.parse(readFileSync(SURFACE_INVENTORY, 'utf8')));
+  return compareGlance(live, glanceTableRows(readFileSync(COVERAGE_DOC, 'utf8')), error);
 }
 
 // assertParityFloors compares the floors stated in compat-ratchet.mjs's header
@@ -388,6 +555,20 @@ function runAssertions() {
   const parityOk = assertParityFloors();
   const parityTableOk = assertParityTable();
 
+  const glanceOk = assertSurfaceParityGlance();
+
+  const { count: divCount, byShard } = countShapeDivergences(readCatalogueShards());
+  log(
+    `rejection-parity divergence rows (live): ${divCount} ` +
+      `[${Object.entries(byShard).map(([n, c]) => `${n}:${c}`).join(', ')}]`,
+  );
+  const divergenceOk = assertClaims({
+    label: 'shape-divergence-count',
+    expected: divCount,
+    docs: [{ path: COVERAGE_DOC, name: 'docs/coverage.md' }],
+    patterns: SHAPE_DIVERGENCE_CLAIM_PATTERNS,
+  });
+
   const callers = forbidSkipCallers(readWorkflows());
   log(
     `forbid-skip workflow callers (live): ${callers.length} ` +
@@ -395,11 +576,13 @@ function runAssertions() {
   );
   const callersOk = assertForbidSkipCallers(fsNames, callers);
 
-  if (forbidOk && layerOk && parityOk && parityTableOk && callersOk) {
+  if (forbidOk && layerOk && parityOk && parityTableOk && glanceOk && divergenceOk && callersOk) {
     notice(
       `doc-counts: all doc-stated counts match source ` +
         `(forbid-skip=${fsCount}, test-layers=${layerCount}, parity floors and the ` +
         `docs/compatibility.md roster table both match the baseline, ` +
+        `the coverage glance table matches the surface-parity ledger, ` +
+        `shape-divergences=${divCount}, ` +
         `${callers.length} workflow CHECK callers all name a live scan)`,
     );
     return 0;
@@ -546,7 +729,106 @@ function selfTest() {
   // The REAL header must match the REAL baseline — the assertion the gate runs.
   check('real compat-ratchet.mjs floors match compatibility/parity-baseline.json', assertParityFloors());
 
-  // 6. The roster-table extractor reads a markdown row, does NOT confuse a head
+  // 6. The glance tally folds the ledger's four classes into the doc's four
+  //    columns, and the comparison rejects a hand-typed wrong-rejection cell —
+  //    the drift that let docs/coverage.md publish a zero the catalogue
+  //    contradicted.
+  const fakeInventory = {
+    entries: [
+      { head: 'promql', class: 'parity-accept' },
+      { head: 'promql', class: 'wrong-accept' },
+      { head: 'promql', class: 'parity-reject' },
+      { head: 'promql', class: 'wrong-reject' },
+      { head: 'logql', class: 'parity-accept' },
+      { head: 'traceql', class: 'parity-accept' },
+    ],
+  };
+  const fakeTotals = surfaceParityTotals(fakeInventory);
+  check(
+    'glance tally folds wrong-accept into Supported and wrong-reject into its own column',
+    fakeTotals.promql.probed === 4 &&
+      fakeTotals.promql.supported === 2 &&
+      fakeTotals.promql.parityRejected === 1 &&
+      fakeTotals.promql.wrongRejected === 1,
+  );
+  check(
+    'glance tally sums the total row across all three heads',
+    fakeTotals.total.probed === 6 && fakeTotals.total.supported === 4,
+  );
+  let unknownClassRejected = false;
+  try {
+    surfaceParityTotals({ entries: [{ head: 'promql', class: 'novel-verdict' }] });
+  } catch {
+    unknownClassRejected = true;
+  }
+  check('glance tally THROWS on a ledger class it cannot place in a column', unknownClassRejected);
+
+  const glanceDoc = [
+    '| Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Wrong-rejected symbols |',
+    '| --------- | -------------- | ------------------------------ | ------------------------------- | ---------------------- |',
+    '| PromQL    | 4              | 2                              | 1                               | 0                      |',
+    '| LogQL     | 1              | 1                              | 0                               | 0                      |',
+    '| TraceQL   | 1              | 1                              | 0                               | 0                      |',
+    '| **Total** | **6**          | **4**                          | **1**                           | **0**                  |',
+  ].join('\n');
+  const glanceRows = glanceTableRows(glanceDoc);
+  check(
+    'glance row parser reads a bolded, markdownlint-padded total row',
+    glanceRows.total !== undefined && glanceRows.total.probed === 6 && glanceRows.total.supported === 4,
+  );
+  check(
+    'glance gate would REJECT a doc printing 0 wrong-rejections against a ledger with 1',
+    !compareGlance(fakeTotals, glanceRows, () => {}),
+  );
+  const honestDoc = [
+    '| Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Wrong-rejected symbols |',
+    '| --------- | -------------- | ------------------------------ | ------------------------------- | ---------------------- |',
+    '| PromQL    | 4              | 2                              | 1                               | 1                      |',
+    '| LogQL     | 1              | 1                              | 0                               | 0                      |',
+    '| TraceQL   | 1              | 1                              | 0                               | 0                      |',
+    '| **Total** | **6**          | **4**                          | **1**                           | **1**                  |',
+  ].join('\n');
+  check(
+    'glance gate would ACCEPT the corrected wrong-rejection cells',
+    compareGlance(fakeTotals, glanceTableRows(honestDoc), () => {}),
+  );
+  check(
+    'glance gate would REJECT a doc that dropped the table entirely',
+    !compareGlance(fakeTotals, {}, () => {}),
+  );
+  // The REAL ledger must match the REAL doc — the assertion the gate runs.
+  check('real docs/coverage.md glance table matches test/surface-parity/inventory.json', assertSurfaceParityGlance());
+
+  // 7. The shape-divergence count is a SECOND measurement, and the doc must
+  //    state it rather than let the symbol-level zero stand in for it.
+  const fakeShards = [
+    { name: 'a.json', json: { entries: [{ class: 'divergence' }, { class: 'rejection' }] } },
+    { name: 'b.json', json: { entries: [{ class: 'internal' }] } },
+    { name: 'c.json', json: { entries: [{ class: 'divergence' }, { class: 'divergence' }] } },
+  ];
+  const fakeDiv = countShapeDivergences(fakeShards);
+  check('divergence deriver counts only `divergence` rows across shards', fakeDiv.count === 3);
+  check('divergence deriver omits shards with no divergence rows', !('b.json' in fakeDiv.byShard));
+  const staleCoverage = 'the catalogue records **0** open argument-shape divergences today.';
+  const staleDivClaims = extractClaims(staleCoverage, SHAPE_DIVERGENCE_CLAIM_PATTERNS);
+  check(
+    'divergence claim extractor finds the stated count',
+    staleDivClaims.length === 1 && staleDivClaims[0].value === 0,
+  );
+  check(
+    'divergence gate would REJECT a doc claiming 0 against a catalogue with 3',
+    staleDivClaims.some((c) => c.value !== fakeDiv.count),
+  );
+  // The REAL catalogue must derive a non-zero count that respects the ratchet's
+  // ceiling. Both bounds are tripwires on the deriver itself: a silently-broken
+  // reader returns 0 (and would let the doc reprint the false zero), and a
+  // double-counting one exceeds the ceiling the Go ratchet enforces.
+  const realDiv = countShapeDivergences(readCatalogueShards()).count;
+  const ceiling = JSON.parse(readFileSync(DIVERGENCE_CEILING, 'utf8')).max_entries;
+  check('real rejection-parity catalogue derives a non-zero divergence count', realDiv > 0);
+  check(`real divergence count ${realDiv} is within the ratchet ceiling ${ceiling}`, realDiv <= ceiling);
+
+  // 8. The roster-table extractor reads a markdown row, does NOT confuse a head
   //    whose name prefixes another's, and rejects a row that drifted.
   const tableHeads = ['prometheus', 'tempo', 'tempo-grpc'];
   const table = [

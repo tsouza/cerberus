@@ -572,6 +572,83 @@ var fixtureInserts = []namedStmt{
             ) AS me
         )`,
 	},
+	// demo_latency_exp_hist: 2 instances, exponential (native) histograms.
+	// The `_exp_hist` suffix is what routes the name to
+	// otel_metrics_exponential_histogram (schema.Metrics.ExpHistogramSuffix);
+	// on the reference side prom_remote.go mirrors these rows as native
+	// histogram samples over remote-write, so the corpus's histogram_*
+	// value functions compare two populated histograms rather than two
+	// empty vectors.
+	//
+	// Geometry, stated explicitly because every property the corpus asks
+	// about is a consequence of it:
+	//
+	//	Scale = 0                        → bucket base 2, edges at 2^k
+	//	ZeroCount = 0, no negative buckets
+	//	instance :10000 → PositiveOffset 0, per-step counts [1, 2, 3, 4]
+	//	                  edges (1,2] (2,4] (4,8] (8,16], cumulative 1/3/6/10
+	//	instance :10001 → PositiveOffset 1, per-step counts [2, 5, 3]
+	//	                  edges (2,4] (4,8] (8,16], cumulative 2/7/10
+	//
+	// Both series observe 10 events per unit of `step + 1`, so a quantile
+	// (a shape property) is stable across the window while the counts
+	// themselves grow — a lowering that folded the time axis into one
+	// collapse would still move the quantile. Every bucket count is
+	// strictly positive: an empty interior bucket is skipped by the
+	// reference's quantile iterator, which would make the case test the
+	// skip path rather than the interpolation.
+	//
+	// The two offsets differ so a series mix-up cannot pass: :10000's
+	// lowest populated edge is 1 and :10001's is 2, so the two disagree on
+	// every quantile below the median.
+	//
+	// Sum is a per-series constant × (step + 1) — 35.0 and 50.0, both
+	// exactly representable in binary, so histogram_sum / histogram_avg
+	// and the Sum/Count mean that histogram_stddev centres on carry no
+	// float drift. prom_remote.go mirrors the same literal.
+	//
+	// Labels are `instance` only — deliberately no `job` and no `type`.
+	// The corpus carries label-only selectors ({type="free", instance!=…},
+	// {job="demo", __name__!~…}) whose match sets are pinned by the float
+	// families; a native histogram joining either group would change what
+	// those cases return through a channel unrelated to what they test.
+	{
+		name: "demo_latency_exp_hist",
+		sql: `INSERT INTO otel_metrics_exponential_histogram
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix,
+             Count, Sum, Scale, ZeroCount,
+             PositiveOffset, PositiveBucketCounts,
+             NegativeOffset, NegativeBucketCounts,
+             Flags, AggregationTemporality)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_latency_exp_hist',
+            'Request latency as an exponential histogram',
+            'seconds',
+            map('instance', instance),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            toUInt64(10 * (step + 1)),
+            toFloat64(if(instance_idx = 0, 35.0, 50.0) * (step + 1)),
+            0,
+            0,
+            toInt32(instance_idx),
+            arrayMap(c -> toUInt64(c * (step + 1)),
+                     if(instance_idx = 0, [1, 2, 3, 4], [2, 5, 3])),
+            0,
+            emptyArrayUInt64(),
+            0,
+            2
+        FROM (
+            SELECT step, instance, instance_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(['demo.promlabs.com:10000','demo.promlabs.com:10001']) AS instance,
+                indexOf(['demo.promlabs.com:10000','demo.promlabs.com:10001'], instance) - 1 AS instance_idx
+            ) AS i
+        )`,
+	},
 	// demo_batch_last_success_timestamp_seconds: 3 instances, gauge whose
 	// VALUE is a unix timestamp — the shape `time() - max(...)` and the
 	// seven date functions are written against.
