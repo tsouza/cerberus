@@ -8,8 +8,9 @@ import "fmt"
 // GroupBy/Projection slice element, or any embedded ScalarSubquery.Input —
 // leaves n and every node/expr reachable from it byte-identical.
 //
-// CloneNode is exhaustive over every concrete Node type (the switch's
-// default panics rather than silently aliasing). That exhaustiveness backs
+// CloneNode is exhaustive over every concrete Node type: its switch, then
+// cloneRangeNode's, then cloneCompositeNode's, form one chain whose final
+// default panics rather than silently aliasing. That exhaustiveness backs
 // the solver's slicing path: ReanchorRange CLONES the O(spine-depth) re-
 // gridded spine nodes and SHARES the immutable off-spine subtree across the K
 // shards (a copy-on-write view, sound under the no-mutate-after-slice
@@ -66,6 +67,47 @@ func CloneNode(n Node) Node {
 		c.AggFuncs = cloneAggFuncs(v.AggFuncs)
 		c.Having = cloneExpr(v.Having)
 		return &c
+	case *AbsentOverTime:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.SynthLabels = cloneSynthLabels(v.SynthLabels)
+		return &c
+	case *TopK:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.KExpr = CloneNode(v.KExpr)
+		c.By = cloneExprs(v.By)
+		c.SortExpr = cloneExpr(v.SortExpr)
+		c.Columns = cloneStrings(v.Columns)
+		return &c
+	case *Limit:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		return &c
+	case *OrderBy:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.Keys = cloneOrderKeys(v.Keys)
+		return &c
+	case *OneRow:
+		c := *v
+		return &c
+	case *UnionAll:
+		c := *v
+		c.Inputs = cloneNodes(v.Inputs)
+		return &c
+	default:
+		return cloneRangeNode(n)
+	}
+}
+
+// cloneRangeNode deep-copies the windowed / gridded Node family — the range
+// selectors and the step grid they resample onto. Split out of CloneNode so
+// each type switch stays within the funlen budget; its default hands the
+// remaining kinds to cloneCompositeNode, so the three switches form one
+// exhaustive chain with a single panic at its end.
+func cloneRangeNode(n Node) Node {
+	switch v := n.(type) {
 	case *RangeWindow:
 		c := *v
 		c.Input = CloneNode(v.Input)
@@ -99,35 +141,6 @@ func CloneNode(n Node) Node {
 	case *StepGrid:
 		c := *v
 		return &c
-	case *AbsentOverTime:
-		c := *v
-		c.Input = CloneNode(v.Input)
-		c.SynthLabels = cloneSynthLabels(v.SynthLabels)
-		return &c
-	case *TopK:
-		c := *v
-		c.Input = CloneNode(v.Input)
-		c.KExpr = CloneNode(v.KExpr)
-		c.By = cloneExprs(v.By)
-		c.SortExpr = cloneExpr(v.SortExpr)
-		c.Columns = cloneStrings(v.Columns)
-		return &c
-	case *Limit:
-		c := *v
-		c.Input = CloneNode(v.Input)
-		return &c
-	case *OrderBy:
-		c := *v
-		c.Input = CloneNode(v.Input)
-		c.Keys = cloneOrderKeys(v.Keys)
-		return &c
-	case *OneRow:
-		c := *v
-		return &c
-	case *UnionAll:
-		c := *v
-		c.Inputs = cloneNodes(v.Inputs)
-		return &c
 	default:
 		return cloneCompositeNode(n)
 	}
@@ -135,7 +148,7 @@ func CloneNode(n Node) Node {
 
 // cloneCompositeNode deep-copies the join / set-op / histogram / metrics /
 // trace Node families. Split out of CloneNode so each type switch stays within
-// the funlen budget; together the two functions remain exhaustive over every
+// the funlen budget; together the three functions remain exhaustive over every
 // planNode() implementer — the TestCloneNodeExhaustive lock-step guard proves
 // no kind is missed, and the default below still panics on an unknown type so a
 // new kind cannot silently alias into a re-anchored shard plan.
