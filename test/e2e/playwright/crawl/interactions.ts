@@ -122,6 +122,12 @@ export type DiscoveredControl = {
   optionHints: string[];
   /** Locator hint addressing the control itself (combobox inputs). */
   controlHint: string;
+  /**
+   * Comboboxes: how many parentElement hops separate the input named
+   * by `controlHint` from the element a click must land on. See
+   * COMBOBOX_CLICK_TARGET_MAX_HOPS.
+   */
+  clickHops: number;
 };
 
 export type PlannedInteraction = {
@@ -163,6 +169,30 @@ export function isExcludedControlName(name: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * The ONE option a high-cardinality (data-backed) control contributes
+ * to a plan: the codepoint-smallest label in the set.
+ *
+ * Order-independence is the point. A control whose options come from
+ * the ingested data — adhoc-filter label keys, metric-name tiles, tag
+ * values — renders them in whatever order the app's query returned,
+ * and that order moves as the stack ingests. Taking "the first option
+ * the DOM happened to carry" therefore drives a DIFFERENT option run
+ * to run, which fires a different query and (when the gesture encodes
+ * to the URL) mints a different surface — the crawl stops being a
+ * function of the application. Deriving the pick from the SET removes
+ * the render order from the answer entirely.
+ *
+ * `localeCompare` is deliberately avoided: its collation is
+ * host-locale- and ICU-version-dependent, which would reintroduce the
+ * very cross-run instability this function exists to remove.
+ */
+export function representativeOption(options: ReadonlyArray<string>): string {
+  let best = options[0]!;
+  for (const option of options) if (option < best) best = option;
+  return best;
+}
+
+/**
  * Build the bounded interaction plan for one surface.
  *
  * `pinnedParams` is the surface's pinned-structural-param count (see
@@ -185,19 +215,25 @@ export function planInteractions(
     const structural =
       !control.forcedHighCardinality &&
       control.options.length <= STRUCTURAL_MAX_OPTIONS;
-    let first = true;
-    for (let i = 0; i < control.options.length; i++) {
-      if (i === control.selectedIndex) continue;
-      const option = control.options[i]!;
+    const drivable = control.options.filter(
+      (_, i) => i !== control.selectedIndex,
+    );
+    if (drivable.length === 0) continue;
+    // High-cardinality → exactly ONE representative. The pick is the
+    // lexicographically smallest option so it is a function of the
+    // option SET, never of the order the app rendered it in:
+    // data-backed lists (adhoc label keys, metric-name tiles, tag
+    // values) reorder as the stack ingests, and a DOM-order pick then
+    // drives a different option — and mints a different surface — on
+    // every run.
+    const options = structural ? drivable : [representativeOption(drivable)];
+    for (let i = 0; i < options.length; i++) {
       plan.push({
         control,
-        option,
-        stateValue: structural ? option : '{rep}',
-        leanRepresentative: first,
+        option: options[i]!,
+        stateValue: structural ? options[i]! : '{rep}',
+        leanRepresentative: i === 0,
       });
-      first = false;
-      // High-cardinality → exactly one representative option.
-      if (!structural) break;
       // Representative plan → one option per control.
       if (representativeOnly) break;
     }
@@ -249,6 +285,38 @@ const CHROME_ANCESTOR_SELECTOR = [
   '[aria-label="Toast container"]',
 ].join(', ');
 
+/**
+ * How far above a combobox `input` its clickable element may sit.
+ *
+ * A non-searchable react-select renders its `input[role=combobox]` as
+ * a sub-pixel, fully transparent `dummyInput`, and the visible control
+ * is the `input-wrapper` two levels up
+ * (`input → value-container → control → input-wrapper`). Clicking the
+ * input therefore never succeeds — Playwright's hit test lands on a
+ * sibling and it retries until the timeout, surfacing as a bare
+ * `locator.click: Timeout`. Four hops covers the deepest such nesting.
+ *
+ * The bound doubles as the RENDERED test: a control with no clickable
+ * element within it is not laid out at all.
+ */
+const COMBOBOX_CLICK_TARGET_MAX_HOPS = 4;
+
+/**
+ * React `useId` tokens — `:rNN:`, and React 19's `«rNN»` — as a source
+ * pattern, so the one definition serves both the in-page key
+ * derivation and the settle signature (a RegExp cannot cross the
+ * page.evaluate boundary, a string can).
+ *
+ * The token is a MOUNT COUNTER: it is reassigned every time the
+ * component remounts, so any two renders of the same control carry
+ * different ids. Every place that compares controls across renders has
+ * to erase it or it compares mount generations instead of controls.
+ */
+const REACT_ID_TOKEN_PATTERN = String.raw`(:r[0-9a-z]+:|«r[0-9a-z]+»)`;
+
+/** What an erased React `useId` token reads as. */
+const REACT_ID_PLACEHOLDER = '{rid}';
+
 type RawControl = {
   kind: ControlKind;
   key: string;
@@ -260,6 +328,8 @@ type RawControl = {
   optionHints: string[];
   /** Hint addressing the control itself (combobox input). */
   controlHint: string;
+  /** See DiscoveredControl.clickHops. */
+  clickHops: number;
   /**
    * Comboboxes only: the VISIBLE current-value text (react-select
    * renders it in a sibling div, not the input's value attribute) —
@@ -276,7 +346,7 @@ type RawControl = {
  */
 async function discoverStaticControls(page: Page): Promise<RawControl[]> {
   return await page.evaluate(
-    ({ chromeSelector }) => {
+    ({ chromeSelector, maxClickHops, reactIdPattern, reactIdPlaceholder }) => {
       const out: Array<{
         kind: string;
         key: string;
@@ -285,6 +355,7 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
         locatorKind: string;
         optionHints: string[];
         controlHint: string;
+        clickHops: number;
         currentText?: string;
       }> = [];
       const inChrome = (el: Element) => el.closest(chromeSelector) !== null;
@@ -342,6 +413,7 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
             (t) => t.getAttribute('data-testid') ?? tabName(t),
           ),
           controlHint: '',
+          clickHops: 0,
         });
       });
 
@@ -379,6 +451,7 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
           locatorKind: 'radio-signature',
           optionHints: options,
           controlHint: '',
+          clickHops: 0,
         });
       });
 
@@ -448,6 +521,7 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
           locatorKind: 'li-title',
           optionHints: titles,
           controlHint: '',
+          clickHops: 0,
         });
       });
 
@@ -472,6 +546,7 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
           locatorKind: 'tile',
           optionHints: tiles.map((t) => t.getAttribute('data-testid') ?? ''),
           controlHint: '',
+          clickHops: 0,
         });
       }
 
@@ -539,9 +614,52 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
         // Normalize both to fixed tokens; assignUniqueKeys' DOM-order
         // `#n` suffix keeps same-page twins distinct.
         const key = rawKey
-          .replace(/(:r[0-9a-z]+:|«r[0-9a-z]+»)/g, '{rid}')
+          .replace(new RegExp(reactIdPattern, 'g'), reactIdPlaceholder)
           .replace(/^\d+ (logs|lines|rows)$/, '{n} $1');
         if (key === '') continue;
+        // Resolve the click target and the rendered test in one walk
+        // (see COMBOBOX_CLICK_TARGET_MAX_HOPS). "Clickable" is the
+        // browser's own hit test, which is also the check Playwright
+        // runs before every click: the element whose centre point
+        // actually receives the press must be the candidate itself or
+        // one of its descendants. A react-select dummyInput fails it
+        // twice over — sub-pixel box, and its centre lands on a
+        // sibling — and so does the value-container one level up,
+        // whose centre lands on the dropdown chevron NEXT to it. The
+        // input-wrapper that owns both passes, and that is the element
+        // a user presses.
+        const hittable = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          // Below the fold the hit test is meaningless — nothing is at
+          // a point outside the viewport until Playwright scrolls it
+          // in, which it does for us. Fall back to "has a box".
+          if (
+            cx < 0 ||
+            cy < 0 ||
+            cx > window.innerWidth ||
+            cy > window.innerHeight
+          ) {
+            return r.width > 0 && r.height > 0;
+          }
+          const hit = document.elementFromPoint(cx, cy);
+          return hit !== null && el.contains(hit);
+        };
+        let clickHops = 0;
+        let target: Element = cb;
+        while (!hittable(target) && clickHops < maxClickHops) {
+          const parent = target.parentElement;
+          if (parent === null) break;
+          target = parent;
+          clickHops++;
+        }
+        // Nothing within the bound can receive a press: the control is
+        // not laid out (Grafana renders a HIDDEN scenes template
+        // variable's picker at zero size), so it is not a control the
+        // user can operate and not one the sweep may plan a gesture
+        // for.
+        if (!hittable(target)) continue;
         // The visible current value: react-select renders it in a
         // sibling/ancestor div, not the input. Walk up a few levels
         // and take the first short non-empty text.
@@ -560,13 +678,19 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
           locatorKind: 'combobox',
           optionHints: [],
           controlHint: testid !== '' ? `testid=${testid}` : `id=${cb.id}`,
+          clickHops,
           currentText,
         });
       }
 
       return out;
     },
-    { chromeSelector: CHROME_ANCESTOR_SELECTOR },
+    {
+      chromeSelector: CHROME_ANCESTOR_SELECTOR,
+      maxClickHops: COMBOBOX_CLICK_TARGET_MAX_HOPS,
+      reactIdPattern: REACT_ID_TOKEN_PATTERN,
+      reactIdPlaceholder: REACT_ID_PLACEHOLDER,
+    },
   ) as RawControl[];
 }
 
@@ -591,14 +715,24 @@ function assignUniqueKeys(raw: RawControl[]): RawControl[] {
   return raw;
 }
 
-/** Locate a combobox input from its discovery hint. */
-function locateCombobox(page: Page, hint: string): Locator {
-  if (hint.startsWith('testid=')) {
-    return page
-      .locator(`input[data-testid="${hint.slice('testid='.length)}"]`)
-      .first();
-  }
-  return page.locator(`input[id="${hint.slice('id='.length)}"]`).first();
+/**
+ * Locate a combobox's CLICK TARGET from its discovery hint: the input
+ * the hint names, ascended `clickHops` levels to the element that
+ * actually carries the control's rendered box (see
+ * COMBOBOX_CLICK_TARGET_MAX_HOPS).
+ */
+function locateCombobox(page: Page, hint: string, clickHops: number): Locator {
+  const input = hint.startsWith('testid=')
+    ? page.locator(`input[data-testid="${hint.slice('testid='.length)}"]`)
+    : page.locator(`input[id="${hint.slice('id='.length)}"]`);
+  const first = input.first();
+  if (clickHops === 0) return first;
+  // Ascend in the LOCATOR rather than clicking a coordinate, so
+  // Playwright still runs its actionability checks (visible, stable,
+  // enabled, not occluded) against the element the user would press.
+  return first.locator(
+    `xpath=${Array.from({ length: clickHops }, () => '..').join('/')}`,
+  );
 }
 
 /** The options currently rendered in an open select/combobox menu. */
@@ -608,8 +742,285 @@ function openMenuOptions(page: Page): Locator {
   );
 }
 
-const PROBE_OPEN_MS = 900;
-const PROBE_CLOSE_MS = 300;
+// ---------------------------------------------------------------------------
+// Settling — the determinism substrate
+// ---------------------------------------------------------------------------
+//
+// Every synchronisation point below used to be a fixed sleep on top of
+// a `networkidle` settle. Neither observes the thing the sweep
+// actually reads. A scenes app mounts its controls as each of its
+// queries resolves, so `networkidle` resolves at an arbitrary point in
+// that sequence and a fixed sleep either clears it or does not,
+// depending on the machine and the moment. The consequences were not
+// cosmetic: a control missing from one pass and present in the next
+// shifts assignUniqueKeys' occurrence suffixes (`combobox … not
+// re-found by key`), and a control missing from the DISCOVERY pass
+// simply never mints its surfaces — which is how two runs of the same
+// command produced different surface sets.
+//
+// The primitives here wait for the observable itself to stop changing,
+// with a hard cap and a loud failure when it does not. They are
+// synchronisation, not retry: nothing here re-attempts a failed
+// gesture, and no bound is ever exceeded silently.
+
+/**
+ * Consecutive identical samples that make an observable SETTLED. Two
+ * would prove only that one interval elapsed without a repaint; three
+ * spans two full intervals, so a re-render whose period straddles one
+ * of them still breaks the streak.
+ */
+const SETTLE_STABLE_SAMPLES = 3;
+
+/** Gap between successive samples of a settling observable. */
+const SETTLE_SAMPLE_INTERVAL_MS = 300;
+
+/**
+ * Hard cap on waiting for a page's control set to stop changing. A
+ * surface still re-rendering its controls after this long is not a
+ * state the sweep can attribute a gesture to, so the wait fails the
+ * crawl rather than sampling a moving DOM.
+ */
+const CONTROL_SET_SETTLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Hard cap on waiting for an OPEN dropdown's option list to stop
+ * changing. Shorter than the page-level cap: the menu is already open
+ * and its options are one query away.
+ */
+const MENU_SETTLE_TIMEOUT_MS = 15_000;
+
+/**
+ * How long an opened combobox gets to mount its FIRST option. A
+ * control that renders none within this bound is a free-text input,
+ * not a select, and the discovery drops it as such — the one verdict
+ * an empty option list is allowed to produce. Generous because
+ * data-backed lists (adhoc label keys, tag values) fetch their options
+ * over the wire before rendering any.
+ */
+const MENU_MOUNT_TIMEOUT_MS = 8_000;
+
+/** Hard cap on an Escape actually dismissing an open dropdown. */
+const MENU_CLOSE_TIMEOUT_MS = 5_000;
+
+/**
+ * How long a page must be watched before an EMPTY control set is
+ * believed — see readSettledControls. Sized against the thing it has to
+ * outlast: a first navigation to a Grafana app route, where the app's
+ * JS chunk is fetched, parsed and mounted before any control exists.
+ * A page that mounts a control never waits it out.
+ */
+const EMPTY_CONTROL_SET_DWELL_MS = 10_000;
+
+/**
+ * Timeout on a single control gesture. The gesture runs on a page
+ * whose control set has already settled, so this bounds the click
+ * itself (Playwright's visible/stable/enabled actionability wait), not
+ * a page load.
+ */
+const CONTROL_CLICK_TIMEOUT_MS = 5_000;
+
+/**
+ * Sample `probe` until it returns the same value `SETTLE_STABLE_SAMPLES`
+ * times running, then return it. Throws — never returns a moving
+ * sample — when the observable is still changing at `timeoutMs`.
+ *
+ * `ready` is the caller's "this sample counts" test. A sample that
+ * fails it resets the streak, so "settled" can never mean "settled on
+ * a state that is not yet the one we need". An app that mounts nothing
+ * for a second would otherwise settle instantly on its empty
+ * pre-mount plateau — three identical readings of nothing.
+ */
+async function sampleUntilStable<T>(
+  page: Page,
+  probe: () => Promise<T>,
+  signature: (value: T) => string,
+  timeoutMs: number,
+  describe: string,
+  ready: (value: T) => boolean = () => true,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let previous: string | undefined;
+  let identical = 0;
+  let everReady = false;
+  let lastChange = '';
+  for (;;) {
+    const value = await probe();
+    const current = signature(value);
+    if (ready(value)) {
+      everReady = true;
+      if (current === previous) {
+        identical++;
+      } else {
+        if (previous !== undefined) {
+          lastChange = describeSignatureChange(previous, current);
+        }
+        identical = 1;
+      }
+      previous = current;
+      if (identical >= SETTLE_STABLE_SAMPLES) return value;
+    } else {
+      identical = 0;
+      previous = undefined;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${describe} never settled after ${timeoutMs}ms ` +
+          `(${SETTLE_STABLE_SAMPLES} identical samples ${SETTLE_SAMPLE_INTERVAL_MS}ms apart required, ` +
+          `reached ${identical}${everReady ? '' : '; no sample ever met the precondition'}). ` +
+          `${lastChange === '' ? '' : `Last change: ${lastChange}. `}` +
+          `Last sample: ${current}`,
+      );
+    }
+    await page.waitForTimeout(SETTLE_SAMPLE_INTERVAL_MS);
+  }
+}
+
+/**
+ * Characters of context either side of the first byte at which two
+ * successive samples of a settling observable diverge. Wide enough to
+ * carry the surrounding JSON keys (so the churning FIELD is named),
+ * narrow enough that a failure message stays readable.
+ */
+const SIGNATURE_DIFF_CONTEXT_CHARS = 120;
+
+/**
+ * Name WHAT moved between two successive samples: the offset of the
+ * first differing byte plus a window of each side around it.
+ *
+ * Without this a settle failure reports only the final sample, which
+ * says what the page looked like but not which control refused to hold
+ * still — and "which one moved" is the entire diagnosis when a surface
+ * fails to quiesce.
+ */
+function describeSignatureChange(before: string, after: string): string {
+  let i = 0;
+  while (i < before.length && i < after.length && before[i] === after[i]) i++;
+  const from = Math.max(0, i - SIGNATURE_DIFF_CONTEXT_CHARS);
+  const to = i + SIGNATURE_DIFF_CONTEXT_CHARS;
+  return (
+    `at char ${i}: …${before.slice(from, to)}… became …${after.slice(from, to)}…`
+  );
+}
+
+/**
+ * The page's control set, read once it has stopped changing — the
+ * single entry point for every DOM read of the controls.
+ *
+ * Both the discovery pass and every drive pass go through it, so both
+ * observe the same quiesced DOM and assignUniqueKeys derives the same
+ * keys on each. That is what makes a key re-findable across the fresh
+ * navigation, rather than a longer timeout on a moving target.
+ */
+async function readSettledControls(
+  page: Page,
+  requiredKey?: string,
+): Promise<RawControl[]> {
+  // "There are no controls here" is the one answer this read can give
+  // that silently deletes a surface's entire interaction subtree, so it
+  // is the one answer that has to be earned. A page still booting its
+  // app bundle presents an empty control set that is perfectly stable
+  // for as long as the boot takes — three identical readings of nothing
+  // is a measurement of the boot, not of the page. Emptiness therefore
+  // only counts once the page has been watched for the dwell below;
+  // a page that does mount controls pays nothing for this.
+  const emptyBelievableAt = Date.now() + EMPTY_CONTROL_SET_DWELL_MS;
+  return await sampleUntilStable(
+    page,
+    async () => assignUniqueKeys(await discoverStaticControls(page)),
+    // React `useId` tokens are erased from the SIGNATURE only: the
+    // returned controls keep the live hints the locators need, but a
+    // remount that changes nothing except a mount counter must not read
+    // as the page still moving. The keys already erase the token, so
+    // leaving it in the signature would compare mount generations the
+    // control model itself declares meaningless — and, when a component
+    // remounts on every render, would make settling impossible.
+    (controls) =>
+      JSON.stringify(controls).replace(
+        new RegExp(REACT_ID_TOKEN_PATTERN, 'g'),
+        REACT_ID_PLACEHOLDER,
+      ),
+    CONTROL_SET_SETTLE_TIMEOUT_MS,
+    requiredKey === undefined
+      ? 'the page control set'
+      : `the page control set carrying control ${requiredKey}`,
+    requiredKey === undefined
+      ? (controls) => controls.length > 0 || Date.now() >= emptyBelievableAt
+      : (controls) => controls.some((c) => c.key === requiredKey),
+  );
+}
+
+/**
+ * The option labels of the currently-open dropdown, read once the list
+ * has stopped changing.
+ *
+ * Returns `[]` only when NO option mounts within
+ * MENU_MOUNT_TIMEOUT_MS — the free-text-input verdict discoverControls
+ * acts on. A list that mounts and then keeps changing throws.
+ *
+ * Labels are trimmed but NOT filtered: the returned array is
+ * positionally aligned with `openMenuOptions(page)`, which is what
+ * lets clickMenuOption address an option by its own index.
+ */
+async function readSettledMenuOptions(page: Page): Promise<string[]> {
+  const options = openMenuOptions(page);
+  const mounted = await options
+    .first()
+    .waitFor({ state: 'visible', timeout: MENU_MOUNT_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  if (!mounted) return [];
+  return await sampleUntilStable(
+    page,
+    async () => (await options.allTextContents()).map((t) => t.trim()),
+    (labels) => JSON.stringify(labels),
+    MENU_SETTLE_TIMEOUT_MS,
+    'the open dropdown option list',
+  );
+}
+
+/**
+ * Click the option whose settled label is EXACTLY `option` in the
+ * currently-open dropdown.
+ *
+ * Exactness is the point on both axes. Substring matching
+ * (`filter({ hasText })`) resolves to whichever matching option comes
+ * first in the DOM, so two options sharing a prefix pick by render
+ * order; and indexing by the DISCOVERY-time position is wrong wherever
+ * the discovered option set was filtered (the datasource picker keeps
+ * only the cerberus-backed options). Reading the live settled list and
+ * addressing the label's own position in it is right on both.
+ */
+async function clickMenuOption(
+  page: Page,
+  controlKey: string,
+  option: string,
+): Promise<void> {
+  const labels = await readSettledMenuOptions(page);
+  const index = labels.indexOf(option);
+  if (index < 0) {
+    throw new Error(
+      `control ${controlKey}: option ${JSON.stringify(option)} is absent from the settled ` +
+        `dropdown [${labels.map((l) => JSON.stringify(l)).join(', ')}] — the option set moved ` +
+        `between discovery and driving`,
+    );
+  }
+  await openMenuOptions(page)
+    .nth(index)
+    .click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
+}
+
+/**
+ * Dismiss an open dropdown and WAIT for it to go. openMenuOptions is a
+ * page-wide locator, so a menu still on screen when the next control
+ * is probed contributes its options to that control's option set —
+ * a probe-order-dependent, and therefore run-dependent, control model.
+ */
+async function closeOpenMenu(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await openMenuOptions(page)
+    .first()
+    .waitFor({ state: 'hidden', timeout: MENU_CLOSE_TIMEOUT_MS });
+}
 
 /**
  * CSS locator for a scenes AdHocFiltersVariable combobox — the
@@ -672,60 +1083,71 @@ export async function settleAdhocFilterBar(page: Page): Promise<void> {
 export async function discoverControls(
   page: Page,
 ): Promise<DiscoveredControl[]> {
-  const raw = assignUniqueKeys(await discoverStaticControls(page));
+  const raw = await readSettledControls(page);
   const out: DiscoveredControl[] = [];
 
   for (const c of raw) {
     if (isExcludedControlName(c.key)) continue;
     if (c.locatorKind === 'combobox') {
-      const input = locateCombobox(page, c.controlHint);
-      if ((await input.count()) === 0) continue;
-      try {
-        // The visible current value (captured by the static pass —
-        // react-select keeps the input itself empty).
-        const currentValue = (c.currentText ?? '').trim();
-        await input.click({ timeout: 3_000 });
-        await page.waitForTimeout(PROBE_OPEN_MS);
-        let options = (await openMenuOptions(page).allTextContents())
-          .map((t) => t.trim())
-          .filter((t) => t !== '');
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(PROBE_CLOSE_MS);
-        if (options.length === 0) continue; // free-text input, not a select
-        // The datasource picker lists EVERY provisioned datasource,
-        // including Grafana's built-in `grafanacloud-*` cloud stubs
-        // (present in the DS list, backed by no real backend in the
-        // crawl stack). Driving the picker to one of those navigates
-        // OUT of the cerberus consumption domain and 404s the proxy —
-        // not a cerberus defect, just a control option that points
-        // away from cerberus. The crawl audits cerberus surfaces only,
-        // so keep the picker swept but restrict it to cerberus-backed
-        // options. Not a tolerance: a foreign-DS render is genuinely
-        // out of scope, the same doctrine as the connections/datasource
-        // path exclusion.
-        if (/datasource-picker/.test(c.key)) {
-          options = options.filter((o) => /cerberus/i.test(o));
-          if (options.length === 0) continue;
-        }
-        out.push({
-          kind: c.kind,
-          key: c.key,
-          options,
-          selectedIndex: options.findIndex((o) => o === currentValue),
-          // Adhoc-filter key lists are data-derived (label names)
-          // whatever their size — force the one-representative path.
-          forcedHighCardinality: c.kind === 'adhoc-filter',
-          optionHints: options,
-          controlHint: c.controlHint,
-        });
-      } catch {
-        // A combobox that can't open (covered by an overlay, detached
-        // mid-probe) contributes no states; the surface's other
-        // controls still sweep. Not a tolerance: if the control
-        // matters it encodes elsewhere (URL param / radio twin) or a
-        // future selector fix re-discovers it.
-        await page.keyboard.press('Escape').catch(() => {});
+      const input = locateCombobox(page, c.controlHint, c.clickHops);
+      // The hint was read from the SETTLED DOM a moment ago, and
+      // probing a control only opens and Escapes its own menu. A hint
+      // that no longer resolves is therefore selector drift, and
+      // dropping the control would silently shrink the surface set —
+      // exactly the coverage loss the inventory ratchet exists to
+      // catch, laundered into the baseline as if it were intended.
+      if ((await input.count()) === 0) {
+        throw new Error(
+          `combobox ${c.key} (${c.controlHint}) vanished between the settled control-set read ` +
+            `and its probe — selector drift, not a control the sweep may drop`,
+        );
       }
+      // The visible current value (captured by the static pass —
+      // react-select keeps the input itself empty).
+      const currentValue = (c.currentText ?? '').trim();
+      // Name the control in any failure: "locator.click: Timeout" on
+      // its own says nothing about WHICH of a surface's dozen controls
+      // could not be opened, and that identity is the whole diagnosis.
+      await input.click({ timeout: CONTROL_CLICK_TIMEOUT_MS }).catch((err) => {
+        throw new Error(
+          `probing combobox ${c.key} (${c.controlHint}): ${(err as Error).message}`,
+        );
+      });
+      const labels = await readSettledMenuOptions(page);
+      // Blur either way, so a focused input can never swallow the next
+      // control's gesture; a menu that did mount must be verifiably
+      // gone before the next probe reads the page-wide option locator.
+      if (labels.length > 0) await closeOpenMenu(page);
+      else await page.keyboard.press('Escape');
+      let options = labels.filter((t) => t !== '');
+      if (options.length === 0) continue; // free-text input, not a select
+      // The datasource picker lists EVERY provisioned datasource,
+      // including Grafana's built-in `grafanacloud-*` cloud stubs
+      // (present in the DS list, backed by no real backend in the
+      // crawl stack). Driving the picker to one of those navigates
+      // OUT of the cerberus consumption domain and 404s the proxy —
+      // not a cerberus defect, just a control option that points
+      // away from cerberus. The crawl audits cerberus surfaces only,
+      // so keep the picker swept but restrict it to cerberus-backed
+      // options. Not a tolerance: a foreign-DS render is genuinely
+      // out of scope, the same doctrine as the connections/datasource
+      // path exclusion.
+      if (/datasource-picker/.test(c.key)) {
+        options = options.filter((o) => /cerberus/i.test(o));
+        if (options.length === 0) continue;
+      }
+      out.push({
+        kind: c.kind,
+        key: c.key,
+        options,
+        selectedIndex: options.findIndex((o) => o === currentValue),
+        // Adhoc-filter key lists are data-derived (label names)
+        // whatever their size — force the one-representative path.
+        forcedHighCardinality: c.kind === 'adhoc-filter',
+        optionHints: options,
+        controlHint: c.controlHint,
+        clickHops: c.clickHops,
+      });
       continue;
     }
     out.push({
@@ -736,6 +1158,7 @@ export async function discoverControls(
       forcedHighCardinality: c.kind === 'select-tile',
       optionHints: c.optionHints,
       controlHint: c.controlHint,
+      clickHops: c.clickHops,
     });
   }
   return out;
@@ -756,14 +1179,14 @@ export async function discoverControls(
  */
 async function relocateCombobox(
   page: Page,
+  settled: ReadonlyArray<RawControl>,
   control: DiscoveredControl,
 ): Promise<Locator> {
-  const raw = assignUniqueKeys(await discoverStaticControls(page));
-  const match = raw.find(
+  const match = settled.find(
     (c) => c.locatorKind === 'combobox' && c.key === control.key,
   );
   if (match !== undefined) {
-    return locateCombobox(page, match.controlHint);
+    return locateCombobox(page, match.controlHint, match.clickHops);
   }
   // Re-discovery didn't re-derive the key — but a combobox addressed
   // by a STABLE element hint (its own data-testid, not a render-order
@@ -773,11 +1196,19 @@ async function relocateCombobox(
   // depends on the booted datasource) without masking a real drift:
   // an id-based hint or an absent locator still throws.
   if (control.controlHint.startsWith('testid=')) {
-    const fallback = locateCombobox(page, control.controlHint);
+    const fallback = locateCombobox(
+      page,
+      control.controlHint,
+      control.clickHops,
+    );
     if ((await fallback.count()) > 0) return fallback;
   }
   throw new Error(
-    `combobox ${control.key} not re-found by key (or stable hint) after fresh navigation`,
+    `combobox ${control.key} not re-found by key (or stable hint) after fresh navigation. ` +
+      `Settled control set: ${settled
+        .filter((c) => c.locatorKind === 'combobox')
+        .map((c) => c.key)
+        .join(', ')}`,
   );
 }
 
@@ -794,6 +1225,16 @@ export async function driveInteraction(
   const { control, option } = planned;
   const idx = control.options.indexOf(option);
   const hint = control.optionHints[idx] ?? option;
+  // Every gesture — not just the combobox ones — runs against a
+  // control set that has stopped changing AND that carries the control
+  // this gesture is for. Clicking mid-render is what exhausted the 5 s
+  // actionability budget (Playwright waits for a bounding box stable
+  // across two frames, which a scenes app still laying out panels
+  // never offers), and it is also what made a control's identity
+  // depend on the instant it was read. Requiring the key is what makes
+  // "re-findable by key across a fresh navigation" a precondition the
+  // driver waits for rather than a coin toss it reports on.
+  const settled = await readSettledControls(page, control.key);
 
   switch (control.kind) {
     case 'tab': {
@@ -807,7 +1248,7 @@ export async function driveInteraction(
         (await byTestid.count()) > 0
           ? byTestid.first()
           : page.getByRole('tab', { name: option }).first();
-      await target.click({ timeout: 5_000 });
+      await target.click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
       return;
     }
     case 'radio': {
@@ -867,40 +1308,46 @@ export async function driveInteraction(
       await page
         .locator(`ul > li[title="${hint}"]`)
         .first()
-        .click({ timeout: 5_000, position: { x: 12, y: 12 } });
+        .click({
+          timeout: CONTROL_CLICK_TIMEOUT_MS,
+          position: { x: 12, y: 12 },
+        });
       return;
     }
     case 'select-tile': {
       await page
         .locator(`[data-testid="${hint}"]`)
         .first()
-        .click({ timeout: 5_000 });
+        .click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
       return;
     }
     case 'combobox': {
-      const input = await relocateCombobox(page, control);
-      await input.click({ timeout: 5_000 });
-      await page.waitForTimeout(PROBE_OPEN_MS);
-      await openMenuOptions(page)
-        .filter({ hasText: option })
-        .first()
-        .click({ timeout: 5_000 });
+      const input = await relocateCombobox(page, settled, control);
+      await input.click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
+      await clickMenuOption(page, control.key, option);
       return;
     }
     case 'adhoc-filter': {
-      const input = await relocateCombobox(page, control);
-      await input.click({ timeout: 5_000 });
-      await page.waitForTimeout(PROBE_OPEN_MS);
-      // Step 1: pick the representative KEY (first option).
-      await openMenuOptions(page).first().click({ timeout: 5_000 });
-      await page.waitForTimeout(PROBE_OPEN_MS);
-      // Step 2: the value dropdown auto-opens (scenes adhoc flow);
-      // pick the first value. Some builders interpose an operator
-      // step that defaults to '=' — the first option click covers
-      // both shapes.
-      const valueOptions = openMenuOptions(page);
-      if ((await valueOptions.count()) > 0) {
-        await valueOptions.first().click({ timeout: 5_000 });
+      const input = await relocateCombobox(page, settled, control);
+      await input.click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
+      // Step 1: the representative KEY. `option` is the deterministic
+      // representative planInteractions derived from the discovered
+      // key SET, and it is addressed by exact label — "whatever the
+      // menu renders first" would apply a different filter, and fire a
+      // different query, every time the label list reordered.
+      await clickMenuOption(page, control.key, option);
+      // Step 2: the value dropdown auto-opens (scenes adhoc flow).
+      // Some builders interpose an operator step that defaults to '=';
+      // both shapes are a menu whose settled labels pick their own
+      // deterministic representative. A builder that opens no second
+      // menu leaves the key-only filter, which is a complete state.
+      const valueOptions = await readSettledMenuOptions(page);
+      if (valueOptions.length > 0) {
+        await clickMenuOption(
+          page,
+          control.key,
+          representativeOption(valueOptions),
+        );
       }
       return;
     }
