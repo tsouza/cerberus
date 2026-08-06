@@ -559,9 +559,23 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	v := func() chplan.Expr { return &chplan.BareIdent{Name: valueParam} }
 	u := func() chplan.Expr { return &chplan.BareIdent{Name: digitsParam} }
 
+	// `position` and `length` return UInt64, while subtracting from one
+	// yields Int64. An `if` with one arm of each has no common supertype,
+	// and ClickHouse resolves that pair to `Variant(Int64, UInt64)`;
+	// arithmetic or `toString` over a Variant then comes back Nullable.
+	// That nullability rides the whole label expression up into
+	// `mapConcat`, so Attributes arrives as `Map(String, Nullable(String))`
+	// and the production cursor refuses to scan it into `map[string]string`.
+	// chDB coerces it away, so only the strict-scan differential sees it.
+	// Landing every count on Int64 at the source keeps each `if`
+	// single-typed.
+	countOf := func(name string, args ...chplan.Expr) chplan.Expr {
+		return call("toInt64", call(name, args...))
+	}
+
 	// Position of the exponent marker in CH's rendering; 0 when CH chose
 	// fixed notation.
-	epos := func() chplan.Expr { return call("position", u(), str("e")) }
+	epos := func() chplan.Expr { return countOf("position", u(), str("e")) }
 	// The mantissa CH rendered — the whole string in fixed notation.
 	mantRaw := func() chplan.Expr {
 		return call("if", bin(chplan.OpGt, epos(), i(0)),
@@ -575,13 +589,13 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	digitsLead := func() chplan.Expr { return call("replaceRegexpOne", digitsAll(), str("^0+"), str("")) }
 	digits := func() chplan.Expr { return call("replaceRegexpOne", digitsLead(), str("0+$"), str("")) }
 
-	pointPos := func() chplan.Expr { return call("position", mantRaw(), str(".")) }
+	pointPos := func() chplan.Expr { return countOf("position", mantRaw(), str(".")) }
 	// Digit count left of the decimal point (the whole mantissa when
 	// there is no point).
 	intLen := func() chplan.Expr {
 		return call("if", bin(chplan.OpGt, pointPos(), i(0)),
 			bin(chplan.OpSub, pointPos(), i(1)),
-			call("length", mantRaw()))
+			countOf("length", mantRaw()))
 	}
 	// The decimal exponent: read straight off CH's exponent when it used
 	// scientific notation, else derived from where the first significant
@@ -589,15 +603,15 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	// no floating-point log is involved, so the [-4, 21) boundaries
 	// cannot be misclassified.
 	expVal := func() chplan.Expr {
-		leadingZeros := bin(chplan.OpSub, call("length", digitsAll()), call("length", digitsLead()))
+		leadingZeros := bin(chplan.OpSub, countOf("length", digitsAll()), countOf("length", digitsLead()))
 		return call("if", bin(chplan.OpGt, epos(), i(0)),
-			call("toInt32", call("substring", u(), bin(chplan.OpAdd, epos(), i(1)))),
+			call("toInt64", call("substring", u(), bin(chplan.OpAdd, epos(), i(1)))),
 			bin(chplan.OpSub, bin(chplan.OpSub, intLen(), leadingZeros), i(1)))
 	}
 
 	// `d` or `d.ddd` — Go's normalised scientific mantissa.
 	mantissa := func() chplan.Expr {
-		return call("if", bin(chplan.OpLe, call("length", digits()), i(1)),
+		return call("if", bin(chplan.OpLe, countOf("length", digits()), i(1)),
 			digits(),
 			call("concat", call("substring", digits(), i(1), i(1)), str("."), call("substring", digits(), i(2))))
 	}
