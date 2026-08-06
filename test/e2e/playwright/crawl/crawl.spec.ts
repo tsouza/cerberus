@@ -611,6 +611,94 @@ test.describe('crawl: canonicalization pins', () => {
         scope,
       ),
     ).toBe('/a/grafana-exploretraces-app/trace/{hex}');
+    expect(
+      canonicalizeURL(
+        '/a/grafana-lokiexplore-app/explore/service/cerberus/label/level',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}');
+    expect(
+      canonicalizeURL(
+        '/a/grafana-lokiexplore-app/explore/service/cerberus/field/order_id?visualizationType=%22table%22',
+        base,
+        scope,
+      ),
+    ).toBe(
+      '/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType="table"',
+    );
+  });
+
+  test('parameterizing the field segment absorbs log-field churn but still catches real coverage change', () => {
+    // #1862: the segment after 'field' is a log FIELD name harvested
+    // from whatever the seeded logs happened to carry, so pinning it
+    // pinned the dataset — the same class of defect #1825 was on the
+    // query-parameter axis. Renaming or reordering a log field must
+    // not move the surface key.
+    const asOrderID = canonicalizeURL(
+      '/a/grafana-lokiexplore-app/explore/service/cerberus/field/order_id',
+      base,
+      scope,
+    );
+    const asThread = canonicalizeURL(
+      '/a/grafana-lokiexplore-app/explore/service/cerberus/field/thread',
+      base,
+      scope,
+    );
+    expect(asOrderID).toBe(asThread);
+
+    const stack = activeStack();
+    const fieldSurface = asThread!;
+    const servicePage = '/a/grafana-lokiexplore-app/explore/service/{service}/logs';
+    const inventory = {
+      doc: '',
+      stack: stack.name,
+      surfaces: [
+        { url: servicePage, lean: true },
+        { url: fieldSurface, lean: true },
+      ],
+    };
+    const noExclusions = { doc: '', exclusions: [] };
+
+    // Field churn alone: the ratchet is silent.
+    expect(
+      diffInventory(
+        new Set([servicePage, fieldSurface]),
+        inventory,
+        noExclusions,
+        'lean',
+        stack,
+      ),
+    ).toEqual([]);
+
+    // The gate is NOT dead — if the sweep stopped following the
+    // fields-tab drill entirely, no field name can key fieldSurface,
+    // so the collapse must still report the loss.
+    const shrank = diffInventory(
+      new Set([servicePage]),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(shrank).toHaveLength(1);
+    expect(shrank[0]).toContain('coverage shrank');
+    expect(shrank[0]).toContain(fieldSurface);
+
+    // …and a genuinely new surface under the same route family still fails.
+    const grew = diffInventory(
+      new Set([
+        servicePage,
+        fieldSurface,
+        `${fieldSurface}?visualizationType="table"`,
+      ]),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(grew).toHaveLength(1);
+    expect(grew[0]).toContain('coverage grew');
   });
 
   test('committed inventory + exclusions files are internally consistent', () => {

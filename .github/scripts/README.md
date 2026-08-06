@@ -95,6 +95,19 @@ changed"), and segment-wise `underPrefix` / `matchesAny`.
 It exists so the two dangerous parts — the always-full event set and the
 uncomputable-diff fallback — cannot drift between the lanes that use it.
 
+`lib/crawl-budget.mjs` owns the two nested time budgets the Grafana surface
+crawl runs under — the SPEC budget `crawl.spec.ts` sets on itself
+(`testInfo.setTimeout`) and the JOB cap the shard planners put on the runner —
+and the ordering between them: the job cap is always the spec budget plus a
+fixed overhead headroom, so the spec times out first and reports a real
+`failure` with its partial inventory. Get that ordering backwards and the
+runner kills the job instead, which GitHub records as `cancelled` — not a
+verdict, and the state that let the nightly full-depth sweep go unenforced.
+Both `compose-smoke-matrix.mjs` and `dashboard-matrix.mjs` derive their crawl
+caps from `crawlShardTimeoutMinutes(depth)` here, and
+`parseSpecBudgetsFromSource()` lets the guard test read the real spec file so
+the pinned numbers cannot drift away from what the crawl actually asks for.
+
 ## Modules
 
 - **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
@@ -1137,10 +1150,12 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   reported, then `exit 1`. `compose-smoke-matrix.test.mjs` is the `node --test`
   guard (run on the cheap `forbid-skip` job) that pins the invariant + proves the
   detectors fire. Two extra responsibilities: (1) it carries the per-shard
-  `timeoutMinutes` ceiling on each emitted entry — the crawl shard gets a hard
-  30-min cap (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the concurrency
-  slot), non-crawl shards keep 120 (nightly full, `IS_SCHEDULE=true`) / 45
-  (PR/push lean); (2) it splits the partition into a REQUIRED `matrix` and an
+  `timeoutMinutes` ceiling on each emitted entry — the crawl shard's cap is
+  derived from its own spec budget at the depth this event sweeps at
+  (`lib/crawl-budget.mjs`; fail fast, release the concurrency slot, but always
+  ABOVE the spec budget so the spec times out first), non-crawl shards keep 120
+  (nightly full, `IS_SCHEDULE=true`) / 45 (PR/push lean); (2) it splits the
+  partition into a REQUIRED `matrix` and an
   informational `matrix_informational` (the `GATE_EXCLUDED_SHARDS` coverage
   shards — today `shard-crawl`). The required `compose-smoke` aggregator
   `needs:` only the required matrix, so a crawl flake/hang reports its own
@@ -1152,6 +1167,29 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     `"true"` selects the full non-crawl timeout), `GITHUB_OUTPUT` (emit: the
     runner file the `matrix` / `matrix_informational` / `has_informational` /
     `gate_excluded` outputs are written to).
+
+- **`assert-crawl-terminal.mjs`** — `e2e.yml`, the `crawl-terminal` job. The
+  de-gated crawl lane's only reader. `compose-smoke-shard-info (shard-crawl)`
+  is deliberately outside the required `compose-smoke` gate so a crawl hang
+  cannot block a PR — which also means nothing was reading its result, and a
+  crawl killed by its own job cap reported `cancelled` and enforced NOTHING
+  while the lane still looked present. This job asserts TERMINALITY, not
+  correctness: the crawl shard must reach `success` or `failure`. `cancelled`
+  (job cap hit, or the runner reclaimed it), `skipped` (never dispatched), and
+  any unknown conclusion all fail with a message naming the depth, which
+  surface pin went unenforced, and the two budgets from `lib/crawl-budget.mjs`
+  to compare. It also fails when the setup job stopped emitting an
+  informational matrix at all — an empty `has_informational` means the shard
+  silently stopped existing, which is coverage loss disguised as a green lane.
+  The one clean no-op is a change out of the crawl lane's scope: setup
+  `skipped` behind a `compose-smoke-scope` that itself succeeded. A scope job
+  that crashed leaves the crawl undecided, and that fails.
+  - Env: `SCOPE_RESULT`, `SETUP_RESULT`, `HAS_INFORMATIONAL` (the setup job's
+    output of the same name), `CRAWL_SHARD_RESULT` (the informational matrix's
+    rolled-up result), `SWEEP_DEPTH` (`full` on schedule, else `lean` — names
+    which pin was at stake in the failure message).
+  - Exit: `0` when the crawl reached a verdict or was legitimately out of
+    scope, `1` on any non-terminal outcome.
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 
@@ -1289,9 +1327,11 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   `node --test` guard (run on the cheap `forbid-skip` job) pinning the invariant +
   proving the detectors fire. k3d is heavy + flaky, so the shard count is kept
   deliberately small. Each emitted entry also carries a per-shard
-  `timeoutMinutes`: the crawl shard gets a hard 30-min cap
-  (`CRAWL_SHARD_TIMEOUT_MIN`; fail fast, release the k3d concurrency slot), the
-  smoke shards keep their 75-min cluster-lifetime bound (`SMOKE_SHARD_TIMEOUT_MIN`).
+  `timeoutMinutes`: the crawl shard gets the FULL-depth cap from
+  `lib/crawl-budget.mjs` (this shard always sweeps `SWEEP_DEPTH=full`; fail fast,
+  release the k3d concurrency slot, but above the spec budget so the spec times
+  out first), the smoke shards keep their 75-min cluster-lifetime bound
+  (`SMOKE_SHARD_TIMEOUT_MIN`).
   The `dashboard` aggregator is a branch-protection required check; the crawl
   shard runs only on schedule, dispatch, and release/* PRs, so it never gates
   an ordinary PR's merge-when-green.

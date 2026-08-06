@@ -404,14 +404,21 @@ export function canonicalTarget(
     }
     // Logs-drilldown service pages: the segment AFTER 'service' is the
     // service name harvested from live data; the segment after
-    // 'label' is a label NAME from live data (the labels-tab drill).
-    // Both parameterize to one representative per route family.
+    // 'label' is a label NAME from live data (the labels-tab drill); the
+    // segment after 'field' is a log FIELD name from live data (the
+    // fields-tab drill). All three parameterize to one representative per
+    // route family, so the inventory pins the ROUTE the drill reaches rather
+    // than whichever names happened to be in the seeded logs that day.
     if (i >= 1 && segments[i - 1] === 'service') {
       segments[i] = '{service}';
       continue;
     }
     if (i >= 1 && segments[i - 1] === 'label') {
       segments[i] = '{label}';
+      continue;
+    }
+    if (i >= 1 && segments[i - 1] === 'field') {
+      segments[i] = '{field}';
     }
   }
   path = segments.join('/');

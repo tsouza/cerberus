@@ -77,6 +77,7 @@
 import process from 'node:process';
 import { error, notice, log, setOutput, appendStepSummary } from './lib/gh.mjs';
 import { SHARD_NAME_RE, collectShardCoverageViolations, discoverSpecs } from './lib/shard-coverage.mjs';
+import { crawlShardTimeoutMinutes } from './lib/crawl-budget.mjs';
 
 // CRAWL_STACK value that selects the k3d crawl-suite config (crawl/stacks.ts).
 // A smoke shard leaves it EMPTY so playwright.config.ts ignores crawl/**
@@ -85,6 +86,12 @@ import { SHARD_NAME_RE, collectShardCoverageViolations, discoverSpecs } from './
 // inventory at SWEEP_DEPTH=full (the old "Run Playwright crawl" step).
 const CRAWL_STACK_K3D = 'k3d';
 const CRAWL_STACK_NONE = '';
+
+// Sweep depth the k3d crawl shard always runs at (SWEEP_DEPTH in e2e.yml's
+// dashboard-shard step is unconditionally `full` for CRAWL_STACK=k3d — this
+// lane exists to do the exhaustive sweep). Named because the crawl shard's job
+// timeout is derived from the spec budget AT THIS DEPTH.
+const CRAWL_SHARD_SWEEP_DEPTH = 'full';
 
 // Chart deployment topologies the smoke lane exercises (E2E_MODE in `just
 // e2e-up`). The SAME Grafana/Playwright smoke runs against both: `monolith`
@@ -107,13 +114,18 @@ const SPLIT_ONLY_SPECS = new Set(['split_isolation.spec.ts']);
 // Per-shard wall-clock ceilings (timeout-minutes on the dashboard-shard job,
 // interpolated as `matrix.timeoutMinutes`).
 //
-// The CRAWL shard gets a HARD 30-min cap. The k3d crawl is a slow BFS COVERAGE
-// lane, not a correctness gate, and it is dispatched only on schedule + manual
-// dispatch + release/* PRs; on a hang it rides the job to its long timeout
-// holding the `cancel-in-progress: false` k3d concurrency slot. A 30-min cap
-// makes it FAIL FAST and release the slot. The smoke shards keep a 75-min job
-// ceiling (k3d bring-up ~3-5min + the non-crawl smoke specs fit comfortably).
-const CRAWL_SHARD_TIMEOUT_MIN = 30;
+// The CRAWL shard's cap comes from lib/crawl-budget.mjs at the FULL depth: this
+// shard always runs SWEEP_DEPTH=full (see SHARDS below), so its spec budget is
+// the 75-min one and the job cap has to clear it. The k3d crawl is a slow BFS
+// COVERAGE lane, not a correctness gate, and it is dispatched only on schedule
+// + manual dispatch + release/* PRs; on a hang it would otherwise ride the job
+// to its long timeout holding the `cancel-in-progress: false` k3d concurrency
+// slot, so the cap is what makes it fail fast and release the slot. A cap BELOW
+// the spec budget inverts that: the runner kills the job before the spec can
+// report, and GitHub records the kill as `cancelled` — no verdict, no evidence,
+// which is what a constant 30-min cap did to every nightly k3d crawl (#1861).
+// The smoke shards keep a 75-min job ceiling (k3d bring-up ~3-5min + the
+// non-crawl smoke specs fit comfortably).
 const SMOKE_SHARD_TIMEOUT_MIN = 75;
 
 // ---------------------------------------------------------------------------
@@ -246,11 +258,14 @@ export function collectViolations(discovered) {
 }
 
 // shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. The crawl
-// shard (CRAWL_STACK=k3d) is a constant 30-min hard cap (fail fast, release the
-// k3d concurrency slot); the smoke shards keep the prior effective 75-min job
-// ceiling.
+// shard (CRAWL_STACK=k3d) always sweeps at full depth, so its cap is the
+// full-depth one derived from the spec's own budget (lib/crawl-budget.mjs):
+// the spec times out first, with evidence, and the runner kill stays a genuine
+// last resort. The smoke shards keep the prior effective 75-min job ceiling.
 export function shardTimeoutMinutes(shard) {
-  return shard.crawlStack === CRAWL_STACK_K3D ? CRAWL_SHARD_TIMEOUT_MIN : SMOKE_SHARD_TIMEOUT_MIN;
+  return shard.crawlStack === CRAWL_STACK_K3D
+    ? crawlShardTimeoutMinutes(CRAWL_SHARD_SWEEP_DEPTH)
+    : SMOKE_SHARD_TIMEOUT_MIN;
 }
 
 function assertCoverageOrExit(discovered) {
@@ -387,7 +402,6 @@ export {
   SHARDS,
   EXCLUDED,
   SHARD_NAME_RE,
-  CRAWL_SHARD_TIMEOUT_MIN,
   SMOKE_SHARD_TIMEOUT_MIN,
   CRAWL_STACK_K3D,
   MODE_MONOLITH,
