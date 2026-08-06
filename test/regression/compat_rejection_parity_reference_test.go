@@ -163,7 +163,7 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 	m := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	checked := 0
-	sawExpHistogramReference := false
+	sawUnseededExpHistogramTrigger := false
 	for _, e := range cat.Entries {
 		if e.Head != promHead || e.TriggerQuery == "" {
 			continue
@@ -179,13 +179,19 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 		for _, name := range sortedSetKeys(names) {
 			// Exp-histogram routing rejects on the NAME alone
 			// (schema.Metrics.IsExpHistogramMetric is a pure suffix
-			// predicate, consulted before any row is read), so the
-			// suffix IS the trigger: such an entry scores the guard at
-			// its site whether or not the exact family it names is one
-			// the seeder writes. This arm names no specific metric and
-			// grows no entries.
-			if m.IsExpHistogramMetric(name) {
-				sawExpHistogramReference = true
+			// predicate, consulted before any row is read), so the suffix
+			// IS the trigger and an UNSEEDED exp-histogram family still
+			// scores the guard at its site. That — and only that — is what
+			// this arm exempts: a seeded exp-histogram family needs no
+			// exemption and falls through to the ordinary check below.
+			//
+			// Narrowing the arm to the unseeded case is what keeps it from
+			// outliving its premise: the moment every exp-histogram trigger
+			// names a seeded family, nothing sets the flag and the liveness
+			// assertion after the loop fails, demanding the arm's deletion.
+			// The arm names no specific metric and grows no entries.
+			if m.IsExpHistogramMetric(name) && !seeded[name] {
+				sawUnseededExpHistogramTrigger = true
 				continue
 			}
 			if !seeded[name] {
@@ -200,9 +206,10 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no PromQL trigger queries found in the catalogue; this test would compare nothing")
 	}
-	if !sawExpHistogramReference {
-		t.Error("no PromQL trigger selects an exp-histogram-suffixed name; the exemption arm " +
-			"of this gate is dead and should be removed")
+	if !sawUnseededExpHistogramTrigger {
+		t.Error("every exp-histogram-suffixed name a PromQL trigger selects is one the seeder " +
+			"writes, so the exemption arm of this gate exempts nothing the ordinary seeded " +
+			"check would not already accept; it is dead and should be removed")
 	}
 }
 
@@ -228,12 +235,26 @@ func seededPromFamilies(t *testing.T) map[string]bool {
 			}
 			out[f.name] = true
 		case m.ExpHistogramTable:
-			// A native histogram is a single Prom-wire series carrying the
-			// whole distribution, so there are no `_bucket` / `_sum` /
-			// `_count` companions to synthesise: the storage name is the
-			// series name, and the histogram_* value functions take it
-			// directly.
+			// A native histogram is one row carrying the whole distribution.
+			// The histogram_* value functions take the bare storage name, and
+			// promql.expHistogramSelectorRouting serves each companion suffix
+			// off the Count / Sum columns of that same row. No `_bucket`
+			// fan-out exists here — the buckets ARE the row.
+			//
+			// Routing is by name suffix, decided before any row is read, so a
+			// fixture whose name lacks the exp-histogram marker is written to
+			// a table no selector resolves against and surfaces under no
+			// series name at all.
+			if !m.IsExpHistogramMetric(f.name) {
+				t.Fatalf("fixture %q inserts into the exp-histogram table but carries no %q "+
+					"suffix, so selector routing never reaches that table and its rows "+
+					"surface under no PromQL series name",
+					f.name, m.ExpHistogramSuffix)
+			}
 			out[f.name] = true
+			for _, suf := range m.HistogramCompanionSuffixes() {
+				out[f.name+suf] = true
+			}
 		case m.GaugeTable, m.SumTable:
 			out[f.name] = true
 		default:
