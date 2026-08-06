@@ -23,8 +23,15 @@
 //      LogQL + TraceQL, rapid N=500)` is the standing reminder that these names
 //      are display strings, not identifiers.
 //
-// So: run both checks on a schedule, off the release critical path, where the
-// fix is a one-line PR instead of a broken publish.
+//   C. PIN DRIFT — the live branch-protection set and the repo's own pin of it
+//      (`branchProtectionContexts`, in the protection-pin file below) disagree.
+//      Every in-tree gate reasons off that pin, because reading the live
+//      setting needs repo-admin rights a Go test does not have — so a
+//      disagreement leaves those gates authoritative about a configuration
+//      that is not in force. See `pinnedProtectionDrift` for both halves.
+//
+// So: run all three checks on a schedule, off the release critical path, where
+// the fix is a one-line PR instead of a broken publish.
 //
 // The lists are read from release.yml itself rather than duplicated here —
 // there is exactly one copy of the data and one parser for it. A parse that
@@ -42,6 +49,10 @@
 //                      posted check-run names (default 20).
 //   RELEASE_WORKFLOW   Path to the workflow holding the lists
 //                      (default .github/workflows/release.yml).
+//   PROTECTION_PIN_FILE  Path to the Go file holding the in-tree
+//                      `branchProtectionContexts` pin that direction C compares
+//                      the live setting against (default
+//                      test/regression/release_required_checks_test.go).
 //   argv `--self-test` runs the pure-logic assertions and exits.
 //
 // Exit: 0 when both directions are clean; 1 on any drift, a failed API read, or
@@ -124,6 +135,72 @@ export function protectionDrift({ liveContexts, required, informational }) {
     );
 }
 
+// Direction C. The repo pins its own expected protection set in
+// `branchProtectionContexts` (test/regression/release_required_checks_test.go),
+// and every in-tree gate that reasons about "what a PR must pass" reads that
+// pin rather than the live setting — because a Go test cannot call an endpoint
+// that needs repo-admin rights. So the pin is authoritative in the tree and
+// powerless over the repo, which leaves the two apart with nothing watching:
+//
+//   - LIVE MISSING. A context the pin names is not enforced. Every in-tree gate
+//     still reasons as though it were, and the check keeps posting green on
+//     every PR, so the lane looks gating from every angle except the only one
+//     that decides a merge. This is not hypothetical: `pr-body` sat in the pin
+//     while branch protection enforced 19 contexts, and the release preflight —
+//     which DOES require it on the maintenance path — never disagreed, because
+//     it reads the pin too.
+//   - LIVE EXTRA. Protection enforces a context the pin does not name. That is
+//     the drift the pin's own doc comment calls "the one drift this file cannot
+//     see", and it lands on the maintenance path as a lane certified by
+//     absence.
+//
+// Set EQUALITY is the assertion, in both directions, because either half alone
+// is a gate that reports on something other than what it claims to gate.
+export function pinnedProtectionDrift({ liveContexts, pinned }) {
+  const live = new Set(liveContexts ?? []);
+  const pin = new Set(pinned ?? []);
+
+  const missing = [...pin]
+    .filter((ctx) => !live.has(ctx))
+    .map(
+      (ctx) =>
+        `${ctx}: pinned in branchProtectionContexts but NOT enforced by branch protection on ` +
+        `\`main\`. The lane still posts green on every PR, so nothing in the tree can tell the ` +
+        `difference — the check is advisory while every gate that reads the pin treats it as ` +
+        `binding. Restore it with: gh api -X POST repos/<owner>/<repo>/branches/main/protection/` +
+        `required_status_checks/contexts -f 'contexts[]=${ctx}' — or, if it is meant to be ` +
+        `advisory, drop it from the pin and from RELEASE_REQUIRED_CHECKS in the same change.`,
+    );
+
+  const extra = [...live]
+    .filter((ctx) => !pin.has(ctx))
+    .map(
+      (ctx) =>
+        `${ctx}: enforced by branch protection on \`main\` but absent from ` +
+        `branchProtectionContexts. The release-preflight totality assertion runs OVER that pin, ` +
+        `so an unpinned context is certified by absence on the maintenance path. Add it to the ` +
+        `pin, which forces it into RELEASE_REQUIRED_CHECKS or an explicit de-gating.`,
+    );
+
+  return [...missing, ...extra];
+}
+
+// The pin is a plain Go string-slice literal, so a regex over the source is
+// enough and keeps this script free of a Go toolchain. A pin that fails to
+// parse — renamed, reshaped, moved — throws rather than comparing against an
+// empty set, which would report perfect agreement with whatever is live.
+export function parsePinnedContexts(goText) {
+  const block = /var\s+branchProtectionContexts\s*=\s*\[\]string\{([\s\S]*?)\}/.exec(goText ?? '');
+  if (block === null) {
+    throw new Error('branchProtectionContexts slice literal not found in the protection pin file');
+  }
+  const names = [...block[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(([, s]) => s.replace(/\\(.)/g, '$1'));
+  if (names.length === 0) {
+    throw new Error('branchProtectionContexts parsed as empty — the equality check would be vacuously green');
+  }
+  return names;
+}
+
 // Direction B. `required` names are check-run display strings; `observed` is
 // every display string seen across the scanned window. A required name that
 // nothing posts is a name the preflight will block the next release waiting for.
@@ -149,6 +226,7 @@ async function apiJson(url, headers, what) {
 
 async function main() {
   const workflowPath = process.env.RELEASE_WORKFLOW || '.github/workflows/release.yml';
+  const pinPath = process.env.PROTECTION_PIN_FILE || 'test/regression/release_required_checks_test.go';
   const branch = process.env.DRIFT_BRANCH || 'main';
   const history = Number(process.env.DRIFT_HISTORY || defaultHistoryCommits);
   const repo = process.env.GITHUB_REPOSITORY;
@@ -159,6 +237,7 @@ async function main() {
   if (!token) throw new Error('GITHUB_TOKEN is unset — reading branch protection needs a repo-admin token');
 
   const { required, informational } = parseCheckLists(readFileSync(workflowPath, 'utf8'));
+  const pinned = parsePinnedContexts(readFileSync(pinPath, 'utf8'));
 
   const headers = {
     Accept: 'application/vnd.github+json',
@@ -202,13 +281,14 @@ async function main() {
   const problems = [
     ...protectionDrift({ liveContexts, required, informational }),
     ...laneDrift({ required, observed: [...observed] }),
+    ...pinnedProtectionDrift({ liveContexts, pinned }),
   ];
 
   appendStepSummary(
     [
       `## release gate drift — \`${branch}\``,
       '',
-      `- branch-protection required contexts: **${liveContexts.length}**`,
+      `- branch-protection required contexts: **${liveContexts.length}** (pinned: **${pinned.length}**)`,
       `- \`RELEASE_REQUIRED_CHECKS\`: **${required.length}**`,
       `- \`RELEASE_INFORMATIONAL_CHECKS\`: **${informational.length}**`,
       `- commits scanned for posted lane names: **${commits.length}**`,
@@ -223,8 +303,9 @@ async function main() {
   }
 
   notice(
-    `release gate is in sync: ${liveContexts.length} protected context(s) all accounted for, ` +
-      `${required.length} required lane(s) all still posting across ${commits.length} commit(s)`,
+    `release gate is in sync: ${liveContexts.length} protected context(s) all accounted for and ` +
+      `matching the ${pinned.length}-name in-tree pin exactly, ${required.length} required lane(s) ` +
+      `all still posting across ${commits.length} commit(s)`,
     { title: 'release gate drift' },
   );
 }
@@ -280,6 +361,46 @@ function selfTest() {
     }),
     [],
   );
+
+  // Direction C: equality holds, then each half of it broken on its own.
+  const goPin = [
+    'var branchProtectionContexts = []string{',
+    '\t"check",',
+    '\t"pr-body",',
+    '\t"property (PromQL + LogQL + TraceQL, rapid N=500)",',
+    '}',
+    '',
+    'const workflowsDir = "../../.github/workflows"',
+  ].join('\n');
+  const pinned = parsePinnedContexts(goPin);
+  assert.deepEqual(pinned, ['check', 'pr-body', 'property (PromQL + LogQL + TraceQL, rapid N=500)']);
+
+  assert.deepEqual(
+    pinnedProtectionDrift({ liveContexts: [...pinned].reverse(), pinned }),
+    [],
+    'the comparison is set-wise, so ordering alone is not drift',
+  );
+
+  // The regression this direction exists for: a pinned context silently absent
+  // from the live setting, which no in-tree gate can observe.
+  const cMissing = pinnedProtectionDrift({
+    liveContexts: ['check', 'property (PromQL + LogQL + TraceQL, rapid N=500)'],
+    pinned,
+  });
+  assert.equal(cMissing.length, 1, `expected exactly one problem, got: ${cMissing.join('; ')}`);
+  assert.match(cMissing[0], /^pr-body: pinned in branchProtectionContexts but NOT enforced/);
+
+  const cExtra = pinnedProtectionDrift({ liveContexts: [...pinned, 'brand-new-gate'], pinned });
+  assert.equal(cExtra.length, 1, `expected exactly one problem, got: ${cExtra.join('; ')}`);
+  assert.match(cExtra[0], /^brand-new-gate: enforced by branch protection on `main` but absent/);
+
+  // Both halves at once are reported together, not short-circuited: a rename
+  // presents as exactly this pair, and seeing only one end of it hides which.
+  assert.equal(pinnedProtectionDrift({ liveContexts: ['check', 'pr-boddy'], pinned }).length, 3);
+
+  // A pin that cannot be parsed must throw rather than compare against nothing.
+  assert.throws(() => parsePinnedContexts('var other = []string{"check"}'), /slice literal not found/);
+  assert.throws(() => parsePinnedContexts('var branchProtectionContexts = []string{}'), /parsed as empty/);
 
   log('release-gate-drift self-test: OK');
 }

@@ -666,16 +666,23 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
   scanned commit window no longer matches a lane, so the next release waits out
   its full window and aborts mid-publish. The window spans many commits because a
   single commit's check-runs are a subset of the lane inventory (a docs-only push
-  skips `check`); absent from every commit means dead, not skipped. Pure exported
-  `parseBlockScalar` / `parseCheckLists` / `protectionDrift` / `laneDrift` plus a
-  `--self-test` the job runs first.
+  skips `check`); absent from every commit means dead, not skipped. PIN DRIFT:
+  set equality between the live contexts and `branchProtectionContexts`, the
+  repo's own pin of them in `test/regression/release_required_checks_test.go`.
+  Every in-tree gate reasons off that pin because the endpoint needs repo-admin
+  rights no test token has, so a pinned-but-unenforced context is a lane that
+  posts green on every PR while contributing nothing to the merge decision — and
+  nothing else in the tree can tell. Pure exported `parseBlockScalar` /
+  `parseCheckLists` / `parsePinnedContexts` / `protectionDrift` / `laneDrift` /
+  `pinnedProtectionDrift` plus a `--self-test` the job runs first.
   - Env: `GITHUB_TOKEN` (must be repo-ADMIN — branch protection is unreadable
     with the default workflow token at any `permissions:` level, so the workflow
     passes `RELEASE_PAT`), `GITHUB_REPOSITORY`, `GITHUB_API_URL` (default
     `https://api.github.com`), `DRIFT_BRANCH` (default `main`), `DRIFT_HISTORY`
     (default 20 commits), `RELEASE_WORKFLOW` (default
-    `.github/workflows/release.yml`).
-  - Exit: `0` when both directions are clean; `1` on any drift, an API read
+    `.github/workflows/release.yml`), `PROTECTION_PIN_FILE` (default
+    `test/regression/release_required_checks_test.go`).
+  - Exit: `0` when all three directions are clean; `1` on any drift, an API read
     failure, an unparseable release.yml, or protection reporting zero contexts
     (fails closed — unreadable protection is not a clean bill of health).
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The

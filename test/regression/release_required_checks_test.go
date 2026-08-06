@@ -42,9 +42,21 @@ import (
 //	  --jq '.required_status_checks.contexts[]'
 //
 // and this copy exists so the totality assertion below has something to be
-// total OVER. Adding a required check to branch protection without adding it
-// here is the one drift this file cannot see; adding it here without wiring it
-// into release.yml fails immediately.
+// total OVER. Adding it here without wiring it into release.yml fails
+// immediately.
+//
+// This copy and the live setting cannot be compared from here — that endpoint
+// needs repo-admin rights, which no test token carries — so the comparison
+// runs where a token that does exist: `pinnedProtectionDrift` in
+// .github/scripts/release-gate-drift.mjs asserts set EQUALITY between this
+// slice and the live contexts, on the scheduled drift lane. Both halves matter
+// and both have bitten. A context enforced live but missing here is certified
+// by absence on the maintenance path. A context named here but not enforced
+// live is worse, because nothing in the tree can see it: the lane keeps posting
+// green on every PR while contributing nothing to the merge decision, and every
+// gate that reads this slice — including the release preflight — agrees with
+// itself about a configuration that is not in force. `pr-body` spent time in
+// exactly that state.
 //
 // The relation is a SUBSET, not equality: RELEASE_REQUIRED_CHECKS also names
 // release-ONLY gates that no PR ever waits on — `migration-e2e` (no
