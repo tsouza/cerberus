@@ -378,7 +378,7 @@ func TestConformance_TempoSearchTagsWire(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		// V2: three scopes — resource, span, intrinsic.
+		// V2: one bucket per scope that reported a key, plus intrinsic.
 		seen := map[string]bool{}
 		for _, s := range r.Scopes {
 			seen[s.Name] = true

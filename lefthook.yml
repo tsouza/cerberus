@@ -18,15 +18,21 @@ pre-commit:
   parallel: true
   commands:
     gofumpt:
+      # `-extra` matches `.golangci.yml`'s `gofumpt.extra-rules: true`, which
+      # the required `lint` gate applies. Without the flag this hook reports
+      # success over a file CI then rejects — the worst kind of formatter.
       glob: "*.go"
       stage_fixed: true
       run: |
-        gofumpt -w {staged_files}
+        gofumpt -extra -w {staged_files}
     goimports:
+      # `-local` matches `.golangci.yml`'s `goimports.local-prefixes`, so
+      # cerberus's own imports group separately here exactly as the `lint` gate
+      # requires. Same reason as the `-extra` above.
       glob: "*.go"
       stage_fixed: true
       run: |
-        goimports -w {staged_files}
+        goimports -w -local github.com/tsouza/cerberus {staged_files}
     md-table-align:
       # MD060 (table-column-style: aligned) has no auto-fixer in
       # markdownlint-cli2 — pad cell widths before --fix sees the file.

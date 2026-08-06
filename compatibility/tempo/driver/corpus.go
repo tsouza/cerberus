@@ -15,10 +15,16 @@
 //	                            `traces` / `traces_v2`)
 //	-- tag_name --              attribute key whose values to enumerate
 //	                            (tag_values_v1 / tag_values_v2 only)
-//	-- scope --                 optional `?scope=` filter for tags_v2 (one of
-//	                            resource | span | intrinsic | none); empty
-//	                            omits the parameter so both backends return
-//	                            the unfiltered scope set
+//	-- scope --                 optional `?scope=` filter for tags_v2. The
+//	                            accepted set is upstream Tempo's:
+//	                            none | trace | span | resource | event | link |
+//	                            instrumentation (traceql.AttributeScopeFromString)
+//	                            plus intrinsic (api.ParseSearchTagsRequest's
+//	                            carve-out). Empty omits the parameter, so both
+//	                            backends return the unfiltered scope set.
+//	                            Anything outside that set — `all` included — is a
+//	                            400 on both backends and belongs in an
+//	                            `-- expect_status --` case.
 //	-- step --                  step duration (e.g. "60s") — only for metrics_range
 //	-- spss --                  integer; sent as the `spss` (spans-per-spanset)
 //	                            URL param on search cases AND switches on the
@@ -140,8 +146,10 @@ type CorpusCase struct {
 	TagName string
 
 	// Scope is the optional `?scope=` query parameter for tags_v2. One of
-	// "resource" / "span" / "intrinsic" / "none". Empty leaves the
-	// parameter off the URL (Tempo defaults to returning every scope).
+	// upstream Tempo's scope keywords — "none" / "trace" / "span" /
+	// "resource" / "event" / "link" / "instrumentation" / "intrinsic".
+	// Empty leaves the parameter off the URL (Tempo defaults to returning
+	// every scope).
 	Scope string
 
 	// Step is only consulted when Endpoint == "metrics_range". The string

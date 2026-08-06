@@ -78,12 +78,18 @@ type TagScope struct {
 }
 
 // scope query-param values accepted by /api/v2/search/tags. Mirrors
-// upstream Tempo's `pkg/api.ParseSearchTagsRequest` semantics:
+// upstream Tempo's `pkg/api.ParseSearchTagsRequest` semantics — the
+// whole `traceql.AttributeScopeFromString` set plus the `intrinsic`
+// carve-out that function does not know about:
 //
-//   - "resource"  → only the resource scope bucket
-//   - "span"      → only the span scope bucket
-//   - "intrinsic" → only the intrinsic bucket
-//   - "none" or "" → every scope (default; matches AttributeScopeNone)
+//   - "resource"        → only the resource-attribute bucket
+//   - "span"            → only the span-attribute bucket
+//   - "event"           → only the span-event attribute bucket
+//   - "link"            → only the span-link attribute bucket
+//   - "instrumentation" → only the instrumentation-scope attribute bucket
+//   - "intrinsic"       → only the intrinsic bucket
+//   - "trace"           → a scope with no attribute family behind it
+//   - "none" or ""      → every scope (default; matches AttributeScopeNone)
 //
 // Anything else is a 400. In particular "all" is *not* a scope:
 // upstream's `traceql.AttributeScopeFromString` folds it to
@@ -92,24 +98,31 @@ type TagScope struct {
 // permissive backend, which silently trains clients into a request
 // shape that breaks the moment they point at real Tempo.
 const (
-	tagScopeResource  = "resource"
-	tagScopeSpan      = "span"
-	tagScopeIntrinsic = "intrinsic"
-	tagScopeNone      = "none"
+	tagScopeResource        = "resource"
+	tagScopeSpan            = "span"
+	tagScopeEvent           = "event"
+	tagScopeLink            = "link"
+	tagScopeInstrumentation = "instrumentation"
+	tagScopeIntrinsic       = "intrinsic"
+	tagScopeTrace           = "trace"
+	tagScopeNone            = "none"
 )
 
+// nestedAttributesSubfield is the sub-column of the OTel-CH `Events` /
+// `Links` Nested columns that carries the per-event / per-link
+// attribute map, stored as `Array(Map(String, String))` — one map per
+// event / link on the span row.
+const nestedAttributesSubfield = "Attributes"
+
 // handleSearchTags implements `GET /api/search/tags`. Returns the union
-// of every dynamic attribute key (span + resource maps) plus the static
-// intrinsic-span list, sorted ascending. Honours optional `start`/`end`
-// time bounds (Unix seconds; nanoseconds also accepted via the same
-// heuristic Loki uses, see parseTempoTime).
+// of every dynamic attribute key across the scopes the request selects,
+// sorted ascending. Honours optional `start`/`end` time bounds (Unix
+// seconds; nanoseconds also accepted via the same heuristic Loki uses,
+// see parseTempoTime).
 //
-// SQL shape:
+// SQL shape — one query per scope bucket, e.g. for `span`:
 //
-//	SELECT DISTINCT arrayJoin(arrayConcat(
-//	    mapKeys(`SpanAttributes`),
-//	    mapKeys(`ResourceAttributes`)
-//	)) AS `tag`
+//	SELECT DISTINCT arrayJoin(mapKeys(`SpanAttributes`))
 //	FROM `otel_traces`
 //	WHERE `Timestamp` >= ? AND `Timestamp` <= ?
 //
@@ -120,15 +133,16 @@ func (h *Handler) handleSearchTags(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSearchTagsV2 implements `GET /api/v2/search/tags`. Same data
-// as V1, partitioned by scope (resource / span / intrinsic). Grafana's
-// Tempo datasource queries V2 when available.
+// as V1, partitioned by scope (one bucket per attribute family the
+// schema carries, plus intrinsic). Grafana's Tempo datasource queries
+// V2 when available.
 func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, r *http.Request) {
 	h.respondTags(w, r, true)
 }
 
-// respondTags is the shared core of V1 + V2: it runs two independent
-// CH lookups (one per attribute map) so the V2 response can keep the
-// resource-vs-span split, then unions them for the V1 envelope.
+// respondTags is the shared core of V1 + V2: it runs one independent CH
+// lookup per attribute-backed scope so the V2 response can keep the
+// per-scope split, then unions them for the V1 envelope.
 //
 // The optional `?scope=` query parameter filters which buckets are
 // fetched and returned. Honouring it on V2 was missing before — the
@@ -152,42 +166,27 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		return
 	}
 
-	var resourceTags, spanTags []string
-	if scope == tagScopeNone || scope == tagScopeResource {
-		resourceTags, err = h.fetchTagKeys(r.Context(), h.Schema.ResourceAttributesColumn, start, end)
-		if err != nil {
-			h.Logger.Error("cerberus tempo /search/tags resource CH query failed", "err", err)
-			writeError(w, tagsErrStatus(err), "", "", err)
-			return
-		}
+	scopes, err := h.collectAttributeTagScopes(r.Context(), scope, start, end)
+	if err != nil {
+		writeError(w, tagsErrStatus(err), "", "", err)
+		return
 	}
-	if scope == tagScopeNone || scope == tagScopeSpan {
-		spanTags, err = h.fetchTagKeys(r.Context(), h.Schema.AttributesColumn, start, end)
-		if err != nil {
-			h.Logger.Error("cerberus tempo /search/tags span CH query failed", "err", err)
-			writeError(w, tagsErrStatus(err), "", "", err)
-			return
-		}
+	var all []string
+	for _, s := range scopes {
+		all = append(all, s.Tags...)
 	}
 
 	if v2 {
-		scopes := make([]TagScope, 0, 3)
-		if scope == tagScopeNone || scope == tagScopeResource {
-			scopes = append(scopes, TagScope{Name: tagScopeResource, Tags: sortedUnique(resourceTags)})
-		}
-		if scope == tagScopeNone || scope == tagScopeSpan {
-			scopes = append(scopes, TagScope{Name: tagScopeSpan, Tags: sortedUnique(spanTags)})
-		}
 		if scope == tagScopeNone || scope == tagScopeIntrinsic {
 			scopes = append(scopes, TagScope{Name: tagScopeIntrinsic, Tags: append([]string(nil), intrinsicTags...)})
+		}
+		if scopes == nil {
+			scopes = []TagScope{}
 		}
 		writeJSON(w, http.StatusOK, SearchTagsResponseV2{Scopes: scopes})
 		return
 	}
 
-	all := make([]string, 0, len(resourceTags)+len(spanTags)+len(intrinsicTags))
-	all = append(all, resourceTags...)
-	all = append(all, spanTags...)
 	// V1 mirrors upstream Tempo: intrinsics only surface when the caller
 	// asks for `scope=intrinsic` explicitly. The default (and `scope=none`)
 	// returns dynamic attributes only — leaking intrinsics here puts the
@@ -196,6 +195,74 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		all = append(all, intrinsicTags...)
 	}
 	writeJSON(w, http.StatusOK, SearchTagsResponse{TagNames: sortedUnique(all)})
+}
+
+// collectAttributeTagScopes runs the key lookup for every
+// attribute-backed scope the requested `scope` selects, and returns
+// the buckets that carry at least one key, sorted and de-duplicated.
+//
+// A scope with no keys in the window contributes no bucket: upstream's
+// tags-V2 combiner materialises a bucket only from keys the storage
+// layer actually reported, so emitting an empty one would put cerberus
+// a scope ahead of reference Tempo.
+func (h *Handler) collectAttributeTagScopes(ctx context.Context, scope string, start, end time.Time) ([]TagScope, error) {
+	var scopes []TagScope
+	for _, src := range attributeTagScopes(h.Schema) {
+		if scope != tagScopeNone && scope != src.name {
+			continue
+		}
+		tags, err := h.fetchTagKeys(ctx, src.name, src.keys, start, end)
+		if err != nil {
+			h.Logger.Error("cerberus tempo tag-key lookup failed", "scope", src.name, "err", err)
+			return nil, err
+		}
+		if tags = sortedUnique(tags); len(tags) == 0 {
+			continue
+		}
+		scopes = append(scopes, TagScope{Name: src.name, Tags: tags})
+	}
+	return scopes, nil
+}
+
+// attributeTagScope binds one scope bucket to the CH projection that
+// enumerates its attribute keys.
+type attributeTagScope struct {
+	name string
+	keys chsql.Frag
+}
+
+// attributeTagScopes returns the scope buckets whose keys come from a
+// column on the spans table, in the order upstream Tempo's storage
+// layer scans them (`vparquet4/block_search_tags.go`).
+//
+// A scope the configured schema carries no column for is absent from
+// the slice rather than present-and-empty: `trace` has no attribute
+// family at all in either backend, and the upstream OTel-CH traces DDL
+// declares no instrumentation-scope attribute map (a custom schema may
+// point ScopeAttributesColumn at one, which puts the bucket back).
+// Requesting such a scope is still a 200 — upstream accepts the value
+// and answers with whatever its storage reports, which is nothing.
+func attributeTagScopes(s schema.Traces) []attributeTagScope {
+	out := make([]attributeTagScope, 0, 5)
+	add := func(name string, keys chsql.Frag) {
+		out = append(out, attributeTagScope{name: name, keys: keys})
+	}
+	if s.ResourceAttributesColumn != "" {
+		add(tagScopeResource, distinctMapKeysFrag(s.ResourceAttributesColumn))
+	}
+	if s.ScopeAttributesColumn != "" {
+		add(tagScopeInstrumentation, distinctMapKeysFrag(s.ScopeAttributesColumn))
+	}
+	if s.AttributesColumn != "" {
+		add(tagScopeSpan, distinctMapKeysFrag(s.AttributesColumn))
+	}
+	if s.EventsColumn != "" {
+		add(tagScopeEvent, distinctNestedMapKeysFrag(s.EventsColumn))
+	}
+	if s.LinksColumn != "" {
+		add(tagScopeLink, distinctNestedMapKeysFrag(s.LinksColumn))
+	}
+	return out
 }
 
 // parseTagScope normalises the `?scope=` query parameter against the
@@ -208,7 +275,8 @@ func parseTagScope(raw string) (string, error) {
 	switch raw {
 	case "", tagScopeNone:
 		return tagScopeNone, nil
-	case tagScopeResource, tagScopeSpan, tagScopeIntrinsic:
+	case tagScopeResource, tagScopeSpan, tagScopeEvent, tagScopeLink,
+		tagScopeInstrumentation, tagScopeIntrinsic, tagScopeTrace:
 		return raw, nil
 	default:
 		return "", &tagScopeError{raw: raw}
@@ -221,22 +289,22 @@ type tagScopeError struct{ raw string }
 
 func (e *tagScopeError) Error() string { return "invalid scope: " + e.raw }
 
-// fetchTagKeys runs the mapKeys-distinct lookup for a single attribute
-// map column. Splitting into two queries (rather than one with
-// arrayConcat) keeps the V2 scope partition cheap — V1 unions the two
-// slices in Go.
-func (h *Handler) fetchTagKeys(ctx context.Context, mapCol string, start, end time.Time) ([]string, error) {
-	sqlStr, args := buildSearchTagsSQL(h.Schema, mapCol, start, end)
-	h.Logger.Debug("cerberus tempo /search/tags", "col", mapCol, "sql", sqlStr, "args", args)
+// fetchTagKeys runs the distinct-key lookup for a single scope bucket.
+// Keeping one query per scope (rather than one with arrayConcat) is
+// what lets the V2 partition skip the buckets the caller didn't ask
+// for — V1 unions the surviving slices in Go.
+func (h *Handler) fetchTagKeys(ctx context.Context, scope string, keys chsql.Frag, start, end time.Time) ([]string, error) {
+	sqlStr, args := buildSearchTagsSQL(h.Schema, keys, start, end)
+	h.Logger.Debug("cerberus tempo /search/tags", "scope", scope, "sql", sqlStr, "args", args)
 	return h.Client.QueryStrings(ctx, sqlStr, args...)
 }
 
-// buildSearchTagsSQL builds the SELECT for one attribute map column.
-// Exposed for tests so the SQL shape is pinned without spinning up the
-// HTTP layer.
-func buildSearchTagsSQL(s schema.Traces, mapCol string, start, end time.Time) (string, []any) {
+// buildSearchTagsSQL builds the SELECT for one scope bucket's
+// key-enumerating projection. Exposed for tests so the SQL shape is
+// pinned without spinning up the HTTP layer.
+func buildSearchTagsSQL(s schema.Traces, keys chsql.Frag, start, end time.Time) (string, []any) {
 	sb := chsql.NewQuery().
-		Select(distinctMapKeysFrag(mapCol)).
+		Select(keys).
 		From(chsql.Col(s.SpansTable))
 	if !start.IsZero() {
 		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
@@ -258,6 +326,34 @@ func distinctMapKeysFrag(col string) chsql.Frag {
 		chsql.Call(
 			"arrayJoin",
 			chsql.Call("mapKeys", chsql.Col(col)),
+		),
+	)
+}
+
+// distinctNestedMapKeysFrag is the same idea one nesting level up:
+// `Events.Attributes` / `Links.Attributes` are Array(Map(...)) — one
+// map per event / link on the span row — so the keys of every element
+// are collected with arrayMap+mapKeys, flattened into a single key
+// array, and then unrolled by arrayJoin.
+//
+// Emits "DISTINCT arrayJoin(arrayFlatten(arrayMap(m -> mapKeys(m),
+// `<col>`.`Attributes`)))". `nestedMapParam` is the lambda's bound
+// element. The sub-column is addressed with the same qualified-identifier
+// spelling every other Nested reference in the emitter uses (see
+// Builder.exprNestedArrayExists).
+func distinctNestedMapKeysFrag(col string) chsql.Frag {
+	const nestedMapParam = "m"
+	return chsql.Distinct(
+		chsql.Call(
+			"arrayJoin",
+			chsql.Call(
+				"arrayFlatten",
+				chsql.Call(
+					"arrayMap",
+					chsql.Lambda1(nestedMapParam, chsql.Call("mapKeys", chsql.BareIdent(nestedMapParam))),
+					chsql.Qual(col, nestedAttributesSubfield),
+				),
+			),
 		),
 	)
 }

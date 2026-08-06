@@ -169,8 +169,10 @@ func TestSearchTags_SingleFrame(t *testing.T) {
 }
 
 // TestSearchTagsV2_ScopeBuckets asserts the V2 RPC streams one frame
-// containing the three scope buckets (resource / span / intrinsic),
-// each carrying the sorted attribute keys for that scope. The
+// containing one bucket per scope that reported a key, each carrying
+// the sorted attribute keys for that scope. Only resource and span are
+// populated here, so those two plus intrinsic are the whole envelope —
+// the event / link scopes report nothing and contribute no bucket. The
 // intrinsic bucket comes from cerberus's static inventory so its
 // length pins to len(IntrinsicTags()) regardless of what the fake
 // querier returns.
@@ -253,6 +255,67 @@ func TestSearchTagsV2_ScopeFilter(t *testing.T) {
 		if strings.Contains(sql, "`SpanAttributes`") {
 			t.Errorf("scope=resource leaked a SpanAttributes lookup: %s", sql)
 		}
+	}
+}
+
+// TestSearchTagsV2_UpstreamScopeVocabulary asserts the gRPC surface
+// accepts every scope keyword upstream Tempo does, and partitions the
+// nested `event` / `link` families into their own buckets. Both
+// surfaces route through Handler.CollectAttributeTagScopes, so this
+// pins that the RPC cannot drift from the HTTP envelope on which
+// scopes exist.
+func TestSearchTagsV2_UpstreamScopeVocabulary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		scope     string
+		wantScope string
+		wantTag   string
+	}{
+		{scope: "event", wantScope: "event", wantTag: "exception.type"},
+		{scope: "link", wantScope: "link", wantTag: "link.kind"},
+		// `trace` is a real upstream keyword with no attribute family
+		// behind it: accepted, and answered with intrinsics only.
+		{scope: "trace"},
+		{scope: "instrumentation"},
+	} {
+		t.Run("scope="+tc.scope, func(t *testing.T) {
+			t.Parallel()
+			q := &fakeQuerier{stringsBySQL: map[string][]string{
+				"`Events`.`Attributes`": {"exception.type"},
+				"`Links`.`Attributes`":  {"link.kind"},
+			}}
+			client := newTagsTestServer(t, q)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			t.Cleanup(cancel)
+			stream, err := client.SearchTagsV2(ctx, &tempopb.SearchTagsRequest{Scope: tc.scope})
+			if err != nil {
+				t.Fatalf("open SearchTagsV2 stream: %v", err)
+			}
+			frames, err := recvAll[tempopb.SearchTagsV2Response](t, stream)
+			if err != nil {
+				t.Fatalf("recvAll: %v", err)
+			}
+			if len(frames) != 1 {
+				t.Fatalf("frame count: want 1, got %d", len(frames))
+			}
+			scopes := frames[0].GetScopes()
+			if tc.wantScope == "" {
+				if len(scopes) != 0 {
+					t.Fatalf("scope=%s: want no buckets, got %v", tc.scope, scopes)
+				}
+				return
+			}
+			if len(scopes) != 1 {
+				t.Fatalf("scope=%s: want 1 bucket, got %d (%v)", tc.scope, len(scopes), scopes)
+			}
+			if scopes[0].GetName() != tc.wantScope {
+				t.Errorf("scope name: want %q, got %q", tc.wantScope, scopes[0].GetName())
+			}
+			if got := scopes[0].GetTags(); len(got) != 1 || got[0] != tc.wantTag {
+				t.Errorf("%s bucket: want [%s], got %v", tc.wantScope, tc.wantTag, got)
+			}
+		})
 	}
 }
 

@@ -218,10 +218,10 @@ const (
 	SurfaceTempoTagValuesV2 = "tag-values-v2"
 )
 
-// tempoTagDiscoveryScopeAll requests every scope bucket (resource, span,
-// intrinsic) on the v2 tags endpoint. The unfiltered per-scope tag-NAME diff
-// is exact and complete on its own — see corpus_tags.go — so this probe is
-// never narrowed to a single scope.
+// tempoTagDiscoveryScopeAll requests every scope bucket the backend carries
+// on the v2 tags endpoint. The unfiltered per-scope tag-NAME diff is exact
+// and complete on its own — see corpus_tags.go — so this probe is never
+// narrowed to a single scope.
 const tempoTagDiscoveryScopeAll = "none"
 
 // TempoTagDiscoveryDialect speaks Tempo's four tag/tag-value discovery
