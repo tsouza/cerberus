@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -788,9 +789,101 @@ type Meta struct {
 	// etc. The engine doesn't read it; it's threaded through Result
 	// so the handler can switch on it without re-deriving.
 	ResponseShape string
+	// Guards are the value-domain checks the adapter's lowering could not
+	// settle on its own — see [Guard]. The engine runs every one of them,
+	// in order, BEFORE the main statement and fails the request with the
+	// first violation. Nil for every language and query shape with
+	// nothing to check, which is the overwhelming majority.
+	Guards []Guard
 	// Extra is an adapter-specific bag so per-language knobs can ride
 	// through Meta without bloating the type. Engine doesn't read it.
 	Extra map[string]any
+}
+
+// Guard is one value-domain check a language could not settle while
+// lowering, because the value it judges only exists once ClickHouse has
+// produced it.
+//
+// PromQL's evaluation-time parameter domains are the motivating case: a
+// `topk(scalar(x), v)` K that turns out to be NaN, a
+// `double_exponential_smoothing(v[5m], scalar(x), 0.3)` smoothing factor
+// that turns out to be 1.5. Reference Prometheus evaluates the parameter
+// expression first, inspects the resulting value series, and aborts the
+// query with a message quoting the offending value. Neither half of that
+// survives being folded into the main statement: ClickHouse's `throwIf`
+// requires a constant message, so the value cannot be interpolated into
+// it, and a predicate that silently substitutes a sentinel answers a
+// query the reference rejects — a wrong answer, not a lenient one.
+//
+// So the check rides beside the plan as its own query. The engine runs
+// Plan, hands the values it produced to Check in the order they came
+// back, and fails the request with a [GuardError] wrapping Check's error
+// — never reaching the main statement, exactly as reference never
+// reaches its aggregation.
+type Guard struct {
+	// Name identifies the guarded quantity in the wrapped error and in
+	// traces, e.g. "topk K".
+	Name string
+	// Plan projects the guarded quantity's value series as canonical
+	// Samples: one row per evaluation step for a range query, one row for
+	// an instant query.
+	Plan chplan.Node
+	// Check applies the domain to the values Plan produced and returns
+	// the reference-shaped error for a violation, or nil to proceed.
+	Check func(values []float64) error
+}
+
+// GuardError reports a [Guard] whose Check rejected the values its plan
+// produced. It carries the guard's own message verbatim, because that
+// message is the user-visible contract — it is what reference Prometheus
+// would have answered — and handlers map it to the reference's
+// evaluation-error status rather than to an upstream-failure 5xx.
+type GuardError struct {
+	// Guard is the failing guard's Name.
+	Guard string
+	// Err is the domain violation, in reference Prometheus's own wording.
+	Err error
+}
+
+func (e *GuardError) Error() string { return e.Err.Error() }
+
+func (e *GuardError) Unwrap() error { return e.Err }
+
+// runGuards evaluates meta's guards, in order, and returns the first
+// violation as a [GuardError].
+//
+// Each guard is a full query in its own right, so it goes through the
+// same optimize → emit → execute pipeline the main statement does; a
+// guard plan that could not be emitted or executed is an internal
+// failure, not a domain violation, and keeps its own error shape.
+//
+// The values are handed to Check in the order ClickHouse returned them,
+// sorted by timestamp so a domain whose message names the FIRST
+// offending step (double_exponential_smoothing's does) names the same
+// step reference would.
+func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
+	for _, g := range meta.Guards {
+		plan := e.Optimizer.Run(ctx, g.Plan)
+		sql, args, err := emitForHead(ctx, lang, plan)
+		if err != nil {
+			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
+		}
+		samples, err := e.Client.Query(chclient.WithProgressFor(ctx, lang.Name()), sql, args...)
+		if err != nil {
+			return fmt.Errorf("engine: execute: guard %s: %w", g.Name, err)
+		}
+		sort.SliceStable(samples, func(i, j int) bool {
+			return samples[i].Timestamp.Before(samples[j].Timestamp)
+		})
+		values := make([]float64, len(samples))
+		for i, s := range samples {
+			values[i] = s.Value
+		}
+		if err := g.Check(values); err != nil {
+			return &GuardError{Guard: g.Name, Err: err}
+		}
+	}
+	return nil
 }
 
 // Result is what Engine.Query / Engine.QueryPlan return on success.
@@ -940,6 +1033,14 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// instrumentation lives on QueryPlanCursor so the streaming path
 	// gets the same gauge bump.
 	defer telemetry.ObserveQueryInflight(ctx, lang.Name())()
+
+	// Deferred value-domain checks, before anything else touches the main
+	// statement: a guard violation is a rejection of the whole query, so
+	// running the query first and discarding it would be wasted work and
+	// would report the wrong thing on the way out.
+	if err := e.runGuards(ctx, lang, meta); err != nil {
+		return Result{}, err
+	}
 
 	// Wrap-projection. The adapter owns the per-language switch
 	// (canonical vs. derived vs. structural-join shape); the engine
@@ -1226,6 +1327,12 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// QueryPlanCursor returns); the cursor's subsequent drain isn't
 	// "in engine" anymore and shouldn't double-count.
 	defer telemetry.ObserveQueryInflight(ctx, lang.Name())()
+
+	// Deferred value-domain checks — symmetrical with QueryPlan, so the
+	// streaming path rejects exactly what the eager path rejects.
+	if err := e.runGuards(ctx, lang, meta); err != nil {
+		return CursorResult{}, err
+	}
 
 	plan = lang.ProjectSamples(plan, meta)
 	if !meta.IsTraceByID {

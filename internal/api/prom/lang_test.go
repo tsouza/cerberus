@@ -141,7 +141,7 @@ func TestLang_Parse_LowerError(t *testing.T) {
 	if ps.stage != "lower" {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
-	if !strings.Contains(err.Error(), "K must not be NaN") {
+	if !strings.Contains(err.Error(), "Parameter value is NaN") {
 		t.Errorf("err message: got %q, want it to mention the NaN-K rejection", err.Error())
 	}
 }

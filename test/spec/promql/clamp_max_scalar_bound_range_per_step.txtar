@@ -1,0 +1,81 @@
+# A computed scalar argument is re-evaluated at EVERY step of a range
+# query, exactly as reference Prometheus does (`newFParams` evaluates the
+# parameter expression once per evaluation step before the enclosing call
+# sees it). This fixture is the executable proof, so its scalar source
+# deliberately CHANGES across the window: `bound` is 10 at 00:00 and
+# climbs by 10 each minute, and `cpu` is a flat 100. Over the fixture's
+# `[2026-01-01 00:00:00, 00:05:00]` window at a 1m step the six anchors
+# must therefore clamp to 10, 20, 30, 40, 50, 60.
+#
+# Binding the scalar ONCE for the whole statement — the shape a lowering
+# gets by forcing the argument into an instant context — cannot produce
+# that: it yields the same number at all six anchors. A fixture whose
+# scalar source is constant cannot tell the two apart, which is why this
+# one varies at every anchor.
+-- query.promql --
+clamp_max(cpu, scalar(bound))
+-- range_step --
+1m
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('cpu', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+    ('cpu', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 100.0),
+    ('cpu', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 100.0),
+    ('cpu', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 100.0),
+    ('cpu', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 100.0),
+    ('cpu', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 100.0);
+INSERT INTO otel_metrics_gauge VALUES
+    ('bound', map('env', 'prod'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('bound', map('env', 'prod'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('bound', map('env', 'prod'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('bound', map('env', 'prod'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('bound', map('env', 'prod'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('bound', map('env', 'prod'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 10],
+  ["", {"job": "api"}, "2026-01-01T00:01:00Z", 20],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 30],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 40],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 50],
+  ["", {"job": "api"}, "2026-01-01T00:05:00Z", 60]
+]
+-- args --
+[0] string = ""
+[1] int64 = 1
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = ""
+[7] string = "service_name"
+[8] string = "bound"
+[9] int64 = 1
+[10] string = "service.name"
+[11] string = "service_name"
+[12] string = "service.name"
+[13] string = "service_name"
+[14] string = ""
+[15] string = "service_name"
+[16] string = "bound"
+[17] string = "service.name"
+[18] string = "service_name"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = ""
+[22] string = "service_name"
+[23] string = "cpu"
+-- chplan --
+Project ["" AS MetricName, Attributes, TimeUnix, if(isNaN(ifNull(arrayElement(scalarSubquery{Project [mapFromArrays(_cerb_sks, _cerb_svs) AS Value] ; Aggregate groupBy=[] funcs=[groupArray(_cerb_sts) AS _cerb_sks, groupArray(_cerb_sv) AS _cerb_svs] ; Project [toUnixTimestamp64Nano(TimeUnix) AS _cerb_sts, toNullable(if((_cerb_scnt = 1), _cerb_sval, NaN)) AS _cerb_sv] ; Aggregate groupBy=[TimeUnix AS TimeUnix] funcs=[count() AS _cerb_scnt, any(Value) AS _cerb_sval] ; RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z ; Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value] ; Filter predicate=(MetricName = "bound") ; Scan(merge(otel_metrics_gauge|otel_metrics_sum))}, toUnixTimestamp64Nano(TimeUnix)), NaN)), NaN, least(Value, ifNull(arrayElement(scalarSubquery{Project [mapFromArrays(_cerb_sks, _cerb_svs) AS Value] ; Aggregate groupBy=[] funcs=[groupArray(_cerb_sts) AS _cerb_sks, groupArray(_cerb_sv) AS _cerb_svs] ; Project [toUnixTimestamp64Nano(TimeUnix) AS _cerb_sts, toNullable(if((_cerb_scnt = 1), _cerb_sval, NaN)) AS _cerb_sv] ; Aggregate groupBy=[TimeUnix AS TimeUnix] funcs=[count() AS _cerb_scnt, any(Value) AS _cerb_sval] ; RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z ; Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value] ; Filter predicate=(MetricName = "bound") ; Scan(merge(otel_metrics_gauge|otel_metrics_sum))}, toUnixTimestamp64Nano(TimeUnix)), NaN))) AS Value]
+  RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName = "cpu")
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, if(isNaN(ifNull(arrayElement((SELECT mapFromArrays(`_cerb_sks`, `_cerb_svs`) AS `Value` FROM (SELECT groupArray(`_cerb_sts`) AS `_cerb_sks`, groupArray(`_cerb_sv`) AS `_cerb_svs` FROM (SELECT toUnixTimestamp64Nano(`TimeUnix`) AS `_cerb_sts`, toNullable(if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0))) AS `_cerb_sv` FROM (SELECT `TimeUnix` AS `TimeUnix`, toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) GROUP BY `TimeUnix`)))), toUnixTimestamp64Nano(`TimeUnix`)), (0.0/0))), (0.0/0), least(`Value`, ifNull(arrayElement((SELECT mapFromArrays(`_cerb_sks`, `_cerb_svs`) AS `Value` FROM (SELECT groupArray(`_cerb_sts`) AS `_cerb_sks`, groupArray(`_cerb_sv`) AS `_cerb_svs` FROM (SELECT toUnixTimestamp64Nano(`TimeUnix`) AS `_cerb_sts`, toNullable(if((`_cerb_scnt` = ?), `_cerb_sval`, (0.0/0))) AS `_cerb_sv` FROM (SELECT `TimeUnix` AS `TimeUnix`, toFloat64(count()) AS `_cerb_scnt`, any(`Value`) AS `_cerb_sval` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) GROUP BY `TimeUnix`)))), toUnixTimestamp64Nano(`TimeUnix`)), (0.0/0)))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))

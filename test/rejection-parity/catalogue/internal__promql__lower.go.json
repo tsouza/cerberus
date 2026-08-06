@@ -39,13 +39,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:limitRatioPredicate#a75ec376",
-      "message": "promql: limit_ratio ratio value is NaN",
-      "class": "rejection",
-      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:limitRatioPredicate#afc83b92",
       "message": "promql: limit_ratio ratio: %w",
       "class": "internal",
@@ -120,20 +113,6 @@
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
       "rationale": "the only caller (buildAggFunc) pre-filters to the seven operators this mapper handles"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:topKDomain#7f1f205b",
-      "message": "promql: %s K must not be NaN",
-      "class": "rejection",
-      "trigger_query": "topk(NaN, up)"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:topKDomain#ae02c31a",
-      "message": "promql: %s K %v overflows int64",
-      "class": "rejection",
-      "trigger_query": "topk(1e300, up)"
     }
   ]
 }

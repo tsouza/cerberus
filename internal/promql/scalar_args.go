@@ -17,6 +17,12 @@ import (
 const (
 	scalarCountAlias = "_cerb_scnt"
 	scalarValueAlias = "_cerb_sval"
+	// Aliases used by scalarStepPlan's per-step reduction: the step key,
+	// the per-step value, and the two arrays they are folded into.
+	scalarStepKeyAlias    = "_cerb_sts"
+	scalarStepValueAlias  = "_cerb_sv"
+	scalarStepKeysAlias   = "_cerb_sks"
+	scalarStepValuesAlias = "_cerb_svs"
 )
 
 // lowerScalarArg lowers a scalar-typed PromQL expression — the type
@@ -94,6 +100,16 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			if len(v.Args) != 1 {
 				return nil, fmt.Errorf("promql: scalar() expects 1 argument, got %d", len(v.Args))
 			}
+			if ctx.scalarsBindPerStep() {
+				inner, err := lower(v.Args[0], s, ctx)
+				if err != nil {
+					return nil, err
+				}
+				return scalarStepValue(scalarStepPlan(inner, s), s, ctx), nil
+			}
+			// Instant mode (or a pinned embedding position): one
+			// evaluation, so the single-value scalar subquery is the
+			// whole story.
 			scalarCtx := ctx
 			scalarCtx.step = 0
 			inner, err := lower(v.Args[0], s, scalarCtx)
@@ -167,7 +183,10 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 // MetricName/Attributes/TimeUnix/Value row, fanned across the step grid
 // in range mode.
 func lowerScalarTopLevel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	v, err := lowerScalarArg(c, s, ctx)
+	// The scalar lands directly above the StepGrid this projection is
+	// built on, so a per-step binding keys off the grid's own anchor
+	// column — the Sample timestamp column is this projection's OUTPUT.
+	v, err := lowerScalarArg(c, s, ctx.withStepGridAnchor())
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +235,141 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 				Alias: s.ValueColumn,
 			},
 		},
+	}
+}
+
+// scalarStepPlan is [scalarValuePlan]'s range-mode sibling: instead of
+// reducing the whole input to one value it reduces it to one value *per
+// evaluation step*, then folds the result into a single-row lookup table.
+//
+// Shape:
+//
+//	Project [mapFromArrays(_cerb_sks, _cerb_svs) AS Value]
+//	  Aggregate funcs=[groupArray(_cerb_sts) AS _cerb_sks,
+//	                   groupArray(_cerb_sv)  AS _cerb_svs]  (DropEmptyOnNoGroup=false)
+//	    Project [toUnixTimestamp64Nano(TimeUnix) AS _cerb_sts,
+//	             toNullable(if(_cerb_scnt = 1, _cerb_sval, nan)) AS _cerb_sv]
+//	      Aggregate group=[TimeUnix] funcs=[count() AS _cerb_scnt,
+//	                                        any(Value) AS _cerb_sval]
+//	        <input>
+//
+// The per-step reduction is `scalar()`'s own rule applied once per step —
+// the value of the step's single sample, NaN when the step has zero or
+// several samples — which is exactly what reference Prometheus computes
+// when it evaluates the scalar argument at each step.
+//
+// Folding those per-step values into a Map rather than leaving them as
+// rows is what keeps the embedding site a plain expression: the whole
+// table is one value of one row, so it still satisfies
+// chplan.ScalarSubquery's one-row/one-column contract, ClickHouse folds
+// the subquery to a constant once per statement, and every embedding of
+// the scalar reads it with an O(1) map lookup instead of a correlated
+// re-execution.
+//
+// The map's values are Nullable so a step the input has no row for reads
+// back as NULL rather than as ClickHouse's zero-valued default for the
+// element type; [scalarStepValue] turns that NULL into the NaN PromQL
+// defines for "no single sample at this step".
+func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
+	perStep := &chplan.Aggregate{
+		Input:          input,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
+		GroupByAliases: []string{s.TimestampColumn},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "count", Args: nil, Alias: scalarCountAlias},
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: scalarValueAlias},
+		},
+	}
+	keyed := &chplan.Project{
+		Input: perStep,
+		Projections: []chplan.Projection{
+			{
+				Expr: &chplan.FuncCall{
+					Name: "toUnixTimestamp64Nano",
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
+				},
+				Alias: scalarStepKeyAlias,
+			},
+			{
+				Expr: &chplan.FuncCall{
+					Name: "toNullable",
+					Args: []chplan.Expr{&chplan.FuncCall{
+						Name: "if",
+						Args: []chplan.Expr{
+							&chplan.Binary{
+								Op:    chplan.OpEq,
+								Left:  &chplan.ColumnRef{Name: scalarCountAlias},
+								Right: &chplan.LitInt{V: 1},
+							},
+							&chplan.ColumnRef{Name: scalarValueAlias},
+							&chplan.LitFloat{V: math.NaN()},
+						},
+					}},
+				},
+				Alias: scalarStepValueAlias,
+			},
+		},
+	}
+	folded := &chplan.Aggregate{
+		Input: keyed,
+		AggFuncs: []chplan.AggFunc{
+			{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepKeyAlias}}, Alias: scalarStepKeysAlias},
+			{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepValueAlias}}, Alias: scalarStepValuesAlias},
+		},
+		DropEmptyOnNoGroup: false,
+	}
+	return &chplan.Project{
+		Input: folded,
+		Projections: []chplan.Projection{
+			{
+				Expr: &chplan.FuncCall{
+					Name: "mapFromArrays",
+					Args: []chplan.Expr{
+						&chplan.ColumnRef{Name: scalarStepKeysAlias},
+						&chplan.ColumnRef{Name: scalarStepValuesAlias},
+					},
+				},
+				Alias: s.ValueColumn,
+			},
+		},
+	}
+}
+
+// scalarStepValue reads one evaluation step's value out of a
+// [scalarStepPlan] lookup table:
+//
+//	ifNull((SELECT …)[toUnixTimestamp64Nano(<anchor>)], nan)
+//
+// The anchor is whatever names the current step in the scope the
+// expression lands in — the canonical Sample timestamp column for a
+// row-position embedding, `anchor_ts` inside a synthetic step grid (see
+// lowerCtx.scalarAnchorColumn).
+//
+// A step the table has no entry for reads back NULL, which becomes the
+// NaN PromQL gives `scalar()` when a step has no single sample; the
+// Nullable never escapes this expression.
+//
+// The anchor ColumnRef is built here, per call, rather than carried on
+// the ctx: one ctx lowers arbitrarily many scalar arguments and each
+// needs its own node so the IR stays a tree.
+func scalarStepValue(plan chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Expr {
+	anchorColumn := ctx.scalarAnchorColumn
+	if anchorColumn == "" {
+		anchorColumn = s.TimestampColumn
+	}
+	lookup := &chplan.FuncCall{
+		Name: "arrayElement",
+		Args: []chplan.Expr{
+			&chplan.ScalarSubquery{Input: plan},
+			&chplan.FuncCall{
+				Name: "toUnixTimestamp64Nano",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: anchorColumn}},
+			},
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "ifNull",
+		Args: []chplan.Expr{lookup, &chplan.LitFloat{V: math.NaN()}},
 	}
 }
 

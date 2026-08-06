@@ -1112,7 +1112,11 @@ func threadOuterRangeFnScalars(
 		if t, ok := tryScalarLiteral(outer.Args[1]); ok {
 			rw.Scalars = []float64{t}
 		} else {
-			computed, cerr := lowerScalarArg(outer.Args[1], s, ctx)
+			// A chplan.RangeWindow scalar argument is evaluated inside the
+			// windowed-array emitter, whose scope carries the window's own arrays
+			// rather than a per-row evaluation anchor, so the value binds once per
+			// statement here.
+			computed, cerr := lowerScalarArg(outer.Args[1], s, ctx.withPinnedScalars())
 			if cerr != nil {
 				return nil, false, cerr
 			}
@@ -1141,7 +1145,11 @@ func threadOuterRangeFnScalars(
 			}
 			rw.ScalarExprs = []chplan.Expr{&chplan.LitFloat{V: phi}}
 		} else {
-			computed, cerr := lowerScalarArg(outer.Args[0], s, ctx)
+			// A chplan.RangeWindow scalar argument is evaluated inside the
+			// windowed-array emitter, whose scope carries the window's own arrays
+			// rather than a per-row evaluation anchor, so the value binds once per
+			// statement here.
+			computed, cerr := lowerScalarArg(outer.Args[0], s, ctx.withPinnedScalars())
 			if cerr != nil {
 				return nil, false, cerr
 			}
@@ -1912,7 +1920,7 @@ func lowerSubqueryOverTopK(
 	)
 	if kF, ok := tryScalarLiteral(agg.Param); ok {
 		var err error
-		if k, empty, err = topKDomain(agg.Op, kF); err != nil {
+		if k, empty, err = topKDomain(kF); err != nil {
 			return nil, err
 		}
 	} else {
@@ -2325,7 +2333,10 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string, s schema.Metri
 		// Value through outOfRangePhiGuardExpr so out-of-domain /
 		// NaN phi resolves to ±Inf / NaN per Prom's quantile() helper.
 		// Mirrors lower.go's buildAggFunc computed-phi arm.
-		phiE, err := lowerScalarArg(a.Param, s, ctx)
+		// ClickHouse requires a parameterised aggregate's parameter to be a
+		// CONSTANT expression, so the phi in `quantile(<phi>)(Value)` cannot
+		// reference a per-row anchor and binds once per statement here.
+		phiE, err := lowerScalarArg(a.Param, s, ctx.withPinnedScalars())
 		if err != nil {
 			return chplan.AggFunc{}, err
 		}
