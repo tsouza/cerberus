@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -82,6 +83,23 @@ func remoteWriteFixture(ctx context.Context, conn driver.Conn, promURL string, l
 			return fmt.Errorf("post %s: %w", src.base, err)
 		}
 	}
+	for _, src := range expHistogramFixtureSources {
+		logger.Info("remote_write native histogram to prom", "metric", src.name, "table", src.table)
+		batch, err := readExpHistogramFixtureSeries(ctx, conn, src)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", src.name, err)
+		}
+		// Same reasoning as the two loops above, and it is the reason this
+		// mirror exists at all: without it the reference skips every native
+		// histogram sample, and the corpus's histogram_* cases compare the
+		// empty vector against the empty vector while reporting parity.
+		if len(batch) == 0 {
+			return fmt.Errorf("read %s: fixture produced no rows", src.name)
+		}
+		if err := postRemoteWrite(ctx, promURL, batch); err != nil {
+			return fmt.Errorf("post %s: %w", src.name, err)
+		}
+	}
 	return nil
 }
 
@@ -93,11 +111,12 @@ type fixtureSource struct {
 	table      string
 }
 
-// fixtureSources and histogramFixtureSources together mirror
-// fixtureInserts in main.go — keep them in lock-step so every CH-side
-// INSERT has a corresponding Prom remote_write. The lock-step is enforced,
-// not merely documented: test/regression/compat_promql_seed_corpus_test.go
-// fails when the two lists diverge.
+// fixtureSources, histogramFixtureSources and expHistogramFixtureSources
+// together mirror fixtureInserts in main.go — keep them in lock-step so every
+// CH-side INSERT has a corresponding Prom remote_write. The lock-step is
+// enforced, not merely documented:
+// test/regression/compat_promql_seed_corpus_test.go fails when the lists
+// diverge.
 var fixtureSources = []fixtureSource{
 	{"demo_cpu_usage_seconds_total", "otel_metrics_sum"},
 	{"demo_memory_usage_bytes", "otel_metrics_gauge"},
@@ -126,6 +145,52 @@ var histogramFixtureSources = []histogramFixtureSource{
 	{"demo_api_request_duration_seconds", "otel_metrics_histogram"},
 	{"demo_resource_latency_seconds", "otel_metrics_histogram"},
 }
+
+// expHistogramFixtureSource mirrors an exponential (native) histogram
+// fixture. Unlike the classic layout there is no synthetic wire surface to
+// derive: a native histogram rides on ONE series under its own name, with the
+// whole distribution carried in the sample, so `name` is both the stored
+// MetricName and the Prom `__name__`.
+type expHistogramFixtureSource struct {
+	name  string
+	table string
+}
+
+var expHistogramFixtureSources = []expHistogramFixtureSource{
+	{"demo_latency_exp_hist", "otel_metrics_exponential_histogram"},
+}
+
+// promBucketIndexShift is the one-bucket offset between the two sparse
+// encodings. OTel bucket index i covers (base^i, base^(i+1)] while Prometheus
+// bucket index i covers (base^(i-1), base^i], so the same boundary pair is
+// named one higher on the Prometheus side. This mirrors `initialOffset` in the
+// upstream OTLP translator (prometheusremotewrite.convertBucketsLayout) —
+// getting it wrong shifts every quantile by one bucket, a factor of two at
+// scale 0.
+const promBucketIndexShift = 1
+
+// promZeroThreshold is the zero-bucket half-width the upstream OTLP translator
+// stamps when OTLP carries none (its `defaultZeroThreshold`). Mirroring that
+// constant keeps the reference seeing exactly what a real OTLP→Prometheus
+// pipeline would hand it.
+const promZeroThreshold = 1e-128
+
+// expHistogramFixtureSelect reads the OTLP-shaped exponential-histogram
+// columns. Everything the Prom wire form needs is a pure re-encoding of these
+// (see otelBucketsToPromSpans), so unlike the classic mirror there is nothing
+// to compute server-side.
+const expHistogramFixtureSelect = `SELECT
+        Attributes,
+        mapFromArrays(
+            arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(ResourceAttributes)),
+            mapValues(ResourceAttributes)) AS resource_labels,
+        toUnixTimestamp64Milli(TimeUnix) AS ts_ms,
+        Count, Sum, Scale, ZeroCount,
+        PositiveOffset, PositiveBucketCounts,
+        NegativeOffset, NegativeBucketCounts
+    FROM %s
+    WHERE MetricName = ?
+    ORDER BY Attributes, TimeUnix`
 
 // histogramFixtureSelect computes the `le` labels, the cumulative counts
 // and the Prom-sanitized resource labels IN CLICKHOUSE, using the same
@@ -188,7 +253,7 @@ func newPromSeriesSet() *promSeriesSet {
 	return &promSeriesSet{bySeries: map[string]*prompb.TimeSeries{}}
 }
 
-func (p *promSeriesSet) add(metricName string, labels map[string]string, tsMS int64, value float64) {
+func (p *promSeriesSet) seriesFor(metricName string, labels map[string]string) *prompb.TimeSeries {
 	key := metricName + "\x00" + canonicaliseLabels(labels)
 	ts, ok := p.bySeries[key]
 	if !ok {
@@ -196,7 +261,22 @@ func (p *promSeriesSet) add(metricName string, labels map[string]string, tsMS in
 		p.bySeries[key] = ts
 		p.order = append(p.order, key)
 	}
+	return ts
+}
+
+func (p *promSeriesSet) add(metricName string, labels map[string]string, tsMS int64, value float64) {
+	ts := p.seriesFor(metricName, labels)
 	ts.Samples = append(ts.Samples, prompb.Sample{Value: value, Timestamp: tsMS})
+}
+
+// addHistogram appends a native-histogram sample. It shares seriesFor with the
+// float arm because the two are mutually exclusive per series, not per batch:
+// Prometheus rejects a series that carries both a float and a histogram sample
+// at the same timestamp, so the fixture families that use this one never use
+// add.
+func (p *promSeriesSet) addHistogram(metricName string, labels map[string]string, h prompb.Histogram) {
+	ts := p.seriesFor(metricName, labels)
+	ts.Histograms = append(ts.Histograms, h)
 }
 
 func (p *promSeriesSet) series() []prompb.TimeSeries {
@@ -352,6 +432,106 @@ func readHistogramFixtureSeries(
 		}
 		acc.add(countName, attrs, tsMS, countValue)
 		acc.add(sumName, attrs, tsMS, sumValue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return acc.series(), nil
+}
+
+// otelBucketsToPromSpans re-encodes one OTLP dense bucket array as the
+// Prometheus span + delta form, mirroring the upstream OTLP translator
+// (prometheusremotewrite.convertBucketsLayout). A dense OTLP array is
+// contiguous by construction, so it becomes exactly one span; the counts are
+// delta-encoded against the running previous count, which is what
+// `positive_deltas` / `negative_deltas` mean on the wire.
+//
+// Both wire fields are narrower than the column they carry — a span length is
+// uint32 and a delta is int64 against a uint64 count — so each conversion is
+// range-checked. A fixture that overflowed either would silently mirror a
+// different distribution than ClickHouse holds, which is exactly the
+// empty-vs-empty class of hollow comparison this seeder exists to prevent.
+func otelBucketsToPromSpans(offset int32, counts []uint64) ([]prompb.BucketSpan, []int64, error) {
+	if len(counts) == 0 {
+		return nil, nil, nil
+	}
+	n := uint64(len(counts))
+	if n > math.MaxUint32 {
+		return nil, nil, fmt.Errorf("bucket array of %d entries exceeds a span length", n)
+	}
+	spans := []prompb.BucketSpan{{
+		Offset: offset + promBucketIndexShift,
+		Length: uint32(n),
+	}}
+	deltas := make([]int64, len(counts))
+	var prev int64
+	for i, c := range counts {
+		if c > math.MaxInt64 {
+			return nil, nil, fmt.Errorf("bucket count %d exceeds a delta-encoded bucket", c)
+		}
+		cur := int64(c)
+		deltas[i] = cur - prev
+		prev = cur
+	}
+	return spans, deltas, nil
+}
+
+// readExpHistogramFixtureSeries mirrors one exponential-histogram family. Each
+// CH row becomes one native-histogram sample on the series its attributes
+// identify — no fan-out, because the Prometheus wire form carries the whole
+// distribution in the sample rather than across `_bucket` companions.
+func readExpHistogramFixtureSeries(
+	ctx context.Context, conn driver.Conn, src expHistogramFixtureSource,
+) ([]prompb.TimeSeries, error) {
+	m := schema.DefaultOTelMetrics()
+	rows, err := conn.Query(ctx, fmt.Sprintf(expHistogramFixtureSelect, src.table), src.name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	acc := newPromSeriesSet()
+	for rows.Next() {
+		var attrs, resourceLabels map[string]string
+		var tsMS int64
+		var count, zeroCount uint64
+		var sum float64
+		var scale, positiveOffset, negativeOffset int32
+		var positiveCounts, negativeCounts []uint64
+		if err := rows.Scan(
+			&attrs, &resourceLabels, &tsMS, &count, &sum, &scale, &zeroCount,
+			&positiveOffset, &positiveCounts, &negativeOffset, &negativeCounts,
+		); err != nil {
+			return nil, err
+		}
+		// Same resource-layer fold as the classic mirror, for the same
+		// reason: cerberus projects resource labels into the wire label set,
+		// so the reference series must carry them too.
+		mirroredResourceLabels(m, resourceLabels, attrs)
+		positiveSpans, positiveDeltas, err := otelBucketsToPromSpans(positiveOffset, positiveCounts)
+		if err != nil {
+			return nil, fmt.Errorf("%s positive buckets: %w", src.name, err)
+		}
+		negativeSpans, negativeDeltas, err := otelBucketsToPromSpans(negativeOffset, negativeCounts)
+		if err != nil {
+			return nil, fmt.Errorf("%s negative buckets: %w", src.name, err)
+		}
+		acc.addHistogram(src.name, attrs, prompb.Histogram{
+			// The integer arms of the two oneofs: OTLP counts are integral,
+			// and the float arms would make Prometheus treat the sample as
+			// an already-aggregated float histogram.
+			Count:          &prompb.Histogram_CountInt{CountInt: count},
+			ZeroCount:      &prompb.Histogram_ZeroCountInt{ZeroCountInt: zeroCount},
+			Sum:            sum,
+			Schema:         scale,
+			ZeroThreshold:  promZeroThreshold,
+			PositiveSpans:  positiveSpans,
+			PositiveDeltas: positiveDeltas,
+			NegativeSpans:  negativeSpans,
+			NegativeDeltas: negativeDeltas,
+			ResetHint:      prompb.Histogram_UNKNOWN,
+			Timestamp:      tsMS,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

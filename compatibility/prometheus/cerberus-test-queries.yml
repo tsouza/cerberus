@@ -41,6 +41,15 @@
 #    through cerberus's subquery spine (#1602, #1778, #1794). Upstream's
 #    corpus reduces subqueries with `max_over_time`, which drops the name,
 #    so no upstream case can discriminate any of them.
+# 7. A cerberus-owned native-histogram block replaces upstream's
+#    `histogram_*` value-function cases. Upstream's demo fixture is
+#    float-only, so every one of those cases compared an empty vector
+#    against an empty vector; `demo_latency_exp_hist` (cmd/seed/main.go)
+#    seeds a real OTel exponential histogram into ClickHouse and mirrors it
+#    to the reference as a Prometheus native histogram over remote-write, so
+#    the six value functions and the native `histogram_quantile` walk now
+#    compare real distributions. The float-input cases are kept alongside,
+#    with the emptiness they assert stated as the property it is.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -480,10 +489,40 @@ test_cases:
   # rate() has already stripped `__name__`, so a preserving outer function
   # must not resurrect it.
   - query: 'last_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])'
-  # Native-histogram value functions: the corpus carries no native
-  # histograms, so reference skips every float sample — both sides
-  # answer the empty vector (acceptance + emptiness pinned at the
-  # value level).
+  # Native histograms. `demo_latency_exp_hist` is an OTel exponential
+  # histogram in ClickHouse and a Prometheus native histogram on the
+  # reference (cmd/seed/main.go seeds the first, cmd/seed/prom_remote.go
+  # mirrors the second). Scale 0 puts the bucket boundaries on exact
+  # powers of two; the two seeded instances carry different positive
+  # offsets and different bucket shapes, so a series mix-up cannot pass.
+  #
+  # Value functions: Count / Sum / Sum÷Count, then the bucket-midpoint
+  # variance estimate (geometric midpoints for standard exponential
+  # buckets) in both its stddev and stdvar spellings.
+  - query: 'histogram_count(demo_latency_exp_hist)'
+  - query: 'histogram_sum(demo_latency_exp_hist)'
+  - query: 'histogram_avg(demo_latency_exp_hist)'
+  - query: 'histogram_stddev(demo_latency_exp_hist)'
+  - query: 'histogram_stdvar(demo_latency_exp_hist)'
+  # Rank walk with both bounds strictly interior to a populated bucket, so
+  # the case discriminates the in-bucket exponential interpolation rather
+  # than only the whole-bucket sums a boundary-aligned pair would reach.
+  - query: 'histogram_fraction(3, 12, demo_latency_exp_hist)'
+  # Quantile interpolation across the distribution: a low phi that lands
+  # exactly on a bucket edge for one instance and inside a bucket for the
+  # other, one in a middle bucket, one in the top bucket, and phi = 1 (the
+  # upper edge of the highest populated bucket, taken without interpolating).
+  - query: 'histogram_quantile(0.1, demo_latency_exp_hist)'
+  - query: 'histogram_quantile(0.5, demo_latency_exp_hist)'
+  - query: 'histogram_quantile(0.9, demo_latency_exp_hist)'
+  - query: 'histogram_quantile(1, demo_latency_exp_hist)'
+  # Same walk under a label matcher: one series, one known bucket layout,
+  # so the result pins that instance's offset rather than either instance's.
+  - query: 'histogram_quantile(0.9, demo_latency_exp_hist{instance="demo.promlabs.com:10000"})'
+  # Float inputs: the native-histogram value functions skip float samples
+  # rather than erroring, so a float family and an absent family both
+  # answer the empty vector on both backends. These pin that acceptance,
+  # not the histogram math — the cases above own the math.
   - query: 'histogram_count(demo_memory_usage_bytes)'
   - query: 'histogram_sum(demo_memory_usage_bytes)'
   - query: 'histogram_avg(nonexistent_metric_name)'
