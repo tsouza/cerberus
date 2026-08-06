@@ -172,10 +172,13 @@ using another checkout's path because a briefing had pasted it in as "the repo".
   additionally runs `just ci` before each commit and push; it is off by default because that
   duplicates a better-targeted layer at a cost of minutes per commit.
 
-The guard deliberately does not run the test suite or `golangci-lint`. `lefthook.yml` already mirrors
-the CI `check`, `lint`, and `forbid-skip` jobs on `pre-push`, once per push instead of once per
-commit, and a linter invoked from a fresh agent worktree can report a clean tree without having
-analysed it — a false green is worse than no local check, because it is trusted.
+The guard deliberately does not run the test suite or `golangci-lint`, and neither does
+`lefthook.yml`. A linter invoked from a fresh agent worktree can report a clean tree without having
+analysed it, so a local green is not evidence — and a false green is worse than no local check,
+because it is trusted. CI's `lint` job is the only authority on lint. What `pre-push` does carry is
+the set of checks CI cannot return in time to act on and that cost about a second between them: the
+`forbid-skip` discipline scans, the `repo-hygiene` scans, and `actionlint`. Anything that compiles
+Go, walks the whole tree, or needs a container is CI's.
 
 ### Reproducing a red check
 

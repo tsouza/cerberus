@@ -1,12 +1,17 @@
-# Lefthook config. Two stages:
+# Lefthook config. Three stages, all of them cheap:
 #
 #   pre-commit — fast formatters on staged files only (sub-second).
-#   pre-push   — heavier static checks (golangci-lint, markdown verify,
-#                forbid-skip discipline grep, repo-hygiene) that mirror
-#                what the `check` + `lint` + `forbid-skip` + `forbid-skip`
-#                (binary/root-allowlist) CI gates would run.
-#                Lives on push, not commit, so the inner-loop stays
-#                fast — one ~70s wait per push instead of per commit.
+#   commit-msg — commitlint on the message being written.
+#   pre-push   — grep- and Node-based discipline scans plus actionlint,
+#                a couple of seconds in total.
+#
+# Every command here is one a developer cannot get from CI in time to
+# act on it, and cheap enough that paying for it on every push is
+# invisible. Anything that compiles Go, walks the whole tree, or needs a
+# container belongs to CI: CI runs it once, authoritatively, on the
+# commit that will actually merge. A local run of the same thing is a
+# second, slower, less trustworthy copy — see the golangci-lint note
+# under "Intentionally NOT in any hook".
 #
 # Install: `just hooks-install` (one-shot; installs the lefthook
 # binary via `go install` and activates the git hooks). See also
@@ -52,23 +57,12 @@ pre-commit:
       run: |
         markdownlint-cli2 --fix {staged_files}
 
-# pre-push runs once per `git push`. The commands mirror the CI gates
-# (check / lint / forbid-skip / repo-hygiene) so a push that would have
-# failed CI fails locally first instead of round-tripping through
-# the runner. Set `LEFTHOOK=0` to bypass for WIP pushes.
+# pre-push runs once per `git push`. It carries the forbid-skip and
+# repo-hygiene gates — grep and Node scans that finish in about a second
+# — and actionlint. Set `LEFTHOOK=0` to bypass for WIP pushes.
 pre-push:
   parallel: true
   commands:
-    golangci-lint:
-      tags: lint
-      # `just lint`, not a bare `golangci-lint run ./...`: one invocation
-      # analyses one build configuration, so the bare form skipped every
-      # tagged file — the `chdb` round-trip layer, the `agpl_oracle`
-      # differentials, the migration tiers — and reported clean over what was
-      # left. The recipe runs the tagged pass and the untagged one, which is
-      # what CI's lint job runs.
-      run: |
-        just lint
     # Workflow-file validation. GitHub rejects invalid workflow files
     # SERVER-side as zero-job "invalid workflow file" failure runs,
     # which silently prevents required pull_request checks from ever
@@ -81,11 +75,6 @@ pre-push:
       tags: lint
       run: |
         just lint-actions
-    markdownlint:
-      tags: lint
-      glob: "*.md"
-      run: |
-        markdownlint-cli2 {all_files}
     forbid-skip-t-skip:
       tags: discipline
       run: |
@@ -96,17 +85,6 @@ pre-push:
           echo "lefthook: t.Skip / t.Skipf / t.SkipNow in test files — fix the bug, do not skip"
           exit 1
         fi
-    # Backstop for the `commit-msg` hook: that hook validates each
-    # commit at creation time, but `git commit --no-verify` bypasses
-    # it. This range-check mirrors the CI `lint` job's npx commitlint
-    # step (which reads the same
-    # `.commitlintrc.json`) so a push with a non-Conventional subject
-    # — or any other rule violation — fails locally before CI runs.
-    commitlint-range:
-      tags: lint
-      run: |
-        base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
-        npx --no -- commitlint --from "$base" --to HEAD
     # Mirrors the CI `forbid-skip` gate's Gherkin-scenario discipline.
     # A `@wip`-style tag filters a Scenario out of the migration lane
     # while the run still reports green, and godog's Go-side skip
@@ -238,7 +216,26 @@ commit-msg:
         npx --no -- commitlint --edit {1}
 
 # Intentionally NOT in any hook:
-# - go test / just test / go build — these need full module state and
-#   are CI-only. The pre-push gate above runs golangci-lint, which
-#   covers ~95% of the failures that would land in `check` without
-#   the full-test cost.
+#
+# - `just lint` / golangci-lint. It was the single most expensive thing
+#   here at around three minutes per push, and it bought nothing: from a
+#   fresh worktree golangci-lint reports "0 issues" without having
+#   analysed the tree, so a local green is not evidence and the only
+#   authority on lint is CI's own `lint` job. Three minutes for a signal
+#   that has to be re-confirmed on CI anyway is worse than no signal,
+#   because a wait that long trains everyone to reach for `LEFTHOOK=0`
+#   and lose the cheap scans below with it.
+#
+# - Whole-tree markdownlint. `pre-commit` already runs
+#   `markdownlint-cli2 --fix` over the staged `*.md`, so the push-time
+#   pass re-linted several dozen files nobody had touched.
+#
+# - commitlint over the push range. `commit-msg` validates each message
+#   as it is written, which is where the author can still fix it. The
+#   range form re-judged commits that were already on the remote and
+#   rejected the whole push over them — including merge commits, which
+#   are not Conventional Commits and are not meant to be. CI's `lint`
+#   job keeps the range check for the commits that will merge.
+#
+# - go test / just test / go build. These need full module state, build
+#   tags and a race-enabled toolchain, and are CI-only.
