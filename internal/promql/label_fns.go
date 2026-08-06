@@ -60,7 +60,7 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		Regex:            regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),
 	}
-	return projectAttributesOverInner(inner, s, attrs), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
 }
 
 // lowerLabelJoin lowers
@@ -103,7 +103,7 @@ func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node
 		Separator: separator,
 		Srcs:      srcs,
 	}
-	return projectAttributesOverInner(inner, s, attrs), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
 }
 
 // stringArg extracts a static string literal from a Call argument,
@@ -129,7 +129,12 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 // Every other inner shape (Scan / Filter / Project / Aggregate / LWR)
 // keeps the full Sample-row schema, so we forward all four canonical
 // columns.
-func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) chplan.Node {
+// The return type is the concrete *chplan.Project rather than the Node
+// interface because [guardLabelRewriteCollision] reads the projection list
+// back to learn which canonical columns this rewrite actually exposes —
+// the same derive-don't-declare question [chplan.IsDerivedShape] answers
+// for the emitter and the HTTP layer.
+func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) *chplan.Project {
 	if _, ok := inner.(*chplan.RangeWindow); ok {
 		return &chplan.Project{
 			Input: inner,
