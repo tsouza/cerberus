@@ -177,6 +177,38 @@ the CI `check`, `lint`, and `forbid-skip` jobs on `pre-push`, once per push inst
 commit, and a linter invoked from a fresh agent worktree can report a clean tree without having
 analysed it — a false green is worse than no local check, because it is trusted.
 
+### Reproducing a red check
+
+A speculative pre-flight over the whole tree is waste; reproducing a *known* red check is not. Once
+CI names a failure, that failure is reproduced locally, narrowed to the thing that failed, and the
+fix is confirmed locally before the next push. A full run is roughly nineteen checks and forty
+minutes, so pushing a guess and waiting to find out spends CI credits and wall-clock on feedback a
+targeted local run returns in seconds.
+
+Narrowing means the failing unit and nothing around it:
+
+| Red check                                                         | Local reproduction                                       |
+| ----------------------------------------------------------------- | -------------------------------------------------------- |
+| `check-test`                                                      | `go test -run '^TestName$/^subtest$' ./internal/<pkg>/`  |
+| `forbid-skip`, `forbid-deferral`, `forbid-sql-raw`, `config-docs` | `node .github/scripts/<gate>.mjs` from the worktree root |
+| `check-build`                                                     | `go build ./<pkg>/` for the package named in the log     |
+
+Where a recipe exists, invoke the recipe rather than the underlying command: the recipe carries the
+build tags, the race flag and the timeouts, and a direct `go test` inherits Go's own ten-minute
+default instead — a bypass that manufactures a timeout the recipe would never have hit.
+
+Three lanes genuinely resist local reproduction, and only these justify a CI round-trip:
+
+- **`lint`** — golangci-lint run from an agent worktree reports "No issues found" without analysing.
+  Read the CI log for the linter, the rule, and the `file:line`, then reason about that line.
+- **`strict-scan` and the compatibility lanes** — these need a real ClickHouse. chDB coerces column
+  types production rejects, so a green chDB golden is not evidence for either.
+- **`e2e`, `compose-smoke`, and the crawl ratchet** — these need k3d or Docker Compose.
+
+The Compose lanes carry a concurrency hazard: there is no per-worktree Compose project-name
+isolation, so a compose run started from one worktree corrupts another's containers. Compose stays
+down while any other agent is live.
+
 ### Project subagents (`.claude/agents/`)
 
 - `code-reviewer` — reviews the working diff for regressions, missing tests, and invariant breaches
