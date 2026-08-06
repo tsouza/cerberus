@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -434,5 +435,39 @@ func TestJSONLSink_AppendsAcrossOpens(t *testing.T) {
 func TestNewJSONLSink_EmptyPath(t *testing.T) {
 	if _, err := NewJSONLSink(""); err == nil {
 		t.Error("NewJSONLSink(\"\"): want error, got nil")
+	}
+}
+
+// TestJSONLSink_Close_JoinsFlushAndCloseErrors verifies that when both the
+// buffered flush and the underlying file close fail, Close surfaces both
+// errors instead of masking the close failure behind the flush failure.
+func TestJSONLSink_Close_JoinsFlushAndCloseErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "corpus.jsonl")
+	sink, err := NewJSONLSink(path)
+	if err != nil {
+		t.Fatalf("NewJSONLSink: %v", err)
+	}
+	// Buffer a byte so the flush on Close has work to do, then close the
+	// underlying fd out from under the sink: the buffered flush now writes to
+	// a closed descriptor (flush error) and the sink's own f.Close() sees an
+	// already-closed file (close error).
+	if _, werr := sink.w.WriteString("x"); werr != nil {
+		t.Fatalf("prime buffer: %v", werr)
+	}
+	if cerr := sink.f.Close(); cerr != nil {
+		t.Fatalf("pre-close fd: %v", cerr)
+	}
+
+	err = sink.Close()
+	if err == nil {
+		t.Fatal("Close: want joined error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "flush on close") {
+		t.Errorf("Close error missing flush failure: %v", err)
+	}
+	if !strings.Contains(msg, "close sink") {
+		t.Errorf("Close error missing close failure: %v", err)
 	}
 }
