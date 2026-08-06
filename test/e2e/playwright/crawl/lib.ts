@@ -103,7 +103,7 @@ export type StructuralParamRule = {
   /** Exact query param name. */
   param: string;
   mode: 'enumerate' | 'parameterize';
-  /** 'enumerate' only: the app's cold-boot value, dropped from keys. */
+  /** The app's cold-boot value, dropped from keys in either mode. */
   defaultValue?: string;
 };
 
@@ -115,10 +115,27 @@ export type StructuralParamRule = {
  *   - Traces Drilldown (`grafana-exploretraces-app`): `actionView`
  *     (Breakdown | Service structure | Comparison | Traces tabs,
  *     boot value `breakdown`), `var-metric` (rate | errors |
- *     duration, boot `rate`), `var-groupBy` (the breakdown attribute,
- *     boot `resource.service.name` — `kind` is the maintainer-found
- *     422), `var-primarySignal` (Root spans | All spans, boot
+ *     duration, boot `rate`), `var-groupBy` (the breakdown ATTRIBUTE
+ *     NAME, boot `resource.service.name` — high-cardinality and
+ *     data-derived, so it parameterizes; see below),
+ *     `var-primarySignal` (Root spans | All spans, boot
  *     `nestedSetParent<0`).
+ *
+ * `var-groupBy` parameterizes rather than enumerates because its
+ * option list is a fact about the DATA, not about the surface: the
+ * app offers whichever span and resource attributes the ingested
+ * traces carry, capped at the combobox's first N. Pinning the values
+ * pinned the dataset — adding one resource attribute to the compose
+ * stack (#1822 added `service.namespace` / `deployment.environment`)
+ * reshuffled the list, evicted `rootName` / `rootServiceName` past
+ * the cap, and moved the sweep's representative from
+ * `resource.service.version` to `resource.service.namespace`. The
+ * ratchet then reported that pure data change as coverage growing AND
+ * shrinking at once (#1825), which is noise, not a regression. The
+ * surface is "the breakdown is grouped by SOME attribute"; the sweep
+ * still DRIVES every option at full depth, exactly as before — only
+ * the inventory key collapses. Same doctrine as the metrics-drilldown
+ * `metric` name and the `{service}` path segment.
  *   - Metrics Drilldown (`grafana-metricsdrilldown-app`): `metric`
  *     (the selected metric NAME — one per series family in the
  *     stack, high-cardinality → parameterize), `actionView`
@@ -148,7 +165,7 @@ export const STRUCTURAL_PARAM_RULES: ReadonlyArray<StructuralParamRule> = [
   {
     pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
     param: 'var-groupBy',
-    mode: 'enumerate',
+    mode: 'parameterize',
     defaultValue: 'resource.service.name',
   },
   {
@@ -414,8 +431,10 @@ export function canonicalTarget(
     if (!rule.pathPattern.test(path)) continue;
     const value = url.searchParams.get(rule.param);
     if (value === null || value === '') continue;
+    // The app's cold-boot value keys the BARE surface in both modes —
+    // the default state is not a distinct surface.
+    if (value === rule.defaultValue) continue;
     if (rule.mode === 'enumerate') {
-      if (value === rule.defaultValue) continue;
       retained.push(`${rule.param}=${value}`);
     } else {
       retained.push(`${rule.param}={${rule.param}}`);
