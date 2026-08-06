@@ -65,8 +65,8 @@ const aggregationParamMinK = 1
 // below 1.
 //
 // An empty series means the parameter produced no values at all, which is
-// reference's `len(mat) == 0` zero-value fParams: max is -MaxFloat64,
-// below 1, so the query answers empty rather than erroring.
+// reference's `len(mat) == 0` zero-value fParams: max is 0, below 1, so
+// the query answers empty rather than erroring.
 //
 // The reported value in the underflow / overflow messages is the extreme
 // one reference names (Min for underflow, Max for overflow), not the
@@ -138,15 +138,17 @@ var (
 //	    panic(fmt.Errorf("invalid smoothing factor. Expected: 0 < sf < 1, got: %f", sf))
 //	}
 //
-// NaN fails both comparisons in Go, so a NaN factor is out of domain and
-// reference reports it with `%f`'s spelling of NaN.
+// NaN fails BOTH comparisons in Go, so reference does not reject a NaN
+// factor — it smooths with it and produces NaN samples. Adding an
+// IsNaN arm here would be an invented rejection, answering 4xx where
+// reference answers 200, so the condition is reference's verbatim.
 //
 // Reference evaluates the factor per step and panics at the first step
 // whose value is out of domain, so the reported value is the first
 // offender in timestamp order rather than an extreme.
 func holtWintersFactorDomain(kind holtWintersFactorKind, values []float64) error {
 	for _, v := range values {
-		if v <= 0 || v >= 1 || math.IsNaN(v) {
+		if v <= 0 || v >= 1 {
 			return fmt.Errorf( //nolint:staticcheck,revive // reference Prometheus's own error text, reproduced verbatim
 				"invalid %s factor. Expected: 0 < %s < 1, got: %f", kind.noun, kind.symbol, v,
 			)
@@ -159,7 +161,18 @@ func holtWintersFactorDomain(kind holtWintersFactorKind, values []float64) error
 // included: reference seeds max with -MaxFloat64 and min with +MaxFloat64
 // and folds with math.Max / math.Min, both of which return NaN as soon as
 // either operand is NaN.
+//
+// The empty case is NOT the seed values. Reference returns the zero-value
+// `&fParams{}` when the parameter evaluates to an empty matrix
+// (promql/value.go, newFParams), whose minValue and maxValue are both 0 —
+// it never reaches the seeding. Returning the seeds here instead would
+// agree with reference for the K domain by accident (-MaxFloat64 < 1 is
+// the same empty verdict) and disagree for the limit_ratio domain, whose
+// empty rule is max == 0 && min == 0.
 func paramExtrema(values []float64) (mn, mx float64) {
+	if len(values) == 0 {
+		return 0, 0
+	}
 	mn, mx = math.MaxFloat64, -math.MaxFloat64
 	for _, v := range values {
 		mx = math.Max(mx, v)

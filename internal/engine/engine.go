@@ -853,8 +853,16 @@ func (e *GuardError) Unwrap() error { return e.Err }
 // violation as a [GuardError].
 //
 // Each guard is a full query in its own right, so it goes through the
-// same optimize → emit → execute pipeline the main statement does; a
-// guard plan that could not be emitted or executed is an internal
+// same optimize → resource-bound → execContext → emit → execute pipeline
+// the main statement does. That is not bookkeeping. A guard plan is
+// lowered with the caller's own lowerers, so it can carry a
+// RangeWindowNative that only runs with the experimental ts-grid setting
+// execContext attaches; it scans the parameter's whole series, so it
+// wants the same spill settings and the same subquery sample budget; and
+// it is a real ClickHouse dispatch, so it belongs in the corpus the same
+// way the main statement does.
+//
+// A guard plan that could not be emitted or executed is an internal
 // failure, not a domain violation, and keeps its own error shape.
 //
 // The values are handed to Check in the order ClickHouse returned them,
@@ -864,11 +872,15 @@ func (e *GuardError) Unwrap() error { return e.Err }
 func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 	for _, g := range meta.Guards {
 		plan := e.Optimizer.Run(ctx, g.Plan)
-		sql, args, err := emitForHead(ctx, lang, plan)
+		if err := requireSubquerySampleBudget(plan, e.MaxQuerySamples); err != nil {
+			return err
+		}
+		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
+		sql, args, err := emitForHead(guardCtx, lang, plan)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
-		samples, err := e.Client.Query(chclient.WithProgressFor(ctx, lang.Name()), sql, args...)
+		samples, err := e.Client.Query(chclient.WithProgressFor(guardCtx, lang.Name()), sql, args...)
 		if err != nil {
 			return fmt.Errorf("engine: execute: guard %s: %w", g.Name, err)
 		}

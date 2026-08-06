@@ -3031,7 +3031,13 @@ func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema
 		}
 		return wrapped, nil
 	}
-	phiE, err := lowerScalarArg(a.Param, s, ctx)
+	// Pinned, because the aggregate this guards reads phi through
+	// [sanitizedPhiParamExpr], which is pinned by ClickHouse's
+	// constant-parameter rule. The two halves must read the SAME phi: a
+	// per-step guard beside a statement-wide aggregate would let an
+	// in-range step pass the 0.5 sentinel the aggregate computed with
+	// straight through as if it were the real quantile.
+	phiE, err := lowerScalarArg(a.Param, s, ctx.withPinnedScalars())
 	if err != nil {
 		return nil, err
 	}

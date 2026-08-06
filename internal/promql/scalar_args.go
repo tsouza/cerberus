@@ -23,6 +23,9 @@ const (
 	scalarStepValueAlias  = "_cerb_sv"
 	scalarStepKeysAlias   = "_cerb_sks"
 	scalarStepValuesAlias = "_cerb_svs"
+	// scalarStepNullableParam names the lambda parameter of the
+	// arrayMap that re-applies nullability to the folded value array.
+	scalarStepNullableParam = "_cerb_sn"
 )
 
 // lowerScalarArg lowers a scalar-typed PromQL expression — the type
@@ -269,7 +272,9 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 // The map's values are Nullable so a step the input has no row for reads
 // back as NULL rather than as ClickHouse's zero-valued default for the
 // element type; [scalarStepValue] turns that NULL into the NaN PromQL
-// defines for "no single sample at this step".
+// defines for "no single sample at this step". Nullability is applied to
+// the finished array, not to the aggregate's argument — see the comment
+// on the mapFromArrays projection for why the obvious spelling is inert.
 func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 	perStep := &chplan.Aggregate{
 		Input:          input,
@@ -292,19 +297,16 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 			},
 			{
 				Expr: &chplan.FuncCall{
-					Name: "toNullable",
-					Args: []chplan.Expr{&chplan.FuncCall{
-						Name: "if",
-						Args: []chplan.Expr{
-							&chplan.Binary{
-								Op:    chplan.OpEq,
-								Left:  &chplan.ColumnRef{Name: scalarCountAlias},
-								Right: &chplan.LitInt{V: 1},
-							},
-							&chplan.ColumnRef{Name: scalarValueAlias},
-							&chplan.LitFloat{V: math.NaN()},
+					Name: "if",
+					Args: []chplan.Expr{
+						&chplan.Binary{
+							Op:    chplan.OpEq,
+							Left:  &chplan.ColumnRef{Name: scalarCountAlias},
+							Right: &chplan.LitInt{V: 1},
 						},
-					}},
+						&chplan.ColumnRef{Name: scalarValueAlias},
+						&chplan.LitFloat{V: math.NaN()},
+					},
 				},
 				Alias: scalarStepValueAlias,
 			},
@@ -322,6 +324,15 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		Input: folded,
 		Projections: []chplan.Projection{
 			{
+				// The values array is made Nullable HERE, after the
+				// groupArray, not before it: ClickHouse's Null
+				// combinator strips nullability off an aggregate's
+				// argument, so `groupArray(toNullable(x))` is
+				// Array(Float64) and the map it builds returns the
+				// element type's zero — 0.0 — for a key it does not
+				// hold. arrayMap over the finished array keeps
+				// Array(Nullable(Float64)), so a missing step reads
+				// back NULL and [scalarStepValue] turns it into NaN.
 				Expr: &chplan.FuncCall{
 					Name: "mapFromArrays",
 					Args: []chplan.Expr{

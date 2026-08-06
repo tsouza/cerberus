@@ -1841,7 +1841,11 @@ func wrapSubqueryQuantilePhiGuard(
 		}
 		return wrapped, nil
 	}
-	phiE, err := lowerScalarArg(agg.Param, s, ctx)
+	// Pinned for the same reason as [wrapQuantilePhiGuard]: the aggregate
+	// this guards reads phi as a ClickHouse aggregate parameter, which
+	// must be constant, so the guard has to read the same pinned value or
+	// the two halves can disagree at a step.
+	phiE, err := lowerScalarArg(agg.Param, s, ctx.withPinnedScalars())
 	if err != nil {
 		return nil, err
 	}
@@ -1909,9 +1913,18 @@ func lowerSubqueryOverTopK(
 			return nil, err
 		}
 	} else {
+		// Same K domain, same guard, as the non-subquery path
+		// ([lowerTopKComputed]): the subquery spelling of the same
+		// aggregation must reject exactly what the bare spelling rejects.
+		if err := registerScalarGuard(ctx, agg.Op.String()+" K", agg.Param, s, func(values []float64) error {
+			_, err := aggregationParamDomain(values)
+			return err
+		}); err != nil {
+			return nil, err
+		}
 		// Instant context for the K subtree: one value per evaluation,
 		// read once by the emitter's K subquery (see lowerTopKComputed).
-		kCtx := ctx
+		kCtx := ctx.withPinnedScalars()
 		kCtx.step = 0
 		kValue, err := lowerScalarArg(agg.Param, s, kCtx)
 		if err != nil {
