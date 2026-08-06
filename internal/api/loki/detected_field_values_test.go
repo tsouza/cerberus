@@ -160,6 +160,40 @@ func TestDetectedFieldValues_SkipsEmpty(t *testing.T) {
 	}
 }
 
+// TestDetectedFieldValues_ByteValuesAreHumanized — a byte-suffixed
+// PARSED value is rewritten to its canonical unspaced humanized form,
+// which is the spelling a LogQL byte comparison takes. Upstream does the
+// same and the Loki differential harness diffs this endpoint, so a
+// divergence here is a real parity bug. Values without a byte unit — and
+// structured-metadata values, which upstream never rewrites — pass
+// through untouched.
+func TestDetectedFieldValues_ByteValuesAreHumanized(t *testing.T) {
+	t.Parallel()
+
+	srv := newServer(&stubQuerier{detectedRows: []chclient.DetectedFieldRow{
+		{
+			LogfmtFields: map[string]string{"size": "1024B", "status": "200", "ok": "true"},
+			Attributes:   map[string]string{"raw_size": "1024B"},
+		},
+	}})
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct {
+		field string
+		want  []string
+	}{
+		{"size", []string{"1.0kB"}},
+		{"status", []string{"200"}},     // no byte unit — untouched
+		{"ok", []string{"true"}},        // unit-suffixed but unparseable — untouched
+		{"raw_size", []string{"1024B"}}, // structured metadata — never rewritten
+	} {
+		out := getDetectedFieldValues(t, srv.URL, tc.field, "")
+		if !reflect.DeepEqual(out.Values, tc.want) {
+			t.Errorf("%s values=%v want %v", tc.field, out.Values, tc.want)
+		}
+	}
+}
+
 // TestDetectedFieldValues_BadInput — the values route takes the same
 // parameters as the fields route and rejects the same way.
 func TestDetectedFieldValues_BadInput(t *testing.T) {

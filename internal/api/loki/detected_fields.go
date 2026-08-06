@@ -155,11 +155,10 @@ func (h *Handler) handleDetectedFields(w http.ResponseWriter, r *http.Request) {
 //
 // Upstream reuses logproto.DetectedFieldsResponse for this route,
 // populating only `values` (pkg/querier/queryrange/detected_fields.go,
-// parseDetectedFieldValues). Values are returned verbatim: upstream
-// rewrites byte-like values through humanize ("1024 B" → "1.0 kB"),
-// which produces a string that no longer matches the stored value, so a
-// filter built from it returns nothing. Cerberus returns what a query
-// would have to match.
+// parseDetectedFieldValues). Byte-suffixed values from a parser stage
+// are canonicalised through humanize the way upstream does — see
+// [humanizeByteValue] — because the Loki differential harness diffs this
+// endpoint and a spelling difference there is a real parity failure.
 //
 // https://grafana.com/docs/loki/latest/reference/loki-http-api/#detected-field-values
 func (h *Handler) handleDetectedFieldValues(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +248,10 @@ func (h *Handler) detectedFieldsPeek(w http.ResponseWriter, r *http.Request, rou
 // on this row", and offering it as a value would build a filter that
 // matches nothing. The result is sorted for determinism (upstream
 // iterates a Go map and returns whatever order it gets).
+//
+// A byte-suffixed PARSED value is canonicalised by [humanizeByteValue],
+// which is what upstream's parseDetectedFieldValues does; structured
+// metadata is never rewritten, matching upstream's split.
 func detectFieldValues(rows []chclient.DetectedFieldRow, name string, limit int) []string {
 	seen := make(map[string]struct{}, limit)
 	out := []string{}
@@ -277,7 +280,7 @@ func detectFieldValues(rows []chclient.DetectedFieldRow, name string, limit int)
 		}
 		parsedLabels, _ := rowParsedFields(row)
 		if v, present := parsedLabels[name]; present {
-			if !add(v) {
+			if !add(humanizeByteValue(v)) {
 				break
 			}
 		}
@@ -285,6 +288,39 @@ func detectFieldValues(rows []chclient.DetectedFieldRow, name string, limit int)
 
 	sort.Strings(out)
 	return out
+}
+
+// byteValueUnits is upstream's allowedBytesUnits verbatim
+// (pkg/querier/queryrange/detected_fields.go). humanize.ParseBytes is
+// permissive enough to read "200" as 200 bytes, so a bare number would
+// otherwise be rewritten into a byte quantity; the suffix test is what
+// keeps a plain integer a plain integer.
+var byteValueUnits = []string{"b", "kib", "kb", "mib", "mb", "gib", "gb", "tib", "tb", "pib", "pb", "eib", "eb"}
+
+// humanizeByteValue canonicalises a byte-suffixed value to the spelling
+// a LogQL byte comparison takes ("1024B" → "1.0kB"), matching upstream's
+// parseDetectedFieldValues. The space humanize.Bytes inserts is removed
+// because LogQL's byte literal grammar has no space in it.
+//
+// Anything without a byte unit, or with one humanize cannot parse, is
+// returned untouched.
+func humanizeByteValue(v string) string {
+	lower := strings.ToLower(v)
+	hasUnit := false
+	for _, u := range byteValueUnits {
+		if strings.HasSuffix(lower, u) {
+			hasUnit = true
+			break
+		}
+	}
+	if !hasUnit {
+		return v
+	}
+	n, err := humanize.ParseBytes(v)
+	if err != nil {
+		return v
+	}
+	return strings.Replace(humanize.Bytes(n), " ", "", 1)
 }
 
 // buildDetectedFieldsSQL renders:
