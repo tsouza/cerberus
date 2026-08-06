@@ -41,7 +41,7 @@ jobs:
   # file changed → full suite.
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
@@ -112,7 +112,7 @@ jobs:
     name: check-test
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 
@@ -132,7 +132,7 @@ jobs:
     name: check-build
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 
@@ -186,7 +186,7 @@ jobs:
     name: check
     needs: [changes, check-test, check-build]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: gate on both halves
@@ -219,7 +219,7 @@ jobs:
   #   - Markdown (markdownlint-cli2)
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:
@@ -539,7 +539,7 @@ jobs:
   # via branch protection.
   forbid-skip:
     name: forbid-skip
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:
@@ -887,7 +887,7 @@ jobs:
   # reference material outside cerberus's authorship boundary.
   link-check:
     name: link-check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 
@@ -931,7 +931,7 @@ jobs:
     name: agpl-clean
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 

@@ -39,7 +39,7 @@ jobs:
   tidy:
     name: tidy nested modules
     if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Fetch Dependabot metadata
         id: meta

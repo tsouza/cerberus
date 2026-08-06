@@ -103,7 +103,7 @@ jobs:
   # other event we fall through to the full suite.
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
@@ -163,7 +163,7 @@ jobs:
     name: gate
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -200,7 +200,7 @@ jobs:
     name: compatibility/prometheus
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was REMOVED here on
     # purpose. Previously it combined with `if: always()` on Summarise
@@ -424,7 +424,7 @@ jobs:
     name: compatibility/prometheus-forced-route
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -589,7 +589,7 @@ jobs:
     name: compatibility/prometheus-floor
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -771,7 +771,7 @@ jobs:
     name: compatibility/promql-surface
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -810,7 +810,7 @@ jobs:
     name: compatibility/tempo
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -967,7 +967,7 @@ jobs:
     name: compatibility/loki
     needs: [changes, gate]
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was removed here.
     # Previously it combined with `if: always()` on Upload to make

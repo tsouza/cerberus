@@ -51,7 +51,7 @@ jobs:
   # `every` predicate-quantifier rationale.
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
@@ -92,7 +92,7 @@ jobs:
     name: schema-ddl
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Generous: the suite pulls two ClickHouse images (24.8 + 25.8 alpine) and
     # starts a container per test, including a Keeper-backed Replicated case.
     timeout-minutes: 25

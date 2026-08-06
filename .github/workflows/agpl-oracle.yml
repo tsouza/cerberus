@@ -86,7 +86,7 @@ jobs:
   # required context is always published.
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
     steps:
@@ -135,7 +135,7 @@ jobs:
   agpl-oracle:
     name: agpl-oracle
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

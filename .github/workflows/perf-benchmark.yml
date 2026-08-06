@@ -60,7 +60,7 @@ concurrency:
 jobs:
   bench:
     name: benchstat diff (baseline vs ref)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:

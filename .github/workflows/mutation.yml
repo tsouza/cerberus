@@ -59,7 +59,7 @@ jobs:
   # docs-only PR pays a few seconds here and queues zero mutation legs.
   select:
     name: mutation-select
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
@@ -104,7 +104,7 @@ jobs:
     # The aggregator re-checks `has_phases`, so a skip here can never be mistaken
     # for a pass over work that should have run.
     if: ${{ needs.select.outputs.has_phases == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # 90 (not 60): the parser legs run workers=1 (see mutation-phases.mjs) to
     # stay under the runner memory ceiling, which serialises their ~109 timeout
     # mutants and pushes wall-clock toward an hour on a 2-core runner. The faster
@@ -202,7 +202,7 @@ jobs:
     name: mutation
     needs: [select, mutate]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: gate on every mutation phase

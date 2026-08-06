@@ -62,7 +62,7 @@ concurrency:
 jobs:
   profile:
     name: profile
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
     # a release PR (head branch release/*). On a regular PR every heavy step is

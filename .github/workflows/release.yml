@@ -77,7 +77,7 @@ jobs:
   # downstream publish job is skipped entirely.
   gate:
     name: gate
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       packages: read
@@ -169,7 +169,7 @@ jobs:
     name: preflight
     needs: gate
     if: needs.gate.outputs.app_publish == 'true' || needs.gate.outputs.chart_publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       checks: read
@@ -303,7 +303,7 @@ jobs:
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
       needs.preflight.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
       packages: write
@@ -481,7 +481,7 @@ jobs:
       needs.gate.outputs.app_publish == 'true' &&
       needs.goreleaser.result == 'success' &&
       needs.release-artifact-migration.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:
@@ -558,7 +558,7 @@ jobs:
       # legs; cancelling the sibling would hide which platform broke.
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, blacksmith-4vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -650,7 +650,7 @@ jobs:
       always() &&
       needs.gate.outputs.app_publish == 'true' &&
       needs.publish.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       # Deleting a branch ref needs contents:write. This scope only covers the
       # github.token fallback; the `release/*.x` ruleset additionally requires
@@ -692,7 +692,7 @@ jobs:
       always() &&
       needs.gate.outputs.chart_publish == 'true' &&
       needs.preflight.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
       packages: write

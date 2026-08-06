@@ -95,7 +95,7 @@ jobs:
   # emit the tier list the three tier jobs gate on.
   migration-setup:
     name: migration-setup
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       # The tiers this run selected — what the roll-up holds to `success`, and
@@ -147,7 +147,7 @@ jobs:
     # `tiers` is emit's own answer to "what does this run execute", so the
     # gate and the roll-up read the same source and cannot disagree.
     if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier0')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Offline fixtures and a `go build`; the ceiling only has to outlast a
     # cold module cache. Mirrors TIER0_TIMEOUT_MIN in migration-e2e.mjs.
     timeout-minutes: 15
@@ -233,7 +233,7 @@ jobs:
     # `tiers` is emit's own answer to "what does this run execute", so the
     # gate and the roll-up read the same source and cannot disagree.
     if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier1')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # The stack build + boot + seed + assertions; generous enough that a slow
     # image pull is not a failure, tight enough that a hung backend releases
     # the runner instead of riding to the 6h ceiling. Mirrors
@@ -399,7 +399,7 @@ jobs:
     # and the roll-up read the same source and cannot disagree. A dispatch that
     # narrows to another tier must not pay for this stack.
     if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier2')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Strictly larger than Tier 1's: the same stack plus the ruler leg, and the
     # scenarios then wait on real evaluation cadences (a rule-group tick, an
     # alert hold-down, a notification-policy flush) that no runner speed
@@ -530,7 +530,7 @@ jobs:
     name: migration-e2e
     needs: [migration-setup, migration-tier0, migration-tier1, migration-tier2]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7

@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, blacksmith-4vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     steps:
       # Resolve the target version BEFORE checkout, because the checkout has to
@@ -139,7 +139,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, blacksmith-4vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

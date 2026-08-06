@@ -64,7 +64,7 @@ concurrency:
 jobs:
   forbid-deferral:
     name: forbid-deferral
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       # Every cited number is resolved through the API: a deferral is only

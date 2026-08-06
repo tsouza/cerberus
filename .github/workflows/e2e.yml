@@ -161,7 +161,7 @@ jobs:
   # lists live in the module, not here.
   compose-smoke-scope:
     name: compose-smoke-scope
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       in_scope: ${{ steps.scope.outputs.in_scope }}
@@ -199,7 +199,7 @@ jobs:
     # changed is the ordinary PR: it now boots the stack when it touched
     # something the stack can see.
     if: needs.compose-smoke-scope.outputs.in_scope == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       # `matrix` = the REQUIRED gating shards (smoke, kiosk). The required
@@ -241,7 +241,7 @@ jobs:
     # skips on an ordinary PR, so the shards skip with it, and a failed setup
     # must not fan out shards either.
     needs: compose-smoke-setup
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     strategy:
       # MANDATORY: one shard's failure must NOT cancel its siblings. The
       # default (true) cancels in-flight shards into the ambiguous `cancelled`
@@ -500,7 +500,7 @@ jobs:
     # extra condition: only fan out when setup actually emitted an
     # informational matrix.
     if: needs.compose-smoke-setup.outputs.has_informational == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.compose-smoke-setup.outputs.matrix_informational) }}
@@ -670,7 +670,7 @@ jobs:
     # the merge commit, so it must always exist and always be honest about what
     # ran.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: gate on every required shard
@@ -776,7 +776,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'release/')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
@@ -823,7 +823,7 @@ jobs:
     # an ordinary PR, so the shards skip with it, and a failed setup must not
     # fan out shards against a matrix it never emitted.
     needs: dashboard-setup
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     strategy:
       # MANDATORY: one shard's failure must NOT cancel its siblings — each
       # boots its own k3d cluster, and a cancelled-in-flight teardown leaks
@@ -1198,7 +1198,7 @@ jobs:
     name: dashboard
     needs: [dashboard-setup, dashboard-shard]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: gate on every shard
@@ -1236,7 +1236,7 @@ jobs:
     # nightly + manual dispatch alongside the dashboard job.
     name: startup-bench
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     concurrency:
       group: e2e-startup-bench-${{ github.ref }}
@@ -1352,7 +1352,7 @@ jobs:
     # branch-protection required check. A regression is caught at
     # merge-to-main time and reverted from main, not blocked pre-merge.
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # 40 to match the dashboard budget. Shared bring-up (e2e-up +
     # seed-rolling + wait-otel) is ~10-15 min; the phase-1 fault scenarios
     # are ~3-5 min each including heal + bounded recovery polling, fitting
@@ -1551,7 +1551,7 @@ jobs:
   bwc-minio:
     name: bwc-minio
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 40
     concurrency:
       # Never cancel-in-progress — a half-killed k3d teardown leaks Docker

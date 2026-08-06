@@ -34,7 +34,7 @@ concurrency:
 jobs:
   drift:
     name: drift
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
 

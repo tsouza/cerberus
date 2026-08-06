@@ -62,7 +62,7 @@ jobs:
   label:
     name: label
     if: github.event_name == 'pull_request_target'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:
@@ -106,7 +106,7 @@ jobs:
   backfill:
     name: backfill
     if: github.event_name != 'pull_request_target'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:

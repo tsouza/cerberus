@@ -58,7 +58,7 @@ permissions:
 jobs:
   prepare:
     name: prepare
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Run on a manual dispatch, or when a `release:*` label is applied to an issue.
     if: >-
       github.event_name == 'workflow_dispatch' ||
