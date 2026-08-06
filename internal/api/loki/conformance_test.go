@@ -445,16 +445,16 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 		{
 			"json_lines",
 			[]chclient.DetectedFieldRow{
-				{Line: `{"user_id":42,"action":"login"}`},
-				{Line: `{"user_id":7,"action":"logout"}`},
+				{Line: `{"user_id":42,"action":"login"}`, JSONFields: map[string]string{"user_id": "42", "action": "login"}},
+				{Line: `{"user_id":7,"action":"logout"}`, JSONFields: map[string]string{"user_id": "7", "action": "logout"}},
 			},
 			[]string{"json"},
 		},
 		{
 			"logfmt_lines",
 			[]chclient.DetectedFieldRow{
-				{Line: `user_id=42 action=login`},
-				{Line: `user_id=7 action=logout`},
+				{Line: `user_id=42 action=login`, LogfmtFields: map[string]string{"user_id": "42", "action": "login"}},
+				{Line: `user_id=7 action=logout`, LogfmtFields: map[string]string{"user_id": "7", "action": "logout"}},
 			},
 			[]string{"logfmt"},
 		},

@@ -59,6 +59,11 @@ var mapColumnNames = []string{
 	"labels",
 	"log_attributes",
 	"stream_labels",
+	// The `| logfmt` / `| json` parser-stage extractions
+	// loki.buildDetectedFieldsSQL projects alongside the peek row —
+	// Map(String,String) like every other entry here.
+	"logfmt_fields",
+	"json_fields",
 }
 
 func isMapColumn(name string) bool {

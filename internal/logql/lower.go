@@ -665,7 +665,45 @@ const duplicateSuffix = "_extracted"
 // pair-delimiter / quote arguments mirror Loki's logfmt parser
 // defaults.
 func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
-	return mergeParsedMap(prev, s, extractKVPairs(s))
+	return concatParsedLabels(prev, LogfmtParsedLabels(s))
+}
+
+// LogfmtParsedLabels returns the `Map(String, String)` of labels a bare
+// `| logfmt` stage contributes to the label set — the CH-side extraction
+// with Loki's stream-label collision rename already applied, but WITHOUT
+// the merge onto the running labels map.
+//
+// It is exported because the Loki metadata surface has to answer "which
+// fields can a `| logfmt` query actually read?" and the only answer that
+// cannot drift is the expression the query path itself runs.
+// `/loki/api/v1/detected_fields` projects this very expression into its
+// peek SQL rather than re-deriving the field set with a second, Go-side
+// extractor: a second derivation is what advertised logfmt keys the
+// query path could never produce (issue #1888). Cerberus's `| logfmt`
+// lowers to ClickHouse's `extractKeyValuePairs`, whose key grammar skips
+// characters Loki's own decoder would rewrite to `_`, so the two
+// extractors genuinely disagree on the KEY NAMES — `(method='GET')`
+// yields `method` here and `_method` under a Loki-shaped decoder.
+func LogfmtParsedLabels(s schema.Logs) chplan.Expr {
+	return renameExtractedOnCollision(s, extractKVPairs(s))
+}
+
+// JSONParsedLabels is the `| json` counterpart of [LogfmtParsedLabels]:
+// the top-level key/value pairs a bare `| json` stage contributes, with
+// the collision rename applied. Same single-source-of-truth contract —
+// `/detected_fields` projects it instead of re-parsing bodies in Go.
+func JSONParsedLabels(s schema.Logs) chplan.Expr {
+	return renameExtractedOnCollision(s, jsonExtractPairs(s))
+}
+
+// concatParsedLabels merges an already-renamed parsed-label map onto the
+// running labels map. Stream-selector labels win on collision because
+// the renamed map has had its colliding keys suffixed already.
+func concatParsedLabels(prev, renamedParsed chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{prev, renamedParsed},
+	}
 }
 
 // parsedField pairs a parser stage's statically-known destination label
@@ -873,7 +911,15 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 // `parent_child` keys — that's an approximation of Loki's bare `| json`
 // semantics; the common flat-object case is exact.
 func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
-	return mergeParsedMap(prev, s, &chplan.FuncCall{
+	return concatParsedLabels(prev, JSONParsedLabels(s))
+}
+
+// jsonExtractPairs is the raw CH-side extraction behind a bare `| json`:
+// `CAST(JSONExtractKeysAndValues(Body, 'String') AS Map(String,String))`.
+// Split out of [jsonBareMergeLabels] so the query path and the
+// `/detected_fields` metadata SQL build it from one constructor.
+func jsonExtractPairs(s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
 		Name: "CAST",
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
@@ -885,7 +931,7 @@ func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 			},
 			&chplan.LitString{V: "Map(String,String)"},
 		},
-	})
+	}
 }
 
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
