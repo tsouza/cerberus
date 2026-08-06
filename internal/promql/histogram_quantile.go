@@ -258,6 +258,20 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		return lowerHistogramQuantileAgg(shape, phi, s, ctx)
 	}
 
+	// A matched CLASSIC-bucket idiom that is not lowerable is precisely one
+	// whose aggregation has no entry in classicBucketLadderFold — the
+	// series-SHAPING operators, which reduce nothing and so cannot be
+	// expressed as a per-`le` rung fold. Prometheus evaluates them over
+	// ordinary float bucket series, and so does cerberus here: the argument
+	// goes through the ordinary pipeline (which fans the bucket arrays into
+	// `le`-labelled samples) and the ladder is reassembled afterwards. The
+	// exp-histogram half deliberately stays out: reference Prometheus DROPS
+	// native-histogram samples under every aggregation but sum / avg, so
+	// the empty fallback below is its answer there, not a gap.
+	if matched && !s.IsExpHistogramMetric(shape.selector.Name) {
+		return lowerHistogramQuantileClassicFloat(c.Args[1], phi, s, ctx)
+	}
+
 	vs, ok := unwrapVectorSelector(c.Args[1])
 	if !ok {
 		// Unrecognised inner shape — `histogram_quantile(0.9, sum(up))`,
@@ -603,10 +617,12 @@ const promGroupSampleValue = 1.0
 // `topk` / `bottomk` SELECT a subset of the input series and keep their
 // full label sets, and `count_values` MINTS a label whose values are
 // sample values. Neither collapses an `le` group to one value per rung,
-// so no fold could express them; they are tracked in #1626.
+// so no fold could express them without inventing a number.
 //
-// A nil result means "no classic lowering for this operator", which
-// histogramAggShapeLowerable turns into the empty fold.
+// A nil result means "this operator has no per-rung reduction", and it is
+// the routing signal lowerHistogramQuantile uses to send the query through
+// lowerHistogramQuantileClassicFloat instead — the float-domain evaluator
+// that reproduces what Prometheus does with these operators.
 func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (classicBucketRungFold, error) {
 	arrayFold := func(name string) classicBucketRungFold {
 		return func(rungs chplan.Expr) chplan.Expr {
@@ -1327,7 +1343,15 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 // smoothing changes a value (it can only raise a dip back to the running
 // maximum), so there is nothing left for a tolerance to do.
 func classicBucketMonotonicLadderExpr() chplan.Expr {
-	ladder := chplan.Expr(&chplan.ColumnRef{Name: hqAggLadderAlias})
+	return classicBucketMonotonicExpr(&chplan.ColumnRef{Name: hqAggLadderAlias})
+}
+
+// classicBucketMonotonicExpr is the repair itself over an arbitrary ladder
+// expression — a prefix maximum, so every rung is at least as high as the
+// one below it. Both cumulative-input producers owe it, and both derive
+// their rungs independently rather than by accumulating non-negative
+// counts, so both can hand up a ladder that dips.
+func classicBucketMonotonicExpr(ladder chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramLadderIdx},
@@ -1397,7 +1421,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, identity chplan.Expr, s sche
 	}
 	// `sum by (...)` — drop `le` from the user's list (the bucket
 	// distribution lives in the array, not in an Attributes key).
-	labels := dropLabel(agg.Grouping, "le")
+	labels := dropLabel(agg.Grouping, bucketBoundLabel)
 	if len(labels) == 0 {
 		// Either `sum by()` or `sum by(le)` — collapse to a single
 		// group and project an empty Attributes map. This is the same

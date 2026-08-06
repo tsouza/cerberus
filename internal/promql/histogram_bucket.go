@@ -188,25 +188,7 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 	// ExplicitBounds[le_idx]. Wrapped in toFloat64 so the canonical
 	// Sample-row Value column stays Float64 (BucketCounts is UInt64).
 	leIdx := &chplan.BareIdent{Name: bucketIdxAlias}
-	lengthBounds := &chplan.FuncCall{
-		Name: "length",
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
-	}
-	boundAtIdx := &chplan.Subscript{
-		Container: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn},
-		Key:       leIdx,
-	}
-	leStr := &chplan.FuncCall{
-		Name: "if",
-		Args: []chplan.Expr{
-			&chplan.Binary{Op: chplan.OpGt, Left: leIdx, Right: lengthBounds},
-			&chplan.LitString{V: "+Inf"},
-			&chplan.FuncCall{
-				Name: "toString",
-				Args: []chplan.Expr{boundAtIdx},
-			},
-		},
-	}
+	leStr := classicBucketLeStringExpr(leIdx, &chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
 	// No canonicalisation here: mapConcat appends `le` to whatever the
 	// inner projection produced, and that projection already binds
 	// Attributes canonically, so every row of one logical series gets the
@@ -219,7 +201,7 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 			&chplan.FuncCall{
 				Name: "map",
 				Args: []chplan.Expr{
-					&chplan.LitString{V: "le"},
+					&chplan.LitString{V: bucketBoundLabel},
 					leStr,
 				},
 			},

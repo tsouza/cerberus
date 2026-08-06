@@ -7,6 +7,61 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// bucketBoundInfLabel is the wire spelling of the trailing overflow
+// rung's bound. Prometheus writes it exactly this way, and its reader —
+// strconv.ParseFloat on the `le` label — turns it back into +Inf;
+// ClickHouse's toFloat64OrNull agrees, which is what lets
+// classicBucketLeValueExpr invert the synthesis without a special case.
+const bucketBoundInfLabel = "+Inf"
+
+// classicBucketLeStringExpr renders the wire `le` value of the 1-based
+// bucket position `idx` on a classic-histogram row whose upper bounds are
+// `bounds`: the formatted bound for a position inside the bounds array,
+// and the +Inf spelling for the trailing overflow position (BucketCounts
+// always runs one element longer than ExplicitBounds).
+//
+// This is the single definition of the array-position -> `le` mapping, and
+// every producer of the label goes through it: wrapHistogramBucketFanout,
+// which materialises `le` onto exploded Sample rows, and
+// classicBucketLeRestriction, which matches `le` selectors against the
+// same positions without exploding anything. Two copies of the rendering
+// would let the array domain and the float domain disagree about which
+// bucket a given `le` names, and no single query exercises both halves —
+// the divergence would only surface once a query mixed them.
+func classicBucketLeStringExpr(idx, bounds chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			&chplan.Binary{
+				Op:    chplan.OpGt,
+				Left:  idx,
+				Right: &chplan.FuncCall{Name: "length", Args: []chplan.Expr{bounds}},
+			},
+			&chplan.LitString{V: bucketBoundInfLabel},
+			&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{
+				&chplan.Subscript{Container: bounds, Key: idx},
+			}},
+		},
+	}
+}
+
+// classicBucketLeValueExpr reads the `le` label back off a Sample row's
+// label map as a Float64 — the inverse of classicBucketLeStringExpr, and
+// the only place the float-domain evaluator interprets a bucket bound.
+//
+// NULL means "this sample carries no usable bucket bound". Both ways of
+// getting there collapse into that one value: a Map lookup of an absent
+// key yields the empty string, and neither the empty string nor an
+// unparseable one converts. Reference Prometheus makes the same single
+// decision — strconv.ParseFloat on the label, skip the sample on error —
+// so a sample with no `le` and a sample with a nonsense `le` are treated
+// identically on both sides.
+func classicBucketLeValueExpr(attrs chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Name: "toFloat64OrNull", Args: []chplan.Expr{
+		&chplan.MapAccess{Map: attrs, Key: &chplan.LitString{V: bucketBoundLabel}},
+	}}
+}
+
 // classicBucketLeRestriction narrows a classic-histogram row's
 // BucketCounts x ExplicitBounds arrays down to just the buckets an `le`
 // matcher set selects (#1478), re-deriving per-bucket counts from the
@@ -47,7 +102,6 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	eb := &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
 
 	n := &chplan.FuncCall{Name: "length", Args: []chplan.Expr{bc}}
-	boundCount := &chplan.FuncCall{Name: "length", Args: []chplan.Expr{eb}}
 
 	// cumFloat[i] = running total through bucket i, 1-based, length n.
 	// BucketCounts is Array(UInt64) in the OTel-CH schema; cast to
@@ -70,21 +124,6 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 		},
 	}
 
-	// leStrAt(idx) synthesises the same le string
-	// wrapHistogramBucketFanout fans a real Sample row's `le` label from:
-	// the formatted ExplicitBounds entry, or "+Inf" past the end of
-	// ExplicitBounds (the trailing overflow bucket).
-	leStrAt := func(idx chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{
-			Name: "if",
-			Args: []chplan.Expr{
-				&chplan.Binary{Op: chplan.OpGt, Left: idx, Right: boundCount},
-				&chplan.LitString{V: "+Inf"},
-				&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.Subscript{Container: eb, Key: idx}}},
-			},
-		}
-	}
-
 	// lePred(i) ANDs every `le` matcher against the position-`i` bucket's
 	// synthesised le string — matchOp covers all four labels.MatchType
 	// values (=, !=, =~, !~), same routing matcherToExpr uses for every
@@ -98,7 +137,7 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	for _, m := range leMatchers {
 		cmp := &chplan.Binary{
 			Op:    matchOp(m.Type),
-			Left:  leStrAt(&chplan.BareIdent{Name: "i"}),
+			Left:  classicBucketLeStringExpr(&chplan.BareIdent{Name: "i"}, eb),
 			Right: &chplan.LitString{V: m.Value},
 		}
 		lePred = andExpr(lePred, cmp)
@@ -192,7 +231,8 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// The two NaN guards Prometheus's bucketQuantile applies before ever
 	// interpolating: the retained ladder's top rung must be the +Inf
 	// overflow bucket (checked via array membership of position n, the
-	// only position leStrAt ever renders as "+Inf"), and at least two
+	// only position classicBucketLeStringExpr ever renders as the +Inf
+	// bound), and at least two
 	// rungs must remain.
 	overflowRetained := &chplan.FuncCall{Name: "has", Args: []chplan.Expr{keptIdx, n}}
 	atLeastTwoRungs := &chplan.Binary{Op: chplan.OpGe, Left: lenKept, Right: &chplan.LitInt{V: 2}}
