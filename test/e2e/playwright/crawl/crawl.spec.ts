@@ -390,8 +390,9 @@ test.describe('crawl: canonicalization pins', () => {
 
   test('structural params join the canonical key; defaults and session params drop', () => {
     // The maintainer-found gap: var-groupBy selects WHICH query the
-    // breakdown fires — a consumption mode, hence a surface. Boot
-    // defaults (actionView=breakdown, var-metric=rate,
+    // breakdown fires — a consumption mode, hence a surface. The
+    // ATTRIBUTE NAME is data-derived, so the value parameterizes.
+    // Boot defaults (actionView=breakdown, var-metric=rate,
     // var-groupBy=resource.service.name) drop so the app rewriting
     // its defaults into the URL can't re-key the bare surface.
     expect(
@@ -400,7 +401,7 @@ test.describe('crawl: canonicalization pins', () => {
         base,
         scope,
       ),
-    ).toBe('/a/grafana-exploretraces-app/explore?var-groupBy=kind');
+    ).toBe('/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}');
     // Two pinned params sort by name — pairwise-terminal state.
     expect(
       canonicalizeURL(
@@ -409,7 +410,7 @@ test.describe('crawl: canonicalization pins', () => {
         scope,
       ),
     ).toBe(
-      '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+      '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}',
     );
     // All-defaults URL keys the bare surface.
     expect(
@@ -448,18 +449,90 @@ test.describe('crawl: canonicalization pins', () => {
     ).toBe('/a/grafana-lokiexplore-app/explore/service/{service}/logs');
   });
 
+  test('parameterizing var-groupBy absorbs data churn but still catches real coverage change', () => {
+    // #1825: one added resource attribute reshuffled the breakdown's
+    // option list, so the sweep's representative moved from
+    // resource.service.version to resource.service.namespace and the
+    // ratchet fired BOTH halves at once for a pure data change. Under
+    // the parameterized rule the two states key one surface.
+    const asVersion = canonicalizeURL(
+      '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version',
+      base,
+      scope,
+    );
+    const asNamespace = canonicalizeURL(
+      '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.namespace',
+      base,
+      scope,
+    );
+    expect(asVersion).toBe(asNamespace);
+
+    const stack = activeStack();
+    const groupBySurface = asNamespace!;
+    const inventory = {
+      doc: '',
+      stack: stack.name,
+      surfaces: [
+        { url: '/a/grafana-exploretraces-app/explore', lean: true },
+        { url: groupBySurface, lean: true },
+      ],
+    };
+    const noExclusions = { doc: '', exclusions: [] };
+
+    // Data churn alone: the ratchet is silent.
+    expect(
+      diffInventory(
+        new Set(['/a/grafana-exploretraces-app/explore', groupBySurface]),
+        inventory,
+        noExclusions,
+        'lean',
+        stack,
+      ),
+    ).toEqual([]);
+
+    // The gate is NOT dead — a genuinely unvisited surface still fails.
+    // If the sweep stopped driving the groupBy control entirely, no
+    // value of it can key groupBySurface, so this is exactly the
+    // regression the collapse must still catch.
+    const shrank = diffInventory(
+      new Set(['/a/grafana-exploretraces-app/explore']),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(shrank).toHaveLength(1);
+    expect(shrank[0]).toContain('coverage shrank');
+    expect(shrank[0]).toContain(groupBySurface);
+
+    // …and a genuinely new surface still fails.
+    const grew = diffInventory(
+      new Set([
+        '/a/grafana-exploretraces-app/explore',
+        groupBySurface,
+        '/a/grafana-exploretraces-app/explore?actionView=comparison',
+      ]),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(grew).toHaveLength(1);
+    expect(grew[0]).toContain('coverage grew');
+  });
+
   test('pinned structural-param counting (the pairwise depth bound)', () => {
     expect(
       pinnedStructuralParamCount('/a/grafana-exploretraces-app/explore'),
     ).toBe(0);
     expect(
       pinnedStructuralParamCount(
-        '/a/grafana-exploretraces-app/explore?var-groupBy=kind',
+        '/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}',
       ),
     ).toBe(1);
     expect(
       pinnedStructuralParamCount(
-        '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy=kind',
+        '/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}',
       ),
     ).toBe(2);
     expect(
