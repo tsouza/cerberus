@@ -378,9 +378,24 @@ uncomputable-diff fallback — cannot drift between the lanes that use it.
     collapsing 2a/2b/6d/7b to their integer = 14) and asserts the
     "N-layer test map" / "tested in N layers" claims in `CLAUDE.md`,
     `docs/test-strategy.md`, and `README.md` match.
+  - **surface-parity glance table** — tallies the `class` field of
+    `test/surface-parity/inventory.json` per head and asserts all sixteen
+    cells of the "Coverage at a glance" table in `docs/coverage.md`. The fold
+    mirrors `scripts/gen-coverage.py` (`parity-accept` + `wrong-accept` →
+    supported, `parity-reject` → intentionally rejected, `wrong-reject` →
+    wrong-rejected); an unrecognised class throws rather than dropping out of
+    every column, so a fourth ledger verdict cannot deflate the headline
+    wrong-rejection cell.
+  - **shape-divergence count** — counts the `class: "divergence"` rows across
+    `test/rejection-parity/catalogue/*.json` (the argument shapes the
+    reference answers and cerberus rejects) and asserts the "N open
+    argument-shape divergences" claim in `docs/coverage.md`. This is a
+    SECOND, shape-level measurement standing beside the ledger's
+    symbol-level one, and the doc must state both so a reader cannot take
+    the symbol-level zero for a global one.
   - Counts are parsed from the actual structures (registry keys / markdown
-    headings), never from a string match on the prose they validate, so a
-    doc can only go green by matching reality.
+    headings / ledger records), never from a string match on the prose they
+    validate, so a doc can only go green by matching reality.
   - **`--self-test`** is a meta-test that feeds the derivers / extractors
     deliberately-drifted inputs and proves each assertion FAILS on a
     mismatch (and ACCEPTS the corrected wording). The CI step runs

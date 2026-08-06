@@ -25,7 +25,7 @@ same query.
 | **Supported (experimental)**         | A symbol the upstream parser gates behind an experimental-functions flag. Cerberus enables that flag in its production parser (PromQL: `--enable-feature=promql-experimental-functions`), so these work out of the box. Treat them as you would on upstream — they are experimental *upstream*, not flaky in cerberus. |
 | **Supported (cerberus extension)**   | Cerberus accepts a query the reference's default configuration rejects, and answers it correctly. Rare; called out explicitly.                                                                                                                                                                                         |
 | **Rejected (parity with reference)** | Cerberus rejects it *and so does the reference* under the same configuration — a deliberate, parity-preserving gate, not a gap.                                                                                                                                                                                        |
-| **Not yet supported**                | Cerberus rejects a symbol the reference accepts — a real coverage gap. There are currently **none** of these (see [Coverage at a glance](#coverage-at-a-glance)).                                                                                                                                                      |
+| **Not yet supported**                | Cerberus rejects a symbol the reference accepts — a real coverage gap. No symbol carries this status; specific argument *shapes* of supported symbols do, and are counted separately in [Coverage at a glance](#coverage-at-a-glance).                                                                                 |
 
 This is the human-facing translation of cerberus's machine-readable
 conformance **ledger** in [`test/surface-parity/`](../test/surface-parity/)
@@ -52,13 +52,21 @@ each citing an open issue and held to a count ceiling plus an age cap — see
 The numbers below are derived directly from
 [`test/surface-parity/inventory.json`](../test/surface-parity/inventory.json),
 the pinned ledger of every grammar symbol the three upstream parsers expose.
+The table is rendered from it by `scripts/gen-coverage.py`, and every cell is
+re-derived from the ledger on each pull request by the `doc-counts` gate
+([`.github/scripts/doc-counts.mjs`](../.github/scripts/doc-counts.mjs)), so a
+figure here can only ever be what the ledger tallies.
 
-| Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Not yet supported |
-| --------- | -------------- | ------------------------------ | ------------------------------- | ----------------- |
-| PromQL    | 121            | 119                            | 2                               | 0                 |
-| LogQL     | 62             | 62                             | 0                               | 0                 |
-| TraceQL   | 45             | 45                             | 0                               | 0                 |
-| **Total** | **228**        | **226**                        | **2**                           | **0**             |
+<!-- BEGIN AUTOGEN: coverage-glance (scripts/gen-coverage.py) -->
+
+| Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Wrong-rejected symbols |
+| --------- | -------------- | ------------------------------ | ------------------------------- | ---------------------- |
+| PromQL    | 121            | 119                            | 2                               | 0                      |
+| LogQL     | 62             | 62                             | 0                               | 0                      |
+| TraceQL   | 45             | 45                             | 0                               | 0                      |
+| **Total** | **228**        | **226**                        | **2**                           | **0**                  |
+
+<!-- END AUTOGEN: coverage-glance -->
 
 > **This is an accept/reject ledger, not a correctness score.** "226/228
 > supported" means cerberus *lowers to SQL that the reference also accepts*
@@ -68,10 +76,33 @@ the pinned ledger of every grammar symbol the three upstream parsers expose.
 > can still emit wrong rows). Cite this number as **surface / rejection
 > parity**, never as numerical correctness coverage.
 
-There are **zero** wrong-rejections across all three heads: cerberus lowers
-every grammar symbol the reference backends accept. The two PromQL parity
-rejections are the bare `start()` / `end()` query-context calls, which the
-reference parser itself only admits inside an `@` modifier (`up @ start()`,
+### What the wrong-rejection column measures, and what it does not
+
+The `Wrong-rejected symbols` column counts **symbols**, one probe each: it is
+zero across all three heads, and what that buys a reader is that no grammar
+symbol is wholly missing — cerberus lowers every one the reference backends
+accept. It is silent on argument shapes. A symbol reaches the table through a
+single canonical probe, so a function that lowers `sort_by_label(v, "l")` and
+rejects `sort_by_label(v)` still counts as one supported symbol.
+
+Shape-level wrong-rejections are measured separately, by the rejection-parity
+catalogue: across all three heads it records **13** open argument-shape
+divergences — queries the reference backend answers and cerberus rejects. Each
+is one `class: "divergence"` row in
+[`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
+carries an open GitHub issue tracking its closure, and is re-verified against
+both backends on every compat run in both directions — cerberus must still
+reject it and the reference must still accept it — under a count ceiling and an
+age cap ([`test/rejection-parity/doc.go`](../test/rejection-parity/doc.go)).
+That count is re-derived from the catalogue by the same `doc-counts` gate that
+validates the table above.
+
+Read the two measurements together, never one for the other: every grammar
+symbol lowers, and a counted, individually-tracked set of argument shapes of
+those symbols does not.
+
+The two PromQL parity rejections are the bare `start()` / `end()`
+query-context calls, which the reference parser itself only admits inside an `@` modifier (`up @ start()`,
 `up @ end()` — both **Supported**, listed under Modifiers) and rejects as
 standalone expressions exactly as cerberus does.
 
@@ -87,8 +118,8 @@ not a correctness divergence. In real PromQL usage they match upstream.
 
 ## Per-symbol tables
 
-The tables below are generated from the inventory; regenerate them after a
-burndown that changes the surface with:
+The tables below are generated from the inventory, as is the summary table
+above; regenerate both after a burndown that changes the surface with:
 
 ```sh
 CERBERUS_UPDATE_INVENTORY=1 go test ./test/surface-parity/   # re-pin the ledger
