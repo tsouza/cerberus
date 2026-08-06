@@ -5,7 +5,15 @@
       "site": "internal/traceql/select.go:lowerSelect#bba2e3bc",
       "message": "traceql: `| select(...)` requires at least one attribute",
       "class": "internal",
-      "rationale": "the grammar rejects an empty select() as a parse error"
+      "rationale": "the grammar rejects an empty select() as a parse error",
+      "evidence": {
+        "guard": [
+          "if len(attrs) == 0"
+        ],
+        "callers": [
+          "lowerFollowingElement"
+        ]
+      }
     }
   ]
 }

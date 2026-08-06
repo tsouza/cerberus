@@ -7,6 +7,16 @@
       "class": "divergence",
       "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
       "tracking_issue": 1768,
+      "evidence": {
+        "guard": [
+          "past returning if e.Left == nil",
+          "past returning if err != nil",
+          "if err != nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      },
       "since": "2026-08-05"
     },
     {
@@ -14,7 +24,15 @@
       "site": "internal/logql/label_fns.go:lowerLabelReplace#997ce6c3",
       "message": "logql: label_replace has nil inner",
       "class": "internal",
-      "rationale": "internal invariant: the parser never yields label_replace with a nil inner expression"
+      "rationale": "internal invariant: the parser never yields label_replace with a nil inner expression",
+      "evidence": {
+        "guard": [
+          "if e.Left == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     }
   ]
 }

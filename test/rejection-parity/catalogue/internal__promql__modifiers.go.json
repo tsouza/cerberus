@@ -5,21 +5,82 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#394bcda7",
       "message": "promql: `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers"
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers",
+      "evidence": {
+        "guard": [
+          "case parser.END of switch vs.StartOrEnd",
+          "if ctx.end.IsZero()"
+        ],
+        "callers": [
+          "andInstantWindow",
+          "lowerAbsentOverTime",
+          "lowerHistogramQuantileAgg",
+          "lowerHistogramQuantileNativeAgg",
+          "lowerHoltWinters",
+          "lowerMatrixSelector",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime",
+          "lowerRangeVectorCall",
+          "selectorAnchor"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAtRange"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/modifiers.go:anchorFromSelector#91490634",
       "message": "promql: `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers"
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers",
+      "evidence": {
+        "guard": [
+          "case parser.START of switch vs.StartOrEnd",
+          "if ctx.start.IsZero()"
+        ],
+        "callers": [
+          "andInstantWindow",
+          "lowerAbsentOverTime",
+          "lowerHistogramQuantileAgg",
+          "lowerHistogramQuantileNativeAgg",
+          "lowerHoltWinters",
+          "lowerMatrixSelector",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime",
+          "lowerRangeVectorCall",
+          "selectorAnchor"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAtRange"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/modifiers.go:anchorFromSelector#df7f6e9a",
       "message": "promql: unexpected StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the parser yields only START / END / 0 in StartOrEnd"
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd",
+      "evidence": {
+        "guard": [
+          "default of switch vs.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
+        ],
+        "callers": [
+          "andInstantWindow",
+          "lowerAbsentOverTime",
+          "lowerHistogramQuantileAgg",
+          "lowerHistogramQuantileNativeAgg",
+          "lowerHoltWinters",
+          "lowerMatrixSelector",
+          "lowerPredictLinear",
+          "lowerQuantileOverTime",
+          "lowerRangeVectorCall",
+          "selectorAnchor"
+        ]
+      }
     }
   ]
 }

@@ -5,70 +5,170 @@
       "site": "internal/logql/range_aggregation.go:lowerLogRange#b8257b72",
       "message": "logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)",
       "class": "internal",
-      "rationale": "the pinned parser yields only MatchersExpr / PipelineExpr as log-range inners"
+      "rationale": "the pinned parser yields only MatchersExpr / PipelineExpr as log-range inners",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch left := lr.Left.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr]"
+        ],
+        "callers": [
+          "lowerAbsentOverTime",
+          "lowerRangeAggregation"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:lowerRangeAggregation#1a3d0c76",
       "message": "logql: quantile_over_time requires a phi parameter",
       "class": "internal",
-      "rationale": "the parser rejects quantile_over_time without a parameter before lowering"
+      "rationale": "the parser rejects quantile_over_time without a parameter before lowering",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left == nil",
+          "past returning if e.Operation == syntax.OpRangeTypeAbsent",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if e.Operation == syntax.OpRangeTypeQuantile",
+          "if e.Params == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:lowerRangeAggregation#de7d6b8c",
       "message": "logql: range-aggregation has nil inner",
       "class": "internal",
-      "rationale": "internal invariant: the parser never yields a range aggregation with a nil inner"
+      "rationale": "internal invariant: the parser never yields a range aggregation with a nil inner",
+      "evidence": {
+        "guard": [
+          "if e.Left == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeFuncName#b1ec3bca",
       "message": "logql: range op %s is not yet supported",
       "class": "internal",
-      "rationale": "unreachable: every lexer-producible range op is mapped (rate/bytes_rate/rate_counter/count/bytes plus the *_over_time family incl. first/last; absent_over_time routes to lowerAbsentOverTime first); the dunder sharding ops (__quantile_sketch_over_time__, __first/last_over_time_ts__) have no lexer tokens"
+      "rationale": "unreachable: every lexer-producible range op is mapped (rate/bytes_rate/rate_counter/count/bytes plus the *_over_time family incl. first/last; absent_over_time routes to lowerAbsentOverTime first); the dunder sharding ops (__quantile_sketch_over_time__, __first/last_over_time_ts__) have no lexer tokens",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case syntax.OpRangeTypeRate, syntax.OpRangeTypeBytesRate; case syntax.OpRangeTypeRateCounter; case syntax.OpRangeTypeCount; case syntax.OpRangeTypeBytes; case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin, syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar, syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast]"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ],
+        "cited": [
+          "lowerAbsentOverTime"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeValueExpr#23b3f454",
       "message": "logql: %s does not accept `| unwrap`",
       "class": "internal",
-      "rationale": "the parser rejects bytes_rate / bytes_over_time with `| unwrap` (\"invalid aggregation ... with unwrap\"); guard kept against a future parser loosening"
+      "rationale": "the parser rejects bytes_rate / bytes_over_time with `| unwrap` (\"invalid aggregation ... with unwrap\"); guard kept against a future parser loosening",
+      "evidence": {
+        "guard": [
+          "if e.Left.Unwrap != nil",
+          "case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes of switch op"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeValueExpr#34122fa8",
       "message": "logql: %s requires an `| unwrap` clause",
       "class": "internal",
-      "rationale": "the parser rejects sum_over_time-family operations without `| unwrap` (\"invalid aggregation ... without unwrap\")"
+      "rationale": "the parser rejects sum_over_time-family operations without `| unwrap` (\"invalid aggregation ... without unwrap\")",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left.Unwrap != nil",
+          "past exhaustive switch op over [case syntax.OpRangeTypeRate, syntax.OpRangeTypeCount; case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes]",
+          "case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin, syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar, syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast, syntax.OpRangeTypeRateCounter of switch op"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeValueExpr#b1ec3bca",
       "message": "logql: range op %s is not yet supported",
       "class": "internal",
-      "rationale": "unreachable: without unwrap the parser only admits rate/count_over_time/bytes_rate/bytes_over_time/absent_over_time (all handled or routed earlier); every other lexable op requires unwrap and takes the unwrap branch"
+      "rationale": "unreachable: without unwrap the parser only admits rate/count_over_time/bytes_rate/bytes_over_time/absent_over_time (all handled or routed earlier); every other lexable op requires unwrap and takes the unwrap branch",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left.Unwrap != nil",
+          "past exhaustive switch op over [case syntax.OpRangeTypeRate, syntax.OpRangeTypeCount; case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes]",
+          "past exhaustive switch op over [case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin, syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar, syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast, syntax.OpRangeTypeRateCounter]"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:rangeValueExprFromMerged#3d7b48c7",
       "message": "logql: rangeValueExprFromMerged called without `| unwrap`",
       "class": "internal",
-      "rationale": "internal invariant: the caller routes only unwrap-carrying range aggregations here"
+      "rationale": "internal invariant: the caller routes only unwrap-carrying range aggregations here",
+      "evidence": {
+        "guard": [
+          "if e.Left.Unwrap == nil"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:unwrapValueExpr#ad5af60c",
       "message": "logql: `| unwrap` has empty identifier",
       "class": "internal",
-      "rationale": "the grammar requires a non-empty unwrap identifier; an empty one is a parse error"
+      "rationale": "the grammar requires a non-empty unwrap identifier; an empty one is a parse error",
+      "evidence": {
+        "guard": [
+          "if u.Identifier == \"\""
+        ],
+        "callers": [
+          "rangeValueExpr",
+          "rangeValueExprFromMerged"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:unwrapValueExpr#bbe4735f",
       "message": "logql: unsupported unwrap conversion %q",
       "class": "internal",
-      "rationale": "every conversion the grammar accepts (bytes / duration / duration_seconds) is handled"
+      "rationale": "every conversion the grammar accepts (bytes / duration / duration_seconds) is handled",
+      "evidence": {
+        "guard": [
+          "past returning if u.Identifier == \"\"",
+          "past exhaustive switch u.Operation over [case \"\"; case syntax.OpConvDuration, syntax.OpConvDurationSeconds; case syntax.OpConvBytes]"
+        ],
+        "callers": [
+          "rangeValueExpr",
+          "rangeValueExprFromMerged"
+        ]
+      }
     }
   ]
 }

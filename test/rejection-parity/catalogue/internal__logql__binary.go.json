@@ -5,42 +5,100 @@
       "site": "internal/logql/binary.go:logqlBinaryOp#5dca11c4",
       "message": "logql: unknown binary op %s",
       "class": "internal",
-      "rationale": "unreachable: the parser produces only the 12 arithmetic/comparison ops (all mapped) plus and/or/unless, which lowerBinary routes to lowerVectorSetOp before this map is consulted"
+      "rationale": "unreachable: the parser produces only the 12 arithmetic/comparison ops (all mapped) plus and/or/unless, which lowerBinary routes to lowerVectorSetOp before this map is consulted",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case syntax.OpTypeAdd; case syntax.OpTypeSub; case syntax.OpTypeMul; case syntax.OpTypeDiv; case syntax.OpTypeMod; case syntax.OpTypePow; case syntax.OpTypeCmpEQ; case syntax.OpTypeNEQ; case syntax.OpTypeLT; case syntax.OpTypeLTE; case syntax.OpTypeGT; case syntax.OpTypeGTE]"
+        ],
+        "callers": [
+          "lowerBinary"
+        ],
+        "cited": [
+          "lowerBinary",
+          "lowerVectorSetOp"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/binary.go:logqlVectorSetOpKind#a8c6abd9",
       "message": "logql: not a vector set operator: %s",
       "class": "internal",
-      "rationale": "unreachable: only called when syntax.IsLogicalBinOp(op) is true, and the three logical ops are all mapped"
+      "rationale": "unreachable: only called when syntax.IsLogicalBinOp(op) is true, and the three logical ops are all mapped",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case syntax.OpTypeAnd; case syntax.OpTypeOr; case syntax.OpTypeUnless]"
+        ],
+        "callers": [
+          "lowerVectorSetOp"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/binary.go:lowerBinary#4879747f",
       "message": "logql: binary expression has nil leg(s)",
       "class": "internal",
-      "rationale": "internal invariant: the pinned parser never yields a binary expression with nil legs"
+      "rationale": "internal invariant: the pinned parser never yields a binary expression with nil legs",
+      "evidence": {
+        "guard": [
+          "if b.SampleExpr == nil || b.RHS == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/binary.go:lowerBinary#e16a89f2",
       "message": "logql: scalar-only binary expression not folded (op %s) — internal invariant violation",
       "class": "internal",
-      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch"
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch",
+      "evidence": {
+        "guard": [
+          "past returning if b.SampleExpr == nil || b.RHS == nil",
+          "past returning if syntax.IsLogicalBinOp(b.Op)",
+          "past returning if err != nil",
+          "case lhsIsLit \u0026\u0026 rhsIsLit of switch"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/binary.go:vectorMatchingFromOpts#64179012",
       "message": "logql: unsupported vector-matching cardinality %d",
       "class": "internal",
-      "rationale": "LogQL's VectorMatchCardinality enum stops at CardOneToMany; no parser-producible value reaches the default arm"
+      "rationale": "LogQL's VectorMatchCardinality enum stops at CardOneToMany; no parser-producible value reaches the default arm",
+      "evidence": {
+        "guard": [
+          "past returning if vm == nil",
+          "default of switch vm.Card over [case syntax.CardOneToOne; case syntax.CardManyToOne; case syntax.CardOneToMany; default]"
+        ],
+        "callers": [
+          "lowerVectorVector"
+        ]
+      }
     },
     {
       "head": "logql",
       "site": "internal/logql/binary.go:vectorMatchingFromOpts#89d11456",
       "message": "logql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
       "class": "internal",
-      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible"
+      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible",
+      "evidence": {
+        "guard": [
+          "past returning if vm == nil",
+          "if len(vm.Include) \u003e 0",
+          "if card == chplan.CardOneToOne"
+        ],
+        "callers": [
+          "lowerVectorVector"
+        ]
+      }
     }
   ]
 }

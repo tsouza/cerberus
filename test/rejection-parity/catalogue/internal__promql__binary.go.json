@@ -5,63 +5,160 @@
       "site": "internal/promql/binary.go:lowerBinary#47ece6fd",
       "message": "promql: scalar-only binary expression not folded (op %s) — internal invariant violation",
       "class": "internal",
-      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch"
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch",
+      "evidence": {
+        "guard": [
+          "past returning if v, ok := TryFoldScalar(b); ok",
+          "past returning if b.Op.IsSetOperator()",
+          "past returning if err != nil",
+          "case lhsIsScalar \u0026\u0026 rhsIsScalar of switch"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverBinary"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:lowerVectorSetOp#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")"
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:lowerVectorVector#27f7a326",
       "message": "promql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
       "class": "internal",
-      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible"
+      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "if b.VectorMatching != nil",
+          "if len(b.VectorMatching.Include) \u003e 0",
+          "if card == chplan.CardOneToOne"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:lowerVectorVector#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")"
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool \u0026\u0026 !isComparison(op)"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:lowerVectorVector#81f45a15",
       "message": "promql: many-to-many matching not allowed: matching labels must be unique on one side",
       "class": "internal",
-      "rationale": "CardManyToMany arises only from set operators, which route to lowerVectorSetOp before this check"
+      "rationale": "CardManyToMany arises only from set operators, which route to lowerVectorSetOp before this check",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "if b.VectorMatching != nil",
+          "case parser.CardManyToMany of switch b.VectorMatching.Card"
+        ],
+        "callers": [
+          "lowerBinary"
+        ],
+        "cited": [
+          "lowerVectorSetOp"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:lowerVectorVector#bfcc1402",
       "message": "promql: unsupported vector-matching cardinality %d",
       "class": "internal",
-      "rationale": "the parser's VectorMatchCardinality enum values are all handled; no parser-producible value reaches the default arm"
+      "rationale": "the parser's VectorMatchCardinality enum values are all handled; no parser-producible value reaches the default arm",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "if b.VectorMatching != nil",
+          "default of switch b.VectorMatching.Card over [case parser.CardOneToOne; case parser.CardManyToOne; case parser.CardOneToMany; case parser.CardManyToMany; default]"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:promBinaryOp#2d85dac3",
       "message": "promql: vector set op %s should route through lowerVectorSetOp",
       "class": "internal",
-      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping"
+      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
+          "if op.IsSetOperator()"
+        ],
+        "callers": [
+          "lowerBinary",
+          "lowerScalarArg"
+        ],
+        "cited": [
+          "lowerVectorSetOp"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:promBinaryOp#63a5ec6e",
       "message": "promql: binary op %s unsupported",
       "class": "internal",
-      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm."
+      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
+          "past returning if op.IsSetOperator()"
+        ],
+        "callers": [
+          "lowerBinary",
+          "lowerScalarArg"
+        ],
+        "cited": [
+          "lowerVectorSetOp"
+        ]
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/binary.go:promVectorSetOpKind#46b4e78e",
       "message": "promql: not a vector set operator: %s",
       "class": "internal",
-      "rationale": "internal routing invariant: only parser set-operator tokens reach this mapper"
+      "rationale": "internal routing invariant: only parser set-operator tokens reach this mapper",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.LAND; case parser.LOR; case parser.LUNLESS]"
+        ],
+        "callers": [
+          "lowerVectorSetOp"
+        ]
+      }
     }
   ]
 }
