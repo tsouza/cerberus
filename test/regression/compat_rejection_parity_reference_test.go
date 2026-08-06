@@ -179,15 +179,11 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 		for _, name := range sortedSetKeys(names) {
 			// Exp-histogram routing rejects on the NAME alone
 			// (schema.Metrics.IsExpHistogramMetric is a pure suffix
-			// predicate, consulted before any row is read), and the
-			// seeder writes no exp-histogram fixture because reference
-			// Prometheus has no classic-wire representation for one to
-			// mirror. Seeding is therefore not the way to make such a
-			// trigger meaningful — the suffix IS the trigger. This arm
-			// names no specific metric and grows no entries; the
-			// seededPromFamilies switch still fatals if the seeder ever
-			// starts writing the exp-histogram table, so the exemption
-			// cannot outlive its premise.
+			// predicate, consulted before any row is read), so the
+			// suffix IS the trigger: such an entry scores the guard at
+			// its site whether or not the exact family it names is one
+			// the seeder writes. This arm names no specific metric and
+			// grows no entries.
 			if m.IsExpHistogramMetric(name) {
 				sawExpHistogramReference = true
 				continue
@@ -230,6 +226,13 @@ func seededPromFamilies(t *testing.T) map[string]bool {
 			for _, name := range synthetic {
 				out[name] = true
 			}
+			out[f.name] = true
+		case m.ExpHistogramTable:
+			// A native histogram is a single Prom-wire series carrying the
+			// whole distribution, so there are no `_bucket` / `_sum` /
+			// `_count` companions to synthesise: the storage name is the
+			// series name, and the histogram_* value functions take it
+			// directly.
 			out[f.name] = true
 		case m.GaugeTable, m.SumTable:
 			out[f.name] = true
