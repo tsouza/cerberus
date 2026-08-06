@@ -510,6 +510,83 @@ For direct internet exposure you would need a `tls.Config` on the
 listener (`CERBERUS_TLS_CERT`/`_KEY`) — not currently implemented;
 deploy behind a TLS-terminating proxy or sidecar.
 
+## Security posture
+
+Cerberus ships **no authentication, no authorization, and no tenant
+isolation**. That is a deliberate scope decision — the same one the
+listener makes about TLS — but it is load-bearing for how you deploy
+the process, so it is spelled out here rather than left to be inferred
+from the absence of a `CERBERUS_AUTH_*` knob. Vulnerability reporting
+and the in-scope threat model live in
+[`SECURITY.md`](../SECURITY.md).
+
+**Everything on the listener is open to whoever can reach the port.**
+There is no privileged route and no unprivileged one: the three query
+heads, `/healthz`, `/readyz`, and `/info` all answer any caller that
+completes a TCP connection. Treat `:8080` as an internal port and put
+the authn boundary in front of it — a TLS terminator plus an
+authenticating proxy (mTLS, `oauth2-proxy`, ingress basic-auth, a
+service mesh), and a `NetworkPolicy` (or security group) that lets only
+that proxy dial the port. The chart's `ingress.enabled=true` publishes
+the port unauthenticated unless you supply the annotations that
+authenticate it; nothing in cerberus will object.
+
+**No tenant header is read.** `X-Scope-OrgID` is ignored on every
+serving path, so a multi-tenant Grafana pointed at one cerberus gets one
+undivided view of the configured ClickHouse database — every tenant's
+metrics, logs, and traces, whichever tenant asked. (The
+`CERBERUS_VERIFY_REF_*_ORG_ID` settings are reference-side only: they
+tenant the *incumbent* Loki / Tempo that `cerberus migrate verify`
+queries, not cerberus.) Per-tenant separation has to come from the
+deployment: one cerberus per tenant, each with its own ClickHouse user
+and database, or a proxy that enforces the split before the request
+arrives.
+
+**Give the gateway a read-only ClickHouse user.** The query path only
+ever issues `SELECT`, so the credential in `CERBERUS_CH_PASSWORD` needs
+nothing but read access to the telemetry database. Provision DDL rights
+separately for the paths that actually create objects —
+`CERBERUS_AUTO_CREATE_SCHEMA` / `CERBERUS_AUTO_CREATE_DATABASE` and
+`cerberus migrate` — and prefer running those as a one-shot job under a
+different user rather than granting the long-lived gateway the ability
+to write. Note the interaction with the native `ts_grid_*` family
+documented under [Configuration](#configuration): a `readonly` profile
+that forbids the per-query experimental setting makes cerberus fall
+back to the fan-out shape.
+
+**Error bodies are verbatim.** A failed query's `{status:"error",
+error:"…"}` envelope carries the underlying ClickHouse error text,
+which can name tables and columns and quote the emitted SQL. That is
+useful in a trusted operator context and is reconnaissance material in
+an untrusted one — another reason the port belongs behind a boundary.
+
+**The diagnostic surface is opt-in, except `/info`.**
+`/debug/pprof/*` is mounted only under `CERBERUS_DEBUG_PPROF=true` (and
+logs a `WARN` for as long as it is on), so enable it transiently and
+turn it back off. `/info` has no switch: it always answers `200` with
+the build identity plus the configured ClickHouse address and database
+(never credentials) — see [`health.md`](health.md). Both are internal
+surfaces; neither should be routable from outside the boundary.
+
+**CORS and the tail WebSocket.** Cerberus emits no
+`Access-Control-Allow-*` headers, so a browser refuses cross-origin XHR
+against it. The exception is Loki's tail WebSocket
+(`/loki/api/v1/tail`), which accepts every `Origin` — upstream Loki's
+posture, and the one cerberus matches, since the endpoint is consumed
+same-origin by Grafana or out-of-browser by `logcli`. WebSocket
+handshakes are not subject to CORS, so a proxy that authenticates with
+cookies should check `Origin` itself; one that authenticates with a
+header or mTLS is unaffected.
+
+**The passwords in the repo are fixtures.** `docker-compose.yml`,
+`test/e2e/**`, and the integration tests all use `cerberus` (and
+Grafana's `admin`) as literal dev credentials for throwaway local
+stacks. They are not defaults the shipped binary or the chart carries:
+the chart takes `clickhouse.existingSecret` (or synthesises a Secret),
+and the process reads the credential from the environment. Copying a
+compose fixture into a real deployment is how those strings become a
+problem.
+
 ## Scaling
 
 Cerberus scales horizontally by adding replicas. Because the process is
