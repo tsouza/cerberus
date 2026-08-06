@@ -34,11 +34,21 @@ name: e2e
 #     visible child check, but its result does NOT gate the required
 #     `compose-smoke` (crawl = coverage, not a correctness gate; it is
 #     slow + intermittently flaky — the app-init-race 400 is #115/#934 —
-#     and must not block PR merges). The crawl shard also carries a hard
-#     30-min `timeout-minutes` so a hang fails fast and releases the
-#     `cancel-in-progress: false` concurrency slot instead of riding to
-#     a 2h ceiling. The split + per-shard timeouts live in the
-#     single-source-of-truth .github/scripts/compose-smoke-matrix.mjs.
+#     and must not block PR merges). The crawl shard also carries a
+#     depth-scaled `timeout-minutes` so a hang fails fast and releases
+#     the `cancel-in-progress: false` concurrency slot instead of riding
+#     to a 2h ceiling — always ABOVE the spec's own budget at that depth,
+#     so the SPEC times out first (a `failure` with evidence) and the
+#     runner kill stays a last resort. The split + per-shard timeouts
+#     live in the single-source-of-truth
+#     .github/scripts/compose-smoke-matrix.mjs +
+#     .github/scripts/lib/crawl-budget.mjs.
+#   - `crawl-terminal` — the de-gated crawl lane's only reader. Asserts
+#     the crawl shard ended in a REAL verdict (`success` or `failure`),
+#     not `cancelled`/`skipped`. A de-gated lane with nobody reading it
+#     went silent for three nights while the pin implied full coverage;
+#     this makes that impossible to repeat. Informational, like the lane
+#     it reads — it does not gate merges.
 #   - `dashboard` — full-stack k3d + cerberus + Grafana + Playwright
 #     smoke, SHARDED across a modest matrix of isolated-k3d-cluster jobs
 #     (dashboard-setup emits the matrix from the single-source-of-truth
@@ -225,9 +235,10 @@ jobs:
 
       # Emit the strategy.matrix JSON to $GITHUB_OUTPUT. emit re-runs the
       # assertions internally, so even without the verify step above it can
-      # never ship a matrix that silently drops a spec. IS_SCHEDULE selects the
-      # FULL (120) vs lean (45) per-shard timeout for the non-crawl shards; the
-      # crawl shard's 30-min cap is constant.
+      # never ship a matrix that silently drops a spec. IS_SCHEDULE says this
+      # event sweeps at full depth, which selects the FULL (120) vs lean (45)
+      # per-shard timeout for the non-crawl shards AND the full- vs lean-depth
+      # crawl cap (lib/crawl-budget.mjs).
       - id: emit
         name: emit shard matrix
         run: node .github/scripts/compose-smoke-matrix.mjs
@@ -253,9 +264,10 @@ jobs:
     # Per-shard wall-clock ceiling, computed in compose-smoke-matrix.mjs and
     # carried on each matrix entry. Non-crawl shards take 120 (nightly full) /
     # 45 (PR/push lean); the crawl shard (now in the SEPARATE informational
-    # matrix below) carries a hard 30-min cap. Keeping the value in the manifest
-    # — the single source of truth for the partition — means the timeout policy
-    # can't drift from the shard it applies to.
+    # matrix below) takes a depth-scaled cap derived from its own spec budget.
+    # Keeping the value in the manifest — the single source of truth for the
+    # partition — means the timeout policy can't drift from the shard it
+    # applies to.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
       # Per-shard-keyed so sibling shards in the SAME run queue independently
@@ -491,8 +503,14 @@ jobs:
   # Rationale for de-gating crawl: it is slow BFS COVERAGE, not a correctness
   # gate; it is slow + flaky by nature (~6min compose / ~50min k3d at full
   # depth; the app-init-race 400 is #115 / #934), and intermittently runs out to
-  # its timeout holding the cancel-in-progress:false concurrency slot. The hard
-  # 30-min per-shard cap (matrix.timeoutMinutes) makes a hang fail fast.
+  # its timeout holding the cancel-in-progress:false concurrency slot. The
+  # per-shard cap (matrix.timeoutMinutes) makes a hang fail fast.
+  #
+  # De-gated is not unread. `crawl-terminal` below asserts this matrix ended in
+  # a real verdict: a shard the runner killed reports `cancelled`, which is not
+  # a test result, and for three nights running that is exactly what the nightly
+  # full-depth sweep produced while the pin implied it was enforcing ~237 rows
+  # no other lane visits (#1861).
   compose-smoke-shard-info:
     name: compose-smoke-shard-info
     needs: compose-smoke-setup
@@ -504,8 +522,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.compose-smoke-setup.outputs.matrix_informational) }}
-    # Hard 30-min cap (CRAWL_SHARD_TIMEOUT_MIN in the manifest) — fail fast
-    # instead of riding to a 2h hang holding the concurrency slot.
+    # Depth-scaled cap (lib/crawl-budget.mjs, carried on the matrix entry) —
+    # fail fast instead of riding to a 2h hang holding the concurrency slot,
+    # while still sitting above the spec's own budget so the SPEC times out
+    # first and the crawl can report a verdict with evidence.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
       group: compose-smoke-info-${{ github.ref }}-${{ matrix.name }}
@@ -720,6 +740,42 @@ jobs:
           echo "all required compose-smoke shards passed (crawl coverage shard is informational, de-gated)."
 
   # ---------------------------------------------------------------------------
+  # crawl-terminal — the de-gated crawl lane's reader.
+  #
+  # Splitting the crawl out of the required aggregate (compose-smoke-shard-info)
+  # was right: a slow, flaky COVERAGE sweep must not block PR merges. What it
+  # left behind was a lane nothing read. When the shard stopped producing
+  # verdicts entirely — killed by its own `timeout-minutes`, which GitHub
+  # records as `cancelled` — the required `compose-smoke` went green (correctly;
+  # it does not need that matrix) and the ~237 full-depth rows of the surface
+  # pin were enforced by nothing, three nights running (#1861).
+  #
+  # This job asserts TERMINALITY, not correctness: the crawl must end in
+  # `success` or `failure`, a real verdict with a report behind it. A crawl that
+  # runs and legitimately fails passes THIS gate — it is already loud on its own
+  # child check, and re-gating it here would undo the de-gate on purpose. It is
+  # `cancelled` and `skipped` that this job exists to make impossible to ignore.
+  # Not a branch-protection context, so it reports without blocking merges.
+  crawl-terminal:
+    name: crawl-terminal
+    needs: [compose-smoke-scope, compose-smoke-setup, compose-smoke-shard-info]
+    # always() so a cancelled/skipped crawl matrix still reaches this reader —
+    # a plain `needs:` would skip it in exactly the case it exists to catch.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: assert the surface crawl reached a verdict
+        run: node .github/scripts/assert-crawl-terminal.mjs
+        env:
+          SCOPE_RESULT: ${{ needs.compose-smoke-scope.result }}
+          SETUP_RESULT: ${{ needs.compose-smoke-setup.result }}
+          HAS_INFORMATIONAL: ${{ needs.compose-smoke-setup.outputs.has_informational }}
+          CRAWL_SHARD_RESULT: ${{ needs.compose-smoke-shard-info.result }}
+          SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
+
+  # ---------------------------------------------------------------------------
   # dashboard (k3d) lane — SHARDED across a modest matrix of isolated k3d
   # clusters, mirroring the compose-smoke split.
   #
@@ -833,11 +889,13 @@ jobs:
       matrix: ${{ fromJSON(needs.dashboard-setup.outputs.matrix) }}
     # Per-shard wall-clock ceiling, computed in dashboard-matrix.mjs and carried
     # on each matrix entry. Smoke shards keep the prior 75-min cluster-lifetime
-    # bound; the crawl shard gets a HARD 30-min cap (CRAWL_SHARD_TIMEOUT_MIN) so a
-    # hung BFS fails fast and releases the cancel-in-progress:false k3d slot
-    # instead of riding to the long ceiling. The k3d crawl is informational
-    # COVERAGE (the whole dashboard lane is non-gating), so a 30-min cut never
-    # blocks a merge or a release.
+    # bound; the crawl shard gets the FULL-depth cap derived from its own spec
+    # budget (lib/crawl-budget.mjs) — this shard always runs SWEEP_DEPTH=full, so
+    # a cap sized for the lean sweep would kill every run before the BFS could
+    # report, which is what #1861 was. A hung BFS still fails fast and releases
+    # the cancel-in-progress:false k3d slot instead of riding to the long
+    # ceiling; the cut just lands after the spec's own timeout rather than
+    # before it, so the lane produces a verdict with evidence.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
       # Per-shard-keyed: sibling shards in the SAME run must not cancel each

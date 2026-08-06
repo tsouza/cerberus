@@ -167,235 +167,79 @@
       "lean": true
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#radio[Grid|Rows]=Grid",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"#select[Filter by fields]=thread",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"#select[SortBy direction]=Asc",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[Filter by fields]=thread",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[SortBy direction]=Asc",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[SortBy direction]=Desc",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"#select[Filter by fields]=thread",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"#select[SortBy direction]=Asc",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#radio[Grid|Rows]=Grid",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/customer?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[Filter by fields]=thread",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy direction]=Asc",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"#radio[Grid|Rows]=Grid",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy direction]=Desc",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"#select[Filter by fields]=thread",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"#select[SortBy direction]=Desc",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"#radio[Grid|Rows]=Grid",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"#select[Filter by fields]=thread",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"#select[SortBy direction]=Desc",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/order_id?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"#select[Filter by fields]=thread",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"#select[SortBy direction]=Asc",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"#select[Filter by fields]=thread",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"#select[SortBy direction]=Asc",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/response_latency_ms?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"#radio[Grid|Rows]=Grid",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"#select[Filter by fields]=thread",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"#select[SortBy direction]=Desc",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"#radio[Grid|Rows]=Grid",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"#select[Filter by fields]=thread",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"#select[SortBy direction]=Desc",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/thread?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
       "lean": false
     },
     {

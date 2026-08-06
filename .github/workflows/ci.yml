@@ -675,6 +675,17 @@ jobs:
           node --test .github/scripts/compose-smoke-matrix.test.mjs
           node --test .github/scripts/dashboard-matrix.test.mjs
 
+      # The crawl lane reports outside the required gate, so its own budget
+      # ordering and its terminality reader are what stand between a killed
+      # nightly and a pin nobody enforces. Both are pure in-process tests over
+      # the modules (the budget one reads crawl.spec.ts to catch drift), so
+      # they run here rather than waiting for the release lane that would have
+      # discovered the inversion the expensive way.
+      - name: Assert the crawl budget ordering and terminality reader hold
+        run: |
+          node --test .github/scripts/crawl-budget.test.mjs
+          node --test .github/scripts/assert-crawl-terminal.test.mjs
+
       # The subprocess helper every script above runs its commands through.
       # capture() names the spawnSync options it forwards rather than spreading
       # `opts`, so an unsupported key used to vanish without a word — and a

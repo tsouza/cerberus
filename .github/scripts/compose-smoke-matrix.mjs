@@ -39,9 +39,10 @@
 // Env:
 //   MODE            `emit` | `verify` (also argv[2]); default `verify`.
 //   PLAYWRIGHT_DIR  glob root; default `test/e2e/playwright`.
-//   IS_SCHEDULE     (emit) "true" on the nightly schedule — selects the FULL
-//                   per-shard timeout for non-crawl shards (120 vs the 45 lean
-//                   PR/push ceiling). The crawl shard's 30-min cap is constant.
+//   IS_SCHEDULE     (emit) "true" on the nightly schedule — the lane then runs
+//                   SWEEP_DEPTH=full, which selects the FULL per-shard timeout
+//                   for the non-crawl shards (120 vs the 45 lean PR/push
+//                   ceiling) AND the full-depth crawl cap (see lib/crawl-budget.mjs).
 //   GITHUB_OUTPUT   (emit) runner file the matrix JSON is appended to.
 //
 // Exit: 0 clean / matrix emitted; 1 on any coverage violation or bad MODE.
@@ -51,26 +52,29 @@
 import process from 'node:process';
 import { error, notice, log, setOutput, appendStepSummary } from './lib/gh.mjs';
 import { SHARD_NAME_RE, collectShardCoverageViolations, discoverSpecs } from './lib/shard-coverage.mjs';
+import { crawlShardTimeoutMinutes } from './lib/crawl-budget.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-shard wall-clock ceilings (timeout-minutes on the compose-smoke-shard
 // job, interpolated as `matrix.timeoutMinutes`).
 //
-// The CRAWL shard gets a HARD 30-min cap regardless of event. crawl/crawl.spec.ts
-// is a slow BFS COVERAGE lane (NOT a correctness gate — it is de-gated from the
-// required `compose-smoke` aggregate, see GATE_EXCLUDED_SHARDS below) whose single
-// indivisible BFS test() intermittently flakes (the app-init-race 400, #115/#934)
-// and, on a hang, runs out to its long job timeout holding the
-// `cancel-in-progress: false` concurrency slot for ~2h. A 30-min cap makes it FAIL
-// FAST and release the slot instead. The PR/push lean crawl's internal budget is
-// 14min (testInfo.setTimeout in crawl.spec.ts), so 30min is comfortable headroom
-// for a healthy run; a hung/flaking run is cut at 30 instead of riding to 120.
+// The CRAWL shard's cap tracks the DEPTH it runs at, because the cap only does
+// its job while it sits above the spec's own budget. crawl/crawl.spec.ts is a
+// slow BFS COVERAGE lane (NOT a correctness gate — it is de-gated from the
+// required `compose-smoke` aggregate, see GATE_EXCLUDED_SHARDS below) whose
+// single indivisible BFS test() intermittently flakes (the app-init-race 400,
+// #115/#934) and, on a hang, would otherwise ride to a 2h ceiling holding the
+// `cancel-in-progress: false` concurrency slot. The cap makes that fail fast
+// and release the slot — but a cap BELOW the spec budget stops being a
+// fail-fast and becomes a guaranteed runner kill, which GitHub records as
+// `cancelled`: no verdict, no evidence. A constant 30-min cap did exactly that
+// to every nightly SWEEP_DEPTH=full crawl (#1861). lib/crawl-budget.mjs derives
+// both caps from the spec budgets so the ordering holds by construction.
 //
 // NON-CRAWL shards keep their prior effective ceilings: the nightly schedule runs
 // SWEEP_DEPTH=full (the heavier sweep) at 120, PR/push run SWEEP_DEPTH=lean at 45.
 // Those shards are fast (≤~35s lean per spec) so they comfortably fit; the 45/120
 // split is preserved verbatim from the old per-job `timeout-minutes` expression.
-const CRAWL_SHARD_TIMEOUT_MIN = 30;
 const NONCRAWL_SHARD_TIMEOUT_FULL_MIN = 120;
 const NONCRAWL_SHARD_TIMEOUT_LEAN_MIN = 45;
 
@@ -207,11 +211,14 @@ function verify() {
   process.exit(0);
 }
 
-// shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. The crawl
-// shard is a constant 30-min hard cap (fail fast, release the concurrency slot);
-// non-crawl shards take the full (nightly) or lean (PR/push) ceiling.
+// shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. Both the
+// crawl and the non-crawl ceilings follow the sweep depth this event runs at:
+// the nightly schedule sweeps full, PR/push sweep lean (the SWEEP_DEPTH
+// expression in e2e.yml). The crawl cap is derived from the spec's own budget
+// at that depth so the spec always times out first (lib/crawl-budget.mjs).
 export function shardTimeoutMinutes(shardName, { isSchedule } = {}) {
-  if (GATE_EXCLUDED_SHARDS.includes(shardName)) return CRAWL_SHARD_TIMEOUT_MIN;
+  const depth = isSchedule ? 'full' : 'lean';
+  if (GATE_EXCLUDED_SHARDS.includes(shardName)) return crawlShardTimeoutMinutes(depth);
   return isSchedule ? NONCRAWL_SHARD_TIMEOUT_FULL_MIN : NONCRAWL_SHARD_TIMEOUT_LEAN_MIN;
 }
 
@@ -278,4 +285,4 @@ if (invokedDirectly) {
 }
 
 // Exported for the unit guard (.github/scripts/compose-smoke-matrix.test.mjs).
-export { SHARDS, EXCLUDED, SHARD_NAME_RE, GATE_EXCLUDED_SHARDS, CRAWL_SHARD_TIMEOUT_MIN };
+export { SHARDS, EXCLUDED, SHARD_NAME_RE, GATE_EXCLUDED_SHARDS };
