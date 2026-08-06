@@ -9,6 +9,13 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/subquery.go:lowerAbsentOverTimeOverSubquery#e8585e71",
+      "message": "promql: absent_over_time() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: absent_over_time() is pinned to one argument in parser.Functions"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "divergence",
@@ -110,10 +117,10 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#1455acf5",
-      "message": "promql: subquery over %s requires a scalar literal K",
-      "class": "rejection",
-      "trigger_query": "max_over_time(topk(scalar(up), up)[5m:1m])"
+      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#c28ffcca",
+      "message": "promql: subquery over %s K: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
     },
     {
       "head": "promql",
