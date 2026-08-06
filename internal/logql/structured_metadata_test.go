@@ -233,6 +233,100 @@ func TestStructuredMetadata_GroupByInflatesIdentity(t *testing.T) {
 	}
 }
 
+// TestStructuredMetadata_UnwrapResolvesLogAttributes is the regression
+// guard for issue #1887: `| unwrap <structured-metadata field>` used to
+// resolve its value against the bare labels map, which for a
+// LogAttributes-only key reads "" on every row. The unwrap row semantics
+// then drop every such sample ("an EMPTY unwrap source drops the sample
+// before any conversion runs"), so the whole matrix came back empty even
+// though the same field filtered and grouped correctly.
+//
+// The value expression must therefore go through the SAME coalescing
+// lookup the filter/grouping sites use. `toFloat64OrZero(if(mapContains(`
+// is the byte-level signature of that: before the fix the emitted value
+// expression was `toFloat64OrZero(\`ResourceAttributes\`[?])`.
+func TestStructuredMetadata_UnwrapResolvesLogAttributes(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{
+			// No parser stage: labelsExpr is the bare ResourceAttributes
+			// column, so the lookup must take the full
+			// structured-over-stream coalesce.
+			name:  "bare",
+			query: `avg_over_time({service_name="clickhouse"} | unwrap latency [1m])`,
+		},
+		{
+			// A parser stage materialises `_logql_merged_labels`; the
+			// unwrap value reads that column and must still fall back to
+			// structured metadata for a key the parser did not extract.
+			name:  "parser_merged",
+			query: `avg_over_time({service_name="clickhouse"} | logfmt | unwrap latency [1m])`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := syntax.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := lower(expr, s, lowerCtx{})
+			if err != nil {
+				t.Fatalf("lower: %v", err)
+			}
+			sqlStr, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if !strings.Contains(sqlStr, "toFloat64OrZero(if(mapContains(") {
+				t.Errorf("unwrap value expression does not coalesce through structured metadata; "+
+					"a LogAttributes-only unwrap target would read \"\" and drop every sample:\n%s", sqlStr)
+			}
+			if !strings.Contains(sqlStr, "`LogAttributes`[?]") {
+				t.Errorf("emitted SQL never reads a LogAttributes value for the unwrap target:\n%s", sqlStr)
+			}
+		})
+	}
+}
+
+// TestStructuredMetadata_UnwrapDurationRowSemanticsCoalesce covers the
+// second half of issue #1887: the row-semantics guard that drops empty
+// unwrap sources (and the duration-conversion error stamp) reads the
+// unwrap source through its own lookup. It must coalesce too, or a
+// duration conversion over structured metadata drops every row at the
+// filter before the value expression is ever evaluated.
+func TestStructuredMetadata_UnwrapDurationRowSemanticsCoalesce(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+
+	expr, err := syntax.ParseExpr(`avg_over_time({service_name="clickhouse"} | unwrap duration(latency) [1m])`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The drop-empty guard compares the unwrap source against ''. With the
+	// coalescing lookup that comparison reads the `if(mapContains(...))`
+	// shape; before the fix it compared `ResourceAttributes`[?] directly,
+	// which is always '' for a structured-metadata-only key.
+	if !strings.Contains(sqlStr, "if(mapContains(`LogAttributes`,") {
+		t.Errorf("unwrap row-semantics guard does not coalesce through structured metadata:\n%s", sqlStr)
+	}
+	if strings.Contains(sqlStr, "(`ResourceAttributes`[?] != ?)") {
+		t.Errorf("unwrap drop-empty guard still reads the stream-label map directly:\n%s", sqlStr)
+	}
+}
+
 // TestStructuredOuterByKeys_FiltersTopLevelAndDetectedLevel pins the
 // outer-by key classifier: top-level columns and the detected_level
 // family are excluded (handled elsewhere); structured/stream keys pass
