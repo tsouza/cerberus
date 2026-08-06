@@ -717,7 +717,7 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 //	SELECT <Columns> FROM (
 //	  SELECT *, row_number() OVER (PARTITION BY <By> ORDER BY <SortExpr> [DESC]) AS _rn
 //	  FROM (<input>)
-//	) WHERE _rn <= (SELECT toUInt64(`Value`) FROM (<KExpr>) LIMIT 1)
+//	) WHERE toFloat64(_rn) <= (SELECT toFloat64(`Value`) FROM (<KExpr>) LIMIT 1)
 //
 // `By` empty omits PARTITION BY (the rank fires across the whole
 // result). `_rn` is a CH-safe synthetic alias the emitter pins; the
@@ -725,13 +725,14 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 // does not use leading-underscore columns, so the alias does not
 // collide with the inner subquery's columns.
 //
-// The K subquery is wrapped in `toUInt64(...)` so a non-integer scalar
-// (PromQL semantics permit a float K, truncated to int) does not
-// surface as a CH "cannot compare UInt64 and Float64" error. The
-// trailing `LIMIT 1` guards against the unusual case where the scalar
-// subtree returns multiple rows — CH's scalar-subquery binding refuses
-// non-unique results, and PromQL's `scalar()` is documented to return
-// NaN in that case (which would coerce to 0 here and reject every row).
+// Both sides of the comparison are `toFloat64(...)`, deliberately: K is
+// never cast to an integer, for the correctness reason spelled out at
+// the kSelect below — a UInt64 cast wraps a negative K to ~1.8e19 and
+// lets every row through, where PromQL requires any K below 1 to select
+// nothing. The trailing `LIMIT 1` guards against the unusual case where
+// the scalar subtree returns multiple rows — CH's scalar-subquery
+// binding refuses non-unique results, and PromQL's `scalar()` is
+// documented to return NaN in that case, which selects no row here.
 func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 	sub, err := e.subqueryFrag(t.Input)
 	if err != nil {

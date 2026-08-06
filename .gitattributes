@@ -28,8 +28,16 @@
 #
 # Adding a new generated artefact? Add it here. The gate is pinned from both
 # directions by test/regression/generated_artifact_merge_gate_test.go, which
-# also fails on any tracked data file NAMED like a generated artefact that is
-# neither gated here nor recorded in the hand-authored section at the bottom.
+# also fails on any tracked data file that is UNCLASSIFIED — neither gated here
+# nor recorded, with a reason, in the hand-authored section at the bottom. The
+# scan reaches a file two ways: because it is named like an artefact, and —
+# the half that fails closed — because it sits in "generated territory", a
+# directory holding either a known artefact or a source file that gates an
+# os.WriteFile / writeFileSync on a regeneration mode (CERBERUS_UPDATE_*,
+# GOLDEN_UPDATE, UPDATE_*_BASELINE, REGENERATE and friends). Naming an artefact
+# outside the four historical families is therefore no longer enough to escape
+# the gate, which is how test/rejection-parity/divergence-ceiling.json and the
+# two reference-verdict ledgers sat here ungated (#1868).
 #
 # `-merge` protects a LOCAL `git merge` / `git rebase` / `git pull`, which
 # reads this file. Whether GitHub's SERVER-SIDE merge (the "Update branch"
@@ -130,7 +138,8 @@ compatibility/loki/upstream-skip-baseline.txt  -merge
 #   a golden is a reviewed artefact, never rewritten by the lane asserting it.
 # Matched by basename so a new archetype's goldens are gated on arrival.
 # Deliberately NOT gated: expected/compliance-retention.json and
-# expected/tier1.json are hand-authored fixtures that are read, never written.
+# expected/tier1.json are hand-authored fixtures that are read, never written —
+# recorded as such in the hand-authored section at the bottom.
 test/e2e/migration/archetypes/*/expected/corpus.json     -merge
 test/e2e/migration/archetypes/*/expected/explain.txt     -merge
 test/e2e/migration/archetypes/*/expected/gate.json       -merge
@@ -157,12 +166,29 @@ test/e2e/grafana/ql-inventory/traceql-feature-inventory.json  -merge
 # guards in different files write different shards and never blend; `-merge`
 # still covers the residual case of two branches touching the same shard.
 test/rejection-parity/catalogue/*.json       -merge
+# The divergence ceiling is the catalogue's monotonic-count leg, written by the
+# same env gate: CERBERUS_UPDATE_INVENTORY=1 go test ./test/rejection-parity/
+# tightens it to match a decrease. It holds one key today, so a blend collides
+# on the same line — that is the file's shape, not a protection, and the shape
+# changes the first time a second key lands.
+test/rejection-parity/divergence-ceiling.json  -merge
 # CERBERUS_UPDATE_INVENTORY=1 go test ./test/surface-parity/
 test/surface-parity/inventory.json           -merge
 # Regenerate: REGENERATE=1 node .github/scripts/promql-surface-gate.mjs
 #   (starts a local reference Prometheus in Docker; normally produced by the
 #    compatibility/promql-surface job)
 test/surface-parity/promql-reference-verdicts.json  -merge
+# Regenerate: CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle
+#   -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/
+#   One `"<symbol>": "<verdict>"` entry per probed surface symbol, re-probed
+#   through upstream Loki's AGPL parser. The default build reads the ledger
+#   instead of linking that parser, so a blended verdict silently changes what
+#   parity means for a symbol nobody re-probed.
+test/surface-parity/logql-reference-verdicts.json    -merge
+# Regenerate: CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle
+#   -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/
+#   Same shape and same hazard, against upstream Tempo's AGPL parser.
+test/surface-parity/traceql-reference-verdicts.json  -merge
 
 # --- Grafana surface crawl inventories --------------------------------------
 # Regenerate: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=<stack>
@@ -173,11 +199,14 @@ test/surface-parity/promql-reference-verdicts.json  -merge
 test/e2e/playwright/crawl/grafana-surface-inventory.compose.json  -merge
 test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 
-# --- Named like a generated artefact, but HAND-AUTHORED ---------------------
+# --- In generated territory, but HAND-AUTHORED ------------------------------
 # These are recorded rather than gated. Each is hand-maintained, and each is
-# self-checking: its consumer recomputes the value it pins, so a bad blend fails
-# loudly instead of silently widening a tolerance — which is the property that
-# makes `-merge` necessary for everything above and unnecessary here.
+# self-checking: its consumer recomputes or re-derives what it pins, so a bad
+# blend fails loudly instead of silently widening a tolerance — which is the
+# property that makes `-merge` necessary for everything above and unnecessary
+# here. A record counts only while it STATES that reason; the gate rejects one
+# that names a path and argues nothing, because a list of paths with no argument
+# is an exemption set rather than a classification.
 # hand-authored: test/e2e/migration/coverage-baseline.json — raise-only counts;
 #   migration-e2e.mjs only reads it and errors telling you to reconcile.
 # hand-authored: test/e2e/migration/pass-assertions.pin.json — deliberately has
@@ -189,6 +218,26 @@ test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 #   same, for the LogQL crawl.
 # hand-authored: test/e2e/grafana/ql-inventory/traceql-feature-exclusions.json —
 #   same, for the TraceQL crawl.
+# hand-authored: test/e2e/playwright/crawl/grafana-surface-exclusions.compose.json —
+#   curated, empty by design and shrink-biased; the crawl fails on any URL that
+#   appears both here and in the stack's inventory, so a blend that invents an
+#   entry is caught by the crawl it guards rather than quietly skipping a page.
+# hand-authored: test/e2e/playwright/crawl/grafana-surface-exclusions.k3d.json —
+#   same, for the k3d stack.
+# hand-authored: compatibility/loki/dataset_metadata.json —
+#   pinned by hand from the deterministic fixture cmd/seed/ pushes (it carries a
+#   `_comment` field the bench metadata struct does not even model, so nothing
+#   writes it). The compliance driver substitutes it into every corpus query and
+#   reports `baseline returned empty` as an unexpected failure, so a blended
+#   selector breaks the reference side loudly instead of scoring a hollow pass.
+# hand-authored: test/e2e/migration/archetypes/regulated-airgapped/expected/compliance-retention.json —
+#   a declared mandate the tier-1 lane reads and never writes; the step that
+#   consumes it rejects a mandate that "bounds nothing", so a blend fails the
+#   scenario rather than weakening it.
+# hand-authored: test/e2e/migration/archetypes/three-signal/expected/tier1.json —
+#   the hand-declared tier-1 parity expectation, read and never written; the
+#   parity test compares live results against it, so a blended row fails the
+#   comparison it exists to drive.
 #
 # Two further families are deliberately left ungated, for the same "a blend is
 # loud, not silent" reason:

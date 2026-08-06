@@ -4,7 +4,10 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -42,11 +45,24 @@ const mergeAttrUnset = "unset"
 // separator rather than by splitting into a fixed field count.
 const checkAttrSeparator = ": "
 
-// handAuthoredMarker records, inside the gate itself, a file that is NAMED like
-// a generated artefact but is maintained by hand. Writing the exemption next to
-// the rule is what keeps the classification a decision someone made rather than
-// a gap nobody noticed.
+// handAuthoredMarker records, inside the gate itself, a committed data file
+// that sits in generated territory but is maintained by hand. Writing the
+// classification next to the rule is what keeps it a decision someone made
+// rather than a gap nobody noticed — and a record counts only when it STATES
+// the reason a bad merge of that file would fail loudly, so the section can
+// never decay into a bare list of paths the gate has agreed to ignore.
 const handAuthoredMarker = "# hand-authored: "
+
+// handAuthoredContinuation is the prefix of a comment line that continues the
+// previous hand-authored record's reason. The records are wrapped prose, so the
+// reason routinely starts on the line below the path; a continuation is
+// indented past the `# ` every other comment in the file uses.
+const handAuthoredContinuation = "#  "
+
+// reasonPunctuation is trimmed off a parsed reason before it is checked for
+// emptiness — a record whose stated reason is nothing but the em dash that
+// introduces it has stated nothing.
+const reasonPunctuation = " —-"
 
 // generatedArtifact is one committed file written by a regeneration command
 // rather than by hand, together with the distinctive fragment of that command
@@ -77,6 +93,16 @@ const inventoryUpdateEnv = "CERBERUS_UPDATE_INVENTORY=1"
 // inventories; it needs the named stack healthy, so the resolution is heavier
 // than a `go test` and the gate says so.
 const crawlInventorySpec = "npx playwright test crawl/crawl.spec.ts"
+
+// logqlReferenceVerdictsEnv and traceqlReferenceVerdictsEnv are the env gates
+// that re-probe every LogQL / TraceQL surface symbol through the AGPL reference
+// parser and rewrite the checked-in verdict ledger. They need the `agpl_oracle`
+// build tag, which is why each has its own gate rather than riding
+// CERBERUS_UPDATE_INVENTORY.
+const (
+	logqlReferenceVerdictsEnv   = "CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1"
+	traceqlReferenceVerdictsEnv = "CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1"
+)
 
 // parityBaselineSync is the ONLY entry here that is not a local command. It
 // rewrites a head's entry from that head's compat-cases.json RUN ARTEFACT,
@@ -132,6 +158,10 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/e2e/grafana/ql-inventory/traceql-feature-inventory.json", inventoryUpdateEnv},
 	{"test/surface-parity/inventory.json", inventoryUpdateEnv},
 	{"test/surface-parity/promql-reference-verdicts.json", "promql-surface-gate.mjs"},
+	{"test/surface-parity/logql-reference-verdicts.json", logqlReferenceVerdictsEnv},
+	{"test/surface-parity/traceql-reference-verdicts.json", traceqlReferenceVerdictsEnv},
+
+	{"test/rejection-parity/divergence-ceiling.json", inventoryUpdateEnv},
 
 	{"test/e2e/playwright/crawl/grafana-surface-inventory.compose.json", crawlInventorySpec},
 	{"test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json", crawlInventorySpec},
@@ -260,42 +290,242 @@ func TestGeneratedArtifactsRefuseLineMerge(t *testing.T) {
 }
 
 // generatedNameMarkers are the naming families cerberus gives its generated data
-// artefacts. They are the net for artefacts added AFTER this gate landed: the
-// roster above can only cover what its author knew about, so anything committed
-// under one of these names has to be classified here one way or the other. A
-// family name on the DIRECTORY counts — see looksGenerated.
+// artefacts. They are a SECOND, independent signal, and no longer the load
+// bearing one: a substring list of naming families protects only artefacts whose
+// author happened to pick one of these words, so it caught neither
+// test/rejection-parity/divergence-ceiling.json nor the two AGPL-oracle
+// reference-verdict ledgers (#1868). The classification that fails closed is the
+// territory inversion below; this list stays because it reaches artefacts
+// OUTSIDE any generated directory, which the inversion by construction does not.
+// A family name on the DIRECTORY counts — see looksGenerated.
 var generatedNameMarkers = []string{"baseline", "inventory", "catalogue", ".pin."}
 
-// generatedDataExtensions restrict the net to DATA files. The same words appear
-// in the names of the Go and Node sources that PRODUCE these artefacts
+// generatedDataExtensions restrict both nets to DATA files. The same words
+// appear in the names of the Go and Node sources that PRODUCE these artefacts
 // (compat-baseline-sync.mjs, inventory.go, catalogue.go); those are hand-written
 // code, and code is line-mergeable.
-var generatedDataExtensions = []string{".json", ".txt"}
+var generatedDataExtensions = []string{".json", ".txt", ".sql"}
+
+// generatorSourceExtensions are the languages cerberus writes its generators in.
+// A generator is found by reading source, not by compiling it, so the
+// build-tagged ones (`agpl_oracle`, `chdb`, `migration`) are seen by this gate
+// exactly like any other file — which matters, because two of the artefacts the
+// name net missed are written from behind `agpl_oracle`.
+var generatorSourceExtensions = []string{".go", ".mjs", ".ts", ".js"}
+
+// updateModeWriteCall matches the two file-write calls cerberus's generators
+// make. A generated artefact exists because something wrote it; that is the fact
+// the classification hangs on, rather than on what the artefact was named.
+var updateModeWriteCall = regexp.MustCompile(`os\.WriteFile\(|writeFileSync\(`)
+
+// updateModeGate matches the SHOUTING env-var or flag name a regeneration mode
+// is gated on — CERBERUS_UPDATE_INVENTORY, GOLDEN_UPDATE, MIGRATION_UPDATE_GOLDENS,
+// UPDATE_CARDINALITY_BASELINE, COVERAGE_UPDATE_FLOORS, REGENERATE and their
+// siblings all carry one of these three words. Pairing it with a write call is
+// what separates a generator from the many tests that write a scratch file into
+// a t.TempDir().
+var updateModeGate = regexp.MustCompile(`[A-Z0-9_]*(?:UPDATE|REGEN|GOLDEN)[A-Z0-9_]*`)
+
+// updateModeWriters returns every tracked source file that gates a file write on
+// a regeneration mode. These are the generators, read off the tree rather than
+// listed by hand: adding one is how a new generated artefact comes into
+// existence, and the directory it sits in becomes generated territory the moment
+// it lands.
+func updateModeWriters(t *testing.T, tracked []string) []string {
+	t.Helper()
+
+	var writers []string
+	for _, file := range tracked {
+		if !hasExtension(file, generatorSourceExtensions) {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(file)))
+		if err != nil {
+			t.Fatalf("read %s: %v. It is tracked, so it must be readable from the repository root "+
+				"this gate resolves against.", file, err)
+		}
+		if updateModeWriteCall.Match(body) && updateModeGate.Match(body) {
+			writers = append(writers, file)
+		}
+	}
+
+	if len(writers) == 0 {
+		t.Fatalf("no tracked source file pairs a file write with a regeneration-mode gate. Every "+
+			"generated artefact in this repository is written by one, so an empty set means the "+
+			"scan stopped reading the tree — check that this gate runs with the repository root "+
+			"at %s.", repoRoot)
+	}
+
+	return writers
+}
+
+// generatedTerritory is the set of directories in which a committed data file
+// has to be classified. It is DERIVED, never listed:
+//
+//   - the directory of every update-mode writer, because a generator almost
+//     always writes next to itself;
+//   - the directory of every rostered artefact, so a generated artefact's
+//     siblings are policed by its presence;
+//   - the directory of every hand-authored record, for the same reason from the
+//     other side.
+//
+// The inversion is the point. The name net asks "is this file named like an
+// artefact?" and lets everything else through; territory asks "is this file
+// sitting where artefacts are made?" and lets NOTHING through unclassified. A
+// new artefact dropped next to its generator is therefore loud on arrival
+// whatever it is called, which is exactly what divergence-ceiling.json was not
+// (#1868).
+func generatedTerritory(roster []generatedArtifact, records map[string]string, writers []string) map[string]struct{} {
+	territory := make(map[string]struct{})
+	for _, writer := range writers {
+		territory[path.Dir(writer)] = struct{}{}
+	}
+	for _, artifact := range roster {
+		territory[path.Dir(artifact.path)] = struct{}{}
+	}
+	for recorded := range records {
+		territory[path.Dir(recorded)] = struct{}{}
+	}
+
+	return territory
+}
+
+// hasExtension reports whether a slash-separated path's basename ends in one of
+// the given extensions.
+func hasExtension(file string, extensions []string) bool {
+	base := strings.ToLower(path.Base(file))
+	for _, ext := range extensions {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handAuthoredRecords parses the hand-authored section of `.gitattributes` into
+// path -> stated reason, folding each record's wrapped continuation lines into
+// the reason. A record that names a path without arguing for it is rejected: an
+// entry with no reason is an expected-failure list wearing a comment's clothes,
+// and the classification only means something while every "not generated" is a
+// position someone took.
+func handAuthoredRecords(t *testing.T, attrBody string) map[string]string {
+	t.Helper()
+
+	lines := strings.Split(attrBody, "\n")
+	records := make(map[string]string)
+	for i, line := range lines {
+		rest, found := strings.CutPrefix(line, handAuthoredMarker)
+		if !found {
+			continue
+		}
+
+		recorded, reason, _ := strings.Cut(strings.TrimSpace(rest), " ")
+		for _, cont := range lines[i+1:] {
+			if !strings.HasPrefix(cont, handAuthoredContinuation) {
+				break
+			}
+			reason += " " + strings.TrimSpace(strings.TrimPrefix(cont, "#"))
+		}
+
+		reason = strings.Trim(reason, reasonPunctuation)
+		if reason == "" {
+			t.Errorf("%s records %s as hand-authored but states no reason. A record with no reason "+
+				"is an exemption, not a classification: say what regenerates nothing here and why a "+
+				"bad merge of it fails loudly instead of silently.", gitattributesPath, recorded)
+		}
+		records[recorded] = reason
+	}
+
+	return records
+}
 
 // TestNoGeneratedArtifactEscapesTheMergeGate walks every tracked file and fails
-// on one that is named like a generated artefact yet is neither `-merge` gated
-// nor recorded as hand-authored in the gate. Without this the gate decays the
-// moment someone adds the next baseline: the roster above would still pass while
-// the new file merges silently, which is the shape of the bug rather than a fix
-// for it.
+// on a committed data file that is UNCLASSIFIED: one sitting in generated
+// territory, or named like a generated artefact, that is neither `-merge` gated
+// and rostered nor recorded as hand-authored with a reason. Without this the
+// gate decays the moment someone adds the next artefact: the roster above would
+// still pass while the new file merges silently, which is the shape of the bug
+// rather than a fix for it.
+//
+// The two nets fail in opposite directions on purpose. The name net is
+// permissive — everything it does not recognise is allowed through — which is
+// how divergence-ceiling.json and the two reference-verdict ledgers went
+// unprotected under four naming families that happened not to describe them
+// (#1868). Territory is the closed half: inside a directory where artefacts are
+// made, a data file is unclassified until someone classifies it, so the default
+// for a new file is loud rather than silent.
 func TestNoGeneratedArtifactEscapesTheMergeGate(t *testing.T) {
 	t.Parallel()
 
 	attrBody := readGitattributes(t)
+	records := handAuthoredRecords(t, attrBody)
 
-	// The net is name-based, so it sees only the subset of the roster that is
-	// actually NAMED like a generated artefact — the migration goldens are
-	// gated by path pattern instead and never match it. Counting that subset
-	// here is what makes the reachability check below compare like with like.
 	roster := rosterArtifacts(t)
 	rostered := make(map[string]struct{}, len(roster))
-	var rosteredMatchingNet int
 	for _, artifact := range roster {
 		rostered[artifact.path] = struct{}{}
-		if looksGenerated(artifact.path) {
-			rosteredMatchingNet++
+	}
+
+	tracked := trackedFiles(t)
+	territory := generatedTerritory(roster, records, updateModeWriters(t, tracked))
+
+	var candidates []string
+	for _, file := range tracked {
+		if !hasExtension(file, generatedDataExtensions) {
+			continue
+		}
+		if _, inTerritory := territory[path.Dir(file)]; !inTerritory && !looksGenerated(file) {
+			continue
+		}
+		candidates = append(candidates, file)
+	}
+	states := mergeAttrs(t, candidates)
+
+	scanned := make(map[string]struct{}, len(candidates))
+	for _, file := range candidates {
+		scanned[file] = struct{}{}
+
+		gated := states[file] == mergeAttrUnset
+		if _, ok := rostered[file]; ok {
+			// The per-artefact test above reports an ungated roster entry in
+			// full; repeating it here would only duplicate the failure.
+			continue
+		}
+
+		if gated {
+			t.Errorf("%s is `-merge` gated in %s but is missing from generatedArtifacts. The "+
+				"roster is what pins the regeneration command next to the rule, so an entry "+
+				"only in %s leaves the conflict undiagnosable. Add it, with the command that "+
+				"regenerates it.", file, gitattributesPath, gitattributesPath)
+
+			continue
+		}
+
+		if _, recorded := records[file]; !recorded {
+			t.Errorf("%s is an unclassified data file in generated territory (%s holds a "+
+				"generator or a known generated artefact). If a command regenerates it, gate it "+
+				"`-merge` in %s and add it to generatedArtifacts — an ungated generated baseline "+
+				"is how PR #1422's silent blend got in. If it really is hand-maintained, say so "+
+				"in %s with a %q%s line and the reason a bad merge of it would fail loudly.",
+				file, path.Dir(file), gitattributesPath, gitattributesPath, handAuthoredMarker, file)
 		}
 	}
+
+	for _, artifact := range roster {
+		if _, ok := scanned[artifact.path]; !ok {
+			t.Fatalf("the classification scan never reached %s, which this gate's own roster names "+
+				"as a generated artefact. Every rostered artefact is a data file in generated "+
+				"territory by construction, so missing one means the scan is not reading the tree "+
+				"it polices — check that this test runs with the repository root at %s.",
+				artifact.path, repoRoot)
+		}
+	}
+}
+
+// trackedFiles lists every file git tracks, slash-separated and repo-root-relative.
+func trackedFiles(t *testing.T) []string {
+	t.Helper()
 
 	cmd := exec.Command("git", "ls-files")
 	cmd.Dir = repoRoot
@@ -304,51 +534,43 @@ func TestNoGeneratedArtifactEscapesTheMergeGate(t *testing.T) {
 		t.Fatalf("git ls-files: %v", err)
 	}
 
-	var candidates []string
-	for _, tracked := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if looksGenerated(tracked) {
-			candidates = append(candidates, tracked)
-		}
-	}
-	states := mergeAttrs(t, candidates)
+	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
 
-	matched := len(candidates)
-	for _, tracked := range candidates {
-		gated := states[tracked] == mergeAttrUnset
-		if _, ok := rostered[tracked]; ok {
-			if !gated {
-				// The per-artefact test above reports this in full; counting it
-				// here too would only duplicate the failure.
-				continue
-			}
+// TestTerritoryCatchesWhatTheNameNetCannot pins the #1868 defect itself. The
+// ceiling ratchet's artefact is named after neither a baseline, an inventory, a
+// catalogue nor a pin, so the name net classified it as "not a generated file"
+// and it sat ungated. What makes it generated is that the ratchet WRITES it
+// under CERBERUS_UPDATE_INVENTORY, and that is what territory reads. Pinning
+// both halves stops a future simplification from dropping the derivation back
+// to naming, where the same class of file escapes again under a fifth word.
+func TestTerritoryCatchesWhatTheNameNetCannot(t *testing.T) {
+	t.Parallel()
 
-			continue
-		}
+	const (
+		ceiling = "test/rejection-parity/divergence-ceiling.json"
+		ratchet = "test/rejection-parity/divergence_ratchet_test.go"
+	)
 
-		if gated {
-			t.Errorf("%s is `-merge` gated in %s but is missing from generatedArtifacts. The "+
-				"roster is what pins the regeneration command next to the rule, so an entry "+
-				"only in %s leaves the conflict undiagnosable. Add it, with the command that "+
-				"regenerates it.", tracked, gitattributesPath, gitattributesPath)
-
-			continue
-		}
-
-		if !strings.Contains(attrBody, handAuthoredMarker+tracked) {
-			t.Errorf("%s is named like a generated artefact but is neither `-merge` gated nor "+
-				"recorded as hand-authored in %s. If a command regenerates it, gate it and add "+
-				"it to generatedArtifacts — an ungated generated baseline is how PR #1422's "+
-				"silent blend got in. If it really is hand-maintained, say so there with a "+
-				"%q%s line and the reason a bad merge of it would fail loudly.",
-				tracked, gitattributesPath, handAuthoredMarker, tracked)
-		}
+	if looksGenerated(ceiling) {
+		t.Errorf("looksGenerated(%q) = true. This test exists because it is FALSE: the name net "+
+			"cannot see this artefact, which is why the classification may not rest on naming.",
+			ceiling)
 	}
 
-	if matched < rosteredMatchingNet {
-		t.Fatalf("the generated-name net matched only %d tracked files, fewer than the %d rostered "+
-			"artefacts whose own names match it. The net is no longer reaching the tree it "+
-			"polices — check that this test runs with the repository root at %s.",
-			matched, rosteredMatchingNet, repoRoot)
+	writers := updateModeWriters(t, trackedFiles(t))
+	if !slices.Contains(writers, ratchet) {
+		t.Fatalf("%s is not among the %d update-mode writers this gate derives territory from, yet "+
+			"it writes %s under CERBERUS_UPDATE_INVENTORY. Without it %s is in no directory the "+
+			"gate polices and goes back to being silently line-merged (#1868).",
+			ratchet, len(writers), ceiling, ceiling)
+	}
+
+	if _, ok := generatedTerritory(nil, nil, writers)[path.Dir(ceiling)]; !ok {
+		t.Errorf("%s is not generated territory even though %s writes into it. Territory derived "+
+			"from the writers alone is what has to reach this directory — deriving it from the "+
+			"roster instead would only ever confirm what someone already classified.",
+			path.Dir(ceiling), ratchet)
 	}
 }
 
