@@ -1537,6 +1537,34 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     the ORDER rather than the patterns: three of the four classes can match the
     same output, and each wrong order fails silently in its own way.
 
+- **`golden-update.mjs`** — no workflow. This one is invoked by
+  `just update-golden <shard>...`, the local regeneration recipe, and it is
+  listed here because it is the only script in this directory a contributor runs
+  by hand. It regenerates just the artefact groups the caller named, in the stage
+  order the shard table encodes (`solver` / `migration` / `parity` ahead of the
+  fixture-golden body, `cardinality` after it), and refuses to start when those
+  shards do not cover what the branch's own diff implies has gone stale. That
+  refusal is what makes sharding safe: the recipe used to regenerate everything
+  unconditionally because of #1573, where a contributor repaired one artefact,
+  saw zero remaining churn, and met a red lane on a different one. CI can only
+  detect that drift — the harness refuses to rewrite a golden when `CI` is set —
+  so the coverage has to be computed locally, before the run.
+  - Env: `GOLDEN_SHARDS` (required; space/comma separated, or `all` — empty is an
+    error that prints the vocabulary, there is deliberately no default),
+    `GOLDEN_UPDATE_BASE_REF` (optional; default the merge-base with
+    `origin/main`), `GOLDEN_UPDATE_CHANGED_FILES` (optional; replaces the
+    git-derived file list, which is how the regression pin drives the check over
+    a synthetic diff), `GOLDEN_UPDATE_CHECK_ONLY`, `GOLDEN_UPDATE_PRINT_PLAN`,
+    `CHDB_INSTALL_PATH`, `JUST_EXECUTABLE`.
+  - Exit: `0` on a clean regeneration; `1` on an empty or unknown shard set, a
+    coverage violation, a missing `libchdb.so`, or the first shard that fails.
+  - `lib/golden-shards.mjs` owns the vocabulary and both staleness derivations —
+    per-fixture baselines resolve their own shard ids back to the corpus that
+    explains the most of them, and code inputs come from `go list -deps -test`.
+    Neither relation is written down as a table of paths;
+    `test/regression/golden_shard_coverage_test.go` pins that, along with the
+    check firing in both directions.
+
 ## Notes
 
 - **`forbid-skip.mjs` regexes are a contract.** They are kept
