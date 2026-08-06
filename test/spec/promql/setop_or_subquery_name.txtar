@@ -1,0 +1,97 @@
+# `__name__` across a SET-OPERATOR subquery inner (#1810).
+#
+# `or` / `and` / `unless` forward each surviving series' own label set
+# unchanged — unlike arithmetic and comparison-with-`bool`, they are not
+# name-dropping operators — and `last_over_time` is one of the two range
+# functions reference Prometheus never strips the name from. So both arms'
+# names must reach the wire.
+#
+# Cerberus's set-operator lowering projected only
+# (Attributes, anchor_ts, TimeUnix, Value) over the `VectorSetOp`, so the
+# name was genuinely absent from that relation and the subquery spine walk
+# correctly declined to carry it — the fix belongs upstream of the spine,
+# in the projection over the set operation itself.
+#
+# The two metrics sit on DISTINCT attribute sets on purpose: `or` matches
+# arms on the label signature EXCLUDING `__name__`, so two metrics sharing
+# one attribute set would see the right arm dropped as already-present
+# rather than merged, and the fixture would stop discriminating. With
+# `host=a` / `host=b` both arms survive and the two names are the only
+# thing a dropped `MetricName` column would erase.
+-- query.promql --
+last_over_time((cpu_temp or gpu_temp)[10m:1m])
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('cpu_temp', map('host', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 41.0),
+    ('cpu_temp', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0),
+    ('gpu_temp', map('host', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 71.0),
+    ('gpu_temp', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 72.0);
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- expected_rows --
+[
+  ["cpu_temp", {"host": "a"}, "2025-12-31T23:59:56Z", 42],
+  ["gpu_temp", {"host": "b"}, "2025-12-31T23:59:56Z", 72]
+]
+-- args --
+[0] int64 = 9
+[1] int64 = 5000000000
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = ""
+[7] string = "service_name"
+[8] string = "cpu_temp"
+[9] string = "cpu.temp"
+[10] string = "cpu/temp"
+[11] string = "service.name"
+[12] string = "service_name"
+[13] string = "service.name"
+[14] string = "service_name"
+[15] string = ""
+[16] string = "service_name"
+[17] string = "gpu_temp"
+[18] string = "gpu.temp"
+[19] string = "gpu/temp"
+-- chplan --
+Project [MetricName AS MetricName, Attributes AS Attributes, (now64(9) - toIntervalNanosecond(5000000000)) AS TimeUnix, Value AS Value]
+  RangeWindow func=last_over_time range=10m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes, MetricName] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+      VectorSetOp op=or match=default stepAligned
+        RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:51:00Z end=2026-01-01T00:00:00Z
+          Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName IN ("cpu_temp", "cpu.temp", "cpu/temp"))
+              Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+        RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:51:00Z end=2026-01-01T00:00:00Z
+          Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=(MetricName IN ("gpu_temp", "gpu.temp", "gpu/temp"))
+              Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, (now64(?) - toIntervalNanosecond(?)) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, arraySort(groupArray((`anchor_ts`, `Value`))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`), `TimeUnix`) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(10, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:51:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(10, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:00:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:51:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0)) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`, `MetricName`))) WHERE length(`window_vals`) >= 1)

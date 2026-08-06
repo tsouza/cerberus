@@ -25,7 +25,10 @@
 package prom_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -158,21 +161,139 @@ func TestQueryRange_Subquery_NestedCall_PreservesName_ChDB(t *testing.T) {
 
 // TestQueryRange_Subquery_RateInner_DropsName_ChDB is the NEGATIVE pin:
 // `rate` has already stripped `__name__` (upstream's `inputDropName`), so
-// a preserving OUTER function must not resurrect it. Only the label's
-// absence is asserted — how many series a nameless duplicate labelset
-// yields is a separate question this test deliberately does not answer.
+// a preserving OUTER function must not resurrect it.
+//
+// The seed here gives the two metrics DISTINCT attribute sets. That is
+// load-bearing since #1811: on ONE shared attribute set the dropped name
+// collapses the two series onto a single label set, which reference
+// Prometheus refuses outright — so the shared-attribute variant of this
+// query is a rejection, and it is pinned as one in
+// TestQueryRange_Subquery_RateInner_DuplicateLabelset_ChDB. Splitting the
+// hosts keeps this test on the question it exists to answer: is the name
+// resurrected?
 func TestQueryRange_Subquery_RateInner_DropsName_ChDB(t *testing.T) {
 	start, end, step := subqueryNameWindow()
-	srv, _ := newChDBServer(t, subqueryNameSeed(t, start, end))
+	srv, _ := newChDBServer(t, dupLabelsetSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
 
 	const query = `last_over_time(rate({__name__=~"cpu_temp|gpu_temp"}[5m])[10m:1m])`
 	matrix := runRangeModeQueryRange(t, srv.URL, query, start, end, step)
-	if len(matrix) == 0 {
-		t.Fatalf("%s: got an empty matrix; the fixture cannot discriminate a dropped name", query)
+	if len(matrix) != 2 {
+		t.Fatalf("%s: got %d series, want 2 (host=a and host=b are distinct label sets): %+v",
+			query, len(matrix), matrix)
 	}
 	for _, s := range matrix {
 		if name, ok := s.Metric["__name__"]; ok {
 			t.Errorf("%s: __name__ %q survived a rate inner (full metric: %+v)", query, name, s.Metric)
 		}
 	}
+}
+
+// TestQuery_BareSubquery_PreservesName_ChDB is #1809: a subquery with NO
+// wrapping range function. Nothing reduces the series, so nothing may
+// strip the name — upstream only drops it inside a reducing range
+// function. Cerberus lowered the bare form to an Identity RangeWindow
+// grouped on Attributes alone, so `MetricName` fell out of the window's
+// output relation and the HTTP layer stamped `” AS MetricName` on it.
+//
+// A bare subquery is matrix-typed, which /api/v1/query_range rejects on
+// both backends, so this drives the instant endpoint.
+func TestQuery_BareSubquery_PreservesName_ChDB(t *testing.T) {
+	start, end, _ := subqueryNameWindow()
+	srv, _ := newChDBServer(t, subqueryNameSeed(t, start, end))
+
+	const query = `{__name__=~"cpu_temp|gpu_temp"}[10m:1m]`
+	matrix := runInstantQueryMatrix(t, srv.URL, query, end)
+	assertNamedTempSeries(t, matrix, query)
+}
+
+// TestQuery_BareSetOpSubquery_PreservesName_ChDB is #1809 and #1810 met at
+// once: a bare subquery whose body is a set operation. Both carriers have
+// to hold — the projection over the `VectorSetOp` must expose
+// `MetricName`, and the Identity window must keep it as a grouping key.
+//
+// `or` matches its arms on the label signature EXCLUDING `__name__`, so
+// the two metrics get distinct attribute sets here; sharing one would make
+// `or` drop the right arm as already-present rather than exercise the
+// carry.
+func TestQuery_BareSetOpSubquery_PreservesName_ChDB(t *testing.T) {
+	start, end, _ := subqueryNameWindow()
+	srv, _ := newChDBServer(t, dupLabelsetSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+
+	const query = `(cpu_temp or gpu_temp)[10m:1m]`
+	matrix := runInstantQueryMatrix(t, srv.URL, query, end)
+	assertNamedSeriesAcrossHosts(t, matrix, query)
+}
+
+// TestQueryRange_SetOpSubquery_LastOverTime_PreservesName_ChDB is #1810
+// proper: the name has to survive the set operation's projection AND a
+// preserving range function reading the subquery's output.
+func TestQueryRange_SetOpSubquery_LastOverTime_PreservesName_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
+	srv, _ := newChDBServer(t, dupLabelsetSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+
+	const query = `last_over_time((cpu_temp or gpu_temp)[10m:1m])`
+	matrix := runRangeModeQueryRange(t, srv.URL, query, start, end, step)
+	assertNamedSeriesAcrossHosts(t, matrix, query)
+}
+
+// assertNamedSeriesAcrossHosts is assertNamedTempSeries' twin for the
+// distinct-attribute seeds: two series, each carrying its own `__name__`
+// paired with its own host. Pairing name to host is what a dropped or
+// mis-carried `MetricName` column cannot fake.
+func assertNamedSeriesAcrossHosts(t *testing.T, matrix []prom.MatrixSample, query string) {
+	t.Helper()
+	if len(matrix) != 2 {
+		t.Fatalf("%s: got %d series, want 2: %+v", query, len(matrix), matrix)
+	}
+	got := map[string]string{}
+	for _, s := range matrix {
+		name, ok := s.Metric["__name__"]
+		if !ok {
+			t.Fatalf("%s: series is missing __name__ (full metric: %+v)", query, s.Metric)
+		}
+		if len(s.Values) == 0 {
+			t.Errorf("%s: series %q carries no samples", query, name)
+		}
+		got[s.Metric["host"]] = name
+	}
+	for host, want := range map[string]string{"a": "cpu_temp", "b": "gpu_temp"} {
+		if got[host] != want {
+			t.Errorf("%s: host %q: got __name__ %q, want %q (full result: %+v)",
+				query, host, got[host], want, matrix)
+		}
+	}
+}
+
+// runInstantQueryMatrix drives /api/v1/query for a matrix-typed
+// expression — the only endpoint that accepts one, since query_range
+// rejects non-Scalar/Vector top-level types on both backends.
+func runInstantQueryMatrix(t *testing.T, baseURL, query string, at time.Time) []prom.MatrixSample {
+	t.Helper()
+	reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",
+		baseURL, url.QueryEscape(query), at.Unix())
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", reqURL, err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s", query, resp.StatusCode, body)
+	}
+	var parsed queryResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if parsed.Data.ResultType != "matrix" {
+		t.Fatalf("%s: resultType: got %q, want matrix; body=%s",
+			query, parsed.Data.ResultType, body)
+	}
+	rawResult, _ := json.Marshal(parsed.Data.Result)
+	var matrix []prom.MatrixSample
+	if err := json.Unmarshal(rawResult, &matrix); err != nil {
+		t.Fatalf("decode matrix: %v (raw=%s)", err, rawResult)
+	}
+	return matrix
 }

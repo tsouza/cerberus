@@ -59,7 +59,14 @@ func TestEmit_HistogramQuantileNative_NoZeroThresholdColumn(t *testing.T) {
 	if strings.Contains(sql, "ZeroThreshold") {
 		t.Errorf("emitted SQL references ZeroThreshold despite the schema persisting none:\n%s", sql)
 	}
-	if !strings.Contains(sql, "-0. + 2 * 0. *") {
+	// Both one-sided clamp arms collapse onto the same constant-0 edge
+	// when there is no zero_threshold to clamp, so the band is a point
+	// at zero however the distribution is shaped — which is exactly why
+	// the clamp divergence (#1836) is invisible on the default DDL.
+	const constantZeroBand = "if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.)" +
+		" + (if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.)" +
+		" - if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.)) *"
+	if !strings.Contains(sql, constantZeroBand) {
 		t.Errorf("emitted SQL does not render the constant-0 zero-bucket interpolation:\n%s", sql)
 	}
 }
@@ -161,9 +168,21 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		"0.95 > 1",
 		"0.95 = 0",
 		"0.95 = 1",
-		"-`ZeroThreshold`",
-		"2 * `ZeroThreshold`",
+		// The zero band is one-sidedly clamped (#1836): a distribution
+		// with no negative buckets cannot have observed anything below
+		// 0, so its band starts at 0 rather than -ZeroThreshold, and
+		// the mirror holds for a distribution with no positive
+		// buckets. Both arms must appear, and the interpolation must
+		// span lower -> upper rather than the unclamped 2*ZeroThreshold
+		// width.
+		"if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -`ZeroThreshold`)",
+		"if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., `ZeroThreshold`)",
 		"FROM `otel_metrics_exponential_histogram`",
+	}
+	// The unclamped fixed-width band is precisely the bug #1836 fixes;
+	// its reappearance means the clamp was lost.
+	if strings.Contains(sql, "2 * `ZeroThreshold`") {
+		t.Errorf("SQL renders the unclamped 2*ZeroThreshold zero band (#1836)\n--- sql ---\n%s", sql)
 	}
 	for _, tok := range wantTokens {
 		if !strings.Contains(sql, tok) {

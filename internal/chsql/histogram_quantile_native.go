@@ -50,9 +50,17 @@
 //     `value = -pow(base, NegativeOffset + (nlen - idx) + 1 - fraction)`.
 //     (fraction=0 → most-negative edge; fraction=1 → least-negative
 //     edge.)
-//     - Zero bucket (idx = nlen+1). Linear interpolation between
-//     `-ZeroThreshold` and `+ZeroThreshold`:
-//     `value = -ZeroThreshold + 2 * ZeroThreshold * fraction`.
+//     - Zero bucket (idx = nlen+1). Linear interpolation across the
+//     zero band `[lower, upper]`:
+//     `value = lower + (upper - lower) * fraction`.
+//     The band is `[-ZeroThreshold, +ZeroThreshold]` only when the
+//     distribution can hold observations on both sides of zero. A
+//     one-sided distribution clamps the side that cannot
+//     (quantile.go:263-273): with no negative buckets the band starts
+//     at 0, with no positive buckets it ends at 0. Without the clamp a
+//     positive-only histogram answers any phi in the lower half of its
+//     zero bucket with a NEGATIVE value — a number no observation in it
+//     could have produced. See zeroBandLower / zeroBandUpper.
 //     - Positive bucket (idx > nlen+1). Position 0-based in
 //     PositiveBucketCounts is `idx - nlen - 2`; absolute bucket
 //     index is `PositiveOffset + (idx - nlen - 2)`. The bucket
@@ -65,8 +73,9 @@
 // already cover). The `idx = 1 → ZeroThreshold` branch is subsumed by
 // the zero-bucket
 // linear interpolation: with ZeroCount > 0 and target landing inside
-// the zero band, the interpolation returns a value in
-// `[-ZeroThreshold, +ZeroThreshold]` rather than the fixed upper edge.
+// the zero band, the interpolation returns a value in the clamped band
+// — `[0, +ZeroThreshold]` for a positive-only distribution — rather
+// than the fixed upper edge.
 package chsql
 
 import (
@@ -146,26 +155,26 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 	// geometry stays written down in exactly one place per edge.
 	//
 	//   phiLow  = if(first <= nlen,   -pow(base, no + (nlen - first) + 1),
-	//               if(first = nlen+1, -zt,
+	//               if(first = nlen+1, zeroBandLower,
 	//                                  pow(base, po + (first - nlen - 2))))
 	phiLow := If(
 		Lte(w.firstPopulated(), w.nLen()),
 		Neg(Call("pow", w.base(), Add(Add(Col(no), Paren(Sub(w.nLen(), w.firstPopulated()))), InlineLit(1)))),
 		If(
 			Eq(w.firstPopulated(), Add(w.nLen(), InlineLit(1))),
-			Neg(w.zt()),
+			w.zeroBandLower(),
 			Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(w.firstPopulated(), w.nLen()), InlineLit(2))))),
 		),
 	)
 	//   phiHigh = if(last <= nlen,    -pow(base, no + (nlen - last)),
-	//               if(last = nlen+1,  zt,
+	//               if(last = nlen+1,  zeroBandUpper,
 	//                                  pow(base, po + (last - nlen - 1))))
 	phiHigh := If(
 		Lte(w.lastPopulated(), w.nLen()),
 		Neg(Call("pow", w.base(), Add(Col(no), Paren(Sub(w.nLen(), w.lastPopulated()))))),
 		If(
 			Eq(w.lastPopulated(), Add(w.nLen(), InlineLit(1))),
-			w.zt(),
+			w.zeroBandUpper(),
 			Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(w.lastPopulated(), w.nLen()), InlineLit(1))))),
 		),
 	)
@@ -180,8 +189,14 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		),
 	))
 	// Zero bucket interp (idx = nlen + 1):
-	//   -ZeroThreshold + 2 * ZeroThreshold * fraction
-	zeroInterp := Add(Neg(w.zt()), Mul(Mul(InlineLit(2), w.zt()), w.fraction()))
+	//   zeroBandLower + (zeroBandUpper - zeroBandLower) * fraction
+	// The band is the clamped one, so a one-sided distribution never
+	// interpolates across the half of `[-zt, +zt]` it cannot have
+	// observed — see zeroBandLower / zeroBandUpper.
+	zeroInterp := Add(
+		w.zeroBandLower(),
+		Mul(Paren(Sub(w.zeroBandUpper(), w.zeroBandLower())), w.fraction()),
+	)
 	// Positive bucket interp (idx > nlen + 1):
 	//   pow(base, po + (idx - nlen - 2) + fraction)
 	posInterp := Call(
@@ -241,11 +256,23 @@ type hqNativeWriters struct {
 	idx            func() Frag
 	cumAt          func(offsetMinusOne bool) Frag
 	nLen           func() Frag
+	pLen           func() Frag
 	zt             func() Frag
+	zeroBandLower  func() Frag
+	zeroBandUpper  func() Frag
 	fraction       func() Frag
 	firstPopulated func() Frag
 	lastPopulated  func() Frag
 }
+
+// zeroBandOrigin is the float-zero the one-sided zero-band clamp
+// collapses an edge onto. `0.` rides verbatim rather than through
+// InlineLit for the same reason w.zt() does when the schema persists no
+// zero_threshold: InlineLit canonicalises the value to the integer `0`,
+// and mixing it into the band arithmetic makes ClickHouse reconcile
+// Int64 against Float64 inside a single if() branch pair. It is a
+// CH-portable shape token, not data.
+func zeroBandOrigin() Frag { return verbatim("0.") }
 
 func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	pbc := h.PositiveBucketCountsColumn
@@ -309,6 +336,7 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 		return Subscript(w.cum(), key)
 	}
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
+	w.pLen = func() Frag { return Call("length", Col(pbc)) }
 	// first / last POPULATED position in the same concatenated walk order
 	// `cum` uses, so they index into the identical bucket geometry the
 	// interpolation branches read. Reference Prometheus's rank walk skips
@@ -329,9 +357,49 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	// point at 0 — emitted as the CH-portable shape token `0.`.
 	w.zt = func() Frag {
 		if zt == "" {
-			return verbatim("0.")
+			return zeroBandOrigin()
 		}
 		return Col(zt)
+	}
+	// The zero bucket's band edges, with reference Prometheus's
+	// one-sided clamp applied (promql/quantile.go:263-273):
+	//
+	//	if !h.UsesCustomBuckets() && bucket.Lower < 0 && bucket.Upper > 0 {
+	//	    case len(NegativeBuckets) == 0 && len(PositiveBuckets) > 0:
+	//	        bucket.Lower = 0
+	//	    case len(PositiveBuckets) == 0 && len(NegativeBuckets) > 0:
+	//	        bucket.Upper = 0
+	//	}
+	//
+	// The zero bucket nominally spans `[-ZeroThreshold, +ZeroThreshold]`,
+	// but a distribution with no negative buckets recorded nothing below
+	// zero, so its zero bucket starts AT zero; the mirror holds for a
+	// distribution with no positive buckets. Without the clamp every phi
+	// in the lower half of a positive-only histogram's zero bucket
+	// answers negative.
+	//
+	// The predicates read the ARRAY LENGTHS, not "has a non-zero count",
+	// because that is what the reference switch tests: an explicitly
+	// stored run of zero counts is a bucket span the distribution
+	// declares, and it keeps the band two-sided upstream too.
+	//
+	// When the schema persists no zero_threshold, w.zt() is already the
+	// constant 0 and both clamps collapse to it — the band is a point at
+	// zero either way, which is why this divergence is invisible on the
+	// default OTel-CH exp-histogram DDL.
+	w.zeroBandLower = func() Frag {
+		return If(
+			And(Eq(w.nLen(), InlineLit(0)), Gt(w.pLen(), InlineLit(0))),
+			zeroBandOrigin(),
+			Neg(w.zt()),
+		)
+	}
+	w.zeroBandUpper = func() Frag {
+		return If(
+			And(Eq(w.pLen(), InlineLit(0)), Gt(w.nLen(), InlineLit(0))),
+			zeroBandOrigin(),
+			w.zt(),
+		)
 	}
 	// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]),
 	// target = phi * total.

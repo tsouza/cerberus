@@ -1,0 +1,10 @@
+{
+  "query": "subquery_bare_multi_name",
+  "routed": false,
+  "k": 0,
+  "reason": "instant",
+  "n_anchors": 11,
+  "fanout": 5,
+  "cumulative_d": "5m0s",
+  "outer_range": "10m0s"
+}

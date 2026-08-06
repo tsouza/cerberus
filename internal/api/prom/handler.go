@@ -1110,6 +1110,19 @@ func classifyEngineError(err error) error {
 			Status: http.StatusUnprocessableEntity,
 		}
 	}
+	// Same class, different guard: a name-dropping range function collapsed
+	// two series onto one label set. Upstream raises this from
+	// Matrix.ContainsSameLabelset() as a plain evaluation error, so it is a
+	// 422 errorType=execution here too — and the restated message is
+	// upstream's verbatim, which is what makes the rejection-parity
+	// comparison against reference Prometheus meaningful.
+	if chsql.IsDuplicateLabelsetError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.DuplicateLabelsetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
 	msg := err.Error()
 	switch {
 	case errContainsStage(msg, "emit"):
