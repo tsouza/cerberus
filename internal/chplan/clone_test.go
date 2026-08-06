@@ -9,9 +9,12 @@ import (
 )
 
 // allNodeKinds is one populated instance of every concrete Node type in
-// the chplan IR. The count guard at the bottom of TestCloneNodeExhaustive
-// fails when a new Node type is added without a CloneNode case, in
-// lock-step with the panic-default in clone.go.
+// the chplan IR. The derived guard at the bottom of
+// TestCloneNodeExhaustive fails, naming the kind, when a Node type is
+// added without an instance here — in lock-step with the panic-default in
+// clone.go. The instances themselves must be hand-written (only a human
+// knows which fields make a meaningful clone fixture); which KINDS must
+// appear is derived from the source.
 func allNodeKinds() []chplan.Node {
 	leaf := &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}}
 	expr := chplan.Expr(&chplan.ColumnRef{Name: "Attributes"})
@@ -126,13 +129,49 @@ func TestCloneNodeExhaustive(t *testing.T) {
 		}
 	}
 
-	// Lock-step guard: every concrete planNode() implementer in chplan must
-	// appear here. When this count drifts, a Node type was added — extend
-	// allNodeKinds AND the CloneNode switch in clone.go.
-	const wantNodeTypes = 31
-	if len(nodes) != wantNodeTypes {
-		t.Fatalf("expected %d Node types, listed %d — a Node type was added: "+
-			"extend allNodeKinds + CloneNode", wantNodeTypes, len(nodes))
+	// Lock-step guard, derived: the Node set is the set of planNode()
+	// implementers in this package's source, read out of the source itself.
+	// A count pinned as a constant could not catch the failure it existed to
+	// catch — a Node type added without extending allNodeKinds left the
+	// count matching the list, because both are hand-maintained and both get
+	// edited in the same commit or in neither.
+	assertCoversEveryNodeKind(t, nodeKindNames(nodes), "allNodeKinds",
+		"add a populated instance to allNodeKinds and a CloneNode case in clone.go")
+}
+
+// nodeKindNames returns the concrete type name of each node, e.g. "Scan".
+func nodeKindNames(nodes []chplan.Node) map[string]bool {
+	names := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		names[reflect.TypeOf(n).Elem().Name()] = true
+	}
+	return names
+}
+
+// assertCoversEveryNodeKind is the shared derive-and-diff ratchet: the KEYS
+// of `covered` must be exactly the set of planNode() implementers this
+// package declares (the values are the caller's own business — only key
+// presence is coverage). Both directions fail loudly and name the offending
+// kind: a missing kind means the caller's table went stale under a new Node
+// type, an extra one means a Node type was deleted or renamed and the table
+// kept its ghost.
+func assertCoversEveryNodeKind(t *testing.T, covered map[string]bool, what, remedy string) {
+	t.Helper()
+
+	remaining := make(map[string]bool, len(covered))
+	for name := range covered {
+		remaining[name] = true
+	}
+	for _, kind := range planNodeImplementers(t) {
+		if _, ok := covered[kind]; !ok {
+			t.Errorf("plan node %s implements %s() but %s does not cover it — %s",
+				kind, planNodeMarkerMethod, what, remedy)
+		}
+		delete(remaining, kind)
+	}
+	for kind := range remaining {
+		t.Errorf("%s covers %s, which no longer implements %s() — drop it",
+			what, kind, planNodeMarkerMethod)
 	}
 }
 

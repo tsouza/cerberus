@@ -20,11 +20,16 @@
 // total == cases.length. That is the project's contract, not an
 // accident of the current numbers — a diff against a reference backend
 // is a bug to fix at the source, so there is no shape in this file that
-// can record a divergence as acceptable. The floors are prometheus
-// 788/788, loki 130/130, tempo 72/72, tempo-grpc 69/69; doc-counts.mjs
-// asserts those numbers against compatibility/parity-baseline.json, so
-// a corpus change cannot leave this comment behind. tempo-grpc's floor
-// is 3 below tempo's: traces / traces_v2 have no StreamingQuerier RPC
+// can record a divergence as acceptable. Each head's floor is therefore
+// its own roster length, and this header states it by REFERENCE — read
+// heads.<head> out of compatibility/parity-baseline.json. The integers
+// are not restated here, because a corpus case is one fact and writing
+// its count down a second time buys nothing a reader cannot get from the
+// baseline while costing every corpus-adding PR a merge conflict in this
+// file. doc-counts.mjs asserts the absence, so the restatement cannot
+// come back. tempo-grpc's floor is 3 below tempo's, and that difference
+// IS worth stating because it is structural rather than a count: traces
+// / traces_v2 have no StreamingQuerier RPC
 // (see compatibility/tempo/driver/grpc_diff.go), so those 2 corpus
 // cases never enter its roster, and one more (a -- expect_status --
 // rejection-parity case) is excluded pending #1714 (gRPC has no status

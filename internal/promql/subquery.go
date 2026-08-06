@@ -870,28 +870,13 @@ func subquerySpineNameWindows(n chplan.Node, s schema.Metrics) ([]*chplan.RangeW
 // Replacements may rebind MetricName, so it is not walked through.
 func projectCarriesMetricName(p *chplan.Project, s schema.Metrics) bool {
 	for _, proj := range p.Projections {
-		if projectionOutputName(proj) != s.MetricNameColumn {
+		if chplan.ProjectionOutputName(proj) != s.MetricNameColumn {
 			continue
 		}
 		lit, isLit := proj.Expr.(*chplan.LitString)
 		return !isLit || lit.V != ""
 	}
 	return false
-}
-
-// projectionOutputName returns the column name a Projection exposes: its
-// explicit Alias, else the bare-ColumnRef name it passes through. A
-// computed Expr with no Alias names no output column. Mirrors the
-// identically named helper in internal/api/prom/handler.go, which answers
-// the same question for the HTTP layer's canonical-shape check.
-func projectionOutputName(p chplan.Projection) string {
-	if p.Alias != "" {
-		return p.Alias
-	}
-	if ref, ok := p.Expr.(*chplan.ColumnRef); ok {
-		return ref.Name
-	}
-	return ""
 }
 
 // canonicalRangeWindowFunc maps a parsed PromQL function name to the
