@@ -34,7 +34,7 @@ Please include:
 ## Out of scope
 
 - Bugs in upstream `prometheus/prometheus`, `grafana/loki`, `grafana/tempo`, or `clickhouse-go` — please file upstream.
-- Misconfigurations in deployments (e.g. exposing CH without auth in front of cerberus).
+- Misconfigurations in deployments (e.g. exposing CH without auth in front of cerberus). Cerberus itself ships no authentication, authorization, or tenant isolation — [`docs/operations.md` → Security posture](docs/operations.md#security-posture) documents the boundary an operator has to provide.
 - Denial of service via legitimately expensive queries; cerberus relies on ClickHouse's query-time controls. We'll happily document mitigations.
 
 ## Cryptographic hardening

@@ -28,11 +28,6 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "topk K must be scalar literal",
-			query:   `max_over_time(topk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "requires a scalar literal K",
-		},
-		{
 			// Reference Prometheus errors on a NaN K; K < 1 shapes are
 			// NOT errors — they return an empty result (covered by
 			// TestLowerSubqueryTopK_KDomain). Same domain as instant
@@ -45,11 +40,6 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 			name:    "topk K must not overflow int64",
 			query:   `max_over_time(topk(1e300, rate(http_requests_total[1m]))[1h:30s])`,
 			wantErr: "overflows int64",
-		},
-		{
-			name:    "bottomk K must be scalar literal",
-			query:   `max_over_time(bottomk(scalar(up), rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "requires a scalar literal K",
 		},
 		{
 			name:    "count_values requires non-empty label",

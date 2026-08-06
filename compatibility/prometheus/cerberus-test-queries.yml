@@ -559,6 +559,41 @@ test_cases:
   - query: 'histogram_avg(nonexistent_metric_name)'
   - query: 'histogram_stddev(demo_memory_usage_bytes)'
   - query: 'histogram_fraction(0.2, 0.8, demo_memory_usage_bytes)'
+  # Subquery-argument range functions (rejection-parity, 2026-08).
+  # absent_over_time and the four ts_of_*_over_time reducers took a
+  # matrix selector only; each 422'd on a subquery argument while
+  # reference Prometheus answered it.
+  - query: 'absent_over_time(nonexistent_metric_name[5m:1m])'
+  - query: 'absent_over_time(demo_memory_usage_bytes[5m:1m])'
+  - query: 'absent_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])'
+  - query: 'ts_of_first_over_time(demo_memory_usage_bytes[10m:1m])'
+  - query: 'ts_of_last_over_time(demo_memory_usage_bytes[10m:1m])'
+  - query: 'ts_of_max_over_time(demo_memory_usage_bytes[10m:1m])'
+  - query: 'ts_of_min_over_time(demo_memory_usage_bytes[10m:1m])'
+  # Instant-vector transforms in subquery-inner position. Sorting is
+  # identity on the sample set once the anchor's result folds into the
+  # matrix; the date components and the native-histogram accessors are
+  # per-sample value maps.
+  - query: 'max_over_time(sort(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(sort_desc(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(sort_by_label(demo_memory_usage_bytes, "instance")[5m:1m])'
+  - query: 'max_over_time(sort_by_label_desc(demo_memory_usage_bytes, "instance")[5m:1m])'
+  - query: 'max_over_time(hour(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(day_of_week(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(timestamp(demo_memory_usage_bytes)[5m:1m])'
+  - query: 'max_over_time(histogram_count(demo_latency_exp_hist)[5m:1m])'
+  - query: 'max_over_time(histogram_sum(demo_latency_exp_hist)[5m:1m])'
+  - query: 'max_over_time(histogram_avg(demo_latency_exp_hist)[5m:1m])'
+  # Computed K for topk / bottomk: any scalar-valued expression, not
+  # just a bare `scalar(<vector>)`. demo_num_cpus is constant per the
+  # seed, so the per-statement binding agrees with reference's per-step
+  # evaluation at every step. limitk is deliberately absent — its K
+  # survivors are arbitrary, so a differential comparison is meaningless.
+  - query: 'topk(scalar(demo_num_cpus{instance="demo.promlabs.com:10000"}) * 2, demo_memory_usage_bytes)'
+  - query: 'topk(2 + scalar(vector(1)), demo_memory_usage_bytes)'
+  - query: 'bottomk(scalar(vector(2)) + 1, demo_memory_usage_bytes)'
+  - query: 'topk((scalar(vector(4)) + 2) / 2, demo_memory_usage_bytes)'
+  - query: 'max_over_time(topk(scalar(vector(2)), demo_memory_usage_bytes)[5m:1m])'
   # String- and matrix-typed top-level expressions: the compliance
   # tester drives /api/v1/query_range, where BOTH backends reject
   # non-Scalar/Vector expression types — pinning cerberus's new

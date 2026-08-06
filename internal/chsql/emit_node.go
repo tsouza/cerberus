@@ -633,30 +633,27 @@ func (e *emitter) emitLimit(l *chplan.Limit) error {
 // PromQL lowering should have rejected it upstream; emit an error so
 // the plan tree doesn't silently produce an unbounded result.
 //
-// When t.KExpr != nil (computed-K, e.g. `topk(scalar(metric_count),
+// When t.KExpr != nil (computed-K, e.g. `topk(scalar(metric_count) * 2,
 // v)`), the literal-K LIMIT shape is replaced with a `row_number()
-// OVER (PARTITION BY <by> ORDER BY <sortExpr> [DESC]) <= K` predicate
+// OVER (PARTITION BY <by> [ORDER BY <sortExpr> [DESC]]) <= K` predicate
 // because ClickHouse does not accept a subquery directly in a LIMIT
-// clause. The K subquery is wrapped as `(SELECT toUInt64(Value) FROM
-// (<k_subtree>) LIMIT 1)` — PromQL `scalar()` produces a Sample-shape
-// (MetricName, Attributes, TimeUnix, Value) and we read the `Value`
-// column. The integer cast guards against the (rare) case where the
-// scalar evaluates to a non-integer; PromQL semantics truncate.
+// clause. The K subquery is wrapped as `(SELECT toFloat64(Value) FROM
+// (<k_subtree>) LIMIT 1)`, reading the `Value` column of the one-row
+// relation the lowering builds for K.
 //
 // When t.Unordered (PromQL `limitk(K, v)`), the ORDER BY is omitted
 // entirely: the result is K *arbitrary* rows per partition, no ranking.
 // CH's `LIMIT K BY <by>` already returns the first K rows it encounters
 // per group, which is exactly limitk's "any K series" contract. SortExpr
-// is nil in this shape, so the ORDER BY clause is skipped.
+// is nil in this shape, so the ORDER BY clause is skipped — including on
+// the computed-K path, where the rank window carries a bare PARTITION BY
+// and the survivors are whichever K rows it numbers first.
 func (e *emitter) emitTopK(t *chplan.TopK) error {
 	if !t.Unordered && t.SortExpr == nil {
 		return fmt.Errorf("%w: TopK with nil SortExpr", ErrUnsupported)
 	}
 	if t.Unordered && t.SortExpr != nil {
 		return fmt.Errorf("%w: limitk TopK must not carry a SortExpr", ErrUnsupported)
-	}
-	if t.Unordered && t.KExpr != nil {
-		return fmt.Errorf("%w: limitk TopK does not support computed K", ErrUnsupported)
 	}
 	if t.KExpr == nil && t.K <= 0 {
 		return fmt.Errorf("%w: TopK with non-positive K=%d", ErrUnsupported, t.K)
@@ -745,21 +742,25 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		return err
 	}
 
-	sortExpr := t.SortExpr
-	sortFrag := func(b *Builder) { _ = b.Expr(sortExpr) }
-
 	partitionBy := make([]Frag, 0, len(t.By))
 	for _, by := range t.By {
 		byExpr := by
 		partitionBy = append(partitionBy, func(b *Builder) { _ = b.Expr(byExpr) })
 	}
 
-	// `row_number() OVER (PARTITION BY <by> ORDER BY <sortExpr> [DESC])`.
-	rankFrag := Window(
-		Call("row_number"),
-		partitionBy,
-		[]OrderKey{{Expr: sortFrag, Desc: t.Desc}},
-	)
+	// `row_number() OVER (PARTITION BY <by> [ORDER BY <sortExpr> [DESC]])`.
+	// Unordered (limitk) carries no SortExpr, so the window ranks in
+	// whatever order CH reads the partition — limitk's "any K series per
+	// group" contract, the same arbitrariness `LIMIT K BY` gives.
+	var orderKeys []OrderKey
+	if t.SortExpr != nil {
+		sortExpr := t.SortExpr
+		orderKeys = []OrderKey{{
+			Expr: func(b *Builder) { _ = b.Expr(sortExpr) },
+			Desc: t.Desc,
+		}}
+	}
+	rankFrag := Window(Call("row_number"), partitionBy, orderKeys)
 
 	// Inner SELECT projects all input columns + the synthetic rank alias.
 	// `*` forwards every column from the input subquery so the outer
@@ -770,16 +771,22 @@ func (e *emitter) emitTopKComputed(t *chplan.TopK) error {
 		As(rankFrag, "_rn"),
 	)
 
-	// K subquery: `(SELECT toUInt64(Value) FROM (<k_subtree>) LIMIT 1)`.
-	// The toUInt64 cast handles fractional scalars (PromQL truncates K to
-	// int); LIMIT 1 enforces single-row scalar-subquery semantics.
+	// K subquery: `(SELECT toFloat64(Value) FROM (<k_subtree>) LIMIT 1)`.
+	// The comparison stays in Float64 rather than casting K to an integer:
+	// a UInt64 cast wraps a negative K around to ~1.8e19 and lets EVERY
+	// row through, where PromQL's rule is that any K below 1 selects
+	// nothing. Comparing `toFloat64(_rn) <= K` gives all three PromQL
+	// behaviours directly — K < 1 keeps no row (ranks start at 1), a
+	// fractional K truncates for free, and a NaN K (already folded to the
+	// empty threshold by the lowering) keeps no row. LIMIT 1 enforces
+	// single-row scalar-subquery semantics.
 	kSelect := NewQuery().
-		Select(Call("toUInt64", Col("Value"))).
+		Select(Call("toFloat64", Col("Value"))).
 		From(kSub).
 		Limit(1)
 	kSubquery := Subquery(kSelect)
 
-	outer := NewQuery().From(ranked.Frag()).Where(Lte(Col("_rn"), kSubquery))
+	outer := NewQuery().From(ranked.Frag()).Where(Lte(Call("toFloat64", Col("_rn")), kSubquery))
 	if len(t.Columns) > 0 {
 		cols := make([]Frag, 0, len(t.Columns))
 		for _, c := range t.Columns {
