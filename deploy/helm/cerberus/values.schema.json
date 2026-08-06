@@ -378,7 +378,8 @@
         "replicaCount": { "type": ["integer", "null"], "minimum": 0 },
         "resources": { "type": ["object", "null"] },
         "maxSamples": { "type": ["integer", "null"], "minimum": 0 },
-        "chMaxMemory": { "type": ["integer", "string", "null"], "minimum": 0 }
+        "chMaxMemory": { "type": ["integer", "string", "null"], "minimum": 0 },
+        "timeout": { "type": ["string", "null"] }
       }
     }
   }

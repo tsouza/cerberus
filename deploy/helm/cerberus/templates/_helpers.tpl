@@ -82,8 +82,8 @@ cerberus.headValues — the resolved per-head `split.<svc>` block, normalised so
 null/absent field falls back to the top-level default. Input is the head's bare
 Service name (e.g. "prometheus"); reads .Values.split.<svc> off the ROOT context
 via $. Returns a YAML dict {enabled, replicaCount, resources, maxSamples,
-chMaxMemory} with every field populated. Used by the per-head Deployment +
-Service partials.
+chMaxMemory, timeout} with every field populated. Used by the per-head
+Deployment + Service partials.
 */}}
 {{- define "cerberus.headValues" -}}
 {{- $ctx := .ctx -}}
@@ -110,6 +110,14 @@ maxSamples: {{ int64 $ms }}
 {{- if kindIs "invalid" $chm }}{{ $chm = $ctx.Values.query.chMaxMemory }}{{ end }}
 {{- if not (kindIs "invalid" $chm) }}
 chMaxMemory: {{ $chm }}
+{{- end }}
+{{- /* timeout: per-head override else top-level query.timeout. Both the null
+       (absent) and the empty-string form mean "keep the binary default", and
+       `with` skips both, so an unset knob emits no key at all. */ -}}
+{{- $to := $head.timeout }}
+{{- if kindIs "invalid" $to }}{{ $to = $ctx.Values.query.timeout }}{{ end }}
+{{- with $to }}
+timeout: {{ . }}
 {{- end }}
 {{- end }}
 

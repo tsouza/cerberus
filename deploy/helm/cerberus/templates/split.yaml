@@ -144,6 +144,14 @@ spec:
                      received the CH per-query memory cap headValues now carries. */}}
               value: {{ include "cerberus.numOrStr" $hv.chMaxMemory | quote }}
             {{- end }}
+            {{- with $hv.timeout }}
+            - name: CERBERUS_QUERY_TIMEOUT
+              {{- /* A duration string ("90s", "2m") — no numeric coercion applies.
+                     headValues already resolved the per-head override against the
+                     top-level query.timeout, and emits no key when both are unset,
+                     so the shared ConfigMap's value stands untouched in that case. */}}
+              value: {{ . | quote }}
+            {{- end }}
             {{- /* GOMEMLIMIT derived from THIS head's own memory limit, so each
                    head's Go soft heap limit tracks its own (possibly distinct)
                    cgroup limit — a single global extraEnv value cannot. */}}
