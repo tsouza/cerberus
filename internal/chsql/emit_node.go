@@ -720,7 +720,8 @@ func (e *emitter) emitTopK(t *chplan.TopK) error {
 //	) WHERE _rn <= (SELECT toUInt64(`Value`) FROM (<KExpr>) LIMIT 1)
 //
 // `By` empty omits PARTITION BY (the rank fires across the whole
-// result). `_rn` is a CH-safe synthetic alias the emitter pins; the
+// result); `SortExpr` nil (the Unordered / limitk shape) omits the
+// window ORDER BY. `_rn` is a CH-safe synthetic alias the emitter pins; the
 // canonical PromQL Sample shape (MetricName/Attributes/TimeUnix/Value)
 // does not use leading-underscore columns, so the alias does not
 // collide with the inner subquery's columns.

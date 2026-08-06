@@ -81,13 +81,27 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 // are both false — empty is neither-less-than every value), which makes
 // reference Prometheus's empty-vs-present ordering itself undefined; our
 // key sorts empty first in ASC, the only transitive choice.
+//
+// The LABEL LIST IS OPTIONAL. Upstream declares both spellings
+// `Variadic: -1` over a single required instant-vector argument, so
+// `sort_by_label(v)` parses, type-checks and evaluates: funcSortByLabel
+// runs a STABLE sort whose comparator loops over zero label names and
+// therefore never swaps, returning the input vector in its existing
+// order. Cerberus reproduces that by returning the lowered input
+// untouched — no OrderBy node, which is precisely the "existing order"
+// an unsorted instant vector already has.
 func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if len(c.Args) < 2 {
-		return nil, fmt.Errorf("promql: %s expects at least 2 arguments (vector, label[, label…]), got %d", c.Func.Name, len(c.Args))
+	if len(c.Args) < 1 {
+		return nil, fmt.Errorf("promql: %s expects at least 1 argument (vector[, label…]), got %d", c.Func.Name, len(c.Args))
 	}
 	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if len(c.Args) == 1 {
+		// No sort key: identity ordering, per funcSortByLabel's
+		// zero-comparator stable sort.
+		return inner, nil
 	}
 	desc := c.Func.Name == "sort_by_label_desc"
 	keys := make([]chplan.OrderKey, 0, len(c.Args)-1)

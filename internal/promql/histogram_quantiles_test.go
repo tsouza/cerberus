@@ -109,41 +109,37 @@ func TestLower_HistogramQuantiles_SinglePhi(t *testing.T) {
 	}
 }
 
-// TestLower_HistogramQuantiles_Errors pins the lowering rejection paths:
-// too few arguments, and a non-literal phi (the label rendering needs a
-// compile-time-foldable phi).
-func TestLower_HistogramQuantiles_Errors(t *testing.T) {
+// TestLower_HistogramQuantiles_ComputedPhi pins the computed-phi
+// acceptance. Reference Prometheus type-checks the phi arguments as
+// scalar-valued and reads phi[0].F per step, so
+// `histogram_quantiles(v, "q", scalar(x))` is an ordinary query there.
+// Cerberus renders the quantile label's OpenMetrics float formatting at
+// query time instead of folding it at lowering time, so the lowered
+// tree still injects the label via mapConcat — just with a computed
+// value rather than a chplan.LitString.
+func TestLower_HistogramQuantiles_ComputedPhi(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := newExperimentalParser()
 
-	cases := []struct {
-		name      string
-		query     string
-		wantSubst string
-	}{
-		{
-			name:      "non-literal phi rejected",
-			query:     `histogram_quantiles(http_server_request_duration, "q", scalar(http_server_request_duration))`,
-			wantSubst: "literal phi",
-		},
+	expr, err := p.ParseExpr(`histogram_quantiles(http_server_request_duration, "q", scalar(http_server_request_duration))`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
 	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			expr, err := p.ParseExpr(tc.query)
-			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
-			}
-			_, err = promql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("expected lowering error for %q, got nil", tc.query)
-			}
-			if !strings.Contains(err.Error(), tc.wantSubst) {
-				t.Errorf("error %q does not contain %q", err.Error(), tc.wantSubst)
-			}
-		})
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	// The runtime formatter is the tell: a folded literal phi would
+	// never reach for arrayMap/multiIf to build the label value.
+	for _, want := range []string{"mapConcat", "arrayMap", "multiIf"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("emitted SQL missing %q for the computed-phi label; got:\n%s", want, sql)
+		}
 	}
 }

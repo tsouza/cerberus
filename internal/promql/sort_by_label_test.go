@@ -2,7 +2,6 @@ package promql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -137,27 +136,33 @@ func unwrapNaturalSortKey(t *testing.T, e chplan.Expr) chplan.Expr {
 	return extract.Args[0]
 }
 
-// TestLowerSortByLabel_Errors pins the argument-shape rejections.
-func TestLowerSortByLabel_Errors(t *testing.T) {
+// TestLowerSortByLabel_NoLabel pins the single-argument acceptance
+// relaxed for #1783. Reference Prometheus type-checks sort_by_label's
+// label list as variadic-from-zero and answers `sort_by_label(v)` by
+// running funcSortByLabel's stable sort with a zero comparator — i.e.
+// input order, unchanged. Cerberus mirrors that by lowering to the inner
+// plan verbatim, with no chplan.OrderBy wrapper: an ORDER BY on no key
+// would be a different (and in ClickHouse, unstable) contract.
+func TestLowerSortByLabel_NoLabel(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
-	cases := []struct {
-		name    string
-		query   string
-		wantSub string
-	}{
-		{"no_label", `sort_by_label(http_requests)`, "at least 2 arguments"},
-		{"no_label_desc", `sort_by_label_desc(http_requests)`, "at least 2 arguments"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			expr := parseExprExp(t, tc.query)
-			_, err := promql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("Lower(%q): want error, got nil", tc.query)
-			}
-			if !strings.Contains(err.Error(), tc.wantSub) {
-				t.Errorf("Lower(%q): err=%q, want substring %q", tc.query, err, tc.wantSub)
-			}
-		})
+
+	for _, q := range []string{
+		`sort_by_label(http_requests)`,
+		`sort_by_label_desc(http_requests)`,
+	} {
+		expr := parseExprExp(t, q)
+		plan, err := promql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
+		if ob, ok := plan.(*chplan.OrderBy); ok {
+			t.Fatalf("Lower(%q) = *chplan.OrderBy with %d keys, want the inner plan unwrapped", q, len(ob.Keys))
+		}
 	}
 }
+
+// Every remaining rejection site in sort.go is parser-unreachable (both
+// are classed `internal` in the rejection-parity catalogue: the PromQL
+// parser enforces sort()'s arity and sort_by_label's one mandatory
+// instant-vector argument), so there is no argument-shape rejection left
+// for a lowering test to exercise. Acceptance is pinned above.

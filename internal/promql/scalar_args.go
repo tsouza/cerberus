@@ -100,7 +100,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			if err != nil {
 				return nil, err
 			}
-			return &chplan.ScalarSubquery{Input: scalarValuePlan(inner, s)}, nil
+			return scalarSubqueryValue(scalarValuePlan(inner, s)), nil
 		case "time":
 			// Mirrors lowerTime's value expression. In range mode
 			// (ctx.step > 0) lowerTime binds per-step via
@@ -216,6 +216,33 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 				Alias: s.ValueColumn,
 			},
 		},
+	}
+}
+
+// scalarSubqueryValue wraps a [scalarValuePlan] subtree in the scalar
+// subquery that reads its single value, then strips the Nullable that
+// ClickHouse's static type inference attaches to EVERY scalar-subquery
+// position (a subquery might return no rows, so `(SELECT x FROM …)` is
+// Nullable(typeof(x)) regardless of x).
+//
+// That inference is what has to go, not a real null: scalarValuePlan's
+// Aggregate carries DropEmptyOnNoGroup=false, so it emits exactly one
+// row even over an empty input, and its projection is the total
+// `if(count = 1, value, NaN)` — there is no input for which this
+// subquery yields SQL NULL. Prometheus's own "not exactly one series"
+// signal is NaN, which passes through assumeNotNull untouched.
+//
+// Leaving the Nullable in place poisons any consumer whose ClickHouse
+// function demands an exact type match. `arrayFold`, which
+// double_exponential_smoothing's recurrence runs on, compares its
+// lambda's return type against the seed accumulator's and raises
+// TYPE_MISMATCH when a computed smoothing factor makes the lambda
+// Tuple(Nullable(Float64), Nullable(Float64)) against a
+// Tuple(Float64, Float64) seed.
+func scalarSubqueryValue(plan chplan.Node) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "assumeNotNull",
+		Args: []chplan.Expr{&chplan.ScalarSubquery{Input: plan}},
 	}
 }
 

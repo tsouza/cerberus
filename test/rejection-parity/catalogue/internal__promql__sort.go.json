@@ -9,12 +9,10 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/sort.go:lowerSortByLabel#8f9fe409",
-      "message": "promql: %s expects at least 2 arguments (vector, label[, label…]), got %d",
-      "class": "divergence",
-      "trigger_query": "sort_by_label(demo_memory_usage_bytes)",
-      "tracking_issue": 1783,
-      "since": "2026-08-05"
+      "site": "internal/promql/sort.go:lowerSortByLabel#e60a47b8",
+      "message": "promql: %s expects at least 1 argument (vector[, label…]), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: sort_by_label is declared Variadic -1 over one mandatory instant-vector argument, so a zero-argument call never parses"
     }
   ]
 }

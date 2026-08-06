@@ -57,9 +57,12 @@ package chplan
 // ordering, the surviving series keep their original samples unchanged.
 // When `Unordered` is true the emitter omits the ORDER BY entirely and
 // renders a bare `LIMIT K BY <By>` (or `LIMIT K` when `By` is empty),
-// and `SortExpr` is nil. `Unordered` only composes with the literal-K
-// path (`K > 0`, `KExpr == nil`); the ranking variants (topk/bottomk,
-// computed-K) keep `Unordered == false`.
+// and `SortExpr` is nil. `Unordered` composes with BOTH K bindings: the
+// computed-K form (`limitk(scalar(<vector>), v)`) reuses the row_number()
+// rank filter with an EMPTY window ORDER BY, so each partition's rows are
+// numbered in whatever order CH encounters them — the same arbitrary
+// selection the literal-K `LIMIT K BY <By>` shape makes. The ranking
+// variants (topk/bottomk) keep `Unordered == false`.
 type TopK struct {
 	Input     Node
 	K         int64

@@ -1,0 +1,57 @@
+# Multi-argument range function as a subquery's inner expression
+# (#1785). The subquery lowering previously admitted only single-argument
+# matrix-selector calls, so `quantile_over_time(phi, m[r])[range:step]`
+# was rejected while reference Prometheus answers it. The matrix argument
+# is at index 1 here, which is why the shape table is keyed by function
+# rather than assuming argument 0.
+-- query.promql --
+max_over_time(quantile_over_time(0.9, http_requests_total[5m])[30m:5m])
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:32:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:37:00', 9), 3.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:42:00', 9), 7.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:47:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:52:00', 9), 9.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 4.0);
+-- args --
+[0] float64 = 0.9
+[1] float64 = 0.9
+[2] float64 = 0.9
+[3] float64 = 0.9
+[4] float64 = 0.9
+[5] float64 = 0.9
+[6] float64 = 0.9
+[7] float64 = 0.9
+[8] float64 = 0.9
+[9] string = "service.name"
+[10] string = "service_name"
+[11] string = "service.name"
+[12] string = "service_name"
+[13] string = ""
+[14] string = "service_name"
+[15] string = "http_requests_total"
+[16] string = "http.requests.total"
+[17] string = "http.requests/total"
+[18] string = "http.requests_total"
+[19] string = "http/requests/total"
+[20] string = "http/requests_total"
+[21] string = "http_requests.total"
+-- chplan --
+RangeWindow func=max_over_time range=30m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  RangeWindow func=quantile_over_time range=5m0s step=5m0s outerRange=30m0s ts=TimeUnix value=Value groupBy=[Attributes] scalarExprs=[0.9] start=2025-12-31T23:30:01Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, multiIf(isNaN(toFloat64(?)), nan, toFloat64(?) < 0, (-1.0/0), toFloat64(?) > 1, (1.0/0), arraySort(window_vals)[toUInt32(floor((toFloat64(?) * toFloat64(length(window_vals) - 1)))) + 1] * (1 - ((toFloat64(?) * toFloat64(length(window_vals) - 1)) - floor((toFloat64(?) * toFloat64(length(window_vals) - 1))))) + arraySort(window_vals)[toUInt32(least(toFloat64(length(window_vals) - 1), floor((toFloat64(?) * toFloat64(length(window_vals) - 1))) + 1)) + 1] * ((toFloat64(?) * toFloat64(length(window_vals) - 1)) - floor((toFloat64(?) * toFloat64(length(window_vals) - 1))))) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000) - toIntervalNanosecond(i * 300000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)) - 300000000000, toInt64(300000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)) - 300000000000, toInt64(300000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)), toInt64(300000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 300000000000) * 300000000000)), toInt64(300000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:30:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(1800000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`
+-- expected_rows --
+[
+  [{"job": "api"}, 9]
+]
