@@ -3501,13 +3501,12 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 // topKDomain): K < 1 short-circuits to an empty result, fractional
 // K >= 1 truncates toward zero, NaN / int64-overflow K are rejected.
 //
-// Computed K (`limitk(scalar(<vector>), v)`) routes to the shared
-// [lowerTopKComputed] path: CH's LIMIT requires a constant, so the K
-// binding moves into chplan.TopK's KExpr slot and the emitter renders a
-// `row_number() OVER (PARTITION BY <by>) <= K` rank filter. limitk has
-// no ranking key, so the window carries NO ORDER BY — each partition's
-// rows are numbered in whatever order CH encounters them, the same
-// arbitrary selection the literal-K `LIMIT K BY` shape makes.
+// Computed K (`limitk(scalar(<vector>), v)`) falls through to
+// lowerTopKComputed, which swaps CH's constant-only LIMIT for a
+// `row_number() OVER (PARTITION BY <by>) <= K` rank filter. The window
+// carries no ORDER BY there, so the K survivors are again whichever rows
+// the window numbers first — the same arbitrary-K-per-group contract
+// `LIMIT K BY` gives on the literal path.
 //
 // Range mode (ctx.step > 0): like topk, limitk selects K series per
 // evaluation step. topKPartition appends the per-step TimeUnix anchor
@@ -3600,82 +3599,25 @@ func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []ch
 	return by
 }
 
-// lowerTopKComputed lowers `topk(scalar(<vector>), v)`,
-// `bottomk(scalar(<vector>), v)` and `limitk(scalar(<vector>), v)` — the
-// computed-K case where K is the value of a scalar subquery rather than
-// a literal integer. CH's LIMIT clause requires a constant, so we route
-// the lowering through chplan.TopK's KExpr slot; the emitter then
-// renders a `row_number() OVER (...) <= K` rank filter (see
-// emitTopKComputed).
+// lowerTopKComputed lowers `topk`/`bottomk`/`limitk` with a K that is
+// any scalar-valued PromQL expression rather than a foldable literal —
+// `topk(scalar(<vector>), v)`, `topk(scalar(x) * 2, v)`,
+// `topk(ceil(scalar(x) / 3) + 1, v)`, `topk(time() % 5, v)`. CH's LIMIT
+// clause requires a constant, so the lowering routes K through
+// chplan.TopK's KExpr slot and the emitter renders a `row_number()
+// OVER (...) <= K` rank filter (see emitTopKComputed).
 //
-// The ranking shape follows the operator, exactly as on the literal-K
-// path: topk/bottomk rank by the Value column (DESC / ASC), while
-// limitk carries no SortExpr and sets Unordered so the window has no
-// ORDER BY — its K survivors are arbitrary per group.
+// K binds through [lowerScalarArg], the single owner of "scalar-typed
+// PromQL expression → chplan.Expr": the parser's type checker closes
+// that space over literals, arithmetic, `scalar(<vector>)`, `time()` and
+// `pi()`, so every shape the grammar admits in K position is covered by
+// construction — there is no residual shape for a guard to reject. The
+// resulting Expr is materialised as a one-row relation because KExpr is
+// a Node slot (the emitter reads its `Value` column).
 //
-// Only `scalar(<vector>)` is accepted as the K shape — mixed forms
-// like `topk(2 + scalar(x), v)` would require constant-folding around
-// the scalar subquery, which is a larger structural change not
-// modelled here. The PromQL parser already type-checks the K arg as
-// scalar-valued, so this is a narrow filter on the lowering surface.
+// [topKDomainExpr] applies the runtime half of the K-domain rules the
+// literal path resolves in [topKDomain].
 func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	kExpr, err := lowerComputedK(a.Op, a.Param, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	input, err := lower(a.Expr, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	by := topKPartition(a, s, ctx)
-
-	unordered := a.Op == parser.LIMITK
-	var sortExpr chplan.Expr
-	if !unordered {
-		sortExpr = &chplan.ColumnRef{Name: s.ValueColumn}
-	}
-
-	return &chplan.TopK{
-		Input:     input,
-		KExpr:     kExpr,
-		By:        by,
-		SortExpr:  sortExpr,
-		Desc:      a.Op == parser.TOPK,
-		Unordered: unordered,
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
-	}, nil
-}
-
-// lowerComputedK lowers the K argument of a computed-K
-// topk/bottomk/limitk into the single-row scalar relation that
-// chplan.TopK's KExpr slot consumes. Shared by the instant path
-// ([lowerTopKComputed]) and the subquery path
-// ([lowerSubqueryOverTopK]) so both accept exactly the same K shapes.
-func lowerComputedK(op parser.ItemType, param parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	// Peel ParenExpr wrappers so `topk((scalar(x)), v)` still routes
-	// here. The parser keeps explicit parens in the AST.
-	for {
-		p, ok := param.(*parser.ParenExpr)
-		if !ok {
-			break
-		}
-		param = p.Expr
-	}
-	call, ok := param.(*parser.Call)
-	if !ok || call.Func == nil || call.Func.Name != "scalar" {
-		return nil, fmt.Errorf("promql: %s K must be a scalar literal or scalar(<vector>); computed-K with other shapes is not yet supported", op.String())
-	}
-	if len(call.Args) != 1 {
-		return nil, fmt.Errorf("promql: %s K: scalar() expects 1 argument, got %d", op.String(), len(call.Args))
-	}
-
 	// Lower the K argument in instant context (step=0). PromQL's
 	// `scalar(v)` produces a single value per eval; range-mode would
 	// fan it out into one row per step, but the emitter's K subquery
@@ -3683,15 +3625,76 @@ func lowerComputedK(op parser.ItemType, param parser.Expr, s schema.Metrics, ctx
 	// wasted work. Reusing the surrounding ctx (with step > 0) would
 	// also drag a StepGrid CROSS JOIN into the K subtree, bloating the
 	// SQL for no semantic gain — the result vector's shape comes from
-	// the aggregation's own operand, not the K subtree.
+	// `a.Expr`, not the K subtree.
 	kCtx := ctx
 	kCtx.step = 0
-	kExpr, err := lower(call.Args[0], s, kCtx)
+	kValue, err := lowerScalarArg(a.Param, s, kCtx)
 	if err != nil {
-		return nil, fmt.Errorf("promql: %s K: %w", op.String(), err)
+		return nil, err
 	}
-	return kExpr, nil
+	kExpr := &chplan.Project{
+		Input: &chplan.OneRow{},
+		Projections: []chplan.Projection{
+			{Expr: topKDomainExpr(kValue), Alias: s.ValueColumn},
+		},
+	}
+
+	input, err := lower(a.Expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	t := &chplan.TopK{
+		Input: input,
+		KExpr: kExpr,
+		By:    topKPartition(a, s, ctx),
+		Columns: []string{
+			s.MetricNameColumn,
+			s.AttributesColumn,
+			s.TimestampColumn,
+			s.ValueColumn,
+		},
+	}
+	if a.Op == parser.LIMITK {
+		// limitk keeps K arbitrary series per group — no ranking, so the
+		// rank filter's window carries a bare PARTITION BY and the
+		// surviving rows are whichever K the window numbers first.
+		t.Unordered = true
+	} else {
+		t.SortExpr = &chplan.ColumnRef{Name: s.ValueColumn}
+		t.Desc = a.Op == parser.TOPK
+	}
+	return t, nil
 }
+
+// topKDomainExpr is the runtime sibling of [topKDomain]: it folds a
+// computed K into the rank threshold `row_number() <= K` compares
+// against, so the two paths agree on the K domain.
+//
+// Ranks start at 1, so a threshold below 1 selects nothing and a
+// fractional threshold truncates for free (`_rn <= 2.7` ⇔ `_rn <= 2`) —
+// which is reference's `params.Max() < 1 → empty result` and its
+// `int64(fParam)` truncation, with no cast needed. The one shape that
+// does need folding is NaN: an unfolded NaN threshold would compare
+// false and read as "empty" only by accident, and CH's integer casts
+// turn it into 0 or a saturated maximum depending on version. Fold it to
+// [topKEmptyThreshold] explicitly so the empty result is the plan's
+// intent rather than a coincidence of comparison semantics.
+func topKDomainExpr(k chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			isNaNExpr(k),
+			&chplan.LitFloat{V: topKEmptyThreshold},
+			k,
+		},
+	}
+}
+
+// topKEmptyThreshold is the rank threshold that selects no series:
+// row_number() is 1-based, so any value below 1 is empty and 0 is the
+// canonical spelling.
+const topKEmptyThreshold = 0
 
 // groupKeyAliases returns ["gkey_0", "gkey_1", ...] of length n. Empty
 // slice for n=0 so unaggregated aggregates (`count(up)` with no `by/

@@ -114,22 +114,22 @@ func TestLang_Parse_ParseError(t *testing.T) {
 // form surfaces as a parseStageError tagged "lower". Verifies the parse →
 // lower split is preserved through the adapter.
 //
-// The example is `limitk` with a NaN K (`limitk(NaN, up)`): the
-// aggregator itself lowers (the experimental-aggregator burndown wired
-// limitk → LIMIT K BY), but NaN does not convert to int64, so the K
-// domain check rejects it at the lowering stage.
+// The example is `topk(NaN, up)`: the parser type-checks it happily (NaN
+// is a scalar literal), and the lowering rejects it because reference
+// Prometheus itself errors on a NaN K ("Parameter value is NaN",
+// promql/engine.go::rangeEvalAgg). That makes it a stable
+// parse→lower-split example — it is a rejection PARITY case, so it can
+// never be "implemented away" the way a merely-unsupported shape can.
 //
 // Earlier revisions keyed this on `first_over_time` /
-// `double_exponential_smoothing` and then on a computed
-// `limitk(scalar(up), up)` K, but each was subsequently implemented and
-// stopped exercising the lower-error path. A NaN K cannot rot the same
-// way: reference Prometheus rejects it too, so it is a permanent
-// rejection rather than an unimplemented shape.
+// `double_exponential_smoothing`, and then on a computed-K `limitk`; all
+// three now lower cleanly, so none of them can exercise the lower-error
+// path any more.
 func TestLang_Parse_LowerError(t *testing.T) {
 	t.Parallel()
 
 	l := langForTest()
-	const q = `limitk(NaN, up)`
+	const q = `topk(NaN, up)`
 	_, _, err := l.Parse(context.Background(), q)
 	if err == nil {
 		t.Fatalf("Parse(%q): expected lower failure, got nil", q)
@@ -142,7 +142,7 @@ func TestLang_Parse_LowerError(t *testing.T) {
 		t.Errorf("parseStageError.stage: got %q, want %q (got err=%v)", ps.stage, "lower", err)
 	}
 	if !strings.Contains(err.Error(), "K must not be NaN") {
-		t.Errorf("err message: got %q, want it to mention the NaN K rejection", err.Error())
+		t.Errorf("err message: got %q, want it to mention the NaN-K rejection", err.Error())
 	}
 }
 

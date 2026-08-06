@@ -74,29 +74,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:lowerComputedK#8af012e4",
-      "message": "promql: %s K must be a scalar literal or scalar(\u003cvector\u003e); computed-K with other shapes is not yet supported",
-      "class": "divergence",
-      "trigger_query": "topk(scalar(demo_memory_usage_bytes) * 2, demo_memory_usage_bytes)",
-      "tracking_issue": 1840,
-      "since": "2026-08-06"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerComputedK#9dcfc5e7",
-      "message": "promql: %s K: %w",
-      "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerComputedK#e4c25bc2",
-      "message": "promql: %s K: scalar() expects 1 argument, got %d",
-      "class": "internal",
-      "rationale": "parser-enforced arity: scalar() is pinned at one argument in parser.Functions"
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:lowerCountValues#49c20b7b",
       "message": "promql: count_values requires a string-literal label name as the first arg",
       "class": "internal",

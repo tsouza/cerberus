@@ -80,6 +80,43 @@ function splitSegments(command) {
   return command.split(/&&|\|\||[;\n|]/g);
 }
 
+// effectiveCwd — the directory the guarded git command actually runs in.
+//
+// The payload's `cwd` is the session's project directory, which is not where
+// the command runs when the line starts by changing directory: agents work in
+// linked worktrees and reach them with `cd <worktree> && git commit ...`. The
+// project directory and the worktree are different checkouts of the same
+// repository on different branches, so reading the branch from the payload's
+// `cwd` answers a question nobody asked — and blocks every commit made from a
+// worktree whenever the main checkout happens to sit on `main`.
+//
+// `git -C <dir>` on the guarded segment itself takes precedence, since it binds
+// tighter than any earlier `cd`.
+function effectiveCwd(command, segment, payloadCwd) {
+  const dirOpt = gitDirOption(segment);
+  if (dirOpt) return resolveDir(dirOpt, payloadCwd);
+  for (const seg of splitSegments(command)) {
+    const words = seg.trim().split(/\s+/).filter(Boolean);
+    if (words[0] === 'cd' && words[1] && !words[1].startsWith('-')) {
+      const resolved = resolveDir(words[1], payloadCwd);
+      if (resolved) return resolved;
+    }
+  }
+  return payloadCwd;
+}
+
+// gitDirOption — the value of `-C <dir>` on a git invocation, or null.
+function gitDirOption(segment) {
+  const words = segment.trim().split(/\s+/).filter(Boolean);
+  const at = words.indexOf('-C');
+  return at >= 0 && words[at + 1] ? words[at + 1] : null;
+}
+
+function resolveDir(dir, base) {
+  const abs = isAbsolute(dir) ? dir : join(base, dir);
+  return existsSync(abs) ? abs : null;
+}
+
 // gitInvocation — given one segment, return the git subcommand it runs, or null.
 // Skips leading `VAR=value` assignments and known wrappers, then walks git's
 // global options to find the first bare word, which is the subcommand.
@@ -174,18 +211,20 @@ function main() {
   const command = payload?.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return ALLOW;
 
-  const cwd = payload.cwd && existsSync(payload.cwd) ? payload.cwd : process.cwd();
+  const payloadCwd = payload.cwd && existsSync(payload.cwd) ? payload.cwd : process.cwd();
 
   const guarded = [];
   for (const segment of splitSegments(command)) {
     const sub = gitInvocation(segment);
-    if (sub && GUARDED_SUBCOMMANDS.has(sub)) guarded.push({ sub, segment });
+    if (sub && GUARDED_SUBCOMMANDS.has(sub)) {
+      guarded.push({ sub, segment, cwd: effectiveCwd(command, segment, payloadCwd) });
+    }
   }
   if (guarded.length === 0) return ALLOW;
 
-  const branch = currentBranch(cwd);
-  for (const { sub, segment } of guarded) {
-    const targetsMain = branch === PROTECTED_BRANCH || (sub === 'push' && pushesToProtectedBranch(segment));
+  const cwd = guarded[0].cwd;
+  for (const { sub, segment, cwd: segCwd } of guarded) {
+    const targetsMain = currentBranch(segCwd) === PROTECTED_BRANCH || (sub === 'push' && pushesToProtectedBranch(segment));
     if (targetsMain) {
       return block([
         `guard-git: refusing to ${sub} against \`${PROTECTED_BRANCH}\`.`,

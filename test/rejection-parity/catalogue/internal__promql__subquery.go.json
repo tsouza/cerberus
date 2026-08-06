@@ -9,12 +9,17 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/subquery.go:lowerAbsentOverTimeOverSubquery#e8585e71",
+      "message": "promql: absent_over_time() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: absent_over_time() is pinned to one argument in parser.Functions"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
-      "class": "divergence",
-      "trigger_query": "absent_over_time(demo_memory_usage_bytes[5m:1m])",
-      "tracking_issue": 1837,
-      "since": "2026-08-06"
+      "class": "internal",
+      "rationale": "unreachable: every PromQL function taking a range-vector argument is either a member of rangeVectorFn or is absent_over_time, which the arm above this guard routes to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it"
     },
     {
       "head": "promql",
@@ -62,16 +67,18 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#9b8454a6",
       "message": "promql: subquery inner %s expects exactly %d argument(s), got %d",
-      "class": "internal",
-      "rationale": "parser-enforced arity: every function in the subquery-inner shape table is pinned at its argument count in parser.Functions, so the lowering never observes a different one"
+      "class": "divergence",
+      "trigger_query": "max_over_time(histogram_quantile(0.9, demo_memory_usage_bytes)[5m:1m])",
+      "tracking_issue": 1866,
+      "since": "2026-08-06"
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
       "class": "divergence",
-      "trigger_query": "max_over_time(sort(demo_memory_usage_bytes)[5m:1m])",
-      "tracking_issue": 1838,
+      "trigger_query": "max_over_time(vector(1)[5m:1m])",
+      "tracking_issue": 1866,
       "since": "2026-08-06"
     },
     {
@@ -87,7 +94,7 @@
       "message": "promql: %s does not accept a subquery argument",
       "class": "divergence",
       "trigger_query": "max_over_time(absent_over_time(demo_memory_usage_bytes[5m:1m])[10m:1m])",
-      "tracking_issue": 1837,
+      "tracking_issue": 1867,
       "since": "2026-08-06"
     },
     {
@@ -103,6 +110,13 @@
       "message": "promql: count_values requires a non-empty label name",
       "class": "rejection",
       "trigger_query": "max_over_time(count_values(\"\", up)[5m:1m])"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#c28ffcca",
+      "message": "promql: subquery over %s K: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin"
     },
     {
       "head": "promql",

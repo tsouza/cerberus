@@ -162,9 +162,10 @@ func TestLower_LimitK_KDomain(t *testing.T) {
 
 // TestLower_LimitK_Errors covers limitk's observable error contract.
 // NaN / overflow K are shared with topKDomain and match upstream, which
-// rejects a K that does not convert to int64. Computed-K shapes beyond
-// `scalar(<vector>)` are still rejected; the `scalar(<vector>)` shape
-// itself is accepted (see TestLower_LimitK_ComputedK).
+// rejects a K that does not convert to int64. They are the whole of the
+// contract: every scalar-valued K the grammar admits lowers (see
+// TestLower_LimitK_ComputedK), so a literal outside the int64 domain is
+// the only shape left to reject.
 func TestLower_LimitK_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -185,15 +186,6 @@ func TestLower_LimitK_Errors(t *testing.T) {
 			name:    "overflow K rejected",
 			query:   `limitk(1e300, up)`,
 			wantErr: "overflows int64",
-		},
-		{
-			// `scalar(<vector>)` K is accepted (see
-			// TestLower_LimitK_ComputedK); arithmetic AROUND the scalar
-			// subquery still needs constant folding cerberus does not
-			// model, so it stays rejected here.
-			name:    "computed K beyond scalar() is rejected",
-			query:   `limitk(scalar(up) * 2, up)`,
-			wantErr: "computed-K with other shapes is not yet supported",
 		},
 	}
 	for _, tc := range cases {

@@ -29,15 +29,6 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			// `scalar(<vector>)` K is accepted (see
-			// TestLowerSubqueryTopK_ComputedK); arithmetic AROUND the
-			// scalar subquery still needs constant folding cerberus does
-			// not model, so it stays rejected here.
-			name:    "topk computed K beyond scalar() is rejected",
-			query:   `max_over_time(topk(scalar(up) * 2, rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "computed-K with other shapes is not yet supported",
-		},
-		{
 			// Reference Prometheus errors on a NaN K; K < 1 shapes are
 			// NOT errors — they return an empty result (covered by
 			// TestLowerSubqueryTopK_KDomain). Same domain as instant
@@ -50,11 +41,6 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 			name:    "topk K must not overflow int64",
 			query:   `max_over_time(topk(1e300, rate(http_requests_total[1m]))[1h:30s])`,
 			wantErr: "overflows int64",
-		},
-		{
-			name:    "bottomk computed K beyond scalar() is rejected",
-			query:   `max_over_time(bottomk(scalar(up) + 1, rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "computed-K with other shapes is not yet supported",
 		},
 		{
 			name:    "count_values requires non-empty label",

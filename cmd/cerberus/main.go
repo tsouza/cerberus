@@ -1098,7 +1098,11 @@ func startOptCorpus(ctx context.Context, logger *slog.Logger, client *chclient.C
 	attachQueryObserver(rec, engines...)
 	go func() {
 		rec.Run(ctx)
-		_ = sink.Close()
+		// The sink flushes on close; a failure here means buffered corpus
+		// rows never reached disk, so surface it rather than dropping it.
+		if err := sink.Close(); err != nil {
+			logger.Warn("ch_opt query_log corpus sink close failed", "err", err)
+		}
 	}()
 	logger.Info(
 		"ch_opt query_log performance-corpus reconciler started",

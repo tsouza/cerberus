@@ -3,6 +3,7 @@ package optcorpus
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -60,18 +61,23 @@ func (s *JSONLSink) Write(rows []Row) error {
 	return nil
 }
 
-// Close flushes any buffered bytes and closes the underlying file.
+// Close flushes any buffered bytes and closes the underlying file. Both
+// steps run even when the flush fails, and both errors are joined so a
+// close failure isn't dropped just because the flush already errored.
 func (s *JSONLSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var flushErr error
 	if s.w != nil {
 		if err := s.w.Flush(); err != nil {
-			_ = s.f.Close()
-			return fmt.Errorf("optcorpus: flush on close: %w", err)
+			flushErr = fmt.Errorf("optcorpus: flush on close: %w", err)
 		}
 	}
+	var closeErr error
 	if s.f != nil {
-		return s.f.Close()
+		if err := s.f.Close(); err != nil {
+			closeErr = fmt.Errorf("optcorpus: close sink: %w", err)
+		}
 	}
-	return nil
+	return errors.Join(flushErr, closeErr)
 }
