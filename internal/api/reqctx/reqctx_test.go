@@ -2,6 +2,7 @@ package reqctx_test
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,16 +74,48 @@ func TestApplyQueryTimeout_DefaultSmallerWins(t *testing.T) {
 	deadlineWithin(t, defBudget, dl, ok)
 }
 
-func TestApplyQueryTimeout_Malformed(t *testing.T) {
-	for _, raw := range []string{"nonsense", "-1s"} {
-		r := httptest.NewRequest("GET", "/query?timeout="+raw, nil)
-		ctx, cancel, err := reqctx.ApplyQueryTimeout(r, defBudget)
-		cancel()
-		if err == nil {
-			t.Fatalf("timeout=%q: expected error, got none", raw)
-		}
-		if _, ok := ctx.Deadline(); ok {
-			t.Fatalf("timeout=%q: expected bare request context on error", raw)
-		}
+// rejectTimeout drives the rejection path for one `?timeout=` value and
+// returns the client-visible message, asserting the shared shape both
+// branches owe: a non-nil error, a bare (deadline-free) context, and a
+// message free of any fmt bad-verb placeholder. The placeholder check is
+// the load-bearing one — a `%w` verb applied to a nil error still
+// produces a non-nil error, so an `err != nil` assertion alone passes
+// while the body reads `invalid parameter 'timeout': %!w(<nil>)`.
+func rejectTimeout(t *testing.T, raw string) string {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/query?timeout="+raw, nil)
+	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, defBudget)
+	cancel()
+	if err == nil {
+		t.Fatalf("timeout=%q: expected error, got none", raw)
+	}
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatalf("timeout=%q: expected bare request context on error", raw)
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "invalid parameter 'timeout': ") {
+		t.Fatalf("timeout=%q: message %q lacks the upstream parameter prefix", raw, msg)
+	}
+	if strings.Contains(msg, "%!") {
+		t.Fatalf("timeout=%q: message %q contains an fmt bad-verb placeholder", raw, msg)
+	}
+	return msg
+}
+
+func TestApplyQueryTimeout_Unparseable(t *testing.T) {
+	msg := rejectTimeout(t, "nonsense")
+	if !strings.Contains(msg, "nonsense") {
+		t.Fatalf("message %q does not name the offending value", msg)
+	}
+}
+
+// TestApplyQueryTimeout_Negative pins the branch a table lumping both
+// rejection reasons together cannot see: format.ParseDuration accepts
+// "-1s" and returns a nil error, so the negative value is rejected on
+// its own merits and must carry its own message.
+func TestApplyQueryTimeout_Negative(t *testing.T) {
+	msg := rejectTimeout(t, "-1s")
+	if !strings.Contains(msg, "-1s") {
+		t.Fatalf("message %q does not name the offending value", msg)
 	}
 }

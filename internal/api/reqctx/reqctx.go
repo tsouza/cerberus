@@ -32,8 +32,9 @@ import (
 //     aborts the query with TIMEOUT_EXCEEDED (code 159) → *QueryTimeoutError.
 //
 // The caller MUST defer the returned cancel (a no-op when no deadline
-// was installed). A malformed `?timeout=` yields a non-nil
-// error the caller reports as 400 bad_data (matching upstream); on that
+// was installed). A `?timeout=` that does not parse, or that parses to a
+// negative duration, yields a non-nil error the caller reports as 400
+// bad_data (matching upstream); the two carry distinct messages. On that
 // path the returned context is the bare request context and cancel is a
 // no-op.
 func ApplyQueryTimeout(r *http.Request, def time.Duration) (context.Context, context.CancelFunc, error) {
@@ -41,8 +42,15 @@ func ApplyQueryTimeout(r *http.Request, def time.Duration) (context.Context, con
 	budget := def
 	if raw := r.FormValue("timeout"); raw != "" {
 		reqTimeout, err := format.ParseDuration(raw)
-		if err != nil || reqTimeout < 0 {
+		switch {
+		case err != nil:
 			return ctx, func() {}, fmt.Errorf("invalid parameter 'timeout': %w", err)
+		case reqTimeout < 0:
+			// A cleanly-parsed negative is its own rejection reason:
+			// err is nil here, so folding it into the wrapping branch
+			// renders the %!w(<nil>) bad-verb placeholder into the
+			// client-visible error body.
+			return ctx, func() {}, fmt.Errorf("invalid parameter 'timeout': negative duration %q", raw)
 		}
 		budget = format.MinPositiveDuration(budget, reqTimeout)
 	}
