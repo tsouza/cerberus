@@ -187,12 +187,22 @@ func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// The anchor scope is the self-contained newest-N root selection. The
-	// ordering (DESC, TraceId ASC) and the GROUP BY min(Timestamp) match
+	// The anchor scope is the self-contained newest-N root selection, hoisted
+	// to one single-evaluation binding (#1672) the anchor tests with has().
+	// The ordering (DESC, TraceId ASC) and the GROUP BY min(Timestamp) match
 	// sortSummariesStartDesc / toTraceSummaries' StartTimeUnixNano.
-	wantBound := "WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+	wantBinding := "WITH (SELECT groupArray(`TraceId`) FROM " + unwindowedTopN + ") AS _cerberus_trace_scope"
+	if got := strings.Count(sql, wantBinding); got != 1 {
+		t.Errorf("top-N binding must be defined exactly once, got %d;\nwant substring: %s\ngot:\n%s", got, wantBinding, sql)
+	}
+	wantBound := "WHERE `ParentSpanId` = '' AND has(_cerberus_trace_scope, `TraceId`)"
 	if !strings.Contains(sql, wantBound) {
 		t.Errorf("bounded anchor scope missing;\nwant substring: %s\ngot:\n%s", wantBound, sql)
+	}
+	// The whole point of the binding: the top-N subquery text appears once in
+	// the statement, not once per site that scopes itself by it.
+	if got := strings.Count(sql, unwindowedTopN); got != 1 {
+		t.Errorf("top-N subquery must be materialised once, got %d occurrences:\n%s", got, sql)
 	}
 	// The bound is a single extra subquery over the root scan — the
 	// recursive numbering CTE still renders exactly once.
@@ -201,14 +211,21 @@ func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
 	}
 }
 
+// unwindowedTopN is the newest-N root selection a TraceLimit of 200 derives
+// when no request window narrows it — the exact text both the numbering walk
+// and a leaf BoundedTraceScope gate bind, asserted byte-for-byte below.
+const unwindowedTopN = "(SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+
 // TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate pins the
-// load-bearing identity: the top-N subquery the numbering anchor scope emits
-// is BYTE-IDENTICAL to the one a leaf-scan BoundedTraceScope gate emits. If
-// they ever drift, the numbering would number a different trace set than the
-// row source produces, stranding kept rows at the 0/0/0 LEFT-JOIN default.
+// load-bearing identity: the top-N binding the numbering anchor scope emits is
+// BYTE-IDENTICAL to the one a leaf-scan BoundedTraceScope gate emits, and each
+// statement defines it exactly once. If they ever drift, the numbering would
+// number a different trace set than the row source produces, stranding kept
+// rows at the 0/0/0 LEFT-JOIN default; if the definition duplicated, the
+// #1672 collapse would have silently come undone.
 func TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate(t *testing.T) {
 	t.Parallel()
-	const topN = "(SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+	const binding = "WITH (SELECT groupArray(`TraceId`) FROM " + unwindowedTopN + ") AS _cerberus_trace_scope"
 
 	// Numbering side: a bounded NestedSetAnnotate's anchor scope.
 	n := nsAnnotateOver(drilldownUnionInput())
@@ -217,8 +234,11 @@ func TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit numbering: %v", err)
 	}
-	if !strings.Contains(nsSQL, "`TraceId` IN "+topN) {
-		t.Errorf("numbering anchor scope does not emit the expected top-N subquery %s\ngot:\n%s", topN, nsSQL)
+	if got := strings.Count(nsSQL, binding); got != 1 {
+		t.Errorf("numbering side must define the top-N binding exactly once, got %d;\nwant: %s\ngot:\n%s", got, binding, nsSQL)
+	}
+	if !strings.Contains(nsSQL, "has(_cerberus_trace_scope, `TraceId`)") {
+		t.Errorf("numbering anchor scope does not test the binding;\ngot:\n%s", nsSQL)
 	}
 
 	// Gate side: a leaf Filter carrying a BoundedTraceScope, emitted directly.
@@ -236,8 +256,11 @@ func TestNestedSetAnnotate_TraceLimit_NumberingMatchesLeafGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit gate: %v", err)
 	}
-	if !strings.Contains(gateSQL, "`TraceId` IN "+topN) {
-		t.Errorf("leaf gate does not emit the expected top-N subquery %s\ngot:\n%s", topN, gateSQL)
+	if got := strings.Count(gateSQL, binding); got != 1 {
+		t.Errorf("gate side must define the top-N binding exactly once, got %d;\nwant: %s\ngot:\n%s", got, binding, gateSQL)
+	}
+	if !strings.Contains(gateSQL, "has(_cerberus_trace_scope, `TraceId`)") {
+		t.Errorf("leaf gate does not test the binding;\ngot:\n%s", gateSQL)
 	}
 }
 
@@ -255,6 +278,7 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 		endNano   int64 = 1767225602000000000
 	)
 	const topN = "(SELECT `TraceId` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `Timestamp` >= fromUnixTimestamp64Nano(1767225600000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1767225602000000000) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 200)"
+	const binding = "WITH (SELECT groupArray(`TraceId`) FROM " + topN + ") AS _cerberus_trace_scope"
 
 	n := nsAnnotateOver(drilldownUnionInput())
 	n.TraceLimit = 200
@@ -276,8 +300,11 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 	if err != nil {
 		t.Fatalf("Emit numbering: %v", err)
 	}
-	if !strings.Contains(nsSQL, "`TraceId` IN "+topN) {
-		t.Errorf("windowed numbering scope does not emit the expected windowed top-N %s\ngot:\n%s", topN, nsSQL)
+	if got := strings.Count(nsSQL, binding); got != 1 {
+		t.Errorf("windowed numbering side must define the windowed top-N binding exactly once, got %d;\nwant: %s\ngot:\n%s", got, binding, nsSQL)
+	}
+	if !strings.Contains(nsSQL, "has(_cerberus_trace_scope, `TraceId`)") {
+		t.Errorf("windowed numbering scope does not test the binding;\ngot:\n%s", nsSQL)
 	}
 
 	gated := &chplan.Filter{
@@ -296,8 +323,11 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 	if err != nil {
 		t.Fatalf("Emit gate: %v", err)
 	}
-	if !strings.Contains(gateSQL, "`TraceId` IN "+topN) {
-		t.Errorf("windowed leaf gate does not emit the expected windowed top-N %s\ngot:\n%s", topN, gateSQL)
+	if got := strings.Count(gateSQL, binding); got != 1 {
+		t.Errorf("windowed gate side must define the windowed top-N binding exactly once, got %d;\nwant: %s\ngot:\n%s", got, binding, gateSQL)
+	}
+	if !strings.Contains(gateSQL, "has(_cerberus_trace_scope, `TraceId`)") {
+		t.Errorf("windowed leaf gate does not test the binding;\ngot:\n%s", gateSQL)
 	}
 }
 

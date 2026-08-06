@@ -14,8 +14,11 @@ import (
 // Layer 11 — handler-level wire contract for the chclient circuit
 // breaker. When the breaker is OPEN, chclient methods return
 // ErrCircuitOpen; the Prom handler must translate that into HTTP 503
-// with a `Retry-After: 5` header so Grafana / Prometheus clients back
-// off instead of hammering the gateway during a CH outage.
+// with a `Retry-After` header sized from the tripped breaker's own recovery
+// interval, so Grafana / Prometheus clients back off for exactly as long as
+// the gateway will keep fast-failing. The cases below carry a BARE sentinel
+// (no breaker attached), which is the chain shape that falls back to the
+// package-default 5s interval.
 
 // TestHandler_BreakerOpenReturns503WithRetryAfter — the canonical
 // breaker → wire test. We use a stub querier whose err is the

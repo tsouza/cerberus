@@ -122,7 +122,12 @@ func (x *Executor) Execute(
 	// traffic.
 	if x.Breaker != nil {
 		if st := x.Breaker.PeekBreakerState(); st != BreakerClosed {
-			return nil, nil, fmt.Errorf("solver: pre-flight: %w", chclient.ErrCircuitOpen)
+			// The abort carries the breaker's OWN recovery interval so the 503
+			// this becomes advertises a Retry-After the breaker will actually
+			// honour — route B fails fast for exactly as long as route A does.
+			return nil, nil, chclient.NewCircuitOpenError(
+				"solver: pre-flight", x.Breaker.BreakerRetryAfter(),
+			)
 		}
 	}
 

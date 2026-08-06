@@ -267,6 +267,13 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 				t.Errorf("%s read %d rows > bound %d (%d partition-spans * %d) — the request window did not reach a recursive/grouped spans scan",
 					tc.name, readRows, readRowsBound, scanWinPartitionSpans, tc.readRowsFactor)
 			}
+			// Report the measured cost even on a pass. The ceiling only says
+			// "not catastrophically worse"; the number underneath it is what a
+			// scan-count change (a subquery collapsing into one binding, a
+			// pushdown gained or lost) actually moves, and without it every
+			// such change looks identical from the outside — green.
+			t.Logf("%s read %d rows (%.1fx one partition's %d spans; bound %d)",
+				tc.name, readRows, float64(readRows)/float64(scanWinPartitionSpans), scanWinPartitionSpans, readRowsBound)
 		})
 	}
 }

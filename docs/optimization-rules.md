@@ -4,12 +4,17 @@ Binding rules for how performance optimizations are built in cerberus. They
 exist because the cheap-looking version of an optimization tends to either rot
 the hot path or get adopted without evidence.
 
-## Rule 1: every optimization is a registered `chopt` feature, resolved once at boot, wired as a pure-polymorphic strategy
+## Rule 1: every optimization is a registered `chopt` feature, resolved out of band, wired as a pure-polymorphic strategy
 
 Every optimization whose use depends on the ClickHouse server version, a
 resolved feature, or an operator toggle follows ONE lifecycle end to end —
-register, resolve at boot, dispatch through a strategy — with no per-query
-branch. This is a single rule, not separate ones.
+register, resolve against a probed server, dispatch through a strategy — with
+no per-query branch. This is a single rule, not separate ones.
+
+"Out of band" is the load-bearing half: the resolution happens on the process's
+own schedule (at boot, and on the periodic re-probe that keeps the answer
+current across a ClickHouse upgrade), never on the request path. A query reads
+an already-decided strategy; it never asks what the server supports.
 
 **1. Register it as a `chopt` feature.** Every performance / optimization toggle
 MUST be a named feature in the `chopt` registry, reached through
@@ -21,16 +26,20 @@ that must stay off by default), and a floor — a real `minVersion`, or
 `chopt.AlwaysAvailable` when it depends on no server version (a purely
 client-side optimization).
 
-**2. Resolve it once at boot.** The feature is read exactly once, at startup,
-when `chopt.EnabledSet` is resolved from the single server-version probe. There
-is no second source of truth and no per-knob env read scattered through config.
+**2. Resolve it off the request path.** The feature is read when
+`chopt.EnabledSet` is resolved from a server-version probe — at startup, and
+again on the re-probe cadence that keeps a long-running process honest about a
+ClickHouse cluster upgraded underneath it. There is no second source of truth
+and no per-knob env read scattered through config.
 
 **3. Wire it as a concrete polymorphic strategy.** The resolved
 `EnabledSet.Has(FeatureX)` selects a concrete strategy implementation at
 construction (or, when resolve must run after the client is built, installed
-once at boot before any handler serves). The fallback is a CONCRETE default
-implementation (the fan-out lowerer, the row decoder), not a nil field — always
-wired.
+before any handler serves). The fallback is a CONCRETE default implementation
+(the fan-out lowerer, the row decoder), not a nil field — always wired. A
+feature whose strategy can change under a running process publishes the swap
+through one atomic pointer per consumer, so a request reads a whole strategy
+table and never a half-replaced one.
 
 **4. Keep the quickstart able to demo it.** When a new optimization's floor
 exceeds the quickstart's ClickHouse version, bump the quickstart
@@ -69,9 +78,10 @@ Rationale: one env surface (operators tune everything through
 `CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing|permissive`); uniform semantics for
 free (auto / off / explicit-list opt-in / enforcing-vs-permissive policy /
 unknown-id typo guard — a standalone bool re-implements and inherits none of
-these); one boot-resolution path; and a hot path with no repeated flag reads and
-no risk of version logic drifting back into it. The version decision happens
-once; the codepath is fixed for the process lifetime.
+these); one resolution path; and a hot path with no repeated flag reads and no
+risk of version logic drifting back into it. The version decision is made where
+the process can see the whole picture, and a query only ever executes the
+strategy that decision already chose.
 
 In tree: the `promql.RangeLowerers` native-lowering strategies (rate, staleness
 / resample); the `chclient.cursorDecoder` (row vs columnar matrix decode); the
@@ -82,8 +92,10 @@ client-side ch-go columnar `query_range` decode, so its floor is
 opt-in (never enabled by `auto`, since the second ch-go dial is a tradeoff). It
 replaced the standalone `CERBERUS_COLUMNAR_MATRIX_DECODE` bool that violated this
 rule; the chclient keeps a source-agnostic `Config.ColumnarMatrixDecode` knob,
-but its production value flows from `EnabledSet.Has(FeatureColumnarResultDecode)`
-at boot, not from any env var.
+but its production value flows from `EnabledSet.Has(FeatureColumnarResultDecode)`,
+not from any env var. It is also the one strategy the re-probe never swaps: an
+`AlwaysAvailable`, opt-in-only feature sits off the version axis entirely, so no
+server upgrade can change the answer and the decode is wired once at boot.
 
 ## Rule 2: speed up cloning by cloning less, not by cloning faster
 

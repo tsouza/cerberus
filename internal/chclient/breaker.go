@@ -11,13 +11,15 @@ import (
 
 // ErrCircuitOpen is the sentinel returned by Client methods when the
 // ClickHouse-disconnect circuit breaker has tripped to OPEN. Callers
-// translate it into HTTP 503 + `Retry-After: 5` via the per-handler
-// error path so saturated upstream failures fail-fast at the wire
-// (no dial timeout, no inner-stage retries).
+// translate it into HTTP 503 + a `Retry-After` derived from the tripped
+// breaker's own recovery interval (see [RetryAfterSeconds]) via the
+// per-handler error path, so saturated upstream failures fail-fast at the
+// wire (no dial timeout, no inner-stage retries).
 //
-// Callers MUST compare via errors.Is — the chclient surface wraps the
-// sentinel under stage-prefix wrappers like `chclient: query: ...`,
-// matching the existing error-wrapping style in this package.
+// Callers MUST compare via errors.Is — the chclient surface returns the
+// sentinel wrapped in a [CircuitOpenError] carrying stage-prefix text like
+// `chclient: query: ...`, matching the existing error-wrapping style in
+// this package.
 var ErrCircuitOpen = errors.New("chclient: circuit breaker open")
 
 // Circuit-breaker tuning defaults. These are the GA defaults, applied

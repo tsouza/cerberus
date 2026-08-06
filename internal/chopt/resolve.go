@@ -97,6 +97,22 @@ func (s EnabledSet) Has(id string) bool {
 	return ok
 }
 
+// Equal reports whether s and other enable exactly the same feature ids. A
+// periodic re-resolution compares its result against the set already in force
+// and swaps (and logs) only on a genuine transition, so a server whose
+// capabilities have not moved produces no churn and no log noise.
+func (s EnabledSet) Equal(other EnabledSet) bool {
+	if len(s.ids) != len(other.ids) {
+		return false
+	}
+	for id := range s.ids {
+		if _, ok := other.ids[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // IDs returns the enabled feature ids sorted, for deterministic boot logging.
 func (s EnabledSet) IDs() []string {
 	out := make([]string, 0, len(s.ids))
@@ -112,9 +128,12 @@ const (
 	selectionOff  = "off"
 )
 
-// Resolve runs ONCE at startup, after the runtime version probe, and produces
-// the immutable EnabledSet plus the human-readable warnings to log at boot
-// (permissive skips and the legacy-alias deprecation / override notices).
+// Resolve runs after a runtime version probe and produces an immutable
+// EnabledSet plus the human-readable warnings to log (permissive skips and the
+// legacy-alias deprecation / override notices). It is a pure function of the
+// configured selection and the probed server, so the caller — boot, or the
+// periodic re-probe — decides how often the question is asked; the answer never
+// depends on when it was asked before.
 //
 // Selection is a comma-separated list of tokens; each is "auto", "off", or a
 // feature id, and the tokens compose:

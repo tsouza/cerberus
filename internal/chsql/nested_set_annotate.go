@@ -228,8 +228,19 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 	// boundedRootScopeFrag / traceScopeFrag, neither recursive, so the prune
 	// cannot trip CH error 49 yet gives the step genuine partition pruning
 	// instead of relying on the per-iteration closure join.
-	anchorTraceIn := InSubquery(Col(n.TraceIDColumn), scope)
-	stepTraceIn := InSubquery(qualColFrag("t", n.TraceIDColumn), scope)
+	// When the emit chokepoint bound the top-N set once
+	// (chplan.BindBoundedTraceScope), both sites test the binding instead of
+	// re-deriving the scope — the step's especially, since a scope subquery
+	// there is re-evaluated on every recursion iteration. Same trace set
+	// either way; see exprBoundedTraceScope for why `has` rather than `IN`.
+	traceInScope := func(col Frag) Frag {
+		if n.ScopeBindingAlias != "" {
+			return Call("has", BareIdent(n.ScopeBindingAlias), col)
+		}
+		return InSubquery(col, scope)
+	}
+	anchorTraceIn := traceInScope(Col(n.TraceIDColumn))
+	stepTraceIn := traceInScope(qualColFrag("t", n.TraceIDColumn))
 	anchorFrom, err := e.fromSpansScan(n.SpansTable, traceIDSetBound(anchorTraceIn))
 	if err != nil {
 		return nil, err

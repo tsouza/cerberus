@@ -255,6 +255,61 @@ func TestQueryBuilder_WithRecursive_Multiple(t *testing.T) {
 	}
 }
 
+// TestQueryBuilder_WithScalar — a scalar binding renders with the body BEFORE
+// the name (`WITH (<body>) AS <name>`), the inverse of a relational CTE's
+// `<name> AS (<body>)`. The order is not cosmetic: it is what tells ClickHouse
+// this is a single-evaluation scalar rather than a relation it would inline at
+// every reference, which is the whole reason the slot exists. Args from the
+// body are bound ahead of the outer query's, matching the render order.
+func TestQueryBuilder_WithScalar(t *testing.T) {
+	t.Parallel()
+
+	body := NewQuery().
+		Select(Call("groupArray", Col("id"))).
+		From(Col("t")).
+		Where(Eq(Col("kind"), Lit("root")))
+
+	sql, args := NewQuery().
+		WithScalar("_ids", body).
+		Select(Col("id")).
+		From(Col("t")).
+		Where(Call("has", BareIdent("_ids"), Col("id"))).
+		Limit(10).
+		Build()
+
+	want := "WITH (SELECT groupArray(`id`) FROM `t` WHERE `kind` = ?) AS _ids" +
+		" SELECT `id` FROM `t` WHERE has(_ids, `id`) LIMIT 10"
+	if sql != want {
+		t.Errorf("scalar CTE = %q; want %q", sql, want)
+	}
+	if wantArgs := []any{"root"}; !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("Args = %v; want %v", args, wantArgs)
+	}
+}
+
+// TestQueryBuilder_WithScalar_MixesWithRelationalCTE — the two CTE kinds share
+// one slot and one comma-separated WITH list, so a query may carry both and
+// each keeps its own token order.
+func TestQueryBuilder_WithScalar_MixesWithRelationalCTE(t *testing.T) {
+	t.Parallel()
+
+	scalar := NewQuery().Select(Call("groupArray", Col("id"))).From(Col("t1"))
+	rel := NewQuery().Select(Col("id")).From(Col("t2"))
+
+	sql, _ := NewQuery().
+		WithScalar("_ids", scalar).
+		With("c", Subquery(rel)).
+		Select(Col("id")).
+		From(Col("c")).
+		Build()
+
+	want := "WITH (SELECT groupArray(`id`) FROM `t1`) AS _ids, c AS (SELECT `id` FROM `t2`)" +
+		" SELECT `id` FROM `c`"
+	if sql != want {
+		t.Errorf("mixed CTE list = %q; want %q", sql, want)
+	}
+}
+
 // TestQueryBuilder_EmptySelectList_RendersStar — leaving Select
 // unset renders `SELECT *`. The lowering pass relies on this default
 // when a Scan has no Columns slice.

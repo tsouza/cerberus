@@ -160,6 +160,18 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// gets a split matrix Loki would have merged (issue #1491).
 	identityBase = narrowIdentityByProjection(identityBase, e.Left.Left)
 
+	// The same projection also applies to the synthesized
+	// `detected_level`, which reference Loki carries as ordinary
+	// structured metadata and cerberus splices in below — after the
+	// mapFilter above has already run, so the stage's effect on it
+	// rides on the VALUE instead (issue #1607). A nil result means the
+	// pipeline removes the label on every row and the key is left out
+	// of the identity entirely. It is a factory rather than one value
+	// because several positions below are simultaneously live (the two
+	// arms of the error bypass, one entry per `by (...)` label), and a
+	// plan node must not be aliased into two of them.
+	newLevelValue := func() chplan.Expr { return detectedLevelIdentityExpr(s, e.Left.Left) }
+
 	// The grouping key is computed AGAINST identityBase — the full
 	// series identity (parser-merged labels minus the unwrap target
 	// when applicable) — not against the raw ResourceAttributes column.
@@ -171,12 +183,12 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// matrix to a single empty-level series (loki-compat
 	// exhaustive/aggregations.yaml#Max avg duration by level without
 	// service_name).
-	groupBy, err := rangeAggregationGroupBy(e, s, identityBase)
+	groupBy, err := rangeAggregationGroupBy(e, s, identityBase, newLevelValue)
 	if err != nil {
 		return nil, err
 	}
 
-	identityExpr := withDetectedLevelAndColumns(s, identityBase, lc.OuterByLabels)
+	identityExpr := withDetectedLevelAndColumns(s, identityBase, newLevelValue(), lc.OuterByLabels)
 	if groupBy != nil {
 		// With `by (...)` / `without (...)` the inner Project replaces
 		// the per-stream identity with the group-key map so the
@@ -190,7 +202,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		identityExpr = groupBy
 	}
 	if errorBypassLabels != nil {
-		identityExpr = errorBypassIdentityExpr(s, errorBypassLabels, identityExpr)
+		identityExpr = errorBypassIdentityExpr(s, errorBypassLabels, identityExpr, newLevelValue())
 	}
 	projections := []chplan.Projection{
 		{Expr: canonicalIdentityExpr(identityExpr), Alias: s.ResourceAttributesColumn},
@@ -490,8 +502,12 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inne
 // complete label set plus `__error__` / `__error_details__`. The
 // synthesized detected_level rides along like it does on the normal
 // branch (reference stamps detected_level as structured metadata on
-// every row, so its error series carry it too).
-func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity chplan.Expr) chplan.Expr {
+// every row, so its error series carry it too) — under the SAME
+// `levelValue` the normal branch uses, so a `| drop detected_level`
+// removes it from the error series too. Reference's bypass is scoped to
+// the by/without grouping; the pipeline's own drop/keep stages have
+// already mutated the LabelsBuilder by then, error or not.
+func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity, levelValue chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "if",
 		Args: []chplan.Expr{
@@ -499,7 +515,7 @@ func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity chplan.Expr) ch
 				Name: "mapContains",
 				Args: []chplan.Expr{fullLabels, &chplan.LitString{V: syntax.ErrorLabel}},
 			},
-			withDetectedLevel(s, fullLabels),
+			withDetectedLevel(s, fullLabels, levelValue),
 			identity,
 		},
 	}
@@ -817,14 +833,21 @@ func rangeValueExprFromMerged(e *syntax.RangeAggregationExpr, mergedCol chplan.E
 // resolved to the SeverityText-derived `multiIf(...)` normalisation
 // rather than a literal map lookup the seeder doesn't write — mirrors
 // the vector-aggregation alias surface so the two grouping layers
-// behave consistently.
-func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, identityBase chplan.Expr) (chplan.Expr, error) {
+// behave consistently. `newLevelValue` yields that normalisation with
+// the pipeline's `| drop` / `| keep` projection already applied
+// ([detectedLevelIdentityExpr]); a nil value means the pipeline removed
+// the label, so `without` has nothing to inject and a `by` clause
+// naming the level family groups on the empty string — the same
+// collapse reference Loki produces once the projection has deleted the
+// label from its LabelsBuilder. `by (detected_level, level)` names the
+// family twice, so the value is built per entry rather than aliased.
+func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, identityBase chplan.Expr, newLevelValue func() chplan.Expr) (chplan.Expr, error) {
 	if e.Grouping == nil {
 		return nil, nil
 	}
 	if e.Grouping.Without {
 		return &chplan.MapWithoutKeys{
-			Map:  withDetectedLevel(s, identityBase),
+			Map:  withDetectedLevel(s, identityBase, newLevelValue()),
 			Keys: canonicalLevelKeys(e.Grouping.Groups),
 		}, nil
 	}
@@ -833,7 +856,7 @@ func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, iden
 		args = append(
 			args,
 			&chplan.LitString{V: label},
-			levelAwareRangeGroupKey(label, s),
+			levelAwareRangeGroupKey(label, s, newLevelValue),
 		)
 	}
 	return &chplan.FuncCall{Name: "map", Args: args}, nil

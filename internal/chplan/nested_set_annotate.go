@@ -93,6 +93,19 @@ type NestedSetAnnotate struct {
 	// (Tempo numbers at ingest regardless of the search window).
 	WindowStartNano int64
 	WindowEndNano   int64
+
+	// ScopeBindingAlias, when non-empty, names the single-evaluation
+	// ClickHouse scalar binding that already holds this walk's TraceLimit
+	// top-N trace-id array, so the anchor and the recursive step scope
+	// themselves with `has(<ScopeBindingAlias>, TraceId)` instead of each
+	// re-deriving the top-N subquery. Same contract as
+	// [BoundedTraceScope.BindingAlias]: stamped only by
+	// [BindBoundedTraceScope] at the emit chokepoint, and only when the
+	// binding's scope matches this node's (table / columns / limit /
+	// window) exactly, so the numbering and the row-source gates stay on
+	// one trace set. The recursive step is where this saves the most — an
+	// inline scope subquery there is re-evaluated once per iteration.
+	ScopeBindingAlias string
 }
 
 func (*NestedSetAnnotate) planNode() {}
@@ -111,7 +124,8 @@ func (n *NestedSetAnnotate) Equal(other Node) bool {
 		n.TimestampColumn != o.TimestampColumn ||
 		n.TraceLimit != o.TraceLimit ||
 		n.WindowStartNano != o.WindowStartNano ||
-		n.WindowEndNano != o.WindowEndNano {
+		n.WindowEndNano != o.WindowEndNano ||
+		n.ScopeBindingAlias != o.ScopeBindingAlias {
 		return false
 	}
 	return n.Input.Equal(o.Input)

@@ -22,7 +22,7 @@ Auto-eligibility is a separate axis from maturity. A feature carries a
 auto-enabled on capable servers, because they are validated result-correct
 and run at flat memory — auto picks them once the server meets their floor
 **and** the server permits the experimental setting they need (see
-[Boot capability probe](#boot-capability-probe-experimental-ts_grid-setting)).
+[Capability probe](#capability-probe-experimental-ts_grid-setting)).
 The lone opt-in-only feature is `columnar_result_decode` (`autoSelect: no`),
 a perf tradeoff that auto never selects.
 
@@ -48,7 +48,7 @@ feature id, and they **compose**:
   `experimental` native `timeSeries*ToGrid` aggregates on a capable server —
   provided that server also **permits the experimental setting** they require;
   a server that forbids it silently keeps the native family on the fan-out path
-  (see [Boot capability probe](#boot-capability-probe-experimental-ts_grid-setting)).
+  (see [Capability probe](#capability-probe-experimental-ts_grid-setting)).
   The only feature `auto` never picks is `columnar_result_decode`
   (`autoSelect: no`, a perf tradeoff), which requires explicit listing.
   `auto` may appear **alongside** explicit ids, so
@@ -84,10 +84,13 @@ An **unknown** feature id is fatal in **both** modes.
 
 ## Resolution
 
-Resolution runs **once at startup**, after the runtime version probe, and
-produces an immutable `EnabledSet` that is logged at boot. It is the single
-source of truth every consumer reads from; nothing downstream re-reads the
-raw env.
+Resolution runs after a runtime version probe and produces an immutable
+`EnabledSet`. It is the single source of truth every consumer reads from;
+nothing downstream re-reads the raw env.
+
+It runs at startup, and again every `5m` while the process serves (see
+[Re-probe](#re-probe)), so the set in force always describes the server
+cerberus is actually connected to.
 
 | `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                                        |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -303,11 +306,11 @@ Patch and build suffixes (`25.8.2.1`, `25.8.2.1-lts`) are dropped: feature
 availability lands at minor-version granularity, so the comparison is over
 `(major, minor)` only. This mirrors the existing preflight version parse.
 
-The probe runs **once**. A rolling ClickHouse upgrade that crosses a feature
-floor needs a cerberus **restart/reconnect** to re-probe and re-resolve.
-This is the documented v1 behaviour.
+The probe repeats on the [re-probe](#re-probe) cadence, so a rolling ClickHouse
+upgrade that crosses a feature floor is picked up by a running cerberus without
+a restart.
 
-## Boot capability probe (experimental ts_grid setting)
+## Capability probe (experimental ts_grid setting)
 
 The native `timeSeries*ToGrid` features (`ts_grid_range`, `ts_grid_resample`,
 `ts_grid_changes`, `ts_grid_resets`, `ts_grid_deriv`, `ts_grid_predict_linear`)
@@ -321,7 +324,7 @@ the native node there would only earn a `SETTING_CONSTRAINT_VIOLATION` (or
 fan-out path into a 5xx.
 
 So auto-selection of the native family is gated on **two** axes, not just the
-version floor: at boot, alongside `SELECT version()`, cerberus runs a cheap
+version floor: alongside `SELECT version()`, cerberus runs a cheap
 **capability canary** that stamps the experimental setting on a trivial query
 over the always-present `default` database (independent of whether the
 configured database exists yet). The verdict is tri-state:
@@ -332,8 +335,8 @@ configured database exists yet). The verdict is tri-state:
   readonly profile); a *definitive* "no". The native family is **dropped to the
   fan-out path**.
 - **unreachable** — the canary got no server verdict (a transport failure); an
-  *inconclusive* result. Native stays off until a restart re-probes, matching
-  the version probe's connectivity fallback.
+  *inconclusive* result. Native stays off until a later re-probe gets a verdict,
+  matching the version probe's connectivity fallback.
 
 A verdict is therefore either **definitive** (`available` permits, `forbidden`
 refuses) or **inconclusive** (`unreachable`, or `unknown` when the probe never
@@ -361,14 +364,62 @@ and how the feature was selected:
     explicitly-listed feature on a too-old server is still FATAL under
     `enforcing`.)
 
-The canary runs **once** at boot, like the version probe; a profile change that
-later permits the setting needs a restart to re-probe.
+The canary rides with the version probe on every [re-probe](#re-probe), so a
+profile change that later permits the setting is picked up without a restart.
 
 **Escape hatch.** To run a forbidden server without any boot warnings, pin an
 explicit `CERBERUS_CH_OPTIMIZATIONS` list that omits the `ts_grid_*` ids (e.g.
 `aggregation_in_order,condition_cache`), or set `CERBERUS_CH_OPTIMIZATIONS=off`.
 Conversely, permitting the setting in the ClickHouse profile (or using a
-non-readonly user) lets `auto` pick the native family back up on the next boot.
+non-readonly user) lets `auto` pick the native family back up on the next
+re-probe.
+
+## Re-probe
+
+The resolved set describes a server, and the server changes: a rolling
+ClickHouse upgrade crosses a feature floor, a profile is relaxed, or a pod that
+booted while ClickHouse was down pinned itself to the supported floor. So the
+resolution is re-run every **5 minutes** for the life of the process, and a
+changed answer is swapped into the query path in place.
+
+Each pass repeats exactly the boot resolution — probe `version()`, run the
+capability canary, resolve the *same* configured selection against both — so a
+running process can never reach a posture boot could not have produced. The
+selection itself is fixed for the life of the process, which is what makes the
+loop safe to run unattended: a re-resolve cannot introduce an unknown feature id
+or an unsupported explicit id, because those are config faults and config does
+not change under a running process. Consequently a re-probe never exits the
+process; a failed probe or resolve is logged and the set already in force is
+kept.
+
+Only a genuine transition is acted on. A pass whose resolved set and server
+version both match the current ones does nothing at all, so the steady state is
+silent and the log carries one line per real capability change:
+
+```text
+level=INFO msg="clickhouse optimizations re-resolved" server_version=25.9
+  previous_server_version=24.8 enabled=aggregation_in_order,condition_cache,ts_grid_range
+  previous_enabled=aggregation_in_order
+```
+
+What a transition swaps:
+
+| Consumer                      | Effect of a re-resolved set                                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).   |
+| Engine per-query settings     | The `aggregation_in_order` / `condition_cache` rules are replaced, so subsequent queries stamp the settings the current server supports.          |
+| `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with. |
+
+`columnar_result_decode` is deliberately **not** in that list: it is
+`AlwaysAvailable` and opt-in only, so no server upgrade can change its verdict
+and the decode stays wired at boot.
+
+The swap is per-consumer and lock-free — each consumer publishes its derived
+value through one atomic pointer, so an in-flight request always reads a whole
+strategy table or rule set, never a half-replaced one. A request that straddles
+a swap may lower with one posture and execute with the other; both are valid
+postures for the same server, because a dropped capability only ever disables a
+native path and a gained one only ever enables it.
 
 ## Legacy alias: `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
 
@@ -637,12 +688,15 @@ func (s EnabledSet) IDs() []string // sorted, for boot logging
 // condition_cache, ts_grid_range). Exposed so tests can enumerate it.
 func Registry() []Feature
 
-// Resolve runs ONCE at startup, after the version probe. It returns the
-// immutable EnabledSet plus a slice of human-readable warnings (deprecation
-// + permissive skips) to log at boot. A fatal condition (unknown id in any
-// mode; unsupported explicit id under Enforcing) is returned as err -> the
-// caller exits non-zero.
+// Resolve runs after a version probe. It returns the immutable EnabledSet plus
+// a slice of human-readable warnings (deprecation + permissive skips) to log. A
+// fatal condition (unknown id in any mode; unsupported explicit id under
+// Enforcing) is returned as err -> the boot caller exits non-zero.
 func Resolve(cfg Config, server Version) (set EnabledSet, warnings []string, err error)
+
+// Equal reports whether two resolved sets carry the same feature ids, so the
+// re-probe can tell a genuine capability transition from a repeat answer.
+func (s EnabledSet) Equal(other EnabledSet) bool
 ```
 
 Feature id constants (exported, so config/engine reference them without
@@ -748,12 +802,18 @@ The legacy `LegacyFlag` is carried on `Config` (e.g.
    `internal/chplan/range_window_native.go`) are **unchanged** — they keep
    reading the bool, now a derived value.
 
-3. **`cmd/cerberus/main.go`** — owns the one-shot resolve: build client ->
-   probe `version()` -> `chopt.Resolve` -> log boot line + warnings (or
-   `return err` to exit non-zero on fatal) -> back-fill
-   `cfg.ExperimentalTSGridRange` -> `settingsRules(cfg, set)` for all three
-   heads -> optionally start the corpus reconciler when
-   `cfg.CHOptCorpus.Enabled`.
+3. **`cmd/cerberus/main.go`** — owns the boot resolve: build client -> probe
+   `version()` -> `chopt.Resolve` -> log boot line + warnings (or `return err`
+   to exit non-zero on fatal) -> back-fill `cfg.ExperimentalTSGridRange` ->
+   `settingsRules(cfg, set)` for all three heads -> optionally start the corpus
+   reconciler when `cfg.CHOptCorpus.Enabled`.
+
+4. **`cmd/cerberus/chopt_reprobe.go`** — owns the re-probe loop and the live
+   holder every consumer reads through (`chOptLive` for `/info`,
+   `chOptConsumers` for the query path). It repeats the probe + resolve halves
+   of step 3 with none of its side effects, since back-filling config, swapping
+   the columnar decode, and exiting on a config fault are all boot-only
+   decisions.
 
 ### condition_cache setting
 

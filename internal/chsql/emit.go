@@ -152,7 +152,12 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 		ctxLateMatTable: ctxLMTable,
 		ctxLateMatShape: ctxLMShape,
 	}
-	if err := e.emitNode(n); err != nil {
+	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
+	// single-evaluation scalar binding hoisted to the outermost statement
+	// (#1672). No-op — returns nil, leaves the tree untouched — for every
+	// plan that carries no gate at all, which is every PromQL / LogQL plan
+	// and every unbounded TraceQL one.
+	if err := e.emitBound(chplan.BindBoundedTraceScope(n), n); err != nil {
 		span.RecordError(err)
 		return "", nil, err
 	}
@@ -169,6 +174,58 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	sql, args := chaosSleepWrap(ctx, sql, e.args)
 	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
 	return sql, args, nil
+}
+
+// emitBound renders the plan, hoisting the shared top-N trace-id binding
+// onto the outermost statement when there is one.
+//
+// With no binding (scope nil) this is exactly emitNode — the whole
+// non-TraceQL corpus keeps a byte-identical emission. With one, the plan
+// renders as a subquery under a wrapper that carries the binding:
+//
+//	WITH (SELECT groupArray(`TraceId`) FROM (<top-N newest root traces>)) AS _cerberus_trace_scope
+//	SELECT * FROM (<plan>)
+//
+// The wrapper exists because a ClickHouse WITH alias is visible only in the
+// statement that declares it and the subqueries nested inside it, while the
+// gates that reference the alias sit arbitrarily deep — inside recursive CTE
+// arms, union legs and join branches that the per-node emitters assemble
+// independently. Declaring it once at the top is the only placement that
+// reaches all of them, and a `SELECT * FROM (<plan>)` wrapper is the typed
+// way to get there: the alternative — prefixing the rendered string — is the
+// raw-SQL composition the emitter forbids.
+//
+// `SELECT *` forwards the plan's own column names and row shape unchanged,
+// and every clause that shapes the result (ORDER BY, LIMIT, LIMIT n BY) stays
+// inside the subquery where it already was.
+func (e *emitter) emitBound(scope *chplan.BoundedTraceScope, n chplan.Node) error {
+	if scope == nil {
+		return e.emitNode(n)
+	}
+	planFrag, err := e.subqueryFrag(n)
+	if err != nil {
+		return err
+	}
+	return e.emitSelect(NewQuery().
+		WithScalar(chplan.BoundedTraceScopeAlias, boundedRootScopeIDsQuery(scope)).
+		From(planFrag))
+}
+
+// boundedRootScopeIDsQuery is the scalar-CTE body backing
+// chplan.BoundedTraceScopeAlias: the top-N trace ids the gates test against,
+// collected into one array so the alias binds a value ClickHouse evaluates
+// once.
+//
+// The inner relation is boundedRootScopeFrag — the SAME self-contained top-N
+// subquery an unbound gate renders inline and the NestedSetAnnotate numbering
+// scope renders for itself. Deriving all three from one function is what keeps
+// the numbering scope and the row-source gate on a byte-identical trace set
+// even when only one of them is bound; the ranking is total (the `TraceId ASC`
+// tie-break), so independent evaluations agree on the N-boundary.
+func boundedRootScopeIDsQuery(s *chplan.BoundedTraceScope) *QueryBuilder {
+	return NewQuery().
+		Select(Call("groupArray", Col(s.TraceIDColumn))).
+		From(boundedRootScopeFrag(s.SpansTable, s.TraceIDColumn, s.ParentSpanIDColumn, s.TimestampColumn, s.TraceLimit, s.WindowStartNano, s.WindowEndNano))
 }
 
 type emitter struct {

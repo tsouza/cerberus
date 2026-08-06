@@ -206,9 +206,21 @@ func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
 // vector-aggregation reads from the post-RangeWindow scope where
 // SeverityText is no longer visible, so it has to reach through the
 // augmented map's `detected_level` key instead.
-func levelAwareRangeGroupKey(label string, s schema.Logs) chplan.Expr {
+//
+// `newLevelValue` supplies that expression with the pipeline's
+// `| drop` / `| keep` projection already applied
+// ([detectedLevelIdentityExpr]). A nil value means the projection
+// removed the label on every row, and grouping on a label the record
+// no longer carries is grouping on the empty string — the same collapse
+// reference Loki produces from its LabelsBuilder. The outer companion
+// [levelAwareGroupKey] needs no equivalent: it reads the key back out of
+// the identity map, where a removed key already resolves to `”`.
+func levelAwareRangeGroupKey(label string, s schema.Logs, newLevelValue func() chplan.Expr) chplan.Expr {
 	if isDetectedLevelGroupingLabel(label) {
-		return detectedLevelExpr(s)
+		if v := newLevelValue(); v != nil {
+			return v
+		}
+		return &chplan.LitString{V: ""}
 	}
 	if matCol, ok := materializedColumnFor(label, s); ok {
 		// At the inner range-aggregation layer the Scan/Filter sits

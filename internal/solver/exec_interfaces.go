@@ -2,6 +2,7 @@ package solver
 
 import (
 	"context"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -17,7 +18,7 @@ import (
 // The concrete satisfiers live on the chclient / admit side:
 //
 //   - *chclient.Client satisfies CursorQuerier (QueryCursor) and
-//     breakerPeeker (PeekBreakerState).
+//     breakerPeeker (PeekBreakerState + BreakerRetryAfter).
 //   - *admit.Limiter satisfies admitTopUp (TryAcquireTopUp).
 //   - internal/chsql provides the SQLEmitter (wired by the engine adapter
 //     in the next PR).
@@ -67,12 +68,19 @@ const (
 )
 
 // breakerPeeker reports the circuit-breaker lifecycle phase WITHOUT
-// consuming a half-open probe. *chclient.Client satisfies it via
-// PeekBreakerState. The Executor calls it once, before emitting, so a
+// consuming a half-open probe, plus the breaker's OPEN-state recovery
+// interval. *chclient.Client satisfies it via PeekBreakerState +
+// BreakerRetryAfter. The Executor calls it once, before emitting, so a
 // non-CLOSED breaker aborts the request before any CH work and — crucially
 // — without spending the single half-open recovery probe on a fan-out.
+//
+// The interval belongs on this interface because the pre-flight builds its
+// own fast-fail error rather than calling THROUGH the breaker: the
+// `Retry-After` a route-B abort advertises must be the same interval the
+// breaker enforces, and reading it here is what keeps the two in step.
 type breakerPeeker interface {
 	PeekBreakerState() string
+	BreakerRetryAfter() time.Duration
 }
 
 // admitTopUp is the two-stage weighted-admission hook (docs/solver.md
