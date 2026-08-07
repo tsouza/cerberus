@@ -1,5 +1,5 @@
 {
-  "fixture": "promql/histogram_quantile_native_zero_band",
+  "fixture": "promql/histogram_quantile_native_zero_band_window",
   "fan_factor": 1,
   "scan_rows": 2,
   "peak_intermediate": 2,
