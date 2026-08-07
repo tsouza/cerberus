@@ -493,9 +493,16 @@ func clampU8(v int64) uint8 {
 // stamps the experimental setting on a query carrying ANY such node — the
 // changes / resets / deriv / predict_linear matrix functions ride the
 // RangeWindowNative match with no engine change.
+//
+// The sweep is chplan.WalkDeep, not chplan.Walk: a per-step scalar parameter
+// binds its vector as a chplan.ScalarSubquery, so a query whose ONLY ts-grid
+// node sits inside that scalar interior — `vector(scalar(m))`, `topk(scalar(m)
+// * 2, m)` — hangs off an Expr slot that Walk does not follow. Missing it
+// leaves the setting unstamped and ClickHouse answers code 63 ("aggregate
+// function ... is experimental and disabled by default") on every such query.
 func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
-	chplan.Walk(plan, func(n chplan.Node) bool {
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
 		switch n.(type) {
 		case *chplan.RangeWindowNative, *chplan.RangeWindowResample:
 			found = true
