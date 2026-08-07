@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -486,5 +487,117 @@ search
 `
 	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
 		t.Fatal("expect_status combined with a body-shape assertion should fail — the status-parity path never parses the body, so expected_min_traces would silently never run")
+	}
+}
+
+// TestParseCorpus_TagsQueryGuards pins the guards that keep a `q`-sending
+// tag case honest, on both sides of the V1/V2 asymmetry. V2 narrows, so a
+// V2 case must name a key the narrowing drops — otherwise it passes
+// identically against a backend that ignores the parameter, the very bug
+// it exists to catch. V1 does not narrow, so a V1 case must name a key
+// the narrowing WOULD have dropped, and may not claim any key is absent:
+// that claim is the false premise this pair of routes was once written
+// on, and it failed against reference Tempo.
+func TestParseCorpus_TagsQueryGuards(t *testing.T) {
+	t.Parallel()
+	for name, src := range map[string]string{
+		"v2 query without absent values": `-- name --
+q_no_absent
+-- endpoint --
+tags_v2
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+`,
+		"v1 query with absent values": `-- name --
+q_v1_absent
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+-- expected_absent_values --
+child.index
+`,
+		"v1 query without expected values": `-- name --
+q_v1_bare
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+`,
+		"absent values on a non-tags endpoint": `-- name --
+absent_on_search
+-- endpoint --
+search
+-- query --
+{ span.http.method = "GET" }
+-- expected_absent_values --
+child.index
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := parseCorpus(strings.NewReader(src), "t.txtar"); err == nil {
+				t.Fatal("want a parse error, got nil")
+			}
+		})
+	}
+}
+
+// TestParseCorpus_TagsQueryShapes is the positive control for the guards
+// above: the two shapes the corpus actually uses parse, and every half
+// lands on the case.
+func TestParseCorpus_TagsQueryShapes(t *testing.T) {
+	t.Parallel()
+	const v2Src = `-- name --
+q_scoped_v2
+-- endpoint --
+tags_v2
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+-- expected_absent_values --
+child.index
+`
+	const v1Src = `-- name --
+q_ignored_v1
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+child.index
+`
+	v2, err := parseCorpus(strings.NewReader(v2Src), "t.txtar")
+	if err != nil {
+		t.Fatalf("parseCorpus v2: %v", err)
+	}
+	if len(v2) != 1 {
+		t.Fatalf("v2 case count: want 1, got %d", len(v2))
+	}
+	if v2[0].Query != `{ span.http.method = "GET" }` {
+		t.Errorf("v2 query = %q", v2[0].Query)
+	}
+	if len(v2[0].ExpectedAbsentValues) != 1 || v2[0].ExpectedAbsentValues[0] != "child.index" {
+		t.Errorf("v2 expected_absent_values = %v", v2[0].ExpectedAbsentValues)
+	}
+
+	v1, err := parseCorpus(strings.NewReader(v1Src), "t.txtar")
+	if err != nil {
+		t.Fatalf("parseCorpus v1: %v", err)
+	}
+	if len(v1) != 1 {
+		t.Fatalf("v1 case count: want 1, got %d", len(v1))
+	}
+	if len(v1[0].ExpectedAbsentValues) != 0 {
+		t.Errorf("v1 expected_absent_values = %v", v1[0].ExpectedAbsentValues)
+	}
+	if !slices.Contains(v1[0].ExpectedValues, "child.index") {
+		t.Errorf("v1 expected_values = %v", v1[0].ExpectedValues)
 	}
 }

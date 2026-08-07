@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/format"
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
@@ -64,8 +63,28 @@ func ParseTagScope(raw string) (string, error) {
 // returns the non-empty ones. Exported so the gRPC tag services build
 // their scope partition from the exact same buckets the HTTP V1 / V2
 // envelopes do — the two surfaces cannot drift on which scopes exist.
-func (h *Handler) CollectAttributeTagScopes(ctx context.Context, scope string, start, end time.Time) ([]TagScope, error) {
-	return h.collectAttributeTagScopes(ctx, scope, start, end)
+//
+// query is the caller's optional TraceQL narrowing filter — the `q`
+// URL parameter on the HTTP routes, SearchTagsRequest.Query over gRPC.
+// It goes through the same parse + lower + predicate extraction the
+// HTTP routes use (tagQueryFilter), so the two surfaces cannot drift on
+// which spans a `q` selects either. Empty means no narrowing, and the
+// lookups render exactly the SQL they did before `q` existed. A `q`
+// that cannot be parsed, lowered, or reduced to a span-row predicate
+// comes back as a classified error (ClassifyErr → InvalidArgument).
+//
+// route says which tag-name route is asking, and decides whether query
+// is honoured at all: only V2 takes a narrowing query, so a V1 caller's
+// query is discarded before it reaches the parser (TagsRoute in
+// search_tags_filter.go carries the reasoning).
+func (h *Handler) CollectAttributeTagScopes(
+	ctx context.Context, scope string, route TagsRoute, query string, start, end time.Time,
+) ([]TagScope, error) {
+	filter, err := h.tagQueryFilter(ctx, route, query, start, end)
+	if err != nil {
+		return nil, err
+	}
+	return h.collectAttributeTagScopes(ctx, scope, filter, start, end)
 }
 
 // SortedUnique returns the de-duplicated, lexicographically sorted
@@ -209,70 +228,19 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %w", errLowerStage, lerr)
 	}
 
-	// Second-stage peel + re-apply — same shape as
-	// handleMetricsQueryRange: the RangeWindow wraps the aggregate, the
-	// topk/bottomk/threshold wraps re-apply around the windowed result
+	// Second-stage peel + kind classification — the SAME call
+	// handleMetricsQueryRange makes: the RangeWindow wraps the metrics node,
+	// the topk/bottomk/threshold wraps re-apply around the windowed result
 	// partitioned by the matrix anchor column.
-	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
-	if !ok {
-		return h.execMetricsRangeNonScalar(ctx, query, plan, inner, stages, start, end, step)
+	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsRangeGRPC, query)
+	if cerr != nil {
+		return ExecMetricsRangeResult{}, cerr
 	}
-	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
-		return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
+	router := h.newMetricsRangeRouter(query, pipeline, start, end, step)
+	if rerr := pipeline.Route(ctx, router); rerr != nil {
+		return ExecMetricsRangeResult{}, rerr
 	}
-
-	series, _, qerr := h.execMetricsRange(ctx, query, inner, stages, metrics, start, end, step)
-	if qerr != nil {
-		return ExecMetricsRangeResult{}, qerr
-	}
-	return ExecMetricsRangeResult{Series: series}, nil
-}
-
-// execMetricsRangeNonScalar handles the plan shapes ExecMetricsRange sees
-// when the lowered plan does NOT unwrap to the scalar
-// chplan.MetricsAggregate shape: `| histogram_over_time(<attr>)` and
-// `| compare({...}, topN)`. Mirrors the HTTP handler's
-// serveMetricsQueryRangeNonScalar split (metrics_query_range.go) — pulled
-// out of ExecMetricsRange for the identical reason that function was
-// pulled out of handleMetricsQueryRange: keeping the nesting flat.
-//
-// histogram_over_time is checked first, matching the HTTP handler's
-// ordering. This branch was MISSING here until #1453's gRPC
-// compatibility lane caught the divergence: every histogram_over_time
-// query 400'd on the gRPC surface ("not a TraceQL metrics-pipeline
-// expression") while the byte-identical query succeeded over HTTP.
-func (h *Handler) execMetricsRangeNonScalar(
-	ctx context.Context,
-	query string,
-	plan, inner chplan.Node,
-	stages []*chplan.MetricsSecondStage,
-	start, end time.Time,
-	step time.Duration,
-) (ExecMetricsRangeResult, error) {
-	if hist, hok := unwrapMetricsHistogram(inner); hok {
-		if len(stages) > 0 {
-			return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over histogram_over_time is unsupported — the per-bucket distribution rows have no scalar Value to rank or threshold", errLowerStage, stages[0].Op)
-		}
-		series, _, herr := h.execMetricsRangeHistogram(ctx, query, inner, hist, start, end, step)
-		if herr != nil {
-			return ExecMetricsRangeResult{}, herr
-		}
-		return ExecMetricsRangeResult{Series: series}, nil
-	}
-	// `| compare({...}, topN)` routes through the BaselineAggregator
-	// mirror — same post-processed series the HTTP handler returns.
-	if cmp, cok := unwrapMetricsCompare(inner); cok {
-		if len(stages) > 0 {
-			return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", errLowerStage, stages[0].Op)
-		}
-		series, _, cerr := h.execCompareRange(ctx, query, plan, cmp, start, end, step)
-		if cerr != nil {
-			return ExecMetricsRangeResult{}, cerr
-		}
-		return ExecMetricsRangeResult{Series: series}, nil
-	}
-	return ExecMetricsRangeResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryRange requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", errLowerStage, query)
+	return ExecMetricsRangeResult{Series: router.Series}, nil
 }
 
 // ExecMetricsInstantResult is the post-execution intermediate the
@@ -323,34 +291,16 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: %w", errLowerStage, lerr)
 	}
 
-	// Second-stage peel + re-apply — instant path: no PartitionBy, a
-	// single anchor means one global selection (mirrors
-	// handleMetricsQueryInstant).
-	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
-	if !ok {
-		// compare() instant — single anchor at `end` (Start = End, same
-		// rationale as handleMetricsQueryInstant's RangeWindow comment),
-		// then the per-series sample collapses to InstantSeries.Value.
-		if cmp, cok := unwrapMetricsCompare(inner); cok {
-			if len(stages) > 0 {
-				return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", errLowerStage, stages[0].Op)
-			}
-			series, _, cerr := h.execCompareRange(ctx, query, plan, cmp, end, end, step)
-			if cerr != nil {
-				return ExecMetricsInstantResult{}, cerr
-			}
-			return ExecMetricsInstantResult{Series: compareSeriesToInstant(series)}, nil
-		}
-		return ExecMetricsInstantResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryInstant requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", errLowerStage, query)
+	// Second-stage peel + kind classification — the SAME call
+	// handleMetricsQueryInstant makes. Instant path: no PartitionBy, a
+	// single anchor at `end` means one global selection.
+	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsInstantGRPC, query)
+	if cerr != nil {
+		return ExecMetricsInstantResult{}, cerr
 	}
-	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
-		return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
+	router := h.newMetricsInstantRouter(query, pipeline, end, step)
+	if rerr := pipeline.Route(ctx, router); rerr != nil {
+		return ExecMetricsInstantResult{}, rerr
 	}
-
-	series, _, qerr := h.execMetricsInstant(ctx, query, inner, stages, metrics, end, step)
-	if qerr != nil {
-		return ExecMetricsInstantResult{}, qerr
-	}
-	return ExecMetricsInstantResult{Series: series}, nil
+	return ExecMetricsInstantResult{Series: router.Series}, nil
 }

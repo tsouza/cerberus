@@ -753,3 +753,89 @@ func TestCompare_SpanSets_CompleteSetsDiffPerSpan(t *testing.T) {
 		t.Fatalf("durationNanos divergence must diff, got Equal")
 	}
 }
+
+// TestAssertCase_TagsAbsentValues is the strict-subset assertion's own
+// test: a key listed in expected_absent_values that shows up in the
+// answer is a failure, and one that stays away is not. Without this the
+// `q`-scoped corpus cases would be graded by an assertion nothing pins.
+// The case is tags_v2 because that is the route `q` narrows; tags_v1
+// answers the unscoped key set and never carries the assertion.
+func TestAssertCase_TagsAbsentValues(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:                 "x",
+		Endpoint:             "tags_v2",
+		Query:                `{ span.http.method = "GET" }`,
+		ExpectedValues:       []string{"http.method"},
+		ExpectedAbsentValues: []string{"child.index"},
+	}
+
+	scoped := []byte(`{"scopes":[{"name":"span","tags":["http.method","http.target"]}]}`)
+	reasons, err := AssertCase(tc, scoped, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (scoped): %v", err)
+	}
+	if len(reasons) != 0 {
+		t.Fatalf("scoped answer should pass, got %+v", reasons)
+	}
+
+	// The same case against a backend that ignored `q` and answered the
+	// window-wide key set: the absent key is present, so it must fail.
+	unscoped := []byte(`{"scopes":[{"name":"span","tags":["child.index","http.method","http.target"]}]}`)
+	reasons, err = AssertCase(tc, unscoped, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (unscoped): %v", err)
+	}
+	if len(reasons) != 1 {
+		t.Fatalf("unscoped answer should fail on the absent key, got %+v", reasons)
+	}
+	if !strings.Contains(reasons[0].Detail, "child.index") {
+		t.Errorf("reason does not name the leaked key: %s", reasons[0].Detail)
+	}
+}
+
+// TestAssertCase_TagsV1QueryKeepsWideAnswer is the V1 mirror: the
+// corrected corpus case asserts the keys a narrowing route would have
+// dropped are still there, so a cerberus that pushed `q` into the V1
+// lookups fails here rather than only in the cross-backend diff. Both
+// backends narrowing together would otherwise agree and pass.
+func TestAssertCase_TagsV1QueryKeepsWideAnswer(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:           "x",
+		Endpoint:       "tags_v1",
+		Query:          `{ span.http.method = "GET" }`,
+		ExpectedValues: []string{"http.method", "child.index", "kind"},
+	}
+
+	wide := []byte(`{"tagNames":["child.index","http.method","http.target","kind"]}`)
+	reasons, err := AssertCase(tc, wide, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (wide): %v", err)
+	}
+	if len(reasons) != 0 {
+		t.Fatalf("unscoped answer should pass, got %+v", reasons)
+	}
+
+	// A backend that honoured `q` on V1 drops the child-only keys, which
+	// is the divergence this case exists to catch.
+	narrowed := []byte(`{"tagNames":["http.method","http.target"]}`)
+	reasons, err = AssertCase(tc, narrowed, "cerberus")
+	if err != nil {
+		t.Fatalf("AssertCase (narrowed): %v", err)
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("narrowed answer should fail on both child-only keys, got %+v", reasons)
+	}
+	for _, want := range []string{"child.index", "kind"} {
+		found := false
+		for _, r := range reasons {
+			if strings.Contains(r.Detail, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no reason names the dropped key %q: %+v", want, reasons)
+		}
+	}
+}

@@ -121,6 +121,11 @@ const nestedAttributesSubfield = "Attributes"
 // seconds; nanoseconds also accepted via the same heuristic Loki uses,
 // see parseTempoTime).
 //
+// The `q` narrowing parameter is a V2 parameter and this route ignores
+// it, as upstream does — a V1 request answers the whole window's key set
+// whatever `q` says, including a malformed one (see the route contract in
+// search_tags_filter.go).
+//
 // SQL shape — one query per scope bucket, e.g. for `span`:
 //
 //	SELECT DISTINCT arrayJoin(mapKeys(`SpanAttributes`))
@@ -130,15 +135,21 @@ const nestedAttributesSubfield = "Attributes"
 // All identifiers and bound values flow through chsql.QueryBuilder —
 // no fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func (h *Handler) handleSearchTags(w http.ResponseWriter, r *http.Request) {
-	h.respondTags(w, r, false)
+	h.respondTags(w, r, TagsRouteV1)
 }
 
 // handleSearchTagsV2 implements `GET /api/v2/search/tags`. Same data
 // as V1, partitioned by scope (one bucket per attribute family the
 // schema carries, plus intrinsic). Grafana's Tempo datasource queries
 // V2 when available.
+//
+// This is the route that takes the optional `q` parameter: it narrows the
+// answer to the keys carried by the spans a TraceQL query selects, which
+// is what Grafana's tag autocomplete sends as the user types. It
+// contributes one more conjunct to the WHERE above; absent, the SQL is
+// unchanged (see search_tags_filter.go).
 func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, r *http.Request) {
-	h.respondTags(w, r, true)
+	h.respondTags(w, r, TagsRouteV2)
 }
 
 // respondTags is the shared core of V1 + V2: it runs one independent CH
@@ -150,7 +161,7 @@ func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, r *http.Request) {
 // handler emitted every scope regardless of what the client asked for,
 // which made Grafana's per-scope autocomplete iterate over irrelevant
 // keys.
-func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
+func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route TagsRoute) {
 	start, end, err := parseTempoStartEnd(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "", "", err)
@@ -167,7 +178,17 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		return
 	}
 
-	scopes, err := h.collectAttributeTagScopes(r.Context(), scope, start, end)
+	// The optional `?q=` narrowing filter, which only the V2 route takes —
+	// tagQueryFilter discards it on V1. It is read after `scope` so a
+	// request that gets both wrong still reports the scope first, matching
+	// upstream's parameter order.
+	filter, err := h.tagQueryFilter(r.Context(), route, r.URL.Query().Get("q"), start, end)
+	if err != nil {
+		writeError(w, tagsErrStatus(err), "", "", err)
+		return
+	}
+
+	scopes, err := h.collectAttributeTagScopes(r.Context(), scope, filter, start, end)
 	if err != nil {
 		writeError(w, tagsErrStatus(err), "", "", err)
 		return
@@ -177,7 +198,7 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		all = append(all, s.Tags...)
 	}
 
-	if v2 {
+	if route == TagsRouteV2 {
 		if scope == tagScopeNone || scope == tagScopeIntrinsic {
 			scopes = append(scopes, TagScope{Name: tagScopeIntrinsic, Tags: append([]string(nil), intrinsicTags...)})
 		}
@@ -206,13 +227,15 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 // tags-V2 combiner materialises a bucket only from keys the storage
 // layer actually reported, so emitting an empty one would put cerberus
 // a scope ahead of reference Tempo.
-func (h *Handler) collectAttributeTagScopes(ctx context.Context, scope string, start, end time.Time) ([]TagScope, error) {
+func (h *Handler) collectAttributeTagScopes(
+	ctx context.Context, scope string, filter chsql.Frag, start, end time.Time,
+) ([]TagScope, error) {
 	var scopes []TagScope
 	for _, src := range attributeTagScopes(h.Schema) {
 		if scope != tagScopeNone && scope != src.name {
 			continue
 		}
-		tags, err := h.fetchTagKeys(ctx, src.name, src.keys, start, end)
+		tags, err := h.fetchTagKeys(ctx, src.name, src.keys, filter, start, end)
 		if err != nil {
 			h.Logger.Error("cerberus tempo tag-key lookup failed", "scope", src.name, "err", err)
 			return nil, err
@@ -294,16 +317,26 @@ func (e *tagScopeError) Error() string { return "invalid scope: " + e.raw }
 // Keeping one query per scope (rather than one with arrayConcat) is
 // what lets the V2 partition skip the buckets the caller didn't ask
 // for — V1 unions the surviving slices in Go.
-func (h *Handler) fetchTagKeys(ctx context.Context, scope string, keys chsql.Frag, start, end time.Time) ([]string, error) {
-	sqlStr, args := buildSearchTagsSQL(h.Schema, keys, start, end)
-	h.Logger.Debug("cerberus tempo /search/tags", "scope", scope, "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
+func (h *Handler) fetchTagKeys(
+	ctx context.Context,
+	scope string,
+	keys, filter chsql.Frag,
+	start, end time.Time,
+) ([]string, error) {
+	sqlStr, args := buildSearchTagsSQL(h.Schema, keys, filter, start, end)
+	h.Logger.Debug("cerberus tempo /search/tags", "scope", scope, "sql", sqlStr,
+		"args", telemetry.SanitizeArgsForLog(args))
 	return h.Client.QueryStrings(ctx, sqlStr, args...)
 }
 
 // buildSearchTagsSQL builds the SELECT for one scope bucket's
 // key-enumerating projection. Exposed for tests so the SQL shape is
 // pinned without spinning up the HTTP layer.
-func buildSearchTagsSQL(s schema.Traces, keys chsql.Frag, start, end time.Time) (string, []any) {
+//
+// `filter` is the optional `?q=` span-row predicate (see
+// search_tags_filter.go); a nil filter appends no clause, so a request
+// without `q` renders exactly the SQL it always did.
+func buildSearchTagsSQL(s schema.Traces, keys, filter chsql.Frag, start, end time.Time) (string, []any) {
 	sb := chsql.NewQuery().
 		Select(keys).
 		From(chsql.Col(s.SpansTable))
@@ -312,6 +345,9 @@ func buildSearchTagsSQL(s schema.Traces, keys chsql.Frag, start, end time.Time) 
 	}
 	if !end.IsZero() {
 		sb.Where(tempoTimeLteFrag(s.TimestampColumn, end))
+	}
+	if filter != nil {
+		sb.Where(filter)
 	}
 	return sb.Build()
 }

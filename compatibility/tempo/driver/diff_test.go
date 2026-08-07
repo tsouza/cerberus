@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -363,5 +364,38 @@ func TestDiffStatusParityCase_NoResponseIsHardError(t *testing.T) {
 	}
 	if res.passed() {
 		t.Fatal("a hard error must never pass")
+	}
+}
+
+// TestBuildURL_TagsCarryQueryAsNarrowingParam pins the wiring behind the
+// `q`-scoped tag cases: a tag-name case with a -- query -- sends it as
+// the `q` parameter on both routes, and one without sends no `q` at all
+// (which is what every pre-existing tag case relies on for its
+// window-wide answer).
+func TestBuildURL_TagsCarryQueryAsNarrowingParam(t *testing.T) {
+	t.Parallel()
+	const query = `{ span.http.method = "GET" }`
+	for _, ep := range []string{"tags_v1", "tags_v2"} {
+		t.Run(ep, func(t *testing.T) {
+			t.Parallel()
+			scoped, err := buildURL("http://tempo:3200",
+				CorpusCase{Name: "x", Endpoint: ep, Query: query},
+				"tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+			if err != nil {
+				t.Fatalf("buildURL: %v", err)
+			}
+			if !strings.Contains(scoped, "q="+url.QueryEscape(query)) {
+				t.Errorf("q= not sent for %s: %s", ep, scoped)
+			}
+			unscoped, err := buildURL("http://tempo:3200",
+				CorpusCase{Name: "x", Endpoint: ep},
+				"tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+			if err != nil {
+				t.Fatalf("buildURL: %v", err)
+			}
+			if strings.Contains(unscoped, "q=") {
+				t.Errorf("q= should be omitted for a query-less %s case: %s", ep, unscoped)
+			}
+		})
 	}
 }

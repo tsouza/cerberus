@@ -37,7 +37,10 @@ import (
 //     codes.InvalidArgument with the validator's error string.
 //   - missing required RPC field (e.g. TagName for the values RPCs) →
 //     codes.InvalidArgument.
-//   - ClickHouse / driver failure → codes.Internal.
+//   - a pipeline failure behind a tag lookup (an unparseable `q`
+//     narrowing filter, a budget, the breaker, ClickHouse itself) →
+//     whatever grpcStatusFor's shared classification assigns it, so
+//     the RPC and its HTTP twin never disagree on whose fault it was.
 //   - context cancellation / stream-context cancel surfaces
 //     naturally via the CH driver (which honours the ctx); the gRPC
 //     transport then closes the stream with codes.Canceled.
@@ -45,7 +48,11 @@ import (
 // SearchTags implements StreamingQuerier_SearchTagsServer. Mirrors
 // the HTTP /api/search/tags endpoint: returns the union of every
 // dynamic attribute key seen in the time window across each scope the
-// request selects, sorted ascending. Intrinsics are excluded by
+// request selects, sorted ascending. The request Query is ignored here,
+// as it is on the HTTP twin and in upstream Tempo: a narrowing query
+// belongs to the V2 route, and V1 answers the whole window's key set
+// whatever Query says (see TagsRoute in
+// internal/api/tempo/search_tags_filter.go). Intrinsics are excluded by
 // default (parity with upstream Tempo); only the explicit
 // `scope=intrinsic` request emits the static intrinsic inventory.
 func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.StreamingQuerier_SearchTagsServer) error {
@@ -58,9 +65,9 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	start, end := tempoTagsBounds(req.GetStart(), req.GetEnd())
-	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, start, end)
+	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, tempo.TagsRouteV1, req.GetQuery(), start, end)
 	if err != nil {
-		return status.Error(codes.Internal, err.Error())
+		return grpcStatusFor(err)
 	}
 	var all []string
 	for _, b := range buckets {
@@ -83,7 +90,10 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 // upstream's tags-V2 combiner builds its scope list from the keys
 // storage actually reported, so an empty bucket never appears. The
 // intrinsic bucket is emitted on a `none` request (the default) and
-// on an explicit `scope=intrinsic`.
+// on an explicit `scope=intrinsic`. This is the route that honours a
+// non-empty request Query: it narrows every bucket to the keys carried
+// by the spans that TraceQL query selects — the gRPC spelling of the
+// HTTP `q` parameter.
 func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.StreamingQuerier_SearchTagsV2Server) error {
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
@@ -94,9 +104,9 @@ func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.St
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	start, end := tempoTagsBounds(req.GetStart(), req.GetEnd())
-	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, start, end)
+	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, tempo.TagsRouteV2, req.GetQuery(), start, end)
 	if err != nil {
-		return status.Error(codes.Internal, err.Error())
+		return grpcStatusFor(err)
 	}
 	scopes := make([]*tempopb.SearchTagsV2Scope, 0, len(buckets)+1)
 	for _, b := range buckets {

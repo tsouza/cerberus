@@ -55,8 +55,12 @@ const (
 	// nil error handed to the classifier, or anything with no recognised
 	// sentinel. The conservative default.
 	ErrClassInternal ErrClass = iota
-	// ErrClassParse is a malformed TraceQL query — the parser rejected the
-	// text the client sent.
+	// ErrClassParse is a query the endpoint cannot accept as written: the
+	// parser rejected the text the client sent, or the text parsed into a
+	// well-formed query of the wrong KIND for the endpoint it was sent to
+	// (a search expression posted to a metrics route —
+	// errNotMetricsPipeline). Upstream Tempo answers both with 400, and
+	// both are fixed the same way: send a different query.
 	ErrClassParse
 	// ErrClassLower is a well-formed TraceQL query cerberus cannot evaluate:
 	// a lowering rejection, or an unsupported operator combination. The
@@ -110,7 +114,8 @@ func ClassifyErr(err error) ErrClass {
 		errors.Is(err, chclient.ErrDrainBytesExceeded),
 		errors.Is(err, chclient.ErrMemoryLimitExceeded):
 		return ErrClassResourceExhausted
-	case errors.Is(err, errParseStage):
+	case errors.Is(err, errParseStage),
+		errors.Is(err, errNotMetricsPipeline):
 		return ErrClassParse
 	case errors.Is(err, errLowerStage):
 		return ErrClassLower

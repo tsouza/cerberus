@@ -98,15 +98,18 @@ func (h *Handler) execMetricsRange(
 // (wrapHistogramForSample) and label-name derivation
 // (histogramLabelNames) — see metrics_query_range_histogram.go.
 //
-// Both Tempo entrypoints that can reach a histogram plan — the HTTP
-// handler's serveMetricsQueryRangeHistogram and the gRPC
-// MetricsQueryRange RPC's ExecMetricsRange (grpc_exports.go) — call this
-// one function, so `| histogram_over_time(...)` behaves identically on
-// both transports. Before this, the gRPC path never checked
+// Every Tempo entrypoint that can reach a histogram plan calls this one
+// function through metricsPipelineRouter.Histogram, so
+// `| histogram_over_time(...)` behaves identically on all of them. Before
+// the shared router, three of the five never checked
 // unwrapMetricsHistogram at all and rejected every histogram_over_time
 // query as "not a TraceQL metrics-pipeline expression" — a real
-// transport-only divergence the compatibility/tempo gRPC differential
-// lane (#1453) caught on its first run.
+// entrypoint-only divergence (#1453 caught the gRPC-range half of it,
+// #1484 the remaining three).
+//
+// `shape` is the engine.Meta response-shape tag: the matrix tag for a
+// range request, the instant tag for the single-anchor collapse, so the
+// telemetry/corpus bucket names the request the caller actually made.
 func (h *Handler) execMetricsRangeHistogram(
 	ctx context.Context,
 	q string,
@@ -114,6 +117,7 @@ func (h *Handler) execMetricsRangeHistogram(
 	hist *chplan.MetricsHistogramOverTime,
 	start, end time.Time,
 	step time.Duration,
+	shape string,
 ) ([]MetricsSeries, map[string]string, error) {
 	rw := &chplan.RangeWindow{
 		Input:           plan,
@@ -127,13 +131,14 @@ func (h *Handler) execMetricsRangeHistogram(
 
 	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
-		ResponseShape: metricsMatrixShape,
+		ResponseShape: shape,
 	})
 	if qerr != nil {
 		return nil, nil, qerr
 	}
-	h.Logger.Debug("cerberus tempo metrics_query_range histogram",
-		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
+	h.Logger.Debug("cerberus tempo metrics histogram exec",
+		"traceql", telemetry.SanitizeForLog(q), "shape", shape,
+		"start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	normalizeHistogramBucketLabels(res.Samples)
@@ -261,4 +266,127 @@ func (h *Handler) attachMetricsExemplars(
 		return
 	}
 	attachExemplars(series, exSamples, metrics)
+}
+
+// metricsRangeRouter is the ONE range-shape evaluation both range
+// entrypoints run: the HTTP /api/metrics/query_range handler and the gRPC
+// MetricsQueryRange RPC. It implements metricsPipelineRouter, so the
+// per-kind branch exists exactly once and both transports reach the same
+// exec function for the same plan kind.
+//
+// The result lands on the struct rather than in the return value because
+// metricsPipelineRouter's methods return only an error — the two transports
+// encode the series differently (JSON envelope vs proto stream) but compute
+// them identically, which is precisely the split this router preserves.
+type metricsRangeRouter struct {
+	h          *Handler
+	q          string
+	pipeline   metricsPipeline
+	start, end time.Time
+	step       time.Duration
+
+	// Series / Headers carry the evaluated result out to the caller after
+	// metricsPipeline.Route returns nil.
+	Series  []MetricsSeries
+	Headers map[string]string
+}
+
+// newMetricsRangeRouter binds a classified pipeline to the range window it
+// is evaluated over.
+func (h *Handler) newMetricsRangeRouter(
+	q string, p metricsPipeline, start, end time.Time, step time.Duration,
+) *metricsRangeRouter {
+	return &metricsRangeRouter{h: h, q: q, pipeline: p, start: start, end: end, step: step}
+}
+
+func (r *metricsRangeRouter) Scalar(ctx context.Context, m *chplan.MetricsAggregate) error {
+	series, headers, err := r.h.execMetricsRange(
+		ctx, r.q, r.pipeline.Inner, r.pipeline.Stages, m, r.start, r.end, r.step,
+	)
+	return r.capture(series, headers, err)
+}
+
+func (r *metricsRangeRouter) Histogram(ctx context.Context, m *chplan.MetricsHistogramOverTime) error {
+	series, headers, err := r.h.execMetricsRangeHistogram(
+		ctx, r.q, r.pipeline.Inner, m, r.start, r.end, r.step, metricsMatrixShape,
+	)
+	return r.capture(series, headers, err)
+}
+
+func (r *metricsRangeRouter) Compare(ctx context.Context, m *chplan.MetricsCompare) error {
+	series, headers, err := r.h.execCompareRange(
+		ctx, r.q, r.pipeline.Inner, m, r.start, r.end, r.step, metricsMatrixShape,
+	)
+	return r.capture(series, headers, err)
+}
+
+func (r *metricsRangeRouter) capture(series []MetricsSeries, headers map[string]string, err error) error {
+	if err != nil {
+		return err
+	}
+	r.Series, r.Headers = series, headers
+	return nil
+}
+
+// metricsInstantRouter is the instant-shape counterpart: the ONE evaluation
+// both instant entrypoints run (HTTP /api/metrics/query and the gRPC
+// MetricsQueryInstant RPC).
+//
+// Every kind evaluates over the single anchor at `end` — see
+// execMetricsInstant's window comment for why Start == End is load-bearing
+// rather than incidental — and collapses to one (labels, scalar) tuple per
+// series, which is Tempo's translateQueryRangeToInstant semantics.
+type metricsInstantRouter struct {
+	h        *Handler
+	q        string
+	pipeline metricsPipeline
+	end      time.Time
+	step     time.Duration
+
+	Series  []MetricsInstantSeries
+	Headers map[string]string
+}
+
+// newMetricsInstantRouter binds a classified pipeline to the single-bucket
+// window ending at `end` (step = end - start, set by the caller).
+func (h *Handler) newMetricsInstantRouter(
+	q string, p metricsPipeline, end time.Time, step time.Duration,
+) *metricsInstantRouter {
+	return &metricsInstantRouter{h: h, q: q, pipeline: p, end: end, step: step}
+}
+
+func (r *metricsInstantRouter) Scalar(ctx context.Context, m *chplan.MetricsAggregate) error {
+	series, headers, err := r.h.execMetricsInstant(
+		ctx, r.q, r.pipeline.Inner, r.pipeline.Stages, m, r.end, r.step,
+	)
+	if err != nil {
+		return err
+	}
+	r.Series, r.Headers = series, headers
+	return nil
+}
+
+func (r *metricsInstantRouter) Histogram(ctx context.Context, m *chplan.MetricsHistogramOverTime) error {
+	series, headers, err := r.h.execMetricsRangeHistogram(
+		ctx, r.q, r.pipeline.Inner, m, r.end, r.end, r.step, metricsInstantShape,
+	)
+	return r.collapse(series, headers, err)
+}
+
+func (r *metricsInstantRouter) Compare(ctx context.Context, m *chplan.MetricsCompare) error {
+	series, headers, err := r.h.execCompareRange(
+		ctx, r.q, r.pipeline.Inner, m, r.end, r.end, r.step, metricsInstantShape,
+	)
+	return r.collapse(series, headers, err)
+}
+
+// collapse folds a matrix-shape result (the histogram and compare paths
+// have no instant-specific emitter — they run the same single-anchor window
+// and collapse afterwards) into the instant envelope.
+func (r *metricsInstantRouter) collapse(series []MetricsSeries, headers map[string]string, err error) error {
+	if err != nil {
+		return err
+	}
+	r.Series, r.Headers = metricsSeriesToInstant(series), headers
+	return nil
 }

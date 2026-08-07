@@ -471,6 +471,18 @@ func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error)
 	}
 }
 
+// setTagQuery sends a tag-name case's optional TraceQL query as the `q`
+// narrowing parameter. Both backends accept it on /api/search/tags and
+// /api/v2/search/tags, where it restricts the answer to the keys carried
+// by the spans the query selects; a case with no -- query -- section
+// sends no `q` at all and gets the unfiltered key set, which is what
+// every tag case did before the parameter was wired.
+func setTagQuery(q url.Values, tc CorpusCase) {
+	if tc.Query != "" {
+		q.Set("q", tc.Query)
+	}
+}
+
 // buildURL composes the per-endpoint URL for a corpus case. The
 // `backend` argument is purely for error messages.
 //
@@ -518,6 +530,7 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		u.Path += "/api/search/tags"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+		setTagQuery(q, tc)
 	case "tags_v2":
 		u.Path += "/api/v2/search/tags"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
@@ -525,6 +538,7 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		if tc.Scope != "" {
 			q.Set("scope", tc.Scope)
 		}
+		setTagQuery(q, tc)
 	case "tag_values_v1":
 		u.Path += "/api/search/tag/" + tc.TagName + "/values"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))

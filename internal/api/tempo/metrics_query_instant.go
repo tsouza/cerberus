@@ -2,7 +2,6 @@ package tempo
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -108,59 +107,25 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Second-stage transforms (`| topk(N)` / `| bottomk(N)` / `| > N`)
-	// wrap the aggregate — peel them off so the RangeWindow wraps the
-	// aggregate itself, then re-apply around the windowed result. The
-	// instant path passes no PartitionBy: a single anchor means a
-	// single global selection (`ORDER BY Value LIMIT K`), matching
-	// Tempo's translateQueryRangeToInstant collapse.
-	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
-	if !ok {
-		// `| compare({...}, topN)` follows its own post-processing path
-		// (the BaselineAggregator mirror); with a single anchor the
-		// per-series sample collapses to the InstantSeries.Value —
-		// translateQueryRangeToInstant semantics, same as the scalar ops.
-		if cmp, cok := unwrapMetricsCompare(inner); cok {
-			if len(stages) > 0 {
-				writeError(w, http.StatusUnprocessableEntity, "", "",
-					fmt.Errorf("traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", stages[0].Op))
-				return
-			}
-			// Start = End on purpose — see the RangeWindow comment below
-			// for why the instant anchor sits at `end` only.
-			series, headers, cerr := h.execCompareRange(ctx, q, plan, cmp, end, end, step)
-			if cerr != nil {
-				writeError(w, httpErrStatus(cerr), "", "", cerr)
-				return
-			}
-			writeEngineHeaders(w, headers)
-			writeJSON(w, http.StatusOK, MetricsQueryInstantResponse{
-				Series: compareSeriesToInstant(series),
-			})
-			return
-		}
-		writeError(w, http.StatusBadRequest, "", "",
-			fmt.Errorf("query %q is not a TraceQL metrics-pipeline expression — /api/metrics/query requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", q))
+	// wrap the metrics node — classifyMetricsPipeline peels them off so the
+	// RangeWindow wraps the node itself, and the router re-applies them
+	// around the windowed result. The instant path passes no PartitionBy:
+	// a single anchor means a single global selection (`ORDER BY Value
+	// LIMIT K`), matching Tempo's translateQueryRangeToInstant collapse.
+	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsInstantHTTP, q)
+	if cerr != nil {
+		writeError(w, httpErrStatus(cerr), "", "", cerr)
 		return
 	}
-	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
-		// Same boundary as handleMetricsQueryRange: quantiles fold from
-		// bucket rows Go-side, after SQL — a SQL-side rank/threshold
-		// would operate on bucket counts, not quantile values.
-		writeError(w, http.StatusUnprocessableEntity, "", "",
-			fmt.Errorf("traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", stages[0].Op))
+	router := h.newMetricsInstantRouter(q, pipeline, end, step)
+	if rerr := pipeline.Route(ctx, router); rerr != nil {
+		writeError(w, httpErrStatus(rerr), "", "", rerr)
 		return
 	}
 
-	series, headers, qerr := h.execMetricsInstant(ctx, q, inner, stages, metrics, end, step)
-	if qerr != nil {
-		writeError(w, httpErrStatus(qerr), "", "", qerr)
-		return
-	}
-
-	writeEngineHeaders(w, headers)
+	writeEngineHeaders(w, router.Headers)
 	writeJSON(w, http.StatusOK, MetricsQueryInstantResponse{
-		Series: series,
+		Series: router.Series,
 	})
 }
 

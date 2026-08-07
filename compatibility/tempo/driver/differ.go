@@ -595,8 +595,9 @@ func assertTraceSearchCase(tc CorpusCase, body []byte, backendLabel string) ([]D
 
 // assertTagsCase applies the tag-endpoint assertions: min/max list
 // cardinality, expected-values subset (every value in tc.ExpectedValues
-// must appear in the response), and (for tags_v2) expected-scopes
-// subset.
+// must appear in the response), expected-absent-values disjointness
+// (nothing in tc.ExpectedAbsentValues may appear — the strict-subset
+// half of a `q`-scoped case), and (for tags_v2) expected-scopes subset.
 func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
 	v2 := tc.Endpoint == "tags_v2"
 	tagNames, scopeNames, err := decodeTagNames(body, v2)
@@ -623,6 +624,18 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 				reasons = append(reasons, DiffReason{
 					Kind:   "assertion",
 					Detail: fmt.Sprintf("%s: expected tag name %q in response", backendLabel, want),
+				})
+			}
+		}
+	}
+	if len(tc.ExpectedAbsentValues) > 0 {
+		seen := stringSet(tagNames)
+		for _, unwanted := range tc.ExpectedAbsentValues {
+			if seen[unwanted] {
+				reasons = append(reasons, DiffReason{
+					Kind: "assertion",
+					Detail: fmt.Sprintf("%s: tag name %q must be absent from the response (q=%q)",
+						backendLabel, unwanted, tc.Query),
 				})
 			}
 		}

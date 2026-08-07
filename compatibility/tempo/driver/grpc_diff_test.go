@@ -246,7 +246,8 @@ func TestFetchGRPCTagsV1(t *testing.T) {
 		{TagNames: []string{"a"}},
 		{TagNames: []string{"b", "c"}},
 	}}
-	body, err := fetchGRPCTagsV1(context.Background(), client, testOpts())
+	tc := CorpusCase{Endpoint: "tags_v1", Query: `{ span.http.method = "GET" }`}
+	body, err := fetchGRPCTagsV1(context.Background(), client, tc, testOpts())
 	if err != nil {
 		t.Fatalf("fetchGRPCTagsV1: %v", err)
 	}
@@ -256,15 +257,22 @@ func TestFetchGRPCTagsV1(t *testing.T) {
 	if client.tagsReq.Start != 1_700_000_000 || client.tagsReq.End != 1_700_003_600 {
 		t.Fatalf("window not wired: %+v", client.tagsReq)
 	}
+	// The RPC is driven with the case's query even though V1 ignores it.
+	// A backend that started narrowing on V1 has to fail the corpus case
+	// over gRPC as well as over HTTP, and it cannot if the parameter never
+	// leaves the harness.
+	if client.tagsReq.Query != tc.Query {
+		t.Fatalf("Query = %q, want the corpus case's query", client.tagsReq.Query)
+	}
 }
 
-func TestFetchGRPCTagsV2_CarriesScope(t *testing.T) {
+func TestFetchGRPCTagsV2_CarriesScopeAndQuery(t *testing.T) {
 	t.Parallel()
 	client := &fakeQuerier{tagsV2Frames: []*tempopb.SearchTagsV2Response{
 		{Scopes: []*tempopb.SearchTagsV2Scope{{Name: "resource", Tags: []string{"service.name"}}}},
 		{Scopes: []*tempopb.SearchTagsV2Scope{{Name: "span", Tags: []string{"http.method"}}}},
 	}}
-	tc := CorpusCase{Endpoint: "tags_v2", Scope: "resource"}
+	tc := CorpusCase{Endpoint: "tags_v2", Scope: "resource", Query: `{ span.http.method = "GET" }`}
 	body, err := fetchGRPCTagsV2(context.Background(), client, tc, testOpts())
 	if err != nil {
 		t.Fatalf("fetchGRPCTagsV2: %v", err)
@@ -274,6 +282,12 @@ func TestFetchGRPCTagsV2_CarriesScope(t *testing.T) {
 	}
 	if client.tagsV2Req.Scope != "resource" {
 		t.Fatalf("Scope = %q, want the corpus case's scope", client.tagsV2Req.Scope)
+	}
+	// V2 is the route that narrows, so the query must reach the RPC —
+	// without it the case is graded against the wide answer and the
+	// corpus's absent-key assertion fires on every backend.
+	if client.tagsV2Req.Query != tc.Query {
+		t.Fatalf("Query = %q, want the corpus case's query", client.tagsV2Req.Query)
 	}
 }
 

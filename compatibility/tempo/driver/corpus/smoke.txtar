@@ -703,6 +703,59 @@ http.method
 -- expected_scopes --
 span
 
+# --- `q`-scoped tag-name discovery ---
+# The `q` TraceQL filter (Grafana's autocomplete sends it as the user
+# types) belongs to the V2 tag-name route. Upstream's API reference lists
+# it under "Search tags V2" only, and the V1 route drops it rather than
+# rejecting it — LiveStore.SearchTags forwards nothing but the scope into
+# SearchTagsV2, so the query is empty by the time the blocks are read.
+# The pair below pins both halves of that asymmetry against one seeding.
+#
+# The seeder's span attributes are disjoint by span role — root spans
+# carry http.method / http.target / trace.index, children carry
+# child.index / kind — so `{ span.http.method = "GET" }` selects roots
+# only, and the child-only keys are what tell a honoured `q` from an
+# ignored one. V2 must not answer with them; V1 must.
+
+-- name --
+tags_v1_scoped_by_query
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+# child.index and kind are carried only by the child spans this query
+# does not select. Requiring them is the assertion that V1 left `q` alone
+# and answered the whole window, which is what upstream does.
+-- expected_values --
+http.method
+http.target
+child.index
+kind
+
+-- name --
+tags_v2_span_scoped_by_query
+-- endpoint --
+tags_v2
+-- scope --
+span
+-- query --
+{ span.http.method = "GET" }
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+http.method
+http.target
+-- expected_absent_values --
+child.index
+-- expected_scopes --
+span
+
 -- name --
 tags_v2_intrinsic
 -- endpoint --
