@@ -10,7 +10,7 @@
 # `__error_details__` labels a malformed payload should carry) shipped
 # through.
 #
-# Both queries below target `{service_name="packed-source"}`, the one
+# Every query below targets `{service_name="packed-source"}`, the one
 # seeded stream (compatibility/loki/cmd/seed/main.go's
 # generatePackedLine) whose lines cycle through the four payload
 # shapes `| unpack` must discriminate: a well-formed packed object
@@ -22,12 +22,16 @@
 # silently a no-op end-to-end (see internal/logql/lower.go's
 # dynamicLabels gate and internal/api/loki/post_process.go's
 # newLabelFilterStep for the fix) — the two `kind: log` cases below
-# cover it. A `kind: metric` case grouping by an unpack-extracted label
-# (`sum by (category) (count_over_time(... | unpack ...))`) is
-# deliberately NOT included here: that's a separate, wider gap (metric
-# queries have no Go-side post-processing pass to hook a fix into —
-# see #1652) and would gate the required `compatibility/loki` check on
-# a fix this PR doesn't make.
+# cover it.
+#
+# The `kind: metric` case groups by `category`, a label that exists only
+# on the packed payloads `| unpack` successfully opens. It is the arm
+# that pins the extraction in SQL rather than in Go: a metric query
+# aggregates inside ClickHouse and never reaches a per-row Go pass, so
+# `sum by (category)` returns the packed categories only when the label
+# map the GROUP BY reads was built by the lowering itself. Where the log
+# arms would still pass with the labels reconstructed after the rows
+# return, this one cannot.
 queries:
   - description: unpack happy path - only successfully unpacked lines
     query: '{service_name="packed-source"} | unpack | __error__=""'
@@ -48,3 +52,14 @@ queries:
     tags:
       - unpack
       - error-path
+
+  - description: metric query grouped by an unpack-extracted label
+    query: sum by (category) (count_over_time({service_name="packed-source"} | unpack | __error__="" [24h]))
+    kind: metric
+    time_range:
+      length: 24h
+      step: 1h
+    tags:
+      - unpack
+      - metric
+      - grouping

@@ -122,10 +122,8 @@ func TestCheckExpansion(t *testing.T) {
 // cases with those eight silently absent; the vendored-only total was
 // 86. loadCerberusQueries (issue #1611) then merges in
 // cerberus-queries/regression/unpack.yaml's 2 `directions: both` log
-// query definitions (2 cases each) — a metric-mode third case was
-// deliberately left out (issue #1652: metric-mode grouping/filtering
-// by an unpack-extracted label is a separate, unfixed gap) — for a
-// total of 90. cerberus-queries/regression/structured-metadata-generic.yaml
+// query definitions (2 cases each) — for a total of 90.
+// cerberus-queries/regression/structured-metadata-generic.yaml
 // (issue #1498) then adds a 5th definition set: one `directions: both`
 // log query (2 cases) plus TWO `directions: backward` log queries — the
 // structured-metadata key absent and present (1 case each; the
@@ -135,7 +133,10 @@ func TestCheckExpansion(t *testing.T) {
 // cerberus-queries/regression/anchored-regex-matcher.yaml (issue #1741)
 // then adds a 6th definition set: one `directions: both` log query (2
 // cases) plus one `directions: backward` log query (1 case) — for +3,
-// a total of 98.
+// a total of 98. unpack.yaml's metric-mode case (issue #1652) — `sum by
+// (category)` over `| unpack`, the arm that only passes when the label
+// map the GROUP BY reads is built in SQL — contributes one forward
+// metric case, for a total of 99.
 func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	t.Parallel()
 	f := flags{
@@ -148,8 +149,8 @@ func TestLoadCases_FullCorpusExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadCases: %v", err)
 	}
-	if len(cases) != 98 {
-		t.Fatalf("corpus expanded to %d cases, want 98", len(cases))
+	if len(cases) != 99 {
+		t.Fatalf("corpus expanded to %d cases, want 99", len(cases))
 	}
 
 	revived := []string{
