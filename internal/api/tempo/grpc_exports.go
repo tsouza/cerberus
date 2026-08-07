@@ -63,8 +63,23 @@ func ParseTagScope(raw string) (string, error) {
 // returns the non-empty ones. Exported so the gRPC tag services build
 // their scope partition from the exact same buckets the HTTP V1 / V2
 // envelopes do — the two surfaces cannot drift on which scopes exist.
-func (h *Handler) CollectAttributeTagScopes(ctx context.Context, scope string, start, end time.Time) ([]TagScope, error) {
-	return h.collectAttributeTagScopes(ctx, scope, start, end)
+//
+// query is the caller's optional TraceQL narrowing filter — the `q`
+// URL parameter on the HTTP routes, SearchTagsRequest.Query over gRPC.
+// It goes through the same parse + lower + predicate extraction the
+// HTTP routes use (tagQueryFilter), so the two surfaces cannot drift on
+// which spans a `q` selects either. Empty means no narrowing, and the
+// lookups render exactly the SQL they did before `q` existed. A `q`
+// that cannot be parsed, lowered, or reduced to a span-row predicate
+// comes back as a classified error (ClassifyErr → InvalidArgument).
+func (h *Handler) CollectAttributeTagScopes(
+	ctx context.Context, scope, query string, start, end time.Time,
+) ([]TagScope, error) {
+	filter, err := h.tagQueryFilter(ctx, query, start, end)
+	if err != nil {
+		return nil, err
+	}
+	return h.collectAttributeTagScopes(ctx, scope, filter, start, end)
 }
 
 // SortedUnique returns the de-duplicated, lexicographically sorted

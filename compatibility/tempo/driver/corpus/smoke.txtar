@@ -703,6 +703,53 @@ http.method
 -- expected_scopes --
 span
 
+# --- `q`-scoped tag-name discovery ---
+# The tag-name routes take an optional `q` TraceQL filter (Grafana's
+# autocomplete sends it as the user types) and must answer only the keys
+# the selected spans carry. The seeder's span attributes are disjoint by
+# span role — root spans carry http.method / http.target / trace.index,
+# children carry child.index / kind — so `{ span.http.method = "GET" }`
+# selects roots only and its key set is a STRICT subset of the unscoped
+# one. expected_absent_values is what makes it strict: without it the
+# case would pass just as well against a backend that ignored `q`
+# outright, since every expected_values key is in the wider answer too.
+
+-- name --
+tags_v1_scoped_by_query
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+http.method
+http.target
+-- expected_absent_values --
+child.index
+
+-- name --
+tags_v2_span_scoped_by_query
+-- endpoint --
+tags_v2
+-- scope --
+span
+-- query --
+{ span.http.method = "GET" }
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+http.method
+http.target
+-- expected_absent_values --
+child.index
+-- expected_scopes --
+span
+
 -- name --
 tags_v2_intrinsic
 -- endpoint --

@@ -753,3 +753,41 @@ func TestCompare_SpanSets_CompleteSetsDiffPerSpan(t *testing.T) {
 		t.Fatalf("durationNanos divergence must diff, got Equal")
 	}
 }
+
+// TestAssertCase_TagsAbsentValues is the strict-subset assertion's own
+// test: a key listed in expected_absent_values that shows up in the
+// answer is a failure, and one that stays away is not. Without this the
+// `q`-scoped corpus cases would be graded by an assertion nothing pins.
+func TestAssertCase_TagsAbsentValues(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:                 "x",
+		Endpoint:             "tags_v1",
+		Query:                `{ span.http.method = "GET" }`,
+		ExpectedValues:       []string{"http.method"},
+		ExpectedAbsentValues: []string{"child.index"},
+	}
+
+	scoped := []byte(`{"tagNames":["http.method","http.target"]}`)
+	reasons, err := AssertCase(tc, scoped, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (scoped): %v", err)
+	}
+	if len(reasons) != 0 {
+		t.Fatalf("scoped answer should pass, got %+v", reasons)
+	}
+
+	// The same case against a backend that ignored `q` and answered the
+	// window-wide key set: the absent key is present, so it must fail.
+	unscoped := []byte(`{"tagNames":["child.index","http.method","http.target"]}`)
+	reasons, err = AssertCase(tc, unscoped, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (unscoped): %v", err)
+	}
+	if len(reasons) != 1 {
+		t.Fatalf("unscoped answer should fail on the absent key, got %+v", reasons)
+	}
+	if !strings.Contains(reasons[0].Detail, "child.index") {
+		t.Errorf("reason does not name the leaked key: %s", reasons[0].Detail)
+	}
+}

@@ -488,3 +488,70 @@ search
 		t.Fatal("expect_status combined with a body-shape assertion should fail — the status-parity path never parses the body, so expected_min_traces would silently never run")
 	}
 }
+
+// TestParseCorpus_TagsQueryNeedsAbsentValues pins the two guards that
+// keep a `q`-scoped tag case honest: the narrowing assertion may only
+// sit on an endpoint that reads it, and a tag-name case that sends `q`
+// must carry one — otherwise it passes identically against a backend
+// that drops the parameter, which is the very bug it exists to catch.
+func TestParseCorpus_TagsQueryNeedsAbsentValues(t *testing.T) {
+	t.Parallel()
+	for name, src := range map[string]string{
+		"query without absent values": `-- name --
+q_no_absent
+-- endpoint --
+tags_v2
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+`,
+		"absent values on a non-tags endpoint": `-- name --
+absent_on_search
+-- endpoint --
+search
+-- query --
+{ span.http.method = "GET" }
+-- expected_absent_values --
+child.index
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := parseCorpus(strings.NewReader(src), "t.txtar"); err == nil {
+				t.Fatal("want a parse error, got nil")
+			}
+		})
+	}
+}
+
+// TestParseCorpus_TagsQueryWithAbsentValues is the positive control for
+// the guards above: the shape the corpus actually uses parses, and both
+// halves land on the case.
+func TestParseCorpus_TagsQueryWithAbsentValues(t *testing.T) {
+	t.Parallel()
+	const src = `-- name --
+q_scoped
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+-- expected_absent_values --
+child.index
+`
+	got, err := parseCorpus(strings.NewReader(src), "t.txtar")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("case count: want 1, got %d", len(got))
+	}
+	if got[0].Query != `{ span.http.method = "GET" }` {
+		t.Errorf("query = %q", got[0].Query)
+	}
+	if len(got[0].ExpectedAbsentValues) != 1 || got[0].ExpectedAbsentValues[0] != "child.index" {
+		t.Errorf("expected_absent_values = %v", got[0].ExpectedAbsentValues)
+	}
+}
