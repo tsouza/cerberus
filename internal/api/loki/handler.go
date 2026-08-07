@@ -924,7 +924,7 @@ func toMatrixStepGrid(samples []chclient.Sample, start, end time.Time, _ time.Du
 // applyLineTransform runs tx over every row, keeping only the ones tx
 // keeps (a *syntax.LabelFilterExpr step — see newLabelFilterStep — can
 // drop a row once its label filter no longer matches the labels
-// unpackStep/newPatternStep just computed). Returns a NEW slice with
+// newPatternStep just computed). Returns a NEW slice with
 // each surviving row's Line/Labels replaced by tx's output; nil tx is
 // the identity (rows returned unchanged, same length).
 //

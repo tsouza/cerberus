@@ -271,8 +271,17 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	if levelValue := detectedLevelIdentityExpr(s, expr); levelValue != nil {
 		attrsExpr = withDetectedLevel(s, attrsExpr, levelValue)
 	}
+	// `| unpack` replaces the line with the payload's `_entry` member, and
+	// it does so in SQL alongside the labels it extracts from the same
+	// payload (see [PipelineLineExpr]). Projecting the bare body column
+	// here would hand callers the packed JSON under labels that describe
+	// its contents.
+	lineExpr := chplan.Expr(&chplan.ColumnRef{Name: s.BodyColumn})
+	if rewritten, err := PipelineLineExpr(expr, s); err == nil && rewritten != nil {
+		lineExpr = rewritten
+	}
 	projections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.BodyColumn}, Alias: LogLineColumn},
+		{Expr: lineExpr, Alias: LogLineColumn},
 		{Expr: attrsExpr, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
 		// LitFloat is wrapped centrally in toFloat64(?) by

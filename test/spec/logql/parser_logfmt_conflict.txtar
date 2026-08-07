@@ -19,23 +19,33 @@ INSERT INTO otel_logs (Body) VALUES
 [0] string = "level"
 [1] string = "error"
 [2] string = "_extracted"
-[3] string = "="
-[4] string = " "
-[5] string = "\""
-[6] string = "level_extracted"
-[7] string = "_extracted"
-[8] string = "="
-[9] string = " "
-[10] string = "\""
+[3] int64 = 1
+[4] int64 = 1
+[5] string = "="
+[6] string = " "
+[7] string = "\""
+[8] string = "Array(Tuple(String,String))"
+[9] string = "Array(Tuple(String,String))"
+[10] string = "Map(String,String)"
 [11] string = "level_extracted"
-[12] string = "level_extracted"
-[13] string = "level_extracted"
-[14] string = "level.extracted"
-[15] string = "level.extracted"
-[16] string = "level/extracted"
-[17] string = "warn"
+[12] string = "_extracted"
+[13] int64 = 1
+[14] int64 = 1
+[15] string = "="
+[16] string = " "
+[17] string = "\""
+[18] string = "Array(Tuple(String,String))"
+[19] string = "Array(Tuple(String,String))"
+[20] string = "Map(String,String)"
+[21] string = "level_extracted"
+[22] string = "level_extracted"
+[23] string = "level_extracted"
+[24] string = "level.extracted"
+[25] string = "level.extracted"
+[26] string = "level/extracted"
+[27] string = "warn"
 -- chplan --
-Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "level_extracted"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], if(mapContains(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
+Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "level_extracted"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], if(mapContains(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)

@@ -127,13 +127,16 @@
       "site": "internal/logql/range_aggregation.go:rangeValueExprFromMerged#3d7b48c7",
       "message": "logql: rangeValueExprFromMerged called without `| unwrap`",
       "class": "internal",
-      "rationale": "internal invariant: the caller routes only unwrap-carrying range aggregations here",
+      "rationale": "internal invariant: unwrapSeriesIdentity is entered only under e.Left.Unwrap != nil, so no unwrap-free range aggregation reaches here",
       "evidence": {
         "guard": [
           "if e.Left.Unwrap == nil"
         ],
         "callers": [
-          "lowerRangeAggregation"
+          "unwrapSeriesIdentity"
+        ],
+        "cited": [
+          "unwrapSeriesIdentity"
         ]
       }
     },

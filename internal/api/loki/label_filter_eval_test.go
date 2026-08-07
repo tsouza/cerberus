@@ -6,76 +6,14 @@ import (
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 )
 
-// TestPostProcess_UnpackThenErrorLabelFilter_DropsMismatches pins the
-// fix for the loki-unpack-corpus-coverage compat gap (#1611): a
-// `| __error__=""` filter following `| unpack` used to have zero
-// effect end-to-end (the lowering pushed a SQL predicate that
-// silently matched everything — see internal/logql/lower.go's
-// dynamicLabels gate). It must now actually drop rows whose unpacked
-// payload errored.
-func TestPostProcess_UnpackThenErrorLabelFilter_DropsMismatches(t *testing.T) {
-	t.Parallel()
-
-	expr, err := syntax.ParseExpr(`{job="api"} | unpack | __error__=""`)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	tx, err := postProcessExtract(expr)
-	if err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-	if tx == nil {
-		t.Fatalf("expected non-nil transform")
-	}
-
-	// A well-formed packed payload: keep.
-	_, _, keep := tx(`{"_entry":"hello","category":"auth"}`, 0, map[string]string{"job": "api"})
-	if !keep {
-		t.Errorf("expected a well-formed packed line to be kept")
-	}
-
-	// Not a JSON object at all: unpack stamps __error__="JSONParserErr",
-	// so `__error__=""` must drop it.
-	_, _, keep = tx(`["not","an","object"]`, 0, map[string]string{"job": "api"})
-	if keep {
-		t.Errorf("expected a non-object payload to be dropped by __error__=\"\"")
-	}
-
-	// Malformed JSON: same story.
-	_, _, keep = tx(`{"_entry":"truncated`, 0, map[string]string{"job": "api"})
-	if keep {
-		t.Errorf("expected a malformed payload to be dropped by __error__=\"\"")
-	}
-}
-
-// TestPostProcess_UnpackThenErrorLabelFilter_KeepsOnlyErrors is the
-// mirror image: `| __error__="JSONParserErr"` must keep ONLY the rows
-// unpack rejected — previously it matched none, end-to-end.
-func TestPostProcess_UnpackThenErrorLabelFilter_KeepsOnlyErrors(t *testing.T) {
-	t.Parallel()
-
-	expr, err := syntax.ParseExpr(`{job="api"} | unpack | __error__="JSONParserErr"`)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	tx, err := postProcessExtract(expr)
-	if err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-
-	_, _, keep := tx(`{"_entry":"hello","category":"auth"}`, 0, map[string]string{"job": "api"})
-	if keep {
-		t.Errorf("expected a well-formed packed line to be dropped")
-	}
-
-	_, labels, keep := tx(`["not","an","object"]`, 0, map[string]string{"job": "api"})
-	if !keep {
-		t.Errorf("expected a non-object payload to be kept")
-	}
-	if labels[syntax.ErrorLabel] != "JSONParserErr" {
-		t.Errorf("expected __error__=JSONParserErr, got %q", labels[syntax.ErrorLabel])
-	}
-}
+// The `| unpack` + `__error__` filter behaviour these tests used to
+// pin (the loki-unpack-corpus-coverage compat gap, #1611) now lives
+// entirely in SQL: the lowering models unpack's extraction and its
+// error markers, so the filter is a real predicate over the extracted
+// labels map rather than a Go-side re-evaluation.
+// test/spec/logql/unpack_error_filter.txtar pins it end to end against
+// chDB, over a seed carrying a well-formed packed payload, a non-object
+// payload and a malformed one.
 
 // TestPostProcess_OrdinaryLabelFilterAfterUnpack_StillPushedToSQL pins
 // that only the __error__ family is re-evaluated in Go — an ordinary
@@ -96,7 +34,7 @@ func TestPostProcess_OrdinaryLabelFilterAfterUnpack_StillPushedToSQL(t *testing.
 		t.Fatalf("extract: %v", err)
 	}
 	if tx == nil {
-		t.Fatalf("expected a non-nil transform (unpackStep itself still runs)")
+		t.Fatalf("expected a non-nil transform (unpackParseDetailStep itself still runs)")
 	}
 
 	// A row that would fail `level="error"` still comes through kept —

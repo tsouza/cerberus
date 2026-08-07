@@ -1,28 +1,38 @@
 -- query.logql --
 {job="api"} | logfmt level="severity" | level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`, ?, ?, ?)[?]))[?], `LogAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?]))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "level"
 [3] string = "level_extracted"
 [4] string = "level"
-[5] string = "="
-[6] string = " "
-[7] string = "\""
-[8] string = "severity"
-[9] string = "level"
-[10] string = "level"
-[11] string = "level_extracted"
-[12] string = "level"
-[13] string = "="
-[14] string = " "
-[15] string = "\""
-[16] string = "severity"
+[5] int64 = 1
+[6] int64 = 1
+[7] string = "="
+[8] string = " "
+[9] string = "\""
+[10] string = "Array(Tuple(String,String))"
+[11] string = "Array(Tuple(String,String))"
+[12] string = "Map(String,String)"
+[13] string = "severity"
+[14] string = "level"
+[15] string = "level"
+[16] string = "level_extracted"
 [17] string = "level"
-[18] string = "level"
-[19] string = "error"
+[18] int64 = 1
+[19] int64 = 1
+[20] string = "="
+[21] string = " "
+[22] string = "\""
+[23] string = "Array(Tuple(String,String))"
+[24] string = "Array(Tuple(String,String))"
+[25] string = "Map(String,String)"
+[26] string = "severity"
+[27] string = "level"
+[28] string = "level"
+[29] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
@@ -39,5 +49,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2025-01-01 severity=error msg=\"retry\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"])), "level"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), extractKeyValuePairs(Body, "=", " ", "\"")["severity"]))["level"], LogAttributes["level"]) = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")["severity"])), "level"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")["severity"]))["level"], LogAttributes["level"]) = "error"))
   Scan(otel_logs)

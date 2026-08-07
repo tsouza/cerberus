@@ -882,8 +882,8 @@
       ]
     },
     "loki": {
-      "passed": 212,
-      "total": 212,
+      "passed": 213,
+      "total": 213,
       "cases": [
         "cerberus/status-parity | status_parity | range | n/a |  | missing query parameter on /query_range",
         "cerberus/status-parity | status_parity | range | n/a | { | syntactically invalid LogQL (unbalanced selector) on /query_range",
@@ -1096,7 +1096,8 @@
         "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines",
         "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected",
         "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines",
-        "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected"
+        "regression/unpack.yaml | log | range | FORWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected",
+        "regression/unpack.yaml | metric | range | FORWARD | sum by (category) (count_over_time({service_name=\"packed-source\"} | unpack | __error__=\"\" [24h])) | step=1h0m0s | metric query grouped by an unpack-extracted label"
       ]
     },
     "tempo": {

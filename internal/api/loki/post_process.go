@@ -2,7 +2,6 @@ package loki
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"regexp"
 	"text/template"
@@ -29,12 +28,11 @@ import (
 //     template-set labels on the row. Subsequent line_format stages
 //     see the updated label map; the streams response groups rows by
 //     the final (post-format) label set.
-//   - `| unpack` — parses the line as a JSON object emitted by
-//     Promtail's `pack` stage. The special `_entry` key replaces the
-//     line with the original payload, and the remaining string-valued
-//     keys are merged into the labels map — but only if `_entry` was
-//     present. A payload that is not a JSON object, or that fails to
-//     parse, stamps the `__error__` / `__error_details__` pair.
+//   - `| unpack` — only the `__error_details__` text for a `{`-prefixed
+//     payload the Go JSON reader rejects (see [unpackParseDetailStep]).
+//     The stage's labels, its `_entry` line replacement and its
+//     `__error__` marker are all computed in SQL by the lowering's
+//     unpackMergeLabels / unpackLineExpr.
 //   - `| pattern "<ip> <_> <method> <path>"` — matches the line against
 //     a Loki pattern expression and adds each named capture to the
 //     labels map. `<_>` skips a segment.
@@ -58,14 +56,14 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 
 	var steps []lineTransform
 	// dynamicLabels mirrors internal/logql/lower.go's
-	// lowerPipelineWithLabels gate: once a `| unpack` / `| pattern`
-	// stage runs, the lowering skips SQL predicate generation for any
-	// downstream LabelFilterExpr that tests the `__error__` /
-	// `__error_details__` family specifically (see that function's doc
-	// comment for why — the structured-metadata SQL fallback used for
-	// ordinary label names is actively wrong for these two magic keys).
-	// Such filters have to be applied here instead, once the dynamic
-	// stage's own step has actually computed them.
+	// lowerPipelineWithLabels gate: once a `| pattern` stage runs, the
+	// lowering skips SQL predicate generation for any downstream
+	// LabelFilterExpr that tests the `__error__` / `__error_details__`
+	// family specifically (see that function's doc comment for why — the
+	// structured-metadata SQL fallback used for ordinary label names is
+	// actively wrong for these two magic keys). Such filters have to be
+	// applied here instead, once the dynamic stage's own step has
+	// actually computed them.
 	dynamicLabels := false
 	for _, st := range pipe.MultiStages {
 		switch v := st.(type) {
@@ -86,8 +84,7 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 		case *syntax.LineParserExpr:
 			switch v.Op {
 			case syntax.OpParserTypeUnpack:
-				steps = append(steps, unpackStep)
-				dynamicLabels = true
+				steps = append(steps, unpackParseDetailStep)
 			case syntax.OpParserTypePattern:
 				step, err := newPatternStep(v.Param)
 				if err != nil {
@@ -127,13 +124,13 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 }
 
 // newLabelFilterStep builds the Go-side transform for a `| label op
-// value` filter that follows a `| unpack` / `| pattern` stage (see
+// value` filter that follows a `| pattern` stage (see
 // postProcessExtract's dynamicLabels gate). internal/logql/lower.go's
 // lowerPipelineWithLabels skips SQL lowering for these filters
 // entirely — the labels they test may only exist once the preceding
-// dynamic stage's own step (unpackStep / newPatternStep's closure,
-// which run earlier in the same composed pipeline) has produced them
-// — so this is the only place they're actually evaluated.
+// dynamic stage's own step (newPatternStep's closure, which runs
+// earlier in the same composed pipeline) has produced them — so this
+// is the only place they're actually evaluated.
 //
 // Returns keep == false to drop the row; [composeTransforms]
 // short-circuits the remaining steps when that happens.
@@ -341,103 +338,60 @@ func newLabelFormatStep(formats []syntax.LabelFmt) (lineTransform, error) {
 	}, nil
 }
 
-// errUnexpectedJSONObject reproduces Loki's sentinel byte for byte. The
-// text reaches callers through `__error_details__`, so it is part of the
-// wire contract rather than an internal diagnostic: upstream builds it as
-// `fmt.Errorf("expecting json object(%d), but it is not", jsoniter.ObjectValue)`
-// and json-iterator's ObjectValue ordinal is 6.
-var errUnexpectedJSONObject = errors.New("expecting json object(6), but it is not")
-
-// jsonParserErr is the `__error__` value Loki stamps for every failure of
-// a JSON-family parser stage, `| unpack` included.
-const jsonParserErr = "JSONParserErr"
-
-// unpackStep implements `| unpack`. The line is expected to be a JSON
-// object emitted by Promtail's `pack` stage: each string-valued key
-// becomes a label, and the special `_entry` key replaces the line.
+// unpackParseDetailStep supplies the one part of `| unpack` that cannot
+// be computed in SQL: the `__error_details__` text for a `{`-prefixed
+// payload the Go JSON reader rejects.
 //
-// Three rules here are easy to get backwards, and all three are what
-// Loki's UnpackParser actually does (pkg/logql/log/parser.go):
+// Everything else about the stage — which members become labels, the
+// `_entry` gate that arms the extraction, the `_entry` line replacement,
+// and the `__error__` marker itself — is modelled in the lowering
+// (internal/logql/lower.go's unpackMergeLabels / unpackLineExpr), so it
+// reaches metric-mode aggregation, which never runs a Go-side pass at
+// all. This step deliberately does NOT recompute any of it: a second
+// answer to "what does unpack extract" is exactly how the SQL side and
+// the Go side drifted apart in the first place.
 //
-//   - A payload that is not a JSON object, or one that fails to parse,
-//     is an ERROR, not a silent pass-through. Loki stamps
-//     `__error__="JSONParserErr"` plus an `__error_details__` message and
-//     returns the ORIGINAL line. Swallowing it inverts the meaning of a
-//     `| __error__=""` filter, which is the usual way callers ask for
-//     "only lines that parsed" (issue #1447).
-//   - Labels are collected into a buffer and flushed only if a top-level
-//     string `_entry` key was found. A well-formed object without one is
-//     a complete no-op: original line, and NO extracted labels.
-//   - Non-string values (numbers, booleans, arrays, nested objects) are
-//     skipped, and an empty line is not an error.
+// The detail text is buger/jsonparser's own parse-position message —
+// `{"a":"b"` yields "Value is array, but can't find closing ']' symbol",
+// `{` yields "Malformed JSON error" — so it is a property of that
+// reader's state machine rather than of the input, and no ClickHouse
+// expression derives it. The SQL side stamps `__error__` for the same
+// row and leaves the detail empty; this step fills it in on the paths
+// that have a per-row Go pass.
 //
 // Returns a FRESH labels map so callers can treat the input as
 // immutable, consistent with newLabelFormatStep.
-func unpackStep(line string, _ int64, labels map[string]string) (string, map[string]string, bool) {
-	if len(line) == 0 {
+func unpackParseDetailStep(line string, _ int64, labels map[string]string) (string, map[string]string, bool) {
+	if labels[syntax.ErrorLabel] != logql.JSONParserErrValue || labels[syntax.ErrorDetailsLabel] != "" {
 		return line, labels, true
 	}
-	if line[0] != '{' {
-		return line, withParserError(labels, errUnexpectedJSONObject), true
-	}
-
-	// Buffered as alternating key/value pairs so nothing is committed
-	// before the `_entry` gate below, matching upstream's lbsBuffer.
-	var buf []string
-	newLine := line
-	isPacked := false
 	err := jsonparser.ObjectEach([]byte(line),
-		func(key, value []byte, typ jsonparser.ValueType, _ int) error {
-			if typ != jsonparser.String {
-				return nil
-			}
-			k := string(key)
-			if k == syntax.PackedEntryKey {
-				var stackbuf [unescapeStackBufSize]byte
-				unescaped, uerr := jsonparser.Unescape(value, stackbuf[:])
-				if uerr != nil {
-					return uerr
-				}
-				newLine = string(unescaped)
-				isPacked = true
-				return nil
-			}
-			// Don't shadow a stream label — Loki appends a duplicate
-			// suffix to the RAW key, then sanitises the result.
-			if _, ok := labels[k]; ok {
-				k += duplicateSuffix
-			}
-			buf = append(buf, sanitizeLabelKey(k), unescapeJSONString(value))
-			return nil
-		})
-	if err != nil {
-		return line, withParserError(labels, err), true
+		func(_, _ []byte, _ jsonparser.ValueType, _ int) error { return nil })
+	if err == nil {
+		// ClickHouse's isValidJSON is stricter than jsonparser — it
+		// rejects a trailing comma that jsonparser accepts — so the SQL
+		// side can mark a row this reader parses happily. Upstream's
+		// verdict is this reader's, so the marker comes back off.
+		return line, withoutParserError(labels), true
 	}
-	if !isPacked {
-		return line, labels, true
-	}
-
-	out := make(map[string]string, len(labels)+len(buf)/2)
+	out := make(map[string]string, len(labels))
 	for k, v := range labels {
 		out[k] = v
 	}
-	for i := 0; i < len(buf); i += 2 {
-		out[buf[i]] = buf[i+1]
-	}
-	return newLine, out, true
+	out[syntax.ErrorDetailsLabel] = err.Error()
+	return line, out, true
 }
 
-// withParserError returns a copy of labels carrying the `__error__` /
-// `__error_details__` pair Loki's addErrLabel stamps. The copy keeps the
-// step's caller-immutable contract; the extracted labels are deliberately
-// dropped, because upstream discards its buffer on the error path.
-func withParserError(labels map[string]string, err error) map[string]string {
-	out := make(map[string]string, len(labels)+2)
+// withoutParserError returns a copy of labels with the JSON parser's
+// error pair removed.
+func withoutParserError(labels map[string]string) map[string]string {
+	out := make(map[string]string, len(labels))
 	for k, v := range labels {
+		if k == syntax.ErrorLabel || k == syntax.ErrorDetailsLabel {
+			continue
+		}
 		out[k] = v
 	}
-	out[syntax.ErrorLabel] = jsonParserErr
-	out[syntax.ErrorDetailsLabel] = err.Error()
 	return out
 }
 
