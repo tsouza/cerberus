@@ -76,111 +76,40 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	// Default identity: the raw ResourceAttributes column, augmented with
-	// the synthesized `detected_level` label so each distinct severity
-	// becomes its own series. Loki's stream-identity contract includes
-	// detected_level as a structural dimension whenever the upstream row
-	// carries severity metadata; the RangeWindow's GROUP BY (keyed on
-	// the ResourceAttributesColumn alias) then collapses one row per
-	// (stream, detected_level) tuple — matching upstream Loki's matrix
-	// shape (16 of the 19 loki-compat failures came from cerberus
-	// collapsing 4 levels into 1 series here).
-	//
-	// Unwrap variant: when the range aggregation carries an `| unwrap`
-	// clause and no explicit `by/without` grouping, the series identity
-	// MUST include every parser-extracted label EXCEPT the unwrap
-	// target — Loki's `LabelExtractorWithStages` treats no-grouping as
-	// `without (unwrapIdent)`, so each unique (parser-extracted-keys
-	// minus target) labelset becomes its own series. Without this the
-	// outer matrix collapses every distinct combination into a single
-	// detected-level series — the symptom is `matrix length: expected=
-	// 1440 actual=4` against the loki-compat 24h unwrap-aggregations
-	// corpus (each minute of seeded data produces a unique post-parser
-	// labelset because the JSON/logfmt payload carries varying fields
-	// like `request_id`, `status`, `user_agent`).
-	//
-	// Two-stage Project for the unwrap+parser shape: ClickHouse rejects a
-	// `mapFilter((k, v) -> NOT (k IN [...]), mapConcat(RA, mapApply(...)))`
-	// composition with `Recursive lambda ... (UNSUPPORTED_METHOD)` because
-	// the inner `mapApply` lambda references the outer `ResourceAttributes`
-	// column — CH disallows lambdas-inside-lambda-source when the inner
-	// lambda escapes its scope. We materialise the parser-merged labels
-	// into an intermediate `_logql_merged_labels` column via an inner
-	// Project, then the outer Project applies the strip + detected_level
-	// wrap against a plain column reference (no nested lambda). The
-	// matching value-expression also reads from the materialised column
-	// so the per-row unwrap value stays consistent with the identity.
-	innerNode := inner
+	// A parser-merged labels map has to become a plain column before
+	// either the unwrap identity or an outer-by key can read it; see
+	// [materialiseParserMergedLabels] for why. A nil mergedCol means no
+	// materialisation was called for and every read below stays on the
+	// raw columns.
+	innerNode, mergedCol := materialiseParserMergedLabels(inner, labelsExpr, s, lc, e.Left.Unwrap != nil)
+
+	// What the outer-by inflation resolves its keys against. It stays the
+	// raw column unless the merge was materialised, so an un-materialised
+	// `mapConcat(...)` — which carries lambdas CH would reject nested
+	// inside the inflation's own — can never reach the identity.
+	parsedLabels := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	if mergedCol != nil {
+		parsedLabels = mergedCol
+	}
+
+	// Default identity: the raw ResourceAttributes column, augmented
+	// below with the synthesized `detected_level` label so each distinct
+	// severity becomes its own series. Loki's stream-identity contract
+	// includes detected_level as a structural dimension whenever the
+	// upstream row carries severity metadata; the RangeWindow's GROUP BY
+	// (keyed on the ResourceAttributesColumn alias) then collapses one
+	// row per (stream, detected_level) tuple — matching upstream Loki's
+	// matrix shape (16 of the 19 loki-compat failures came from cerberus
+	// collapsing 4 levels into 1 series here). `| unwrap` replaces all
+	// three of identity, value and error bypass at once.
 	identityBase := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	valueExpr := value
 	var errorBypassLabels chplan.Expr
-	// The enclosing `by (...)` may name a label a parser stage extracted
-	// rather than one either raw column carries. That key has to resolve
-	// against the parser-merged labels map, and the map has to be
-	// materialised for the same reason the unwrap shape materialises it
-	// (nested-lambda rejection, below) — so the two cases share one
-	// intermediate projection. Without it `sum by (category)
-	// (count_over_time({...} | json [5m]))` collapses every row into a
-	// single `{category:""}` series (issue #1652, whose `| unpack` report
-	// is one instance of the class).
-	outerByNeedsParsedLabels := len(structuredOuterByKeys(lc.OuterByLabels, s)) > 0
-	// What the outer-by inflation resolves its keys against. It stays the
-	// raw column unless the merge below is materialised, so an
-	// un-materialised `mapConcat(...)` can never reach the identity.
-	parsedLabels := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	if (e.Left.Unwrap != nil || outerByNeedsParsedLabels) && hasParserMergedLabels(labelsExpr, s) {
-		const mergedAlias = "_logql_merged_labels"
-		projections := []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.BodyColumn}},
-			{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
-			{Expr: labelsExpr, Alias: mergedAlias},
+	if e.Left.Unwrap != nil {
+		identityBase, valueExpr, errorBypassLabels, err = unwrapSeriesIdentity(e, s, labelsExpr, mergedCol, value, unwrapHasErrorMarks)
+		if err != nil {
+			return nil, err
 		}
-		// Carry the structured-metadata (LogAttributes) column through the
-		// materialise step so the downstream identity wrap
-		// ([withDetectedLevelAndColumns]) can still coalesce a non-top-level
-		// outer-by key (e.g. `by (namespace)`) from it — without this the
-		// outer identity references `LogAttributes`, which the intermediate
-		// Project would have dropped, and CH aborts with `Unknown
-		// expression or function identifier 'LogAttributes'` (task #59).
-		if s.AttributesColumn != "" {
-			projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}})
-		}
-		// Same reasoning for the top-level scalar columns an outer
-		// `by (service_name, ...)` names: the identity wrap reads them
-		// directly, and an intermediate Project that did not carry them
-		// through would leave CH resolving an identifier that no longer
-		// exists. The four columns above are already in the list, so only
-		// the ones outside it need appending.
-		for _, col := range topLevelColumnsReferencedBy(lc.OuterByLabels, s) {
-			if col == s.TimestampColumn || col == s.BodyColumn || col == s.SeverityColumn || col == s.ResourceAttributesColumn {
-				continue
-			}
-			projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
-		}
-		innerNode = &chplan.Project{
-			Input:       inner,
-			Projections: projections,
-		}
-		mergedCol := &chplan.ColumnRef{Name: mergedAlias}
-		parsedLabels = mergedCol
-		if e.Left.Unwrap != nil {
-			identityBase = &chplan.MapWithoutKeys{Map: mergedCol, Keys: []string{e.Left.Unwrap.Identifier}}
-			valueExpr, err = rangeValueExprFromMerged(e, s, mergedCol)
-			if err != nil {
-				return nil, err
-			}
-			if unwrapHasErrorMarks {
-				errorBypassLabels = mergedCol
-			}
-		}
-	} else if e.Left.Unwrap != nil {
-		// No parser stage (or empty merge): the unwrap target is a
-		// stream label that already lives in ResourceAttributes. Strip
-		// it directly — CH handles `mapFilter(NOT IN, RA)` natively
-		// since RA is a plain column reference.
-		identityBase = &chplan.MapWithoutKeys{Map: labelsExpr, Keys: []string{e.Left.Unwrap.Identifier}}
 	}
 	// `| drop` / `| keep` narrow the series identity before it becomes a
 	// grouping key. On a log query the same projection runs post-fetch in
@@ -952,4 +881,114 @@ func rangeFuncName(op string) (string, error) {
 		return op, nil
 	}
 	return "", fmt.Errorf("logql: range op %s is not yet supported", op)
+}
+
+// materialiseParserMergedLabels materialises the pipeline's
+// parser-merged labels map into an intermediate Project aliased
+// `_logql_merged_labels`, returning that Project together with a
+// reference to the materialised column. It returns `(inner, nil)` when
+// no materialisation is called for, in which case callers keep reading
+// the raw columns exactly as before.
+//
+// The materialisation exists because ClickHouse rejects a
+// `mapFilter((k, v) -> NOT (k IN [...]), mapConcat(RA, mapApply(...)))`
+// composition with `Recursive lambda ... (UNSUPPORTED_METHOD)`: the
+// inner `mapApply` lambda references the outer ResourceAttributes
+// column, and CH disallows a lambda-inside-lambda-source when the inner
+// lambda escapes its scope. Materialising first leaves every downstream
+// wrap applying its own lambda to a plain column reference.
+//
+// Two shapes need it, which is why they share one projection.
+// `| unwrap` strips the unwrap target out of the merged identity and
+// reads its per-row value from the same map. An enclosing `by (...)`
+// that names a parser-extracted label needs the map to resolve that key
+// at all — neither raw column carries it — and without this
+// `sum by (category) (count_over_time({...} | json [5m]))` collapses
+// every row into a single `{category:""}` series (issue #1652, whose
+// `| unpack` report is one instance of the class).
+func materialiseParserMergedLabels(
+	inner chplan.Node,
+	labelsExpr chplan.Expr,
+	s schema.Logs,
+	lc lowerCtx,
+	hasUnwrap bool,
+) (chplan.Node, *chplan.ColumnRef) {
+	outerByNeedsParsedLabels := len(structuredOuterByKeys(lc.OuterByLabels, s)) > 0
+	if !hasUnwrap && !outerByNeedsParsedLabels {
+		return inner, nil
+	}
+	if !hasParserMergedLabels(labelsExpr, s) {
+		return inner, nil
+	}
+	const mergedAlias = "_logql_merged_labels"
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.BodyColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
+		{Expr: labelsExpr, Alias: mergedAlias},
+	}
+	// Carry the structured-metadata (LogAttributes) column through the
+	// materialise step so the downstream identity wrap
+	// ([withDetectedLevelAndColumns]) can still coalesce a non-top-level
+	// outer-by key (e.g. `by (namespace)`) from it — without this the
+	// outer identity references `LogAttributes`, which this Project would
+	// have dropped, and CH aborts with `Unknown expression or function
+	// identifier 'LogAttributes'` (task #59).
+	if s.AttributesColumn != "" {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}})
+	}
+	// Same reasoning for the top-level scalar columns an outer
+	// `by (TraceId, ...)` names: the identity wrap reads them straight off
+	// the scan, and a Project that did not carry them through leaves CH
+	// resolving an identifier that no longer exists. The columns above are
+	// already in the list, so only the ones outside it need appending.
+	for _, col := range topLevelColumnsReferencedBy(lc.OuterByLabels, s) {
+		if col == s.TimestampColumn || col == s.BodyColumn || col == s.SeverityColumn || col == s.ResourceAttributesColumn {
+			continue
+		}
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
+	}
+	return &chplan.Project{Input: inner, Projections: projections}, &chplan.ColumnRef{Name: mergedAlias}
+}
+
+// unwrapSeriesIdentity derives the `| unwrap` shape's series identity,
+// its per-row value expression and its error-bypass labels map.
+//
+// Loki's `LabelExtractorWithStages` treats an unwrap with no explicit
+// grouping as `without (unwrapIdent)`, so the identity is every
+// parser-extracted label EXCEPT the unwrap target and each unique
+// remaining labelset becomes its own series. Without that the outer
+// matrix collapses every distinct combination into a single
+// detected-level series — the symptom is `matrix length: expected=1440
+// actual=4` against the loki-compat 24h unwrap-aggregations corpus,
+// whose seeded payload carries a varying `request_id` / `status` /
+// `user_agent` per minute.
+//
+// `mergedCol` is the materialised parser-merged labels column, or nil
+// when the pipeline has no parser stage to merge. In the nil case the
+// unwrap target is a stream label that already lives in
+// ResourceAttributes — CH strips it from a plain column reference
+// natively — the caller's own value expression still stands, and there
+// is no error bypass to build.
+func unwrapSeriesIdentity(
+	e *syntax.RangeAggregationExpr,
+	s schema.Logs,
+	labelsExpr chplan.Expr,
+	mergedCol *chplan.ColumnRef,
+	defaultValue chplan.Expr,
+	unwrapHasErrorMarks bool,
+) (identity, value, errorBypass chplan.Expr, err error) {
+	stripped := []string{e.Left.Unwrap.Identifier}
+	if mergedCol == nil {
+		return &chplan.MapWithoutKeys{Map: labelsExpr, Keys: stripped}, defaultValue, nil, nil
+	}
+	value, err = rangeValueExprFromMerged(e, s, mergedCol)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if unwrapHasErrorMarks {
+		errorBypass = mergedCol
+	}
+	return &chplan.MapWithoutKeys{Map: mergedCol, Keys: stripped}, value, errorBypass, nil
 }
