@@ -44,7 +44,7 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 	if !chplan.IsDerivedShape(native, sampleColumns(s)) {
 		t.Fatal("RangeWindowNative must be a derived shape (MetricName absent from its scope)")
 	}
-	if !isMatrixRangeWindow(native) {
+	if !isMatrixRangeWindow(native, sampleColumns(s)) {
 		t.Fatal("RangeWindowNative must be matrix-shape (exposes per-row anchor_ts)")
 	}
 
