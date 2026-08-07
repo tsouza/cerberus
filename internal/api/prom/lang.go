@@ -110,13 +110,18 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	parseT.Done(ctx)
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
+	// Collect the scalar-parameter domain checks lowering cannot settle
+	// on its own. This is the query path — it can run the extra statement
+	// each guard needs — so it asks for them; the plan-only callers of
+	// promql.Lower leave the sink nil.
+	var guards []promql.ScalarGuard
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
-		promql.LowerOpts{Lowerers: l.Lowerers})
+		promql.LowerOpts{Lowerers: l.Lowerers, Guards: &guards})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}
 	}
-	meta := engine.Meta{IsMetric: true}
+	meta := engine.Meta{IsMetric: true, Guards: engineGuards(guards)}
 	// Step is non-zero only on the /api/v1/query_range path (see the lang
 	// doc), which is the only PromQL caller that reaches engine.QueryCursor —
 	// executeInstant always goes through the eager engine.Query, which never
@@ -126,6 +131,21 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 		meta.ResponseShape = chclient.ResponseShapeMatrix
 	}
 	return plan, meta, nil
+}
+
+// engineGuards adapts the lowering's scalar guards to the engine's
+// language-agnostic shape. The two types are deliberately separate: the
+// engine knows only "run this plan, judge these values", while the
+// promql side owns which PromQL domain each one enforces.
+func engineGuards(guards []promql.ScalarGuard) []engine.Guard {
+	if len(guards) == 0 {
+		return nil
+	}
+	out := make([]engine.Guard, len(guards))
+	for i, g := range guards {
+		out[i] = engine.Guard{Name: g.Name, Plan: g.Plan, Check: g.Check}
+	}
+	return out
 }
 
 // ProjectSamples wraps plan with the Sample-shape Project via

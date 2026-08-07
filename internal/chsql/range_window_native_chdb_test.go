@@ -55,6 +55,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // The ResourceAttributes column mirrors the production OTel-CH default
@@ -240,7 +241,7 @@ func runDualEmit(t *testing.T, db *sql.DB, native, optimize bool) map[gridCell]f
 		}
 		out[gridCell{ql: extractQLLabel(qlJSON), anchor: ts.UTC().Format(time.RFC3339)}] = v
 	}
-	if err := tolerantSentinel(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("rows.Err (native=%v): %v", native, err)
 	}
 	if len(out) == 0 {
@@ -340,16 +341,3 @@ func trimSpace(s string) string {
 }
 
 func isSpace(r rune) bool { return r == ' ' || r == '\n' || r == '\t' || r == '\r' }
-
-// tolerantSentinel ignores the chdb-go parquet driver's spurious
-// "empty row" end-of-iteration error (it returns that in place of
-// io.EOF). Any other error is real.
-func tolerantSentinel(err error) error {
-	if err == nil {
-		return nil
-	}
-	if indexOf(err.Error(), "empty row") >= 0 {
-		return nil
-	}
-	return err
-}

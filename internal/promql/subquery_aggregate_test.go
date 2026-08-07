@@ -35,7 +35,7 @@ func TestLowerSubquery_Aggregate_Errors(t *testing.T) {
 			// mode via the shared topKDomain helper.
 			name:    "topk K must not be NaN",
 			query:   `max_over_time(topk(NaN, rate(http_requests_total[1m]))[1h:30s])`,
-			wantErr: "K must not be NaN",
+			wantErr: "Parameter value is NaN",
 		},
 		{
 			name:    "topk K must not overflow int64",

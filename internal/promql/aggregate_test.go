@@ -93,7 +93,7 @@ func TestLower_Aggregate_Errors(t *testing.T) {
 			// TestLowerTopK_KDomain).
 			name:    "topk K must not be NaN",
 			query:   `topk(NaN, up)`,
-			wantErr: "K must not be NaN",
+			wantErr: "Parameter value is NaN",
 		},
 		{
 			// Reference Prometheus errors when K >= maxInt64 ("Scalar

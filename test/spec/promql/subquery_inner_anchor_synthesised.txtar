@@ -1,0 +1,29 @@
+# Anchor-synthesising calls as SUBQUERY INNERS (issue #1866).
+#
+# `vector(1)` and the zero-argument date forms build their row out of the
+# evaluation instant rather than out of a stored sample, so they are
+# excluded from instantTransformFns and cannot ride the Identity wrap.
+# That exclusion used to mean rejection: the reducer table demanded one
+# argument in a matrix position, so `vector(1)` failed on
+# "must wrap a MatrixSelector, got *parser.NumberLiteral" and
+# `day_of_month()` on "expects exactly 1 argument(s), got 0".
+#
+# Reference Prometheus answers both — each anchor of the [5m:1m] grid is
+# an instant evaluation that synthesises its own row — so they lower
+# through the per-anchor grid path. `vector(1)` reads no table at all,
+# which is why this fixture pins the emitted SQL and plan shape rather
+# than a chDB roundtrip.
+
+-- query.promql --
+max_over_time(vector(1)[5m:1m])
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1
+-- chplan --
+RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 1 AS Value]
+      StepGrid start=2025-12-31T23:56:00.000000000Z end=2026-01-01T00:00:00.000000000Z step=1m0s
+-- sql --
+SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2025-12-31 23:56:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`))) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`

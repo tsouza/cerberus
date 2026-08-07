@@ -60,6 +60,7 @@ import (
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/solver"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // The lane grid every fixture anchors on. With
@@ -457,26 +458,10 @@ func execLane(t *testing.T, db *sql.DB, query, label, sql string, args []any) []
 		}
 		out = append(out, cells)
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("%s / %s rows.Err: %v", query, label, err)
 	}
 	return out
-}
-
-// chdbEOFSentinel is the spurious end-of-iteration error chdb-go's parquet
-// driver returns instead of io.EOF (chdb-go v1.11.0's `return
-// fmt.Errorf("empty row")`). It surfaces on rows.Err() and must be ignored;
-// any other error is real. Mirrors test/spec/runner_chdb.go.
-const chdbEOFSentinel = "empty row"
-
-func tolerantRowsErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), chdbEOFSentinel) {
-		return nil
-	}
-	return err
 }
 
 // laneStats reports what the comparator actually exercised, so the lane can
@@ -807,7 +792,7 @@ func (c *chdbCursor) Next() bool {
 		return false
 	}
 	if !c.rows.Next() {
-		if err := tolerantRowsErr(c.rows.Err()); err != nil {
+		if err := testsql.TolerantRowsErr(c.rows.Err()); err != nil {
 			c.err = err
 		}
 		return false
