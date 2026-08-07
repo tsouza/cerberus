@@ -162,11 +162,7 @@ func fetchDetectedFields(c *http.Client, addr, selector string, start, end time.
 		return detectedFieldsWire{}, fmt.Errorf("read body: %w", readErr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		snippet := strings.TrimSpace(string(body))
-		if len(snippet) > 400 {
-			snippet = snippet[:400] + "…"
-		}
-		return detectedFieldsWire{}, fmt.Errorf("status=%d body=%s", resp.StatusCode, snippet)
+		return detectedFieldsWire{}, fmt.Errorf("status=%d body=%s", resp.StatusCode, errorBodySnippet(string(body)))
 	}
 
 	// Consumer-grade decode: the response must be the BARE

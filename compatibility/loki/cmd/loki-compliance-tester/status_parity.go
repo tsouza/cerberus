@@ -158,17 +158,17 @@ func compareStatusParityOne(c *http.Client, f flags, sc statusParityCase, start,
 	case refStatus != sc.expect && testStatus != sc.expect:
 		result.UnexpectedFailure = fmt.Sprintf(
 			"status parity: reference status=%d test status=%d, both expected %d (ref body=%s; test body=%s)",
-			refStatus, testStatus, sc.expect, statusParitySnippet(out[0].body), statusParitySnippet(out[1].body),
+			refStatus, testStatus, sc.expect, errorBodySnippet(out[0].body), errorBodySnippet(out[1].body),
 		)
 	case refStatus != sc.expect:
 		result.UnexpectedFailure = fmt.Sprintf(
 			"status parity: reference (-addr-1) returned status=%d, expected %d (body=%s)",
-			refStatus, sc.expect, statusParitySnippet(out[0].body),
+			refStatus, sc.expect, errorBodySnippet(out[0].body),
 		)
 	case testStatus != sc.expect:
 		result.UnexpectedFailure = fmt.Sprintf(
 			"status parity: test endpoint (-addr-2) returned status=%d, expected %d (body=%s)",
-			testStatus, sc.expect, statusParitySnippet(out[1].body),
+			testStatus, sc.expect, errorBodySnippet(out[1].body),
 		)
 	}
 	return result
@@ -203,16 +203,4 @@ func fetchRawStatus(c *http.Client, addr, path string, params url.Values) (int, 
 		return 0, "", fmt.Errorf("read body: %w", readErr)
 	}
 	return resp.StatusCode, strings.TrimSpace(string(body)), nil
-}
-
-// statusParitySnippetMaxLen bounds the body snippet embedded in a
-// mismatch message so a wall-of-text error page doesn't dominate the
-// report, mirroring doQuery's / fetchDetectedFields's truncation.
-const statusParitySnippetMaxLen = 400
-
-func statusParitySnippet(body string) string {
-	if len(body) <= statusParitySnippetMaxLen {
-		return body
-	}
-	return body[:statusParitySnippetMaxLen] + "…"
 }

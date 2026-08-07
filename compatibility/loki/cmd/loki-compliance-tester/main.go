@@ -857,16 +857,29 @@ func doQuery(c *http.Client, u string, params url.Values) (typedResult, error) {
 		return typedResult{}, fmt.Errorf("read body: %w", readErr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Truncate the error body so a wall-of-text upstream stack
-		// trace doesn't dominate the diff column.
-		snippet := strings.TrimSpace(string(body))
-		if len(snippet) > 400 {
-			snippet = snippet[:400] + "…"
-		}
-		return typedResult{}, fmt.Errorf("status=%d body=%s", resp.StatusCode, snippet)
+		return typedResult{}, fmt.Errorf("status=%d body=%s", resp.StatusCode, errorBodySnippet(string(body)))
 	}
 
 	return decodeResponse(body)
+}
+
+// errorBodySnippetMaxLen bounds how much of a failing response body the
+// harness quotes back. Upstream answers a rejected request with an HTML
+// page or a full Go stack trace; unbounded, either dominates the
+// report's diff column and buries the status code that actually carries
+// the signal.
+const errorBodySnippetMaxLen = 400
+
+// errorBodySnippet trims and bounds a failing response body for use in
+// an error message or a mismatch report. Every fetch path in this
+// driver quotes bodies through here so the bound is one number rather
+// than one per call site.
+func errorBodySnippet(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if len(trimmed) <= errorBodySnippetMaxLen {
+		return trimmed
+	}
+	return trimmed[:errorBodySnippetMaxLen] + "…"
 }
 
 // ----- response decoder ---------------------------------------------
