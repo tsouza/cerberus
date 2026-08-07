@@ -170,11 +170,17 @@ func WithQueryTimeout(ctx context.Context, d time.Duration) context.Context {
 	return context.WithValue(ctx, queryTimeoutKey, d)
 }
 
-// queryTimeoutFromContext returns the per-request override installed by
-// WithQueryTimeout, or 0 when none was set.
-func queryTimeoutFromContext(ctx context.Context) time.Duration {
-	d, _ := ctx.Value(queryTimeoutKey).(time.Duration)
-	return d
+// QueryTimeoutFromContext returns the per-request override installed by
+// WithQueryTimeout, and whether one was installed at all.
+//
+// It is exported so the layer that installs the carrier can prove it did.
+// Without a reader, deleting the WithQueryTimeout call in an HTTP handler
+// changes nothing a test can see — the context deadline installed beside
+// it still fires and the handler still unblocks — while ClickHouse keeps
+// burning CPU on a query nobody is waiting for.
+func QueryTimeoutFromContext(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(queryTimeoutKey).(time.Duration)
+	return d, ok
 }
 
 // classifyDriverErr maps a raw clickhouse-go driver error onto the typed
@@ -202,7 +208,7 @@ func (c *Client) classifyDriverErr(ctx context.Context, err error) error {
 // override), so querySettings can omit max_execution_time entirely.
 func (c *Client) effectiveQueryTimeout(ctx context.Context) time.Duration {
 	def := c.queryTimeout
-	override := queryTimeoutFromContext(ctx)
+	override, _ := QueryTimeoutFromContext(ctx)
 	switch {
 	case override <= 0:
 		return def
