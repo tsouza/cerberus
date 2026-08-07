@@ -1786,27 +1786,35 @@ const (
 // against the OTel-CH exponential (native) histogram table.
 //
 // The shape of the produced tree mirrors lowerHistogramQuantileAgg's
-// classic-histogram counterpart, but the inner Project does the
-// per-row exp-histogram merge (scale-fold + offset-align + zero-pad)
-// before HistogramQuantileNative walks the merged distribution:
+// classic-histogram counterpart: a per-SERIES stage reduces each series'
+// in-window samples across TIME with the range-vector function's own
+// fold (histogram_quantile_native_window.go), and only then does the
+// across-SERIES stage merge those distributions (scale-fold +
+// offset-align + zero-pad) for HistogramQuantileNative to walk:
 //
 //	Project [Sample-row contract]
 //	  HistogramQuantileNative phi=phi, groupBy=[Attributes]
 //	    Project [Attributes (rebuilt from gkeys), Scale, ZeroCount, ZeroThreshold,
 //	             PositiveOffset, PositiveBucketCounts,
 //	             NegativeOffset, NegativeBucketCounts]
-//	      Aggregate groupBy=[<user labels>] funcs=[
-//	          min(Scale)                       AS _hq_merged_scale,
-//	          sum(ZeroCount)                   AS ZeroCount,
-//	          max(ZeroThreshold)               AS ZeroThreshold,
-//	          groupArray(Scale)                AS _hq_scales,
-//	          groupArray(PositiveOffset)       AS _hq_pos_offsets,
-//	          groupArray(PositiveBucketCounts) AS _hq_pos_buckets,
-//	          groupArray(NegativeOffset)       AS _hq_neg_offsets,
-//	          groupArray(NegativeBucketCounts) AS _hq_neg_buckets,
-//	      ]
-//	        Filter <metric matchers> AND TimeUnix in (anchor-Range, anchor]
-//	          Scan(otel_metrics_exponential_histogram)
+//	      Aggregate groupBy=[<user labels>] funcs=<expHistogramMergeAggs>
+//	        Project [Attributes, Scale, ZeroCount,
+//	                 {Positive,Negative}{Offset,BucketCounts}]  ← per-series
+//	          Filter _hq_samples >= <range-vector function's floor>
+//	            Aggregate groupBy=[Attributes] funcs=[
+//	                min(Scale)                       AS _hq_merged_scale,
+//	                max(ZeroThreshold)               AS ZeroThreshold,
+//	                groupArray(Scale)                AS _hq_scales,
+//	                groupArray(ZeroCount)            AS _hq_zero_counts,
+//	                groupArray(PositiveOffset)       AS _hq_pos_offsets,
+//	                groupArray(PositiveBucketCounts) AS _hq_pos_buckets,
+//	                groupArray(NegativeOffset)       AS _hq_neg_offsets,
+//	                groupArray(NegativeBucketCounts) AS _hq_neg_buckets,
+//	                groupArray(TimeUnix)             AS _hq_ts_list,
+//	                <sample count>                   AS _hq_samples,
+//	            ]
+//	              Filter <metric matchers> AND TimeUnix in (anchor-Range, anchor]
+//	                Scan(otel_metrics_exponential_histogram)
 //
 // The merge algorithm in the inner Project (see
 // expHistogramMergeOffsetExpr + expHistogramMergeBucketsExpr) mirrors
@@ -1823,7 +1831,10 @@ const (
 //     [arrayMin(downscaled_offset), arrayMax(downscaled_offset+downscaled_length))
 //     across rows, zero-padding rows that don't cover the full range.
 //
-//   - ZeroCount sums trivially; ZeroThreshold takes the max across
+//   - ZeroCount sums across SERIES, because distributions add; across
+//     TIME it goes through the same fold as every other bucket, since
+//     the zero bucket of a cumulative histogram is a counter too (see
+//     hqWindowZeroCountsArrayAlias). ZeroThreshold takes the max across
 //     rows (the merged zero bucket spans the largest individual zero
 //     bucket).
 //
@@ -1947,14 +1958,14 @@ func expHistogramMergeOffsetExpr(offArrAlias, scalesArrAlias, mergedScaleAlias s
 				Name: "arrayMap",
 				Args: []chplan.Expr{
 					&chplan.Lambda{
-						Params: []string{"s", "off"},
+						Params: []string{paramExpRowScale, paramExpRowOffset},
 						Body: &chplan.FuncCall{
 							Name: "bitShiftRight",
 							Args: []chplan.Expr{
-								&chplan.BareIdent{Name: "off"},
+								&chplan.BareIdent{Name: paramExpRowOffset},
 								&chplan.Binary{
 									Op:    chplan.OpSub,
-									Left:  &chplan.BareIdent{Name: "s"},
+									Left:  &chplan.BareIdent{Name: paramExpRowScale},
 									Right: &chplan.ColumnRef{Name: mergedScaleAlias},
 								},
 							},

@@ -460,11 +460,18 @@ func lowerHistogramQuantileNativeBareRange(
 // lowerHistogramQuantileNativeAggRange builds the range-mode plan tree
 // for `histogram_quantile(phi, sum [by/without] (rate(<sel>_exp_hist[r])))`.
 //
-// The lookback is the rate's [range] duration; the per-anchor aggregation
-// collects per-row exp-histogram fields into groupArrays so the wrapping
-// reshape Project can fold them into a single merged distribution per
-// (anchor, series) via the same expHistogramMergeOffsetExpr /
-// expHistogramMergeBucketsExpr helpers used by the instant path.
+// The lookback is the rate's [range] duration. Like the instant native
+// sibling this runs the two reductions in reference Prometheus's order:
+// the fan-out keys on SERIES identity and collects that series'
+// in-window exp-histogram fields into groupArrays, the reshape Project
+// folds them across TIME into one distribution per (anchor, series), and
+// only then does the across-series Aggregate merge those distributions
+// on the user's `by`/`without` labels via the same
+// expHistogramMergeOffsetExpr / expHistogramMergeBucketsExpr helpers the
+// instant path uses. Keying the fan-out on the user's labels instead
+// would put its MinSamples floor on the wrong axis — under `sum by(le)`
+// there are no labels left, so two samples from two different series
+// would satisfy a floor meant to require two samples from one (#1629).
 //
 // Plan shape (in chsql output order):
 //
@@ -472,8 +479,11 @@ func lowerHistogramQuantileNativeBareRange(
 //	  HistogramQuantileNative phi groupBy=[anchor_ts, Attributes]
 //	    Project [anchor_ts, <attrs-rebuilt>, merged Scale / ZeroCount /
 //	             ZeroThreshold / {Pos,Neg}{Offset,BucketCounts}]
-//	      RangeBucketFanout groupBy=[<user-labels>] funcs=<merge aggs>
-//	        Filter(Scan, <matchers>)
+//	      Aggregate groupBy=[anchor_ts, <user-labels>] funcs=<merge aggs>
+//	        Project [anchor_ts, Attributes, window-folded Scale / ZeroCount /
+//	                 {Pos,Neg}{Offset,BucketCounts}]
+//	          RangeBucketFanout groupBy=[Attributes] funcs=<window aggs>
+//	            Filter(Scan, <matchers>)
 func lowerHistogramQuantileNativeAggRange(
 	shape histogramAggShape,
 	phi phiArg,

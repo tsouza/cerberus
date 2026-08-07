@@ -449,7 +449,10 @@ func TestLower_HistogramQuantile_OverAggregation_Native(t *testing.T) {
 				t.Errorf("Scan.Table = %q, want %q", foundScan.Table, s.ExpHistogramTable)
 			}
 
-			// Validate the aggregate function set: min(Scale) +
+			// chplan.Walk is pre-order, so foundAgg is the OUTER
+			// across-series merge stage; the per-series window stage
+			// beneath it is pinned by the _LeDropped sibling below.
+			// Validate the merge's aggregate function set: min(Scale) +
 			// sum(ZeroCount) + groupArray of every per-row
 			// exp-histogram column (no max(ZeroThreshold) on the
 			// default schema — see the function doc above).

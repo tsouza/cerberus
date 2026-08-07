@@ -138,7 +138,14 @@ func expHistogramWindowBucketsExpr(
 	offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string,
 	fold histogramWindowTimeFold,
 ) chplan.Expr {
-	const paramT = "t"
+	// Deliberately not "t": `fold` binds paramRowTime ("t") inside its own
+	// arraySort comparator, and that comparator sits INSIDE this lambda's
+	// body. Naming both "t" would shadow this binding at exactly the point
+	// where the emitted SQL still reads as if it referred to the target
+	// bucket. The references below are resolved before the shadow opens, so
+	// "t" would be correct today and silently wrong after any refactor that
+	// moved one inside the other.
+	const paramExpTargetBucket = "tb"
 
 	mergedScale := chplan.Expr(&chplan.ColumnRef{Name: mergedScaleAlias})
 	scalesArr := chplan.Expr(&chplan.ColumnRef{Name: scalesArrAlias})
@@ -149,7 +156,7 @@ func expHistogramWindowBucketsExpr(
 	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
 	contribs := expHistogramRowContribsExpr(
 		scalesArr, offArr, bucArr,
-		expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramT),
+		expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramExpTargetBucket),
 	)
 
 	// Every row contributes to every target index — a row whose stored
@@ -164,7 +171,7 @@ func expHistogramWindowBucketsExpr(
 		Name: "arrayMap",
 		Args: []chplan.Expr{
 			&chplan.Lambda{
-				Params: []string{paramT},
+				Params: []string{paramExpTargetBucket},
 				Body:   fold(expHistogramWindowFloatsExpr(contribs), tsList),
 			},
 			&chplan.FuncCall{
