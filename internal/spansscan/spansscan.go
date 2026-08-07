@@ -229,13 +229,28 @@ func recursiveBodySpans(sql string) [][2]int {
 	return spans
 }
 
-// topLevelScopeForward returns the text from byte offset i forward that lives
-// at the SAME parenthesis depth as i AND in the SAME set-operation arm as i —
-// i.e. the FROM/WHERE/GROUP BY clauses of the scan's own SELECT, with every
-// nested subquery (the `TraceId IN (…)` seed, a `fromUnixTimestamp64Nano(<arg>)`
-// call's arg) elided. Collection stops at the `)` that closes the enclosing
-// scope, OR at a depth-0 set-op boundary (`UNION [ALL|DISTINCT]` or a sibling
-// `SELECT` opening a new arm), whichever comes first.
+// topLevelScopeForward returns the text from byte offset i forward that belongs
+// to the SAME SELECT scope as i AND to the SAME set-operation arm as i — i.e.
+// the FROM/WHERE/GROUP BY clauses of the scan's own SELECT, with every nested
+// SUBQUERY (the `TraceId IN (…)` seed, a `FROM (SELECT …)` inline view) elided.
+// Collection stops at the `)` that closes the enclosing scope, OR at a depth-0
+// set-op boundary (`UNION [ALL|DISTINCT]` or a sibling `SELECT` opening a new
+// arm), whichever comes first.
+//
+// Scope membership is decided by what a parenthesis OPENS, not by how deeply it
+// nests. A predicate is co-scope wherever the emitter chose to bracket it:
+// `WHERE `Timestamp` >= x AND `Timestamp` <= y` and
+// `WHERE (`Timestamp` >= x) AND (`Timestamp` <= y)` bound the same physical
+// scan and prune the same partitions, and chsql brackets a `Binary` operand
+// whenever the surrounding expression needs it. Reading nesting alone as
+// "another scope" hides the bounds of any fully windowed scan the optimizer's
+// late-materialisation rewrite leaves bracketed, and rejects a query that is in
+// fact bounded — a false positive that takes the query off the wire (#1889). So
+// a group whose first keyword is `SELECT`/`WITH` is a subquery and is dropped
+// whole (its bounds belong to a different scan and must never be borrowed);
+// every other group is an expression group, descended into and reproduced
+// verbatim, brackets included, so an operator can never bind across a dropped
+// bracket.
 //
 // The set-op stop closes a false-accept hole: a windowless `otel_traces` scan
 // in one arm of a UNION must NOT borrow a sibling arm's `Timestamp` predicate to
@@ -244,26 +259,64 @@ func recursiveBodySpans(sql string) [][2]int {
 // truncating at the boundary never drops a legitimate co-scope `Timestamp`.
 func topLevelScopeForward(sql string, i int) string {
 	var b strings.Builder
+	// depth counts open parentheses relative to i. subqueryDepth records the
+	// depth of the outermost subquery group currently being elided, or
+	// notEliding when collection is live.
+	const notEliding = -1
 	depth := 0
+	subqueryDepth := notEliding
 	for j := i; j < len(sql); j++ {
 		switch c := sql[j]; c {
 		case '(':
 			depth++
+			if subqueryDepth == notEliding {
+				if opensSubquery(sql, j) {
+					subqueryDepth = depth
+					continue
+				}
+				b.WriteByte(c)
+			}
 		case ')':
+			switch subqueryDepth {
+			case depth:
+				subqueryDepth = notEliding
+			case notEliding:
+				b.WriteByte(c)
+			}
 			depth--
 			if depth < 0 {
 				return b.String()
 			}
 		default:
-			if depth == 0 {
-				if setOpBoundaryAt(sql, j) {
-					return b.String()
-				}
-				b.WriteByte(c)
+			if subqueryDepth != notEliding {
+				continue
 			}
+			if depth == 0 && setOpBoundaryAt(sql, j) {
+				return b.String()
+			}
+			b.WriteByte(c)
 		}
 	}
 	return b.String()
+}
+
+// opensSubquery reports whether the parenthesis at sql[j] opens a SUBQUERY —
+// a group whose first keyword is `SELECT` or `WITH`, reached by skipping
+// whitespace and any run of immediately nested opening parentheses so the
+// `((SELECT …) UNION ALL (SELECT …))` set-op group a `TraceId IN` seed renders
+// is recognised at its outermost bracket. Any other group — a bracketed
+// conjunct, a function-call argument list, an array or tuple literal — is an
+// expression group belonging to the enclosing SELECT's own scope.
+func opensSubquery(sql string, j int) bool {
+	for k := j + 1; k < len(sql); k++ {
+		switch sql[k] {
+		case '(', ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return wordAt(sql, k, "SELECT") || wordAt(sql, k, "WITH")
+		}
+	}
+	return false
 }
 
 // setOpBoundaryAt reports whether a set-operation arm boundary begins at sql[j]:

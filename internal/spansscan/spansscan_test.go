@@ -368,3 +368,153 @@ func TestUnwindowedSpansScans_PruneSkipDoesNotHaltScan(t *testing.T) {
 			windowlessScan, findings[0].Offset)
 	}
 }
+
+// The bracketed-co-scope corpus (#1889). ClickHouse prunes on a Timestamp range
+// sitting on the physical scan regardless of how the emitter brackets it, so the
+// matcher's scope walk must read a bracketed conjunct as co-scope while still
+// refusing to borrow a Timestamp that lives inside a nested SUBQUERY. The
+// distinction is what a parenthesis OPENS (`SELECT`/`WITH` = another scan's
+// scope), never how deeply it nests.
+
+// recursiveArmBracketedWindow: the same windowed step arm as
+// recursiveArmWindowed, with each window bound wrapped in its own brackets —
+// the shape chsql renders whenever the window is one operand of a larger
+// conjunction. Same physical scan, same pruning, so it must NOT be flagged.
+const recursiveArmBracketedWindow = "WITH RECURSIVE _struct_closure_1 AS (" +
+	"SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth " +
+	"FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)) AND (`ResourceAttributes`[?] = ?)) AS _seed " +
+	"UNION ALL " +
+	"SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 " +
+	"FROM `otel_traces` AS t INNER JOIN _struct_closure_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` " +
+	"WHERE c._depth < 128 AND t.`TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000))) AS _seed_ids) " +
+	"AND ((`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)) AND (`Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)))" +
+	") SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_1 WHERE _depth > 0"
+
+// columnPrunedSeedInRecursiveBody is the #1889 production shape: the nested-set
+// numbering CTE's `TraceId IN (<seed>)` list holds a union of three seed arms,
+// and the optimizer's late-materialisation rewrite has replaced one arm's
+// `SELECT *` pass-through with an explicit column list. That arm is a fully
+// windowed physical scan carrying its own bracketed `Timestamp` bounds, but it
+// no longer matches the `SELECT *` pass-through exclusion — so the ONLY thing
+// that can clear it is reading its own bracketed WHERE as co-scope. It must NOT
+// be flagged.
+const columnPrunedSeedInRecursiveBody = "WITH RECURSIVE _cerberus_ns_paths AS (" +
+	"SELECT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS `_depth` FROM `otel_traces` " +
+	"WHERE `ParentSpanId` = '' AND `TraceId` IN (" +
+	"(SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)) AND (`Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)))) " +
+	"UNION ALL " +
+	"(SELECT `TraceId` FROM (SELECT `SpanId`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)) AND (`Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000))))" +
+	") AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000) " +
+	"UNION ALL " +
+	"SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c.`_depth` + 1 AS `_depth` " +
+	"FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` " +
+	"WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)" +
+	") SELECT `TraceId`, `SpanId` FROM _cerberus_ns_paths"
+
+// windowBracketedBesideSubquery mixes both halves inside ONE bracketed group:
+// the scan's real window sits next to a windowed `TraceId IN (<subquery>)` under
+// the same brackets. The group is an expression group (it opens with a column,
+// not `SELECT`), so the walk descends it and finds the real window, while the
+// subquery nested one level further in is still dropped. Must NOT be flagged.
+const windowBracketedBesideSubquery = "WITH RECURSIVE _closure AS (" +
+	"SELECT `TraceId`, `SpanId`, 0 AS _depth FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `TraceId` IN (SELECT `TraceId` FROM `otel_traces` WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000))) " +
+	"UNION ALL " +
+	"SELECT t.`TraceId`, t.`SpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _closure AS c ON t.`TraceId` = c.`TraceId` " +
+	"WHERE c._depth < 128 AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)" +
+	") SELECT `TraceId` FROM _closure"
+
+// bracketedSubqueryWindowNotBorrowed is the false-ACCEPT direction of the same
+// change: the step arm's ONLY `Timestamp` comparison lives inside the bracketed
+// `TraceId IN ((SELECT …) UNION ALL (SELECT …))` seed — a set-op group whose
+// outermost bracket opens onto nested `SELECT`s. That window bounds the seed's
+// scans, not this one, and an inert `TraceId IN` prunes no partitions, so the
+// step arm reads the whole table and MUST still be flagged.
+const bracketedSubqueryWindowNotBorrowed = "WITH RECURSIVE _closure AS (" +
+	"SELECT `TraceId`, `SpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000))) AS _seed " +
+	"UNION ALL " +
+	"SELECT t.`TraceId`, t.`SpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _closure AS c ON t.`TraceId` = c.`TraceId` " +
+	"WHERE c._depth < 128 AND t.`TraceId` IN (" +
+	"(SELECT `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000))) " +
+	"UNION ALL " +
+	"(SELECT `TraceId` FROM `otel_traces` WHERE (`Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)))" +
+	")" +
+	") SELECT `TraceId` FROM _closure"
+
+// TestUnwindowedSpansScans_BracketedCoScope pins both directions of the #1889
+// scope rule on realistic emitted shapes.
+func TestUnwindowedSpansScans_BracketedCoScope(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		sql  string
+		want int
+	}{
+		{"recursive_arm_bracketed_window", recursiveArmBracketedWindow, 0},
+		{"column_pruned_seed_in_recursive_body", columnPrunedSeedInRecursiveBody, 0},
+		{"window_bracketed_beside_subquery", windowBracketedBesideSubquery, 0},
+		{"bracketed_subquery_window_not_borrowed", bracketedSubqueryWindowNotBorrowed, 1},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := len(spansscan.UnwindowedSpansScans(tc.sql, spansTable))
+			if got != tc.want {
+				t.Fatalf("UnwindowedSpansScans(%s): got %d finding(s), want %d\nSQL:\n%s",
+					tc.name, got, tc.want, tc.sql)
+			}
+		})
+	}
+}
+
+// maxCoScopeBracketDepth is how many redundant bracket layers the invariance
+// test wraps a co-scope predicate in. Anything beyond one layer is already past
+// what any emitter renders; the extra layers exist so the property is checked
+// against nesting depth rather than against the single shape that broke.
+const maxCoScopeBracketDepth = 4
+
+// TestUnwindowedSpansScans_BracketingDoesNotChangeVerdict is the class
+// assertion. #1889 was not "one shape the matcher misreads" — it was the scope
+// walk treating bracket DEPTH as a scope change, so any emitter choice that
+// added a bracket around a co-scope predicate turned a fully pruned scan into a
+// rejected one. Pinning one more fixture would have left the next bracketing
+// free to regress, so the property itself is pinned: wrapping a scan's own
+// predicate in redundant brackets must never change the verdict, at any depth,
+// for a flagged statement or a clean one.
+func TestUnwindowedSpansScans_BracketingDoesNotChangeVerdict(t *testing.T) {
+	t.Parallel()
+	// Both fixtures carry this exact co-scope conjunct on the recursive step
+	// arm — present in the clean one, absent from the flagged one — so wrapping
+	// it exercises the clean verdict, and wrapping the flagged fixture's own
+	// depth-cap conjunct exercises the flagged verdict.
+	const stepWindow = "`Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)"
+	const depthCap = "c._depth < 128"
+
+	cases := []struct {
+		name     string
+		sql      string
+		conjunct string
+		want     int
+	}{
+		{"clean_arm_window", recursiveArmWindowed, stepWindow, 0},
+		{"flagged_arm_depth_cap", recursiveArmUnwindowed, depthCap, 1},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(tc.sql, tc.conjunct) {
+				t.Fatalf("test setup: %s does not contain %q, so the bracketing below rewrites nothing", tc.name, tc.conjunct)
+			}
+			wrapped := tc.conjunct
+			for depth := 0; depth <= maxCoScopeBracketDepth; depth++ {
+				sql := strings.Replace(tc.sql, tc.conjunct, wrapped, 1)
+				if got := len(spansscan.UnwindowedSpansScans(sql, spansTable)); got != tc.want {
+					t.Fatalf("%s at bracket depth %d: got %d finding(s), want %d — bracketing a co-scope predicate changed the verdict\nSQL:\n%s",
+						tc.name, depth, got, tc.want, sql)
+				}
+				wrapped = "(" + wrapped + ")"
+			}
+		})
+	}
+}
