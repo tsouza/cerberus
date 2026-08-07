@@ -1034,6 +1034,17 @@ type zeroFillExtraCol struct {
 // iff the scan is non-empty, zero rows otherwise — so a fully-empty
 // input still produces an empty result (matching the old full-grid
 // fanout, which had no rows to fan).
+//
+// The replay is a second read of the same rows, and naming Inner in a
+// relational `WITH x AS (SELECT …)` CTE does not merge the two: ClickHouse
+// inlines a relational CTE at each reference, so the CTE form dedupes the
+// emitted TEXT and leaves the work untouched. Measured on chDB over a 2M-span
+// OTel-shaped table, the two forms produce byte-identical plans — two
+// ReadFromMergeTree steps, the same parts and granules — and time within noise
+// of each other. Binding the discovered group SET as a scalar array instead
+// does collapse the arm to one read, and measures no faster than either
+// (#1525). The replay is a second pass over rows the sample arm has already
+// warmed, and no CTE spelling of it removes that pass.
 func (e *emitter) metricsZeroFillGridArm(
 	inner Frag,
 	r *chplan.RangeWindow,
