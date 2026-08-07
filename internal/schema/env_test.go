@@ -83,6 +83,105 @@ func TestDefaultOTelMetricsFromEnv_TrimsValue(t *testing.T) {
 	}
 }
 
+// TestDefaultOTelMetricsFromEnv_TableOverrides pins the provenance the
+// resolver records alongside each table name: which of the five names an
+// operator SET, as opposed to inheriting from DefaultOTelMetrics. Cerberus's
+// boot-time metric-table existence check is fatal for the first and
+// wait-and-re-probe for the second (cmd/cerberus's
+// fatalAbsentMetricTablesErr), so losing this bit here silently converts
+// every metrics-less deployment's ordinary absent-schema race into a boot
+// crash.
+//
+// The value-equals-default case is the load-bearing one: an operator who
+// spells out the stock table name has still asserted it exists, so
+// provenance can never be reconstructed by comparing against the default.
+func TestDefaultOTelMetricsFromEnv_TableOverrides(t *testing.T) {
+	def := DefaultOTelMetrics()
+	cases := []struct {
+		name string
+		env  string
+		val  string
+		pick func(MetricTableOverrides) bool
+		want bool
+	}{
+		{"gauge set", EnvMetricsGaugeTable, "custom_gauge", func(o MetricTableOverrides) bool { return o.Gauge }, true},
+		{"sum set", EnvMetricsSumTable, "custom_sum", func(o MetricTableOverrides) bool { return o.Sum }, true},
+		{"histogram set", EnvMetricsHistogramTable, "custom_hist", func(o MetricTableOverrides) bool { return o.Histogram }, true},
+		{"exp histogram set", EnvMetricsExpHistogramTable, "custom_exp", func(o MetricTableOverrides) bool { return o.ExpHistogram }, true},
+		{"summary set", EnvMetricsSummaryTable, "custom_summary", func(o MetricTableOverrides) bool { return o.Summary }, true},
+		{
+			"set to the built-in default value is still set",
+			EnvMetricsGaugeTable, def.GaugeTable,
+			func(o MetricTableOverrides) bool { return o.Gauge }, true,
+		},
+		{
+			"whitespace-only is unset",
+			EnvMetricsGaugeTable, "  \n\t ",
+			func(o MetricTableOverrides) bool { return o.Gauge }, false,
+		},
+		{
+			"empty is unset",
+			EnvMetricsGaugeTable, "",
+			func(o MetricTableOverrides) bool { return o.Gauge }, false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.val)
+			if got := tc.pick(DefaultOTelMetricsFromEnv().TableOverrides); got != tc.want {
+				t.Errorf("%s=%q: override flag = %v, want %v", tc.env, tc.val, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultOTelMetricsFromEnv_NoOverridesRecordsNothing is the negative
+// half of TestDefaultOTelMetricsFromEnv_TableOverrides: a deployment that
+// configures no metric table at all must leave every provenance flag false,
+// including for the four tables the sibling case never touches. A resolver
+// that marked a defaulted name as set would make the boot check fatal for
+// every stock deployment.
+func TestDefaultOTelMetricsFromEnv_NoOverridesRecordsNothing(t *testing.T) {
+	for _, key := range []string{
+		EnvMetricsGaugeTable,
+		EnvMetricsSumTable,
+		EnvMetricsHistogramTable,
+		EnvMetricsExpHistogramTable,
+		EnvMetricsSummaryTable,
+	} {
+		t.Setenv(key, "")
+	}
+	if got := DefaultOTelMetricsFromEnv().TableOverrides; got != (MetricTableOverrides{}) {
+		t.Errorf("no overrides set: TableOverrides = %+v, want the zero value", got)
+	}
+	// DefaultOTelMetrics takes no configuration at all, so it can never
+	// carry provenance either.
+	if got := DefaultOTelMetrics().TableOverrides; got != (MetricTableOverrides{}) {
+		t.Errorf("DefaultOTelMetrics(): TableOverrides = %+v, want the zero value", got)
+	}
+}
+
+// TestDefaultOTelMetricsFromEnv_OverrideIsPerTable confirms the provenance
+// is per-table rather than a single "anything was configured" flag: setting
+// one table must not mark the other four.
+func TestDefaultOTelMetricsFromEnv_OverrideIsPerTable(t *testing.T) {
+	for _, key := range []string{
+		EnvMetricsGaugeTable,
+		EnvMetricsSumTable,
+		EnvMetricsHistogramTable,
+		EnvMetricsExpHistogramTable,
+		EnvMetricsSummaryTable,
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv(EnvMetricsSumTable, "custom_sum")
+	got := DefaultOTelMetricsFromEnv().TableOverrides
+	want := MetricTableOverrides{Sum: true}
+	if got != want {
+		t.Errorf("only the sum table configured: TableOverrides = %+v, want %+v", got, want)
+	}
+}
+
 // TestDefaultOTelMetricsFromEnv_PromResourceLabels pins the
 // CERBERUS_PROM_RESOURCE_LABELS allowlist parse: comma-separated OTel
 // dotted keys split into a trimmed, empty-dropped slice; unset /

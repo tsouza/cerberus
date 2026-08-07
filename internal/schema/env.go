@@ -69,12 +69,18 @@ func envBool(get Getenv, key string) bool {
 // as unset — operators paste values with stray newlines often enough that
 // silently honouring them would produce table names like
 // "otel_metrics_sum\n" that fail at query time with cryptic CH errors.
-func envOverride(get Getenv, key, def string) string {
+//
+// The second return value reports which of the two happened: true when the
+// setting was configured and its value is what came back, false when the
+// caller got its own default. Callers that must tell an operator's
+// assertion apart from cerberus's assumption keep it (see
+// MetricTableOverrides); callers that only need the value discard it.
+func envOverride(get Getenv, key, def string) (string, bool) {
 	v := strings.TrimSpace(get(key))
 	if v == "" {
-		return def
+		return def, false
 	}
-	return v
+	return v, true
 }
 
 // DefaultOTelMetricsFromEnv returns DefaultOTelMetrics() with any
@@ -87,14 +93,17 @@ func DefaultOTelMetricsFromEnv() Metrics { return DefaultOTelMetricsFrom(os.Gete
 
 // DefaultOTelMetricsFrom is DefaultOTelMetricsFromEnv over an arbitrary
 // resolver, so a caller that also reads cerberus.yaml applies the same
-// overrides from either source.
+// overrides from either source. Each table name records whether it came
+// from the resolver or from the default in Metrics.TableOverrides, so a
+// consumer downstream can still tell the two apart once they have both
+// collapsed into the same string.
 func DefaultOTelMetricsFrom(get Getenv) Metrics {
 	m := DefaultOTelMetrics()
-	m.GaugeTable = envOverride(get, EnvMetricsGaugeTable, m.GaugeTable)
-	m.SumTable = envOverride(get, EnvMetricsSumTable, m.SumTable)
-	m.HistogramTable = envOverride(get, EnvMetricsHistogramTable, m.HistogramTable)
-	m.ExpHistogramTable = envOverride(get, EnvMetricsExpHistogramTable, m.ExpHistogramTable)
-	m.SummaryTable = envOverride(get, EnvMetricsSummaryTable, m.SummaryTable)
+	m.GaugeTable, m.TableOverrides.Gauge = envOverride(get, EnvMetricsGaugeTable, m.GaugeTable)
+	m.SumTable, m.TableOverrides.Sum = envOverride(get, EnvMetricsSumTable, m.SumTable)
+	m.HistogramTable, m.TableOverrides.Histogram = envOverride(get, EnvMetricsHistogramTable, m.HistogramTable)
+	m.ExpHistogramTable, m.TableOverrides.ExpHistogram = envOverride(get, EnvMetricsExpHistogramTable, m.ExpHistogramTable)
+	m.SummaryTable, m.TableOverrides.Summary = envOverride(get, EnvMetricsSummaryTable, m.SummaryTable)
 	m.PromResourceLabels = envCSVList(get, EnvPromResourceLabels)
 	return m
 }
@@ -191,7 +200,10 @@ func DefaultOTelLogsFromEnv() Logs { return DefaultOTelLogsFrom(os.Getenv) }
 // DefaultOTelLogsFrom is DefaultOTelLogsFromEnv over an arbitrary resolver.
 func DefaultOTelLogsFrom(get Getenv) Logs {
 	l := DefaultOTelLogs()
-	l.LogsTable = envOverride(get, EnvLogsTable, l.LogsTable)
+	// The override's provenance is discarded: an absent logs table is the
+	// not-yet-provisioned schema race on either source (preflight's
+	// transient AbsentTables path), so nothing downstream asks which it was.
+	l.LogsTable, _ = envOverride(get, EnvLogsTable, l.LogsTable)
 	return l
 }
 
@@ -202,7 +214,8 @@ func DefaultOTelTracesFromEnv() Traces { return DefaultOTelTracesFrom(os.Getenv)
 // DefaultOTelTracesFrom is DefaultOTelTracesFromEnv over an arbitrary resolver.
 func DefaultOTelTracesFrom(get Getenv) Traces {
 	t := DefaultOTelTraces()
-	t.SpansTable = envOverride(get, EnvTracesTable, t.SpansTable)
+	// Provenance discarded for the same reason as the logs table above.
+	t.SpansTable, _ = envOverride(get, EnvTracesTable, t.SpansTable)
 	// The lookup table name tracks the spans table: the OTel-CH DDL
 	// template hard-codes the `_trace_id_ts` suffix, so when the operator
 	// overrides the spans table the lookup table is `<spans>_trace_id_ts`.

@@ -994,6 +994,22 @@ opaque query-time errors into a precise, fail-fast boot error:
   external writer (the collector, or cerberus' own `CERBERUS_AUTO_CREATE_SCHEMA`)
   provisions the schema, `/readyz` flips ready **without a restart**.
   `/healthz` (liveness) stays **200** throughout — only readiness gates.
+- **Absent *configured* metric table.** The one exception to the tolerance
+  above, and it turns on **who chose the name**. When a deployment sets
+  `schema.metrics.gaugeTable` / `sumTable` / `histogramTable` (or the
+  equivalent `CERBERUS_SCHEMA_METRICS_*_TABLE` variable) and a **reachable**
+  ClickHouse does not have that table, startup **fails fast** with a message
+  naming both the table and the config key that set it. Naming a table is an
+  assertion that it exists, and a typo'd or unprovisioned one never
+  self-heals — it would instead silently degrade every `/api/v1/series`,
+  `/api/v1/labels`, and `/api/v1/label/<name>/values` request into a
+  ClickHouse `UNKNOWN_TABLE` error. A metric table whose name cerberus
+  **defaulted** carries no such assertion: a deployment that ingests only logs
+  and traces never provisions `otel_metrics_gauge` / `_sum` / `_histogram` and
+  is not misconfigured for it, so their absence is the ordinary
+  not-yet-provisioned race above — cerberus boots, reports NOT READY, and
+  re-probes. Spelling a stock name out explicitly opts that table into the
+  fail-fast check.
 - **Absent (not-yet-created) database.** A step earlier than an absent table:
   the configured **database** itself does not exist yet. Because the connection
   carries the database as its session default, even the version probe's
@@ -1023,8 +1039,9 @@ read the version and column metadata, but a server that is unreachable at the
 preflight point is itself classified transient (a dial / connection-refused
 error boots unready and re-probes, exactly like the connectivity ping above) —
 **not** a fatal exit. What stays fatal is a *reachable* server that fails the
-contract: a too-old / unparseable version, a wrong-shape table, or an
-introspection *error* (as opposed to a clean zero-row absence, or the
+contract: a too-old / unparseable version, a wrong-shape table, a missing
+metric table the deployment named itself, or an introspection *error* (as
+opposed to a clean zero-row absence of a table nobody named, or the
 `UNKNOWN_DATABASE` not-yet-created-database case).
 
 ### Schema divergence: MetricName-first metrics sort key
