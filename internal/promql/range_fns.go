@@ -433,6 +433,7 @@ func outOfRangePhiInf(phi float64) (float64, bool) {
 // *parser.VectorSelector from a function call's first arg, with the
 // canonical error messages the other range-vector functions use.
 func matrixAndSelector(c *parser.Call, arg parser.Expr) (*parser.MatrixSelector, *parser.VectorSelector, error) {
+	arg = peelWrappers(arg)
 	ms, ok := arg.(*parser.MatrixSelector)
 	if !ok {
 		return nil, nil, fmt.Errorf("promql: %s first argument must be a range-vector selector, got %T",
