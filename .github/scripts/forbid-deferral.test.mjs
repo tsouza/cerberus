@@ -24,9 +24,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   CITATION_WINDOW_LINES,
   DEFERRAL_MARKERS,
+  candidatesFor,
   citationVerdict,
   evaluate,
   findMarkers,
@@ -36,8 +41,11 @@ import {
   paragraphs,
   parseDiff,
   scanDiff,
+  eventPayloadAuthor,
   scanProse,
+  scansDescription,
   sectionAt,
+  sharedAuthor,
   stripFencedBlocks,
 } from './forbid-deferral.mjs';
 
@@ -594,4 +602,163 @@ test('evaluate keeps only the candidates no citation rescues', () => {
     violations.map((v) => v.location),
     ['line 1', 'line 5', 'line 7'],
   );
+});
+
+// --- surface scoping: a generated description ---------------------------------
+//
+// Every test below is a pair with the ones after it, and the pairing IS the
+// claim. "A bot's description is not read" on its own is indistinguishable from
+// an exemption; it becomes scoping only alongside "its commit messages are
+// read" and "its diff is read". So the suppression test is one of five, and the
+// other four are the ones that would catch this rule widening into a bypass.
+
+const BOT = 'dependabot[bot]';
+const HUMAN = 'tsouza';
+
+// A description carrying one marker and citing nothing, so the only reason it
+// could come back clean is that the surface was not read.
+const GENERATED_BODY = [
+  'Bumps go.opentelemetry.io/otel from 1.40.0 to 1.41.0.',
+  '',
+  `<li><code>223f9fd</code> sdk/metric: remove obsolete randomFloat64 ${TODO_WORD} (#7469)</li>`,
+].join('\n');
+
+const COMMITS_WITH_MARKER = [
+  { sha: 'a'.repeat(40), message: `chore(deps): bump otel\n\n${FOLLOWUP_WORD}: re-pin the oracle module` },
+];
+
+const DIFF_WITH_MARKER = [
+  'diff --git a/internal/chsql/emit.go b/internal/chsql/emit.go',
+  '--- a/internal/chsql/emit.go',
+  '+++ b/internal/chsql/emit.go',
+  '@@ -20,4 +20,6 @@ func emit() {',
+  ' func emit() {',
+  `+\t// ${TODO_WORD}: fold the grid`,
+  ' }',
+].join('\n');
+
+const EMPTY_DIFF = [
+  'diff --git a/go.mod b/go.mod',
+  '--- a/go.mod',
+  '+++ b/go.mod',
+  '@@ -3,3 +3,3 @@ module github.com/tsouza/cerberus',
+  '-\tgo.opentelemetry.io/otel v1.40.0',
+  '+\tgo.opentelemetry.io/otel v1.41.0',
+].join('\n');
+
+const surfacesOf = (candidates) => candidates.map((c) => c.surface).sort();
+
+test('a generated description is quoted release notes, not this change’s commitment', () => {
+  const found = candidatesFor({
+    description: GENERATED_BODY,
+    author: BOT,
+    commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
+    diffText: EMPTY_DIFF,
+    repoSlug: REPO,
+  });
+  assert.deepEqual(found, [], 'the body quotes an upstream subject; nothing here is authored');
+});
+
+test('the same description on an ordinary pull request is still read', () => {
+  const found = candidatesFor({
+    description: GENERATED_BODY,
+    author: HUMAN,
+    commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
+    diffText: EMPTY_DIFF,
+    repoSlug: REPO,
+  });
+  assert.deepEqual(surfacesOf(found), ['pr-body']);
+  assert.equal(found[0].location, 'PR description line 3');
+});
+
+test('a marker in a generated pull request’s COMMIT MESSAGE is still reported', () => {
+  const found = candidatesFor({
+    description: GENERATED_BODY,
+    author: BOT,
+    commits: COMMITS_WITH_MARKER,
+    diffText: EMPTY_DIFF,
+    repoSlug: REPO,
+  });
+  assert.deepEqual(surfacesOf(found), ['commit']);
+  assert.equal(found[0].markerId, 'followup-label');
+  assert.deepEqual(found[0].refs, [], 'it cites nothing, so the verdict stays untracked');
+});
+
+test('a marker in a generated pull request’s DIFF is still reported', () => {
+  const found = candidatesFor({
+    description: GENERATED_BODY,
+    author: BOT,
+    commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
+    diffText: DIFF_WITH_MARKER,
+    repoSlug: REPO,
+  });
+  assert.deepEqual(surfacesOf(found), ['diff']);
+  assert.equal(found[0].location, 'internal/chsql/emit.go:21');
+});
+
+test('an unknown author scans the description as normal', () => {
+  for (const author of [null, undefined, '', '   ']) {
+    const found = candidatesFor({
+      description: GENERATED_BODY,
+      author,
+      commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
+      diffText: EMPTY_DIFF,
+      repoSlug: REPO,
+    });
+    assert.deepEqual(
+      surfacesOf(found),
+      ['pr-body'],
+      `author ${JSON.stringify(author)} must not suppress a surface`,
+    );
+  }
+});
+
+test('scansDescription narrows on exactly one login and nothing near it', () => {
+  assert.equal(scansDescription(BOT), false);
+  assert.equal(scansDescription('Dependabot[bot]'), false, 'a login is not case-sensitive');
+  for (const near of ['dependabot', 'dependabot-preview[bot]', 'notdependabot[bot]', 'renovate[bot]', HUMAN]) {
+    assert.equal(scansDescription(near), true, `${near} is not the generated-description account`);
+  }
+});
+
+// --- resolving the author ------------------------------------------------------
+
+const withPayload = (contents) => {
+  const path = join(mkdtempSync(join(tmpdir(), 'forbid-deferral-')), 'event.json');
+  writeFileSync(path, contents);
+  return path;
+};
+
+test('the author is read from the event payload, not from a caller-supplied string', () => {
+  const path = withPayload(JSON.stringify({ pull_request: { user: { login: BOT } } }));
+  assert.equal(eventPayloadAuthor(path), BOT);
+});
+
+test('every unreadable payload yields no author, which scans the description', () => {
+  const cases = {
+    'no path at all': undefined,
+    'a path that does not exist': join(tmpdir(), 'forbid-deferral-absent', 'event.json'),
+    'a file that is not JSON': withPayload('not json {'),
+    'a payload with no pull request': withPayload(JSON.stringify({ ref: 'refs/heads/main' })),
+    'a pull request with no user': withPayload(JSON.stringify({ pull_request: {} })),
+    'a login that is not a string': withPayload(JSON.stringify({ pull_request: { user: { login: 7 } } })),
+    'a blank login': withPayload(JSON.stringify({ pull_request: { user: { login: '  ' } } })),
+  };
+  for (const [what, path] of Object.entries(cases)) {
+    assert.equal(eventPayloadAuthor(path), null, what);
+    assert.equal(scansDescription(eventPayloadAuthor(path)), true, `${what} must still scan`);
+  }
+});
+
+test('a push-resolved surface takes its author only when the pull requests agree', () => {
+  assert.equal(sharedAuthor([{ user: { login: BOT } }]), BOT);
+  assert.equal(sharedAuthor([{ user: { login: BOT } }, { user: { login: BOT } }]), BOT);
+  assert.equal(
+    sharedAuthor([{ user: { login: BOT } }, { user: { login: HUMAN } }]),
+    null,
+    'two authors, one concatenated body — attributing it to either would be a guess',
+  );
+  for (const empty of [[], null, undefined, [{}], [{ user: {} }]]) {
+    assert.equal(sharedAuthor(empty), null, 'no author means nothing to narrow');
+  }
 });

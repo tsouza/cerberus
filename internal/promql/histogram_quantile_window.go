@@ -69,18 +69,26 @@ const (
 	paramLadderPos = "j"
 )
 
-// classicBucketWindowFold reduces ONE `le` rung's per-row cumulative
-// counts down to that series' single value for the rung. `values` holds
-// the contributing rows' cumulative counts at the bound; `order` holds
-// the same rows' timestamps, positionally aligned, so a fold that cares
-// about sample order can sort by it.
+// histogramWindowTimeFold reduces ONE bucket's per-row counts down to
+// that series' single value for the bucket. `values` holds the
+// contributing rows' counts at that bucket; `order` holds the same
+// rows' timestamps, positionally aligned, so a fold that cares about
+// sample order can sort by it.
+//
+// Both histogram representations reduce along this axis with the same
+// folds: for a classic histogram the bucket is one `le` rung of the
+// cumulative ladder, for an exponential histogram it is one
+// scale-aligned bucket index. "Sum the consecutive deltas of a counter"
+// does not care which — only that `values` are one bucket's readings
+// and `order` puts them in time order — so both paths share this type
+// and the folds below rather than keeping parallel copies that drift.
 //
 // Distinct from classicBucketRungFold, which folds across SERIES for the
 // user's aggregation operator: this one folds across TIME for the
 // range-vector function. Different axis, different input, different
 // resolution table — keeping them separate types is what stops a fold
 // meant for one axis being reached from the other.
-type classicBucketWindowFold func(values, order chplan.Expr) chplan.Expr
+type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 
 // histogramWindowFold maps a matched range-vector function to the
 // reduction it performs on one series' in-window samples.
@@ -111,7 +119,7 @@ type classicBucketWindowFold func(values, order chplan.Expr) chplan.Expr
 // selector", which resolves to at most the single newest sample per
 // series in the staleness lookback — so it gets its own fold rather than
 // falling into the sum_over_time default.
-func histogramWindowFold(fn string) classicBucketWindowFold {
+func histogramWindowFold(fn string) histogramWindowTimeFold {
 	switch fn {
 	case "rate", "increase":
 		return counterIncreaseFold
@@ -268,7 +276,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, s sche
 // a bound is self-contained) — and differs only in what it folds over:
 // the rows of ONE series across TIME, carrying their timestamps so the
 // fold can order them.
-func classicBucketWindowLadderExpr(fold classicBucketWindowFold) chplan.Expr {
+func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 	boundsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggBoundsListAlias})
 	countsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggCountsListAlias})
 	tsList := chplan.Expr(&chplan.ColumnRef{Name: hqWindowTsListAlias})
@@ -365,7 +373,7 @@ func classicBucketWindowCountsExpr() chplan.Expr {
 // above consumes it exactly as it consumes raw table rows.
 func classicBucketWindowReshape(
 	group chplan.Node,
-	fold classicBucketWindowFold,
+	fold histogramWindowTimeFold,
 	passthrough []chplan.Projection,
 	s schema.Metrics,
 ) chplan.Node {

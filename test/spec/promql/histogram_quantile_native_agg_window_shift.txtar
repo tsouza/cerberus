@@ -1,3 +1,23 @@
+# `histogram_quantile(phi, sum by(le)(rate(<native hist>[5m])))` where the
+# seeded series' bucket distribution SHIFTS across the window. This fixture
+# exists to discriminate the per-series reduction across TIME from a flat
+# merge of every sample in the window — a constant-shape window cannot tell
+# the two apart.
+#
+# One series, scale 0 (base 2), PositiveOffset 0, cumulative counter:
+#
+#     23:58:00  [1000,   0,  0]
+#     00:00:00  [1000,   0, 40]
+#
+# The per-series counter increase across the window is [0, 0, 40]: every
+# observation added during the window landed in the third positive bucket,
+# covering (4, 8]. p95 of that distribution interpolates near the top of
+# that bucket.
+#
+# A flat merge instead sums the two CUMULATIVE samples into [2000, 0, 40],
+# where 98% of the mass sits in the first bucket (1, 2] and p95 lands there
+# instead. The two answers differ by a factor of ~4, so this fixture reads
+# as a bucket-index change rather than a rounding wobble.
 -- query.promql --
 histogram_quantile(0.95, sum by(le)(rate(http_server_duration_exp_hist[5m])))
 -- seed --
@@ -13,13 +33,11 @@ CREATE TABLE otel_metrics_exponential_histogram (
     NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_exponential_histogram VALUES
-    ('http_server_duration_exp_hist', map('service', 'api'),  toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [0, 0, 0], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'web'),  toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [0, 0, 0], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'api'),  toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [1, 2, 3], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'web'),  toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [3, 4, 3], 0, []);
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [1000, 0, 0], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [1000, 0, 40], 0, []);
 -- expected_rows --
 [
-  ["", {}, "2026-01-01T00:00:01Z", 7.293779908465734]
+  ["", {}, "2026-01-01T00:00:01Z", 7.727490631398766]
 ]
 -- args --
 [0] string = ""

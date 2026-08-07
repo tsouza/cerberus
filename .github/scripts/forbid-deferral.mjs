@@ -21,6 +21,12 @@
 // This is SCOPING, not an allow-list: there is no tolerance file, no exemption
 // list, and no way to park a violation.
 //
+// Surface 1 carries ONE narrowing, on the same grounds — see
+// GENERATED_DESCRIPTION_AUTHOR and scansDescription() below. Surfaces 2 and 3
+// are read on every change without exception, and that is what keeps the
+// narrowing scoping rather than an exemption: nothing reaches the tree behind
+// it.
+//
 // WHAT COUNTS — see DEFERRAL_MARKERS below, the single exported table. Each row
 // matches "work this change is postponing", never "a system boundary being
 // described". The distinction is why the table's last row carries a qualifier:
@@ -86,6 +92,16 @@
 //                      via env and never interpolated into a shell `run:` line
 //                      (bodies are attacker-controlled). May be empty; may not
 //                      be unset, which would mean the surface went uninspected.
+//   GITHUB_EVENT_PATH  Runner-provided path to the event payload JSON. Read for
+//                      ONE field, `pull_request.user.login`, which decides
+//                      whether the description surface is the author's own
+//                      prose (see scansDescription). Deliberately NOT a
+//                      workflow-interpolated author string: an input the caller
+//                      supplies is an input the caller can get wrong, and this
+//                      one decides whether a surface is read at all. Unset,
+//                      unreadable or malformed yields no author, and no author
+//                      means the description IS scanned — the fail-closed
+//                      direction.
 //   BASE_SHA           Range start. Falls back to `HEAD_SHA^` when unset or
 //                      unresolvable (a branch-creation push sends all-zeroes).
 //   HEAD_SHA           Range end. Falls back to `HEAD`.
@@ -107,6 +123,7 @@
 // regex rather than a literal call. Prose in this file, its test, and the docs
 // therefore names marker CLASSES rather than reproducing marker text.
 
+import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -292,6 +309,85 @@ export function stripFencedBlocks(text) {
     .join('\n');
 }
 
+// GENERATED_DESCRIPTION_AUTHOR — the one account whose pull request DESCRIPTION
+// this gate does not read.
+//
+// The reasoning is stripFencedBlocks's, one level up. Dependabot writes its own
+// description, and what it writes is a paste of somebody else's release notes:
+// a `<details>` block per bumped module, each holding that module's changelog
+// and its upstream commit subjects verbatim. That is QUOTED material in exactly
+// the sense the comment above means — a report of what other people wrote, not
+// a commitment this change is making — and scanning it reports the quotation
+// rather than the author's own promise. It is not hypothetical: a bump whose
+// generated body quoted an upstream commit titled "remove obsolete <marker>"
+// was reported four times, once per bumped module, as this change parking work.
+// The upstream commit was DELETING a marker.
+//
+// WHAT THIS GIVES UP, stated plainly. A human who edits a bot pull request's
+// description gets that prose unread — and that happens: the bump this rule was
+// written for grew a hand-written repair section after a human took the branch
+// over. Their commit messages and their diff are still read, so the loss is one
+// surface on one class of pull request, and the surface a marker would have to
+// survive to reach the repository is not it.
+//
+// WHY THIS IS SCOPING AND NOT AN ALLOW-LIST, against the header's own test at
+// the top of this file: nothing here can park a violation. There is no tolerance
+// file, no number to add, no per-change escape. The commit-message surface and
+// the diff surface are read on every change from every author, and the diff
+// surface is the one that decides what lands in the tree. What changes is WHICH
+// SURFACE is read, on the ground that the text in it was written by neither the
+// change nor its author.
+const GENERATED_DESCRIPTION_AUTHOR = 'dependabot[bot]';
+
+// scansDescription — is this pull request's description the author's own prose?
+//
+// Fail-closed by construction: only a login that positively matches the
+// generated-description account suppresses the surface, so an absent, empty or
+// unreadable author scans as normal. A gate that stopped reading a surface
+// because it could not determine something is the failure this ordering avoids.
+export function scansDescription(author) {
+  const login = String(author ?? '').trim().toLowerCase();
+  if (login === '') return true;
+  return login !== GENERATED_DESCRIPTION_AUTHOR;
+}
+
+// eventPayloadAuthor — the login that opened this pull request, read out of the
+// payload JSON the runner wrote for the event.
+//
+// Every failure mode collapses to null (no path, no file, unparseable JSON, a
+// payload with no pull request, a login that is not a non-empty string), which
+// scansDescription reads as "scan it". The read is therefore allowed to be
+// total: there is no error state in which this function's answer widens what
+// the gate accepts.
+export function eventPayloadAuthor(eventPath) {
+  if (!eventPath) return null;
+  let payload;
+  try {
+    payload = JSON.parse(readFileSync(eventPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  const login = payload?.pull_request?.user?.login;
+  return typeof login === 'string' && login.trim() !== '' ? login.trim() : null;
+}
+
+// sharedAuthor — the single login behind a set of pull requests, or null when
+// they do not agree on one.
+//
+// The push and merge-queue paths resolve the description surface from the head
+// commit's associated pull requests, which is a LIST. Concatenating two bodies
+// and attributing them to one author would be a guess; disagreement therefore
+// yields null, and null scans. An empty list likewise: there is no author to
+// read, so there is nothing to narrow.
+export function sharedAuthor(pulls) {
+  const logins = new Set(
+    (Array.isArray(pulls) ? pulls : [])
+      .map((p) => (typeof p?.user?.login === 'string' ? p.user.login.trim() : ''))
+      .filter((l) => l !== ''),
+  );
+  return logins.size === 1 ? [...logins][0] : null;
+}
+
 // paragraphs — split prose into blank-line-separated blocks, each carrying the
 // 1-based line at which it starts. The paragraph is the citation scope for
 // prose: an issue named three paragraphs away tracks something else.
@@ -455,6 +551,39 @@ export function scanDiff(diffText, repoSlug) {
     }
   }
   return candidates;
+}
+
+// --- surface composition -----------------------------------------------------
+
+// candidatesFor — every candidate violation across all three surfaces.
+//
+// Composed here rather than inline in the runner so the surface scoping is a
+// pure function a test can pin. The claim scansDescription makes is not "a
+// description is skipped" but "a description is skipped AND the other two
+// surfaces are not", and that is a statement about all three at once: a test
+// that only exercised the description could not tell scoping apart from an
+// exemption. The tests that matter are the ones asserting a marker in a bot
+// pull request's COMMIT MESSAGE and in its DIFF is still reported.
+export function candidatesFor({ description, author, commits, diffText, repoSlug }) {
+  return [
+    ...(scansDescription(author)
+      ? scanProse({
+          text: description,
+          surface: 'pr-body',
+          locate: (line) => `PR description line ${line}`,
+          repoSlug,
+        })
+      : []),
+    ...(Array.isArray(commits) ? commits : []).flatMap((c) =>
+      scanProse({
+        text: c.message,
+        surface: 'commit',
+        locate: (line) => `commit ${c.sha.slice(0, 12)} message line ${line}`,
+        repoSlug,
+      }),
+    ),
+    ...scanDiff(diffText, repoSlug),
+  ];
 }
 
 // --- verdict ----------------------------------------------------------------
@@ -672,7 +801,11 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
           'Wire `PR_BODY: ${{ github.event.pull_request.body }}` into the step env.',
       );
     }
-    return { text: process.env.PR_BODY, origin: 'the pull_request event payload' };
+    return {
+      text: process.env.PR_BODY,
+      origin: 'the pull_request event payload',
+      author: eventPayloadAuthor(process.env.GITHUB_EVENT_PATH),
+    };
   }
   const pulls = await apiJson(
     `${apiBase}/repos/${repo}/commits/${head}/pulls`,
@@ -693,11 +826,16 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
     );
   }
   if (pulls.length === 0) {
-    return { text: '', origin: `explicitly empty: no pull request is associated with ${head.slice(0, 12)}` };
+    return {
+      text: '',
+      origin: `explicitly empty: no pull request is associated with ${head.slice(0, 12)}`,
+      author: null,
+    };
   }
   return {
     text: pulls.map((p) => p.body ?? '').join('\n\n'),
     origin: `the description of ${pulls.map((p) => `#${p.number}`).join(', ')}`,
+    author: sharedAuthor(pulls),
   };
 }
 
@@ -780,30 +918,29 @@ async function main() {
 
   const description = await descriptionSurface({ eventName, repo, head, token, apiBase });
 
-  const candidates = [
-    ...scanProse({
-      text: description.text,
-      surface: 'pr-body',
-      locate: (line) => `PR description line ${line}`,
-      repoSlug: repo,
-    }),
-    ...commits.flatMap((c) =>
-      scanProse({
-        text: c.message,
-        surface: 'commit',
-        locate: (line) => `commit ${c.sha.slice(0, 12)} message line ${line}`,
-        repoSlug: repo,
-      }),
-    ),
-    ...scanDiff(diffText, repo),
-  ];
+  const candidates = candidatesFor({
+    description: description.text,
+    author: description.author,
+    commits,
+    diffText,
+    repoSlug: repo,
+  });
 
   const cited = [...new Set(candidates.flatMap((c) => c.refs))].sort((a, b) => a - b);
   const resolved = await resolveRefs(cited, { repo, token, apiBase });
   const violations = evaluate(candidates, resolved);
 
+  // The anti-vacuity contract in the header says every run states what it
+  // inspected. A surface that was resolved but deliberately not read has to say
+  // so in the same breath, or the summary claims a scan that did not happen.
+  const descriptionRead = scansDescription(description.author);
   const inspected = [
-    `- description: ${description.origin} (${description.text.length} chars)`,
+    `- description: ${description.origin} (${description.text.length} chars)` +
+      (descriptionRead
+        ? ''
+        : ` — NOT scanned: written by ${GENERATED_DESCRIPTION_AUTHOR}, whose body quotes ` +
+          'upstream release notes rather than stating this change\'s own commitment. Its ' +
+          'commit messages and its diff were scanned as normal.'),
     `- commits: **${commits.length}** in \`${base.slice(0, 12)}..${head.slice(0, 12)}\``,
     `- diff: **${files.length}** file(s) at \`--unified=${CITATION_WINDOW_LINES}\``,
     `- marker table: **${DEFERRAL_MARKERS.length}** rows`,
