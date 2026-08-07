@@ -119,57 +119,59 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 	return sl.Val, nil
 }
 
-// rangeWindowAnchorColumn is the column a MATRIX chplan.RangeWindow
-// publishes its per-row grid anchor under. The emitter fixes the name
-// (internal/chsql range_window.go renders `… AS anchor_ts`), and
-// api/prom.wrapWithSampleProjection reads it back by that name to bucket a
-// matrix response's points, so any projection that sits between the two
-// has to forward it under the same name.
-const rangeWindowAnchorColumn = "anchor_ts"
-
 // projectAttributesOverInner wraps inner with a Project that keeps every
 // other column and replaces only Attributes with the new attrs
 // expression. Mirrors projectValueOverInner (instant_fns.go) but
 // targets the Attributes column instead of Value.
 //
-// When inner is a RangeWindow, MetricName doesn't survive the windowed
-// groupArray, so the projection drops it.
+// Which columns "every other column" means is DERIVED from the inner row
+// shape ([chplan.RowShapeOf]) rather than from the inner node's kind. The
+// projection references its inputs by name, so a listed column the inner
+// scope does not expose is a ClickHouse code 47 and an unlisted column the
+// layer above still reads is a silently emptied response — both of which
+// this helper has shipped, once per shape it guessed at:
 //
-// A MATRIX RangeWindow (OuterRange > 0) does NOT lose its timestamp: it
-// emits one row per (series, anchor) and publishes that anchor both as
-// `anchor_ts` and as `anchor_ts AS TimeUnix`. Listing only Attributes and
-// Value here therefore does not describe the input, it CONTRADICTS it —
-// api/prom.wrapWithSampleProjection reads `anchor_ts` back off the plan
-// root to bucket each series' points, and dropping the column left it
-// selecting an identifier that no longer existed:
+//   - A WINDOWED row shape has already grouped MetricName away. Listing it
+//     emitted `SELECT MetricName, … FROM (<windowed subquery>)`:
 //
-//	Code: 47. DB::Exception: Unknown expression identifier `anchor_ts`
+//     Code: 47. DB::Exception: Unknown expression identifier `MetricName`
 //
-// for `label_replace(rate(m[5m]), …)` at /api/v1/query_range. Forwarding
-// both columns mirrors what [projectValueOverInner] already does for the
-// same shape, and for the same two reasons: the matrix wrapper reads
-// `anchor_ts`, and a step-aligned vector-vector join reads TimeUnix off
-// each arm.
+//     for `label_replace(rate(m[5m]), …)` at /api/v1/query_range whenever
+//     the ts_grid_range lowering was active, because the classifier used
+//     to be a `*chplan.RangeWindow` type assertion and that path builds a
+//     `*chplan.RangeWindowNative` with the identical row shape.
 //
-// An INSTANT RangeWindow (OuterRange == 0) genuinely has no timestamp to
-// forward — it has already reduced each series to a single row — which is
-// why the columns are conditional rather than unconditional.
+//   - A GRID window (one row per (series, anchor)) does NOT lose its
+//     timestamp: it publishes the anchor both as
+//     [chplan.RangeWindowAnchorColumn] and as `anchor_ts AS TimeUnix`.
+//     Listing only Attributes and Value therefore does not describe the
+//     input, it CONTRADICTS it — api/prom.wrapWithSampleProjection reads
+//     the anchor column back off the plan root to bucket each series'
+//     points, and dropping it left that wrapper selecting an identifier
+//     that no longer existed. Forwarding both mirrors what
+//     [projectValueOverInner] does for the same shape, and for the same
+//     two reasons: the matrix wrapper reads the anchor, and a step-aligned
+//     vector-vector join reads TimeUnix off each arm.
 //
-// Every other inner shape (Scan / Filter / Project / Aggregate / LWR)
-// keeps the full Sample-row schema, so we forward all four canonical
-// columns.
+//   - A REDUCED window genuinely has no timestamp to forward — it has
+//     already collapsed each series to a single row — which is why the
+//     timestamp columns are conditional rather than unconditional.
+//
+//   - Every other inner shape keeps the full Sample row, so we forward all
+//     four canonical columns.
+//
 // The return type is the concrete *chplan.Project rather than the Node
 // interface because [guardLabelRewriteCollision] reads the projection list
 // back to learn which canonical columns this rewrite actually exposes —
 // the same derive-don't-declare question [chplan.IsDerivedShape] answers
 // for the emitter and the HTTP layer.
 func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) *chplan.Project {
-	if rw, ok := inner.(*chplan.RangeWindow); ok {
+	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
 		projections := []chplan.Projection{{Expr: attrs, Alias: s.AttributesColumn}}
-		if rw.OuterRange > 0 {
+		if shape == chplan.GridWindowRowShape {
 			projections = append(
 				projections,
-				chplan.Projection{Expr: &chplan.ColumnRef{Name: rangeWindowAnchorColumn}},
+				chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
 				chplan.Projection{
 					Expr:  &chplan.ColumnRef{Name: s.TimestampColumn},
 					Alias: s.TimestampColumn,

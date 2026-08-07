@@ -356,23 +356,22 @@ func TestQueryRange_InstantNameDrop_DistinctLabelsets_ChDB(t *testing.T) {
 	}
 }
 
-// TestQueryRange_LabelRewriteOverMatrixWindow_Intact_ChDB pins the shape
-// the label-rewrite guard deliberately does NOT wrap: a rewrite over a
-// matrix RangeWindow (#1899).
+// TestQueryRange_LabelRewriteOverMatrixWindow_Intact_ChDB is the INJECTIVE
+// control for a label rewrite over a matrix RangeWindow — the guarded shape
+// whose failure mode is silent.
 //
 // It is a control against a specific, silent failure mode rather than a
 // restatement of "label_replace works". A matrix RangeWindow publishes its
 // per-anchor timestamp as `anchor_ts`, and the endpoint finds that window
-// by walking the plan root past the Projects above it — a walk that does
-// not cross an Aggregate. Wrapping this shape in the guard's Aggregate
-// therefore does not fail loudly; it reclassifies the query as non-matrix
-// and answers `"result":[]` with status 200, which no status-code
-// assertion anywhere would notice.
+// by walking the plan root past the nodes above it. A walk that does not
+// cross the guard's Aggregate does not fail loudly; it reclassifies the
+// query as non-matrix and answers `"result":[]` with status 200, which no
+// status-code assertion anywhere would notice.
 //
 // So this asserts the payload: both series survive, each carries the
-// rewritten label, and each keeps every point. An earlier revision of the
-// guard returned an empty matrix here and passed every other test in this
-// file.
+// rewritten label, and each keeps every point. That is what
+// chplan.AggregatePreservesMatrixGrid buys, and nothing else in this file
+// would catch its absence.
 func TestQueryRange_LabelRewriteOverMatrixWindow_Intact_ChDB(t *testing.T) {
 	start, end, step := subqueryNameWindow()
 	srv, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
@@ -433,4 +432,218 @@ func TestQueryRange_LabelRewriteOverMatrixWindow_Intact_ChDB(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rangeMatrix issues an /api/v1/query_range and decodes the matrix result.
+func rangeMatrix(t *testing.T, srvURL, query string, start, end time.Time, step time.Duration) (int, string, []prom.MatrixSample) {
+	t.Helper()
+	status, body := getBody(t, fmt.Sprintf(
+		"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+		srvURL, url.QueryEscape(query), start.Unix(), end.Unix(), int(step.Seconds()),
+	))
+	if status != http.StatusOK {
+		return status, body, nil
+	}
+	var got struct {
+		Data struct {
+			Result []prom.MatrixSample `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("%s: decode: %v; body=%s", query, err, body)
+	}
+	return status, body, got.Data.Result
+}
+
+// TestQueryRange_LabelRewriteOverMatrixWindow_DuplicateLabelset_ChDB is the
+// NON-INJECTIVE half of the same shape: a rewrite over `rate(...)` that maps
+// two series onto one label set must abort, exactly as the instant rewrite
+// over the same two series does.
+//
+// This is the boundary a matrix query cannot express any other way. An
+// instant collision surfaces as a 422; a matrix one has no wire shape for
+// "two series, one label set", so an unguarded answer is two identically
+// labelled series in one matrix — which Grafana renders as two anonymous
+// overlapping lines rather than as the error upstream raises.
+func TestQueryRange_LabelRewriteOverMatrixWindow_DuplicateLabelset_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
+	srv, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{
+			// Flattens the only distinguishing label onto a constant.
+			"label_replace_over_rate",
+			`label_replace(rate(cpu_temp[5m]), "host", "z", "host", ".*")`,
+		},
+		{
+			// Zero src labels join to the empty string, which the emit path's
+			// outer mapFilter drops — so `host` disappears from both series.
+			"label_join_over_rate",
+			`label_join(rate(cpu_temp[5m]), "host", "-")`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := getBody(t, fmt.Sprintf(
+				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				srv.URL, url.QueryEscape(tc.query), start.Unix(), end.Unix(), int(step.Seconds()),
+			))
+			assertDuplicateLabelsetRejected(t, body, status, tc.query)
+		})
+	}
+}
+
+// TestQueryRange_AggregationOverMatrixWindow_Unchanged_ChDB pins the shape
+// that must NOT be reclassified by the matrix-spine walks.
+//
+// `sum by (host) (rate(cpu_temp[5m]))` is also an Aggregate over a matrix
+// RangeWindow, but it folds the grid: it reports the step axis through its
+// own `bucket_ts` alias and never exposes `anchor_ts`. A blanket
+// "cross every Aggregate" arm in isMatrixRangeWindow would send this down
+// the bare-selector path and read a column its output scope has none of.
+// The assertion is the full payload — every series, every point — because
+// a wrong timestamp source here degrades the answer without changing the
+// status.
+func TestQueryRange_AggregationOverMatrixWindow_Unchanged_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
+	srv, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+
+	const query = `sum by (host) (rate(cpu_temp[5m]))`
+	status, body, matrix := rangeMatrix(t, srv.URL, query, start, end, step)
+	if status != http.StatusOK {
+		t.Fatalf("%s: status: got %d, want 200; body=%s", query, status, body)
+	}
+	if len(matrix) != 2 {
+		t.Fatalf("%s: got %d series, want 2 (host=a and host=b): body=%s", query, len(matrix), body)
+	}
+
+	wantSteps := int(end.Sub(start)/step) + 1
+	seen := map[string]bool{}
+	for _, series := range matrix {
+		host := series.Metric["host"]
+		seen[host] = true
+		if len(series.Values) != wantSteps {
+			t.Errorf("%s: series host=%s: %d points, want %d — a folding Aggregate reports on "+
+				"the grid through its own alias, and crossing it here changes the timestamp source",
+				query, host, len(series.Values), wantSteps)
+		}
+	}
+	for _, host := range []string{"a", "b"} {
+		if !seen[host] {
+			t.Errorf("%s: expected a series with host=%q, got %v", query, host, seen)
+		}
+	}
+}
+
+// TestQueryRange_DuplicateLabelsetCorpusShapes_ChDB drives, at
+// /api/v1/query_range, every collision shape the Prometheus compatibility
+// corpus now carries (`compatibility/prometheus/cerberus-test-queries.yml`,
+// header edit 8). The corpus runs against a real ClickHouse and a real
+// reference Prometheus and cannot be settled locally; this pins cerberus's
+// half of each row against chDB so a corpus row can never be the first
+// place a missing guard is discovered.
+//
+// The corpus drives /api/v1/query_range for every row, so "instant" and
+// "range" here name the OPERAND — a bare selector versus a range window —
+// not the endpoint. That distinction is the whole point: the two are
+// different plans, and only the range one can answer wrongly without
+// changing its status code.
+func TestQueryRange_DuplicateLabelsetCorpusShapes_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
+
+	const (
+		selector = `{__name__=~"cpu_temp|gpu_temp"}`
+		window   = `avg_over_time(` + selector + `[5m])`
+	)
+
+	// Two metric names over one attribute set: dropping `__name__` maps
+	// both onto the same label set. Mirrors the corpus's
+	// demo_disk_usage_bytes / demo_disk_total_bytes pair.
+	nameDrop, _ := newChDBServer(t, dupLabelsetSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'a')"))
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"instant_math_fn", `ceil(` + selector + `)`},
+		{"unary_minus", `-` + selector},
+		{"date_fn", `year(` + selector + `)`},
+		{"scalar_times_vector", `2 * ` + selector},
+		{"vector_times_scalar", selector + ` * 2`},
+		{"instant_math_fn_over_window", `ceil(` + window + `)`},
+		{"unary_minus_over_window", `-` + window},
+		{"date_fn_over_window", `year(` + window + `)`},
+		{"scalar_times_window", `2 * ` + window},
+		{"window_times_scalar", window + ` * 2`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := getBody(t, fmt.Sprintf(
+				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				nameDrop.URL, url.QueryEscape(tc.query), start.Unix(), end.Unix(), int(step.Seconds()),
+			))
+			assertDuplicateLabelsetRejected(t, body, status, tc.query)
+		})
+	}
+
+	// One metric name over two hosts: a non-injective rewrite of `host`
+	// merges them. Mirrors the corpus's demo_num_cpus rows.
+	rewrite, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"label_replace_flattens_label", `label_replace(cpu_temp, "host", "merged", "host", ".*")`},
+		{"label_join_drops_label", `label_join(cpu_temp, "host", "-")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := getBody(t, fmt.Sprintf(
+				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				rewrite.URL, url.QueryEscape(tc.query), start.Unix(), end.Unix(), int(step.Seconds()),
+			))
+			assertDuplicateLabelsetRejected(t, body, status, tc.query)
+		})
+	}
+
+	// The corpus's injective control: a capture-group rewrite over a range
+	// window that copies the distinguishing label into a new one and keeps
+	// it, so every series and every point must survive.
+	//
+	// It gets its OWN chDB session rather than reusing `rewrite`. chDB
+	// returns result sets as Parquet, and chdb-go v1.12.0 emits an
+	// undecodable page index for the first SUCCEEDING query on a session
+	// that previously raised a ClickHouse exception — which every row above
+	// does, by design, through the guard's throwIf. parquet-go v0.29.0 then
+	// panics inside NewGenericReader, so the panic middleware answers 500
+	// and the control reads as a cerberus regression it is not. Real
+	// ClickHouse speaks the native protocol and has no such coupling; the
+	// corpus row itself runs there. A fresh session is unaffected, so the
+	// query, the seed and the assertions below are the corpus row's, intact.
+	injective, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+	t.Run("injective_capture_rewrite_over_window", func(t *testing.T) {
+		const query = `label_replace(rate(cpu_temp[5m]), "core", "$1", "host", "(.*)")`
+		status, body, matrix := rangeMatrix(t, injective.URL, query, start, end, step)
+		if status != http.StatusOK {
+			t.Fatalf("%s: status: got %d, want 200; body=%s", query, status, body)
+		}
+		if len(matrix) != 2 {
+			t.Fatalf("%s: got %d series, want 2 — an empty matrix here is the silent failure "+
+				"mode the corpus's should_fail rows cannot see; body=%s", query, len(matrix), body)
+		}
+		wantSteps := int(end.Sub(start)/step) + 1
+		for _, series := range matrix {
+			host := series.Metric["host"]
+			if got := series.Metric["core"]; got != host {
+				t.Errorf("%s: series host=%s: core = %q, want %q", query, host, got, host)
+			}
+			if len(series.Values) != wantSteps {
+				t.Errorf("%s: series host=%s: %d points, want %d", query, host, len(series.Values), wantSteps)
+			}
+		}
+	})
 }

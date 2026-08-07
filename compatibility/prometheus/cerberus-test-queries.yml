@@ -60,6 +60,20 @@
 #    the six value functions and the native `histogram_quantile` walk now
 #    compare real distributions. The float-input cases are kept alongside,
 #    with the emptiness they assert stated as the property it is.
+# 8. A cerberus-owned duplicate-labelset block is appended at the end of the
+#    file. Every other row in this corpus rewrites or drops labels into
+#    DISTINCT label sets, so none of them reaches the abort reference
+#    Prometheus raises when two series land on one label set — the six
+#    label_replace rows included. The block builds that collision on
+#    purpose, once per shape that can create it (a name-dropping instant
+#    function, unary minus, a date function, both scalar-vector binary
+#    orders, label_replace and label_join), and once per position each shape
+#    can occupy: over a bare selector and over a range window. The two
+#    positions are different plans in cerberus, and only the second can fail
+#    silently — a matrix response has no shape for "two series, one label
+#    set", so a wrong answer there is an empty result at status 200 rather
+#    than an error. The block's last row is the injective control that
+#    discriminates the two.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -606,3 +620,93 @@ test_cases:
     should_fail: true
   - query: 'demo_memory_usage_bytes[5m]'
     should_fail: true
+  # Duplicate-labelset boundary (cerberus-owned; see file header edit 8).
+  #
+  # Every row below is built so two or more series land on ONE label set,
+  # which reference Prometheus refuses to answer. The corpus otherwise
+  # carries no such query — its six label_replace rows all rewrite into
+  # distinct label sets — so this boundary was pinned only by cerberus's
+  # own tests.
+  #
+  # `demo_disk_usage_bytes` and `demo_disk_total_bytes` carry the IDENTICAL
+  # label shape (`instance` × `device` × `job`) over the identical values,
+  # so dropping `__name__` maps each pair onto one label set. Reference
+  # Prometheus keeps the name internally until the result is built and then
+  # errors from mergeSeriesWithSameLabelset, because the two series hold a
+  # sample at every shared step.
+  #
+  # `demo_num_cpus` and `demo_cpu_usage_seconds_total` carry the two
+  # rewrite collisions: flattening `instance` (resp. `mode`) onto a
+  # constant, or joining it from zero source labels so it drops out,
+  # merges series that shared a name to begin with. Reference errors from
+  # rangeEval's per-step duplicate check, because a rewrite preserves the
+  # name and the merged samples hash identically.
+  #
+  # Each shape appears twice: over a bare selector, and over a range
+  # window. The two are different plans in cerberus, and the range one
+  # cannot surface a collision as an error on the wire at all — a matrix
+  # response has no shape for "two series, one label set" — so an
+  # instant-only row leaves the range half unpinned.
+  - query: 'ceil({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"})'
+    should_fail: true
+  - query: '-{__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}'
+    should_fail: true
+  - query: '{{.dateFunc}}({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"})'
+    variant_args: ['dateFunc']
+    should_fail: true
+  # Both scalar⊗vector orders: cerberus lowers `scalar op vector` and
+  # `vector op scalar` through separate arms, so one being guarded says
+  # nothing about the other.
+  - query: '2 * {__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}'
+    should_fail: true
+  - query: '{__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"} * 2'
+    should_fail: true
+  # The same five shapes over a range window. `avg_over_time` drops the
+  # name exactly as the instant transforms do, and both families are
+  # gauges, so the reducer is the honest one to read them with.
+  - query: 'ceil(avg_over_time({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}[{{.range}}]))'
+    variant_args: ['range']
+    should_fail: true
+  - query: '-avg_over_time({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}[{{.range}}])'
+    variant_args: ['range']
+    should_fail: true
+  - query: '{{.dateFunc}}(avg_over_time({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}[{{.range}}]))'
+    variant_args: ['dateFunc', 'range']
+    should_fail: true
+  - query: '2 * avg_over_time({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}[{{.range}}])'
+    variant_args: ['range']
+    should_fail: true
+  - query: 'avg_over_time({__name__=~"demo_disk_usage_bytes|demo_disk_total_bytes"}[{{.range}}]) * 2'
+    variant_args: ['range']
+    should_fail: true
+  # Label rewrites over a bare selector: `instance` is the only label that
+  # distinguishes demo_num_cpus's three series.
+  - query: 'label_replace(demo_num_cpus, "instance", "merged", "instance", ".*")'
+    should_fail: true
+  - query: 'label_join(demo_num_cpus, "instance", "-")'
+    should_fail: true
+  # Label rewrites over a range window — the shape whose collision has no
+  # wire representation. `mode` is what separates each instance's three
+  # counter series, so flattening or dropping it merges them.
+  #
+  # The window is pinned rather than driven by the `range` variant: `rate`
+  # needs two samples inside the window to emit anything at all, and the
+  # variant set opens at `1s`, well under the scrape interval. At that
+  # width every series is empty, nothing collides, and reference answers
+  # 200 — so a `should_fail` row driven by the variant asserts the
+  # opposite of what it claims for the narrowest member of the set.
+  - query: 'label_replace(rate(demo_cpu_usage_seconds_total[1m]), "mode", "all", "mode", ".*")'
+    should_fail: true
+  - query: 'label_join(rate(demo_cpu_usage_seconds_total[1m]), "mode", "-")'
+    should_fail: true
+  # The INJECTIVE control for the row above, and the only row in this file
+  # that discriminates the failure mode a collision guard over a range
+  # window introduces if the plan-shape classifier cannot see through it:
+  # the query answers 200 with an EMPTY matrix instead of erroring, which
+  # every should_fail row above would happily accept. Here the rewrite
+  # copies `mode` into a new label and keeps `mode`, so all nine series
+  # survive and reference returns every point. It carries the same pinned
+  # window as the rows it controls: an empty-versus-empty comparison would
+  # match whatever the guard did, which is the one thing this row exists to
+  # rule out.
+  - query: 'label_replace(rate(demo_cpu_usage_seconds_total[1m]), "core", "$1", "mode", "(.*)")'

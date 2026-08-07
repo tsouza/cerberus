@@ -292,27 +292,49 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 //     `abs(metric)` showing Metric: metric{...} on cerberus vs
 //     Metric: {...} on reference Prometheus.
 //
-//   - RangeWindow: only `Attributes` + `Value` survive the windowed
-//     groupArray — MetricName and TimeUnix never make it through, so
-//     this branch already matches Prom semantics by construction.
+//   - A WINDOWED row shape ([chplan.RowShapeOf] answers anything but
+//     [chplan.SampleRowShape]): the reducer already dropped `__name__`,
+//     so no MetricName is forwarded and this branch matches Prom
+//     semantics by construction. A GRID window additionally publishes
+//     the per-anchor timestamp under two names and both are forwarded; a
+//     REDUCED window has collapsed each series to one row and has no
+//     timestamp to forward at all.
+//
+// The shape is DERIVED from the inner node rather than read off its kind.
+// A `*chplan.RangeWindow` type assertion answers "is this one node kind",
+// not "what does my input expose", and the two came apart the moment
+// `*chplan.RangeWindowNative` grew the identical row shape:
+// `abs(rate(m[5m]))` on the ts_grid_range path took the canonical branch
+// and published `(” AS MetricName, Attributes, TimeUnix, Value)` where
+// the fan-out publishes `(Attributes, anchor_ts, TimeUnix, Value)`.
+//
+// That divergence does not fail ClickHouse on its own — this branch
+// SYNTHESISES the name rather than referencing it, and the TimeUnix it
+// forwards IS the grid anchor under its other name — but it makes the
+// two strategies publish different columns for one row shape, which is
+// exactly the substitutability [chplan.RangeWindowNative] documents. The
+// same spelling in [projectAttributesOverInner] REFERENCES MetricName
+// and is a live ClickHouse code 47. Routing both halves through one
+// classifier is what stops them answering differently.
 //
 // The text-equality goldens in test/spec/promql/ track both shapes; see
 // e.g. `edge_abs_over_rate.txtar` (instant fn over rate) and
 // `unary_minus_rate.txtar` (unary minus over rate).
 func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
-	if rw, ok := inner.(*chplan.RangeWindow); ok {
+	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
 		projections := []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},
 		}
-		// Matrix-shape RangeWindow (range-mode subqueries + range-mode
-		// `rate`/`*_over_time` queries with Step > 0) exposes
-		// `anchor_ts` as the per-row per-anchor timestamp. The outer
+		// A GRID window (range-mode subqueries + range-mode
+		// `rate`/`*_over_time` queries with Step > 0, and every
+		// timeSeries*ToGrid native node) exposes `anchor_ts` as the
+		// per-row per-anchor timestamp. The outer
 		// wrapWithSampleProjection reads it back through this Project
 		// (when `isMatrixRangeWindow` walks past the value-rewrite
 		// Project layer); forwarding the column keeps the per-anchor
 		// time-bucketing intact for callers like `abs(avg_over_time(…))`.
 		//
-		// The matrix RangeWindow ALSO surfaces `anchor_ts AS TimeUnix`
+		// A grid window ALSO surfaces `anchor_ts AS TimeUnix`
 		// (the schema timestamp column — see range_window.go
 		// `outer.Select(As(verbatim("anchor_ts"), r.TimestampColumn))`).
 		// A step-aligned vector↔vector join reads that column off each
@@ -325,10 +347,10 @@ func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.
 		// the bare-rate arm does. The non-join path is unaffected: its
 		// outer wrapWithSampleProjection reads `anchor_ts`, not TimeUnix,
 		// and an extra subquery column is harmless.
-		if rw.OuterRange > 0 {
+		if shape == chplan.GridWindowRowShape {
 			projections = append(
 				projections,
-				chplan.Projection{Expr: &chplan.ColumnRef{Name: "anchor_ts"}},
+				chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}},
 				chplan.Projection{
 					Expr:  &chplan.ColumnRef{Name: s.TimestampColumn},
 					Alias: s.TimestampColumn,

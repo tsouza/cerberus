@@ -1204,7 +1204,8 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 	}
-	if chplan.IsDerivedShape(plan, sampleColumns(s)) {
+	cols := sampleColumns(s)
+	if chplan.IsDerivedShape(plan, cols) {
 		// TimeUnix source: a matrix-shape RangeWindow exposes a real per-row
 		// timestamp under the literal column `anchor_ts`, which the emitter
 		// keeps offset-SHIFTED (the window/rate math keys off the shifted
@@ -1219,9 +1220,9 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 		// time, so it is left un-relabeled. The instant case synthesises via
 		// now64().
 		var tsExpr chplan.Expr
-		if isMatrixRangeWindow(plan) {
+		if isMatrixRangeWindow(plan, cols) {
 			tsExpr = &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
-			if off, relabel := matrixWindowOffset(plan); relabel {
+			if off, relabel := matrixWindowOffset(plan, cols); relabel {
 				tsExpr = chplan.OffsetReanchoredAnchorExpr(off)
 			}
 		} else {
@@ -1256,7 +1257,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 // sample at its actual, offset-shifted time and is left alone; a zero offset
 // needs no relabel. Mirrors the emitter's gridAnchorFrag so the bare-selector
 // (wrapWithSampleProjection) and wrapping-aggregate (grid-keyed) paths agree.
-func matrixWindowOffset(plan chplan.Node) (offset time.Duration, relabel bool) {
+func matrixWindowOffset(plan chplan.Node, cols chplan.SampleColumns) (offset time.Duration, relabel bool) {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
 		return v.Offset, v.Offset != 0 && !v.Identity
@@ -1271,14 +1272,23 @@ func matrixWindowOffset(plan chplan.Node) (offset time.Duration, relabel bool) {
 		// by +o. Never relabel native.
 		return 0, false
 	case *chplan.Project:
-		return matrixWindowOffset(v.Input)
+		return matrixWindowOffset(v.Input, cols)
 	case *chplan.Filter:
-		return matrixWindowOffset(v.Input)
+		return matrixWindowOffset(v.Input, cols)
+	case *chplan.Aggregate:
+		if chplan.AggregatePreservesMatrixGrid(v, cols) {
+			return matrixWindowOffset(v.Input, cols)
+		}
 	}
 	return 0, false
 }
 
-func isMatrixRangeWindow(plan chplan.Node) bool {
+// isMatrixRangeWindow and matrixWindowOffset walk the same spine and must
+// cross the same nodes: the first decides that `anchor_ts` is the timestamp
+// source, the second decides how that column is relabeled, and a node one
+// crosses while the other stops at yields an offset-relabel applied to a
+// column nobody selected.
+func isMatrixRangeWindow(plan chplan.Node, cols chplan.SampleColumns) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
 		return v.OuterRange > 0
@@ -1290,9 +1300,18 @@ func isMatrixRangeWindow(plan chplan.Node) bool {
 		// the now64() instant synthesis.
 		return true
 	case *chplan.Project:
-		return isMatrixRangeWindow(v.Input)
+		return isMatrixRangeWindow(v.Input, cols)
 	case *chplan.Filter:
-		return isMatrixRangeWindow(v.Input)
+		return isMatrixRangeWindow(v.Input, cols)
+	case *chplan.Aggregate:
+		// An Aggregate keyed on (Attributes, anchor_ts) re-publishes the
+		// grid it was handed — the duplicate-labelset guard's shape — so
+		// the window underneath it is still the timestamp source. One that
+		// folds the grid (a PromQL `sum by (…)`) is not crossed: it reports
+		// on the step axis through its own alias, and reading `anchor_ts`
+		// off its output scope selects an identifier it never exposed.
+		return chplan.AggregatePreservesMatrixGrid(v, cols) &&
+			isMatrixRangeWindow(v.Input, cols)
 	}
 	return false
 }

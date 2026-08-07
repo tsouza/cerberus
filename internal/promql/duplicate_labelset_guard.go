@@ -262,23 +262,14 @@ func pinnedMetricName(e parser.Expr) string {
 // `rewritten` is the Project [projectAttributesOverInner] built, so the
 // group key reads the REWRITTEN Attributes — grouping the pre-rewrite
 // column would check the wrong label set.
+// A MATRIX RangeWindow input is guarded like every other shape. It emits
+// one row per (series, anchor) and publishes the anchor under `anchor_ts`,
+// which api/prom.wrapWithSampleProjection reads back to bucket each series'
+// points; the guard keys on (Attributes, anchor_ts) and so re-publishes
+// that grid unchanged. api/prom.isMatrixRangeWindow crosses exactly that
+// key shape — chplan.AggregatePreservesMatrixGrid — so the matrix
+// classification survives the guard.
 func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chplan.Node {
-	if rw, ok := rewritten.Input.(*chplan.RangeWindow); ok && rw.OuterRange > 0 {
-		// A MATRIX RangeWindow emits one row per (series, anchor) and
-		// publishes the anchor under `anchor_ts`, which
-		// api/prom.wrapWithSampleProjection reads back to bucket each
-		// series' points. Reaching it means walking the plan root past the
-		// Projects above the window (api/prom.isMatrixRangeWindow), and an
-		// Aggregate is not one of the nodes that walk crosses — so wrapping
-		// this shape in the guard would silently reclassify the query as
-		// non-matrix and answer an EMPTY matrix.
-		//
-		// Guarding this shape needs the classifier to be able to see
-		// through a shape-preserving Aggregate, which is a change to the
-		// plan-shape contract rather than to this guard. Tracked in #1899.
-		return rewritten
-	}
-
 	cols := canonicalSampleColumns(s)
 	canonical := chplan.ProjectExposesCanonical(rewritten, cols)
 	keyOnStep := guardKeysOnTimestamp(rewritten, s)
