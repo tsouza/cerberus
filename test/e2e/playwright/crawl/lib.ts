@@ -134,7 +134,22 @@ export type StructuralParamRule = {
 );
 
 /**
- * Grafana-12.x structural params, pinned to grafana/grafana:12.2.9.
+ * Grafana-12.x structural params, pinned to grafana/grafana:12.2.9 AND
+ * to the Drilldown app versions named in the stack definitions.
+ *
+ * The image tag alone does not pin the surface this table describes.
+ * Grafana 12 preinstalls the four Drilldown apps from a list hardcoded
+ * in its own binary (`pkg/setting/setting_plugins.go`), and that list
+ * pins no version — every entry carries `update_strategy = minor`, so
+ * each container start resolves it against grafana.com's catalogue and
+ * downloads whatever is latest that day. Two runs of the same
+ * `grafana/grafana:12.2.9`, days apart, boot different Drilldown code
+ * with different routes, tabs and picker options.
+ * `GF_PLUGINS_PREINSTALL` (in `docker-compose.yml` and
+ * `test/e2e/k3s/grafana.yaml`) names each id at a version; the
+ * configured list MERGES with the built-in one rather than replacing
+ * it, so an id left unnamed still floats. This list, and the surface
+ * inventory that pins the products of it, are read against that pin.
  *
  * Every `values` set below is read off the shipped plugin bundle —
  * the literal option array the app itself iterates — NOT off whichever
@@ -165,6 +180,14 @@ export type StructuralParamRule = {
  * the crawl reached first — precisely the coverage #1889 (the Service
  * structure tab 500s on every primary signal but the default) needs
  * the crawl to keep reaching.
+ *
+ * The five, boot `nestedSetParent<0`: Root spans `nestedSetParent<0`,
+ * All spans `true`, Server spans `kind=server`, Consumer spans
+ * `kind=consumer`, Database calls `span.db.system.name!=""`. The app
+ * splits them across TWO controls: a RadioButtonGroup holding the
+ * first two (plus the current value when it is one of the other three)
+ * and a Select holding the rest. The sweep therefore sees one param
+ * written by two independent option sets.
  *
  * `var-groupBy` parameterizes rather than enumerates because its
  * option list is a fact about the DATA, not about the surface: the
