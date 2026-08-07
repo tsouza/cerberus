@@ -4,37 +4,62 @@
 [0] string = "job"
 [1] string = "api"
 [2] string = "_extracted"
-[3] string = "="
-[4] string = " "
-[5] string = "\""
-[6] string = "status"
-[7] string = "status"
-[8] bool = false
-[9] string = "_extracted"
-[10] string = "="
-[11] string = " "
-[12] string = "\""
-[13] string = "status"
+[3] int64 = 1
+[4] int64 = 1
+[5] string = "="
+[6] string = " "
+[7] string = "\""
+[8] string = "Array(Tuple(String,String))"
+[9] string = "Array(Tuple(String,String))"
+[10] string = "Map(String,String)"
+[11] string = "status"
+[12] string = "status"
+[13] bool = false
 [14] string = "_extracted"
-[15] string = "="
-[16] string = " "
-[17] string = "\""
-[18] string = "status"
-[19] string = "status"
-[20] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[21] bool = true
-[22] string = "_extracted"
-[23] string = "="
-[24] string = " "
-[25] string = "\""
-[26] string = "status"
-[27] string = "_extracted"
-[28] string = "="
-[29] string = " "
-[30] string = "\""
-[31] string = "status"
-[32] string = "status"
-[33] float64 = 400
+[15] int64 = 1
+[16] int64 = 1
+[17] string = "="
+[18] string = " "
+[19] string = "\""
+[20] string = "Array(Tuple(String,String))"
+[21] string = "Array(Tuple(String,String))"
+[22] string = "Map(String,String)"
+[23] string = "status"
+[24] string = "_extracted"
+[25] int64 = 1
+[26] int64 = 1
+[27] string = "="
+[28] string = " "
+[29] string = "\""
+[30] string = "Array(Tuple(String,String))"
+[31] string = "Array(Tuple(String,String))"
+[32] string = "Map(String,String)"
+[33] string = "status"
+[34] string = "status"
+[35] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[36] bool = true
+[37] string = "_extracted"
+[38] int64 = 1
+[39] int64 = 1
+[40] string = "="
+[41] string = " "
+[42] string = "\""
+[43] string = "Array(Tuple(String,String))"
+[44] string = "Array(Tuple(String,String))"
+[45] string = "Map(String,String)"
+[46] string = "status"
+[47] string = "_extracted"
+[48] int64 = 1
+[49] int64 = 1
+[50] string = "="
+[51] string = " "
+[52] string = "\""
+[53] string = "Array(Tuple(String,String))"
+[54] string = "Array(Tuple(String,String))"
+[55] string = "Map(String,String)"
+[56] string = "status"
+[57] string = "status"
+[58] float64 = 400
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
@@ -51,7 +76,7 @@ INSERT INTO otel_logs (Body) VALUES
   ["ts=2026-01-01 status=503 msg=\"unavailable\""]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(not((mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "status") OR mapContains(LogAttributes, "status"))), false, not(match(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "status"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")), true, (toFloat64OrZero(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\""))), "status"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), extractKeyValuePairs(Body, "=", " ", "\"")))["status"], LogAttributes["status"])) > 400)))
+Filter predicate=((ResourceAttributes["job"] = "api") AND multiIf(not((mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status") OR mapContains(LogAttributes, "status"))), false, not(match(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")), true, (toFloat64OrZero(if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"])) > 400)))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), extractKeyValuePairs(`Body`, ?, ?, ?)))[?], `LogAttributes`[?])) > toFloat64(?)))
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?])) > toFloat64(?)))

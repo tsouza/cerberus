@@ -886,7 +886,7 @@ func renameIdentifierOnCollision(s schema.Logs, id string) chplan.Expr {
 // key and value, space between pairs, double-quote as the quoting
 // character.
 func extractKVPairs(s schema.Logs) chplan.Expr {
-	return &chplan.FuncCall{
+	pairs := &chplan.FuncCall{
 		Name: "extractKeyValuePairs",
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.BodyColumn},
@@ -895,6 +895,12 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 			&chplan.LitString{V: "\""},
 		},
 	}
+	// `dup=1 dup=2` yields a Map carrying BOTH entries, and a CH Map
+	// lookup resolves to the first — upstream's decoder loop assigns each
+	// pair in turn, so the last write stands. Reduce before the map is
+	// built so every consumer of a logfmt label set, bare or by
+	// expression, reads the same value.
+	return castToLabelMap(lastKeyWins(castToLabelPairArray(pairs)))
 }
 
 // jsonNestedKeySpacer joins the segments of a nested JSON key into one
@@ -1025,7 +1031,7 @@ func jsonFlattenedMap(s schema.Logs) chplan.Expr {
 		},
 	}
 
-	return castToLabelMap(jsonLastKeyWins(jsonReadLeaves(folded)))
+	return castToLabelMap(lastKeyWins(jsonReadLeaves(folded)))
 }
 
 // Lambda parameter names for the flattening fold. They are emitted
@@ -1260,10 +1266,12 @@ func jsonStartsWith(e chplan.Expr, prefix string) chplan.Expr {
 	}
 }
 
-// jsonLastKeyWins reduces a `(key, value)` array to one entry per key,
-// keeping the LAST occurrence. A JSON object may repeat a key — and a
-// nested key may flatten onto the same label name as a sibling — in
-// which case upstream's map assignment leaves the last write standing.
+// lastKeyWins reduces a `(key, value)` array to one entry per key,
+// keeping the LAST occurrence. Every text format a parser stage reads
+// can repeat a key — a JSON object may state one twice, a nested JSON
+// key may flatten onto the same label name as a sibling, a logfmt line
+// may carry `dup=1 dup=2` — and in each case upstream assigns the pairs
+// in turn, so the last write is the one left standing.
 // ClickHouse's Map, by contrast, retains duplicate entries and resolves
 // a lookup to the FIRST, so without this reduction the two disagree on
 // exactly the documents where it matters.
@@ -1272,7 +1280,11 @@ func jsonStartsWith(e chplan.Expr, prefix string) chplan.Expr {
 // its key has not been kept already, then restores the original
 // direction. Folding rather than filtering-by-index is what keeps the
 // (large) input expression referenced once.
-func jsonLastKeyWins(pairs chplan.Expr) chplan.Expr {
+//
+// The `__json_*` lambda parameter names are the ones the JSON flattening
+// fold introduced, shared rather than duplicated: they name a pair and
+// an accumulator, which is what every caller passes.
+func lastKeyWins(pairs chplan.Expr) chplan.Expr {
 	seen := &chplan.BareIdent{Name: jsonSeenParam}
 	// A distinct parameter name: this lambda is nested inside the fold's
 	// own `__json_entry` scope, and reusing the name would shadow it —
@@ -1313,13 +1325,7 @@ func jsonLastKeyWins(pairs chplan.Expr) chplan.Expr {
 				Args: []chplan.Expr{
 					keepFirstUnseen,
 					&chplan.FuncCall{Name: "arrayReverse", Args: []chplan.Expr{pairs}},
-					&chplan.FuncCall{
-						Name: "CAST",
-						Args: []chplan.Expr{
-							&chplan.FuncCall{Name: "array"},
-							&chplan.LitString{V: "Array(Tuple(String,String))"},
-						},
-					},
+					castToLabelPairArray(&chplan.FuncCall{Name: "array"}),
 				},
 			},
 		},
@@ -1443,7 +1449,7 @@ func unpackExtractedMap(s schema.Logs) chplan.Expr {
 		Name: "if",
 		Args: []chplan.Expr{
 			unpackIsPacked(s),
-			castToLabelMap(jsonLastKeyWins(pairs)),
+			castToLabelMap(lastKeyWins(pairs)),
 			emptyLabelMap(),
 		},
 	}
@@ -1541,10 +1547,23 @@ func unpackErrorMarkers(s schema.Logs) chplan.Expr {
 // label set is cast to before it is merged onto the running labels map.
 const labelMapType = "Map(String,String)"
 
+// labelPairArrayType is the same label set in its ordered form. A
+// stage's extracted pairs pass through it whenever their order carries
+// meaning — which is whenever a key can repeat, because [lastKeyWins]
+// resolves the repeat by position and a Map has already lost it.
+const labelPairArrayType = "Array(Tuple(String,String))"
+
 func castToLabelMap(pairs chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "CAST",
 		Args: []chplan.Expr{pairs, &chplan.LitString{V: labelMapType}},
+	}
+}
+
+func castToLabelPairArray(pairs chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "CAST",
+		Args: []chplan.Expr{pairs, &chplan.LitString{V: labelPairArrayType}},
 	}
 }
 

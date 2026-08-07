@@ -81,9 +81,16 @@ func TestLogfmtConflictRename_TypedForm(t *testing.T) {
 	// if(mapContains(ResourceAttributes, ?), ?, ?) call. The three
 	// placeholders bind: the stream-membership check key, the suffixed
 	// rename, and the bare identifier.
-	want := "map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractKeyValuePairs(`Body`"
+	want := "map(if(mapContains(`ResourceAttributes`, ?), ?, ?), "
 	if !strings.Contains(sql, want) {
 		t.Errorf("SQL missing typed-form rename wrapper %q\nfull SQL: %s", want, sql)
+	}
+	// The value under that wrapper is still read from the logfmt pair
+	// set. Asserted separately from the wrapper because the pair set is
+	// now reduced to one entry per key before the lookup, so the two are
+	// no longer textually adjacent.
+	if !strings.Contains(sql, "extractKeyValuePairs(`Body`") {
+		t.Errorf("typed form no longer reads the logfmt pair set\nfull SQL: %s", sql)
 	}
 
 	// The prior unmediated shape — `map(?, extractKeyValuePairs(...)[?])`

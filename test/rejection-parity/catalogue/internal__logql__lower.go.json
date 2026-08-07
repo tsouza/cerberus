@@ -143,11 +143,11 @@
       "site": "internal/logql/lower.go:lowerStage#a7242d58",
       "message": "logql: parser stage `| %s` is not yet supported",
       "class": "internal",
-      "rationale": "every LineParserExpr op the pinned grammar produces (json / regexp / unpack / pattern) is handled; bare `| logfmt` parses as LogfmtParserExpr",
+      "rationale": "every LineParserExpr op the pinned grammar produces (json / regexp / unpack / pattern) has its own case; bare `| logfmt` parses as LogfmtParserExpr",
       "evidence": {
         "guard": [
           "case *syntax.LineParserExpr of switch st := stage.(type)",
-          "past exhaustive switch st.Op over [case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern; case syntax.OpParserTypeJSON; case syntax.OpParserTypeRegexp]"
+          "past exhaustive switch st.Op over [case syntax.OpParserTypePattern; case syntax.OpParserTypeUnpack; case syntax.OpParserTypeJSON; case syntax.OpParserTypeRegexp]"
         ],
         "callers": [
           "lowerPipelineWithLabels"
