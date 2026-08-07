@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -130,7 +131,7 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 		"map_scope", resolved.MapScope,
 		"key", resolved.Key,
 		"sql", sqlStr,
-		"args", args)
+		"args", telemetry.SanitizeArgsForLog(args))
 
 	values, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {

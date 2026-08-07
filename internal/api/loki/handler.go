@@ -292,7 +292,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
-	h.Logger.Debug("cerberus loki query", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus loki query", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	data, err := buildInstantData(expr, res.Samples, ts, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
@@ -378,7 +378,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		h.onQueryRangeDrain(res.Inspected)
 	}
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
-	h.Logger.Debug("cerberus loki query_range", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus loki query_range", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {

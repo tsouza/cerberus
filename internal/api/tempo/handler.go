@@ -434,7 +434,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpErrStatus(err), "", "", err)
 		return
 	}
-	h.Logger.Debug("cerberus tempo search", "traceql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus tempo search", "traceql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	summaries, missingRoots := toTraceSummaries(res.Samples, spss, res.Meta)
 	// Accounted BEFORE TruncateSummaries — see SearchMetricsFor for why the
@@ -586,7 +586,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpErrStatus(err), "", "", err)
 		return
 	}
-	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus tempo search/recent", "limit", limit, "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	// /search/recent has no TraceQL query, so res.Meta carries no
 	// name-intrinsic bit and spans come back with name unset — the same
@@ -686,7 +686,7 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 		writeError(w, httpErrStatus(err), traceID, "", err)
 		return
 	}
-	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	writeEngineHeaders(w, res.Headers)
 

@@ -46,3 +46,26 @@ func SanitizeForLog(s string) string {
 	}
 	return b.String()
 }
+
+// SanitizeArgsForLog applies [SanitizeForLog] to every string in a
+// query-argument slice, so a bound parameter carrying a raw newline cannot
+// forge a log line when the slice is attached to a log record. Arguments
+// cerberus binds are request-derived by construction — a label value, a
+// metric name, a line-filter string — which makes the whole slice a
+// log-injection source the moment it reaches a log call.
+//
+// Non-string arguments (timestamps, limits, numeric bounds) render through
+// their own formatters and carry no control characters, so they pass
+// through untouched. The input slice is never mutated: the caller still
+// owns it and passes the same values to the database driver.
+func SanitizeArgsForLog(args []any) []any {
+	out := make([]any, len(args))
+	for i, a := range args {
+		if s, ok := a.(string); ok {
+			out[i] = SanitizeForLog(s)
+			continue
+		}
+		out[i] = a
+	}
+	return out
+}

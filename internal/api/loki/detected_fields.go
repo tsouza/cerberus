@@ -226,7 +226,7 @@ func (h *Handler) detectedFieldsPeek(w http.ResponseWriter, r *http.Request, rou
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return nil, 0, false
 	}
-	h.Logger.Debug("cerberus loki "+route, "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki "+route, "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	rows, err = h.Client.QueryDetectedFieldRows(r.Context(), sqlStr, args...)
 	if err != nil {
@@ -253,7 +253,11 @@ func (h *Handler) detectedFieldsPeek(w http.ResponseWriter, r *http.Request, rou
 // which is what upstream's parseDetectedFieldValues does; structured
 // metadata is never rewritten, matching upstream's split.
 func detectFieldValues(rows []chclient.DetectedFieldRow, name string, limit int) []string {
-	seen := make(map[string]struct{}, limit)
+	// No size hint: limit is request-supplied, and pre-allocating against a
+	// caller-chosen bound hands the client the allocation size. The map
+	// grows to whatever the peek window actually yields, which is bounded
+	// by the rows read, not by the parameter.
+	seen := make(map[string]struct{})
 	out := []string{}
 
 	// add reports whether collection should continue.
