@@ -69,8 +69,6 @@ import (
 // row per series stamped at a single anchor, which the matrix pivot
 // renders as a single point for the entire requested range.
 
-const histogramAnchorCol = "anchor_ts"
-
 // stalenessMinSamples is the sample floor for a staleness-lookback window:
 // a bare selector resolves to at most one sample, so one is enough.
 const stalenessMinSamples = 1
@@ -214,7 +212,7 @@ func broadcastHistogramAtPin(inner chplan.Node, s schema.Metrics, ctx lowerCtx) 
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: histogramAnchorCol}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: stepGridAnchorColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}
@@ -284,12 +282,12 @@ func lowerHistogramQuantileClassicAggRange(
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		classicBucketWindowAggs(s), s, ctx,
 	)
-	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	perSeries := classicBucketWindowReshape(
 		fanout,
 		histogramWindowFold(shape.windowFn),
 		[]chplan.Projection{
-			{Expr: anchorRef, Alias: histogramAnchorCol},
+			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 		},
 		s,
@@ -304,13 +302,13 @@ func lowerHistogramQuantileClassicAggRange(
 	collapse := &chplan.Aggregate{
 		Input:              perSeries,
 		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
-		GroupByAliases:     append([]string{histogramAnchorCol}, userAliases...),
+		GroupByAliases:     append([]string{stepGridAnchorColumn}, userAliases...),
 		AggFuncs:           shaping.aggs,
 		DropEmptyOnNoGroup: true,
 	}
 
 	rebuilt, cumulative := shaping.reshape(collapse, []chplan.Projection{
-		{Expr: anchorRef, Alias: histogramAnchorCol},
+		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
 	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s)
@@ -348,7 +346,7 @@ func buildHistogramRangeTree(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
-	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
 	agg := buildHistogramBucketFanout(scan, pred, leMatchers, win, userGroupBy, userAliases, shaping.aggs, s, ctx)
 
@@ -357,7 +355,7 @@ func buildHistogramRangeTree(
 	// while preserving anchor_ts as a passthrough column so the
 	// downstream HistogramQuantile GroupBy can pick it up.
 	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
-		{Expr: anchorRef, Alias: histogramAnchorCol},
+		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
 	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s)
@@ -384,7 +382,7 @@ func histogramRangeQuantileTree(
 	phi phiArg,
 	s schema.Metrics,
 ) chplan.Node {
-	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	hq := &chplan.HistogramQuantile{
 		Input:                  rebuilt,
 		Phi:                    phi.lit,
@@ -396,7 +394,7 @@ func histogramRangeQuantileTree(
 			anchorRef,
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},
-		GroupByAliases:   []string{histogramAnchorCol, s.AttributesColumn},
+		GroupByAliases:   []string{stepGridAnchorColumn, s.AttributesColumn},
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
@@ -532,7 +530,7 @@ func buildHistogramNativeRangeTree(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
-	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
 	agg := buildHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, expHistAggs, s, ctx)
 
@@ -540,7 +538,7 @@ func buildHistogramNativeRangeTree(
 	// fields (already aliased to their schema-canonical names by the
 	// fanout).
 	rebuiltProjs := []chplan.Projection{
-		{Expr: anchorRef, Alias: histogramAnchorCol},
+		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 		{Expr: &chplan.ColumnRef{Name: s.ScaleColumn}, Alias: s.ScaleColumn},
 		{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
@@ -574,7 +572,7 @@ func buildHistogramNativeRangeTree(
 			anchorRef,
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},
-		GroupByAliases:   []string{histogramAnchorCol, s.AttributesColumn},
+		GroupByAliases:   []string{stepGridAnchorColumn, s.AttributesColumn},
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
@@ -609,14 +607,14 @@ func buildHistogramNativeRangeTreeMerge(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
-	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
 	agg := buildHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, mergeAggs, s, ctx)
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
 	mergeProjs := []chplan.Projection{
-		{Expr: anchorRef, Alias: histogramAnchorCol},
+		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 		{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
 		{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
@@ -650,7 +648,7 @@ func buildHistogramNativeRangeTreeMerge(
 			anchorRef,
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},
-		GroupByAliases:   []string{histogramAnchorCol, s.AttributesColumn},
+		GroupByAliases:   []string{stepGridAnchorColumn, s.AttributesColumn},
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
@@ -684,7 +682,7 @@ func buildHistogramNativeRangeTreeMerge(
 // it unchanged.
 //
 // The anchor key is implicit — it is prepended by the fanout node under
-// histogramAnchorCol — so callers pass ONLY the user group keys in
+// stepGridAnchorColumn — so callers pass ONLY the user group keys in
 // userGroupBy / userAliases (the full Attributes column for the bare
 // paths, the `by/without` projection for the aggregated paths).
 func buildHistogramBucketFanout(
@@ -729,7 +727,7 @@ func buildHistogramBucketFanout(
 		GroupByAliases: userAliases,
 		AggFuncs:       aggFuncs,
 		MinSamples:     win.minSamples,
-		AnchorAlias:    histogramAnchorCol,
+		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
 	}
 }

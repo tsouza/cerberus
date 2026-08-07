@@ -59,10 +59,11 @@ func lowerQueryContextFold(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	return syntheticScalarVector(&chplan.LitFloat{V: val}, nil, s, ctx), nil
 }
 
-// stepGridAnchorColumn is the column a chplan.StepGrid names each
-// evaluation step with. It is the only timestamp in scope directly above
-// a StepGrid — the canonical Sample timestamp column does not exist until
-// a projection aliases this one onto it.
+// stepGridAnchorColumn is the column every per-step fan-out names each
+// evaluation step with — a chplan.StepGrid and the histogram range
+// fan-out alike. It is the only timestamp in scope directly above such a
+// fan-out: the canonical Sample timestamp column does not exist until a
+// projection aliases this one onto it.
 const stepGridAnchorColumn = "anchor_ts"
 
 // syntheticScalarVector builds a Project-over-(OneRow|StepGrid) plan
