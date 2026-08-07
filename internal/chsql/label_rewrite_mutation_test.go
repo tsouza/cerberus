@@ -127,6 +127,55 @@ func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 	)
 }
 
+// TestMutation_ExprLabelReplace_SharedCaptureNameForm pins the
+// `arrayFirst` selection a segment carrying Fallbacks renders — the shape
+// a `$name` reference takes when several capture groups share that name
+// and none of them can match the empty string (#1768).
+//
+// Go's ExpandString picks the first like-named group that took part in
+// the match; over non-nullable groups that is the first with a non-empty
+// capture, so the emitted SQL searches the carriers' `extractGroups`
+// subscripts IN ORDER. Pinning the whole string is what makes the order
+// an assertion: a renderer that emitted the fallbacks first, dropped one,
+// or reused a single subscript changes it.
+//
+// Kills labelReplaceSegment's `len(seg.Fallbacks) == 0` guard, which under
+// negation renders the bare subscript for a selection (silently answering
+// with whichever group happens to be first) and the whole search for a
+// plain reference.
+func TestMutation_ExprLabelReplace_SharedCaptureNameForm(t *testing.T) {
+	t.Parallel()
+
+	sql, args := renderExpr(t, &chplan.LabelReplace{
+		Map:              attrsMap(),
+		Dst:              "dst",
+		Src:              "src",
+		Regex:            "(a)|(b)",
+		EmptyReplacement: "",
+		Segments: []chplan.LabelReplaceSegment{
+			{Literal: "v=", Group: chplan.NoCaptureGroup},
+			{Group: 1, Fallbacks: []int{2, 3}},
+		},
+	})
+
+	assertRender(
+		t, sql, args,
+		"mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), "+
+			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
+			"concat(?, arrayFirst(x -> x != ?, ["+
+			"extractGroups(`Attributes`[?], ?)[?], "+
+			"extractGroups(`Attributes`[?], ?)[?], "+
+			"extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`))",
+		[]any{
+			"src", "^(a)|(b)$", "dst", "src", "",
+			"v=", "",
+			"src", "^(a)|(b)$", int64(1),
+			"src", "^(a)|(b)$", int64(2),
+			"src", "^(a)|(b)$", int64(3),
+		},
+	)
+}
+
 // TestMutation_ExprLabelReplace_MapErrorPropagates pins that an unrenderable
 // Map reaches the caller rather than rendering as silently truncated SQL.
 // Paired with the shape assertions above so it cannot pass by rejecting every
