@@ -424,35 +424,8 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
 		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
-	// expected_absent_values is only read by assertTagsCase, so allowing
-	// it anywhere else would let a case carry an assertion that never
-	// runs — a green that proves nothing.
-	if len(cur.ExpectedAbsentValues) != 0 && cur.Endpoint != "tags_v1" && cur.Endpoint != "tags_v2" {
-		return cur, fmt.Errorf("case %q: -- expected_absent_values -- is only valid for endpoint=tags_v1 / tags_v2 (got %s)", cur.Name, cur.Endpoint)
-	}
-	// `q` on a tag-names route means opposite things on the two versions,
-	// and a case that sends one has to say which it is testing.
-	//
-	// On tags_v2 the parameter narrows, and the only reason to send one is
-	// to get a SMALLER key set back: without an expected_absent_values the
-	// case passes identically when `q` is dropped on the floor, which is
-	// the bug the parameter exists to fix.
-	if cur.Query != "" && cur.Endpoint == "tags_v2" && len(cur.ExpectedAbsentValues) == 0 {
-		return cur, fmt.Errorf("case %q: endpoint=tags_v2 with a -- query -- requires -- expected_absent_values -- (a key the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name)
-	}
-	// tags_v1 does not take `q` — upstream's V1 route drops it and answers
-	// the whole window (LiveStore.SearchTags forwards only the scope into
-	// SearchTagsV2). So a V1 case sending one asserts the OPPOSITE: the
-	// keys the query does not select are still there. Requiring
-	// expected_values and refusing expected_absent_values keeps a case
-	// from re-encoding the narrowing premise on the route that has none.
-	if cur.Query != "" && cur.Endpoint == "tags_v1" {
-		if len(cur.ExpectedAbsentValues) != 0 {
-			return cur, fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- cannot carry -- expected_absent_values -- (V1 ignores `q` and answers the unscoped key set)", cur.Name)
-		}
-		if len(cur.ExpectedValues) == 0 {
-			return cur, fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- requires -- expected_values -- (a key only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name)
-		}
+	if err := validateTagNameAssertions(cur); err != nil {
+		return cur, err
 	}
 	if cur.Spss != 0 && cur.Endpoint != "search" {
 		return cur, fmt.Errorf("case %q: -- spss -- is only valid for endpoint=search (got %s)", cur.Name, cur.Endpoint)
@@ -467,6 +440,44 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 		return cur, err
 	}
 	return cur, nil
+}
+
+// validateTagNameAssertions keeps a tag-names case honest about what it
+// claims the route does with the assertions it carries. Every rule here is
+// about the same failure: a case that passes whether or not the behaviour
+// under test happened.
+func validateTagNameAssertions(cur CorpusCase) error {
+	// expected_absent_values is only read by assertTagsCase, so allowing
+	// it anywhere else would let a case carry an assertion that never
+	// runs — a green that proves nothing.
+	if len(cur.ExpectedAbsentValues) != 0 && cur.Endpoint != "tags_v1" && cur.Endpoint != "tags_v2" {
+		return fmt.Errorf("case %q: -- expected_absent_values -- is only valid for endpoint=tags_v1 / tags_v2 (got %s)", cur.Name, cur.Endpoint)
+	}
+	// `q` on a tag-names route means opposite things on the two versions,
+	// and a case that sends one has to say which it is testing.
+	//
+	// On tags_v2 the parameter narrows, and the only reason to send one is
+	// to get a SMALLER key set back: without an expected_absent_values the
+	// case passes identically when `q` is dropped on the floor, which is
+	// the bug the parameter exists to fix.
+	if cur.Query != "" && cur.Endpoint == "tags_v2" && len(cur.ExpectedAbsentValues) == 0 {
+		return fmt.Errorf("case %q: endpoint=tags_v2 with a -- query -- requires -- expected_absent_values -- (a key the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name)
+	}
+	// tags_v1 does not take `q` — upstream's V1 route drops it and answers
+	// the whole window (LiveStore.SearchTags forwards only the scope into
+	// SearchTagsV2). So a V1 case sending one asserts the OPPOSITE: the
+	// keys the query does not select are still there. Requiring
+	// expected_values and refusing expected_absent_values keeps a case
+	// from re-encoding the narrowing premise on the route that has none.
+	if cur.Query != "" && cur.Endpoint == "tags_v1" {
+		if len(cur.ExpectedAbsentValues) != 0 {
+			return fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- cannot carry -- expected_absent_values -- (V1 ignores `q` and answers the unscoped key set)", cur.Name)
+		}
+		if len(cur.ExpectedValues) == 0 {
+			return fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- requires -- expected_values -- (a key only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name)
+		}
+	}
+	return nil
 }
 
 // validateExpectedStatus enforces the status-parity axis's invariants.
