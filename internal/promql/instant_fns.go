@@ -85,7 +85,7 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx)
 		// the showcase-promql sgn() panel.
 		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{newValue}}
 	}
-	return projectValueOverInner(inner, s, newValue), nil
+	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
 }
 
 // lowerRoundToNearest implements PromQL `round(v, to_nearest)` as
@@ -124,7 +124,7 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		Args: []chplan.Expr{&chplan.Binary{Op: chplan.OpDiv, Left: valueRef, Right: tn}},
 	}
 	newValue := &chplan.Binary{Op: chplan.OpMul, Left: rounded, Right: tn}
-	return projectValueOverInner(inner, s, newValue), nil
+	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
 }
 
 // lowerClamp implements the PromQL clamp family:
@@ -170,7 +170,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					&chplan.LitFloat{V: bound},
 				},
 			}
-			return projectValueOverInner(inner, s, newValue), nil
+			return guardedValueProjection(inner, c.Args[0], s, newValue), nil
 		}
 		boundE, err := lowerScalarArg(c.Args[1], s, ctx)
 		if err != nil {
@@ -187,7 +187,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				boundE,
 			},
 		})
-		return projectValueOverInner(inner, s, newValue), nil
+		return guardedValueProjection(inner, c.Args[0], s, newValue), nil
 
 	case "clamp":
 		if len(c.Args) != 3 {
@@ -226,7 +226,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					},
 				},
 			}
-			return projectValueOverInner(inner, s, newValue), nil
+			return guardedValueProjection(inner, c.Args[0], s, newValue), nil
 		}
 
 		// At least one computed bound: bind both sides through
@@ -271,7 +271,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				},
 			},
 		)
-		return projectValueOverInner(filtered, s, newValue), nil
+		return guardedValueProjection(filtered, c.Args[0], s, newValue), nil
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
 }

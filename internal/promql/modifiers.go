@@ -108,6 +108,66 @@ type lowerCtx struct {
 	// anchored to epoch 0 rather than to the shard's own bounds. Every
 	// non-subquery-inner ctx leaves this false.
 	stepAligned bool
+
+	// scalarAnchorColumn names the column holding the current evaluation
+	// step in the scope where a computed scalar argument is about to be
+	// embedded — the key [scalarStepValue] looks its per-step value up
+	// by. It is empty for every ordinary lowering, which means "the
+	// canonical Sample timestamp column", because that is what a
+	// row-position embedding (a Project or Filter over real samples) has
+	// in scope. The lowerings that embed a scalar directly above a
+	// chplan.StepGrid override it: there the step is named `anchor_ts`
+	// and the Sample timestamp column is the projection's own output, not
+	// something it can read.
+	//
+	// This is a column NAME rather than a chplan.Expr on purpose: one ctx
+	// lowers arbitrarily many scalar arguments (`scalar(a) + scalar(b)`,
+	// limitRatioPredicate's four ratio slots), and each must get its own
+	// ColumnRef node so the IR stays a tree rather than becoming a DAG
+	// that clone / walk cannot handle.
+	scalarAnchorColumn string
+
+	// pinScalarsOnce disables per-step binding of computed scalar
+	// arguments. Reference Prometheus re-evaluates a scalar argument at
+	// every step of a range query, so per-step is the correct default and
+	// the zero value asks for it; the flag exists for the embedding
+	// positions whose ClickHouse form cannot accept a per-row expression,
+	// and each of those call sites says which constraint it is honouring.
+	// Setting it is a known divergence at that position, never an
+	// optimisation.
+	pinScalarsOnce bool
+
+	// guards is the sink [registerScalarGuard] appends to. Nil when the
+	// caller did not ask for guards — see [LowerOpts.Guards].
+	guards *[]ScalarGuard
+}
+
+// withPinnedScalars returns a copy of c that binds a computed scalar
+// argument once per statement instead of per evaluation step, for an
+// embedding position whose ClickHouse form cannot accept a per-row
+// expression. Callers document the position's constraint at the call
+// site.
+func (c lowerCtx) withPinnedScalars() lowerCtx {
+	c.pinScalarsOnce = true
+	return c
+}
+
+// withStepGridAnchor returns a copy of c whose computed scalar arguments
+// key their per-step lookup off a StepGrid's own anchor column rather
+// than off the canonical Sample timestamp column. Used by the lowerings
+// that embed a scalar expression directly above a chplan.StepGrid, where
+// the Sample timestamp column is what the projection is about to
+// produce, not something it can read.
+func (c lowerCtx) withStepGridAnchor() lowerCtx {
+	c.scalarAnchorColumn = stepGridAnchorColumn
+	return c
+}
+
+// scalarsBindPerStep reports whether a computed scalar argument lowered
+// under c must produce one value per evaluation step. Instant mode has a
+// single evaluation, so the question only arises in range mode.
+func (c lowerCtx) scalarsBindPerStep() bool {
+	return c.step > 0 && !c.pinScalarsOnce
 }
 
 // withAttributesPreMerged returns a copy of c with attributesPreMerged

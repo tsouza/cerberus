@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -268,25 +269,23 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 				As(Call("any", canonicalMatchKeyFrag(Col(j.AttributesColumn))), joinAlias(j.AttributesColumn)),
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
-				matchCheckFrag(j.AttributesColumn),
-			).GroupBy(groupFrags...)
+			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
 		} else {
 			inner.Select(
 				joinMetricNameFrag(j),
 				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
 				aggMaxAs(j.TimestampColumn, joinAlias(j.TimestampColumn)),
 				argMaxAs(j.ValueColumn, j.TimestampColumn, joinAlias(j.ValueColumn)),
-				matchCheckFrag(j.AttributesColumn),
-			).GroupBy(groupFrags...)
+			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
 		}
 	}
 
 	// Outer Project: rename `_join_*` back to canonical column names
 	// so the JOIN's ON clause and the outer SELECT reference
-	// `L.Attributes` / `R.Value` / etc. directly. The throwIf
-	// side-effect column from roleOne is dropped here — CH still
-	// evaluates it as part of the inner aggregation, but the join's
-	// ON / projection don't need it.
+	// `L.Attributes` / `R.Value` / etc. directly. Nothing here reads
+	// roleOne's uniqueness guard, which is exactly why the guard is a
+	// HAVING predicate rather than an extra SELECT-list column — see
+	// matchCheckGuardFrag.
 	outer := NewQuery().
 		Select(
 			As(Col(joinAlias(j.MetricNameColumn)), j.MetricNameColumn),
@@ -406,26 +405,48 @@ func argMaxAs(valCol, byCol, alias string) Frag {
 	return As(Call("argMax", Col(valCol), Col(byCol)), alias)
 }
 
-// matchCheckFrag returns a Frag for the runtime uniqueness guard:
+// matchCheckGuardFrag returns the runtime uniqueness guard as a HAVING
+// predicate:
 //
-//	throwIf(uniqExact(<attrsCol>) > 1, ?) AS _cerberus_match_check
+//	throwIf(uniqExact(<attrsCol>) > 1, '…') = 0
 //
-// The error message is bound as a positional `?` argument. The alias
-// `_cerberus_match_check` is rendered bare (no backticks) — the
-// fixtures pin that shape; CH accepts unquoted aliases for ASCII
-// underscore-prefixed names.
-func matchCheckFrag(attrsCol string) Frag {
-	check := Call(
-		"throwIf",
-		Gt(Call("uniqExact", canonicalMatchKeyFrag(Col(attrsCol))), InlineLit(1)),
-		Lit("many-to-many matching not allowed: matching labels must be unique on one side"),
+// It must be a HAVING predicate and not a SELECT-list column. ClickHouse's
+// analyzer prunes a subquery SELECT-list expression that nothing outside the
+// subquery reads, `throwIf` side effect and all, and the outer Project in
+// emitVectorJoin reads only the four canonical Sample columns — so the guard
+// rode along for free and never fired, letting a genuine many-to-many match
+// return an arbitrary pair under 200 OK. A HAVING predicate decides which
+// groups survive, so nothing can prune it. Same substrate fact, same fix, as
+// internal/promql's collapseInfoSeriesBySignature and infoConflictGuardFrag.
+//
+// `throwIf` returns 0 when its condition is false, so `= 0` turns the guard
+// into a predicate that admits every group it does not abort on.
+//
+// The message is inlined rather than bound as a positional `?` because
+// ClickHouse requires `throwIf`'s message to be a compile-time constant.
+func matchCheckGuardFrag(attrsCol string) Frag {
+	return Eq(
+		Call(
+			"throwIf",
+			Gt(Call("uniqExact", canonicalMatchKeyFrag(Col(attrsCol))), InlineLit(1)),
+			InlineLit(chplan.ManyToManyMatchMessage),
+		),
+		InlineLit(int64(0)),
 	)
-	// `_cerberus_match_check` is an emitter-pinned bare alias (no
-	// backticks); the AS suffix rides verbatim, not the quoting As Frag.
-	return func(b *Builder) {
-		check(b)
-		verbatim(" AS _cerberus_match_check")(b)
-	}
+}
+
+// IsManyToManyMatchError reports whether err is the deliberate query abort
+// matchCheckGuardFrag plants (see [chplan.ManyToManyMatchMessage]) rather than
+// a backend failure.
+//
+// It is the sibling of [IsInfoConflictingLabelError] and
+// [IsDuplicateLabelsetError] and exists for the same reason: the HTTP layer
+// must classify the abort the way the reference engine classifies its own — a
+// 422 execution error naming the query as at fault, not a 5xx blaming
+// ClickHouse. The exception prefix is matched alongside the message so a query
+// that merely mentions the phrase in a label value cannot be mistaken for one.
+func IsManyToManyMatchError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), chExceptionPrefix+chplan.ManyToManyMatchMessage)
 }
 
 // setOpMatchKeyFrags returns the key a vector set operator matches

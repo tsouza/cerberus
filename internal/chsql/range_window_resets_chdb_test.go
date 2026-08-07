@@ -45,6 +45,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // resetsSeed mirrors the production OTel-CH default schema. Two job series: api
@@ -200,7 +201,7 @@ func runResetsEmit(t *testing.T, db *sql.DB, native, optimize bool) map[resample
 		}
 		out[resampleCell{job: extractJobLabel(jobJSON), anchor: ts.UTC().Format(time.RFC3339)}] = v
 	}
-	if err := tolerantSentinel(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("rows.Err (native=%v): %v", native, err)
 	}
 	if len(out) == 0 {

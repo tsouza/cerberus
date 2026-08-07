@@ -3,7 +3,6 @@ package promql
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -106,6 +105,15 @@ type LowerOpts struct {
 	// decisions are AST node-type and query-SHAPE eligibility, which live inside
 	// each strategy. See [RangeLowerers].
 	Lowerers RangeLowerers
+
+	// Guards is the sink for the scalar-parameter domain checks lowering
+	// cannot settle on its own — see [ScalarGuard]. A caller that can
+	// execute a second statement before the main one (the query
+	// handlers, through the engine) passes a non-nil pointer and gets
+	// reference Prometheus's evaluation-time rejections; a caller that
+	// only wants the plan (the spec harness, [Lower] and friends) leaves
+	// it nil and no guard plan is built.
+	Guards *[]ScalarGuard
 }
 
 // LowerAtRangeOpts is the options-carrying variant of [LowerAtRange].
@@ -121,6 +129,7 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		end:      end,
 		step:     step,
 		lowerers: opts.Lowerers.withDefaults(),
+		guards:   opts.Guards,
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -3033,7 +3042,13 @@ func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema
 		}
 		return wrapped, nil
 	}
-	phiE, err := lowerScalarArg(a.Param, s, ctx)
+	// Pinned, because the aggregate this guards reads phi through
+	// [sanitizedPhiParamExpr], which is pinned by ClickHouse's
+	// constant-parameter rule. The two halves must read the SAME phi: a
+	// per-step guard beside a statement-wide aggregate would let an
+	// in-range step pass the 0.5 sentinel the aggregate computed with
+	// straight through as if it were the real quantile.
+	phiE, err := lowerScalarArg(a.Param, s, ctx.withPinnedScalars())
 	if err != nil {
 		return nil, err
 	}
@@ -3270,35 +3285,27 @@ func tryStringLiteral(e parser.Expr) (string, bool) {
 	return "", false
 }
 
-// topKDomain validates a topk/bottomk K parameter against reference
-// Prometheus semantics. The pinned engine
-// (tsouza/prometheus@cerberus-parser promql/engine.go, rangeEvalAgg +
-// aggregationK) handles the parameter in this order:
+// topKDomain resolves a LITERAL topk/bottomk/limitk K against reference
+// Prometheus's K rules and, when the query survives them, returns the
+// int64 K the plan selects with.
 //
-//  1. `params.Max() < 1` → return early with an EMPTY result (2xx).
-//     This covers K = 0, every negative K (including -Inf), and
-//     fractional K below 1 — none of them are errors upstream.
-//  2. NaN K → eval error ("Parameter value is NaN").
-//  3. K >= maxInt64 → eval error ("Scalar value %v overflows int64").
-//     (The symmetric underflow check is unreachable for a literal K:
-//     any K <= minInt64 already took the empty-result branch.)
-//  4. Otherwise K truncates toward zero (`int64(fParam)`), so
-//     `topk(1.5, v)` selects the top 1 series.
+// The rules themselves are not here: they live in
+// [aggregationParamDomain], which the computed-K path runs too (via a
+// [ScalarGuard]) on the value series ClickHouse produces. A literal K is
+// simply a one-value series, so passing it through the same function is
+// what keeps the two paths from ever disagreeing about the domain.
+//
+// What is left here is the literal path's own remainder: reference
+// truncates the surviving K toward zero (`int64(fParam)`), so
+// `topk(1.5, v)` selects the top 1 series.
 //
 // Returns (k, false, nil) for the regular path, (0, true, nil) for the
-// empty-result short-circuit, and a non-nil error for the two shapes
+// empty-result short-circuit, and a non-nil error for the shapes
 // reference Prometheus itself rejects.
-func topKDomain(op parser.ItemType, kF float64) (k int64, empty bool, err error) {
-	switch {
-	case kF < 1:
-		// Mirrors upstream's `params.Max() < 1` early return — NaN
-		// compares false here (as upstream) and falls through to the
-		// NaN error below.
-		return 0, true, nil
-	case math.IsNaN(kF):
-		return 0, false, fmt.Errorf("promql: %s K must not be NaN", op.String())
-	case kF >= float64(math.MaxInt64):
-		return 0, false, fmt.Errorf("promql: %s K %v overflows int64", op.String(), kF)
+func topKDomain(kF float64) (k int64, empty bool, err error) {
+	empty, err = aggregationParamDomain([]float64{kF})
+	if err != nil || empty {
+		return 0, empty, err
 	}
 	return int64(kF), false, nil
 }
@@ -3382,11 +3389,12 @@ func limitRatioPredicate(
 	// to a constant-false predicate (Prometheus returns early on all-zero
 	// r), mirroring topk's K<1 degenerate arm.
 	if r, ok := tryScalarLiteral(param); ok {
-		if math.IsNaN(r) {
-			return nil, fmt.Errorf("promql: limit_ratio ratio value is NaN")
+		empty, err := limitRatioParamDomain([]float64{r})
+		if err != nil {
+			return nil, err
 		}
 		switch {
-		case r == 0:
+		case empty:
 			return &chplan.LitBool{V: false}, nil
 		case r > 0:
 			// keep offset < r
@@ -3405,10 +3413,19 @@ func limitRatioPredicate(
 	//	(r >= 0 AND offset < r) OR (r < 0 AND offset >= 1 + r)
 	//
 	// which also yields the empty result for r == 0 (neither arm fires).
-	// The ratio Expr is bound as a scalar subquery / scalar arithmetic
-	// via lowerScalarArg (instant context — one ratio value per eval,
-	// the same posture as topk's computed-K path). A NaN computed ratio
-	// surfaces at query time the same way the reference engine raises it.
+	// The ratio Expr is bound per step by lowerScalarArg, so the predicate
+	// sees the same ratio series reference's newFParams builds.
+	//
+	// A NaN ratio is the one value the predicate cannot express: both arms
+	// compare false, so the query would answer empty where reference raises
+	// "Ratio value is NaN". Register the guard that evaluates the ratio on
+	// its own and applies the same domain the literal arm above just used.
+	if err := registerScalarGuard(ctx, "limit_ratio ratio", param, s, func(values []float64) error {
+		_, err := limitRatioParamDomain(values)
+		return err
+	}); err != nil {
+		return nil, err
+	}
 	zero := &chplan.LitFloat{V: 0}
 	one := &chplan.LitFloat{V: 1}
 	// Lower the ratio arg once per predicate slot so no chplan Expr
@@ -3619,7 +3636,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if !ok {
 		return lowerTopKComputed(a, s, ctx)
 	}
-	k, empty, err := topKDomain(a.Op, kF)
+	k, empty, err := topKDomain(kF)
 	if err != nil {
 		return nil, err
 	}
@@ -3647,12 +3664,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
+		Columns:  topKOutputColumns(input, s),
 	}, nil
 }
 
@@ -3690,7 +3702,7 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 	if !ok {
 		return lowerTopKComputed(a, s, ctx)
 	}
-	k, empty, err := topKDomain(a.Op, kF)
+	k, empty, err := topKDomain(kF)
 	if err != nil {
 		return nil, err
 	}
@@ -3717,12 +3729,7 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 		K:         k,
 		By:        by,
 		Unordered: true,
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
+		Columns:   topKOutputColumns(input, s),
 	}, nil
 }
 
@@ -3773,6 +3780,53 @@ func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []ch
 	return by
 }
 
+// canonicalSampleColumns adapts the schema's configurable column naming
+// into the [chplan.SampleColumns] shape every chplan classifier takes.
+// The names are configuration — a schema override can rename any of the
+// four — so the classifiers are handed the live naming rather than the
+// OTel-CH defaults.
+func canonicalSampleColumns(s schema.Metrics) chplan.SampleColumns {
+	return chplan.SampleColumns{
+		MetricName: s.MetricNameColumn,
+		Attributes: s.AttributesColumn,
+		Timestamp:  s.TimestampColumn,
+		Value:      s.ValueColumn,
+	}
+}
+
+// topKOutputColumns derives the outer SELECT list a [chplan.TopK] projects
+// over `input` from what `input` ACTUALLY exposes, rather than declaring
+// the canonical quadruple and hoping the input agrees.
+//
+// topk / bottomk / limitk re-project their input's rows without re-keying
+// them, so their output column set IS their input's column set. A
+// canonical input (a selector, a binop, a name-preserving Project) carries
+// (MetricName, Attributes, Timestamp, Value), and naming them pins a
+// fixed-arity list for the chDB round-trip runner and the handler
+// projection. A DERIVED input — an instant-mode [chplan.RangeWindow], the
+// shape `topk(2, sum_over_time(m[5m]))` lowers to — exposes only
+// (group keys…, Value): no MetricName and no timestamp exist in that
+// scope, so naming them emits a reference ClickHouse rejects with code 47,
+// `Unknown expression identifier 'MetricName'`. The empty list renders
+// `SELECT *`, which forwards whatever the input produces verbatim — the
+// derivation, not a second declaration of it.
+//
+// [chplan.IsDerivedShape] is the one classifier for that question, shared
+// with the HTTP layer's canonical-sample projection and the emitter's
+// VectorSetOp arm canonicalisation, so the three cannot disagree about one
+// node's column set.
+func topKOutputColumns(input chplan.Node, s schema.Metrics) []string {
+	if chplan.IsDerivedShape(input, canonicalSampleColumns(s)) {
+		return nil
+	}
+	return []string{
+		s.MetricNameColumn,
+		s.AttributesColumn,
+		s.TimestampColumn,
+		s.ValueColumn,
+	}
+}
+
 // lowerTopKComputed lowers `topk`/`bottomk`/`limitk` with a K that is
 // any scalar-valued PromQL expression rather than a foldable literal —
 // `topk(scalar(<vector>), v)`, `topk(scalar(x) * 2, v)`,
@@ -3792,15 +3846,26 @@ func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []ch
 // [topKDomainExpr] applies the runtime half of the K-domain rules the
 // literal path resolves in [topKDomain].
 func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	// Lower the K argument in instant context (step=0). PromQL's
-	// `scalar(v)` produces a single value per eval; range-mode would
-	// fan it out into one row per step, but the emitter's K subquery
-	// reads only the first row (LIMIT 1) so the matrix shape would be
-	// wasted work. Reusing the surrounding ctx (with step > 0) would
-	// also drag a StepGrid CROSS JOIN into the K subtree, bloating the
-	// SQL for no semantic gain — the result vector's shape comes from
+	// The K domain is reference Prometheus's, and reference applies it to
+	// the parameter's whole per-step value series before it aggregates
+	// anything. A computed K has no value until the query runs, and the
+	// rejection messages quote the offending value, so the check rides
+	// beside the plan as its own statement — see [ScalarGuard].
+	if err := registerScalarGuard(ctx, a.Op.String()+" K", a.Param, s, func(values []float64) error {
+		_, err := aggregationParamDomain(values)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	// Lower the K argument in instant context (step=0). chplan.TopK's
+	// KExpr is a one-row relation the emitter reads with an UNCORRELATED
+	// `(SELECT … LIMIT 1)`, so there is no per-row anchor in scope for a
+	// per-step K to key off and K binds once per statement. Reusing the
+	// surrounding ctx (with step > 0) would also drag a StepGrid CROSS
+	// JOIN into the K subtree — the result vector's shape comes from
 	// `a.Expr`, not the K subtree.
-	kCtx := ctx
+	kCtx := ctx.withPinnedScalars()
 	kCtx.step = 0
 	kValue, err := lowerScalarArg(a.Param, s, kCtx)
 	if err != nil {
@@ -3819,15 +3884,10 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	}
 
 	t := &chplan.TopK{
-		Input: input,
-		KExpr: kExpr,
-		By:    topKPartition(a, s, ctx),
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
+		Input:   input,
+		KExpr:   kExpr,
+		By:      topKPartition(a, s, ctx),
+		Columns: topKOutputColumns(input, s),
 	}
 	if a.Op == parser.LIMITK {
 		// limitk keeps K arbitrary series per group — no ranking, so the
@@ -4085,7 +4145,10 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		// outOfRangePhiGuardExpr (NaN phi → NaN, phi<0 → -Inf,
 		// phi>1 → +Inf) so the sentinel quantile is never observed —
 		// the same split as the literal path, resolved at runtime.
-		phiE, err := lowerScalarArg(a.Param, s, ctx)
+		// ClickHouse requires a parameterised aggregate's parameter to be a
+		// CONSTANT expression, so the phi in `quantile(<phi>)(Value)` cannot
+		// reference a per-row anchor and binds once per statement here.
+		phiE, err := lowerScalarArg(a.Param, s, ctx.withPinnedScalars())
 		if err != nil {
 			return chplan.AggFunc{}, err
 		}

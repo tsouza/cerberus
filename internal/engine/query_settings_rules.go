@@ -177,9 +177,15 @@ func applyCompareMemoryBound(ctx context.Context, plan chplan.Node, maxMemory in
 
 // planHasMetricsCompare reports whether plan contains a chplan.MetricsCompare
 // node anywhere in its tree — the lowered form of TraceQL's compare() operator.
+//
+// The sweep is chplan.WalkDeep so a compare() nested inside a plan subtree that
+// hangs off an Expr slot still gets the spill + thread bound. Both settings are
+// result-equivalent, so widening the match can only cost read parallelism on a
+// query that reads the same wide Map columns; missing one is the OOM this bound
+// exists to prevent.
 func planHasMetricsCompare(plan chplan.Node) bool {
 	found := false
-	chplan.Walk(plan, func(n chplan.Node) bool {
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
 		if _, ok := n.(*chplan.MetricsCompare); ok {
 			found = true
 			return false

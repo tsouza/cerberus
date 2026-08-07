@@ -192,22 +192,6 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	if len(c.Args) != 2 {
 		return nil, fmt.Errorf("promql: histogram_quantile expects 2 arguments, got %d", len(c.Args))
 	}
-	var phi phiArg
-	if lit, ok := tryScalarLiteral(c.Args[0]); ok {
-		phi.lit = lit
-	} else {
-		// Computed phi (`histogram_quantile(scalar(x), b)`): bind phi
-		// as a scalar-subquery expression; the emitters render it in
-		// place of the literal, with the phi-domain branches
-		// (phi <= 0 / phi >= 1 plus a leading isNaN guard) resolved at
-		// runtime instead of compile time.
-		expr, err := lowerScalarArg(c.Args[0], s, ctx)
-		if err != nil {
-			return nil, err
-		}
-		phi.expr = expr
-	}
-
 	// Recognise the canonical Prom idiom — `sum [by/without](rate(...))`
 	// — and dispatch to the aggregated-input path. The walker only accepts
 	// shapes whose underlying terminal is a bare VectorSelector; anything
@@ -217,13 +201,41 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	if matched {
 		// The per-`le` rung fold is resolved here rather than in the
 		// matcher because `quantile`'s parameter may be a computed
-		// scalar, which needs the schema + lowering context.
-		fold, err := classicBucketLadderFold(shape.agg, s, ctx)
+		// scalar, which needs the schema + lowering context. The fold is
+		// only ever read by a classic-bucket lowering, so it is bound
+		// under that family's scalar scope; the shaping operators that
+		// leave it nil never read it.
+		fold, err := classicBucketLadderFold(
+			shape.agg, s, histogramScalarArgCtx(shape.selector, ctx),
+		)
 		if err != nil {
 			return nil, err
 		}
 		shape.classicFold = fold
 	}
+
+	// The bare-selector fallthrough is resolved here rather than after the
+	// aggregated dispatch because it, together with the shape above,
+	// decides which scope a computed phi lands in — and that has to be
+	// settled before phi is lowered.
+	vs, isBare := unwrapVectorSelector(c.Args[1])
+
+	var phi phiArg
+	if lit, ok := tryScalarLiteral(c.Args[0]); ok {
+		phi.lit = lit
+	} else {
+		// Computed phi (`histogram_quantile(scalar(x), b)`): bind phi
+		// as a scalar-subquery expression; the emitters render it in
+		// place of the literal, with the phi-domain branches
+		// (phi <= 0 / phi >= 1 plus a leading isNaN guard) resolved at
+		// runtime instead of compile time.
+		expr, err := lowerScalarArg(c.Args[0], s, phiScalarArgCtx(shape, matched, vs, isBare, s, ctx))
+		if err != nil {
+			return nil, err
+		}
+		phi.expr = expr
+	}
+
 	if matched && histogramAggShapeLowerable(shape, s) {
 		if s.IsExpHistogramMetric(shape.selector.Name) {
 			// Range mode: fan the exp-histogram merge + quantile
@@ -272,8 +284,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		return lowerHistogramQuantileClassicFloat(c.Args[1], phi, s, ctx)
 	}
 
-	vs, ok := unwrapVectorSelector(c.Args[1])
-	if !ok {
+	if !isBare {
 		// Unrecognised inner shape — `histogram_quantile(0.9, sum(up))`,
 		// `histogram_quantile(0.9, vector(1))`, … . Reference Prometheus
 		// accepts any instant-vector second argument: classic-histogram
@@ -342,6 +353,48 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		return broadcastHistogramAtPin(inner, s, ctx), nil
 	}
 	return lowerHistogramQuantileClassicBare(vs, phi, s, ctx)
+}
+
+// histogramScalarArgCtx returns the context a computed scalar argument of
+// a histogram_quantile call over vs must be lowered under.
+//
+// A computed scalar compiles to a per-step map subscripted by the column
+// naming the current evaluation step (see lowerCtx.scalarAnchorColumn).
+// The *Range fan-out lowerings evaluate above a per-anchor fan-out, whose
+// scope names the step stepGridAnchorColumn and does NOT carry the Sample
+// timestamp column — that is the projection's own output. Every other
+// shape, instant and `@`-pinned broadcast alike, embeds the scalar in a
+// row position where the Sample timestamp column is in scope.
+func histogramScalarArgCtx(vs *parser.VectorSelector, ctx lowerCtx) lowerCtx {
+	if rangeGridShapeFor(vs, ctx) == gridFanout {
+		return ctx.withStepGridAnchor()
+	}
+	return ctx
+}
+
+// phiScalarArgCtx resolves histogramScalarArgCtx for phi, whose selector
+// depends on which of lowerHistogramQuantile's three dispatch families
+// claims the call: the aggregated idiom, the bare selector, or the
+// float-bucket fallbacks. Both fallbacks — a matched-but-unfoldable
+// shaping aggregation and an unrecognised inner shape — lower their
+// argument through the ordinary sample pipeline, so their scope carries
+// the Sample timestamp column and ctx passes through unchanged.
+func phiScalarArgCtx(
+	shape histogramAggShape,
+	matched bool,
+	vs *parser.VectorSelector,
+	isBare bool,
+	s schema.Metrics,
+	ctx lowerCtx,
+) lowerCtx {
+	switch {
+	case matched && histogramAggShapeLowerable(shape, s):
+		return histogramScalarArgCtx(shape.selector, ctx)
+	case matched, !isBare:
+		return ctx
+	default:
+		return histogramScalarArgCtx(vs, ctx)
+	}
 }
 
 // lowerHistogramQuantileClassicBare is the instant-mode lowering for
