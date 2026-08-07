@@ -149,6 +149,19 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
   concrete values produced by the seeder under `cmd/seed/`.
+  **Hand-authored, and it must stay that way.** It carries a `_comment`
+  key recording how each pinned selector was derived, and
+  `bench.DatasetMetadata` does not model that key. The vendored
+  `bench.SaveMetadata` writes a file named `dataset_metadata.json` into
+  whichever directory it is handed, so pointing it here overwrites the
+  curated file and drops the provenance — while returning no error.
+  Read it with `bench.LoadMetadata` and never write back;
+  `test/regression/loki_dataset_metadata_hand_authored_test.go` fails the
+  build if any cerberus-licensed code reaches for the writer, or if the
+  `_comment` key goes missing. `SaveMetadata` itself stays in the vendored
+  snapshot untouched: it is upstream's code, unused only in the subset
+  cerberus vendors, and the bump procedure below re-copies `metadata.go`
+  verbatim, so deleting it locally would be undone at the next bump.
 
 ## Detected-fields differential pass
 

@@ -231,7 +231,10 @@ test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 # hand-authored: compatibility/loki/dataset_metadata.json —
 #   pinned by hand from the deterministic fixture cmd/seed/ pushes (it carries a
 #   `_comment` field the bench metadata struct does not even model, so nothing
-#   writes it). The compliance driver substitutes it into every corpus query and
+#   writes it — and nothing may, because the vendored bench.SaveMetadata targets
+#   this exact filename and would drop that field while succeeding; both halves
+#   are pinned by test/regression/loki_dataset_metadata_hand_authored_test.go).
+#   The compliance driver substitutes it into every corpus query and
 #   reports `baseline returned empty` as an unexpected failure, so a blended
 #   selector breaks the reference side loudly instead of scoring a hollow pass.
 # hand-authored: test/e2e/migration/archetypes/regulated-airgapped/expected/compliance-retention.json —
