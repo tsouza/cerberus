@@ -857,35 +857,439 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 	}
 }
 
+// jsonNestedKeySpacer joins the segments of a nested JSON key into one
+// flat label name — `{"user":{"id":…}}` becomes `user_id`. It doubles as
+// the replacement byte for every character Loki's key sanitisation
+// rejects, because upstream uses `_` for both (`jsonSpacer` and
+// `sanitizeLabelKey` in pkg/logql/log/parser.go).
+const jsonNestedKeySpacer = "_"
+
+// jsonKeyInvalidCharClass is the RE2 class of bytes Loki's
+// sanitizeLabelKey rewrites to [jsonNestedKeySpacer]: everything outside
+// the Prometheus label-name alphabet.
+const jsonKeyInvalidCharClass = `[^A-Za-z0-9_]`
+
+// jsonKeyLeadingDigit / jsonKeyLeadingDigitFix prepend `_` to a key that
+// starts with a digit, so the result is a legal label name. Loki applies
+// the rule only where the accumulated prefix is still empty
+// (`appendSanitized`), which is why the flattening applies it to the
+// JOINED key: once a non-empty prefix is in front, the joined key starts
+// with the prefix's own already-fixed first byte and the rewrite is a
+// no-op. `{"1a":{"2b":…}}` therefore yields `_1a_2b`, not `_1a__2b`.
+//
+// Spelling this as a capturing rewrite rather than an `if(match(…))`
+// keeps the key expression referenced once instead of three times, which
+// matters: this expression is inlined at every use of the labels map.
+const (
+	jsonKeyLeadingDigit    = `^([0-9])`
+	jsonKeyLeadingDigitFix = `_\1`
+)
+
+// jsonScalarLeafPrefix matches the first byte of every raw JSON value
+// Loki's parseObject extracts — a string, `true`/`false`, or a number.
+// Objects (`{`), arrays (`[`) and `null` are the complement, and are
+// exactly the values upstream drops. One anchored match replaces three
+// separate prefix tests over the same value.
+const jsonScalarLeafPrefix = `^["tf0-9-]`
+
+// jsonKeyTrimWhitespace strips the leading and trailing whitespace Loki's
+// key sanitisation trims before the character rewrite. Trimming first is
+// load-bearing: without it the surrounding spaces would survive as
+// `_` bytes in the label name.
+const jsonKeyTrimWhitespace = `^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$`
+
+// The first byte of a raw JSON value discriminates its type, which is
+// all the flattening needs: objects recurse, arrays and nulls are
+// dropped, strings are unescaped, and everything else (numbers,
+// booleans) is already in its final textual form.
+const (
+	jsonObjectPrefix = "{"
+	jsonStringPrefix = `"`
+)
+
 // jsonBareMergeLabels wraps the current labelsExpr with a
-// `mapConcat(<prev>, mapApply(<rename>, CAST(JSONExtractKeysAndValues(
-// Body, 'String') AS Map(String,String))))` so subsequent label filters
-// see the union of stream-selector labels and JSON-parsed top-level
-// key/value pairs — with stream-selector labels winning on key
-// collisions and the shadowed JSON value reachable under the
+// `mapConcat(<prev>, mapApply(<rename>, <flattened>))` so subsequent
+// label filters see the union of stream-selector labels and the
+// JSON-parsed key/value pairs — with stream-selector labels winning on
+// key collisions and the shadowed JSON value reachable under the
 // `_extracted`-suffixed name (see [mergeParsedMap]).
 //
-// JSONExtractKeysAndValues(json, 'String') returns
-// `Array(Tuple(String, String))` for the top-level object keys with each
-// value cast to String. CAST to Map(String, String) gives the same shape
-// the rest of the pipeline expects (mirrors the `| logfmt` lowering).
-// Nested objects stringify to their JSON form rather than flattening to
-// `parent_child` keys — that's an approximation of Loki's bare `| json`
-// semantics; the common flat-object case is exact.
+// `<flattened>` reproduces Loki's JSONParser (pkg/logql/log/parser.go)
+// exactly, which means recursively flattening nested objects into
+// `parent_child` label names rather than leaving a nested object as its
+// stringified JSON under the parent key. `internal/api/loki`'s
+// jsonExtractor is the clean-room Go statement of the same semantics and
+// the comparand the extraction-parity test drives this expression
+// against.
 func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
-	return mergeParsedMap(prev, s, &chplan.FuncCall{
-		Name: "CAST",
+	return mergeParsedMap(prev, s, jsonFlattenedMap(s))
+}
+
+// jsonFlattenedMap renders the `Map(String, String)` of every scalar leaf
+// in the row's JSON body, keyed by its `parent_child` flattened name.
+//
+// The shape is a fold over a work list of `(flattened key, raw value)`
+// pairs. `JSONExtractKeysAndValuesRaw` splits one object into its
+// immediate members without interpreting their values, so each fold step
+// replaces every member that is itself an object by that object's own
+// members — carrying the parent's already-sanitised key down as a
+// prefix — and leaves every scalar untouched. After enough steps no
+// object remains and the fold is a fixpoint.
+//
+// "Enough steps" is the document's own nesting depth, which is bounded
+// by its count of `{`: one step consumes one level, and a document
+// cannot nest deeper than the number of objects it contains. Deriving
+// the bound from the row rather than pinning a constant is what keeps
+// this exact at any depth — a fixed cap would silently truncate deep
+// documents, which is the class of approximation this expression exists
+// to remove. Steps past the fixpoint are no-ops, so over-counting `{`
+// (a brace inside a string literal, say) costs iterations, never
+// correctness.
+func jsonFlattenedMap(s schema.Logs) chplan.Expr {
+	body := &chplan.ColumnRef{Name: s.BodyColumn}
+
+	// Seed: the body's top-level members, keyed by the sanitised
+	// top-level key. Loki applies its leading-digit rule here because the
+	// accumulated prefix is still empty.
+	seed := &chplan.FuncCall{
+		Name: "arrayMap",
 		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonMemberParam},
+				Body: jsonPair(
+					jsonJoinKey(&chplan.LitString{V: ""}, jsonMemberKey()),
+					jsonMemberValue(),
+				),
+			},
+			jsonMembersOf(body),
+		},
+	}
+
+	folded := &chplan.FuncCall{
+		Name: "arrayFold",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonAccParam, jsonStepParam},
+				Body:   jsonExpandObjects(),
+			},
 			&chplan.FuncCall{
-				Name: "JSONExtractKeysAndValues",
+				Name: "range",
 				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: s.BodyColumn},
-					&chplan.LitString{V: "String"},
+					&chplan.FuncCall{
+						Name: "countSubstrings",
+						Args: []chplan.Expr{body, &chplan.LitString{V: jsonObjectPrefix}},
+					},
 				},
 			},
+			seed,
+		},
+	}
+
+	return &chplan.FuncCall{
+		Name: "CAST",
+		Args: []chplan.Expr{
+			jsonLastKeyWins(jsonReadLeaves(folded)),
 			&chplan.LitString{V: "Map(String,String)"},
 		},
+	}
+}
+
+// Lambda parameter names for the flattening fold. They are emitted
+// verbatim into the SQL, so they are named to be unmistakable in a
+// golden and impossible to confuse with a column.
+const (
+	jsonAccParam       = "__json_acc"
+	jsonStepParam      = "__json_step"
+	jsonEntryParam     = "__json_entry"
+	jsonMemberParam    = "__json_member"
+	jsonPartParam      = "__json_part"
+	jsonSeenParam      = "__json_seen"
+	jsonSeenEntryParam = "__json_seen_entry"
+)
+
+// jsonMembersOf renders `JSONExtractKeysAndValuesRaw(<json>)` — the
+// immediate members of one JSON object as `Array(Tuple(String, String))`
+// with values left as raw JSON text. A non-object (or unparseable) input
+// yields an empty array rather than an error, which is what lets a
+// malformed body flow through the fold as "no extracted labels".
+func jsonMembersOf(json chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Name: "JSONExtractKeysAndValuesRaw", Args: []chplan.Expr{json}}
+}
+
+func jsonPair(key, value chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{key, value}}
+}
+
+func jsonTupleField(tuple chplan.Expr, index int64) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "tupleElement",
+		Args: []chplan.Expr{tuple, &chplan.LitInt{V: index}},
+	}
+}
+
+// The work-list pairs are (key, raw value); these name the two fields at
+// the point of use so the callers below read as prose.
+const (
+	jsonPairKeyField   = 1
+	jsonPairValueField = 2
+)
+
+func jsonMemberKey() chplan.Expr {
+	return jsonTupleField(&chplan.BareIdent{Name: jsonMemberParam}, jsonPairKeyField)
+}
+
+func jsonMemberValue() chplan.Expr {
+	return jsonTupleField(&chplan.BareIdent{Name: jsonMemberParam}, jsonPairValueField)
+}
+
+func jsonEntryKey() chplan.Expr {
+	return jsonTupleField(&chplan.BareIdent{Name: jsonEntryParam}, jsonPairKeyField)
+}
+
+func jsonEntryValue() chplan.Expr {
+	return jsonTupleField(&chplan.BareIdent{Name: jsonEntryParam}, jsonPairValueField)
+}
+
+// jsonExpandObjects is one fold step: every work-list entry whose raw
+// value is an object is replaced by that object's members (their keys
+// prefixed with the entry's key), and every other entry is passed
+// through unchanged. `arrayFlatten` splices the two cases back into a
+// single work list.
+func jsonExpandObjects() chplan.Expr {
+	expanded := &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonMemberParam},
+				Body: jsonPair(
+					jsonJoinKey(jsonEntryKey(), jsonMemberKey()),
+					jsonMemberValue(),
+				),
+			},
+			jsonMembersOf(jsonEntryValue()),
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "arrayFlatten",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "arrayMap",
+				Args: []chplan.Expr{
+					&chplan.Lambda{
+						Params: []string{jsonEntryParam},
+						Body: &chplan.FuncCall{
+							Name: "if",
+							Args: []chplan.Expr{
+								jsonStartsWith(jsonEntryValue(), jsonObjectPrefix),
+								expanded,
+								&chplan.FuncCall{
+									Name: "array",
+									Args: []chplan.Expr{&chplan.BareIdent{Name: jsonEntryParam}},
+								},
+							},
+						},
+					},
+					&chplan.BareIdent{Name: jsonAccParam},
+				},
+			},
+		},
+	}
+}
+
+// jsonJoinKey appends one nested segment to an accumulated flattened
+// key, mirroring upstream's buildSanitizedPrefixFromBuffer: parts that
+// are empty after sanitisation are skipped rather than contributing a
+// separator, and the surviving parts are joined with
+// [jsonNestedKeySpacer]. Filtering an `[prefix, segment]` array states
+// that skip rule directly and keeps both operands referenced once.
+//
+// The leading-digit rule is applied to the joined result — see
+// [jsonKeyLeadingDigit] for why that is equivalent to upstream applying
+// it only to the first surviving part.
+func jsonJoinKey(prefix, rawSegment chplan.Expr) chplan.Expr {
+	parts := &chplan.FuncCall{
+		Name: "array",
+		Args: []chplan.Expr{prefix, jsonSanitizeKey(rawSegment)},
+	}
+	nonEmpty := &chplan.FuncCall{
+		Name: "arrayFilter",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonPartParam},
+				Body: &chplan.Binary{
+					Op:    chplan.OpNe,
+					Left:  &chplan.BareIdent{Name: jsonPartParam},
+					Right: &chplan.LitString{V: ""},
+				},
+			},
+			parts,
+		},
+	}
+	return jsonApplyLeadingDigitRule(&chplan.FuncCall{
+		Name: "arrayStringConcat",
+		Args: []chplan.Expr{nonEmpty, &chplan.LitString{V: jsonNestedKeySpacer}},
 	})
+}
+
+// jsonSanitizeKey renders Loki's sanitizeLabelKey for one raw key
+// segment: trim surrounding whitespace, then rewrite every byte outside
+// the label alphabet. The trim has to precede the rewrite, or the
+// surrounding whitespace would survive as `_` bytes in the label name.
+func jsonSanitizeKey(rawKey chplan.Expr) chplan.Expr {
+	trimmed := &chplan.FuncCall{
+		Name: "replaceRegexpAll",
+		Args: []chplan.Expr{
+			rawKey,
+			&chplan.LitString{V: jsonKeyTrimWhitespace},
+			&chplan.LitString{V: ""},
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "replaceRegexpAll",
+		Args: []chplan.Expr{
+			trimmed,
+			&chplan.LitString{V: jsonKeyInvalidCharClass},
+			&chplan.LitString{V: jsonNestedKeySpacer},
+		},
+	}
+}
+
+func jsonApplyLeadingDigitRule(key chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "replaceRegexpOne",
+		Args: []chplan.Expr{
+			key,
+			&chplan.LitString{V: jsonKeyLeadingDigit},
+			&chplan.LitString{V: jsonKeyLeadingDigitFix},
+		},
+	}
+}
+
+// jsonReadLeaves keeps the work-list entries that are extractable scalars
+// and renders each value the way upstream's readValue does. Arrays,
+// nulls, and any object left unexpanded are dropped — upstream's
+// parseObject only ever emits String, Number, Boolean and Object, and an
+// Object is never a leaf. An entry whose key sanitised to empty is
+// dropped too, matching the `if sk == ""` guard on upstream's top-level
+// scalar path.
+func jsonReadLeaves(workList chplan.Expr) chplan.Expr {
+	isScalar := &chplan.FuncCall{
+		Name: "match",
+		Args: []chplan.Expr{jsonEntryValue(), &chplan.LitString{V: jsonScalarLeafPrefix}},
+	}
+	keyPresent := &chplan.Binary{
+		Op:    chplan.OpNe,
+		Left:  jsonEntryKey(),
+		Right: &chplan.LitString{V: ""},
+	}
+	kept := &chplan.FuncCall{
+		Name: "arrayFilter",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonEntryParam},
+				Body:   &chplan.Binary{Op: chplan.OpAnd, Left: keyPresent, Right: isScalar},
+			},
+			workList,
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonEntryParam},
+				Body:   jsonPair(jsonEntryKey(), jsonReadValue()),
+			},
+			kept,
+		},
+	}
+}
+
+// jsonReadValue unescapes a raw JSON string into its textual value and
+// leaves every other scalar as the text it already is — numbers and
+// booleans need no rewriting. `JSONExtractString` applied to a bare JSON
+// string value performs exactly the unescape upstream's readValue does.
+func jsonReadValue() chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			jsonStartsWith(jsonEntryValue(), jsonStringPrefix),
+			&chplan.FuncCall{Name: "JSONExtractString", Args: []chplan.Expr{jsonEntryValue()}},
+			jsonEntryValue(),
+		},
+	}
+}
+
+func jsonStartsWith(e chplan.Expr, prefix string) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "startsWith",
+		Args: []chplan.Expr{e, &chplan.LitString{V: prefix}},
+	}
+}
+
+// jsonLastKeyWins reduces a `(key, value)` array to one entry per key,
+// keeping the LAST occurrence. A JSON object may repeat a key — and a
+// nested key may flatten onto the same label name as a sibling — in
+// which case upstream's map assignment leaves the last write standing.
+// ClickHouse's Map, by contrast, retains duplicate entries and resolves
+// a lookup to the FIRST, so without this reduction the two disagree on
+// exactly the documents where it matters.
+//
+// The reduction walks the list back to front, keeping an entry only if
+// its key has not been kept already, then restores the original
+// direction. Folding rather than filtering-by-index is what keeps the
+// (large) input expression referenced once.
+func jsonLastKeyWins(pairs chplan.Expr) chplan.Expr {
+	seen := &chplan.BareIdent{Name: jsonSeenParam}
+	// A distinct parameter name: this lambda is nested inside the fold's
+	// own `__json_entry` scope, and reusing the name would shadow it —
+	// legal SQL, but it would read as though the `has(…)` needle and the
+	// haystack keys came from the same value.
+	seenKeys := &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonSeenEntryParam},
+				Body: jsonTupleField(
+					&chplan.BareIdent{Name: jsonSeenEntryParam},
+					jsonPairKeyField,
+				),
+			},
+			seen,
+		},
+	}
+	keepFirstUnseen := &chplan.Lambda{
+		Params: []string{jsonSeenParam, jsonEntryParam},
+		Body: &chplan.FuncCall{
+			Name: "if",
+			Args: []chplan.Expr{
+				&chplan.FuncCall{Name: "has", Args: []chplan.Expr{seenKeys, jsonEntryKey()}},
+				seen,
+				&chplan.FuncCall{
+					Name: "arrayPushBack",
+					Args: []chplan.Expr{seen, &chplan.BareIdent{Name: jsonEntryParam}},
+				},
+			},
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "arrayReverse",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{
+				Name: "arrayFold",
+				Args: []chplan.Expr{
+					keepFirstUnseen,
+					&chplan.FuncCall{Name: "arrayReverse", Args: []chplan.Expr{pairs}},
+					&chplan.FuncCall{
+						Name: "CAST",
+						Args: []chplan.Expr{
+							&chplan.FuncCall{Name: "array"},
+							&chplan.LitString{V: "Array(Tuple(String,String))"},
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that

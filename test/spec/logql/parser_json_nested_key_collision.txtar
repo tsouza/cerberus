@@ -1,23 +1,19 @@
 -- query.logql --
-{level="error"} | json | level_extracted="warn"
+{job="api"} | json | a_b="top"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error')
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
-    ('{"ts":"2025-01-01","level":"warn","msg":"picks-up"}'),
-    ('{"ts":"2025-01-01","level":"info","msg":"rejected"}'),
-    ('{"ts":"2025-01-01","level":"warn","msg":"also-picks-up"}');
--- expected_rows --
-[
-  [{"level": "warn", "msg": "also-picks-up", "ts": "2025-01-01"}],
-  [{"level": "warn", "msg": "picks-up", "ts": "2025-01-01"}]
-]
+    ('{"a":{"b":"nested"},"a_b":"top","msg":"top-wins"}'),
+    ('{"a_b":"top","a":{"b":"nested"},"msg":"nested-wins"}'),
+    ('{"a.b":"dotted","msg":"dotted-key-sanitises-to-a_b"}'),
+    ('{"a":{"b":"nested"},"msg":"nested-only"}');
 -- args --
-[0] string = "level"
-[1] string = "error"
+[0] string = "job"
+[1] string = "api"
 [2] string = "_extracted"
 [3] int64 = 1
 [4] int64 = 1
@@ -58,7 +54,7 @@ INSERT INTO otel_logs (Body) VALUES
 [39] int64 = 2
 [40] string = "Array(Tuple(String,String))"
 [41] string = "Map(String,String)"
-[42] string = "level_extracted"
+[42] string = "a_b"
 [43] string = "_extracted"
 [44] int64 = 1
 [45] int64 = 1
@@ -99,15 +95,19 @@ INSERT INTO otel_logs (Body) VALUES
 [80] int64 = 2
 [81] string = "Array(Tuple(String,String))"
 [82] string = "Map(String,String)"
-[83] string = "level_extracted"
-[84] string = "level_extracted"
-[85] string = "level_extracted"
-[86] string = "level.extracted"
-[87] string = "level.extracted"
-[88] string = "level/extracted"
-[89] string = "warn"
+[83] string = "a_b"
+[84] string = "a_b"
+[85] string = "a_b"
+[86] string = "a.b"
+[87] string = "a.b"
+[88] string = "a/b"
+[89] string = "top"
 -- chplan --
-Filter predicate=((ResourceAttributes["level"] = "error") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, 1), if(startsWith(tupleElement(__json_entry, 2), "\""), JSONExtractString(tupleElement(__json_entry, 2)), tupleElement(__json_entry, 2))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, 1) != "") AND match(tupleElement(__json_entry, 2), "^[\"tf0-9-]")), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, 2), "{"), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array(tupleElement(__json_entry, 1), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, 2))), array(__json_entry)), __json_acc)), range(countSubstrings(Body, "{")), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array("", replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(Body)))))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "level_extracted"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, 1), if(startsWith(tupleElement(__json_entry, 2), "\""), JSONExtractString(tupleElement(__json_entry, 2)), tupleElement(__json_entry, 2))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, 1) != "") AND match(tupleElement(__json_entry, 2), "^[\"tf0-9-]")), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, 2), "{"), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array(tupleElement(__json_entry, 1), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, 2))), array(__json_entry)), __json_acc)), range(countSubstrings(Body, "{")), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array("", replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(Body)))))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")))["level_extracted"], if(mapContains(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], if(mapContains(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, 1), if(startsWith(tupleElement(__json_entry, 2), "\""), JSONExtractString(tupleElement(__json_entry, 2)), tupleElement(__json_entry, 2))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, 1) != "") AND match(tupleElement(__json_entry, 2), "^[\"tf0-9-]")), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, 2), "{"), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array(tupleElement(__json_entry, 1), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, 2))), array(__json_entry)), __json_acc)), range(countSubstrings(Body, "{")), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array("", replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(Body)))))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "a_b"), mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, 1), if(startsWith(tupleElement(__json_entry, 2), "\""), JSONExtractString(tupleElement(__json_entry, 2)), tupleElement(__json_entry, 2))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, 1) != "") AND match(tupleElement(__json_entry, 2), "^[\"tf0-9-]")), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, 2), "{"), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array(tupleElement(__json_entry, 1), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, 2))), array(__json_entry)), __json_acc)), range(countSubstrings(Body, "{")), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ""), array("", replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), tupleElement(__json_member, 2)), JSONExtractKeysAndValuesRaw(Body)))))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)")))["a_b"], if(mapContains(LogAttributes, "a_b"), LogAttributes["a_b"], if(mapContains(LogAttributes, "a.b"), LogAttributes["a.b"], LogAttributes["a/b"]))) = "top"))
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, ?), if(startsWith(tupleElement(__json_entry, ?), ?), JSONExtractString(tupleElement(__json_entry, ?)), tupleElement(__json_entry, ?))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, ?) != ?) AND match(tupleElement(__json_entry, ?), ?)), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, ?), ?), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(tupleElement(__json_entry, ?), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, ?))), array(__json_entry)), __json_acc)), range(countSubstrings(`Body`, ?)), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(?, replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(`Body`)))))), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, ?), if(startsWith(tupleElement(__json_entry, ?), ?), JSONExtractString(tupleElement(__json_entry, ?)), tupleElement(__json_entry, ?))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, ?) != ?) AND match(tupleElement(__json_entry, ?), ?)), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, ?), ?), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(tupleElement(__json_entry, ?), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, ?))), array(__json_entry)), __json_acc)), range(countSubstrings(`Body`, ?)), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(?, replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(`Body`)))))), CAST(array(), ?))), ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
+-- expected_rows --
+[
+  [{"a": {"b": "nested"}, "a_b": "top", "msg": "top-wins"}]
+]
