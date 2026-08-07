@@ -48,6 +48,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 const (
@@ -172,7 +173,7 @@ func runMatK8sQuery(t *testing.T, db *sql.DB, sqlStr string, args []any) [][]any
 		}
 		out = append(out, []any{n})
 	}
-	if err := tolerantChdbErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	return out
@@ -283,19 +284,6 @@ func columnBytes(t *testing.T, db *sql.DB, table, column string) (compressed, un
 		t.Fatalf("columnBytes(%s.%s): %v", table, column, err)
 	}
 	return compressed, uncompressed
-}
-
-// chdbEOFSentinel is the benign end-of-iteration error chdb-go's parquet
-// reader returns in place of a clean io.EOF (parquet.go:
-// `return fmt.Errorf("empty row")`). Mirrors test/spec/runner_chdb.go's
-// tolerantRowsErr.
-const chdbEOFSentinel = "empty row"
-
-func tolerantChdbErr(err error) error {
-	if err != nil && containsSub(err.Error(), chdbEOFSentinel) {
-		return nil
-	}
-	return err
 }
 
 func containsSub(s, sub string) bool {

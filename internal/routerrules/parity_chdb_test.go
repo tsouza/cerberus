@@ -17,6 +17,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optcorpus"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // TestCrossBackendParity seeds one fixture as a chdb table AND as JSONL, runs
@@ -431,14 +432,5 @@ type sqlRowsAdapter struct {
 
 func (a *sqlRowsAdapter) Next() bool          { return a.rows.Next() }
 func (a *sqlRowsAdapter) Scan(d ...any) error { return a.rows.Scan(d...) }
-func (a *sqlRowsAdapter) Err() error          { return tolerantParityErr(a.rows.Err()) }
+func (a *sqlRowsAdapter) Err() error          { return testsql.TolerantRowsErr(a.rows.Err()) }
 func (a *sqlRowsAdapter) Close() error        { return a.rows.Close() }
-
-// tolerantParityErr swallows the chdb parquet driver's spurious empty-row
-// sentinel, mirroring the spec/property harness.
-func tolerantParityErr(err error) error {
-	if err != nil && strings.Contains(err.Error(), "empty row") {
-		return nil
-	}
-	return err
-}

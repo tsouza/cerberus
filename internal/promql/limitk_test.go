@@ -180,7 +180,7 @@ func TestLower_LimitK_Errors(t *testing.T) {
 		{
 			name:    "NaN K rejected",
 			query:   `limitk(NaN, up)`,
-			wantErr: "K must not be NaN",
+			wantErr: "Parameter value is NaN",
 		},
 		{
 			name:    "overflow K rejected",

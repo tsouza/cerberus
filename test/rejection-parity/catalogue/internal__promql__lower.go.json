@@ -91,29 +91,13 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:limitRatioPredicate#a75ec376",
-      "message": "promql: limit_ratio ratio value is NaN",
-      "class": "rejection",
-      "trigger_query": "limit_ratio(NaN, demo_memory_usage_bytes)",
-      "evidence": {
-        "guard": [
-          "if r, ok := tryScalarLiteral(param); ok",
-          "if math.IsNaN(r)"
-        ],
-        "callers": [
-          "lowerLimitRatio",
-          "lowerSubqueryOverLimitRatio"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:limitRatioPredicate#afc83b92",
       "message": "promql: limit_ratio ratio: %w",
       "class": "internal",
       "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin",
       "evidence": {
         "guard": [
+          "past returning if err := registerScalarGuard(ctx, \"limit_ratio ratio\", param, s, func(values []float64) error { _, err := limitRatioParamDomain(values) return err }); err != nil",
           "if err != nil"
         ],
         "callers": [
@@ -324,40 +308,6 @@
         ],
         "cited": [
           "buildAggFunc"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:topKDomain#7f1f205b",
-      "message": "promql: %s K must not be NaN",
-      "class": "rejection",
-      "trigger_query": "topk(NaN, up)",
-      "evidence": {
-        "guard": [
-          "case math.IsNaN(kF) of switch"
-        ],
-        "callers": [
-          "lowerLimitK",
-          "lowerSubqueryOverTopK",
-          "lowerTopK"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:topKDomain#ae02c31a",
-      "message": "promql: %s K %v overflows int64",
-      "class": "rejection",
-      "trigger_query": "topk(1e300, up)",
-      "evidence": {
-        "guard": [
-          "case kF \u003e= float64(math.MaxInt64) of switch"
-        ],
-        "callers": [
-          "lowerLimitK",
-          "lowerSubqueryOverTopK",
-          "lowerTopK"
         ]
       }
     }

@@ -59,6 +59,13 @@ func lowerQueryContextFold(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	return syntheticScalarVector(&chplan.LitFloat{V: val}, nil, s, ctx), nil
 }
 
+// stepGridAnchorColumn is the column every per-step fan-out names each
+// evaluation step with — a chplan.StepGrid and the histogram range
+// fan-out alike. It is the only timestamp in scope directly above such a
+// fan-out: the canonical Sample timestamp column does not exist until a
+// projection aliases this one onto it.
+const stepGridAnchorColumn = "anchor_ts"
+
 // syntheticScalarVector builds a Project-over-(OneRow|StepGrid) plan
 // that materialises a synthetic sample with empty labels and the
 // supplied value/timestamp expressions. Used by `time()`,
@@ -98,7 +105,7 @@ func lowerQueryContextFold(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 func syntheticScalarVector(valueExpr, timeExpr chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	if ctx.step > 0 {
 		if timeExpr == nil {
-			timeExpr = &chplan.ColumnRef{Name: "anchor_ts"}
+			timeExpr = &chplan.ColumnRef{Name: stepGridAnchorColumn}
 		} else {
 			timeExpr = rewriteAnchorRefs(timeExpr)
 		}
@@ -343,7 +350,7 @@ func lowerVector(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// exactly that. Range mode evaluates the scalar once at the eval
 	// anchor (documented lowerScalarArg posture) and fans the constant
 	// across the step grid.
-	v, err := lowerScalarArg(c.Args[0], s, ctx)
+	v, err := lowerScalarArg(c.Args[0], s, ctx.withStepGridAnchor())
 	if err != nil {
 		return nil, err
 	}

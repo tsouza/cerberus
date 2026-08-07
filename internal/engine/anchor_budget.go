@@ -71,6 +71,14 @@ func requireSubquerySampleBudget(plan chplan.Node, maxSamples int64) error {
 // only a RangeWindow stacked over another OuterRange>0 RangeWindow in its own
 // input subtree does. Saturates at math.MaxInt64 so a deeply nested product can
 // never wrap negative and slip under the budget.
+//
+// Plan subtrees that hang off an Expr slot (a chplan.ScalarSubquery binding a
+// per-step scalar parameter, a chplan.InSubquery cohort) are counted too:
+// Children() does not report them, so before they were swept a subquery grid
+// buried in `scalar(<subquery>)` escaped the budget completely and materialised
+// its anchor rows unbounded. They contribute as a PEER maximum rather than a
+// multiplicand — ClickHouse evaluates such a subquery once, independent of the
+// outer anchor grid, so multiplying would reject shapes that never stack.
 func subqueryAnchorLoad(n chplan.Node) int64 {
 	if n == nil {
 		return 0
@@ -88,13 +96,32 @@ func subqueryAnchorLoad(n chplan.Node) int64 {
 	}
 	// A subquery grid (self>0) stacked over a nested grid (childLoad>0)
 	// multiplies; otherwise the load is whichever side carries it.
-	if self > 0 && childLoad > 0 {
-		return satMulInt64(self, childLoad)
+	stacked := childLoad
+	switch {
+	case self > 0 && childLoad > 0:
+		stacked = satMulInt64(self, childLoad)
+	case self > childLoad:
+		stacked = self
 	}
-	if self > childLoad {
-		return self
+	if exprLoad := exprSlotAnchorLoad(n); exprLoad > stacked {
+		return exprLoad
 	}
-	return childLoad
+	return stacked
+}
+
+// exprSlotAnchorLoad returns the heaviest subqueryAnchorLoad among the plan
+// subtrees embedded in n's own Expr slots — the ones chplan.Walk and
+// chplan.Node.Children cannot reach.
+func exprSlotAnchorLoad(n chplan.Node) int64 {
+	var worst int64
+	chplan.InspectNodeExprs(n, func(e chplan.Expr) {
+		chplan.InspectExprNodes(e, func(chplan.Expr) bool { return true }, func(sub chplan.Node) {
+			if l := subqueryAnchorLoad(sub); l > worst {
+				worst = l
+			}
+		})
+	})
+	return worst
 }
 
 // satMulInt64 multiplies two non-negative int64s, saturating at math.MaxInt64
