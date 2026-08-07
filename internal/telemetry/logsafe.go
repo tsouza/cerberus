@@ -22,7 +22,18 @@ import (
 // replaced with its Go-syntax escape (\n, \r, \t) or a \xNN escape for
 // anything else, so the logged value stays legible for debugging instead of
 // being silently dropped or truncated.
+//
+// The two line terminators are escaped through strings.ReplaceAll rather than
+// in the loop below, and that is load-bearing beyond taste: go/log-injection
+// recognises exactly two barriers — a strings.ReplaceAll whose replaced string
+// is "\n" or "\r", and an argument rendered with %q — so routing the return
+// value through them is what lets the analysis see that a call site reached
+// through this function is sanitised. Escaping the terminators inside the
+// builder loop is equally correct at runtime and invisible to the analysis,
+// which reports every caller instead.
 func SanitizeForLog(s string) string {
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
 	if !strings.ContainsFunc(s, unicode.IsControl) {
 		return s // fast path: the overwhelming common case has no control chars
 	}
@@ -33,16 +44,11 @@ func SanitizeForLog(s string) string {
 			b.WriteRune(r)
 			continue
 		}
-		switch r {
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
+		if r == '\t' {
 			b.WriteString(`\t`)
-		default:
-			fmt.Fprintf(&b, `\x%02x`, r)
+			continue
 		}
+		fmt.Fprintf(&b, `\x%02x`, r)
 	}
 	return b.String()
 }
