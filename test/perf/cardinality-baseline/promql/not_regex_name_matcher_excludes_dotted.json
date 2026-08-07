@@ -1,8 +1,8 @@
 {
   "fixture": "promql/not_regex_name_matcher_excludes_dotted",
   "fan_factor": 1,
-  "scan_rows": 5,
-  "peak_intermediate": 5,
+  "scan_rows": 1,
+  "peak_intermediate": 1,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
