@@ -147,6 +147,18 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		if s.AttributesColumn != "" {
 			projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}})
 		}
+		// Same reasoning for the top-level scalar columns an outer
+		// `by (service_name, ...)` names: the identity wrap reads them
+		// directly, and an intermediate Project that did not carry them
+		// through would leave CH resolving an identifier that no longer
+		// exists. The four columns above are already in the list, so only
+		// the ones outside it need appending.
+		for _, col := range topLevelColumnsReferencedBy(lc.OuterByLabels, s) {
+			if col == s.TimestampColumn || col == s.BodyColumn || col == s.SeverityColumn || col == s.ResourceAttributesColumn {
+				continue
+			}
+			projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
+		}
 		innerNode = &chplan.Project{
 			Input:       inner,
 			Projections: projections,
