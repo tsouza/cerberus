@@ -85,41 +85,86 @@ export type ScopeRules = {
  * stayed green. Params that change the queries a page issues are
  * distinct consumption modes, hence distinct surfaces.
  *
- * Two retention modes mirror the path rules:
- *   - 'enumerate' — low-cardinality structural params (actionView
- *     tabs, groupBy attribute, metric type): every value keys its own
- *     surface. `defaultValue` names the value the app writes on a
- *     cold boot; it is DROPPED from the canonical so the default
- *     state stays keyed by the bare surface (the app rewriting its
- *     defaults into the URL must not re-key the surface).
- *   - 'parameterize' — high-cardinality structural params (the
- *     metrics-drilldown `metric` name): the value collapses to
- *     `{param}`, one representative surface family — the same
- *     doctrine as the `{service}` path segment.
+ * Which retention mode applies is NOT a per-param taste call, and NOT
+ * a list of names someone extends each time the ratchet goes red. It
+ * is forced by one question with a checkable answer: **can the param's
+ * complete option set be written down from the pinned app version
+ * alone?**
+ *
+ *   - 'enumerate' — the option set is a fact about the APP: a literal
+ *     array in the plugin bundle, fixed by the pinned plugin version
+ *     (actionView tabs, metric type, primary signal). Every value keys
+ *     its own surface, because each drives a structurally different
+ *     query. The rule must DECLARE that set in `values`, and the
+ *     canonicalizer rejects any value outside it.
+ *   - 'parameterize' — the option set is a fact about the DATA: the
+ *     app offers whichever attribute / metric / label names the
+ *     ingested telemetry happens to carry, so no closed set exists.
+ *     The value collapses to `{param}`, one representative surface
+ *     family — the same doctrine as the `{service}` path segment.
+ *
+ * There is no third mode and no escape hatch: a param whose options
+ * come from data cannot produce a `values` set, so the type itself
+ * forces it to parameterize. That is what stops the doctrine decaying
+ * into an enumeration of param names.
+ *
+ * `defaultValue` names the value the app writes on a cold boot; it is
+ * DROPPED from the canonical in either mode, so the default state
+ * stays keyed by the bare surface (the app rewriting its own defaults
+ * into the URL must not re-key the surface).
  */
 export type StructuralParamRule = {
   /** Canonical-path family the rule applies to (post path-rewrite). */
   pathPattern: RegExp;
   /** Exact query param name. */
   param: string;
-  mode: 'enumerate' | 'parameterize';
   /** The app's cold-boot value, dropped from keys in either mode. */
   defaultValue?: string;
-};
+} & (
+  | {
+      mode: 'enumerate';
+      /**
+       * The COMPLETE option set the pinned app version offers, read
+       * off the plugin bundle rather than off whichever values some
+       * crawl happened to reach. `defaultValue` must be a member.
+       */
+      values: ReadonlyArray<string>;
+    }
+  | { mode: 'parameterize' }
+);
 
 /**
- * Grafana-12.x structural params, verified live against
- * grafana/grafana:12.2.9 (2026-06-11) by driving each control and
- * reading the URL the app wrote:
+ * Grafana-12.x structural params, pinned to grafana/grafana:12.2.9.
+ *
+ * Every `values` set below is read off the shipped plugin bundle —
+ * the literal option array the app itself iterates — NOT off whichever
+ * values a crawl happened to reach. That distinction is the whole
+ * point of the closed set. Cataloguing options by observation is how
+ * this rule table went wrong before: `var-primarySignal` was recorded
+ * as "Root spans | All spans" because those were the two states a
+ * crawl had produced, while the bundle's array carries five. The crawl
+ * later reached a third (`kind=server`) and the ratchet reported it as
+ * new coverage, which it was — but one option at a time, each a fresh
+ * red on `main`, with two more still queued behind it.
  *
  *   - Traces Drilldown (`grafana-exploretraces-app`): `actionView`
- *     (Breakdown | Service structure | Comparison | Traces tabs,
- *     boot value `breakdown`), `var-metric` (rate | errors |
- *     duration, boot `rate`), `var-groupBy` (the breakdown ATTRIBUTE
- *     NAME, boot `resource.service.name` — high-cardinality and
- *     data-derived, so it parameterizes; see below),
- *     `var-primarySignal` (Root spans | All spans, boot
- *     `nestedSetParent<0`).
+ *     (six tabs, boot `breakdown`), `var-metric` (rate | errors |
+ *     duration, boot `rate`), `var-primarySignal` (five signals, boot
+ *     `nestedSetParent<0`), `var-groupBy` (the breakdown ATTRIBUTE
+ *     NAME, boot `resource.service.name` — data-derived, so it
+ *     parameterizes; see below).
+ *
+ * `var-primarySignal` enumerates rather than parameterizes, and the
+ * reason is the mirror image of `var-groupBy`'s. Its five options are
+ * a literal array in the plugin bundle, each pairing a label with a
+ * fixed TraceQL fragment the app splices into EVERY query the page
+ * fires (`{nestedSetParent<0 && …}` vs `{kind=server && …}` vs
+ * `{span.db.system.name!="" && …}`). Adding a span attribute to the
+ * seeded stack cannot change that list. Collapsing it would key five
+ * genuinely different query families as one surface and pin whichever
+ * the crawl reached first — precisely the coverage #1889 (the Service
+ * structure tab 500s on every primary signal but the default) needs
+ * the crawl to keep reaching.
  *
  * `var-groupBy` parameterizes rather than enumerates because its
  * option list is a fact about the DATA, not about the surface: the
@@ -138,12 +183,15 @@ export type StructuralParamRule = {
  * `metric` name and the `{service}` path segment.
  *   - Metrics Drilldown (`grafana-metricsdrilldown-app`): `metric`
  *     (the selected metric NAME — one per series family in the
- *     stack, high-cardinality → parameterize), `actionView`
- *     (breakdown | related, written as `breakdown` on metric select),
- *     `var-groupby` (boot `$__all`).
+ *     stack, data-derived → parameterize), `actionView` (four tabs,
+ *     written as `breakdown` on metric select), `var-groupby` (the
+ *     breakdown LABEL NAME — a QueryVariable over
+ *     `label_names(<metric>)`, so data-derived → parameterize; boot
+ *     `$__all`, its includeAll sentinel).
  *   - Logs Drilldown service pages (`grafana-lokiexplore-app`):
  *     `visualizationType` (logs | table | json — JSON-string-quoted
- *     in the URL, boot `"logs"`), `sortOrder` (boot `"Descending"`).
+ *     in the URL, boot `"logs"`), `sortOrder` (Descending |
+ *     Ascending, likewise quoted, boot `"Descending"`).
  *
  * Time params (`from`/`to`), filters (`var-filters`), display state
  * (`displayedFields`, `urlColumns`, `patterns`, …) stay stripped —
@@ -154,12 +202,26 @@ export const STRUCTURAL_PARAM_RULES: ReadonlyArray<StructuralParamRule> = [
     pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
     param: 'actionView',
     mode: 'enumerate',
+    // Bundle: the tab array the app maps over to build its TabsBar.
+    // `exceptions` and `adaptiveTraces` mount conditionally (feature
+    // flag / sibling plugin), so a crawl need not reach them — but
+    // they are options of the pinned version, so they belong to the
+    // declared set rather than becoming a future surprise red.
+    values: [
+      'breakdown',
+      'structure',
+      'comparison',
+      'exceptions',
+      'traceList',
+      'adaptiveTraces',
+    ],
     defaultValue: 'breakdown',
   },
   {
     pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
     param: 'var-metric',
     mode: 'enumerate',
+    values: ['rate', 'errors', 'duration'],
     defaultValue: 'rate',
   },
   {
@@ -172,6 +234,16 @@ export const STRUCTURAL_PARAM_RULES: ReadonlyArray<StructuralParamRule> = [
     pathPattern: /^\/a\/grafana-exploretraces-app\/explore$/,
     param: 'var-primarySignal',
     mode: 'enumerate',
+    // Bundle: the literal `[{label, value, filter, description}, …]`
+    // array, in its declared order. Each `value` is the TraceQL
+    // fragment the app splices into every query the page fires.
+    values: [
+      'nestedSetParent<0',
+      'true',
+      'kind=server',
+      'kind=consumer',
+      'span.db.system.name!=""',
+    ],
     defaultValue: 'nestedSetParent<0',
   },
   {
@@ -183,24 +255,39 @@ export const STRUCTURAL_PARAM_RULES: ReadonlyArray<StructuralParamRule> = [
     pathPattern: /^\/a\/grafana-metricsdrilldown-app\/(drilldown|trail)$/,
     param: 'actionView',
     mode: 'enumerate',
+    // Bundle: the tab-value enum. Note `relatedLogs` and
+    // `queryResults` write `logs` / `results`, not their key names.
+    values: ['breakdown', 'related', 'logs', 'results'],
     defaultValue: 'breakdown',
   },
   {
     pathPattern: /^\/a\/grafana-metricsdrilldown-app\/(drilldown|trail)$/,
     param: 'var-groupby',
-    mode: 'enumerate',
+    // Data-derived, so it cannot enumerate. The Group by control is a
+    // QueryVariable whose options are `label_names(<selected metric>)`
+    // resolved against the datasource — the LABEL NAMES the ingested
+    // series carry. `$__all` is its includeAll sentinel, not an option
+    // set. No closed set can be written down, which is exactly the
+    // signal that the value is churn rather than coverage: pinning it
+    // would pin the seeded label schema, the same defect #1825 hit
+    // with the traces `var-groupBy`.
+    mode: 'parameterize',
     defaultValue: '$__all',
   },
   {
     pathPattern: /^\/a\/grafana-lokiexplore-app\/explore\/service\/\{service\}\//,
     param: 'visualizationType',
     mode: 'enumerate',
+    // JSON-string-quoted by the app, quotes included, as written.
+    values: ['"logs"', '"table"', '"json"'],
     defaultValue: '"logs"',
   },
   {
     pathPattern: /^\/a\/grafana-lokiexplore-app\/explore\/service\/\{service\}\//,
     param: 'sortOrder',
     mode: 'enumerate',
+    // Grafana core's LogsSortOrder enum, JSON-string-quoted as above.
+    values: ['"Descending"', '"Ascending"'],
     defaultValue: '"Descending"',
   },
 ];
@@ -442,6 +529,27 @@ export function canonicalTarget(
     // the default state is not a distinct surface.
     if (value === rule.defaultValue) continue;
     if (rule.mode === 'enumerate') {
+      // An enumerated param's option set is a CLAIM about the pinned
+      // app version, and this is where the claim gets checked. A value
+      // outside it means exactly one of two things, and both need a
+      // human: either the app version gained an option (real coverage
+      // change, pin it deliberately) or the param's options actually
+      // come from the data and the rule is miscategorised (it must
+      // become 'parameterize'). Failing here names the param and the
+      // value; letting it through instead surfaces as an anonymous
+      // "coverage grew" row 40 minutes into the compose lane.
+      if (!rule.values.includes(value)) {
+        throw new Error(
+          `canonical surface key: ${rule.param}=${JSON.stringify(value)} on ` +
+            `${path} is outside the rule's declared option set ` +
+            `[${rule.values.map((v) => JSON.stringify(v)).join(', ')}]. ` +
+            `Either the pinned app version gained an option — add it to ` +
+            `STRUCTURAL_PARAM_RULES and regenerate the inventory — or the ` +
+            `option list comes from the seeded data, in which case the rule ` +
+            `must be mode 'parameterize' so the value collapses to ` +
+            `{${rule.param}}.`,
+        );
+      }
       retained.push(`${rule.param}=${value}`);
     } else {
       retained.push(`${rule.param}={${rule.param}}`);

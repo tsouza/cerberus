@@ -1,0 +1,10 @@
+{
+  "query": "pinned_name_selector_no_histogram_fanout",
+  "routed": true,
+  "k": 8,
+  "reason": "routed",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}
