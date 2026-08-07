@@ -66,3 +66,63 @@ func TraceIDTsBounds(table, startColumn, endColumn, timestampColumn string, coho
 	}
 	return lo, hi
 }
+
+// TraceIDTsEnvelopeAlias names the ClickHouse scalar binding that
+// [TraceIDTsEnvelopeBounds] reads its two bounds from: one
+// `(min(startColumn), max(endColumn))` tuple over the cohort's trace_id_ts
+// rows, declared once on the outermost statement and therefore evaluated
+// once however many bounds reference it.
+const TraceIDTsEnvelopeAlias = "_cerberus_trace_id_ts_env"
+
+// TraceIDTsEnvelopeStartElement / TraceIDTsEnvelopeEndElement are the 1-based
+// tuple positions the bounds read out of that binding. The emitter that builds
+// the binding body projects the two aggregates in exactly this order, so the
+// order lives here next to the readers rather than being restated at the
+// producer.
+const (
+	TraceIDTsEnvelopeStartElement = 1
+	TraceIDTsEnvelopeEndElement   = 2
+)
+
+// TraceIDTsEnvelopeBounds builds the same (lo, hi) Timestamp-window SUPERSET
+// bounds [TraceIDTsBounds] does — including the identical
+// [TraceIDTsEndPadSeconds] pad on the upper bound, for the identical reason —
+// reading the envelope out of the scalar binding named by alias instead of
+// re-deriving it per bound:
+//
+//	timestampColumn >= tupleElement(alias, TraceIDTsEnvelopeStartElement)
+//	timestampColumn <= addSeconds(tupleElement(alias, TraceIDTsEnvelopeEndElement), TraceIDTsEndPadSeconds)
+//
+// The cohort predicate a caller passes to [TraceIDTsBounds] is a factory
+// because that form embeds the predicate once per bound; here the predicate
+// lives in the binding body alone, so a cohort selected by a whole subquery
+// (a compare()'s seed scan) is scanned once for both bounds rather than once
+// each. ClickHouse evaluates a scalar WITH binding exactly once per statement
+// and resolves the alias inside nested subqueries, which is what makes the two
+// bounds share one evaluation; a relational (`WITH x AS (SELECT …)`) CTE would
+// not, since ClickHouse inlines a relational CTE at every reference.
+//
+// Both bound shapes select the same rows: a tuple of two aggregates over one
+// scan equals the two single-aggregate scans it replaces.
+func TraceIDTsEnvelopeBounds(alias, timestampColumn string) (lo, hi Expr) {
+	element := func(idx int64) Expr {
+		return &FuncCall{Name: "tupleElement", Args: []Expr{
+			&BareIdent{Name: alias},
+			&LitInt{V: idx},
+		}}
+	}
+	lo = &Binary{
+		Op:    OpGe,
+		Left:  &ColumnRef{Name: timestampColumn},
+		Right: element(TraceIDTsEnvelopeStartElement),
+	}
+	hi = &Binary{
+		Op:   OpLe,
+		Left: &ColumnRef{Name: timestampColumn},
+		Right: &FuncCall{Name: "addSeconds", Args: []Expr{
+			element(TraceIDTsEnvelopeEndElement),
+			&LitInt{V: TraceIDTsEndPadSeconds},
+		}},
+	}
+	return lo, hi
+}

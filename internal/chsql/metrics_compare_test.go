@@ -259,6 +259,13 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 // non-root strategy retains Tempo's root enrichment without pretending the
 // request window contains the root. The trace_id_ts min/max envelope is built
 // from exactly the seeded cohort, then conjoined on the physical root scan.
+//
+// The envelope rides a single scalar WITH binding, so this also pins the
+// deduplication that binding exists for: the cohort seed — a whole subquery
+// over the spans table — renders exactly twice per statement (the binding body
+// and the root scan's own membership gate), never once per bound, and the
+// trace_id_ts table is scanned once. A test that only checked the two bounds
+// are present would pass on the shape that re-derives the envelope per bound.
 func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 	t.Parallel()
 
@@ -279,57 +286,91 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
+	// The envelope body is declared once, on the statement's outermost SELECT,
+	// as the `(min(Start), max(End))` tuple both bounds read.
+	const wantBinding = "WITH (SELECT tuple(min(`Start`), max(`End`)) FROM `otel_traces_trace_id_ts` WHERE "
+	if !strings.HasPrefix(sql, wantBinding) {
+		t.Fatalf("expected the envelope binding on the outermost SELECT, got:\n%s", sql)
+	}
+	if got := strings.Count(sql, "AS "+chplan.TraceIDTsEnvelopeAlias); got != 1 {
+		t.Errorf("envelope binding declared %d times, want exactly 1:\n%s", got, sql)
+	}
+	// One binding body means one trace_id_ts scan and one aggregate per bound
+	// column. The pre-binding shape re-derived the envelope per bound, which
+	// rendered both of these twice.
+	for _, once := range []string{"`otel_traces_trace_id_ts`", "min(`Start`)", "max(`End`)"} {
+		if got := strings.Count(sql, once); got != 1 {
+			t.Errorf("%s rendered %d times, want exactly 1:\n%s", once, got, sql)
+		}
+	}
+	// The cohort is a whole subquery over the spans table, so every extra
+	// render of it is another scan. It renders exactly twice: inside the
+	// binding body, and as the root scan's own membership gate.
+	const seedOpener = "`TraceId` IN (SELECT `TraceId`"
+	if got := strings.Count(sql, seedOpener); got != 2 {
+		t.Errorf("cohort seed rendered %d times, want exactly 2:\n%s", got, sql)
+	}
+
 	onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
 	if onIdx < 0 {
 		t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
 	}
 	rLeg := sql[:onIdx]
 	start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
-	// The trace_id_ts scalar bounds each contain the same cohort seed. The
-	// final occurrence is the root scan's exact membership predicate, after
-	// both bounds have been established.
-	seed := strings.LastIndex(rLeg, "`TraceId` IN (SELECT `TraceId`")
+	// The final seed occurrence in the root leg is the root scan's exact
+	// membership predicate; the bounds established before it are the envelope's.
+	seed := strings.LastIndex(rLeg, seedOpener)
 	if start < 0 || seed < 0 || seed <= start {
 		t.Fatalf("expected root scan filter then TraceId seed:\n%s", rLeg)
 	}
 	prefix := rLeg[start:seed]
-	// Each bound is a ScalarSubquery over a no-GROUP Aggregate whose AggFunc
-	// carries an alias, and chsql renders a Filter-over-Scan as a derived
-	// table — so the canonical rendering is
-	// `(SELECT <agg> AS <col> FROM (SELECT * FROM <ts> WHERE …))`.
+	// Both bounds resolve to the binding rather than carrying a subquery of
+	// their own.
 	for _, want := range []string{
-		"`Timestamp` >= (SELECT min(`Start`) AS `Start` FROM (SELECT * FROM `otel_traces_trace_id_ts`",
-		"`Timestamp` <= addSeconds((SELECT max(`End`) AS `End` FROM (SELECT * FROM `otel_traces_trace_id_ts`",
+		"`Timestamp` >= tupleElement(" + chplan.TraceIDTsEnvelopeAlias + ", ?)",
+		"`Timestamp` <= addSeconds(tupleElement(" + chplan.TraceIDTsEnvelopeAlias + ", ?), ?)",
 	} {
 		if !strings.Contains(prefix, want) {
 			t.Errorf("non-root root scan must carry %q before its exact seed:\n%s", want, prefix)
 		}
 	}
-	firstNestedSeed := strings.Index(prefix, "`TraceId` IN (SELECT `TraceId`")
-	if firstNestedSeed < 0 {
-		t.Fatalf("expected the trace_id_ts scalar bound to use the cohort seed:\n%s", prefix)
-	}
-	// The nested seed is request-windowed, as it must be. Only the root scan's
-	// direct predicate is forbidden from using that window; before the scalar's
-	// first seed it must be the lookup-derived min(Start) bound.
-	directPrefix := prefix[:firstNestedSeed]
-	if strings.Contains(directPrefix, "fromUnixTimestamp64Nano") {
-		t.Errorf("non-root root scan must not use the request window directly:\n%s", directPrefix)
+	// Only the root scan's direct predicate is forbidden from using the request
+	// window; the seeds nested below it are request-windowed, as they must be.
+	if strings.Contains(prefix, "fromUnixTimestamp64Nano") {
+		t.Errorf("non-root root scan must not use the request window directly:\n%s", prefix)
 	}
 
 	// addSeconds() alone does not prove the upper bound is actually widened —
 	// a zero pad renders identically. trace_id_ts stores End as a DateTime
 	// floored from a DateTime64(9) max(Timestamp), so the pad must be a full
 	// second for the envelope to stay a superset of the trace's last span.
-	// The exact TraceId-IN seed renders last and contributes exactly the two
-	// request-window params, so the pad is the third argument from the end.
-	const wantEndPadSeconds = int64(1)
-	const padArgsFromEnd = 3
-	if len(args) < padArgsFromEnd {
-		t.Fatalf("expected at least %d args, got %#v", padArgsFromEnd, args)
+	// Nor does tupleElement() alone prove each bound reads the element it
+	// means: reading Start for both would bound the scan to the cohort's
+	// earliest instant. The exact TraceId-IN seed renders last and contributes
+	// exactly the two request-window params, so counting back from the end the
+	// pad is third, the End element fourth and the Start element fifth.
+	const wantEndPadSeconds = int64(chplan.TraceIDTsEndPadSeconds)
+	const (
+		padArgsFromEnd        = 3
+		endElemArgsFromEnd    = 4
+		startElemArgsFromEnd  = 5
+		minTrailingBoundsArgs = startElemArgsFromEnd
+	)
+	if len(args) < minTrailingBoundsArgs {
+		t.Fatalf("expected at least %d args, got %#v", minTrailingBoundsArgs, args)
 	}
-	if got := args[len(args)-padArgsFromEnd]; got != any(wantEndPadSeconds) {
-		t.Errorf("addSeconds pad = %#v, want %d second", got, wantEndPadSeconds)
+	for _, tc := range []struct {
+		name    string
+		fromEnd int
+		want    int64
+	}{
+		{"addSeconds pad", padArgsFromEnd, wantEndPadSeconds},
+		{"End tuple element", endElemArgsFromEnd, chplan.TraceIDTsEnvelopeEndElement},
+		{"Start tuple element", startElemArgsFromEnd, chplan.TraceIDTsEnvelopeStartElement},
+	} {
+		if got := args[len(args)-tc.fromEnd]; got != any(tc.want) {
+			t.Errorf("%s = %#v, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -385,6 +426,48 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig(t *testing.T) {
 				t.Errorf("half-configured trace_id_ts must not bound the root scan, got prefix:\n%s", prefix)
 			}
 		})
+	}
+}
+
+// TestEmitRangeWindowCompare_TraceIDTsEnvelopeUnreferenced pins that the
+// envelope binding is declared only when a scan actually reads it. A root
+// lookup whose aggregate sits directly on its Scan has no Filter to push the
+// bounds into, so the emitter keeps #1214's unbounded-but-lossless root leg —
+// and must then drop the binding too. A scalar WITH that nothing references is
+// not free: ClickHouse still evaluates it, which is a full trace_id_ts scan
+// plus a render of the cohort seed bought for nothing.
+func TestEmitRangeWindowCompare_TraceIDTsEnvelopeUnreferenced(t *testing.T) {
+	t.Parallel()
+
+	m := compareNodeWithRoot()
+	m.RootLookupTraceIDTsTable = "otel_traces_trace_id_ts"
+	m.RootLookupTraceIDTsStartColumn = "Start"
+	m.RootLookupTraceIDTsEndColumn = "End"
+	// Aggregate straight over Scan: no Filter for the bounds to land in.
+	m.RootLookup = &chplan.Aggregate{
+		Input:   &chplan.Scan{Table: "otel_traces"},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
+		},
+	}
+	rw := &chplan.RangeWindow{
+		Input:           m,
+		Range:           time.Minute,
+		Step:            time.Minute,
+		Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+		TimestampColumn: "Timestamp",
+	}
+	sql, _, err := chsql.Emit(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(sql, chplan.TraceIDTsEnvelopeAlias) {
+		t.Errorf("envelope binding must not be declared when no scan reads it:\n%s", sql)
+	}
+	if strings.Contains(sql, "`otel_traces_trace_id_ts`") {
+		t.Errorf("unreferenced envelope must not scan trace_id_ts:\n%s", sql)
 	}
 }
 
