@@ -880,6 +880,18 @@ jobs:
           node .github/scripts/generated-baseline-structural-guard.mjs --self-test
           node .github/scripts/generated-baseline-structural-guard.mjs
 
+      # #1877: post-merge-drift.yml is the ONLY lane that ever looks at the
+      # bytes a squash-merge actually produced, and it reports on `main` where
+      # no PR check can gate it. That makes a silent break in it invisible — a
+      # gate that always says "clean" is indistinguishable from a repo with no
+      # drift, and would stay that way until a corrupted baseline reached a
+      # release. These pins drive the real script over a real git repository in
+      # both directions (a generator whose output matches the committed bytes,
+      # and one whose output does not), so the lane cannot rot into a rubber
+      # stamp. Pure subprocess tests over temp dirs, well under a second.
+      - name: Assert the post-merge drift gate still fails on drift (#1877)
+        run: node --test .github/scripts/post-merge-golden-drift.test.mjs
+
   # `forbid-deferral` used to live here. It moved to its own workflow file,
   # `.github/workflows/forbid-deferral.yml`, because one of its three surfaces
   # is the PR DESCRIPTION and this workflow's bare `pull_request:` trigger does

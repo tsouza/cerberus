@@ -138,11 +138,32 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   that GitHub's server-side merge does not honour `-merge` at all (verified
   empirically — see the script's own doc comment), so the content-exact
   regenerate-and-diff ratchets that already cover most of these files (listed
-  in the doc comment) need a branch-protection `strict: true` to guarantee
-  they always run against the content that actually lands on `main`; this
-  script is a cheap, always-on second signal in the meantime. No env inputs.
+  in the doc comment) only ever run against the tree as a PR saw it;
+  `post-merge-golden-drift.mjs` is what runs them against the bytes that
+  actually land, and this script is a cheap, always-on second signal. No env
+  inputs.
   - Exit: `0` clean (or self-test passed), `1` on a structural violation or
     an unreadable/unparseable file.
+- **`post-merge-golden-drift.mjs`** — `post-merge-drift.yml`, the `drift` job
+  step "Regenerate what this merge implied and diff it". Runs on every push to
+  `main`. Derives which golden shards the merge could have staled (via
+  `lib/golden-shards.mjs`'s `impliedShards`, so an ordinary push regenerates
+  little or nothing), runs each one's real regeneration command, and fails if
+  the tree moved. Exists because branch protection has `strict: false`: a PR's
+  regenerate-and-diff ratchets run against its own merge base, so two PRs each
+  green in isolation can produce a `main` neither validated (#1877). It reports
+  on the merge commit, so it is not a required check — the failure message
+  names the artefact, the regeneration command, and both commits whose
+  interleaving produced the drift.
+  - Env: `POST_MERGE_BEFORE` (required, `github.event.before`),
+    `POST_MERGE_AFTER` (default `HEAD`), `POST_MERGE_SHARDS` (optional, an
+    explicit shard set replacing the derived one — used by the pins),
+    `JUST_EXECUTABLE`.
+  - Exit: `0` nothing implied, or every implied shard regenerates to the
+    committed bytes; `1` on drift, on a failed regeneration command, or on
+    unusable inputs.
+  - Pinned by `post-merge-golden-drift.test.mjs` (`ci.yml`, the `forbid-skip`
+    job), which drives it over a real git repository in both directions.
 - **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans;
   `compatibility.yml`, the cheap-first `gate`.
   - Env: `CHECK` is `all` (every scan, in registry order) or one of `t-skip`,
