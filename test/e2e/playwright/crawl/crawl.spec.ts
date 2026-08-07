@@ -124,6 +124,7 @@ import {
 import {
   ALERT_ERROR_PATTERNS,
   PAGE_CRASH_PATTERNS,
+  STRUCTURAL_PARAM_RULES,
   assertInventoryBootstrapped,
   byCodepoint,
   canonicalTarget,
@@ -566,6 +567,223 @@ test.describe('crawl: canonicalization pins', () => {
     );
     expect(grew).toHaveLength(1);
     expect(grew[0]).toContain('coverage grew');
+  });
+
+  test('parameterizing metrics-drilldown var-groupby absorbs label churn but still catches real coverage change', () => {
+    // Same derivation as the traces var-groupBy, reached by asking the
+    // one question rather than by waiting for a red: the Group by
+    // control is a QueryVariable over `label_names(<metric>)`, so its
+    // options are the label names of whichever series the stack
+    // ingested. No closed set exists, so it cannot enumerate — and
+    // enumerating it meant every label added to the seeded metrics
+    // would have re-keyed a surface and reported churn as coverage.
+    const asJob = canonicalizeURL(
+      '/a/grafana-metricsdrilldown-app/drilldown?metric=cerberus_http_requests_total&var-groupby=job',
+      base,
+      scope,
+    );
+    const asInstance = canonicalizeURL(
+      '/a/grafana-metricsdrilldown-app/drilldown?metric=cerberus_http_requests_total&var-groupby=instance',
+      base,
+      scope,
+    );
+    expect(asJob).toBe(asInstance);
+    expect(asJob).toBe(
+      '/a/grafana-metricsdrilldown-app/drilldown?metric={metric}&var-groupby={var-groupby}',
+    );
+    // The includeAll sentinel is the cold-boot value and still drops.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-metricsdrilldown-app/drilldown?metric=cerberus_http_requests_total&var-groupby=%24__all',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-metricsdrilldown-app/drilldown?metric={metric}');
+
+    // The collapse is not a hole: losing the grouped surface entirely
+    // — the sweep no longer driving the Group by control at all — is
+    // still a coverage loss the ratchet reports.
+    const stack = activeStack();
+    const bare = '/a/grafana-metricsdrilldown-app/drilldown?metric={metric}';
+    const grouped = asJob!;
+    const inventory = {
+      doc: '',
+      stack: stack.name,
+      surfaces: [
+        { url: bare, lean: true },
+        { url: grouped, lean: true },
+      ],
+    };
+    const noExclusions = { doc: '', exclusions: [] };
+
+    expect(
+      diffInventory(
+        new Set([bare, grouped]),
+        inventory,
+        noExclusions,
+        'lean',
+        stack,
+      ),
+    ).toEqual([]);
+
+    const shrank = diffInventory(
+      new Set([bare]),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(shrank).toHaveLength(1);
+    expect(shrank[0]).toContain('coverage shrank');
+    expect(shrank[0]).toContain(grouped);
+  });
+
+  test('every enumerated structural param declares a closed option set holding its default', () => {
+    // The mode is chosen by ONE question — "can the complete option
+    // set be written down from the pinned app version?" — and this is
+    // where the answer is held to account. An enumerate rule with no
+    // set, or whose cold-boot value is not one of its own options, is
+    // a rule written from observation rather than from the bundle:
+    // exactly the defect that recorded var-primarySignal as two
+    // options when its bundle array carries five.
+    const enumerated = STRUCTURAL_PARAM_RULES.filter(
+      (r) => r.mode === 'enumerate',
+    );
+    expect(enumerated.length).toBeGreaterThan(0);
+    for (const rule of enumerated) {
+      const where = `${rule.param} on ${rule.pathPattern.source}`;
+      expect(rule.values.length, `${where}: empty option set`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        new Set(rule.values).size,
+        `${where}: duplicate options`,
+      ).toBe(rule.values.length);
+      // A canonical key is `param=value` joined by '&'; a value
+      // carrying '&' would silently split into two pinned params.
+      for (const v of rule.values) {
+        expect(v, `${where}: option ${JSON.stringify(v)} carries '&'`).not.toContain(
+          '&',
+        );
+      }
+      if (rule.defaultValue !== undefined) {
+        expect(
+          rule.values,
+          `${where}: cold-boot default ${JSON.stringify(rule.defaultValue)} is not one of its own options`,
+        ).toContain(rule.defaultValue);
+      }
+    }
+  });
+
+  test('an enumerated value outside the declared set fails loudly instead of minting a surface', () => {
+    // Without this the same story replays every time: the app offers
+    // an option the rule never catalogued, the crawl reaches it, and
+    // the only symptom is an anonymous "coverage grew" row 40 minutes
+    // into the compose lane naming neither the param nor the cause.
+    // Here it fails in microseconds, naming both, and states the two
+    // possible fixes.
+    let thrown: Error | undefined;
+    try {
+      canonicalizeURL(
+        '/a/grafana-exploretraces-app/explore?var-primarySignal=kind=producer',
+        base,
+        scope,
+      );
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown, 'undeclared option was silently accepted').toBeDefined();
+    expect(thrown!.message).toContain('var-primarySignal');
+    expect(thrown!.message).toContain('kind=producer');
+    expect(thrown!.message).toContain('parameterize');
+
+    // The check is not a blanket rejection of unfamiliar text: a value
+    // the bundle really does offer canonicalizes normally.
+    expect(
+      canonicalizeURL(
+        '/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer',
+        base,
+        scope,
+      ),
+    ).toBe('/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer');
+  });
+
+  test('enumerating var-primarySignal keeps every signal a distinct surface', () => {
+    // The mirror image of the var-groupBy case, and the reason the
+    // collapse doctrine is NOT "every var-* parameterizes". The five
+    // primary signals are a literal array in the plugin bundle, each
+    // splicing a DIFFERENT TraceQL fragment into every query the page
+    // fires. Collapsing them would key five query families as one
+    // surface and pin whichever the crawl reached first — which is
+    // precisely how #1889 (Service structure 500s on every primary
+    // signal but the default) would go unseen.
+    const rule = STRUCTURAL_PARAM_RULES.find(
+      (r) =>
+        r.param === 'var-primarySignal' &&
+        r.pathPattern.test('/a/grafana-exploretraces-app/explore'),
+    );
+    if (rule === undefined || rule.mode !== 'enumerate') {
+      throw new Error(
+        'var-primarySignal must remain an enumerate rule: each signal is a ' +
+          'distinct TraceQL filter, hence a distinct query family',
+      );
+    }
+
+    const keys = rule.values.map(
+      (v) =>
+        canonicalizeURL(
+          `/a/grafana-exploretraces-app/explore?var-primarySignal=${encodeURIComponent(v)}`,
+          base,
+          scope,
+        )!,
+    );
+    // Every non-default signal keys its own surface; the cold-boot
+    // signal keys the bare one. No two collapse together.
+    expect(new Set(keys).size).toBe(rule.values.length);
+    expect(keys).toContain('/a/grafana-exploretraces-app/explore');
+
+    // …and dropping one is a coverage LOSS the ratchet still reports.
+    // Today's red was `kind=server` arriving as new coverage; this
+    // pins the other half — that losing it again is caught.
+    const stack = activeStack();
+    const serverSignal =
+      '/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server';
+    const allSpans = '/a/grafana-exploretraces-app/explore?var-primarySignal=true';
+    const inventory = {
+      doc: '',
+      stack: stack.name,
+      surfaces: [
+        { url: '/a/grafana-exploretraces-app/explore', lean: true },
+        { url: allSpans, lean: true },
+        { url: serverSignal, lean: true },
+      ],
+    };
+    const noExclusions = { doc: '', exclusions: [] };
+
+    expect(
+      diffInventory(
+        new Set([
+          '/a/grafana-exploretraces-app/explore',
+          allSpans,
+          serverSignal,
+        ]),
+        inventory,
+        noExclusions,
+        'lean',
+        stack,
+      ),
+    ).toEqual([]);
+
+    const shrank = diffInventory(
+      new Set(['/a/grafana-exploretraces-app/explore', allSpans]),
+      inventory,
+      noExclusions,
+      'lean',
+      stack,
+    );
+    expect(shrank).toHaveLength(1);
+    expect(shrank[0]).toContain('coverage shrank');
+    expect(shrank[0]).toContain(serverSignal);
   });
 
   test('pinned structural-param counting (the pairwise depth bound)', () => {
