@@ -688,11 +688,16 @@ test_cases:
   # Label rewrites over a range window — the shape whose collision has no
   # wire representation. `mode` is what separates each instance's three
   # counter series, so flattening or dropping it merges them.
-  - query: 'label_replace(rate(demo_cpu_usage_seconds_total[{{.range}}]), "mode", "all", "mode", ".*")'
-    variant_args: ['range']
+  #
+  # The window is pinned rather than driven by the `range` variant: `rate`
+  # needs two samples inside the window to emit anything at all, and the
+  # variant set opens at `1s`, well under the scrape interval. At that
+  # width every series is empty, nothing collides, and reference answers
+  # 200 — so a `should_fail` row driven by the variant asserts the
+  # opposite of what it claims for the narrowest member of the set.
+  - query: 'label_replace(rate(demo_cpu_usage_seconds_total[1m]), "mode", "all", "mode", ".*")'
     should_fail: true
-  - query: 'label_join(rate(demo_cpu_usage_seconds_total[{{.range}}]), "mode", "-")'
-    variant_args: ['range']
+  - query: 'label_join(rate(demo_cpu_usage_seconds_total[1m]), "mode", "-")'
     should_fail: true
   # The INJECTIVE control for the row above, and the only row in this file
   # that discriminates the failure mode a collision guard over a range
@@ -700,6 +705,8 @@ test_cases:
   # the query answers 200 with an EMPTY matrix instead of erroring, which
   # every should_fail row above would happily accept. Here the rewrite
   # copies `mode` into a new label and keeps `mode`, so all nine series
-  # survive and reference returns every point.
-  - query: 'label_replace(rate(demo_cpu_usage_seconds_total[{{.range}}]), "core", "$1", "mode", "(.*)")'
-    variant_args: ['range']
+  # survive and reference returns every point. It carries the same pinned
+  # window as the rows it controls: an empty-versus-empty comparison would
+  # match whatever the guard did, which is the one thing this row exists to
+  # rule out.
+  - query: 'label_replace(rate(demo_cpu_usage_seconds_total[1m]), "core", "$1", "mode", "(.*)")'
