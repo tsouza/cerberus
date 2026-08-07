@@ -6,7 +6,7 @@
 # Promtail-pack-shaped payload for it to run against, so the stage
 # shipped guarded only by cerberus's own unit tests reading upstream's
 # source rather than a real differential run — exactly the gap #1447
-# (unpackStep silently swallowing the `__error__` /
+# (the then-Go-side unpack step silently swallowing the `__error__` /
 # `__error_details__` labels a malformed payload should carry) shipped
 # through.
 #

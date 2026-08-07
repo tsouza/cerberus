@@ -22,11 +22,11 @@ const errLabelFilterKind = "LabelFilterErr"
 // labelFiltererEval evaluates a parsed LogQL label filterer against a
 // row's Go-side label map. It is the execution-time counterpart to
 // internal/logql/lower.go's SQL lowering (labelFiltererLower et al.)
-// for filters that follow a `| unpack` / `| pattern` stage: those two
-// parser stages extract labels in Go after the rows return (see
-// unpackStep / newPatternStep in post_process.go), so any label filter
-// downstream of them can't be resolved by SQL — the labels it tests
-// may not exist until the dynamic stage's transform runs.
+// for filters that follow a `| pattern` stage: it is the one parser
+// stage that extracts labels in Go after the rows return (see
+// newPatternStep in post_process.go), so any label filter downstream of
+// it can't be resolved by SQL — the labels it tests may not exist until
+// the dynamic stage's transform runs.
 // lowerPipelineWithLabels detects this (its dynamicLabels gate) and
 // skips SQL lowering entirely for such filters; [newLabelFilterStep]
 // is where they're actually applied instead.

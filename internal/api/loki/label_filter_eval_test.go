@@ -34,7 +34,7 @@ func TestPostProcess_OrdinaryLabelFilterAfterUnpack_StillPushedToSQL(t *testing.
 		t.Fatalf("extract: %v", err)
 	}
 	if tx == nil {
-		t.Fatalf("expected a non-nil transform (unpackStep itself still runs)")
+		t.Fatalf("expected a non-nil transform (unpackParseDetailStep itself still runs)")
 	}
 
 	// A row that would fail `level="error"` still comes through kept —

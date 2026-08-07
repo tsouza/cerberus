@@ -247,29 +247,29 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 		inner = f.Input
 	}
 	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	// dynamicLabels becomes true once a `| unpack` / `| pattern` stage
-	// runs — both extract labels in Go after the rows return (see
-	// unpackStep / newPatternStep in internal/api/loki/post_process.go)
-	// rather than folding into labelsExpr the way `| json` / `| logfmt`
-	// / `| regexp` do. A downstream *syntax.LabelFilterExpr still gets
-	// SQL lowering — for an ordinary label name that's a deliberate,
-	// pinned fallback (structuredOrStreamLookup: check the structured-
-	// metadata / stream-label columns as a best-effort pre-filter,
-	// since a query-time JSON payload's fields aren't knowable at
+	// dynamicLabels becomes true once a `| pattern` stage runs — it is
+	// the one parser that extracts labels in Go after the rows return
+	// (see newPatternStep in internal/api/loki/post_process.go) rather
+	// than folding into labelsExpr the way `| json` / `| logfmt` /
+	// `| regexp` / `| unpack` do. A downstream *syntax.LabelFilterExpr
+	// still gets SQL lowering — for an ordinary label name that's a
+	// deliberate, pinned fallback (structuredOrStreamLookup: check the
+	// structured-metadata / stream-label columns as a best-effort
+	// pre-filter, since a query-time payload's fields aren't knowable at
 	// lowering time). But the fallback is actively WRONG for the
-	// `__error__` / `__error_details__` family specifically: those
-	// keys only ever exist as unpack's own error markers (see
-	// unpackStep) — they're never legitimately present in
-	// LogAttributes/ResourceAttributes — so the fallback's SQL
-	// predicate degenerates to a silent no-op: `__error__=""` matches
-	// EVERY row (the key is simply absent from both columns) and
-	// `__error__="JSONParserErr"` matches NONE, incorrectly excluding
-	// rows before postProcessExtract's Go-side unpackStep ever runs
-	// (see #1611's compat corpus, which caught this via a real
-	// differential run). Skip SQL lowering for just that family;
-	// [newLabelFilterStep] applies the same LabelFilterer in Go once
-	// the dynamic stage's transform has actually computed the row's
-	// true `__error__` / `__error_details__` labels.
+	// `__error__` / `__error_details__` family specifically: those keys
+	// only ever exist as a parser's own error markers — they're never
+	// legitimately present in LogAttributes/ResourceAttributes — so the
+	// fallback's SQL predicate degenerates to a silent no-op:
+	// `__error__=""` matches EVERY row (the key is simply absent from
+	// both columns) and `__error__="JSONParserErr"` matches NONE,
+	// incorrectly excluding rows before postProcessExtract's Go-side
+	// transform ever runs (see #1611's compat corpus, which caught this
+	// via a real differential run against `| unpack`, whose markers now
+	// come from SQL). Skip SQL lowering for just that family;
+	// [newLabelFilterStep] applies the same LabelFilterer in Go once the
+	// dynamic stage's transform has actually computed the row's true
+	// `__error__` / `__error_details__` labels.
 	dynamicLabels := false
 	for _, stage := range e.MultiStages {
 		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {

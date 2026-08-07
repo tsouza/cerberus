@@ -558,8 +558,8 @@ func generateUnstructuredLine(svc, level string, ts time.Time, rng *rand.Rand, i
 
 // packedPayloadShapeCount is the number of distinct payload shapes
 // generatePackedLine cycles through, matching the four cases `|
-// unpack` must discriminate per internal/api/loki/post_process.go's
-// unpackStep doc-comment: a well-formed packed object, a well-formed
+// unpack` must discriminate per internal/logql/lower.go's
+// unpackMergeLabels: a well-formed packed object, a well-formed
 // object with no "_entry" key, a non-object JSON value, and malformed
 // JSON.
 const packedPayloadShapeCount = 4
@@ -573,7 +573,7 @@ const (
 
 // generatePackedLine cycles a seeded stream's entries through the four
 // payload shapes `| unpack` must discriminate between (see
-// internal/api/loki/post_process.go's unpackStep):
+// internal/logql/lower.go's unpackMergeLabels):
 //
 //   - packedShapeValid: a well-formed Promtail-pack object — a
 //     top-level string "_entry" key (the line `| unpack` replaces the
@@ -582,9 +582,9 @@ const (
 //     packedCategories set so the unpack-then-aggregate compat query
 //     groups deterministically.
 //   - packedShapeNoEntry: a well-formed JSON object with NO "_entry"
-//     key. Loki's UnpackParser (and cerberus's unpackStep) treat this
-//     as a complete no-op: original line, no extracted labels, no
-//     error.
+//     key. Loki's UnpackParser (and cerberus's SQL-side extraction)
+//     treat this as a complete no-op: original line, no extracted
+//     labels, no error.
 //   - packedShapeNonObject: valid JSON that is not an object (a JSON
 //     array here). The `_entry`-gate rejects anything not starting
 //     with '{' as `__error__="JSONParserErr"`.
