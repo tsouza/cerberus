@@ -538,3 +538,112 @@ func TestQueryRange_AggregationOverMatrixWindow_Unchanged_ChDB(t *testing.T) {
 		}
 	}
 }
+
+// TestQueryRange_DuplicateLabelsetCorpusShapes_ChDB drives, at
+// /api/v1/query_range, every collision shape the Prometheus compatibility
+// corpus now carries (`compatibility/prometheus/cerberus-test-queries.yml`,
+// header edit 8). The corpus runs against a real ClickHouse and a real
+// reference Prometheus and cannot be settled locally; this pins cerberus's
+// half of each row against chDB so a corpus row can never be the first
+// place a missing guard is discovered.
+//
+// The corpus drives /api/v1/query_range for every row, so "instant" and
+// "range" here name the OPERAND — a bare selector versus a range window —
+// not the endpoint. That distinction is the whole point: the two are
+// different plans, and only the range one can answer wrongly without
+// changing its status code.
+func TestQueryRange_DuplicateLabelsetCorpusShapes_ChDB(t *testing.T) {
+	start, end, step := subqueryNameWindow()
+
+	const (
+		selector = `{__name__=~"cpu_temp|gpu_temp"}`
+		window   = `avg_over_time(` + selector + `[5m])`
+	)
+
+	// Two metric names over one attribute set: dropping `__name__` maps
+	// both onto the same label set. Mirrors the corpus's
+	// demo_disk_usage_bytes / demo_disk_total_bytes pair.
+	nameDrop, _ := newChDBServer(t, dupLabelsetSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'a')"))
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"instant_math_fn", `ceil(` + selector + `)`},
+		{"unary_minus", `-` + selector},
+		{"date_fn", `year(` + selector + `)`},
+		{"scalar_times_vector", `2 * ` + selector},
+		{"vector_times_scalar", selector + ` * 2`},
+		{"instant_math_fn_over_window", `ceil(` + window + `)`},
+		{"unary_minus_over_window", `-` + window},
+		{"date_fn_over_window", `year(` + window + `)`},
+		{"scalar_times_window", `2 * ` + window},
+		{"window_times_scalar", window + ` * 2`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := getBody(t, fmt.Sprintf(
+				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				nameDrop.URL, url.QueryEscape(tc.query), start.Unix(), end.Unix(), int(step.Seconds()),
+			))
+			assertDuplicateLabelsetRejected(t, body, status, tc.query)
+		})
+	}
+
+	// One metric name over two hosts: a non-injective rewrite of `host`
+	// merges them. Mirrors the corpus's demo_num_cpus rows.
+	rewrite, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"label_replace_flattens_label", `label_replace(cpu_temp, "host", "merged", "host", ".*")`},
+		{"label_join_drops_label", `label_join(cpu_temp, "host", "-")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := getBody(t, fmt.Sprintf(
+				"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+				rewrite.URL, url.QueryEscape(tc.query), start.Unix(), end.Unix(), int(step.Seconds()),
+			))
+			assertDuplicateLabelsetRejected(t, body, status, tc.query)
+		})
+	}
+
+	// The corpus's injective control: a capture-group rewrite over a range
+	// window that copies the distinguishing label into a new one and keeps
+	// it, so every series and every point must survive.
+	//
+	// It gets its OWN chDB session rather than reusing `rewrite`. chDB
+	// returns result sets as Parquet, and chdb-go v1.12.0 emits an
+	// undecodable page index for the first SUCCEEDING query on a session
+	// that previously raised a ClickHouse exception — which every row above
+	// does, by design, through the guard's throwIf. parquet-go v0.29.0 then
+	// panics inside NewGenericReader, so the panic middleware answers 500
+	// and the control reads as a cerberus regression it is not. Real
+	// ClickHouse speaks the native protocol and has no such coupling; the
+	// corpus row itself runs there. A fresh session is unaffected, so the
+	// query, the seed and the assertions below are the corpus row's, intact.
+	injective, _ := newChDBServer(t, sameMetricTwoSeriesSeed(t, start, end,
+		"map('host', 'a')", "map('host', 'b')"))
+	t.Run("injective_capture_rewrite_over_window", func(t *testing.T) {
+		const query = `label_replace(rate(cpu_temp[5m]), "core", "$1", "host", "(.*)")`
+		status, body, matrix := rangeMatrix(t, injective.URL, query, start, end, step)
+		if status != http.StatusOK {
+			t.Fatalf("%s: status: got %d, want 200; body=%s", query, status, body)
+		}
+		if len(matrix) != 2 {
+			t.Fatalf("%s: got %d series, want 2 — an empty matrix here is the silent failure "+
+				"mode the corpus's should_fail rows cannot see; body=%s", query, len(matrix), body)
+		}
+		wantSteps := int(end.Sub(start)/step) + 1
+		for _, series := range matrix {
+			host := series.Metric["host"]
+			if got := series.Metric["core"]; got != host {
+				t.Errorf("%s: series host=%s: core = %q, want %q", query, host, got, host)
+			}
+			if len(series.Values) != wantSteps {
+				t.Errorf("%s: series host=%s: %d points, want %d", query, host, len(series.Values), wantSteps)
+			}
+		}
+	})
+}

@@ -46,6 +46,18 @@ type Client struct {
 // returns a Client that satisfies the prom / loki / tempo Querier
 // interfaces. Each test gets an isolated session — there is no
 // process-wide shared state.
+//
+// One session carries at most one FAILING query. chDB hands results back
+// as Parquet, and chdb-go v1.12.0 emits an undecodable page index for the
+// first query that SUCCEEDS on a session where an earlier query raised a
+// ClickHouse exception; parquet-go v0.29.0 panics inside NewGenericReader
+// rather than returning an error, so the handler under test answers 500
+// and the assertion reads as a cerberus regression. A test that asserts a
+// rejection and a success — the guard tests, which raise through throwIf —
+// therefore opens a session per phase. Sessions are independent: a fresh
+// one is unaffected by any earlier session's exception. Real ClickHouse
+// speaks the native protocol and has no such coupling, so this binds the
+// chdb lane only.
 func NewChDB(t testing.TB) *Client {
 	t.Helper()
 	// Empty DSN -> chdb-go provisions a temp-dir-backed session that
