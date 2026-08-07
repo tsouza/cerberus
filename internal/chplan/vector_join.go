@@ -2,6 +2,25 @@ package chplan
 
 import "slices"
 
+// ManyToManyMatchMessage is the `throwIf` message a vector-vector binary
+// operator raises when the "one" side of the match carries more than one
+// series per matching key. It is the verbatim reference-engine text:
+//
+//	prometheus/prometheus@cerberus-parser/promql/engine.go
+//	`ev.errorf("many-to-many matching not allowed: matching labels must be unique on one side")`
+//
+// Upstream detects the ambiguity while building its match groups and refuses
+// to pick a winner; cerberus reaches the same refusal from the HAVING guard
+// the emitter attaches to each per-side aggregation (chsql's
+// matchCheckGuardFrag), so a query upstream rejects is rejected here with the
+// same words rather than answered with an arbitrary pair.
+//
+// It lives in chplan (not chsql) for the same reason
+// [InfoConflictingLabelMessage] and [DuplicateLabelsetMessage] do: the
+// lowering that describes the guard may not import the SQL-emission layer
+// (see .go-arch-lint.yml).
+const ManyToManyMatchMessage = "many-to-many matching not allowed: matching labels must be unique on one side"
+
 // VectorMatch describes how two vector inputs join on labels in a PromQL
 // binary expression. `Labels` is empty + `On` false → default matching on
 // the full Attributes map. `On` true (with Labels non-empty) → match only
