@@ -323,27 +323,34 @@ func opensSubquery(sql string, j int) bool {
 // `SELECT *` carrying a `REPLACE` / `EXCEPT` modifier and any whitespace change
 // all leave the verdict untouched.
 //
-// The owning `SELECT` is located by owningSelect; whitespace and any run of
-// opening parentheses before it are then skipped so a set-op group
-// (`FROM ((SELECT …) UNION ALL (SELECT …))`) is recognised at its outermost
-// bracket — the backward mirror of what opensSubquery does forward. A `SELECT`
-// reached from `AS` (a CTE body, which is every `WITH RECURSIVE` arm) or from
-// the statement root is NOT a derived table: nothing encloses it that ClickHouse
-// could push a window in from.
+// The owning `SELECT` is located by owningSelect and the token in front of it by
+// precedingToken, which skips whitespace and any run of opening parentheses so a
+// set-op group (`FROM ((SELECT …) UNION ALL (SELECT …))`) is recognised at its
+// outermost bracket — the backward mirror of what opensSubquery does forward. A
+// `SELECT` reached from `AS` (a CTE body, which is every `WITH RECURSIVE` arm)
+// or from the statement root is NOT a derived table: nothing encloses it that
+// ClickHouse could push a window in from. Both "no owning SELECT" and "nothing
+// in front of it" arrive as a negative offset, which wordEndingAt rejects, so
+// neither needs a guard of its own.
 func derivedTableScan(sql string, i int) bool {
-	sel := owningSelect(sql, i)
-	if sel < 0 {
-		return false
-	}
+	k := precedingToken(sql, owningSelect(sql, i))
+	return wordEndingAt(sql, k, "FROM") || wordEndingAt(sql, k, "JOIN")
+}
+
+// precedingToken returns the offset of the last byte before sel that is neither
+// whitespace nor an opening parenthesis — the end of the token that introduces
+// the `SELECT` at sel. It returns -1 when sel is not positive, or when only
+// skippable bytes precede it: the same "no keyword here" answer wordEndingAt
+// gives for a negative offset, so callers need no separate empty case.
+func precedingToken(sql string, sel int) int {
 	for k := sel - 1; k >= 0; k-- {
 		switch sql[k] {
 		case ' ', '\t', '\n', '\r', '(':
 			continue
-		default:
-			return wordEndingAt(sql, k, "FROM") || wordEndingAt(sql, k, "JOIN")
 		}
+		return k
 	}
-	return false
+	return -1
 }
 
 // owningSelect returns the byte offset of the `SELECT` keyword that owns the
