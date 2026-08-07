@@ -42,6 +42,14 @@ type SampleColumns struct {
 // out-of-range quantile_over_time fold) carries only `[Attributes, …,
 // Value]` over a derived inner and must stay classified as derived.
 //
+// TopK is transparent for the same reason a Project is: it re-projects
+// its input's rows without re-keying them. Its `Columns` slot is that
+// projection list, so a TopK that names all four canonical columns is
+// canonical and one that does not (including the empty `SELECT *` list)
+// is whatever its input is. Restating "canonical" here regardless of the
+// input is what emitted `SELECT MetricName, …, TimeUnix, … FROM
+// (<two-column derived>)` for an instant `topk(K, sum_over_time(m[5m]))`.
+//
 // Every other node — Scan, RangeLWR, a nested VectorSetOp (whose emit
 // wraps it in its own canonical-column SELECT), … — is canonical.
 func IsDerivedShape(n Node, cols SampleColumns) bool {
@@ -59,8 +67,41 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 			return false
 		}
 		return IsDerivedShape(v.Input, cols)
+	case *TopK:
+		if ColumnListExposesCanonical(v.Columns, cols) {
+			return false
+		}
+		return IsDerivedShape(v.Input, cols)
 	}
 	return false
+}
+
+// ColumnListExposesCanonical reports whether names contains ALL four
+// canonical column names. It is the plain-string sibling of
+// [ProjectExposesCanonical], for the nodes whose projection list is a
+// `[]string` (TopK.Columns) rather than a `[]Projection`.
+//
+// An empty list exposes nothing to a consumer looking for a specific
+// column — it renders `SELECT *`, whose column set is exactly the input's
+// — so it correctly answers false and defers to the input.
+func ColumnListExposesCanonical(names []string, cols SampleColumns) bool {
+	needed := map[string]bool{
+		cols.MetricName: false,
+		cols.Attributes: false,
+		cols.Timestamp:  false,
+		cols.Value:      false,
+	}
+	for _, name := range names {
+		if _, ok := needed[name]; ok {
+			needed[name] = true
+		}
+	}
+	for _, ok := range needed {
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ProjectExposesCanonical reports whether p's projections name ALL four

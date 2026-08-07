@@ -193,9 +193,9 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		rSynth := isSyntheticScalarPlan(right, s) && !isVectorTypedSyntheticOperand(b.RHS)
 		switch {
 		case lSynth && !rSynth:
-			return foldSyntheticVectorBinary(left, right, op, true /*scalarOnLeft*/, b.ReturnBool, s), nil
+			return foldSyntheticVectorBinary(left, right, b.RHS, op, true /*scalarOnLeft*/, b.ReturnBool, s), nil
 		case !lSynth && rSynth:
-			return foldSyntheticVectorBinary(right, left, op, false /*scalarOnLeft*/, b.ReturnBool, s), nil
+			return foldSyntheticVectorBinary(right, left, b.LHS, op, false /*scalarOnLeft*/, b.ReturnBool, s), nil
 		}
 	}
 
@@ -384,7 +384,13 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 // vec leg's row stream. Instant-mode synthetic Values are pure
 // literal expressions (`toFloat64(toUnixTimestamp64Nano(<lit>) /
 // 1e9)`) with no ColumnRefs, so the rewrite is a no-op there.
-func foldSyntheticVectorBinary(synth, vec chplan.Node, op chplan.BinaryOp, scalarOnLeft, returnBool bool, s schema.Metrics) chplan.Node {
+func foldSyntheticVectorBinary(
+	synth, vec chplan.Node,
+	vecExpr parser.Expr,
+	op chplan.BinaryOp,
+	scalarOnLeft, returnBool bool,
+	s schema.Metrics,
+) chplan.Node {
 	synthVal := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), s)
 	vecValue := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
 
@@ -409,7 +415,7 @@ func foldSyntheticVectorBinary(synth, vec chplan.Node, op chplan.BinaryOp, scala
 	// exposes only (Attributes, Value), so a TimeUnix passthrough would
 	// raise CH UNKNOWN_IDENTIFIER. For a selector / already-canonicalised
 	// vec leg the helper emits the identical 4-column shape.
-	return projectValueOverInner(vec, s, newValue)
+	return guardedValueProjection(vec, vecExpr, s, newValue)
 }
 
 // rewriteAnchorToTimeUnix walks expr and replaces every
@@ -638,5 +644,5 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	// matrix shape keeps its per-anchor `anchor_ts`. Mirrors the
 	// instant-fn / unary-minus path which already routes through this
 	// helper.
-	return projectValueOverInner(inner, s, newValue), nil
+	return guardedValueProjection(inner, vec, s, newValue), nil
 }

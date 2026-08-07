@@ -42,7 +42,7 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 			Left:  &chplan.LitFloat{V: 0},
 			Right: &chplan.ColumnRef{Name: s.ValueColumn},
 		}
-		return projectValueOverInner(inner, s, newValue), nil
+		return guardedValueProjection(inner, u.Expr, s, newValue), nil
 	}
 	return nil, fmt.Errorf("promql: unsupported unary op %v", u.Op)
 }

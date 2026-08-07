@@ -67,7 +67,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if newValue == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return projectValueOverInner(inner, s, asFloat64(newValue)), nil
+	return guardedValueProjection(inner, c.Args[0], s, asFloat64(newValue)), nil
 }
 
 // lowerDateFnNoArg synthesises a single-row constant instant vector for

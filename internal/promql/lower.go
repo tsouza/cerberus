@@ -3647,12 +3647,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		By:       by,
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
+		Columns:  topKOutputColumns(input, s),
 	}, nil
 }
 
@@ -3717,12 +3712,7 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 		K:         k,
 		By:        by,
 		Unordered: true,
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
+		Columns:   topKOutputColumns(input, s),
 	}, nil
 }
 
@@ -3773,6 +3763,53 @@ func topKPartition(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) []ch
 	return by
 }
 
+// canonicalSampleColumns adapts the schema's configurable column naming
+// into the [chplan.SampleColumns] shape every chplan classifier takes.
+// The names are configuration — a schema override can rename any of the
+// four — so the classifiers are handed the live naming rather than the
+// OTel-CH defaults.
+func canonicalSampleColumns(s schema.Metrics) chplan.SampleColumns {
+	return chplan.SampleColumns{
+		MetricName: s.MetricNameColumn,
+		Attributes: s.AttributesColumn,
+		Timestamp:  s.TimestampColumn,
+		Value:      s.ValueColumn,
+	}
+}
+
+// topKOutputColumns derives the outer SELECT list a [chplan.TopK] projects
+// over `input` from what `input` ACTUALLY exposes, rather than declaring
+// the canonical quadruple and hoping the input agrees.
+//
+// topk / bottomk / limitk re-project their input's rows without re-keying
+// them, so their output column set IS their input's column set. A
+// canonical input (a selector, a binop, a name-preserving Project) carries
+// (MetricName, Attributes, Timestamp, Value), and naming them pins a
+// fixed-arity list for the chDB round-trip runner and the handler
+// projection. A DERIVED input — an instant-mode [chplan.RangeWindow], the
+// shape `topk(2, sum_over_time(m[5m]))` lowers to — exposes only
+// (group keys…, Value): no MetricName and no timestamp exist in that
+// scope, so naming them emits a reference ClickHouse rejects with code 47,
+// `Unknown expression identifier 'MetricName'`. The empty list renders
+// `SELECT *`, which forwards whatever the input produces verbatim — the
+// derivation, not a second declaration of it.
+//
+// [chplan.IsDerivedShape] is the one classifier for that question, shared
+// with the HTTP layer's canonical-sample projection and the emitter's
+// VectorSetOp arm canonicalisation, so the three cannot disagree about one
+// node's column set.
+func topKOutputColumns(input chplan.Node, s schema.Metrics) []string {
+	if chplan.IsDerivedShape(input, canonicalSampleColumns(s)) {
+		return nil
+	}
+	return []string{
+		s.MetricNameColumn,
+		s.AttributesColumn,
+		s.TimestampColumn,
+		s.ValueColumn,
+	}
+}
+
 // lowerTopKComputed lowers `topk`/`bottomk`/`limitk` with a K that is
 // any scalar-valued PromQL expression rather than a foldable literal —
 // `topk(scalar(<vector>), v)`, `topk(scalar(x) * 2, v)`,
@@ -3819,15 +3856,10 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 	}
 
 	t := &chplan.TopK{
-		Input: input,
-		KExpr: kExpr,
-		By:    topKPartition(a, s, ctx),
-		Columns: []string{
-			s.MetricNameColumn,
-			s.AttributesColumn,
-			s.TimestampColumn,
-			s.ValueColumn,
-		},
+		Input:   input,
+		KExpr:   kExpr,
+		By:      topKPartition(a, s, ctx),
+		Columns: topKOutputColumns(input, s),
 	}
 	if a.Op == parser.LIMITK {
 		// limitk keeps K arbitrary series per group — no ranking, so the

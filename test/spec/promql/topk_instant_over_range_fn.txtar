@@ -1,0 +1,43 @@
+-- query.promql --
+topk(2, sum_over_time(http_requests_total[5m]))
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:31', 9), 10.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 40.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2025-12-31 23:59:31', 9), 100.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 400.0),
+    ('http_requests_total', map('job', 'db'),  toDateTime64('2025-12-31 23:59:31', 9), 1.0),
+    ('http_requests_total', map('job', 'db'),  toDateTime64('2026-01-01 00:00:00', 9), 2.0);
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = ""
+[5] string = "service_name"
+[6] string = "http_requests_total"
+[7] string = "http.requests.total"
+[8] string = "http.requests/total"
+[9] string = "http.requests_total"
+[10] string = "http/requests/total"
+[11] string = "http/requests_total"
+[12] string = "http_requests.total"
+-- chplan --
+TopK k=2 sort=Value DESC
+  RangeWindow func=sum_over_time range=5m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT * FROM (SELECT * FROM (SELECT `Attributes`, arraySum(window_vals) AS `Value` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`))) WHERE length(`window_vals`) >= 1) ORDER BY `Value` DESC LIMIT 2)
+-- expected_rows --
+[
+  [{"job": "api"}, 50],
+  [{"job": "web"}, 500]
+]
