@@ -104,24 +104,70 @@ func New(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
 
-	tp, traceShutdown, err := newTracerProvider(ctx, cfg, res)
+	return newProviders(ctx, cfg, res, defaultProviderBuilders())
+}
+
+// shutdownFunc tears one provider down, flushing whatever it still holds.
+type shutdownFunc func(context.Context) error
+
+// providerBuilders names the three SDK provider constructors newProviders
+// drives, in the order it drives them. New always supplies the real ones;
+// the indirection exists because the OTLP gRPC exporters do not dial
+// eagerly, so a real constructor practically never returns an error and
+// the rollback paths below would otherwise be unreachable from a test.
+type providerBuilders struct {
+	tracer func(context.Context, Config, *resource.Resource) (trace.TracerProvider, shutdownFunc, error)
+	meter  func(context.Context, Config, *resource.Resource) (metric.MeterProvider, shutdownFunc, error)
+	logger func(context.Context, Config, *resource.Resource) (otellog.LoggerProvider, shutdownFunc, error)
+}
+
+// defaultProviderBuilders is the production wiring: real gRPC OTLP
+// exporters behind the SDK providers.
+func defaultProviderBuilders() providerBuilders {
+	return providerBuilders{
+		tracer: newTracerProvider,
+		meter:  newMeterProvider,
+		logger: newLoggerProvider,
+	}
+}
+
+// rollbackProviders tears down the providers built before a later stage
+// failed and folds every teardown failure into cause. A rollback that
+// itself fails leaves running the very goroutine the rollback exists to
+// stop, so that failure has to reach the caller rather than vanish
+// beside the error that triggered it.
+func rollbackProviders(ctx context.Context, cause error, built ...shutdownFunc) error {
+	errs := make([]error, 1, len(built)+1)
+	errs[0] = cause
+	for _, shutdown := range built {
+		if err := shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// newProviders builds the three providers in order, rolling back the ones
+// already built as soon as a later one fails so a half-built set never
+// leaks its exporter goroutines.
+func newProviders(
+	ctx context.Context, cfg Config, res *resource.Resource, build providerBuilders,
+) (*Providers, error) {
+	tp, traceShutdown, err := build.tracer(ctx, cfg, res)
 	if err != nil {
 		return nil, fmt.Errorf("trace exporter: %w", err)
 	}
 
-	mp, metricShutdown, err := newMeterProvider(ctx, cfg, res)
+	mp, metricShutdown, err := build.meter(ctx, cfg, res)
 	if err != nil {
-		// Roll back the trace provider so we don't leak a goroutine
-		// when only one of the two could be built.
-		_ = traceShutdown(ctx)
-		return nil, fmt.Errorf("metric exporter: %w", err)
+		return nil, rollbackProviders(ctx, fmt.Errorf("metric exporter: %w", err), traceShutdown)
 	}
 
-	lp, logShutdown, err := newLoggerProvider(ctx, cfg, res)
+	lp, logShutdown, err := build.logger(ctx, cfg, res)
 	if err != nil {
-		_ = traceShutdown(ctx)
-		_ = metricShutdown(ctx)
-		return nil, fmt.Errorf("log exporter: %w", err)
+		return nil, rollbackProviders(
+			ctx, fmt.Errorf("log exporter: %w", err), traceShutdown, metricShutdown,
+		)
 	}
 
 	return &Providers{
@@ -142,7 +188,7 @@ func New(ctx context.Context, cfg Config) (*Providers, error) {
 }
 
 func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) (
-	*sdktrace.TracerProvider, func(context.Context) error, error,
+	trace.TracerProvider, shutdownFunc, error,
 ) {
 	opts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(cfg.Endpoint),
@@ -169,7 +215,7 @@ func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 }
 
 func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
-	*sdkmetric.MeterProvider, func(context.Context) error, error,
+	metric.MeterProvider, shutdownFunc, error,
 ) {
 	opts := []otlpmetricgrpc.Option{
 		otlpmetricgrpc.WithEndpoint(cfg.Endpoint),
@@ -209,7 +255,7 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 // text format losing structured attributes, and (c) wouldn't work in
 // non-k8s deployments.
 func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) (
-	*sdklog.LoggerProvider, func(context.Context) error, error,
+	otellog.LoggerProvider, shutdownFunc, error,
 ) {
 	opts := []otlploggrpc.Option{
 		otlploggrpc.WithEndpoint(cfg.Endpoint),
