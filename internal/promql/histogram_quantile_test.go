@@ -497,19 +497,34 @@ func TestLower_HistogramQuantile_OverAggregation_Native_LeDropped(t *testing.T) 
 	pj := plan.(*chplan.Project)
 	hq := pj.Input.(*chplan.HistogramQuantileNative)
 
-	var foundAgg *chplan.Aggregate
+	// Two Aggregates, outermost first: the across-SERIES stage carrying
+	// the user's `by(le)` (which drops to nothing), then the per-series
+	// window stage keyed on series identity (#1629). Asserting on
+	// whichever one the walk happened to reach last would silently swap
+	// which stage is under test the moment the tree gains a level.
+	var aggs []*chplan.Aggregate
 	chplan.Walk(hq.Input, func(n chplan.Node) bool {
 		if v, ok := n.(*chplan.Aggregate); ok {
-			foundAgg = v
+			aggs = append(aggs, v)
 		}
 		return true
 	})
-	if foundAgg == nil {
-		t.Fatalf("no Aggregate found")
+	if len(aggs) != 2 {
+		t.Fatalf("Aggregate stages = %d, want 2 (across-series merge + per-series window)", len(aggs))
 	}
-	if len(foundAgg.GroupBy) != 0 {
-		t.Errorf("Aggregate.GroupBy = %d expressions, want 0 (le must be dropped, no other labels)",
-			len(foundAgg.GroupBy))
+	if len(aggs[0].GroupBy) != 0 {
+		t.Errorf("across-series Aggregate.GroupBy = %d expressions, want 0 (le must be dropped, no other labels)",
+			len(aggs[0].GroupBy))
+	}
+	// The per-series stage must key on series identity, not on the
+	// user's labels: that is the whole point of the split — a floor of
+	// "two samples" has to mean two samples from ONE series.
+	if len(aggs[1].GroupBy) != 1 {
+		t.Errorf("per-series Aggregate.GroupBy = %d expressions, want 1 (series identity)",
+			len(aggs[1].GroupBy))
+	}
+	if got := aggs[1].GroupByAliases; len(got) != 1 || got[0] != s.AttributesColumn {
+		t.Errorf("per-series Aggregate.GroupByAliases = %v, want [%s]", got, s.AttributesColumn)
 	}
 }
 

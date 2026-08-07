@@ -1,3 +1,30 @@
+# `histogram_quantile(phi, sum by(le)(rate(<native hist>[5m])))` where one
+# seeded series holds two scrapes and the other holds one. This fixture
+# exists to discriminate a sample floor keyed on SERIES IDENTITY from one
+# keyed on the user's `by`/`without` labels, and from no floor at all — a
+# fixture where every series has two samples cannot tell the three apart.
+#
+# `sum by(le)` names no attribute, so every row falls into one across-series
+# group. Counting samples per GROUP sees three rows and clears a floor of
+# two; counting per SERIES sees `api` with two and `web` with one, and drops
+# `web` the way `rate()` drops any range vector with fewer than two points.
+#
+# The observable is the merged SCALE, not the merged counts. A series with a
+# single scrape folds to an all-zero distribution, so admitting it adds
+# nothing to a sum and would leave the counts alone — but its Scale still
+# reaches the across-series `min(Scale)`, and that scale sets every bucket
+# BOUNDARY the quantile interpolates between. `web` is therefore seeded one
+# scale coarser than `api`:
+#
+#     api  23:58:00  scale  0  [10,  0,  0]
+#     api  00:00:00  scale  0  [10,  0, 30]   -> increase [0, 0, 30]
+#     web  00:00:00  scale -1  [500, 0,  0]   -> one scrape, no rate
+#
+# With the floor on series identity only `api` survives, the merged scale
+# stays 0 (base 2), and p95 sits near the top of the third positive bucket,
+# covering (4, 8]. Admitting `web` drags the merged scale to -1 (base 4),
+# rescaling `api`'s own buckets onto twice-as-wide boundaries and moving the
+# answer from 7.727490631398766 to 14.928527864588919.
 -- query.promql --
 histogram_quantile(0.95, sum by(le)(rate(http_server_duration_exp_hist[5m])))
 -- seed --
@@ -13,13 +40,12 @@ CREATE TABLE otel_metrics_exponential_histogram (
     NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_exponential_histogram VALUES
-    ('http_server_duration_exp_hist', map('service', 'api'),  toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [0, 0, 0], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'web'),  toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [0, 0, 0], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'api'),  toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [1, 2, 3], 0, []),
-    ('http_server_duration_exp_hist', map('service', 'web'),  toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [3, 4, 3], 0, []);
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 0, 0, 0, [10, 0, 0], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [10, 0, 30], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), -1, 0, 0, [500, 0, 0], 0, []);
 -- expected_rows --
 [
-  ["", {}, "2026-01-01T00:00:01Z", 7.293779908465734]
+  ["", {}, "2026-01-01T00:00:01Z", 7.727490631398766]
 ]
 -- args --
 [0] string = ""

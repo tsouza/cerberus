@@ -484,32 +484,19 @@ func lowerHistogramQuantileNativeAggRange(
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
-	// Single-stage, like the instant native sibling — see #1629.
-	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(shape.agg, histogramIdentityExpr(s), s)
-
-	// Per-anchor merge aggregates: collect rows into groupArrays + simple
-	// reducers, matching the instant-mode aggregated path. The wrapping
-	// reshape Project folds them into a single merged distribution.
-	expHistMergeAggs := []chplan.AggFunc{
-		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
-		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},
-	}
-	// max(ZeroThreshold) only when the physical schema persists the
-	// OTLP zero_threshold field — the upstream OTel-CH DDL doesn't.
-	if s.ZeroThresholdColumn != "" {
-		expHistMergeAggs = append(expHistMergeAggs, chplan.AggFunc{Name: "max", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroThresholdColumn}}, Alias: s.ZeroThresholdColumn})
-	}
-	expHistMergeAggs = append(expHistMergeAggs, []chplan.AggFunc{
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
-	}...)
+	// Two stages, like the instant native sibling — see
+	// histogram_quantile_native_window.go. The fan-out underneath keys on
+	// SERIES identity so its MinSamples floor lands per series; the
+	// across-series aggregation this returns keys on the user's
+	// `by/without` labels, binding them from the per-series stage's
+	// already-canonical Attributes column.
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
+		shape.agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
+	)
 	return buildHistogramNativeRangeTreeMerge(
-		scan, pred, aggWindowFor(shape),
+		scan, pred, aggWindowFor(shape), shape,
 		groupBy, groupByAliases, attrsRebuild,
-		expHistMergeAggs, phi, s, ctx,
+		phi, s, ctx,
 	)
 }
 
@@ -590,47 +577,80 @@ func buildHistogramNativeRangeTree(
 }
 
 // buildHistogramNativeRangeTreeMerge assembles the aggregated-idiom
-// range-mode plan tree for the native-histogram quantile rewrite. The
-// Aggregate surfaces groupArrays + simple reducers; the wrapping
-// reshape Project then folds them into a single merged distribution
-// per (anchor, series) using the same expHistogramMerge* helpers as
-// the instant-mode aggregated path.
+// range-mode plan tree for the native-histogram quantile rewrite, as
+// the same two reductions the instant sibling applies — per series
+// across TIME, then across SERIES — with the anchor column threaded
+// through both.
+//
+// Stage 1 is the fan-out, keyed on SERIES identity rather than on the
+// user's `by/without` labels. That placement is what makes its
+// MinSamples floor mean what reference PromQL means by it: keyed on the
+// user's labels, `sum by(le)` left histogramAggGroupBy with no key at
+// all, so `HAVING uniqExact(TimeUnix) >= 2` asked whether the whole
+// anchor held two scrapes and two samples from two different series
+// satisfied a floor meant to require two samples from one (#1629). The
+// per-series reshape above it then folds each series' in-window rows
+// into one distribution.
+//
+// Stage 2 is an ordinary Aggregate keyed by (anchor, <user keys>). The
+// fan-out's output schema is byte-identical to the Aggregate it
+// replaced, so stacking the two reductions needs no new node — the
+// second one consumes the first exactly as the instant path's
+// across-series Aggregate consumes expHistogramWindowStage.
 func buildHistogramNativeRangeTreeMerge(
 	scan *chplan.Scan,
 	pred chplan.Expr,
 	win histogramWindow,
+	shape histogramAggShape,
 	userGroupBy []chplan.Expr,
 	userAliases []string,
 	attrsRebuild chplan.Expr,
-	mergeAggs []chplan.AggFunc,
 	phi phiArg,
 	s schema.Metrics,
 	ctx lowerCtx,
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
-	agg := buildHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, mergeAggs, s, ctx)
+	// Stage 1: per-(anchor, series) window reduction. The fan-out owns
+	// the sample floor natively through RangeBucketFanout.MinSamples,
+	// which emits it as a HAVING — so the per-series reshape here does
+	// not repeat minSamplesFilter's wrapping Filter.
+	perSeries := expHistogramWindowReshape(
+		buildHistogramBucketFanout(
+			scan, pred, nil, win,
+			[]chplan.Expr{histogramIdentityExpr(s)},
+			[]string{s.AttributesColumn},
+			expHistogramWindowAggs(s), s, ctx,
+		),
+		histogramWindowFold(shape.windowFn),
+		[]chplan.Projection{
+			{Expr: anchorRef, Alias: stepGridAnchorColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+		},
+		s,
+	)
+
+	// Stage 2: the user's aggregation across those per-series rows,
+	// within each anchor.
+	agg := &chplan.Aggregate{
+		Input:              perSeries,
+		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
+		GroupByAliases:     append([]string{stepGridAnchorColumn}, userAliases...),
+		AggFuncs:           expHistogramMergeAggs(s),
+		DropEmptyOnNoGroup: true,
+	}
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
-	mergeProjs := []chplan.Projection{
-		{Expr: anchorRef, Alias: stepGridAnchorColumn},
-		{Expr: attrsRebuild, Alias: s.AttributesColumn},
-		{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
-		{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
-	}
-	if s.ZeroThresholdColumn != "" {
-		mergeProjs = append(mergeProjs, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ZeroThresholdColumn}, Alias: s.ZeroThresholdColumn})
-	}
-	mergeProjs = append(mergeProjs, []chplan.Projection{
-		{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
-		{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
-		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
-		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
-	}...)
 	rebuilt := &chplan.Project{
-		Input:       agg,
-		Projections: mergeProjs,
+		Input: agg,
+		Projections: append(
+			[]chplan.Projection{
+				{Expr: anchorRef, Alias: stepGridAnchorColumn},
+				{Expr: attrsRebuild, Alias: s.AttributesColumn},
+			},
+			expHistogramMergeProjections(s)...,
+		),
 	}
 
 	hq := &chplan.HistogramQuantileNative{
