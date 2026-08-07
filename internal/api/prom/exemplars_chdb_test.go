@@ -46,12 +46,12 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// sumExemplarsDDL is the OTel-metrics-sum-shaped table the chDB-backed
-// exemplars test seeds. The full upstream OTel exporter DDL has many
-// more columns than the handler reads (see
+// exemplarTableDDL renders the OTel-metrics-shaped table the chDB-backed
+// exemplars tests seed, for one table name. The full upstream OTel
+// exporter DDL has many more columns than the handler reads (see
 // $GOMODCACHE/github.com/tsouza/opentelemetry-collector-contrib/exporter/
 // clickhouseexporter@.../sqltemplates/metrics_sum_table.sql); this
-// minimal shape carries exactly the columns chsql.EmitQueryExemplars
+// minimal shape carries exactly the columns the exemplars emitter
 // projects (MetricName / Attributes / ServiceName / TimeUnix) plus the
 // Nested `Exemplars` column with its five sub-fields (TimeUnix /
 // Value / TraceId / SpanId / FilteredAttributes).
@@ -59,11 +59,12 @@ import (
 // `flatten_nested = 1` is the ClickHouse default; under it the Nested
 // column surfaces server-side as a set of parallel `Array(...)`
 // columns accessed via `Exemplars.TimeUnix`, `Exemplars.Value`, etc.
-// The SQL chsql.EmitQueryExemplars renders targets that parallel-array
-// form (the cerberus whole-codebase invariant). Engine = Memory keeps
-// the seed fast and avoids MergeTree's PREWHERE / sort-key
-// constraints; the exemplars SQL does not depend on either.
-const sumExemplarsDDL = `CREATE TABLE otel_metrics_sum (
+// The emitted SQL targets that parallel-array form (the cerberus
+// whole-codebase invariant). Engine = Memory keeps the seed fast and
+// avoids MergeTree's PREWHERE / sort-key constraints; the exemplars SQL
+// does not depend on either.
+func exemplarTableDDL(table string) string {
+	return `CREATE TABLE ` + table + ` (
     MetricName String,
     Attributes Map(String, String),
     ServiceName String,
@@ -77,6 +78,24 @@ const sumExemplarsDDL = `CREATE TABLE otel_metrics_sum (
         TraceId String
     )
 ) ENGINE = Memory;`
+}
+
+// exemplarsDDL creates every exemplar-carrying table of the default
+// schema. A single lookup reads more than one of them — a `_total` name
+// resolves to the sum table plus both histogram layouts
+// (schema.Metrics.ExemplarSources), unioned into one statement — so all
+// of them must exist even though only otel_metrics_sum carries rows.
+// The empty arms are what the fan-out relies on being cost-free, and
+// running them through chDB is what proves the Map-typed projection
+// still casts back across a UNION ALL boundary.
+func exemplarsDDL() string {
+	s := schema.DefaultOTelMetrics()
+	var b strings.Builder
+	for _, table := range []string{s.GaugeTable, s.SumTable, s.HistogramTable, s.ExpHistogramTable} {
+		b.WriteString(exemplarTableDDL(table))
+	}
+	return b.String()
+}
 
 // newChDBExemplarsServer wires a chDB-backed prom handler with the
 // exemplars seed already applied. Mirrors newChDBServer in
@@ -133,7 +152,7 @@ func TestQueryExemplars_ChDB_Roundtrip(t *testing.T) {
 	tsEx2 := base.Add(250 * time.Millisecond).Format(tsFmt)
 	tsEx3 := base.Add(500 * time.Millisecond).Format(tsFmt)
 
-	seed := sumExemplarsDDL + fmt.Sprintf(
+	seed := exemplarsDDL() + fmt.Sprintf(
 		`
 INSERT INTO otel_metrics_sum (
     MetricName, Attributes, ServiceName, TimeUnix, Value,
@@ -323,7 +342,7 @@ func TestQueryExemplars_ChDB_EmptyWindow(t *testing.T) {
 	tsBase := base.Format(tsFmt)
 	tsEx1 := base.Add(10 * time.Millisecond).Format(tsFmt)
 
-	seed := sumExemplarsDDL + fmt.Sprintf(`
+	seed := exemplarsDDL() + fmt.Sprintf(`
 INSERT INTO otel_metrics_sum (
     MetricName, Attributes, ServiceName, TimeUnix, Value,
     Exemplars.FilteredAttributes, Exemplars.TimeUnix, Exemplars.Value,
@@ -361,6 +380,102 @@ INSERT INTO otel_metrics_sum (
 	body := readBody(t, resp)
 	if !strings.Contains(body, `"data":[]`) {
 		t.Errorf("expected data:[] (non-nil empty array) on empty-window response; got %s", body)
+	}
+}
+
+// TestQueryExemplars_ChDB_CompanionSuffixReadsHistogramRow — the
+// end-to-end proof that the `_count` fan-out is live rather than a wider
+// set of arms that can never match (issue #1705).
+//
+// The OTel-CH histogram exporter writes a classic histogram as ONE row
+// keyed by the BARE `<base>` name and serves Prom's `<base>_count` /
+// `<base>_sum` / `<base>_bucket` companion series off that row's
+// columns. So a request for `<base>_count` finds the exemplars only if
+// (a) the histogram table is among the candidate tables and (b) that
+// arm filters on the bare name. Get either half wrong and the response
+// is an empty array — which is exactly what a single-table resolver
+// keyed on the suffixed name returned.
+//
+// The seed puts the exemplars ONLY on the histogram row: no
+// otel_metrics_sum or otel_metrics_gauge row carries `<base>_count`, so
+// nothing but the histogram arm can produce the assertion below.
+//
+// The wire `__name__` stays the queried `<base>_count`: the client asked
+// for that series and Grafana's exemplar overlay matches on it, even
+// though the row it came from is keyed `<base>`.
+func TestQueryExemplars_ChDB_CompanionSuffixReadsHistogramRow(t *testing.T) {
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	const tsFmt = "2006-01-02 15:04:05.000000000"
+	tsBase := base.Format(tsFmt)
+	tsEx := base.Add(10 * time.Millisecond).Format(tsFmt)
+
+	seed := exemplarsDDL() + fmt.Sprintf(`
+INSERT INTO otel_metrics_histogram (
+    MetricName, Attributes, ServiceName, TimeUnix, Value,
+    Exemplars.FilteredAttributes, Exemplars.TimeUnix, Exemplars.Value,
+    Exemplars.SpanId, Exemplars.TraceId
+) VALUES (
+    'http_request_duration_seconds',
+    map('job', 'api'),
+    'checkout',
+    toDateTime64('%s', 9),
+    0.0,
+    [map('request_id', 'req-h1')],
+    [toDateTime64('%s', 9)],
+    [0.042],
+    ['span-h1'],
+    ['trace-h1']
+);`, tsBase, tsEx)
+
+	srv, _ := newChDBExemplarsServer(t, seed)
+
+	startUnix := base.Add(-1 * time.Minute).Unix()
+	endUnix := base.Add(1 * time.Minute).Unix()
+	url := fmt.Sprintf(
+		`%s/api/v1/query_exemplars?query=http_request_duration_seconds_count%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`,
+		srv.URL, startUnix, endUnix,
+	)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var out struct {
+		Status string                `json:"status"`
+		Data   []prom.ExemplarSeries `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Status != "success" {
+		t.Fatalf("status=%q want success", out.Status)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("data has %d series; want 1 (the histogram-row companion): %+v", len(out.Data), out.Data)
+	}
+	series := out.Data[0]
+	if got := series.SeriesLabels["__name__"]; got != "http_request_duration_seconds_count" {
+		t.Errorf("__name__=%q; want the queried companion name", got)
+	}
+	if got := series.SeriesLabels["job"]; got != "api" {
+		t.Errorf("job=%q; want api", got)
+	}
+	if len(series.Exemplars) != 1 {
+		t.Fatalf("series carries %d exemplars; want 1: %+v", len(series.Exemplars), series.Exemplars)
+	}
+	ex := series.Exemplars[0]
+	if ex.Labels["trace_id"] != "trace-h1" || ex.Labels["span_id"] != "span-h1" {
+		t.Errorf("exemplar labels=%v; want trace-h1 / span-h1", ex.Labels)
+	}
+	if ex.Labels["request_id"] != "req-h1" {
+		t.Errorf("exemplar labels=%v; want the seeded request_id", ex.Labels)
+	}
+	if ex.Value != 0.042 {
+		t.Errorf("exemplar value=%v; want the seeded 0.042", ex.Value)
 	}
 }
 

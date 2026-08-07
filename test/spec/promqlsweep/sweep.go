@@ -23,7 +23,7 @@
 // reuses the package's existing chDB idioms (`openChDB`, `applySeed`,
 // the Map-projection rewrites, `substituteNow64At`, `decodeCell`,
 // `tolerantRowsErr`) so it stays in lock-step with the round-trip lane.
-package spec
+package promqlsweep
 
 import (
 	"context"
@@ -36,6 +36,9 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
+
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // evalInstantResult is one swept-evaluation outcome: the (labels, value)
@@ -75,16 +78,6 @@ func (r evalInstantResult) Scalar() (float64, bool) {
 // so the driver's internals stay package-private while the test can
 // assert NonEmpty / Scalar / RowCount.
 type EvalInstantResult = evalInstantResult
-
-// OpenChDBForSweep is the exported entrypoint the eval-instant sweep test
-// uses to open the ephemeral chDB session (delegates to [openChDB]).
-func OpenChDBForSweep(t *testing.T) *sql.DB { return openChDB(t) }
-
-// ApplySeedForSweep applies a seed script to the sweep's chDB session
-// (delegates to [applySeed], so the ResourceAttributes backfill +
-// CREATE-OR-REPLACE idempotency apply identically to the round-trip
-// lane).
-func ApplySeedForSweep(t *testing.T, db *sql.DB, seed string) { applySeed(t, db, seed) }
 
 // RunInstantSweep lowers `expr` as an instant query at `time=T`, emits
 // the SQL, executes it against `db`, and returns the decoded result. It
@@ -158,7 +151,7 @@ func lowerEmitRangeStep(t *testing.T, ctx context.Context, expr parser.Expr, T t
 // WITHOUT the fix the window bound renders as `now64(9)`; splicing
 // sweepServerNow makes the window `(serverNow-5m, serverNow]` — years
 // past the data — so the query returns EMPTY and the sweep FAILS. If this
-// anchor were instead `chNow64Literal(T)` it would silently re-anchor the
+// anchor were instead `spec.CHNow64Literal(T)` it would silently re-anchor the
 // buggy window back onto T and mask the very bug under test (exactly the
 // substituteNow64-pins-one-fixed-literal gap that let rc.8 ship).
 var sweepServerNow = time.Date(2027, 6, 16, 12, 0, 0, 0, time.UTC)
@@ -180,10 +173,10 @@ var sweepServerNow = time.Date(2027, 6, 16, 12, 0, 0, 0, time.UTC)
 // a bare table scan is not needed here.
 func runInstant(t *testing.T, db *sql.DB, sqlText string, args []any, T time.Time) evalInstantResult {
 	t.Helper()
-	query, queryArgs := substituteNow64At(sqlText, args, chNow64Literal(sweepServerNow))
-	query = expandStarProjection(query, nil)
-	query = rewriteMapProjections(query)
-	query = nestMapOrderBy(query)
+	query, queryArgs := spec.SubstituteNow64At(sqlText, args, spec.CHNow64Literal(sweepServerNow))
+	query = testsql.ExpandStarProjection(query, nil)
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
 
 	rows, err := db.Query(query, queryArgs...)
 	if err != nil {
@@ -206,11 +199,11 @@ func runInstant(t *testing.T, db *sql.DB, sqlText string, args []any, T time.Tim
 		if err := rows.Scan(ptrs...); err != nil {
 			t.Fatalf("scan instant row @%s: %v", T.Format(time.RFC3339), err)
 		}
-		labels, _ := decodeCell(cells[0], false).(map[string]any)
-		val := toFloat64Cell(t, decodeCell(cells[1], false))
+		labels, _ := spec.DecodeCell(cells[0], false).(map[string]any)
+		val := toFloat64Cell(t, spec.DecodeCell(cells[1], false))
 		out.Rows = append(out.Rows, evalInstantRow{Labels: labels, Value: val})
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("instant rows.Err @%s: %v", T.Format(time.RFC3339), err)
 	}
 	return out

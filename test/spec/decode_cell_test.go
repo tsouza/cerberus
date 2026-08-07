@@ -33,13 +33,13 @@ func TestDecodeCell_RawStringsPreservesBracePrefixedPayloads(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decodeCell(tc.in, tc.raw)
+			got := DecodeCell(tc.in, tc.raw)
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("decodeCell(%#v, raw=%v): got %#v (%T), want %#v (%T)",
+				t.Fatalf("DecodeCell(%#v, raw=%v): got %#v (%T), want %#v (%T)",
 					tc.in, tc.raw, got, got, tc.want, tc.want)
 			}
 			if reflect.ValueOf(got).Kind() != tc.wantKind {
-				t.Fatalf("decodeCell(%#v, raw=%v): kind %s, want %s",
+				t.Fatalf("DecodeCell(%#v, raw=%v): kind %s, want %s",
 					tc.in, tc.raw, reflect.ValueOf(got).Kind(), tc.wantKind)
 			}
 		})
@@ -49,19 +49,19 @@ func TestDecodeCell_RawStringsPreservesBracePrefixedPayloads(t *testing.T) {
 func TestDecodeCell_NilTimeUnchangedByRawFlag(t *testing.T) {
 	t.Parallel()
 
-	if got := decodeCell(nil, true); got != nil {
+	if got := DecodeCell(nil, true); got != nil {
 		t.Fatalf("nil + raw: got %#v, want nil", got)
 	}
-	if got := decodeCell(nil, false); got != nil {
+	if got := DecodeCell(nil, false); got != nil {
 		t.Fatalf("nil + decoded: got %#v, want nil", got)
 	}
 
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	const want = "2026-01-02T03:04:05Z"
-	if got := decodeCell(ts, true); got != want {
+	if got := DecodeCell(ts, true); got != want {
 		t.Fatalf("time + raw: got %#v, want %q", got, want)
 	}
-	if got := decodeCell(ts, false); got != want {
+	if got := DecodeCell(ts, false); got != want {
 		t.Fatalf("time + decoded: got %#v, want %q", got, want)
 	}
 }

@@ -106,46 +106,150 @@ func EmitQueryExemplars(
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 
-	if exemplarsTable == "" {
-		err := fmt.Errorf("%w: exemplarsTable is empty", ErrUnsupported)
+	sql, args, err := emitQueryExemplarsArm(ExemplarArm{Table: exemplarsTable, Predicate: predicate}, start, end, s)
+	if err != nil {
 		span.RecordError(err)
 		return "", nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
+	return sql, args, nil
+}
+
+// ExemplarArm is one arm of an exemplar fan-out: the candidate table to
+// read, paired with the matcher predicate that resolves the queried
+// series ON THAT table.
+//
+// The predicate is per-arm rather than shared because the row key is
+// per-arm: a `<base>_count` selector filters `MetricName = '<base>_count'`
+// on the Sum and Gauge tables but `MetricName = '<base>'` on the
+// histogram table, where the OTel-CH exporter serves the companion series
+// off the bare-named row's columns. See [schema.Metrics.ExemplarSources],
+// which resolves the (table, row key) pairs the caller turns into arms.
+type ExemplarArm struct {
+	Table     string
+	Predicate Frag
+}
+
+// EmitQueryExemplarsUnion renders one statement reading every arm in
+// arms, in order, as `(<arm>) UNION ALL (<arm>) …`. Each arm is the exact
+// SELECT [EmitQueryExemplars] renders for a single table, so the column
+// contract the handler decodes positionally is identical across arms and
+// the union is row-compatible by construction. A single arm renders
+// byte-identically to [EmitQueryExemplars] — no parentheses, no UNION
+// keyword.
+//
+// The union is the TOP-LEVEL statement rather than the FROM of a
+// wrapping SELECT: the projection carries two Map-typed columns
+// (Attributes, ExemplarAttributes) and a redundant `SELECT * FROM (…)`
+// boundary makes some ClickHouse drivers refuse to cast a Map back
+// (see [Render]).
+//
+// Each arm's args bind in emit order — arm 0's predicate literal, arm 0's
+// two time bounds, then arm 1's, and so on.
+//
+// Returns ErrUnsupported for an empty arm list: a caller with no candidate
+// table must answer with an empty result rather than ask for SQL, and the
+// same per-arm schema guards [EmitQueryExemplars] applies (summary table,
+// missing identity columns, exemplars elided from the schema) reject here
+// too.
+func EmitQueryExemplarsUnion(
+	ctx context.Context,
+	arms []ExemplarArm,
+	start, end time.Time,
+	s schema.Metrics,
+) (string, []any, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
+	defer span.End()
+
+	if len(arms) == 0 {
+		err := fmt.Errorf("%w: no exemplars table to read", ErrUnsupported)
+		span.RecordError(err)
+		return "", nil, err
+	}
+	if len(arms) == 1 {
+		sql, args, err := emitQueryExemplarsArm(arms[0], start, end, s)
+		if err != nil {
+			span.RecordError(err)
+			return "", nil, err
+		}
+		span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
+		return sql, args, nil
+	}
+
+	parts := make([]Frag, 0, len(arms))
+	for _, arm := range arms {
+		q, err := queryExemplarsSelect(arm, start, end, s)
+		if err != nil {
+			span.RecordError(err)
+			return "", nil, err
+		}
+		parts = append(parts, q.Frag())
+	}
+
+	b := NewBuilder()
+	UnionAll(parts...)(b)
+	sql, args, err := b.Build()
+	if err != nil {
+		span.RecordError(err)
+		return "", nil, err
+	}
+	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
+	return sql, args, nil
+}
+
+// emitQueryExemplarsArm renders one arm as a standalone statement — the
+// unparenthesised SELECT both single-table entry points return.
+func emitQueryExemplarsArm(arm ExemplarArm, start, end time.Time, s schema.Metrics) (string, []any, error) {
+	q, err := queryExemplarsSelect(arm, start, end, s)
+	if err != nil {
+		return "", nil, err
+	}
+	return q.subquerySQL()
+}
+
+// queryExemplarsSelect builds the outer SELECT for one arm, validating
+// the arm's table and the schema columns the projection needs. See
+// [EmitQueryExemplars] for the emitted shape and the rejection cases.
+func queryExemplarsSelect(
+	arm ExemplarArm,
+	start, end time.Time,
+	s schema.Metrics,
+) (*QueryBuilder, error) {
+	exemplarsTable, predicate := arm.Table, arm.Predicate
+
+	if exemplarsTable == "" {
+		err := fmt.Errorf("%w: exemplarsTable is empty", ErrUnsupported)
+		return nil, err
 	}
 	// The OTel-CH summary table has no Exemplars Nested column upstream.
 	// Routing summary-shaped queries here would emit SQL that references
-	// a non-existent column and fail at run time. The handler picks
-	// metric→table via schema.Metrics.TableFor (and the upcoming
-	// ExemplarsTableFor wrapper); both must skip summary names. We
+	// a non-existent column and fail at run time.
+	// schema.Metrics.ExemplarSources — the resolver the handler routes
+	// through — filters the summary table out of every candidate set; we
 	// guard defensively in case a future caller bypasses that routing.
 	if s.SummaryTable != "" && exemplarsTable == s.SummaryTable {
 		err := fmt.Errorf("%w: exemplars not supported on summary table %q", ErrUnsupported, exemplarsTable)
-		span.RecordError(err)
-		return "", nil, err
+		return nil, err
 	}
 	if s.ExemplarsColumn == "" {
 		err := fmt.Errorf("%w: schema.Metrics.ExemplarsColumn is empty (exporter version pre-dates exemplars?)", ErrUnsupported)
-		span.RecordError(err)
-		return "", nil, err
+		return nil, err
 	}
 	if s.MetricNameColumn == "" {
 		err := fmt.Errorf("%w: schema.Metrics.MetricNameColumn is empty", ErrUnsupported)
-		span.RecordError(err)
-		return "", nil, err
+		return nil, err
 	}
 	if s.AttributesColumn == "" {
 		err := fmt.Errorf("%w: schema.Metrics.AttributesColumn is empty", ErrUnsupported)
-		span.RecordError(err)
-		return "", nil, err
+		return nil, err
 	}
 	if s.ServiceNameColumn == "" {
 		err := fmt.Errorf("%w: schema.Metrics.ServiceNameColumn is empty", ErrUnsupported)
-		span.RecordError(err)
-		return "", nil, err
+		return nil, err
 	}
 	if s.TimestampColumn == "" {
 		err := fmt.Errorf("%w: schema.Metrics.TimestampColumn is empty", ErrUnsupported)
-		span.RecordError(err)
-		return "", nil, err
+		return nil, err
 	}
 
 	// Inner SELECT — fans out via `arrayJoin(arrayEnumerate(...))` and
@@ -214,12 +318,7 @@ func EmitQueryExemplars(
 		).
 		From(inner.Frag())
 
-	sql, args, err := outer.subquerySQL()
-	if err != nil {
-		return "", nil, err
-	}
-	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
-	return sql, args, nil
+	return outer, nil
 }
 
 // dateTime64Frag returns a Frag emitting `toDateTime64(?, ?)` with the

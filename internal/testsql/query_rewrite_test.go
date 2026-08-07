@@ -1,6 +1,4 @@
-//go:build chdb
-
-package chclienttest
+package testsql
 
 import "testing"
 
@@ -108,7 +106,7 @@ func TestRewriteMapProjections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rewriteMapProjections(tc.in)
+			got := RewriteMapProjections(tc.in)
 			if got != tc.want {
 				t.Errorf("rewrite mismatch\n got: %s\nwant: %s", got, tc.want)
 			}
@@ -117,14 +115,14 @@ func TestRewriteMapProjections(t *testing.T) {
 }
 
 func TestTolerantRowsErr(t *testing.T) {
-	if err := tolerantRowsErr(nil); err != nil {
+	if err := TolerantRowsErr(nil); err != nil {
 		t.Errorf("nil -> %v, want nil", err)
 	}
-	if err := tolerantRowsErr(errString("empty row")); err != nil {
+	if err := TolerantRowsErr(errString("empty row")); err != nil {
 		t.Errorf("empty row sentinel -> %v, want nil", err)
 	}
 	real := errString("connection refused")
-	if err := tolerantRowsErr(real); err == nil {
+	if err := TolerantRowsErr(real); err == nil {
 		t.Errorf("real error swallowed")
 	}
 }

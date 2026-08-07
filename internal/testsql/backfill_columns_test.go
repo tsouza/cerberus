@@ -1,4 +1,4 @@
-package spec
+package testsql
 
 import (
 	"strings"
