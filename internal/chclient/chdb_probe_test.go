@@ -38,29 +38,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
+
+	"github.com/tsouza/cerberus/internal/testsql"
 )
-
-// chdbEOFSentinel is the spurious end-of-iteration error the chdb-go
-// parquet driver returns instead of io.EOF when a row buffer runs out.
-// See chdb/driver/parquet.go in chdb-go v1.11.0: `return fmt.Errorf("empty row")`.
-// Surface this on rows.Err() and we have to ignore it; treat any other
-// error as a real failure.
-const chdbEOFSentinel = "empty row"
-
-func tolerantRowsErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), chdbEOFSentinel) {
-		return nil
-	}
-	return err
-}
 
 // TestChDBProbe creates an OTel-metrics-gauge-shaped table inside an
 // ephemeral chDB session, inserts two rows with Map(String, String)
@@ -133,7 +117,7 @@ func TestChDBProbe(t *testing.T) {
 		switch {
 		case scanErr != nil:
 			t.Logf("native Map scan: NOT supported (chdb-go v1.11.0). Driver error: %v", scanErr)
-		case tolerantRowsErr(rows.Err()) != nil:
+		case testsql.TolerantRowsErr(rows.Err()) != nil:
 			t.Logf("native Map scan: NOT supported (chdb-go v1.11.0). rows.Err: %v", rows.Err())
 		default:
 			t.Logf("native Map scan: supported (chdb-go behavior changed — Path B shim is optional)")
@@ -182,9 +166,7 @@ func TestChDBProbe(t *testing.T) {
 			}
 			_ = value
 		}
-		// Ignore chdb-go's spurious "empty row" sentinel that fires at
-		// end-of-iteration in place of io.EOF (see chdbEOFSentinel).
-		if err := tolerantRowsErr(rows.Err()); err != nil {
+		if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 			t.Fatalf("rows.Err: %v", err)
 		}
 		if !reflect.DeepEqual(got, expected) {

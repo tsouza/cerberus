@@ -48,6 +48,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // seriesInstances is the deterministic series corpus: five `up` series
@@ -224,7 +225,7 @@ func selectInstances(t *testing.T, db *sql.DB, sqlStr string, args []any) []stri
 		}
 		got = append(got, inst)
 	}
-	if err := rows.Err(); err != nil && !strings.Contains(err.Error(), "empty row") {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	sort.Strings(got)
