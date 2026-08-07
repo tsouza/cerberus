@@ -1958,10 +1958,14 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerQuantileOverTime(c, s, ctx)
 	}
 	if len(c.Args) >= 1 {
-		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
+		// Parentheses are transparent grouping in PromQL — peel them (and
+		// any step-invariant wrapper) before deciding the argument's
+		// shape, so `rate((m[5m]))` dispatches identically to `rate(m[5m])`.
+		arg0 := peelWrappers(c.Args[0])
+		if _, ok := arg0.(*parser.MatrixSelector); ok {
 			return lowerRangeVectorCall(c, s, ctx)
 		}
-		if sq, ok := c.Args[0].(*parser.SubqueryExpr); ok {
+		if sq, ok := arg0.(*parser.SubqueryExpr); ok {
 			// `<range-vector-fn>(<subquery>)` — the canonical Grafana
 			// shape `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a
 			// chained RangeWindow: outer reducer over the inner matrix.
@@ -2075,10 +2079,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
 	}
-	ms, ok := c.Args[0].(*parser.MatrixSelector)
+	arg := peelWrappers(c.Args[0])
+	ms, ok := arg.(*parser.MatrixSelector)
 	if !ok {
 		return nil, fmt.Errorf("promql: %s argument must be a range-vector selector, got %T",
-			c.Func.Name, c.Args[0])
+			c.Func.Name, arg)
 	}
 	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
 	if !ok {

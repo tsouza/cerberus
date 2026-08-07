@@ -173,9 +173,8 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lowerCall#682975f8",
       "message": "promql: function %s is not a recognized lowering target",
-      "class": "divergence",
-      "trigger_query": "rate((demo_memory_usage_bytes[5m]))",
-      "tracking_issue": 1896,
+      "class": "internal",
+      "rationale": "quantile_over_time is special-cased above; every remaining function name the parser accepts is covered before this point: the arg0 shape check (now peeling ParenExpr/StepInvariantExpr via peelWrappers, #1896) catches every function whose argument position is Matrix-typed -- the rangeVectorFn set plus absent_over_time, whose sole argument the parser always types as Matrix -- and every other function name is covered by either the exhaustive switch above or instantFnCH. No parseable function name reaches this fallback.",
       "evidence": {
         "guard": [
           "past returning if c.Func.Name == \"quantile_over_time\"",
@@ -186,9 +185,11 @@
           "lower",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverInstantCall"
+        ],
+        "cited": [
+          "peelWrappers"
         ]
-      },
-      "since": "2026-08-06"
+      }
     },
     {
       "head": "promql",

@@ -1089,21 +1089,6 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 	}, true
 }
 
-// peelWrappers strips ParenExpr / StepInvariantExpr wrappers — the
-// parser inserts them for shapes that are otherwise inert.
-func peelWrappers(e parser.Expr) parser.Expr {
-	for {
-		switch v := e.(type) {
-		case *parser.ParenExpr:
-			e = v.Expr
-		case *parser.StepInvariantExpr:
-			e = v.Expr
-		default:
-			return e
-		}
-	}
-}
-
 // lowerHistogramQuantileAgg builds the chplan tree for
 // `histogram_quantile(phi, sum [by/without] (rate(<sel>[range])))`
 // against the OTel-CH classic-histogram table.
