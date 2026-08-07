@@ -247,9 +247,10 @@ function regenerate(name) {
     if (r.status !== 0) {
       fail([
         `error: the \`${name}\` shard could not be regenerated on \`main\`: ${argv.join(' ')}`,
-        '       The merged content cannot be validated until this command runs clean. It is the',
-        '       same command a contributor runs locally, so it failing here means it would fail',
-        '       for them too.',
+        '       The merged content is not validated until this command runs clean, so read its',
+        '       output above for what it found. A generator that refuses to WRITE under CI',
+        '       compares instead and reports the drift there rather than through the tree diff',
+        '       below, so this is the drift report for such a shard, not a broken toolchain.',
       ]);
     }
   }

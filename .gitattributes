@@ -135,11 +135,13 @@ compatibility/parity-baseline.json           -merge
 compatibility/loki/upstream-skip-baseline.txt  -merge
 
 # --- Tier-0 migration harness goldens ---------------------------------------
-# Regenerate: `just migration-golden`
+# Regenerate: `just update-golden migration`, which chains `just migration-golden`
 #   (MIGRATION_UPDATE_GOLDENS=1 go test -tags=migration
 #    ./test/e2e/migration/tiers/tier0-offline/... -count=1).
-#   NOT covered by `just update-golden`, and it refuses to run when CI is set:
-#   a golden is a reviewed artefact, never rewritten by the lane asserting it.
+#   Nothing is ever rewritten when CI is set — a golden is a reviewed artefact,
+#   never rewritten by the lane asserting it — so the update request degrades
+#   there to the comparison, and drift is a hard error naming the differing
+#   lines. Run it locally and commit the result.
 # Matched by basename so a new archetype's goldens are gated on arrival.
 # Deliberately NOT gated: expected/compliance-retention.json and
 # expected/tier1.json are hand-authored fixtures that are read, never written —

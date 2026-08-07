@@ -24,12 +24,12 @@ const migrationGoldenDir = "test/e2e/migration/archetypes"
 const migrationTriggerFile = "internal/chsql/emit.go"
 
 // migrationGoldenLibPath implements the harness's golden comparison, including
-// the CI refusal that must stay a hard error rather than a silent skip.
+// the CI rule that must stay a hard error rather than a silent skip.
 const migrationGoldenLibPath = "../../test/e2e/migration/lib/golden.go"
 
-// ciRefusalError is the shape of that refusal: an error value, not a `nil`
-// early return. `refusing to regenerate` is the message it carries.
-const ciRefusalError = "refusing to regenerate"
+// ciRefusalError is the shape of that rule when it bites: an error value, not a
+// `nil` early return. `refuses to regenerate` is the message it carries.
+const ciRefusalError = "refuses to regenerate"
 
 // TestUpdateGoldenChainsMigrationGolden pins the reachability that closes #1573.
 //
@@ -42,11 +42,14 @@ const ciRefusalError = "refusing to regenerate"
 // goldens and a red `lint` job on "run the Tier-0 migration scenarios
 // (explain-golden drift)". That happened at least twice (#1571, #1592).
 //
-// CI cannot repair it: the harness refuses to regenerate a golden when `CI` is
-// set, because a golden is a reviewed artifact and a lane that rewrites its own
-// expectations asserts only that the tool still does whatever it does. That
-// refusal is correct, and it is precisely what makes the omission a trap — the
-// one command that repairs it locally was the one nobody was told to run.
+// CI cannot repair it: the harness never rewrites a golden when `CI` is set,
+// because a golden is a reviewed artifact and a lane that rewrites its own
+// expectations asserts only that the tool still does whatever it does. Under CI
+// the update request degrades to the comparison — the stronger verdict, and the
+// one post-merge-drift.yml reads — so drift there is a hard error naming the
+// differing lines and never a write. That rule is correct, and it is precisely
+// what makes the omission a trap: the one command that repairs it locally was
+// the one nobody was told to run.
 //
 // Sharding #1898 moved the guarantee without weakening it: the reports are no
 // longer regenerated unconditionally on every invocation, they are regenerated
@@ -118,12 +121,16 @@ func TestUpdateGoldenChainsMigrationGolden(t *testing.T) {
 			"invisible as it was before.", strings.TrimSpace(scope), migrationGoldenDir)
 	}
 
-	// The CI refusal must stay an error. Downgraded to a silent early return it
+	// Drift under CI must stay an error. Downgraded to a silent early return it
 	// would turn every CI invocation into a lane that regenerates nothing while
-	// reporting success — the failure mode that looks exactly like working.
+	// reporting success — the failure mode that looks exactly like working. The
+	// behavioural half of this rule — that an in-sync golden PASSES under CI
+	// rather than failing on sight, which is what post-merge-drift.yml runs on —
+	// is pinned in test/e2e/migration/lib's
+	// TestAssertGoldenUnderCIComparesRatherThanRefusingOnSight.
 	lib := readFileString(t, migrationGoldenLibPath)
 	if !strings.Contains(lib, ciRefusalError) {
-		t.Errorf("%s no longer refuses regeneration with an error containing %q. The refusal is "+
+		t.Errorf("%s no longer refuses regeneration with an error containing %q. That refusal is "+
 			"what keeps a CI run from rewriting the expectations it is supposed to check; if it "+
 			"became a silent skip, the lane would pass while asserting nothing.",
 			migrationGoldenLibPath, ciRefusalError)
