@@ -55,7 +55,7 @@ Both expose the AST surface cerberus's lowering needs as exported types and acce
 
 Fidelity is held by two independent layers, neither of which links the AGPL parser into the binary:
 
-- **Differential `agpl_oracle` tests** (build-tagged; never compiled into `cmd/cerberus`) parse the same corpus with the upstream AGPL parser and assert structural / behavioural agreement — e.g. `internal/logql/lsyntax/oracle_agpl_test.go`, `internal/logql/jsonpath_agpl_test.go`, `internal/logql/logpattern/pattern_agpl_test.go`, `internal/api/loki/detected_extract_agpl_test.go`.
+- **Differential `agpl_oracle` tests** (build-tagged; never compiled into `cmd/cerberus`) parse the same corpus with the upstream AGPL parser and assert structural / behavioural agreement — e.g. `internal/logql/lsyntax/oracle_agpl_test.go`, `internal/logql/jsonpath_agpl_test.go`, `internal/logql/logpattern/pattern_agpl_test.go`.
 - **The `compatibility/{loki,tempo}` harnesses** diff cerberus end-to-end against a reference Loki / Tempo backend.
 
 ## How a new upstream change reaches cerberus
