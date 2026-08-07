@@ -12,6 +12,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // handleSeries implements GET /loki/api/v1/series. Returns the distinct
@@ -59,7 +60,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki series", "selectors", len(selectorGroups), "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki series", "selectors", len(selectorGroups), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	rows, err := h.Client.QueryLabelSets(r.Context(), sqlStr, args...)
 	if err != nil {

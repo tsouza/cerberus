@@ -48,10 +48,15 @@ Two positional arguments (prompt the user if missing):
 4. Tell the user the three follow-up steps:
    - For QL fixtures: paste the query into the `query.<area>` section.
    - For chsql/optimizer: add the corresponding entry to the `plans` / `inputs` map in the matching `_test.go` file.
-   - Run `just update-golden` and review `git diff test/spec/` before committing.
+   - Run `just update-golden <shard>...` and review `git diff test/spec/` before committing. The
+     shard argument is required and has no default: `solver promql cardinality` for a PromQL
+     fixture, `logql cardinality` or `traceql cardinality` for the other heads, `chsql` or
+     `optimizer` or `codegen` for those corpora. Name too few and the recipe refuses to start,
+     printing the set it derived from the diff — that refusal is what keeps a new fixture from
+     landing without its ratchet shard.
    - If the fixture carries a `-- seed --`, it MUST also carry an
      `-- expected_rows --` section — add it with a placeholder `[]` and let
-     `just update-golden` fill the real cell. A seeded fixture without one is
+     the regeneration fill the real cell. A seeded fixture without one is
      inert (the chDB runner returns before executing it, and regeneration
      cannot create the section), and `test/regression/inert_seeded_fixture_test.go`
      fails the `check` gate on it.

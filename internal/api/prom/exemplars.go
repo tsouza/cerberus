@@ -141,7 +141,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, ErrInternal, err)
 		return
 	}
-	h.Logger.Debug("cerberus query_exemplars", "promql", telemetry.SanitizeForLog(q), "sql", sql, "args", args)
+	h.Logger.Debug("cerberus query_exemplars", "promql", telemetry.SanitizeForLog(q), "sql", sql, "args", telemetry.SanitizeArgsForLog(args))
 
 	rows, err := h.Client.QueryExemplars(r.Context(), sql, args...)
 	if err != nil {

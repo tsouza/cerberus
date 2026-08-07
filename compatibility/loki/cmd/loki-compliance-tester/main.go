@@ -189,6 +189,14 @@ func run() error {
 		httpClient := &http.Client{Timeout: f.timeout}
 		results = append(results, compareDetectedFieldsAll(httpClient, f, metadata)...)
 
+		// Detected-field VALUES differential: for every field the
+		// reference advertises, both backends must answer the sibling
+		// /detected_field/{name}/values route the same way. A field
+		// that is advertised but cannot be opened is the same class of
+		// bug as an unqueryable field name. See
+		// detected_field_values.go.
+		results = append(results, compareDetectedFieldValuesAll(httpClient, f, metadata)...)
+
 		// Wrong-rejection-burndown value pass (range lane only, like
 		// detected-fields): a fixed query set covering the operator
 		// shapes the corpus doesn't carry — vector set ops,

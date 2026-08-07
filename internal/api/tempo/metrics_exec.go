@@ -139,7 +139,7 @@ func (h *Handler) execMetricsRangeHistogram(
 	h.Logger.Debug("cerberus tempo metrics histogram exec",
 		"traceql", telemetry.SanitizeForLog(q), "shape", shape,
 		"start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
+		"sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	normalizeHistogramBucketLabels(res.Samples)
 	series := toMetricsSeriesWithNames(res.Samples, histogramLabelNames(hist))
@@ -219,7 +219,7 @@ func (h *Handler) runMetricsWindow(
 	h.Logger.Debug("cerberus tempo metrics exec",
 		"traceql", telemetry.SanitizeForLog(q), "shape", shape,
 		"start", rw.Start, "end", rw.End, "step", rw.Step,
-		"sql", res.SQL, "args", res.Args)
+		"sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	samples := res.Samples
 	if metrics.Op == chplan.MetricsOpQuantileOverTime {

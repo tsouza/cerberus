@@ -8,6 +8,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // intrinsicTags is the static list of Tempo "intrinsic" attribute names
@@ -312,10 +313,14 @@ func (e *tagScopeError) Error() string { return "invalid scope: " + e.raw }
 // what lets the V2 partition skip the buckets the caller didn't ask
 // for — V1 unions the surviving slices in Go.
 func (h *Handler) fetchTagKeys(
-	ctx context.Context, scope string, keys, filter chsql.Frag, start, end time.Time,
+	ctx context.Context,
+	scope string,
+	keys, filter chsql.Frag,
+	start, end time.Time,
 ) ([]string, error) {
 	sqlStr, args := buildSearchTagsSQL(h.Schema, keys, filter, start, end)
-	h.Logger.Debug("cerberus tempo /search/tags", "scope", scope, "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus tempo /search/tags", "scope", scope, "sql", sqlStr,
+		"args", telemetry.SanitizeArgsForLog(args))
 	return h.Client.QueryStrings(ctx, sqlStr, args...)
 }
 

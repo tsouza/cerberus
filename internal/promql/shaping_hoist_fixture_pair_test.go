@@ -16,7 +16,7 @@ import (
 // `expected_rows` sections agree.
 //
 // Nothing else compares them. Each fixture is matched only against its own
-// golden, and `just update-golden` rewrites both halves in one pass — so a
+// golden, and `just update-golden promql` rewrites both halves in one pass — so a
 // hoist that computes a subtly different number regenerates both sides into
 // fresh, mutually-consistent agreement and stays green. This test is the
 // missing comparison: it runs in the default (non-chDB) lane, reads the two
