@@ -320,3 +320,155 @@ func TestEmitQueryExemplars_NilPredicate(t *testing.T) {
 		}
 	}
 }
+
+// TestEmitQueryExemplarsUnion_SingleArmIsByteStable — one arm renders
+// exactly what the single-table emitter renders: no parentheses, no
+// UNION keyword, same args. A gauge-only deployment must not pay a SQL
+// shape change for a fan-out it never needs.
+func TestEmitQueryExemplarsUnion_SingleArmIsByteStable(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	predicate := func() chsql.Frag {
+		return chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds"))
+	}
+
+	wantSQL, wantArgs, err := chsql.EmitQueryExemplars(context.Background(), s.GaugeTable, predicate(), start, end, s)
+	if err != nil {
+		t.Fatalf("EmitQueryExemplars: %v", err)
+	}
+	gotSQL, gotArgs, err := chsql.EmitQueryExemplarsUnion(
+		context.Background(),
+		[]chsql.ExemplarArm{{Table: s.GaugeTable, Predicate: predicate()}},
+		start, end, s,
+	)
+	if err != nil {
+		t.Fatalf("EmitQueryExemplarsUnion: %v", err)
+	}
+	if gotSQL != wantSQL {
+		t.Errorf("SQL mismatch\nwant: %s\n got: %s", wantSQL, gotSQL)
+	}
+	if len(gotArgs) != len(wantArgs) {
+		t.Fatalf("Args = %v; want %v", gotArgs, wantArgs)
+	}
+	for i := range gotArgs {
+		if gotArgs[i] != wantArgs[i] {
+			t.Errorf("Args[%d] = %v; want %v", i, gotArgs[i], wantArgs[i])
+		}
+	}
+}
+
+// TestEmitQueryExemplarsUnion_JoinsArms — every arm reaches the emitted
+// SQL, in order, joined by UNION ALL at the TOP level (no wrapping
+// SELECT: the projection carries Map-typed columns some drivers refuse
+// to cast back through a redundant subquery boundary). Each arm keeps
+// its own predicate, so the per-table row key a classic-histogram
+// companion needs binds independently of the other arms.
+func TestEmitQueryExemplarsUnion_JoinsArms(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+
+	arms := []chsql.ExemplarArm{
+		{
+			Table:     s.HistogramTable,
+			Predicate: chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds")),
+		},
+		{
+			Table:     s.SumTable,
+			Predicate: chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds_count")),
+		},
+		{
+			Table:     s.GaugeTable,
+			Predicate: chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds_count")),
+		},
+	}
+
+	sql, args, err := chsql.EmitQueryExemplarsUnion(context.Background(), arms, start, end, s)
+	if err != nil {
+		t.Fatalf("EmitQueryExemplarsUnion: %v", err)
+	}
+
+	if got := strings.Count(sql, " UNION ALL "); got != len(arms)-1 {
+		t.Errorf("UNION ALL count = %d; want %d\n%s", got, len(arms)-1, sql)
+	}
+	if !strings.HasPrefix(sql, "(SELECT ") {
+		t.Errorf("union arms must render parenthesised at the top level; got %s", sql)
+	}
+	for _, arm := range arms {
+		if !strings.Contains(sql, "FROM `"+arm.Table+"`") {
+			t.Errorf("arm table %q missing from SQL:\n%s", arm.Table, sql)
+		}
+	}
+	if idx := strings.Index(sql, "FROM `"+s.SumTable+"`"); idx < strings.Index(sql, "FROM `"+s.HistogramTable+"`") {
+		t.Errorf("arms rendered out of order:\n%s", sql)
+	}
+
+	// Args bind in arm order: each arm contributes its predicate literal
+	// followed by its two time bounds (formatted string + precision 9).
+	wantArgs := []any{
+		"http_request_duration_seconds",
+		"2026-01-01 00:00:00.000000000", int64(9),
+		"2026-01-01 01:00:00.000000000", int64(9),
+		"http_request_duration_seconds_count",
+		"2026-01-01 00:00:00.000000000", int64(9),
+		"2026-01-01 01:00:00.000000000", int64(9),
+		"http_request_duration_seconds_count",
+		"2026-01-01 00:00:00.000000000", int64(9),
+		"2026-01-01 01:00:00.000000000", int64(9),
+	}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("Args length = %d; want %d (args=%v)", len(args), len(wantArgs), args)
+	}
+	for i, want := range wantArgs {
+		if args[i] != want {
+			t.Errorf("Args[%d] = %v (%T); want %v (%T)", i, args[i], args[i], want, want)
+		}
+	}
+}
+
+// TestEmitQueryExemplarsUnion_RejectsEmptyArms — a caller with no
+// candidate table must answer with an empty result rather than ask for
+// SQL. Rendering "no arms" as an empty statement would reach ClickHouse
+// as a syntax error.
+func TestEmitQueryExemplarsUnion_RejectsEmptyArms(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := chsql.EmitQueryExemplarsUnion(
+		context.Background(),
+		nil,
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+		schema.DefaultOTelMetrics(),
+	)
+	if !errors.Is(err, chsql.ErrUnsupported) {
+		t.Fatalf("err = %v; want ErrUnsupported", err)
+	}
+}
+
+// TestEmitQueryExemplarsUnion_RejectsSummaryArm — the per-arm schema
+// guards still fire inside the fan-out: one summary arm rejects the
+// whole statement rather than emitting SQL against a table with no
+// Exemplars column.
+func TestEmitQueryExemplarsUnion_RejectsSummaryArm(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	_, _, err := chsql.EmitQueryExemplarsUnion(
+		context.Background(),
+		[]chsql.ExemplarArm{
+			{Table: s.GaugeTable},
+			{Table: s.SummaryTable},
+		},
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+		s,
+	)
+	if !errors.Is(err, chsql.ErrUnsupported) {
+		t.Fatalf("err = %v; want ErrUnsupported", err)
+	}
+}

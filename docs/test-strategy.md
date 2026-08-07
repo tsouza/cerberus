@@ -886,7 +886,7 @@ under a **hard page cap that fails the run when exceeded**, so
 surface growth forces a deliberate cap bump in `stacks.ts`.
 
 **The `compose-smoke` matrix-shard split.** `compose-smoke` is the
-slowest required PR gate, so it shards across a matrix of jobs. The three
+slowest lane in the release gate, so it shards across a matrix of jobs. The three
 heaviest specs — `iterate-panel-kiosk`, `compose_grafana_smoke`, and
 `crawl/crawl` — are each a *single* async `test()` that loops
 internally over every dashboard/panel/surface, so Playwright's native

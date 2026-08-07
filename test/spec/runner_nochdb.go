@@ -13,10 +13,12 @@ import "testing"
 
 // RunRoundTrip is a no-op when the `chdb` build tag is not set. The
 // real implementation lives in runner_chdb.go.
-func RunRoundTrip(t *testing.T, c *Case) {
+func RunRoundTrip(t *testing.T, c *Case, opts ...RoundTripOption) {
 	t.Helper()
 	// Intentionally empty — seed: / expected_rows: are inert without
-	// the chdb build tag.
+	// the chdb build tag. The options are still resolved so a lane that
+	// passes one type-checks and behaves identically under both tags.
+	_ = newRoundTripConfig(opts)
 	_ = c
 }
 

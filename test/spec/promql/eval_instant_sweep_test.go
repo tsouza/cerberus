@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	spec "github.com/tsouza/cerberus/test/spec"
+	"github.com/tsouza/cerberus/test/spec/promqlsweep"
 )
 
 // TestEvalInstantWindowSweep is the eval-instant sweep that pins the rc.8
@@ -119,8 +120,8 @@ func TestEvalInstantWindowSweep(t *testing.T) {
 		},
 	}
 
-	db := spec.OpenChDBForSweep(t)
-	spec.ApplySeedForSweep(t, db, seed)
+	db := spec.OpenChDB(t)
+	spec.ApplySeed(t, db, seed)
 
 	p := parser.NewParser(parser.Options{})
 
@@ -144,7 +145,7 @@ func TestEvalInstantWindowSweep(t *testing.T) {
 
 				// (a) NON-EMPTY: the dense series guarantees (T-5m, T]
 				// overlaps samples at every offset.
-				inst := spec.RunInstantSweep(t, db, instantExpr, T)
+				inst := promqlsweep.RunInstantSweep(t, db, instantExpr, T)
 				if !inst.NonEmpty() {
 					t.Fatalf("offset %s (T=%s): instant %s returned EMPTY, but (T-5m, T] overlaps %d seeded samples — the rc.8 now64-anchored window bug",
 						off, T.Format(time.RFC3339), ex.ql, countInWindow(samples, T, rangeWindow))
@@ -169,7 +170,7 @@ func TestEvalInstantWindowSweep(t *testing.T) {
 				// (b) instant==range at the step-aligned eval instant.
 				// The single-step range query pins its window to the
 				// grid anchor = T, so instant and range MUST agree.
-				rng := spec.RunRangeStepSweep(t, db, rangeExpr, T, sampleStep)
+				rng := promqlsweep.RunRangeStepSweep(t, db, rangeExpr, T, sampleStep)
 				gotI, okI := inst.Scalar()
 				gotR, okR := rng.Scalar()
 				if okI != okR {

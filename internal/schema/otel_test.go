@@ -197,10 +197,9 @@ func TestDefaultOTelMetricsTablesFor(t *testing.T) {
 // `_total` (the OTel-CH counter convention) is explicitly NOT routed
 // here — counter routing stays on the existing TableFor heuristic.
 //
-// Mirrors the precedent in
-// internal/api/prom/exemplars.go::exemplarsTableFor, which already
-// adopts the same `_count`/`_sum` → histogram-table routing for the
-// exemplars endpoint.
+// [Metrics.ExemplarSources] reads the same companion pairing for the
+// exemplars endpoint, so `<X>_count` resolves to the bare-named
+// histogram row on both read paths.
 func TestHistogramCompanionColumn(t *testing.T) {
 	t.Parallel()
 	m := DefaultOTelMetrics()
@@ -332,5 +331,138 @@ func TestDefaultOTelMetricsRollups(t *testing.T) {
 	gaugeOnly := m.RollupsFor(m.GaugeTable)
 	if len(gaugeOnly) != 0 {
 		t.Errorf("RollupsFor(GaugeTable): expected 0 rollups (no gauge rollups in default schema), got %d", len(gaugeOnly))
+	}
+}
+
+// TestExemplarSources pins the candidate (table, row key) pairs the
+// `/api/v1/query_exemplars` fan-out reads. Three properties matter, and
+// each is a bug the single-table predecessor shipped:
+//
+//  1. An ambiguous name is read from EVERY layout that can hold it —
+//     the same candidate set [Metrics.TablesFor] resolves for samples,
+//     plus the two histogram-shaped tables the Sample contract excludes
+//     for want of a Value column (the exemplar projection reads the
+//     Exemplars Nested column instead, which every non-summary table
+//     carries identically).
+//  2. On a histogram-shaped table the row key is the BARE base name:
+//     the OTel-CH exporter writes no row under `<base>_count` /
+//     `<base>_sum` / `<base>_bucket`, so an arm filtering on the
+//     suffixed name there can never match.
+//  3. The summary table never appears: its upstream DDL has no
+//     Exemplars column, so reading it is a SQL error, not a thin result.
+func TestExemplarSources(t *testing.T) {
+	t.Parallel()
+	m := DefaultOTelMetrics()
+
+	cases := []struct {
+		name   string
+		metric string
+		want   []ExemplarSource
+	}{
+		{
+			name:   "count suffix fans across all three value layouts plus exp histogram",
+			metric: "http_server_request_duration_count",
+			want: []ExemplarSource{
+				{Table: m.HistogramTable, MetricName: "http_server_request_duration"},
+				{Table: m.SumTable, MetricName: "http_server_request_duration_count"},
+				{Table: m.GaugeTable, MetricName: "http_server_request_duration_count"},
+				{Table: m.ExpHistogramTable, MetricName: "http_server_request_duration"},
+			},
+		},
+		{
+			name:   "sum suffix fans the same way",
+			metric: "http_server_request_duration_sum",
+			want: []ExemplarSource{
+				{Table: m.HistogramTable, MetricName: "http_server_request_duration"},
+				{Table: m.SumTable, MetricName: "http_server_request_duration_sum"},
+				{Table: m.GaugeTable, MetricName: "http_server_request_duration_sum"},
+				{Table: m.ExpHistogramTable, MetricName: "http_server_request_duration"},
+			},
+		},
+		{
+			name:   "bucket suffix pins the classic histogram row",
+			metric: "http_server_request_duration_bucket",
+			want: []ExemplarSource{
+				{Table: m.HistogramTable, MetricName: "http_server_request_duration"},
+			},
+		},
+		{
+			name:   "exp histogram name pins the exp histogram table",
+			metric: "http_server_request_duration" + m.ExpHistogramSuffix,
+			want: []ExemplarSource{
+				{Table: m.ExpHistogramTable, MetricName: "http_server_request_duration" + m.ExpHistogramSuffix},
+			},
+		},
+		{
+			name:   "total suffix reads the sum table and both histogram layouts",
+			metric: "http_server_requests_total",
+			want: []ExemplarSource{
+				{Table: m.SumTable, MetricName: "http_server_requests_total"},
+				{Table: m.HistogramTable, MetricName: "http_server_requests_total"},
+				{Table: m.ExpHistogramTable, MetricName: "http_server_requests_total"},
+			},
+		},
+		{
+			name:   "unsuffixed name reads every exemplar-carrying table",
+			metric: "http_server_request_duration",
+			want: []ExemplarSource{
+				{Table: m.GaugeTable, MetricName: "http_server_request_duration"},
+				{Table: m.SumTable, MetricName: "http_server_request_duration"},
+				{Table: m.HistogramTable, MetricName: "http_server_request_duration"},
+				{Table: m.ExpHistogramTable, MetricName: "http_server_request_duration"},
+			},
+		},
+		{
+			name:   "unpinned name reads every table and rewrites nothing",
+			metric: "",
+			want: []ExemplarSource{
+				{Table: m.GaugeTable},
+				{Table: m.SumTable},
+				{Table: m.HistogramTable},
+				{Table: m.ExpHistogramTable},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := m.ExemplarSources(tc.metric)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ExemplarSources(%q) = %+v; want %+v", tc.metric, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("ExemplarSources(%q)[%d] = %+v; want %+v", tc.metric, i, got[i], tc.want[i])
+				}
+			}
+			for _, src := range got {
+				if src.Table == m.SummaryTable {
+					t.Errorf("ExemplarSources(%q) includes the summary table %q, which has no Exemplars column", tc.metric, m.SummaryTable)
+				}
+			}
+		})
+	}
+}
+
+// TestExemplarSources_SummaryOnlyDeploymentIsEmpty — when no
+// exemplar-carrying table is configured the candidate set is empty, which
+// is the handler's cue to answer `data:[]` without a ClickHouse round
+// trip. A non-empty set here would mean SQL against an unconfigured
+// (empty-named) table.
+func TestExemplarSources_SummaryOnlyDeploymentIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	m := DefaultOTelMetrics()
+	m.GaugeTable = ""
+	m.SumTable = ""
+	m.HistogramTable = ""
+	m.ExpHistogramTable = ""
+
+	for _, metric := range []string{"", "http_server_request_duration", "http_server_request_duration_count"} {
+		if got := m.ExemplarSources(metric); len(got) != 0 {
+			t.Errorf("ExemplarSources(%q) = %+v; want empty", metric, got)
+		}
 	}
 }

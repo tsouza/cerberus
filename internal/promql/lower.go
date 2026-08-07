@@ -459,8 +459,8 @@ func resolveSelectorRouting(metricName string, s schema.Metrics, ctx lowerCtx, d
 	// `<base>` name in the histogram table. Reroute the scan + strip the
 	// suffix off the `__name__` matcher + alias the column as `Value` so
 	// the downstream Sample-row contract holds. Mirrors stripBucketSuffix
-	// (PR #637) for the `_bucket` companion, and the exemplars handler's
-	// routing in internal/api/prom/exemplars.go::exemplarsTableFor.
+	// (PR #637) for the `_bucket` companion, and the per-arm row-key
+	// rewrite schema.Metrics.ExemplarSources drives on the exemplars path.
 	//
 	// Two physical layouts may carry the matching rows:
 	//
@@ -1571,6 +1571,17 @@ func buildPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
 // equivalent.
 func BuildMatcherPredicate(matchers []*labels.Matcher, s schema.Metrics) chplan.Expr {
 	return buildPredicate(matchers, s)
+}
+
+// RewriteMetricName is the exported wrapper around [rewriteMetricName] for
+// callers outside the promql package — the `/api/v1/query_exemplars`
+// handler in internal/api/prom, which retargets a companion selector at
+// the bare-named histogram row exactly the way the sample lowering does.
+//
+// Returns a copy: the input matcher slice is never mutated, and matchers
+// other than the pinned `__name__` equality pass through untouched.
+func RewriteMetricName(matchers []*labels.Matcher, name string) []*labels.Matcher {
+	return rewriteMetricName(matchers, name)
 }
 
 // matcherToExpr resolves a single PromQL label matcher into the

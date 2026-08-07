@@ -15,6 +15,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
 	"github.com/tsouza/cerberus/test/spec"
+	"github.com/tsouza/cerberus/test/spec/traceqlwrap"
 )
 
 var fixtureDir = filepath.Join("..", "..", "test", "spec", "traceql")
@@ -93,12 +94,12 @@ func TestLower(t *testing.T) {
 		// chDB round-trip lane already leans on for issue #1653, so the
 		// optimized SQL below matches what expected_rows was captured
 		// against. Metrics-pipeline queries never take the wrap (see
-		// ReconstructTraceQLSearchWrapPlan's doc comment), so they fall
+		// ReconstructSearchWrapPlan's doc comment), so they fall
 		// back to optimizing the raw lowered plan directly, matching how
 		// expected_rows was captured for them too. Closing this gap is
 		// issue #1700.
 		roundTripInput := plan
-		if wrapPlan, ok, werr := spec.ReconstructTraceQLSearchWrapPlan(c); werr != nil {
+		if wrapPlan, ok, werr := traceqlwrap.ReconstructSearchWrapPlan(c); werr != nil {
 			t.Fatalf("fixture %s: traceql wrap reconstruction: %v", c.Name, werr)
 		} else if ok {
 			roundTripInput = wrapPlan

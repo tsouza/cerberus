@@ -1,15 +1,22 @@
 name: e2e
 
 # End-to-end test umbrella. Both lanes are RELEASE gates, not PR gates:
-# neither is a branch-protection required context, and neither runs on an
-# ordinary pull request. They boot real substrate — a compose stack per shard,
-# a k3d cluster per shard — and were by a wide margin the two longest PR lanes,
-# so a PR sat waiting on them long after every correctness lane had gone green.
-# They run on the merge commit instead, and release.yml's preflight names both
-# `compose-smoke` and `dashboard` in RELEASE_REQUIRED_CHECKS: nothing publishes
-# until both posted a green check-run on the commit being shipped. The gate
-# moved off the PR and onto the release; it did not disappear. A `release/*`
-# head branch still gets the full lane ON the PR (see the `on:` block).
+# NEITHER is a branch-protection required context, so neither can block a merge
+# into `main`. They boot real substrate — a compose stack per shard, a k3d
+# cluster per shard — and were by a wide margin the two longest PR lanes, so a
+# PR sat waiting on them long after every correctness lane had gone green.
+# release.yml's preflight names both `compose-smoke` and `dashboard` in
+# RELEASE_REQUIRED_CHECKS: nothing publishes until both posted a green check-run
+# on the commit being shipped. The gate moved off the PR and onto the release;
+# it did not disappear. That preflight is now the ONLY reader of either name —
+# renaming an aggregator job de-gates it everywhere at once.
+#
+# How much of each lane an ordinary PR still gets differs, and the difference is
+# deliberate: `dashboard` skips outright unless the head branch is `release/*`
+# (k3d is too slow to spend on a PR that cannot be blocked by it), while
+# `compose-smoke` still boots when the PR changed a path the compose stack can
+# see differently from chDB and short-circuits green in seconds otherwise (see
+# `compose-smoke-scope`). Either way the result reports without blocking.
 #
 # Hosts both:
 #   - `compose-smoke` — repo-root quickstart compose stack smoke
@@ -19,16 +26,15 @@ name: e2e
 #     truth .github/scripts/compose-smoke-matrix.mjs; compose-smoke-shard
 #     runs each shard's specs against its own stack; the aggregator job
 #     literally named `compose-smoke` needs the matrix and gates on it).
-#     Runs on pull_request + push-to-main at SWEEP_DEPTH=lean (the
-#     required PR gate) and on the nightly schedule at
-#     SWEEP_DEPTH=full. The clickhouse / host / otelcol dashboards
-#     are compose-only surfaces (their receivers don't run in the
-#     k3d stack), so the nightly full-depth sweep of them has to
-#     happen HERE — the dashboard job can't cover them. Required
-#     status check on branch protection — DO NOT rename the AGGREGATOR
-#     job (the check name is pinned to `compose-smoke`; the matrix
-#     children report as `compose-smoke-shard (shard-x)` and are NOT
-#     the gate). The slow BFS `shard-crawl` COVERAGE lane is split OUT
+#     Runs at SWEEP_DEPTH=lean on an in-scope pull_request and on
+#     push-to-main, and at SWEEP_DEPTH=full on the nightly schedule.
+#     The clickhouse / host / otelcol dashboards are compose-only surfaces
+#     (their receivers don't run in the k3d stack), so the nightly
+#     full-depth sweep of them has to happen HERE — the dashboard job
+#     can't cover them. DO NOT rename the AGGREGATOR job: the name
+#     `compose-smoke` is what release.yml's preflight looks for in
+#     RELEASE_REQUIRED_CHECKS, and the matrix children report as
+#     `compose-smoke-shard (shard-x)` and are NOT the gate. The slow BFS `shard-crawl` COVERAGE lane is split OUT
 #     of the required roll-up into a SEPARATE informational matrix job
 #     (`compose-smoke-shard-info`): it still runs + reports its own
 #     visible child check, but its result does NOT gate the required
@@ -89,14 +95,16 @@ name: e2e
 #   4. Teardown with `docker compose down -v`.
 
 on:
-  # `pull_request` is still declared, but every lane job below short-circuits
-  # unless the head branch is `release/*` — see `releaseOnlyOnPR` in the job
-  # `if:` blocks. Both lanes boot real substrate (a compose stack per shard, a
-  # k3d cluster per shard) and were by a wide margin the two longest PR gates,
-  # so an ordinary PR sat waiting on them long after every correctness lane had
-  # gone green. They are RELEASE gates now: they run on the merge commit, and
-  # release.yml's preflight refuses to publish until both posted a green
-  # check-run on it. Keeping the trigger (rather than deleting it) is what
+  # `pull_request` is still declared, but neither lane spends a PR's time
+  # unconditionally. `dashboard-setup`'s `if:` skips the whole k3d lane unless
+  # the head branch is `release/*`; `compose-smoke-scope` short-circuits the
+  # compose lane unless the diff touched a stack-visible path. Both lanes boot
+  # real substrate (a compose stack per shard, a k3d cluster per shard) and were
+  # by a wide margin the two longest PR gates, so an ordinary PR sat waiting on
+  # them long after every correctness lane had gone green. They are RELEASE
+  # gates now: they run on the merge commit, and release.yml's preflight refuses
+  # to publish until both posted a green check-run on it. Keeping the trigger
+  # (rather than deleting it) is what
   # preserves the release-PR run — crawl + split coverage is selected off
   # `github.head_ref`, which only exists on a pull_request event, and a release
   # must never ship a mode the gate did not exercise (see the v1.4.0 split
@@ -161,7 +169,7 @@ jobs:
   #
   # COST: N shards = N parallel compose builds/boots — billable minutes rise
   # ~Nx, but wall-clock drops from the serial sum toward the longest shard.
-  # That latency win on the slowest required PR gate is the whole point.
+  # That latency win on the slowest lane in the release gate is the whole point.
   # Decides whether THIS pull request has to boot the stack. push / schedule /
   # `release/*` PRs always do, exactly as before; an ordinary PR does
   # only when it changed a path this stack can see differently from chDB — the
@@ -408,7 +416,7 @@ jobs:
           GRAFANA_BASE_URL: http://localhost:3000
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
-          # Depth doctrine: PR/push = lean (required gate, fewest
+          # Depth doctrine: PR/push = lean (release gate, fewest
           # states), nightly schedule = full (every dashboard's
           # browser render, showcase family included). The depth
           # flag only changes how many STATES the sweeps visit,
@@ -669,17 +677,16 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans
 
-  # The AGGREGATOR — named EXACTLY `compose-smoke` so the required
-  # branch-protection status-check context still appears and gates. The matrix
-  # children report as `compose-smoke-shard (shard-x)`, NOT `compose-smoke`;
-  # branch protection waits on `compose-smoke` specifically, so this job MUST
-  # exist and report green/red. DO NOT add the setup/shard job names to branch
-  # protection — only this aggregator is the gate.
+  # The AGGREGATOR — named EXACTLY `compose-smoke` because that is the name
+  # release.yml's preflight looks for in RELEASE_REQUIRED_CHECKS. The matrix
+  # children report as `compose-smoke-shard (shard-x)`, NOT `compose-smoke`, so
+  # this job MUST exist and report green/red or the release gate stalls on a
+  # check-run that never arrives.
   #
   # Crawl de-gate: this aggregator `needs:` ONLY compose-smoke-shard (the
   # REQUIRED matrix), NOT compose-smoke-shard-info (the crawl coverage matrix).
   # So a crawl flake/hang reports its own red `compose-smoke-shard-info
-  # (shard-crawl)` check but does NOT roll into this required gate.
+  # (shard-crawl)` check but does NOT roll into this release gate.
   compose-smoke:
     name: compose-smoke
     needs: [compose-smoke-scope, compose-smoke-setup, compose-smoke-shard]
@@ -712,7 +719,7 @@ jobs:
               echo "::error::compose-smoke-setup skipped although compose-smoke-scope reported in_scope='${{ needs.compose-smoke-scope.outputs.in_scope }}' — the stack should have booted."
               exit 1
             fi
-            echo "no changed path is visible to the compose stack — passing the required check without booting it."
+            echo "no changed path is visible to the compose stack — passing the release gate without booting it."
             exit 0
           fi
           if [ "${{ needs.compose-smoke-scope.result }}" != "success" ]; then
@@ -725,10 +732,10 @@ jobs:
           # `cancelled` if any was cancelled. The strict `!= 'success'` form
           # catches failure AND cancelled AND skipped — `contains(…,'failure')`
           # would miss `cancelled`, letting a cancelled shard set pass the
-          # required check silently. fail-fast:false keeps a real spec failure
+          # release gate silently. fail-fast:false keeps a real spec failure
           # a clean `failure`, not an ambiguous `cancelled`. NOTE: the crawl
           # coverage shard lives in compose-smoke-shard-info, NOT this need set,
-          # so a crawl flake/hang can't fail this required gate.
+          # so a crawl flake/hang can't fail this release gate.
           if [ "${{ needs.compose-smoke-setup.result }}" != "success" ]; then
             echo "::error::compose-smoke-setup did not succeed (${{ needs.compose-smoke-setup.result }})."
             exit 1
@@ -1245,11 +1252,14 @@ jobs:
         run: just e2e-down
 
   # The AGGREGATOR — a single clean pass/fail over every dashboard shard. The
-  # lane DOES run on pull_request (a smoke-only matrix; see dashboard-setup),
-  # and `dashboard` is a branch-protection REQUIRED check, exactly like
-  # compose-smoke's aggregator: a PR/merge/nightly/dispatch run gets one
-  # rolled-up dashboard verdict instead of N per-shard contexts, and the
-  # coverage-discipline guard (dashboard-setup) gates the fan-out. always() so
+  # lane runs on a `release/*` PR (a smoke-only matrix; see dashboard-setup),
+  # and `dashboard` is named in release.yml's RELEASE_REQUIRED_CHECKS, exactly
+  # like compose-smoke's aggregator: a merge/release-PR/nightly/dispatch run
+  # gets one rolled-up dashboard verdict instead of N per-shard contexts, and
+  # the coverage-discipline guard (dashboard-setup) gates the fan-out. Neither
+  # aggregator is a branch-protection context — the header explains the trade —
+  # so release.yml's preflight is the only thing left reading either name, and
+  # renaming a job here de-gates it everywhere at once. always() so
   # it still reports when the setup/shards were skipped (e.g. a docs-only PR,
   # where dashboard-setup does not run).
   dashboard:

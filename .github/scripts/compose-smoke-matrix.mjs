@@ -1,5 +1,5 @@
 // compose-smoke-matrix.mjs — single source of truth for how the
-// `compose-smoke` required PR gate fans its Playwright spec set out across
+// `compose-smoke` release gate fans its Playwright spec set out across
 // a balanced matrix of isolated-compose-stack shards (e2e.yml).
 //
 // Why this exists

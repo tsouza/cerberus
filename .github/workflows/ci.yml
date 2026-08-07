@@ -113,6 +113,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    # The lane settles around 5m30s. This budget is the outer bound the
+    # runner enforces; the inner one is `just test-unit`'s own `-timeout`,
+    # deliberately shorter so a hang is a Go panic with every goroutine's
+    # stack rather than a killed container with no artefact. An undeclared
+    # budget here would be GitHub's 360-minute default, which says nothing.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -133,6 +139,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    # Settles around 3 minutes; same budget as `check-test` because the two
+    # halves are interchangeable in what a stall costs, and a single number
+    # is one fewer thing to keep in sync.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 

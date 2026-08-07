@@ -50,6 +50,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tsouza/cerberus/internal/testsql"
+
 	chdb "github.com/chdb-io/chdb-go/chdb"
 
 	"github.com/tsouza/cerberus/test/spec"
@@ -256,12 +258,12 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 
 	// Seed: split + promote-to-OR-REPLACE exactly as applySeed does, so
 	// re-seeding across fixtures that share a table name is idempotent.
-	for _, stmt := range spec.SplitSeedStatements(prep.Seed) {
+	for _, stmt := range testsql.SplitStatements(prep.Seed) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
-		stmt = spec.PromoteCreateTable(stmt)
+		stmt = testsql.PromoteCreateTable(stmt)
 		if err := p.exec(stmt); err != nil {
 			rec.Err = fmt.Sprintf("seed: %v", err)
 			return rec

@@ -76,10 +76,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/testsql"
+
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/test/spec"
+	"github.com/tsouza/cerberus/test/spec/traceqlwrap"
 )
 
 // strictScanHeads are the per-head fixture directories the differential
@@ -248,18 +251,19 @@ func runStrictScanCase(ctx context.Context, t *testing.T, client *chclient.Clien
 // strict-scan SQL nobody sends.
 //
 // The reconstruction itself lives in the build-tag-free
-// spec.ReconstructTraceQLSearchWrap, shared with the chDB round-trip lane's
-// RunRoundTrip (issue #1653) so there is exactly one wrap-reconstruction
-// path for both consumers. Metrics-pipeline queries (`| rate()`,
-// `| count_over_time() by (...)`, …) are left untouched — rt is not
-// modified — because they never reach traceqlLang in production (see
-// spec.ReconstructTraceQLSearchWrap's doc comment); they keep going through
+// traceqlwrap.ReconstructSearchWrap, which the chDB round-trip lane hands
+// to RunRoundTrip as its [spec.SQLReconstructor] (issue #1653), so there
+// is exactly one wrap-reconstruction path for both consumers and neither
+// puts TraceQL inside the head-agnostic runner. Metrics-pipeline queries
+// (`| rate()`, `| count_over_time() by (...)`, …) are left untouched — rt
+// is not modified — because they never reach traceqlLang in production
+// (see traceqlwrap.ReconstructSearchWrap's doc comment); they keep going through
 // runStrictScanCase with their original (pre-wrap) SQL, which — as today —
 // gets classified caseNonMatrix.
 func traceqlWrapForStrictScan(t *testing.T, c *spec.Case, rt *spec.RoundTripSections) {
 	t.Helper()
 
-	sqlStr, args, ok, err := spec.ReconstructTraceQLSearchWrap(c)
+	sqlStr, args, ok, err := traceqlwrap.ReconstructSearchWrap(c)
 	if err != nil {
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
@@ -312,7 +316,7 @@ func isExperimentalFnError(err error) bool {
 // fixtures that share a table name (otel_metrics_gauge appears in ~250).
 func applyStrictScanSeed(ctx context.Context, t *testing.T, client *chclient.Client, seed string) {
 	t.Helper()
-	stmts := spec.BackfillMetricsColumns(spec.SplitSeedStatements(seed))
+	stmts := testsql.BackfillMetricsColumns(testsql.SplitStatements(seed))
 	// Also backfill the otel_traces columns wrapWithSampleProjection reads
 	// unconditionally (TraceId / SpanId / ParentSpanId / SpanName / Duration /
 	// Timestamp / ResourceAttributes) — a no-op for promql/logql seeds, which
@@ -320,13 +324,13 @@ func applyStrictScanSeed(ctx context.Context, t *testing.T, client *chclient.Cli
 	// traceqlWrapForStrictScan's reconstructed wrap-projected SQL doesn't
 	// 502 with UNKNOWN_IDENTIFIER against a fixture seed that (deliberately)
 	// only declares the columns its OWN pre-wrap SQL touches.
-	stmts = spec.BackfillTracesColumns(stmts)
+	stmts = testsql.BackfillTracesColumns(stmts)
 	for _, stmt := range stmts {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
-		stmt = spec.PromoteCreateTable(stmt)
+		stmt = testsql.PromoteCreateTable(stmt)
 		if err := client.Exec(ctx, stmt); err != nil {
 			t.Fatalf("seed exec failed:\n--- stmt ---\n%s\n--- err ---\n%v", stmt, err)
 		}

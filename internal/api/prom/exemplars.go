@@ -44,8 +44,11 @@ type Exemplar struct {
 //
 // Required params: `query` (PromQL string), `start` and `end` (RFC3339 or
 // unix seconds). The `query` must be a single VectorSelector (Prom rejects
-// anything else); cerberus mirrors that. The response is the canonical
-// Prom envelope with `data` shaped as []ExemplarSeries.
+// anything else); cerberus mirrors that. Every matcher shape a selector
+// can carry is answered — a regex `__name__`, or no `__name__` at all —
+// because the table fan-out is resolved from the matcher set rather than
+// from a literal metric name. The response is the canonical Prom envelope
+// with `data` shaped as []ExemplarSeries.
 //
 // Implementation flow:
 //
@@ -53,15 +56,18 @@ type Exemplar struct {
 //  2. Parse the PromQL, walk through any ParenExpr, and require a single
 //     `*parser.VectorSelector`. Anything more complex returns ErrBadData —
 //     upstream Prometheus also restricts this endpoint to one selector.
-//  3. Resolve the target table via [exemplarsTableFor]. Summary metrics
-//     short-circuit with `data:[]` since the OTel-CH summary table has
-//     no Exemplars column upstream — exemplars are a histogram concept
-//     and clients should not see an error for a legitimately
-//     exemplar-free metric type.
-//  4. Build the matcher predicate via the same
+//  3. Resolve the candidate tables and their per-table row keys via
+//     [exemplarArms], which routes through
+//     [schema.Metrics.ExemplarSources]. An empty candidate set (a
+//     summary-only deployment — the OTel-CH summary table has no
+//     Exemplars column upstream) short-circuits with `data:[]`:
+//     exemplars are a histogram concept and clients should not see an
+//     error for a legitimately exemplar-free metric type.
+//  4. Build each arm's matcher predicate via the same
 //     [promql.BuildMatcherPredicate] helper PromQL `handleQuery` /
 //     `handleQueryRange` use.
-//  5. Call [chsql.EmitQueryExemplars] to render the SQL + args.
+//  5. Call [chsql.EmitQueryExemplarsUnion] to render the SQL + args —
+//     one arm per candidate table, unioned.
 //  6. Run the SQL via Querier.QueryExemplars; decode each row positionally
 //     into a [chclient.ExemplarRow].
 //  7. Group rows by `(MetricName, Attributes, ServiceName)` into one
@@ -111,20 +117,18 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metricName := exemplarMetricName(vs.LabelMatchers)
-	if metricName == "" {
-		// Prom requires a concrete `__name__=...` matcher on this
-		// endpoint. Mirror the upstream behaviour rather than fan out
-		// across every metrics table.
-		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("metric name is required"))
+
+	arms, err := exemplarArms(vs.LabelMatchers, metricName, h.Schema)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrInternal, err)
 		return
 	}
-
-	table, ok := exemplarsTableFor(metricName, h.Schema)
-	if !ok {
-		// Summary metrics (or any other family the upstream OTel-CH
-		// schema doesn't carry exemplars for) return an empty data
-		// array — matches Prom's behaviour for exemplar-free metric
-		// types. No ClickHouse round-trip.
+	if len(arms) == 0 {
+		// No configured table can carry exemplars for this selector —
+		// a summary-only deployment, or a schema with every
+		// exemplar-carrying table elided. Return an empty data array,
+		// which is Prom's answer for an exemplar-free metric type, with
+		// no ClickHouse round-trip.
 		writeJSON(w, http.StatusOK, Response{
 			Status: "success",
 			Data:   []ExemplarSeries{},
@@ -132,13 +136,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	predicate, err := buildExemplarsPredicate(vs.LabelMatchers, h.Schema)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrInternal, err)
-		return
-	}
-
-	sql, args, err := chsql.EmitQueryExemplars(r.Context(), table, predicate, start, end, h.Schema)
+	sql, args, err := chsql.EmitQueryExemplarsUnion(r.Context(), arms, start, end, h.Schema)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrInternal, err)
 		return
@@ -181,11 +179,13 @@ func singleVectorSelector(expr promparser.Expr) (*promparser.VectorSelector, err
 }
 
 // exemplarMetricName returns the value of the `__name__` equality
-// matcher (if any) — same heuristic the PromQL lowering applies to
-// pick the target metrics table. Returns "" when the selector relies
-// purely on regex / non-name matchers; the exemplars handler treats
-// that as `ErrBadData` because Prom's contract requires a concrete
-// metric name.
+// matcher (if any) — the same heuristic the PromQL lowering applies to
+// pick the target metrics tables. Returns "" when the selector pins no
+// literal name: a regex matcher (`{__name__=~"http_.*"}`), a negated
+// one, or no `__name__` matcher at all (`{job="api"}`). Those selectors
+// are answered, not rejected — the candidate set widens to
+// [schema.Metrics.ExemplarSources]'s unpinned-name fan-out and the
+// matchers themselves do the filtering, exactly as on `/query`.
 //
 // Mirrors `metricNameFromMatchers` in internal/promql/lower.go (kept
 // in-package there to avoid the cross-package import in the PromQL hot
@@ -199,63 +199,42 @@ func exemplarMetricName(ms []*labels.Matcher) string {
 	return ""
 }
 
-// exemplarsTableFor picks the OTel-CH metrics table whose Exemplars
-// Nested column carries the queried metric's exemplars. The OTel-CH
-// summary table has no Exemplars column; the boolean return is `false`
-// for summary metrics (and any other case where no exemplars-carrying
-// table is configured) so the handler short-circuits with empty data
-// rather than emitting SQL against a missing column.
+// exemplarArms turns a selector into the per-table arms
+// [chsql.EmitQueryExemplarsUnion] reads.
 //
-// Routing heuristic (extends [schema.Metrics.TableFor], which only
-// returns Gauge or Sum):
+// Table resolution is [schema.Metrics.ExemplarSources] — the same
+// schema-owned resolver the PromQL sample path consults through
+// [schema.Metrics.TablesFor], so a metric name that is ambiguous across
+// physical layouts (`<x>_count` can be a histogram companion, a
+// hostmetrics cumulative Sum, or a standalone gauge) is read from every
+// layout that can hold it instead of one guessed branch.
 //
-//   - [schema.Metrics.IsExpHistogramMetric] hit → ExpHistogramTable.
-//   - `_bucket` suffix → HistogramTable. Buckets carry the per-bound
-//     observation counts for classic histograms; exemplars there are
-//     written on the histogram table by the OTel SDK.
-//   - `_count` / `_sum` suffix → HistogramTable when configured,
-//     otherwise SumTable. The PromQL `TableFor` heuristic groups
-//     `_count` / `_sum` with the sum table, but for exemplars they
-//     more often belong to the histogram family (the SDK writes
-//     `_count` / `_sum` synthetic series alongside `_bucket`).
-//   - `_total` suffix → SumTable (counter convention).
-//   - Otherwise → GaugeTable.
-func exemplarsTableFor(metricName string, s schema.Metrics) (string, bool) {
-	if s.IsExpHistogramMetric(metricName) {
-		if s.ExpHistogramTable == "" {
-			return "", false
+// Each source also carries the MetricName its rows are keyed by, which
+// differs from the queried name on the histogram-shaped tables: the
+// OTel-CH exporter serves `<base>_count` / `<base>_sum` / `<base>_bucket`
+// off the columns of a row written under the bare `<base>` name. That
+// arm therefore gets its `__name__` matcher retargeted through
+// [promql.RewriteMetricName] — the same rewrite the sample lowering
+// applies — or it would filter on a name no row carries and contribute
+// nothing.
+//
+// An empty result means no configured table can carry exemplars for the
+// selector; the caller answers with an empty data array.
+func exemplarArms(matchers []*labels.Matcher, metricName string, s schema.Metrics) ([]chsql.ExemplarArm, error) {
+	sources := s.ExemplarSources(metricName)
+	arms := make([]chsql.ExemplarArm, 0, len(sources))
+	for _, src := range sources {
+		armMatchers := matchers
+		if src.MetricName != "" && src.MetricName != metricName {
+			armMatchers = promql.RewriteMetricName(matchers, src.MetricName)
 		}
-		return s.ExpHistogramTable, true
-	}
-	if hasExemplarSuffix(metricName, "_bucket") {
-		if s.HistogramTable == "" {
-			return "", false
+		predicate, err := buildExemplarsPredicate(armMatchers, s)
+		if err != nil {
+			return nil, err
 		}
-		return s.HistogramTable, true
+		arms = append(arms, chsql.ExemplarArm{Table: src.Table, Predicate: predicate})
 	}
-	if hasExemplarSuffix(metricName, "_count") || hasExemplarSuffix(metricName, "_sum") {
-		if s.HistogramTable != "" {
-			return s.HistogramTable, true
-		}
-		if s.SumTable != "" {
-			return s.SumTable, true
-		}
-		return "", false
-	}
-	if hasExemplarSuffix(metricName, "_total") {
-		if s.SumTable == "" {
-			return "", false
-		}
-		return s.SumTable, true
-	}
-	if s.GaugeTable == "" {
-		return "", false
-	}
-	return s.GaugeTable, true
-}
-
-func hasExemplarSuffix(s, suffix string) bool {
-	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+	return arms, nil
 }
 
 // buildExemplarsPredicate AND-folds the matcher list into a single
@@ -291,10 +270,14 @@ func buildExemplarsPredicate(matchers []*labels.Matcher, s schema.Metrics) (chsq
 // is deterministically ordered by the canonical series-key so two runs
 // against the same row set produce identical wire envelopes.
 //
-// metricName is the resolved `__name__` matcher value; row.MetricName
-// is the authoritative source — they match in normal operation, but
-// the matcher value is the fallback when the row carries a blank
-// MetricName for any reason.
+// metricName is the resolved `__name__` equality-matcher value, and it
+// wins over row.MetricName whenever the selector pinned one: the caller
+// asked for exactly that series name, while the row can be keyed by the
+// bare base name of a classic histogram (the arm that serves
+// `<base>_count` reads the `<base>` row) or by the dotted OTel spelling
+// of the same name. An unpinned selector has no such name, and
+// row.MetricName — which then varies row to row across the fan-out — is
+// the only truth available.
 //
 // Per-exemplar Labels: ExemplarAttributes (the SDK-recorded
 // FilteredAttributes map) is the base, then `trace_id` / `span_id`
@@ -314,9 +297,9 @@ func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSe
 	keys := make([]string, 0, len(rows))
 
 	for _, r := range rows {
-		name := r.MetricName
+		name := metricName
 		if name == "" {
-			name = metricName
+			name = r.MetricName
 		}
 		seriesLabels := format.WithMetricName(r.Attributes, name)
 		if r.ServiceName != "" {
