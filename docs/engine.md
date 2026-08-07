@@ -588,6 +588,20 @@ A short list, because the engine's narrow scope is deliberate:
 - **Not a translator of wire formats.** The handler formats
   `Result.Samples` into the upstream wire shape; the engine never
   touches `http.ResponseWriter`.
+- **Not a streaming subquery reducer.** A PromQL subquery
+  `<reducer>_over_time(<inner>[range:step])` materialises
+  `range/step + 1` anchor rows per series before collapsing them,
+  and the engine bounds that intermediate by refusing the query
+  rather than by fusing the reduction into a single streaming
+  pass. `requireSubquerySampleBudget`
+  (`internal/engine/anchor_budget.go`) measures one series' anchor
+  grid against `Config.MaxQuerySamples` and returns the same
+  Prom-shaped 422 upstream Prometheus returns once a subquery
+  would load more than `query.max-samples` into memory. Fusing the
+  reducer families into streaming passes would serve grids
+  upstream refuses, and a drop-in gateway's answer set is upstream's
+  answer set — so the bound is a rejection, which also keeps one
+  head's grid from exhausting the process the other two share.
 
 These boundaries keep the engine's surface small enough that
 adding a new query head — or a new extension point — is a local
