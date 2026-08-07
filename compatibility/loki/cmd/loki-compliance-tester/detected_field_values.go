@@ -173,11 +173,7 @@ func fetchDetectedFieldValues(c *http.Client, addr, field, selector string, star
 		return detectedFieldValuesWire{}, fmt.Errorf("read body: %w", readErr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		snippet := strings.TrimSpace(string(body))
-		if len(snippet) > 400 {
-			snippet = snippet[:400] + "…"
-		}
-		return detectedFieldValuesWire{}, fmt.Errorf("status=%d body=%s", resp.StatusCode, snippet)
+		return detectedFieldValuesWire{}, fmt.Errorf("status=%d body=%s", resp.StatusCode, errorBodySnippet(string(body)))
 	}
 
 	// Consumer-grade decode, same contract as the fields route: the
@@ -217,6 +213,17 @@ func diffDetectedFieldValues(expected, actual detectedFieldValuesWire) string {
 			if !slices.Contains(exp, v) {
 				diffs = append(diffs, fmt.Sprintf("value %q unexpected on test endpoint", v))
 			}
+		}
+		if len(diffs) == 0 {
+			// The two membership loops answer "which values are on one
+			// side only", which is silent when the lists differ solely
+			// in how many times a value appears. Reporting the sorted
+			// lists keeps the sorted-slice inequality this branch was
+			// entered on from resolving to "no diff": a backend
+			// repeating a value where the reference emits it once is a
+			// real wire-shape divergence, and Grafana renders the
+			// duplicate.
+			diffs = append(diffs, fmt.Sprintf("value multiplicity: expected=%v actual=%v", exp, act))
 		}
 	}
 	if expected.Limit != actual.Limit {
