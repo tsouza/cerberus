@@ -1,5 +1,5 @@
 {
-  "query": "clamp_scalar_min_literal_max",
+  "query": "clamp_max_scalar_bound_range_per_step",
   "routed": false,
   "k": 0,
   "reason": "scalar-heavy",

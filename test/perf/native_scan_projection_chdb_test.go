@@ -39,6 +39,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // nativeScanProjSeed builds a wide otel_metrics_sum carrying the columns a
@@ -218,9 +219,7 @@ func projectedColumnBytes(t *testing.T, db *sql.DB) map[string]uint64 {
 		}
 		out[col] = b
 	}
-	// The chdb-go parquet driver returns a spurious "empty row"
-	// end-of-iteration error in place of io.EOF; any other error is real.
-	if err := rows.Err(); err != nil && !strings.Contains(err.Error(), "empty row") {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("parts_columns rows.Err: %v", err)
 	}
 	if len(out) == 0 {

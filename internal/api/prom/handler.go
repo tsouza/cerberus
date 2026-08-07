@@ -1096,6 +1096,16 @@ func classifyEngineError(err error) error {
 			return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
 		}
 	}
+	// A failed value-domain guard is reference Prometheus's own
+	// evaluation error — an out-of-domain topk K, an out-of-domain
+	// smoothing factor — reached by running the parameter's query first.
+	// It carries reference's wording verbatim and lands where reference
+	// puts it: 422 errorType=execution, never the 502 bucket the guard's
+	// own ClickHouse round trip would otherwise fall into.
+	var ge *engine.GuardError
+	if errors.As(err, &ge) {
+		return &apiError{Kind: ErrExecution, Err: errors.New(ge.Error()), Status: http.StatusUnprocessableEntity}
+	}
 	// A `throwIf` the emitter planted deliberately is a fault in the
 	// QUERY, not in the backend. info()'s conflicting-label abort is the
 	// reference engine's own execution error, so it lands where upstream

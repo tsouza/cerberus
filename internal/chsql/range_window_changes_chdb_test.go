@@ -83,6 +83,7 @@ import (
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // changesSeed mirrors the production OTel-CH default schema (ResourceAttributes
@@ -309,7 +310,7 @@ func runChangesEmit(t *testing.T, db *sql.DB, native, optimize bool) map[gridCel
 		}
 		out[gridCell{ql: extractHostLabel(hostJSON), anchor: ts.UTC().Format(time.RFC3339)}] = v
 	}
-	if err := tolerantSentinel(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("rows.Err (native=%v): %v", native, err)
 	}
 	if len(out) == 0 {

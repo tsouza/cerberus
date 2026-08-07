@@ -13,6 +13,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 	tql "github.com/tsouza/cerberus/internal/traceql"
 	"github.com/tsouza/cerberus/internal/traceql/ast"
 )
@@ -81,7 +82,7 @@ func explainEstimate(t *testing.T, db *sql.DB, query string) (parts, rows int64)
 		parts += p
 		rows += rw
 	}
-	if err := tolerantRowsErr(r.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(r.Err()); err != nil {
 		t.Fatalf("EXPLAIN rows: %v", err)
 	}
 	return parts, rows
