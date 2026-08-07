@@ -36,7 +36,7 @@
 // `just update-golden`) and pinned by `test/regression/golden_shard_coverage_test.go`.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 /** The Go module path every first-party package import starts with. */
