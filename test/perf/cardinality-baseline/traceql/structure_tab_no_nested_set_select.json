@@ -1,0 +1,11 @@
+{
+  "fixture": "traceql/structure_tab_no_nested_set_select",
+  "fan_factor": null,
+  "scan_rows": 10,
+  "peak_intermediate": 10,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": true,
+  "max_recursion_depth": 5,
+  "uncountable_levels": 1
+}
