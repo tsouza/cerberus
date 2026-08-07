@@ -272,7 +272,7 @@ func lowerHistogramValueFnRange(
 ) chplan.Node {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	anchorRef := &chplan.ColumnRef{Name: histogramAnchorCol}
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
 	agg := buildHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),

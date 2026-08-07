@@ -55,6 +55,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // propertyTable is the single test table the generator targets. Schema
@@ -365,7 +366,7 @@ func runPlan(ctx context.Context, db *sql.DB, plan chplan.Node) ([][]any, error)
 		}
 		out = append(out, row)
 	}
-	if err := tolerantRowsErrLocal(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("rows.Err: %w", err)
 	}
 	return out, nil
@@ -421,23 +422,6 @@ func openPropertyChDB(t *testing.T) *sql.DB {
 		t.Fatalf("ping chdb: %v", err)
 	}
 	return db
-}
-
-// chdb-go quirks (see test/spec/runner_chdb.go for the canonical
-// versions). These are re-declared here so the optimizer property
-// test stays self-contained — internal/optimizer/ doesn't depend on
-// test/spec/ and we don't want to flip that for a 30-line helper.
-
-const chdbEOFSentinelLocal = "empty row"
-
-func tolerantRowsErrLocal(err error) error {
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), chdbEOFSentinelLocal) {
-		return nil
-	}
-	return err
 }
 
 // rewriteMapProjectionsLocal wraps every top-level SELECT projection
