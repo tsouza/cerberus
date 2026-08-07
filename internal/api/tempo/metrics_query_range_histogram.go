@@ -1,10 +1,7 @@
 package tempo
 
 import (
-	"context"
-	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -104,34 +101,6 @@ func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOv
 			{Expr: &chplan.ColumnRef{Name: m.ValueAlias}, Alias: "Value"},
 		},
 	}
-}
-
-// serveMetricsQueryRangeHistogram runs the matrix-shape pipeline for a
-// lowered histogram_over_time plan and writes the Tempo
-// series-of-samples envelope. Thin HTTP wrapper around
-// execMetricsRangeHistogram (metrics_exec.go) — the transport-agnostic
-// compute core the gRPC MetricsQueryRange RPC (grpc_exports.go) also
-// calls, so `| histogram_over_time(...)` behaves identically on both
-// surfaces. See metrics_exec.go's file-level comment for why this split
-// exists (#1577's drift class).
-func (h *Handler) serveMetricsQueryRangeHistogram(
-	ctx context.Context,
-	w http.ResponseWriter,
-	q string,
-	plan chplan.Node,
-	hist *chplan.MetricsHistogramOverTime,
-	start, end time.Time,
-	step time.Duration,
-) {
-	series, headers, qerr := h.execMetricsRangeHistogram(ctx, q, plan, hist, start, end, step)
-	if qerr != nil {
-		writeError(w, httpErrStatus(qerr), "", "", qerr)
-		return
-	}
-	writeEngineHeaders(w, headers)
-	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
-		Series: series,
-	})
 }
 
 // normalizeHistogramBucketLabels rewrites each sample's `__bucket`

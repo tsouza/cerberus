@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/format"
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
@@ -209,70 +208,19 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %w", errLowerStage, lerr)
 	}
 
-	// Second-stage peel + re-apply — same shape as
-	// handleMetricsQueryRange: the RangeWindow wraps the aggregate, the
-	// topk/bottomk/threshold wraps re-apply around the windowed result
+	// Second-stage peel + kind classification — the SAME call
+	// handleMetricsQueryRange makes: the RangeWindow wraps the metrics node,
+	// the topk/bottomk/threshold wraps re-apply around the windowed result
 	// partitioned by the matrix anchor column.
-	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
-	if !ok {
-		return h.execMetricsRangeNonScalar(ctx, query, plan, inner, stages, start, end, step)
+	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsRangeGRPC, query)
+	if cerr != nil {
+		return ExecMetricsRangeResult{}, cerr
 	}
-	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
-		return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
+	router := h.newMetricsRangeRouter(query, pipeline, start, end, step)
+	if rerr := pipeline.Route(ctx, router); rerr != nil {
+		return ExecMetricsRangeResult{}, rerr
 	}
-
-	series, _, qerr := h.execMetricsRange(ctx, query, inner, stages, metrics, start, end, step)
-	if qerr != nil {
-		return ExecMetricsRangeResult{}, qerr
-	}
-	return ExecMetricsRangeResult{Series: series}, nil
-}
-
-// execMetricsRangeNonScalar handles the plan shapes ExecMetricsRange sees
-// when the lowered plan does NOT unwrap to the scalar
-// chplan.MetricsAggregate shape: `| histogram_over_time(<attr>)` and
-// `| compare({...}, topN)`. Mirrors the HTTP handler's
-// serveMetricsQueryRangeNonScalar split (metrics_query_range.go) — pulled
-// out of ExecMetricsRange for the identical reason that function was
-// pulled out of handleMetricsQueryRange: keeping the nesting flat.
-//
-// histogram_over_time is checked first, matching the HTTP handler's
-// ordering. This branch was MISSING here until #1453's gRPC
-// compatibility lane caught the divergence: every histogram_over_time
-// query 400'd on the gRPC surface ("not a TraceQL metrics-pipeline
-// expression") while the byte-identical query succeeded over HTTP.
-func (h *Handler) execMetricsRangeNonScalar(
-	ctx context.Context,
-	query string,
-	plan, inner chplan.Node,
-	stages []*chplan.MetricsSecondStage,
-	start, end time.Time,
-	step time.Duration,
-) (ExecMetricsRangeResult, error) {
-	if hist, hok := unwrapMetricsHistogram(inner); hok {
-		if len(stages) > 0 {
-			return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over histogram_over_time is unsupported — the per-bucket distribution rows have no scalar Value to rank or threshold", errLowerStage, stages[0].Op)
-		}
-		series, _, herr := h.execMetricsRangeHistogram(ctx, query, inner, hist, start, end, step)
-		if herr != nil {
-			return ExecMetricsRangeResult{}, herr
-		}
-		return ExecMetricsRangeResult{Series: series}, nil
-	}
-	// `| compare({...}, topN)` routes through the BaselineAggregator
-	// mirror — same post-processed series the HTTP handler returns.
-	if cmp, cok := unwrapMetricsCompare(inner); cok {
-		if len(stages) > 0 {
-			return ExecMetricsRangeResult{}, fmt.Errorf("%w: traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", errLowerStage, stages[0].Op)
-		}
-		series, _, cerr := h.execCompareRange(ctx, query, plan, cmp, start, end, step)
-		if cerr != nil {
-			return ExecMetricsRangeResult{}, cerr
-		}
-		return ExecMetricsRangeResult{Series: series}, nil
-	}
-	return ExecMetricsRangeResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryRange requires `| rate()`, `| count_over_time()`, `| *_over_time(...)`, `| quantile_over_time(...)` or `| histogram_over_time(...)`", errLowerStage, query)
+	return ExecMetricsRangeResult{Series: router.Series}, nil
 }
 
 // ExecMetricsInstantResult is the post-execution intermediate the
@@ -323,34 +271,16 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: %w", errLowerStage, lerr)
 	}
 
-	// Second-stage peel + re-apply — instant path: no PartitionBy, a
-	// single anchor means one global selection (mirrors
-	// handleMetricsQueryInstant).
-	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
-	if !ok {
-		// compare() instant — single anchor at `end` (Start = End, same
-		// rationale as handleMetricsQueryInstant's RangeWindow comment),
-		// then the per-series sample collapses to InstantSeries.Value.
-		if cmp, cok := unwrapMetricsCompare(inner); cok {
-			if len(stages) > 0 {
-				return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over compare() is unsupported — compare() series carry the __meta_type split, not a scalar Value to rank or threshold", errLowerStage, stages[0].Op)
-			}
-			series, _, cerr := h.execCompareRange(ctx, query, plan, cmp, end, end, step)
-			if cerr != nil {
-				return ExecMetricsInstantResult{}, cerr
-			}
-			return ExecMetricsInstantResult{Series: compareSeriesToInstant(series)}, nil
-		}
-		return ExecMetricsInstantResult{}, fmt.Errorf("%w: query %q is not a TraceQL metrics-pipeline expression — MetricsQueryInstant requires `| rate()`, `| count_over_time()`, `| *_over_time(...)` or `| quantile_over_time(...)`", errLowerStage, query)
+	// Second-stage peel + kind classification — the SAME call
+	// handleMetricsQueryInstant makes. Instant path: no PartitionBy, a
+	// single anchor at `end` means one global selection.
+	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsInstantGRPC, query)
+	if cerr != nil {
+		return ExecMetricsInstantResult{}, cerr
 	}
-	if len(stages) > 0 && metrics.Op == chplan.MetricsOpQuantileOverTime {
-		return ExecMetricsInstantResult{}, fmt.Errorf("%w: traceql: second-stage %s over quantile_over_time is unsupported — quantiles are computed from bucket rows after SQL execution", errLowerStage, stages[0].Op)
+	router := h.newMetricsInstantRouter(query, pipeline, end, step)
+	if rerr := pipeline.Route(ctx, router); rerr != nil {
+		return ExecMetricsInstantResult{}, rerr
 	}
-
-	series, _, qerr := h.execMetricsInstant(ctx, query, inner, stages, metrics, end, step)
-	if qerr != nil {
-		return ExecMetricsInstantResult{}, qerr
-	}
-	return ExecMetricsInstantResult{Series: series}, nil
+	return ExecMetricsInstantResult{Series: router.Series}, nil
 }

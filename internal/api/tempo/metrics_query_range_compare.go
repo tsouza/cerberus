@@ -2,7 +2,6 @@ package tempo
 
 import (
 	"context"
-	"net/http"
 	"sort"
 	"time"
 
@@ -287,8 +286,13 @@ func postProcessCompare(samples []chclient.Sample, topN int, anchors []time.Time
 }
 
 // execCompareRange runs the matrix-shape pipeline for a lowered
-// compare() plan and returns the post-processed series list. Shared by
-// the HTTP range handler and the gRPC ExecMetricsRange path.
+// compare() plan and returns the post-processed series list. Every Tempo
+// entrypoint reaches it through metricsPipelineRouter.Compare, so the range
+// and instant surfaces cannot drift apart on the BaselineAggregator mirror.
+//
+// `shape` is the engine.Meta response-shape tag: the matrix tag for a range
+// request, the instant tag for the single-anchor collapse, so the
+// telemetry/corpus bucket names the request the caller actually made.
 func (h *Handler) execCompareRange(
 	ctx context.Context,
 	q string,
@@ -296,6 +300,7 @@ func (h *Handler) execCompareRange(
 	cmp *chplan.MetricsCompare,
 	start, end time.Time,
 	step time.Duration,
+	shape string,
 ) ([]MetricsSeries, map[string]string, error) {
 	rw := &chplan.RangeWindow{
 		Input:           plan,
@@ -309,44 +314,27 @@ func (h *Handler) execCompareRange(
 
 	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable}, wrapped, engine.Meta{
 		IsMetric:      true,
-		ResponseShape: "tempo-metrics-matrix",
+		ResponseShape: shape,
 	})
 	if qerr != nil {
 		return nil, nil, qerr
 	}
-	h.Logger.Debug("cerberus tempo metrics_query_range compare",
-		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
+	h.Logger.Debug("cerberus tempo metrics compare exec",
+		"traceql", telemetry.SanitizeForLog(q), "shape", shape,
+		"start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", res.Args)
 
 	series := postProcessCompare(res.Samples, cmp.TopN, compareAnchorGrid(start, end, step))
 	return series, res.Headers, nil
 }
 
-// serveMetricsQueryRangeCompare is the HTTP envelope over
-// execCompareRange.
-func (h *Handler) serveMetricsQueryRangeCompare(
-	ctx context.Context,
-	w http.ResponseWriter,
-	q string,
-	plan chplan.Node,
-	cmp *chplan.MetricsCompare,
-	start, end time.Time,
-	step time.Duration,
-) {
-	series, headers, err := h.execCompareRange(ctx, q, plan, cmp, start, end, step)
-	if err != nil {
-		writeError(w, httpErrStatus(err), "", "", err)
-		return
-	}
-	writeEngineHeaders(w, headers)
-	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{Series: series})
-}
-
-// compareSeriesToInstant collapses the post-processed range series to
-// Tempo's instant envelope — with a single anchor (step = end - start)
-// each series carries exactly one sample whose value becomes the
-// InstantSeries.Value (translateQueryRangeToInstant semantics).
-func compareSeriesToInstant(series []MetricsSeries) []MetricsInstantSeries {
+// metricsSeriesToInstant collapses a post-processed matrix-shape series
+// list to Tempo's instant envelope — with a single anchor (step = end -
+// start) each series carries exactly one sample whose value becomes the
+// InstantSeries.Value (translateQueryRangeToInstant semantics). Shared by
+// the instant router's compare() and histogram_over_time() branches, which
+// both evaluate through the matrix emitter and collapse afterwards.
+func metricsSeriesToInstant(series []MetricsSeries) []MetricsInstantSeries {
 	out := make([]MetricsInstantSeries, 0, len(series))
 	for _, s := range series {
 		v := 0.0

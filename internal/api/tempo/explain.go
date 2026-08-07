@@ -105,30 +105,63 @@ func (l *explainLang) parseMetrics(ctx context.Context, expr *traceql.RootExpr) 
 	if err != nil {
 		return nil, engine.Meta{}, fmt.Errorf("%w: %w", errLowerStage, err)
 	}
-	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
-	if !ok {
-		// histogram_over_time / compare() lower to their own matrix node shapes
-		// (the handler's serveMetricsQueryRangeNonScalar path). The offline
-		// preview covers the scalar-aggregate metrics families; name the gap
-		// honestly rather than mis-wrapping a non-scalar plan.
-		return nil, engine.Meta{}, fmt.Errorf(
-			"%w: offline metrics preview covers scalar aggregates (rate / count_over_time / *_over_time / quantile_over_time); %q previews a non-scalar metrics shape", errLowerStage, expr.String(),
-		)
+	pipeline, cerr := classifyMetricsPipeline(plan, surfaceMetricsExplain, expr.String())
+	if cerr != nil {
+		return nil, engine.Meta{}, cerr
 	}
-	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Range:           l.step,
-		Step:            l.step,
-		Start:           start,
-		End:             end,
-		TimestampColumn: l.schema.TimestampColumn,
+	router := &explainRouter{
+		pipeline: pipeline,
+		window: &chplan.RangeWindow{
+			Input:           pipeline.Inner,
+			Range:           l.step,
+			Step:            l.step,
+			Start:           start,
+			End:             end,
+			TimestampColumn: l.schema.TimestampColumn,
+		},
 	}
-	wrapped := wrapMetricsForSample(
-		applyMetricsSecondStages(rw, stages, []string{chsql.RangeWindowAnchorAlias}),
-		metrics,
+	if rerr := pipeline.Route(ctx, router); rerr != nil {
+		return nil, engine.Meta{}, rerr
+	}
+	return router.Plan, engine.Meta{IsMetric: true, ResponseShape: metricsMatrixShape}, nil
+}
+
+// explainRouter is the offline preview's metricsPipelineRouter. It is the
+// only implementation that produces a plan instead of executing one: the
+// explain path stops at "what SQL would cerberus run", so each branch does
+// exactly the Sample-shaped wrap its serving counterpart in metrics_exec.go
+// does before handing the plan to the engine.
+//
+// Because it implements the same interface as the four transports, a new
+// metrics plan kind cannot be added for the servers alone — the preview
+// stops compiling until it grows the branch too, which is precisely how it
+// silently lost `| histogram_over_time(...)` and `| compare(...)` (#1484).
+type explainRouter struct {
+	pipeline metricsPipeline
+	// window is the step-sized matrix wrap bounding the metrics inner spans
+	// scan, built once from the explain window and shared by every branch.
+	window *chplan.RangeWindow
+
+	// Plan is the Sample-shaped plan the chosen branch produced.
+	Plan chplan.Node
+}
+
+func (r *explainRouter) Scalar(_ context.Context, m *chplan.MetricsAggregate) error {
+	r.Plan = wrapMetricsForSample(
+		applyMetricsSecondStages(r.window, r.pipeline.Stages, []string{chsql.RangeWindowAnchorAlias}),
+		m,
 	)
-	return wrapped, engine.Meta{IsMetric: true, ResponseShape: "tempo-metrics-matrix"}, nil
+	return nil
+}
+
+func (r *explainRouter) Histogram(_ context.Context, m *chplan.MetricsHistogramOverTime) error {
+	r.Plan = wrapHistogramForSample(r.window, m)
+	return nil
+}
+
+func (r *explainRouter) Compare(_ context.Context, m *chplan.MetricsCompare) error {
+	r.Plan = wrapCompareForSample(r.window, m)
+	return nil
 }
 
 // ProjectSamples keeps the matrix wrap parseMetrics already applied (a metrics
