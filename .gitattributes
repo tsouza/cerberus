@@ -61,13 +61,17 @@
 #      check, coverage, compatibility/*, and the Tier-0 migration goldens via
 #      `lint`) — the "re-run the generator and diff" defence #1568 asked for
 #      already existed for most of this list;
-#   2. the residual risk is that branch protection's "require branches to be
-#      up to date before merging" is OFF (`strict: false`), so a stale PR's
-#      squash-merge can in principle apply a diff against a `main` that moved
-#      without any of those checks ever running against the merged bytes.
-#      Turning `strict: true` on closes that window; it is a repo-admin
-#      setting, not a code change, and is recommended to the maintainer
-#      rather than flipped by the PR that added this note.
+#   2. branch protection's "require branches to be up to date before merging"
+#      is OFF (`strict: false`), so a stale PR's squash-merge applies its diff
+#      against a `main` that moved without any of those checks ever running
+#      against the merged bytes. `strict: true` would close that window at the
+#      cost of re-running ~19 checks and ~40 minutes on every PR, re-forced
+#      each time another PR lands first — serialising merges and multiplying
+#      CI spend worst exactly when the repo is busiest, so the cost scales
+#      WITH the risk instead of against it. .github/workflows/
+#      post-merge-drift.yml closes it from the other side instead: on every
+#      push to `main` it regenerates the shards that merge implied and fails
+#      when the committed bytes are not what the generator writes (#1877).
 # generated-baseline-structural-guard.mjs additionally adds a fast, always-on
 # structural pre-filter over the subset of paths below whose shape was
 # hand-verified — unique key, sorted order and consistent field shape for the

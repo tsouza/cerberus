@@ -1,0 +1,79 @@
+name: post-merge-drift
+# Regenerate what the merge implied and diff it against the bytes that landed.
+#
+# Every generated artefact here already has a required, PR-blocking ratchet that
+# regenerates it and diffs it byte-for-byte. They all share one blind spot: they
+# run against the tree AS THE PR SAW IT. Branch protection has `require branches
+# to be up to date before merging` OFF (`strict: false`), so a PR's squash-merge
+# lands on a `main` that has since moved and no ratchet ever runs on the result.
+# Several artefacts here regenerate from the WHOLE tree — the parity ledgers, the
+# cardinality baseline, the solver decision baseline — so their correct content
+# is a function of the merge base, and two PRs each green in isolation can
+# produce a `main` that neither of them validated.
+#
+# Flipping `strict: true` would close that window by re-running every required
+# check on the up-to-date branch, and is the wrong trade: ~19 checks and ~40
+# minutes, re-forced each time another PR lands first, serialising merges and
+# multiplying CI spend worst exactly when the repo is busiest. This lane is the
+# other half — PRs merge unserialised, and the merged content is validated in
+# the one place it exists.
+#
+# It reports on the merge commit rather than on a PR, so it is deliberately NOT
+# a required check: there is no PR left to block by the time it can run. It
+# fails loudly instead, and the failure names the artefact, the command that
+# regenerates it, and both commits whose interleaving produced the drift.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  # Never cancel: each push is a distinct merge, and the one that gets cancelled
+  # is exactly the one whose merged bytes nothing else will ever look at.
+  group: post-merge-drift-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  drift:
+    name: drift
+    runs-on: ubuntu-latest
+    # The lane only regenerates the shards the merge implied, so the common case
+    # is a fixture-only or docs-only push that regenerates nothing at all. This
+    # budget covers the worst case: a change to internal/chsql, which reaches
+    # every head and implies every shard.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The gate diffs github.event.before against the merge commit, so the
+          # default single-commit fetch is not enough history to compute the
+          # change set at all.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+        with:
+          tool: just
+
+      # The cardinality shard profiles fixtures through chDB, so it cannot
+      # regenerate without libchdb.so — and a shard that cannot regenerate is a
+      # drift this lane would report as a broken generator rather than silently
+      # skip. Cached against the recipe's pinned version, so the common path is
+      # a cache hit and the install a no-op.
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Regenerate what this merge implied and diff it
+        env:
+          POST_MERGE_BEFORE: ${{ github.event.before }}
+          POST_MERGE_AFTER: ${{ github.sha }}
+        run: node .github/scripts/post-merge-golden-drift.mjs

@@ -57,15 +57,18 @@
 // `gh api repos/tsouza/cerberus/branches/main/protection`), a stale PR's
 // squash-merge computes its diff against a `main` that has since moved
 // WITHOUT ever re-running the checks above against the resulting content —
-// so a corrupted blend of one of these files can, in principle, land on
-// `main` with no CI run ever having seen the merged bytes. Turning
-// `strict: true` on closes that window for every file the list above
-// covers (it forces the "Update branch" step, which re-runs every required
-// check — including all of the above — against the exact content that will
-// land) and is the recommended follow-up. It is a branch-protection admin
-// setting, not a code change, so this script does not attempt it — see the
-// PR that added this file for the explicit recommendation to the
-// maintainer.
+// so a corrupted blend of one of these files can land on `main` with no CI
+// run ever having seen the merged bytes.
+//
+// `strict: true` would close that window for every file the list above covers
+// (it forces the "Update branch" step, which re-runs every required check
+// against the exact content that will land) at a price that is not worth
+// paying: ~19 checks and ~40 minutes per PR, re-forced each time another PR
+// lands first, which serialises merges and multiplies CI spend worst exactly
+// when the repo is busiest. `.github/workflows/post-merge-drift.yml` closes it
+// from the other side instead — on every push to `main` it regenerates the
+// shards that merge implied and diffs them against what was committed, which
+// is the one place the merged content exists (#1877).
 //
 // One family was found to have WEAKER coverage on an ordinary PR:
 // test/e2e/playwright/crawl/grafana-surface-inventory.{compose,k3d}.json are
