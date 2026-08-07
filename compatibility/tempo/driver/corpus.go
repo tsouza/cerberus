@@ -44,7 +44,8 @@
 //	                            the response list (tag-names or tag-values)
 //	-- expected_absent_values --newline-separated set that must NOT appear in
 //	                            the tag-names list — the strict-subset half of
-//	                            a `q`-scoped tags case (tags_v1 / tags_v2)
+//	                            a `q`-scoped tags_v2 case (tags_v1 ignores `q`,
+//	                            so a V1 case asserts the wide answer instead)
 //	-- expected_scopes --       newline-separated subset of scope names
 //	                            (resource / span / intrinsic) that must
 //	                            appear in tags_v2 responses
@@ -188,10 +189,13 @@ type CorpusCase struct {
 
 	// ExpectedAbsentValues is the mirror of ExpectedValues: every entry
 	// must be MISSING from the tag-names list. It exists so a `q`-scoped
-	// tag case can assert the scoped key set is a STRICT subset of the
-	// unscoped one — an expected_values-only case passes just as well
+	// tags_v2 case can assert the scoped key set is a STRICT subset of
+	// the unscoped one — an expected_values-only case passes just as well
 	// when `q` is ignored entirely, because the keys it names are in the
-	// unfiltered answer too. Empty disables.
+	// unfiltered answer too. A tags_v1 case never carries one: V1 has no
+	// `q` to honour, so its scoped answer IS the unscoped one and the
+	// assertion that catches a regression there is the presence of the
+	// keys a narrowing route would have dropped. Empty disables.
 	ExpectedAbsentValues []string
 
 	// ExpectedScopes is a subset-must-be-present assertion for the
@@ -426,12 +430,29 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if len(cur.ExpectedAbsentValues) != 0 && cur.Endpoint != "tags_v1" && cur.Endpoint != "tags_v2" {
 		return cur, fmt.Errorf("case %q: -- expected_absent_values -- is only valid for endpoint=tags_v1 / tags_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
-	// A tag-names query is the `q` narrowing filter, and the only reason
-	// to send one is to get a SMALLER key set back. Without an
-	// expected_absent_values the case passes identically when `q` is
-	// dropped on the floor, which is the bug the parameter exists to fix.
-	if cur.Query != "" && (cur.Endpoint == "tags_v1" || cur.Endpoint == "tags_v2") && len(cur.ExpectedAbsentValues) == 0 {
-		return cur, fmt.Errorf("case %q: endpoint=%s with a -- query -- requires -- expected_absent_values -- (a key the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name, cur.Endpoint)
+	// `q` on a tag-names route means opposite things on the two versions,
+	// and a case that sends one has to say which it is testing.
+	//
+	// On tags_v2 the parameter narrows, and the only reason to send one is
+	// to get a SMALLER key set back: without an expected_absent_values the
+	// case passes identically when `q` is dropped on the floor, which is
+	// the bug the parameter exists to fix.
+	if cur.Query != "" && cur.Endpoint == "tags_v2" && len(cur.ExpectedAbsentValues) == 0 {
+		return cur, fmt.Errorf("case %q: endpoint=tags_v2 with a -- query -- requires -- expected_absent_values -- (a key the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name)
+	}
+	// tags_v1 does not take `q` — upstream's V1 route drops it and answers
+	// the whole window (LiveStore.SearchTags forwards only the scope into
+	// SearchTagsV2). So a V1 case sending one asserts the OPPOSITE: the
+	// keys the query does not select are still there. Requiring
+	// expected_values and refusing expected_absent_values keeps a case
+	// from re-encoding the narrowing premise on the route that has none.
+	if cur.Query != "" && cur.Endpoint == "tags_v1" {
+		if len(cur.ExpectedAbsentValues) != 0 {
+			return cur, fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- cannot carry -- expected_absent_values -- (V1 ignores `q` and answers the unscoped key set)", cur.Name)
+		}
+		if len(cur.ExpectedValues) == 0 {
+			return cur, fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- requires -- expected_values -- (a key only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name)
+		}
 	}
 	if cur.Spss != 0 && cur.Endpoint != "search" {
 		return cur, fmt.Errorf("case %q: -- spss -- is only valid for endpoint=search (got %s)", cur.Name, cur.Endpoint)

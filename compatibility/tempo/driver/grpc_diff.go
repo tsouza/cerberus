@@ -326,7 +326,7 @@ func fetchGRPCForEndpoint(ctx context.Context, client tempopb.StreamingQuerierCl
 	case "search":
 		return fetchGRPCSearch(ctx, client, tc, opts)
 	case "tags_v1":
-		return fetchGRPCTagsV1(ctx, client, opts)
+		return fetchGRPCTagsV1(ctx, client, tc, opts)
 	case "tags_v2":
 		return fetchGRPCTagsV2(ctx, client, tc, opts)
 	case "tag_values_v1":
@@ -383,8 +383,15 @@ func fetchGRPCSearch(ctx context.Context, client tempopb.StreamingQuerierClient,
 // fetchGRPCTagsV1 drains the SearchTags stream (single frame on both
 // backends; see internal/api/tempo/grpc/tags.go) into the differ's
 // TagNamesResponseV1 shape.
-func fetchGRPCTagsV1(ctx context.Context, client tempopb.StreamingQuerierClient, opts caseOpts) ([]byte, error) {
+//
+// The case's query rides along as SearchTagsRequest.Query, the proto
+// spelling of the HTTP `?q=`, so the RPC is driven with exactly what its
+// HTTP twin gets. V1 ignores it on both backends — that is what the
+// `q`-carrying V1 case asserts — and sending it anyway is what makes a
+// backend that started honouring it visible here and not only over HTTP.
+func fetchGRPCTagsV1(ctx context.Context, client tempopb.StreamingQuerierClient, tc CorpusCase, opts caseOpts) ([]byte, error) {
 	req := &tempopb.SearchTagsRequest{
+		Query: tc.Query,
 		Start: unixSeconds32(opts.startTS),
 		End:   unixSeconds32(opts.endTS),
 	}
@@ -408,9 +415,16 @@ func fetchGRPCTagsV1(ctx context.Context, client tempopb.StreamingQuerierClient,
 
 // fetchGRPCTagsV2 drains the SearchTagsV2 stream into the differ's
 // TagNamesResponseV2 shape (per-scope tag lists).
+//
+// V2 is the tag-name route that honours a narrowing query, so the case's
+// query is sent as SearchTagsRequest.Query and the answer must be the
+// narrowed key set — the same one the HTTP `?q=` produces. Dropping it
+// here would leave the RPC graded against the wide answer, which is a
+// pass the corpus's absent-key assertion was written to refuse.
 func fetchGRPCTagsV2(ctx context.Context, client tempopb.StreamingQuerierClient, tc CorpusCase, opts caseOpts) ([]byte, error) {
 	req := &tempopb.SearchTagsRequest{
 		Scope: tc.Scope,
+		Query: tc.Query,
 		Start: unixSeconds32(opts.startTS),
 		End:   unixSeconds32(opts.endTS),
 	}

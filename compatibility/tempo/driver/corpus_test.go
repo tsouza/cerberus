@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -489,15 +490,18 @@ search
 	}
 }
 
-// TestParseCorpus_TagsQueryNeedsAbsentValues pins the two guards that
-// keep a `q`-scoped tag case honest: the narrowing assertion may only
-// sit on an endpoint that reads it, and a tag-name case that sends `q`
-// must carry one — otherwise it passes identically against a backend
-// that drops the parameter, which is the very bug it exists to catch.
-func TestParseCorpus_TagsQueryNeedsAbsentValues(t *testing.T) {
+// TestParseCorpus_TagsQueryGuards pins the guards that keep a `q`-sending
+// tag case honest, on both sides of the V1/V2 asymmetry. V2 narrows, so a
+// V2 case must name a key the narrowing drops — otherwise it passes
+// identically against a backend that ignores the parameter, the very bug
+// it exists to catch. V1 does not narrow, so a V1 case must name a key
+// the narrowing WOULD have dropped, and may not claim any key is absent:
+// that claim is the false premise this pair of routes was once written
+// on, and it failed against reference Tempo.
+func TestParseCorpus_TagsQueryGuards(t *testing.T) {
 	t.Parallel()
 	for name, src := range map[string]string{
-		"query without absent values": `-- name --
+		"v2 query without absent values": `-- name --
 q_no_absent
 -- endpoint --
 tags_v2
@@ -505,6 +509,24 @@ tags_v2
 { span.http.method = "GET" }
 -- expected_values --
 http.method
+`,
+		"v1 query with absent values": `-- name --
+q_v1_absent
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+-- expected_absent_values --
+child.index
+`,
+		"v1 query without expected values": `-- name --
+q_v1_bare
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
 `,
 		"absent values on a non-tags endpoint": `-- name --
 absent_on_search
@@ -525,15 +547,15 @@ child.index
 	}
 }
 
-// TestParseCorpus_TagsQueryWithAbsentValues is the positive control for
-// the guards above: the shape the corpus actually uses parses, and both
-// halves land on the case.
-func TestParseCorpus_TagsQueryWithAbsentValues(t *testing.T) {
+// TestParseCorpus_TagsQueryShapes is the positive control for the guards
+// above: the two shapes the corpus actually uses parse, and every half
+// lands on the case.
+func TestParseCorpus_TagsQueryShapes(t *testing.T) {
 	t.Parallel()
-	const src = `-- name --
-q_scoped
+	const v2Src = `-- name --
+q_scoped_v2
 -- endpoint --
-tags_v1
+tags_v2
 -- query --
 { span.http.method = "GET" }
 -- expected_values --
@@ -541,17 +563,41 @@ http.method
 -- expected_absent_values --
 child.index
 `
-	got, err := parseCorpus(strings.NewReader(src), "t.txtar")
+	const v1Src = `-- name --
+q_ignored_v1
+-- endpoint --
+tags_v1
+-- query --
+{ span.http.method = "GET" }
+-- expected_values --
+http.method
+child.index
+`
+	v2, err := parseCorpus(strings.NewReader(v2Src), "t.txtar")
 	if err != nil {
-		t.Fatalf("parseCorpus: %v", err)
+		t.Fatalf("parseCorpus v2: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("case count: want 1, got %d", len(got))
+	if len(v2) != 1 {
+		t.Fatalf("v2 case count: want 1, got %d", len(v2))
 	}
-	if got[0].Query != `{ span.http.method = "GET" }` {
-		t.Errorf("query = %q", got[0].Query)
+	if v2[0].Query != `{ span.http.method = "GET" }` {
+		t.Errorf("v2 query = %q", v2[0].Query)
 	}
-	if len(got[0].ExpectedAbsentValues) != 1 || got[0].ExpectedAbsentValues[0] != "child.index" {
-		t.Errorf("expected_absent_values = %v", got[0].ExpectedAbsentValues)
+	if len(v2[0].ExpectedAbsentValues) != 1 || v2[0].ExpectedAbsentValues[0] != "child.index" {
+		t.Errorf("v2 expected_absent_values = %v", v2[0].ExpectedAbsentValues)
+	}
+
+	v1, err := parseCorpus(strings.NewReader(v1Src), "t.txtar")
+	if err != nil {
+		t.Fatalf("parseCorpus v1: %v", err)
+	}
+	if len(v1) != 1 {
+		t.Fatalf("v1 case count: want 1, got %d", len(v1))
+	}
+	if len(v1[0].ExpectedAbsentValues) != 0 {
+		t.Errorf("v1 expected_absent_values = %v", v1[0].ExpectedAbsentValues)
+	}
+	if !slices.Contains(v1[0].ExpectedValues, "child.index") {
+		t.Errorf("v1 expected_values = %v", v1[0].ExpectedValues)
 	}
 }

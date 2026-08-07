@@ -72,10 +72,15 @@ func ParseTagScope(raw string) (string, error) {
 // lookups render exactly the SQL they did before `q` existed. A `q`
 // that cannot be parsed, lowered, or reduced to a span-row predicate
 // comes back as a classified error (ClassifyErr → InvalidArgument).
+//
+// route says which tag-name route is asking, and decides whether query
+// is honoured at all: only V2 takes a narrowing query, so a V1 caller's
+// query is discarded before it reaches the parser (TagsRoute in
+// search_tags_filter.go carries the reasoning).
 func (h *Handler) CollectAttributeTagScopes(
-	ctx context.Context, scope, query string, start, end time.Time,
+	ctx context.Context, scope string, route TagsRoute, query string, start, end time.Time,
 ) ([]TagScope, error) {
-	filter, err := h.tagQueryFilter(ctx, query, start, end)
+	filter, err := h.tagQueryFilter(ctx, route, query, start, end)
 	if err != nil {
 		return nil, err
 	}

@@ -48,9 +48,11 @@ import (
 // SearchTags implements StreamingQuerier_SearchTagsServer. Mirrors
 // the HTTP /api/search/tags endpoint: returns the union of every
 // dynamic attribute key seen in the time window across each scope the
-// request selects, sorted ascending. A non-empty request Query narrows
-// the union to the keys carried by the spans that TraceQL query
-// selects — the gRPC spelling of the HTTP `q` parameter. Intrinsics are excluded by
+// request selects, sorted ascending. The request Query is ignored here,
+// as it is on the HTTP twin and in upstream Tempo: a narrowing query
+// belongs to the V2 route, and V1 answers the whole window's key set
+// whatever Query says (see TagsRoute in
+// internal/api/tempo/search_tags_filter.go). Intrinsics are excluded by
 // default (parity with upstream Tempo); only the explicit
 // `scope=intrinsic` request emits the static intrinsic inventory.
 func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.StreamingQuerier_SearchTagsServer) error {
@@ -63,7 +65,7 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	start, end := tempoTagsBounds(req.GetStart(), req.GetEnd())
-	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, req.GetQuery(), start, end)
+	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, tempo.TagsRouteV1, req.GetQuery(), start, end)
 	if err != nil {
 		return grpcStatusFor(err)
 	}
@@ -88,7 +90,10 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 // upstream's tags-V2 combiner builds its scope list from the keys
 // storage actually reported, so an empty bucket never appears. The
 // intrinsic bucket is emitted on a `none` request (the default) and
-// on an explicit `scope=intrinsic`.
+// on an explicit `scope=intrinsic`. This is the route that honours a
+// non-empty request Query: it narrows every bucket to the keys carried
+// by the spans that TraceQL query selects — the gRPC spelling of the
+// HTTP `q` parameter.
 func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.StreamingQuerier_SearchTagsV2Server) error {
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
@@ -99,7 +104,7 @@ func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.St
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	start, end := tempoTagsBounds(req.GetStart(), req.GetEnd())
-	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, req.GetQuery(), start, end)
+	buckets, err := s.Handler.CollectAttributeTagScopes(ctx, scope, tempo.TagsRouteV2, req.GetQuery(), start, end)
 	if err != nil {
 		return grpcStatusFor(err)
 	}

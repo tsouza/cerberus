@@ -121,10 +121,9 @@ const nestedAttributesSubfield = "Attributes"
 // seconds; nanoseconds also accepted via the same heuristic Loki uses,
 // see parseTempoTime).
 //
-// The optional `q` parameter narrows the answer to the keys carried by
-// the spans a TraceQL query selects, which is what Grafana's tag
-// autocomplete sends as the user types. It contributes one more conjunct
-// to the WHERE below; absent, the SQL is unchanged (see
+// The `q` narrowing parameter is a V2 parameter and this route ignores
+// it, as upstream does — a V1 request answers the whole window's key set
+// whatever `q` says, including a malformed one (see the route contract in
 // search_tags_filter.go).
 //
 // SQL shape — one query per scope bucket, e.g. for `span`:
@@ -132,20 +131,25 @@ const nestedAttributesSubfield = "Attributes"
 //	SELECT DISTINCT arrayJoin(mapKeys(`SpanAttributes`))
 //	FROM `otel_traces`
 //	WHERE `Timestamp` >= ? AND `Timestamp` <= ?
-//	  AND <the optional `q` predicate>
 //
 // All identifiers and bound values flow through chsql.QueryBuilder —
 // no fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func (h *Handler) handleSearchTags(w http.ResponseWriter, r *http.Request) {
-	h.respondTags(w, r, false)
+	h.respondTags(w, r, TagsRouteV1)
 }
 
 // handleSearchTagsV2 implements `GET /api/v2/search/tags`. Same data
 // as V1, partitioned by scope (one bucket per attribute family the
 // schema carries, plus intrinsic). Grafana's Tempo datasource queries
 // V2 when available.
+//
+// This is the route that takes the optional `q` parameter: it narrows the
+// answer to the keys carried by the spans a TraceQL query selects, which
+// is what Grafana's tag autocomplete sends as the user types. It
+// contributes one more conjunct to the WHERE above; absent, the SQL is
+// unchanged (see search_tags_filter.go).
 func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, r *http.Request) {
-	h.respondTags(w, r, true)
+	h.respondTags(w, r, TagsRouteV2)
 }
 
 // respondTags is the shared core of V1 + V2: it runs one independent CH
@@ -157,7 +161,7 @@ func (h *Handler) handleSearchTagsV2(w http.ResponseWriter, r *http.Request) {
 // handler emitted every scope regardless of what the client asked for,
 // which made Grafana's per-scope autocomplete iterate over irrelevant
 // keys.
-func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
+func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route TagsRoute) {
 	start, end, err := parseTempoStartEnd(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "", "", err)
@@ -174,10 +178,11 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		return
 	}
 
-	// The optional `?q=` narrowing filter. It is read after `scope` so a
+	// The optional `?q=` narrowing filter, which only the V2 route takes —
+	// tagQueryFilter discards it on V1. It is read after `scope` so a
 	// request that gets both wrong still reports the scope first, matching
 	// upstream's parameter order.
-	filter, err := h.tagQueryFilter(r.Context(), r.URL.Query().Get("q"), start, end)
+	filter, err := h.tagQueryFilter(r.Context(), route, r.URL.Query().Get("q"), start, end)
 	if err != nil {
 		writeError(w, tagsErrStatus(err), "", "", err)
 		return
@@ -193,7 +198,7 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, v2 bool) {
 		all = append(all, s.Tags...)
 	}
 
-	if v2 {
+	if route == TagsRouteV2 {
 		if scope == tagScopeNone || scope == tagScopeIntrinsic {
 			scopes = append(scopes, TagScope{Name: tagScopeIntrinsic, Tags: append([]string(nil), intrinsicTags...)})
 		}

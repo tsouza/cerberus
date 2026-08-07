@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -571,71 +572,95 @@ func assertCode(t *testing.T, err error, want codes.Code) {
 	}
 }
 
-// TestSearchTags_QueryNarrowsBothVersions pins the gRPC half of #1820:
+// The narrowing fixture the three tests below share: a query selecting
+// the root spans only, the key carried solely by the spans it does not
+// select, and the fake's answer for the lookup that carries the extra
+// attribute-map conjunct.
+const (
+	tagsNarrowingQuery = `{ span.http.method = "GET" }`
+	tagsUnfilteredKey  = "child.index"
+)
+
+func narrowedTagsBySQL() map[string][]string {
+	return map[string][]string{"`SpanAttributes`[?] = ?": {"http.method"}}
+}
+
+// TestSearchTagsV2_QueryNarrows pins the gRPC half of #1820:
 // SearchTagsRequest.Query is the proto spelling of the HTTP `?q=`
-// parameter, and both tag-name RPCs must push it into the same key
-// lookups their HTTP twins do. The fake answers the narrowed lookup —
+// parameter, and the V2 tag-name RPC must push it into the same key
+// lookups its HTTP twin does. The fake answers the narrowed lookup —
 // the one whose SQL carries the extra attribute-map conjunct — with a
 // strictly smaller key set, so an RPC that ignored Query would surface
 // the wider fallback set and fail here.
-func TestSearchTags_QueryNarrowsBothVersions(t *testing.T) {
+func TestSearchTagsV2_QueryNarrows(t *testing.T) {
 	t.Parallel()
 
-	const (
-		query      = `{ span.http.method = "GET" }`
-		unfiltered = "child.index"
-	)
-	narrowed := map[string][]string{"`SpanAttributes`[?] = ?": {"http.method"}}
-
-	t.Run("v1", func(t *testing.T) {
-		t.Parallel()
-		q := &fakeQuerier{strings: []string{"http.method", unfiltered}, stringsBySQL: narrowed}
-		client := newTagsTestServer(t, q)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		t.Cleanup(cancel)
-		stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{Scope: "span", Query: query})
-		if err != nil {
-			t.Fatalf("open SearchTags stream: %v", err)
-		}
-		frames, err := recvAll[tempopb.SearchTagsResponse](t, stream)
-		if err != nil {
-			t.Fatalf("recvAll: %v", err)
-		}
-		assertTagsNarrowed(t, flattenV1(frames), unfiltered)
-	})
-
-	t.Run("v2", func(t *testing.T) {
-		t.Parallel()
-		q := &fakeQuerier{strings: []string{"http.method", unfiltered}, stringsBySQL: narrowed}
-		client := newTagsTestServer(t, q)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		t.Cleanup(cancel)
-		stream, err := client.SearchTagsV2(ctx, &tempopb.SearchTagsRequest{Scope: "span", Query: query})
-		if err != nil {
-			t.Fatalf("open SearchTagsV2 stream: %v", err)
-		}
-		frames, err := recvAll[tempopb.SearchTagsV2Response](t, stream)
-		if err != nil {
-			t.Fatalf("recvAll: %v", err)
-		}
-		assertTagsNarrowed(t, flattenV2(frames), unfiltered)
-	})
+	q := &fakeQuerier{strings: []string{"http.method", tagsUnfilteredKey}, stringsBySQL: narrowedTagsBySQL()}
+	client := newTagsTestServer(t, q)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.SearchTagsV2(ctx, &tempopb.SearchTagsRequest{Scope: "span", Query: tagsNarrowingQuery})
+	if err != nil {
+		t.Fatalf("open SearchTagsV2 stream: %v", err)
+	}
+	frames, err := recvAll[tempopb.SearchTagsV2Response](t, stream)
+	if err != nil {
+		t.Fatalf("recvAll: %v", err)
+	}
+	assertTagsNarrowed(t, flattenV2(frames), tagsUnfilteredKey)
 }
 
-// TestSearchTags_MalformedQuery_GRPCStatus pins the rejection code. An
+// TestSearchTagsV1_QueryIgnored is the V1 counterpart, and the fact that
+// keeps the gRPC surface in parity with reference Tempo: V1 does not take
+// a narrowing query. Upstream's LiveStore.SearchTags forwards nothing but
+// the scope into SearchTagsV2, so a V1 caller gets the whole window's
+// keys back whatever Query says — including a Query that would not parse,
+// which is answered rather than rejected. Both shapes are driven here
+// because an RPC that validated Query without applying it would pass the
+// narrowing half alone.
+func TestSearchTagsV1_QueryIgnored(t *testing.T) {
+	t.Parallel()
+
+	for name, query := range map[string]string{
+		"narrowing": tagsNarrowingQuery,
+		"malformed": "{{{",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			q := &fakeQuerier{strings: []string{"http.method", tagsUnfilteredKey}, stringsBySQL: narrowedTagsBySQL()}
+			client := newTagsTestServer(t, q)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			t.Cleanup(cancel)
+			stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{Scope: "span", Query: query})
+			if err != nil {
+				t.Fatalf("open SearchTags stream: %v", err)
+			}
+			frames, err := recvAll[tempopb.SearchTagsResponse](t, stream)
+			if err != nil {
+				t.Fatalf("recvAll: %v", err)
+			}
+			got := flattenV1(frames)
+			if !slices.Contains(got, tagsUnfilteredKey) {
+				t.Errorf("V1 narrowed its answer on Query=%q: %v", query, got)
+			}
+		})
+	}
+}
+
+// TestSearchTagsV2_MalformedQuery_GRPCStatus pins the rejection code. An
 // unparseable Query is caller error, and the shared classification
 // (tempo.ClassifyErr → grpcStatusFor) renders that as InvalidArgument —
-// the same fact the HTTP routes answer 400 for. Before Query was read at
-// all, any failure behind the lookup collapsed onto codes.Internal.
-func TestSearchTags_MalformedQuery_GRPCStatus(t *testing.T) {
+// the same fact the HTTP V2 route answers 400 for. Before Query was read
+// at all, any failure behind the lookup collapsed onto codes.Internal.
+func TestSearchTagsV2_MalformedQuery_GRPCStatus(t *testing.T) {
 	t.Parallel()
 
 	client := newTagsTestServer(t, &fakeQuerier{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	stream, err := client.SearchTags(ctx, &tempopb.SearchTagsRequest{Query: "{{{"})
+	stream, err := client.SearchTagsV2(ctx, &tempopb.SearchTagsRequest{Query: "{{{"})
 	if err != nil {
-		t.Fatalf("open SearchTags stream: %v", err)
+		t.Fatalf("open SearchTagsV2 stream: %v", err)
 	}
 	_, err = stream.Recv()
 	assertCode(t, err, codes.InvalidArgument)
