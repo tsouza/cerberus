@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // handleLabels implements GET /loki/api/v1/labels. Returns the set of
@@ -45,7 +46,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki labels", "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki labels", "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {

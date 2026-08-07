@@ -97,10 +97,11 @@ refactor's clothes, and must be justified as one.
 ## Verifying a change
 
 `test/spec/<head>/*.txtar` holds the goldens: the `-- sql --` section is what this package emits, and
-`-- expected_rows --` is the chDB roundtrip. Regenerate with `just update-golden` — never hand-edit a
-golden, because every generated path is marked `-merge` in `.gitattributes` precisely because an
-edited or line-merged one still parses while being wrong. `just update-golden` needs `libchdb.so`
-(`just chdb-install`).
+`-- expected_rows --` is the chDB roundtrip. Regenerate with `just update-golden <shard>...` — never
+hand-edit a golden, because every generated path is marked `-merge` in `.gitattributes` precisely
+because an edited or line-merged one still parses while being wrong. The shard argument is required;
+a change to this package touches every head, so the recipe will refuse anything short of `all`. It
+needs `libchdb.so` (`just chdb-install`).
 
 Read the golden diff as the primary evidence of what you changed. Unexpected churn in a fixture you
 did not mean to touch is the signal that the shape is shared more widely than you assumed.

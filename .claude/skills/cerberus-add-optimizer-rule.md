@@ -79,12 +79,14 @@ One positional argument (prompt if missing):
 5. Tell the user the follow-up:
    - Implement the rule body in `<snake_name>.go`.
    - Add the matching entry to `optimizer_test.go` `inputs` map.
-   - Run `just update-golden` to generate the TXTAR `unoptimized` / `optimized` sections.
+   - Run `just update-golden optimizer` to generate the TXTAR `unoptimized` / `optimized` sections.
+     The shard argument is required; if the rule also moved emitted SQL the recipe will refuse
+     until the heads it derived from the diff are named too.
    - Review the diff, then run `just test` + `just lint`.
    - Commit with a Conventional Commits message: `feat(optimizer): add <kebab-name> rule`.
 
 ## Don't
 
 - Don't implement the rule body — that's the user's actual work.
-- Don't run `just update-golden` automatically — the user wants to fill in the plan first.
+- Don't run `just update-golden optimizer` automatically — the user wants to fill in the plan first.
 - Don't modify `optimizer.Default()` registration silently — the user may want the rule disabled at first; tell them what to add and where.

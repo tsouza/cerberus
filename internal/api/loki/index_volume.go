@@ -67,7 +67,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki index_volume", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki index_volume", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	rows, err := h.Client.QueryIndexVolume(r.Context(), sqlStr, args...)
 	if err != nil {

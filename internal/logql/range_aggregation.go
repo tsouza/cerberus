@@ -139,7 +139,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		}
 		mergedCol := &chplan.ColumnRef{Name: mergedAlias}
 		identityBase = &chplan.MapWithoutKeys{Map: mergedCol, Keys: []string{e.Left.Unwrap.Identifier}}
-		valueExpr, err = rangeValueExprFromMerged(e, mergedCol)
+		valueExpr, err = rangeValueExprFromMerged(e, s, mergedCol)
 		if err != nil {
 			return nil, err
 		}
@@ -456,7 +456,7 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inne
 		return inner, labelsExpr, false, nil
 	}
 	hasErrorMarks := false
-	unwrapAccess := attributeLookupExpr(labelsExpr, e.Left.Unwrap.Identifier)
+	unwrapAccess := structuredOrStreamLookupOnMap(s, labelsExpr, e.Left.Unwrap.Identifier)
 	switch e.Left.Unwrap.Operation {
 	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
 		parse := newDurationParse(unwrapAccess)
@@ -673,7 +673,7 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 		// unwrapped value, and the windowed-array math sums it and
 		// divides by range_seconds (the `log_rate` chsql function).
 		// Same shape as `sum_over_time` etc.
-		return unwrapValueExpr(e.Left.Unwrap, labelsExpr)
+		return unwrapValueExpr(e.Left.Unwrap, s, labelsExpr)
 	}
 
 	switch op {
@@ -719,7 +719,7 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 // the human-readable byte-size shapes Loki's `humanize.ParseBytes`
 // covers (`1KB`, `1.5MiB`, `2 G`). All return Float64 so the
 // downstream windowed-array math stays in Float64 throughout.
-func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr, error) {
+func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
 	if u.Identifier == "" {
 		return nil, fmt.Errorf("logql: `| unwrap` has empty identifier")
 	}
@@ -728,7 +728,16 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, labelsExpr chplan.Expr) (chplan.Expr,
 	// map may carry the value under a dotted OTel-canonical form (e.g.
 	// `cerberus.duration_ms` rather than `cerberus_duration_ms`), so
 	// the dotted-fallback chain hits either shape.
-	access := attributeLookupExpr(labelsExpr, u.Identifier)
+	//
+	// Resolution goes through [structuredOrStreamLookupOnMap] — the SAME
+	// helper the pipeline label-filter and grouping sites use — so an
+	// unwrap target that lives in structured metadata (LogAttributes)
+	// resolves exactly where `| foo != ""` and `sum by (foo)` resolve it.
+	// Reading the bare labels map instead would see "" for every
+	// structured-metadata-only key, and rule 1 below then drops every
+	// sample before conversion, so the whole matrix comes back empty
+	// (issue #1887).
+	access := structuredOrStreamLookupOnMap(s, labelsExpr, u.Identifier)
 	switch u.Operation {
 	case "":
 		return &chplan.FuncCall{
@@ -800,11 +809,11 @@ func hasParserMergedLabels(labelsExpr chplan.Expr, s schema.Logs) bool {
 // Mirrors [unwrapValueExpr] but binds the merged-labels reference to a
 // column ref. Byte / line counters and the no-unwrap branches go
 // unchanged — they don't reference labelsExpr.
-func rangeValueExprFromMerged(e *syntax.RangeAggregationExpr, mergedCol chplan.Expr) (chplan.Expr, error) {
+func rangeValueExprFromMerged(e *syntax.RangeAggregationExpr, s schema.Logs, mergedCol chplan.Expr) (chplan.Expr, error) {
 	if e.Left.Unwrap == nil {
 		return nil, fmt.Errorf("logql: rangeValueExprFromMerged called without `| unwrap`")
 	}
-	return unwrapValueExpr(e.Left.Unwrap, mergedCol)
+	return unwrapValueExpr(e.Left.Unwrap, s, mergedCol)
 }
 
 // rangeAggregationGroupBy returns the chplan group-key expressions for

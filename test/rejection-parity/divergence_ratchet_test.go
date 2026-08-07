@@ -11,7 +11,7 @@ import (
 // divergence-ceiling.json without a hand-edited bump to that file in the
 // same diff. CERBERUS_UPDATE_INVENTORY=1 (the same env-var convention
 // TestCatalogueIsRegenerable uses, already wired into `just
-// update-parity-ledgers` / `just update-golden`) tightens the ceiling down
+// update-parity-ledgers` / `just update-golden parity`) tightens the ceiling down
 // to match a decrease for free; it refuses to raise the ceiling to match an
 // increase, because that must be a reviewable line a human wrote, never a
 // tool's silent output.

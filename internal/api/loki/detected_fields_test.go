@@ -9,6 +9,10 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/logql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // getDetectedFields issues the request and decodes the body EXACTLY as
@@ -48,8 +52,14 @@ func TestDetectedFields_JSON(t *testing.T) {
 	t.Parallel()
 
 	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
-		{Line: `{"status":200,"path":"/api","ok":true}`},
-		{Line: `{"status":404,"path":"/api","ok":false}`},
+		{
+			Line:       `{"status":200,"path":"/api","ok":true}`,
+			JSONFields: map[string]string{"status": "200", "path": "/api", "ok": "true"},
+		},
+		{
+			Line:       `{"status":404,"path":"/api","ok":false}`,
+			JSONFields: map[string]string{"status": "404", "path": "/api", "ok": "false"},
+		},
 	}}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
@@ -99,21 +109,28 @@ func TestDetectedFields_JSON(t *testing.T) {
 	}
 }
 
-// TestDetectedFields_ClickHouseQueryLog pins the #903 follow-up: against
-// the compose stack's `{service_name="clickhouse"}` logs — whose Body is
-// a raw SQL query string and whose LogAttributes carry the useful
-// query_log columns — cerberus's detected_fields must (a) surface the
-// real structured-metadata keys (duration / read_bytes / query_id), and
-// (b) NOT emit garbage `_method` / `_` / `_id` keys from line-parsing the
-// SQL Body. A SQL string is neither valid JSON nor valid logfmt, so
-// parseLine rejects it and contributes zero parsed fields — the garbage
-// columns the maintainer saw originate in the Drilldown app's own
-// client-side line parse, never in cerberus's advertised field set.
+// TestDetectedFields_ClickHouseQueryLog pins #1888: against the compose
+// stack's `{service_name="clickhouse"}` logs — whose Body is a raw SQL
+// query string and whose LogAttributes carry the useful query_log
+// columns — cerberus's detected_fields must (a) surface the real
+// structured-metadata keys (duration / read_bytes / query_id), and (b)
+// NOT advertise `_` / `_method` / `_id` fields that no LogQL query can
+// ever produce.
+//
+// The body below is the SQL text from the issue's repro with the `=`
+// UNSPACED (`(method='GET')`) — the shape that makes the difference. A
+// Loki-shaped Go decoder reads `(method` as a key, sanitises it to
+// `_method` and advertises it; the query path's `| logfmt` lowering is
+// ClickHouse's extractKeyValuePairs, which never yields that name. The
+// peek row therefore carries EMPTY LogfmtFields / JSONFields — what
+// ClickHouse actually returns for this body — so the test fails the
+// moment the handler re-derives fields in Go instead of reading the
+// CH-evaluated extraction.
 func TestDetectedFields_ClickHouseQueryLog(t *testing.T) {
 	t.Parallel()
 
-	sqlBody := `SELECT count() FROM otel_logs WHERE method = 'GET' AND ` +
-		`_id = 5 SETTINGS index_granularity = 8192, max_threads = 4`
+	sqlBody := `SELECT count() FROM otel_logs WHERE (method='GET') AND ` +
+		`(_id=5) SETTINGS index_granularity=8192, max_threads=4`
 	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
 		{
 			Line: sqlBody,
@@ -146,13 +163,65 @@ func TestDetectedFields_ClickHouseQueryLog(t *testing.T) {
 	if got := byLabel["duration"].Type; got != "duration" {
 		t.Errorf("duration.type=%q want duration", got)
 	}
-	// No garbage keys parsed out of the SQL Body. The SQL string is
-	// neither JSON nor logfmt, so NO `method` / `_id` / `_` field appears.
+	// No phantom keys derived from the SQL Body. ClickHouse extracted
+	// nothing from it, so the advertised set is the structured metadata
+	// and nothing else — in particular no `_`-prefixed sanitiser output.
 	for k := range byLabel {
-		if k == "method" || k == "_id" || k == "_" || strings.HasPrefix(k, "_") {
-			t.Errorf("garbage field parsed from SQL body: %q (fields=%v)", k, out.Fields)
+		if strings.HasPrefix(k, "_") {
+			t.Errorf("phantom field advertised from SQL body: %q (fields=%v)", k, out.Fields)
 		}
 	}
+	if len(byLabel) != 3 {
+		t.Errorf("fields=%v want exactly the 3 structured-metadata keys", out.Fields)
+	}
+}
+
+// TestDetectedFields_SQLProjectsQueryPathExtraction is the structural
+// half of #1888: the peek SQL must project the VERY expressions the
+// LogQL lowering emits for `| logfmt` and `| json`, so the advertised
+// inventory cannot drift from what a query can read back. Comparing
+// rendered SQL — rather than re-listing the expected function calls —
+// means any change to either side that is not mirrored on the other
+// fails here.
+func TestDetectedFields_SQLProjectsQueryPathExtraction(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{{Line: "x"}}}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	_ = getDetectedFields(t, srv.URL+
+		`/loki/api/v1/detected_fields?query=%7Bjob%3D%22api%22%7D`)
+
+	s := schema.DefaultOTelLogs()
+	for _, tc := range []struct {
+		name string
+		expr chplan.Expr
+	}{
+		{"logfmt", logql.LogfmtParsedLabels(s)},
+		{"json", logql.JSONParsedLabels(s)},
+	} {
+		want := renderExpr(t, tc.expr)
+		if !strings.Contains(q.LastSQL(), want) {
+			t.Errorf("peek SQL does not project the %s parser-stage extraction\n want: %s\n  sql: %s",
+				tc.name, want, q.LastSQL())
+		}
+	}
+}
+
+// renderExpr renders a chplan expression to the SQL text the emitter
+// would produce for it, by building a one-projection SELECT and
+// stripping the keyword.
+func renderExpr(t *testing.T, e chplan.Expr) string {
+	t.Helper()
+	sqlStr, _ := chsql.NewQuery().
+		Select(func(b *chsql.Builder) {
+			if err := b.Expr(e); err != nil {
+				t.Fatalf("render expr: %v", err)
+			}
+		}).
+		Build()
+	return strings.TrimPrefix(sqlStr, "SELECT ")
 }
 
 // TestDetectedFields_Logfmt covers the logfmt fallback branch:
@@ -162,8 +231,18 @@ func TestDetectedFields_Logfmt(t *testing.T) {
 	t.Parallel()
 
 	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
-		{Line: `level=info method=GET status=200 duration=12ms`},
-		{Line: `level=error method=POST status=500 duration=1s`},
+		{
+			Line: `level=info method=GET status=200 duration=12ms`,
+			LogfmtFields: map[string]string{
+				"level": "info", "method": "GET", "status": "200", "duration": "12ms",
+			},
+		},
+		{
+			Line: `level=error method=POST status=500 duration=1s`,
+			LogfmtFields: map[string]string{
+				"level": "error", "method": "POST", "status": "500", "duration": "1s",
+			},
+		},
 	}}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
@@ -230,7 +309,11 @@ func TestDetectedFields_MetadataAndParsedMerge(t *testing.T) {
 	t.Parallel()
 
 	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
-		{Line: `level=info msg=ok`, Attributes: map[string]string{"level": "info"}},
+		{
+			Line:         `level=info msg=ok`,
+			Attributes:   map[string]string{"level": "info"},
+			LogfmtFields: map[string]string{"level": "info", "msg": "ok"},
+		},
 	}}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
@@ -258,6 +341,9 @@ func TestDetectedFields_StreamLabelCollision(t *testing.T) {
 		{
 			Line:     `service_name=other msg=hello`,
 			Resource: map[string]string{"service_name": "api"},
+			// ClickHouse applied the collision rename in the peek SQL —
+			// the same mapApply the `| logfmt` lowering emits.
+			LogfmtFields: map[string]string{"service_name_extracted": "other", "msg": "hello"},
 		},
 	}}
 	srv := newServer(q)
@@ -282,8 +368,8 @@ func TestDetectedFields_TypeFollowsLastRow(t *testing.T) {
 	t.Parallel()
 
 	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
-		{Line: `v=12`},
-		{Line: `v=hello`},
+		{Line: `v=12`, LogfmtFields: map[string]string{"v": "12"}},
+		{Line: `v=hello`, LogfmtFields: map[string]string{"v": "hello"}},
 	}}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
@@ -307,7 +393,10 @@ func TestDetectedFields_LimitCapsDistinctFields(t *testing.T) {
 	t.Parallel()
 
 	q := &stubQuerier{detectedRows: []chclient.DetectedFieldRow{
-		{Line: `{"a":1,"b":2,"c":3}`},
+		{
+			Line:       `{"a":1,"b":2,"c":3}`,
+			JSONFields: map[string]string{"a": "1", "b": "2", "c": "3"},
+		},
 	}}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
