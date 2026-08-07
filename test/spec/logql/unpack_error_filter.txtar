@@ -1,5 +1,5 @@
 -- query.logql --
-{job="api"} | unpack | level="error"
+{job="api"} | unpack | __error__=""
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -34,7 +34,7 @@
 [30] string = ""
 [31] string = "expecting json object(6), but it is not"
 [32] string = "Map(String,String)"
-[33] string = "level"
+[33] string = "__error__"
 [34] string = "_extracted"
 [35] int64 = 1
 [36] int64 = 2
@@ -66,26 +66,25 @@
 [62] string = ""
 [63] string = "expecting json object(6), but it is not"
 [64] string = "Map(String,String)"
-[65] string = "level"
-[66] string = "level"
-[67] string = "error"
+[65] string = "__error__"
+[66] string = "__error__"
+[67] string = ""
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), if(has(arrayMap(__json_member -> tupleElement(__json_member, ?), arrayFilter(__json_member -> startsWith(tupleElement(__json_member, ?), ?), JSONExtractKeysAndValuesRaw(`Body`))), ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_member -> tuple(replaceRegexpOne(replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?), ?, ?), JSONExtractString(tupleElement(__json_member, ?))), arrayFilter(__json_member -> (startsWith(tupleElement(__json_member, ?), ?) AND (tupleElement(__json_member, ?) != ?)), JSONExtractKeysAndValuesRaw(`Body`)))), CAST(array(), ?))), ?), CAST(array(), ?)))), if(((`Body` != ?) AND (not(startsWith(`Body`, ?)) OR not(isValidJSON(`Body`)))), map(?, ?, ?, if(startsWith(`Body`, ?), ?, ?)), CAST(array(), ?))), ?), mapConcat(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), if(has(arrayMap(__json_member -> tupleElement(__json_member, ?), arrayFilter(__json_member -> startsWith(tupleElement(__json_member, ?), ?), JSONExtractKeysAndValuesRaw(`Body`))), ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_member -> tuple(replaceRegexpOne(replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?), ?, ?), JSONExtractString(tupleElement(__json_member, ?))), arrayFilter(__json_member -> (startsWith(tupleElement(__json_member, ?), ?) AND (tupleElement(__json_member, ?) != ?)), JSONExtractKeysAndValuesRaw(`Body`)))), CAST(array(), ?))), ?), CAST(array(), ?)))), if(((`Body` != ?) AND (not(startsWith(`Body`, ?)) OR not(isValidJSON(`Body`)))), map(?, ?, ?, if(startsWith(`Body`, ?), ?, ?)), CAST(array(), ?)))[?], `LogAttributes`[?]) = ?)
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map(
-        'job', 'api',
-        'level', if(Body = 'packed info skip', 'info', 'error')
-    )
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
 ) ENGINE = Memory;
-INSERT INTO otel_logs (Body) VALUES ('packed error one'), ('packed error two'), ('packed info skip');
+INSERT INTO otel_logs (Body) VALUES
+    ('{"_entry":"hello","category":"auth"}'),
+    ('["not","an","object"]'),
+    ('{"_entry":"truncated');
 -- expected_rows --
 [
-  ["packed error one"],
-  ["packed error two"]
+  [{"_entry": "hello", "category": "auth"}]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), if(has(arrayMap(__json_member -> tupleElement(__json_member, 1), arrayFilter(__json_member -> startsWith(tupleElement(__json_member, 2), "\""), JSONExtractKeysAndValuesRaw(Body))), "_entry"), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_member -> tuple(replaceRegexpOne(replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"), "^([0-9])", "_\\1"), JSONExtractString(tupleElement(__json_member, 2))), arrayFilter(__json_member -> (startsWith(tupleElement(__json_member, 2), "\"") AND (tupleElement(__json_member, 1) != "_entry")), JSONExtractKeysAndValuesRaw(Body)))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"), CAST(array(), "Map(String,String)")))), if(((Body != "") AND (not(startsWith(Body, "{")) OR not(isValidJSON(Body)))), map("__error__", "JSONParserErr", "__error_details__", if(startsWith(Body, "{"), "", "expecting json object(6), but it is not")), CAST(array(), "Map(String,String)"))), "level"), mapConcat(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), if(has(arrayMap(__json_member -> tupleElement(__json_member, 1), arrayFilter(__json_member -> startsWith(tupleElement(__json_member, 2), "\""), JSONExtractKeysAndValuesRaw(Body))), "_entry"), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_member -> tuple(replaceRegexpOne(replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"), "^([0-9])", "_\\1"), JSONExtractString(tupleElement(__json_member, 2))), arrayFilter(__json_member -> (startsWith(tupleElement(__json_member, 2), "\"") AND (tupleElement(__json_member, 1) != "_entry")), JSONExtractKeysAndValuesRaw(Body)))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"), CAST(array(), "Map(String,String)")))), if(((Body != "") AND (not(startsWith(Body, "{")) OR not(isValidJSON(Body)))), map("__error__", "JSONParserErr", "__error_details__", if(startsWith(Body, "{"), "", "expecting json object(6), but it is not")), CAST(array(), "Map(String,String)")))["level"], LogAttributes["level"]) = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), if(has(arrayMap(__json_member -> tupleElement(__json_member, 1), arrayFilter(__json_member -> startsWith(tupleElement(__json_member, 2), "\""), JSONExtractKeysAndValuesRaw(Body))), "_entry"), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_member -> tuple(replaceRegexpOne(replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"), "^([0-9])", "_\\1"), JSONExtractString(tupleElement(__json_member, 2))), arrayFilter(__json_member -> (startsWith(tupleElement(__json_member, 2), "\"") AND (tupleElement(__json_member, 1) != "_entry")), JSONExtractKeysAndValuesRaw(Body)))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"), CAST(array(), "Map(String,String)")))), if(((Body != "") AND (not(startsWith(Body, "{")) OR not(isValidJSON(Body)))), map("__error__", "JSONParserErr", "__error_details__", if(startsWith(Body, "{"), "", "expecting json object(6), but it is not")), CAST(array(), "Map(String,String)"))), "__error__"), mapConcat(mapConcat(ResourceAttributes, mapApply((k, v) -> tuple(if(mapContains(ResourceAttributes, k), concat(k, "_extracted"), k), v), if(has(arrayMap(__json_member -> tupleElement(__json_member, 1), arrayFilter(__json_member -> startsWith(tupleElement(__json_member, 2), "\""), JSONExtractKeysAndValuesRaw(Body))), "_entry"), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, 1), __json_seen), tupleElement(__json_entry, 1)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_member -> tuple(replaceRegexpOne(replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"), "^([0-9])", "_\\1"), JSONExtractString(tupleElement(__json_member, 2))), arrayFilter(__json_member -> (startsWith(tupleElement(__json_member, 2), "\"") AND (tupleElement(__json_member, 1) != "_entry")), JSONExtractKeysAndValuesRaw(Body)))), CAST(array(), "Array(Tuple(String,String))"))), "Map(String,String)"), CAST(array(), "Map(String,String)")))), if(((Body != "") AND (not(startsWith(Body, "{")) OR not(isValidJSON(Body)))), map("__error__", "JSONParserErr", "__error_details__", if(startsWith(Body, "{"), "", "expecting json object(6), but it is not")), CAST(array(), "Map(String,String)")))["__error__"], LogAttributes["__error__"]) = ""))
   Scan(otel_logs)

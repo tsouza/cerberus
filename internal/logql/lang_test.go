@@ -580,7 +580,7 @@ func TestProjectSamples_ParserStageQuerySurfacesDetectedLevel(t *testing.T) {
 		`{cluster="c1"} | regexp "(?P<method>\\w+) (?P<path>\\S+)"`,
 		// Pattern parser — Go-side post-fetch stage.
 		`{cluster="c1"} | pattern "<method> <path>"`,
-		// Unpack parser — JSON-decode wrapper labels.
+		// Unpack parser — SQL-side extraction of the packed members.
 		`{cluster="c1"} | unpack`,
 	} {
 		t.Run(q, func(t *testing.T) {
@@ -758,9 +758,10 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 // negative path: when the query has no SQL-side parser stage, the
 // projection MUST keep the bare ResourceAttributes column under the
 // outer withDetectedLevel wrap. Regression coverage for the parser-stage
-// branch over-firing on plain selectors / line filters / `| unpack` /
-// `| pattern` (the latter two are Go-side post-fetch stages that the
-// SQL projection should not try to surface).
+// branch over-firing on plain selectors / line filters / `| pattern`
+// (the last of which is a Go-side post-fetch stage the SQL projection
+// should not try to surface). `| unpack` belongs to the positive case —
+// see TestProjectSamples_ParserStageQuerySurfacesDetectedLevel.
 func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) {
 	t.Parallel()
 
@@ -771,7 +772,6 @@ func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) 
 		`{cluster="c1"}`,
 		`{cluster="c1"} |= "error"`,
 		`{cluster="c1"} | namespace="ns-0"`,
-		`{cluster="c1"} | unpack`,
 		`{cluster="c1"} | pattern "<method> <path>"`,
 	} {
 		t.Run(q, func(t *testing.T) {
@@ -805,7 +805,7 @@ func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) 
 					"(the bare ResourceAttributes column when no SQL-side parser "+
 					"stage is present); nesting another mapConcat here would mean "+
 					"the parser-stage surface is over-firing on plain selectors "+
-					"/ line filters / post-fetch parsers (`| unpack`, `| pattern`)",
+					"/ line filters / post-fetch parsers (`| pattern`)",
 					outer.Args[0])
 			}
 			if ref.Name != s.ResourceAttributesColumn {

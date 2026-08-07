@@ -12,18 +12,22 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestLowerUnpackPattern_NoSQLImpact pins the contract that `| unpack`
-// and `| pattern` are post-fetch stages: they extract labels in Go
-// after the rows return, so the lowered SQL contains exactly the same
-// predicates as the equivalent query without the parser stage. A
-// downstream label filter on an ORDINARY label name still gets a SQL
-// predicate too (the structured-metadata/stream-label fallback —
-// structuredOrStreamLookup in lower.go), which is what the "before
-// label filter" cases below pin; only a filter on the `__error__` /
-// `__error_details__` family loses SQL visibility (see
+// TestLowerUnpackPattern_NoSQLImpact pins the contract that `| pattern`
+// is a post-fetch stage: it extracts labels in Go after the rows
+// return, so the lowered SQL contains exactly the same predicates as
+// the equivalent query without the parser stage. A downstream label
+// filter on an ORDINARY label name still gets a SQL predicate too (the
+// structured-metadata/stream-label fallback — structuredOrStreamLookup
+// in lower.go), which is what the "before label filter" case below
+// pins; only a filter on the `__error__` / `__error_details__` family
+// loses SQL visibility (see
 // TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo below and
 // lowerPipelineWithLabels's dynamicLabels gate) since those keys are
 // never legitimately present via that fallback.
+//
+// `| unpack` is NOT in this family: its extraction is modelled in SQL,
+// so a filter that follows it resolves against the extracted map — see
+// TestLowerUnpack_FiltersResolveAgainstExtractedLabels.
 //
 // This mirrors the existing decolorize / line_format / label_format
 // stages — see internal/logql/lower.go for the dispatch.
@@ -47,11 +51,6 @@ func TestLowerUnpackPattern_NoSQLImpact(t *testing.T) {
 			name:    "unpack after line filter",
 			with:    `{job="api"} |= "packed" | unpack`,
 			without: `{job="api"} |= "packed"`,
-		},
-		{
-			name:    "unpack before label filter",
-			with:    `{job="api"} | unpack | level="error"`,
-			without: `{job="api"} | level="error"`,
 		},
 		{
 			name:    "pattern on bare selector",
@@ -85,22 +84,19 @@ func TestLowerUnpackPattern_NoSQLImpact(t *testing.T) {
 
 // TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo pins the fix for
 // the bug the loki-unpack-corpus-coverage compat corpus caught (#1611):
-// `| __error__=""` / `| __error__="JSONParserErr"` following `| unpack`
-// (or `| pattern`) used to still get the structured-metadata SQL
-// fallback pushed down — a silent no-op, since `__error__` never
-// legitimately exists in LogAttributes/ResourceAttributes: the ""
-// comparison matched every row and the non-empty comparison matched
-// none, incorrectly excluding rows before unpackStep's Go-side
-// extraction ever ran (see internal/api/loki/post_process.go's
-// newLabelFilterStep, which now applies these filters instead). A
-// filter on an ORDINARY label name is unaffected — see
-// TestLowerUnpackPattern_NoSQLImpact.
+// `| __error__=""` / `| __error__="JSONParserErr"` following `| pattern`
+// used to still get the structured-metadata SQL fallback pushed down —
+// a silent no-op, since `__error__` never legitimately exists in
+// LogAttributes/ResourceAttributes: the "" comparison matched every row
+// and the non-empty comparison matched none, incorrectly excluding rows
+// before the pattern step's Go-side extraction ever ran (see
+// internal/api/loki/post_process.go's newLabelFilterStep, which applies
+// these filters instead). A filter on an ORDINARY label name is
+// unaffected — see TestLowerUnpackPattern_NoSQLImpact.
 func TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelLogs()
 	cases := []string{
-		`{job="api"} | unpack | __error__=""`,
-		`{job="api"} | unpack | __error__="JSONParserErr"`,
 		`{job="api"} | pattern "<_> <level> <msg>" | __error__=""`,
 	}
 	for _, q := range cases {
@@ -110,6 +106,37 @@ func TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo(t *testing.T) {
 			bare := emitSQL(t, `{job="api"}`, s)
 			if got != bare {
 				t.Errorf("expected the __error__ filter to have no SQL impact once handled in Go instead\nwith filter: %s\nbare:        %s", got, bare)
+			}
+		})
+	}
+}
+
+// TestLowerUnpack_FiltersResolveAgainstExtractedLabels pins the other
+// half of the `| unpack` contract: because the stage's extraction is
+// modelled in SQL, a label filter that follows it — including one on
+// the `__error__` family, which only exists as unpack's own marker —
+// lowers to a predicate over the extracted map rather than being
+// deferred to Go or silently pushed at the wrong columns.
+//
+// The assertion is that the SQL DIFFERS from the same query without the
+// filter. A filter that resolved against columns unpack never writes
+// would collapse back to the unfiltered SQL (`__error__=""` matching
+// every row), which is exactly the #1611 shape.
+func TestLowerUnpack_FiltersResolveAgainstExtractedLabels(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	unfiltered := emitSQL(t, `{job="api"} | unpack`, s)
+	cases := []string{
+		`{job="api"} | unpack | level="error"`,
+		`{job="api"} | unpack | __error__=""`,
+		`{job="api"} | unpack | __error__="JSONParserErr"`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			got := emitSQL(t, q, s)
+			if got == unfiltered {
+				t.Errorf("filter after `| unpack` produced no SQL predicate\nwith filter: %s\nunfiltered:  %s", got, unfiltered)
 			}
 		})
 	}

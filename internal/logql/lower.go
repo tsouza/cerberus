@@ -303,19 +303,19 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
 }
 
-// isDynamicLabelStage reports whether stage is a `| unpack` / `|
-// pattern` parser stage — see [lowerPipelineWithLabels]'s dynamicLabels
-// gate.
+// isDynamicLabelStage reports whether stage is a `| pattern` parser
+// stage — see [lowerPipelineWithLabels]'s dynamicLabels gate.
+//
+// `| unpack` used to belong here. It no longer does: its extraction is
+// modelled in SQL by [unpackMergeLabels], so its `__error__` /
+// `__error_details__` markers are real entries in the labels map a
+// filter can resolve against.
 func isDynamicLabelStage(stage syntax.StageExpr) bool {
 	lp, ok := stage.(*syntax.LineParserExpr)
 	if !ok {
 		return false
 	}
-	switch lp.Op {
-	case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
-		return true
-	}
-	return false
+	return lp.Op == syntax.OpParserTypePattern
 }
 
 // FiltersErrorLabel reports whether lf tests the `__error__` /
@@ -394,6 +394,43 @@ func PipelineLabelsExpr(expr syntax.Expr, s schema.Logs) (chplan.Expr, error) {
 	return labelsExpr, nil
 }
 
+// PipelineLineExpr returns the expression a log-stream query should
+// project as its line column, or nil when no stage rewrites the line in
+// SQL and the caller can project the body column directly.
+//
+// Only `| unpack` rewrites the line in SQL today: it replaces the packed
+// payload with its `_entry` member. The rewrite has to happen here
+// rather than after the rows return, because the labels the same stage
+// extracts are already computed in SQL — splitting one stage's line
+// across two evaluation sites is how the two answers drift apart.
+//
+// `| line_format` and `| decolorize` still rewrite the line in Go, which
+// leaves one ordering the projection cannot honour: a `| line_format`
+// BEFORE an `| unpack` feeds the reformatted line to unpack upstream,
+// while here unpack reads the stored body. That ordering is already the
+// shape every SQL-side parser stage has — `| line_format | json` reads
+// the stored body too — so unpack now shares it rather than introducing
+// it.
+func PipelineLineExpr(expr syntax.Expr, s schema.Logs) (chplan.Expr, error) {
+	pipe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		return nil, nil
+	}
+	var lineExpr chplan.Expr
+	for _, stage := range pipe.MultiStages {
+		lp, ok := stage.(*syntax.LineParserExpr)
+		if !ok || lp.Op != syntax.OpParserTypeUnpack {
+			continue
+		}
+		prev := lineExpr
+		if prev == nil {
+			prev = &chplan.ColumnRef{Name: s.BodyColumn}
+		}
+		lineExpr = unpackLineExpr(prev, s)
+	}
+	return lineExpr, nil
+}
+
 // pipelineStageLabels returns the post-stage labels-map expression for a
 // single pipeline stage, or nil if the stage doesn't alter the visible
 // label set. Mirrors the `newLabels` branch of [lowerStage] but isolates
@@ -404,8 +441,10 @@ func pipelineStageLabels(stage syntax.StageExpr, s schema.Logs, labelsExpr chpla
 	switch st := stage.(type) {
 	case *syntax.LineParserExpr:
 		switch st.Op {
-		case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
+		case syntax.OpParserTypePattern:
 			return nil, nil
+		case syntax.OpParserTypeUnpack:
+			return unpackMergeLabels(labelsExpr, s), nil
 		case syntax.OpParserTypeJSON:
 			return jsonBareMergeLabels(labelsExpr, s), nil
 		case syntax.OpParserTypeRegexp:
@@ -456,7 +495,7 @@ func HasParserStage(expr syntax.Expr) bool {
 		switch st := stage.(type) {
 		case *syntax.LineParserExpr:
 			switch st.Op {
-			case syntax.OpParserTypeJSON, syntax.OpParserTypeRegexp:
+			case syntax.OpParserTypeJSON, syntax.OpParserTypeRegexp, syntax.OpParserTypeUnpack:
 				return true
 			}
 		case *syntax.LogfmtParserExpr,
@@ -560,18 +599,19 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		// parsed expression on the handler side.
 		return nil, nil, nil
 	case *syntax.LineParserExpr:
-		// `| unpack` and `| pattern` are parser stages that extract
-		// labels from the line in Go after the rows return — they have
-		// no SQL impact (lowering returns no predicate). The API handler
-		// pulls them out of the parsed expression via postProcessExtract
-		// and applies them per row.
+		// `| pattern` extracts labels from the line in Go after the rows
+		// return — it has no SQL impact (lowering returns no predicate).
+		// The API handler pulls it out of the parsed expression via
+		// postProcessExtract and applies it per row.
 		//
-		// `| json` and `| regexp` lower to a labels-map merge so
-		// subsequent label filters resolve against the parsed keys —
+		// `| unpack`, `| json` and `| regexp` lower to a labels-map merge
+		// so subsequent label filters resolve against the parsed keys —
 		// mirroring how `| logfmt` is handled below.
 		switch st.Op {
-		case syntax.OpParserTypeUnpack, syntax.OpParserTypePattern:
+		case syntax.OpParserTypePattern:
 			return nil, nil, nil
+		case syntax.OpParserTypeUnpack:
+			return nil, unpackMergeLabels(labelsExpr, s), nil
 		case syntax.OpParserTypeJSON:
 			return nil, jsonBareMergeLabels(labelsExpr, s), nil
 		case syntax.OpParserTypeRegexp:
@@ -985,13 +1025,7 @@ func jsonFlattenedMap(s schema.Logs) chplan.Expr {
 		},
 	}
 
-	return &chplan.FuncCall{
-		Name: "CAST",
-		Args: []chplan.Expr{
-			jsonLastKeyWins(jsonReadLeaves(folded)),
-			&chplan.LitString{V: "Map(String,String)"},
-		},
-	}
+	return castToLabelMap(jsonLastKeyWins(jsonReadLeaves(folded)))
 }
 
 // Lambda parameter names for the flattening fold. They are emitted
@@ -1290,6 +1324,235 @@ func jsonLastKeyWins(pairs chplan.Expr) chplan.Expr {
 			},
 		},
 	}
+}
+
+// packedEntryKey is the member Promtail's `pack` stage writes the
+// original log line under. `| unpack` treats it as the line rather than
+// as a label, and its presence is what arms the stage: an object without
+// it contributes nothing at all.
+const packedEntryKey = "_entry"
+
+// JSONParserErrValue is the `__error__` value Loki stamps for every
+// failure of a JSON-family parser stage, `| unpack` included. Exported
+// because the SQL side is where it is now produced, and
+// internal/api/loki's post-processing recognises rows carrying it.
+const JSONParserErrValue = "JSONParserErr"
+
+// UnexpectedJSONObjectDetail reproduces Loki's `__error_details__` text
+// for a payload whose first byte is not `{`. Upstream builds it as
+// `fmt.Errorf("expecting json object(%d), but it is not", jsoniter.ObjectValue)`
+// and json-iterator's ObjectValue ordinal is 6, so the rendered text is
+// part of the wire contract rather than an internal diagnostic.
+const UnexpectedJSONObjectDetail = "expecting json object(6), but it is not"
+
+// unpackMergeLabels lowers `| unpack` to a labels-map merge, so the
+// stage's extracted keys are visible to everything downstream of the
+// scan — label filters, and (the reason this exists) metric-mode
+// `by (...)` grouping, which never runs a Go-side pass at all.
+//
+// The three rules that are easy to get backwards are all upstream's:
+//
+//   - The extraction is armed by a top-level string `_entry` member. A
+//     well-formed object without one contributes NO labels, rather than
+//     contributing its other members.
+//   - Only string-valued members become labels; numbers, booleans,
+//     arrays and nested objects are skipped. `| unpack` is deliberately
+//     shallower than `| json`, which flattens nested objects.
+//   - A payload that is not a readable JSON object is an ERROR, not a
+//     silent pass-through: it carries `__error__` so that `| __error__=""`
+//     — the usual way callers ask for "only the lines that parsed" —
+//     excludes it instead of matching everything.
+//
+// The extracted keys go through [mergeParsedMap], so one that shadows a
+// stream label lands under `<key>_extracted` and the stream label wins.
+// The error markers are concatenated OUTSIDE that merge: they are the
+// stage's own diagnostics rather than payload-derived keys, so renaming
+// them on collision would hide them from the very filter that looks for
+// them.
+func unpackMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			mergeParsedMap(prev, s, unpackExtractedMap(s)),
+			unpackErrorMarkers(s),
+		},
+	}
+}
+
+// unpackLineExpr renders the line `| unpack` yields: the unescaped
+// `_entry` member when the payload is packed, and the original body
+// otherwise — including on the error paths, where upstream returns the
+// line untouched.
+func unpackLineExpr(prev chplan.Expr, s schema.Logs) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			unpackIsPacked(s),
+			&chplan.FuncCall{
+				Name: "JSONExtractString",
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.BodyColumn},
+					&chplan.LitString{V: packedEntryKey},
+				},
+			},
+			prev,
+		},
+	}
+}
+
+// unpackExtractedMap renders the label set `| unpack` contributes, or an
+// empty map when the payload is not packed. Keys are sanitised with the
+// same rules the `| json` lowering uses, and `_entry` is excluded because
+// it becomes the line rather than a label.
+func unpackExtractedMap(s schema.Logs) chplan.Expr {
+	labelMembers := &chplan.FuncCall{
+		Name: "arrayFilter",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonMemberParam},
+				Body: &chplan.Binary{
+					Op:   chplan.OpAnd,
+					Left: jsonStartsWith(jsonMemberValue(), jsonStringPrefix),
+					Right: &chplan.Binary{
+						Op:    chplan.OpNe,
+						Left:  jsonMemberKey(),
+						Right: &chplan.LitString{V: packedEntryKey},
+					},
+				},
+			},
+			jsonMembersOf(&chplan.ColumnRef{Name: s.BodyColumn}),
+		},
+	}
+	pairs := &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonMemberParam},
+				Body: jsonPair(
+					jsonApplyLeadingDigitRule(jsonSanitizeKey(jsonMemberKey())),
+					&chplan.FuncCall{
+						Name: "JSONExtractString",
+						Args: []chplan.Expr{jsonMemberValue()},
+					},
+				),
+			},
+			labelMembers,
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			unpackIsPacked(s),
+			castToLabelMap(jsonLastKeyWins(pairs)),
+			emptyLabelMap(),
+		},
+	}
+}
+
+// unpackIsPacked reports whether the body carries a top-level string
+// `_entry` member — the gate that arms the whole stage.
+func unpackIsPacked(s schema.Logs) chplan.Expr {
+	stringMembers := &chplan.FuncCall{
+		Name: "arrayFilter",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{jsonMemberParam},
+				Body:   jsonStartsWith(jsonMemberValue(), jsonStringPrefix),
+			},
+			jsonMembersOf(&chplan.ColumnRef{Name: s.BodyColumn}),
+		},
+	}
+	keys := &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{jsonMemberParam}, Body: jsonMemberKey()},
+			stringMembers,
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "has",
+		Args: []chplan.Expr{keys, &chplan.LitString{V: packedEntryKey}},
+	}
+}
+
+// unpackErrorMarkers renders the `__error__` / `__error_details__` pair
+// for a payload `| unpack` cannot read, and an empty map otherwise.
+//
+// An empty body is not an error — upstream returns it unchanged — so the
+// non-empty test comes first. Everything else that is not a readable JSON
+// object is: a body whose first byte is not `{` carries upstream's exact
+// sentinel text, and a `{`-prefixed body that does not parse carries the
+// error label without a detail, because that detail is the Go JSON
+// reader's own parse-position message and no property of the input
+// yields it (see [internal/api/loki.unpackParseDetailStep], which
+// supplies it on the log-stream path).
+func unpackErrorMarkers(s schema.Logs) chplan.Expr {
+	body := &chplan.ColumnRef{Name: s.BodyColumn}
+	nonEmpty := &chplan.Binary{
+		Op:    chplan.OpNe,
+		Left:  body,
+		Right: &chplan.LitString{V: ""},
+	}
+	// Two independent ways to not be a readable JSON object, and neither
+	// test subsumes the other: `["a"]` is valid JSON that is not an object,
+	// and `{"a":` is object-shaped but does not parse.
+	notObjectShaped := &chplan.FuncCall{
+		Name: "not",
+		Args: []chplan.Expr{jsonStartsWith(body, jsonObjectPrefix)},
+	}
+	doesNotParse := &chplan.FuncCall{
+		Name: "not",
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "isValidJSON", Args: []chplan.Expr{body}},
+		},
+	}
+	unreadable := &chplan.Binary{
+		Op:    chplan.OpOr,
+		Left:  notObjectShaped,
+		Right: doesNotParse,
+	}
+	markers := &chplan.FuncCall{
+		Name: "map",
+		Args: []chplan.Expr{
+			&chplan.LitString{V: syntax.ErrorLabel},
+			&chplan.LitString{V: JSONParserErrValue},
+			&chplan.LitString{V: syntax.ErrorDetailsLabel},
+			&chplan.FuncCall{
+				Name: "if",
+				Args: []chplan.Expr{
+					jsonStartsWith(body, jsonObjectPrefix),
+					&chplan.LitString{V: ""},
+					&chplan.LitString{V: UnexpectedJSONObjectDetail},
+				},
+			},
+		},
+	}
+	return &chplan.FuncCall{
+		Name: "if",
+		Args: []chplan.Expr{
+			&chplan.Binary{Op: chplan.OpAnd, Left: nonEmpty, Right: unreadable},
+			markers,
+			emptyLabelMap(),
+		},
+	}
+}
+
+// labelMapType is the ClickHouse type every parser stage's extracted
+// label set is cast to before it is merged onto the running labels map.
+const labelMapType = "Map(String,String)"
+
+func castToLabelMap(pairs chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "CAST",
+		Args: []chplan.Expr{pairs, &chplan.LitString{V: labelMapType}},
+	}
+}
+
+// emptyLabelMap renders an empty Map(String,String). A bare `map()`
+// would leave CH to infer the key and value types from nothing, which
+// makes the surrounding `if` branches disagree on type.
+func emptyLabelMap() chplan.Expr {
+	return castToLabelMap(&chplan.FuncCall{Name: "array"})
 }
 
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
