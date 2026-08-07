@@ -90,9 +90,13 @@ func Walk(t *testing.T, dir string, fn func(t *testing.T, c *Case)) {
 // disk in c. When GOLDEN_UPDATE=1 is set, mismatches rewrite the section
 // in-place instead of failing — so the dev flow is:
 //
-//	just update-golden                   # regenerate fixtures (both lanes)
+//	just update-golden <shard>...        # regenerate fixtures (both lanes)
 //	git diff                             # review the new expected output
 //	git add test/spec && git commit ...
+//
+// The shard argument is required and has no default; `just update-golden`
+// alone prints the vocabulary, and the recipe refuses to start when the named
+// shards do not cover what the branch's own diff implies has gone stale.
 //
 // Mismatches without GOLDEN_UPDATE call t.Errorf with a unified-style diff
 // hint and a `git diff` command to inspect.

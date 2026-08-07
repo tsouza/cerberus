@@ -24,7 +24,11 @@ var fixtureDir = filepath.Join("..", "..", "test", "spec", "promql")
 // the `sql` + `args` sections match what's recorded.
 //
 // To add a new case: create test/spec/promql/<name>.txtar with a
-// `-- query.promql --` section, then run `just update-golden`.
+// `-- query.promql --` section, then run
+// `just update-golden solver promql cardinality`. A PromQL fixture also feeds
+// the routing baseline (from its `-- query.promql --`) and the cardinality
+// baseline (from its `-- sql --`), and the recipe refuses to start on a shard
+// set that would leave either behind.
 func TestLower(t *testing.T) {
 	t.Parallel()
 
