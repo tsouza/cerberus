@@ -199,7 +199,26 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   The tree at large is deliberately NOT scanned — the same phrases are ordinary
   architecture prose in `internal/**`, and a gate that fired on those would be
   routed around. That is scoping, not an allow-list: there is no tolerance file
-  and no way to park a violation. Anti-vacuity is explicit — a missing
+  and no way to park a violation.
+  The description surface carries one narrowing on the same grounds: a pull
+  request opened by `dependabot[bot]` has its DESCRIPTION left unread, because
+  that body is written by the bot and consists of a `<details>` block per bumped
+  module holding the module's upstream changelog and commit subjects verbatim.
+  That is quoted third-party material in exactly the sense `stripFencedBlocks`
+  already means, and scanning it reports the quotation rather than the change's
+  own commitment — an upstream commit titled "remove obsolete `<marker>`" was
+  reported four times, once per bumped module, as the bump parking work. The
+  commit-message and diff surfaces are read on **every** change from every
+  author with no exception, which is what keeps this scoping rather than an
+  exemption: the surface a marker must survive to reach the tree is the diff,
+  and nothing narrows it. The accepted cost, stated rather than sold: a human
+  who edits a bot pull request's description gets that prose unread; their
+  commits and their diff are still read. The author is resolved from
+  `GITHUB_EVENT_PATH`'s payload rather than a workflow-interpolated string, and
+  every failure to resolve it — no path, no file, unparseable JSON, no `login`
+  — scans the description as normal, so the gate never stops reading a surface
+  because it could not determine something.
+  Anti-vacuity is explicit — a missing
   description surface, an unresolvable commit range, an empty commit list, an
   empty file set or an empty marker table each fail LOUDLY rather than passing
   A citation the API cannot resolve is never read as a citation that names
@@ -229,7 +248,9 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     `pull-requests: read`; a token without either fails the run with a
     permission diagnostic rather than a verdict about the author's prose),
     `GITHUB_EVENT_NAME`, `PR_BODY` (required on a `pull_request` run; may be
-    empty, may not be unset), `BASE_SHA`, `HEAD_SHA`, `GITHUB_API_URL`
+    empty, may not be unset), `GITHUB_EVENT_PATH` (runner-provided; read for
+    `pull_request.user.login` only, and an unreadable payload scans the
+    description as normal), `BASE_SHA`, `HEAD_SHA`, `GITHUB_API_URL`
     (optional; runner-provided).
   - Exit: `0` when every marker is tracked by an open issue (or none were
     found); `1` on an untracked deferral or a malformed input. ENFORCING and a
