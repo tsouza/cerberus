@@ -114,7 +114,21 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	identityBase := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	valueExpr := value
 	var errorBypassLabels chplan.Expr
-	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
+	// The enclosing `by (...)` may name a label a parser stage extracted
+	// rather than one either raw column carries. That key has to resolve
+	// against the parser-merged labels map, and the map has to be
+	// materialised for the same reason the unwrap shape materialises it
+	// (nested-lambda rejection, below) — so the two cases share one
+	// intermediate projection. Without it `sum by (category)
+	// (count_over_time({...} | json [5m]))` collapses every row into a
+	// single `{category:""}` series (issue #1652, whose `| unpack` report
+	// is one instance of the class).
+	outerByNeedsParsedLabels := len(structuredOuterByKeys(lc.OuterByLabels, s)) > 0
+	// What the outer-by inflation resolves its keys against. It stays the
+	// raw column unless the merge below is materialised, so an
+	// un-materialised `mapConcat(...)` can never reach the identity.
+	parsedLabels := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
+	if (e.Left.Unwrap != nil || outerByNeedsParsedLabels) && hasParserMergedLabels(labelsExpr, s) {
 		const mergedAlias = "_logql_merged_labels"
 		projections := []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
@@ -138,13 +152,16 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 			Projections: projections,
 		}
 		mergedCol := &chplan.ColumnRef{Name: mergedAlias}
-		identityBase = &chplan.MapWithoutKeys{Map: mergedCol, Keys: []string{e.Left.Unwrap.Identifier}}
-		valueExpr, err = rangeValueExprFromMerged(e, s, mergedCol)
-		if err != nil {
-			return nil, err
-		}
-		if unwrapHasErrorMarks {
-			errorBypassLabels = mergedCol
+		parsedLabels = mergedCol
+		if e.Left.Unwrap != nil {
+			identityBase = &chplan.MapWithoutKeys{Map: mergedCol, Keys: []string{e.Left.Unwrap.Identifier}}
+			valueExpr, err = rangeValueExprFromMerged(e, s, mergedCol)
+			if err != nil {
+				return nil, err
+			}
+			if unwrapHasErrorMarks {
+				errorBypassLabels = mergedCol
+			}
 		}
 	} else if e.Left.Unwrap != nil {
 		// No parser stage (or empty merge): the unwrap target is a
@@ -188,7 +205,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		return nil, err
 	}
 
-	identityExpr := withDetectedLevelAndColumns(s, identityBase, newLevelValue(), lc.OuterByLabels)
+	identityExpr := withDetectedLevelAndColumns(s, identityBase, newLevelValue(), lc.OuterByLabels, parsedLabels)
 	if groupBy != nil {
 		// With `by (...)` / `without (...)` the inner Project replaces
 		// the per-stream identity with the group-key map so the

@@ -355,7 +355,7 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 // the augmented identity drives the RangeWindow GROUP BY to emit one
 // series per detected_level).
 func withDetectedLevel(s schema.Logs, baseLabels, levelValue chplan.Expr) chplan.Expr {
-	return withDetectedLevelAndColumns(s, baseLabels, levelValue, nil)
+	return withDetectedLevelAndColumns(s, baseLabels, levelValue, nil, nil)
 }
 
 // withDetectedLevelAndColumns is the column-aware companion of
@@ -393,7 +393,7 @@ func withDetectedLevel(s schema.Logs, baseLabels, levelValue chplan.Expr) chplan
 // the label on every row — see [detectedLevelIdentityExpr]). When that
 // leaves nothing to synthesize at all, the base labels are returned
 // untouched so the plan carries no vestigial `mapConcat(base, map())`.
-func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Expr, outerByLabels []string) chplan.Expr {
+func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Expr, outerByLabels []string, parsedLabels chplan.Expr) chplan.Expr {
 	var args []chplan.Expr
 	if levelValue != nil {
 		args = append(args, &chplan.LitString{V: detectedLevelLabel}, levelValue)
@@ -413,20 +413,30 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Ex
 	// identity map so the post-RangeWindow outer aggregation
 	// ([levelAwareGroupKey]) can read them back from the
 	// ResourceAttributes-aliased identity column. Each value resolves
-	// with the structured-metadata > stream precedence
-	// [structuredOrStreamLookup] applies — without this inflation a
+	// with the parsed > structured-metadata > stream precedence
+	// [structuredOrStreamLookupOnMap] applies — without this inflation a
 	// `sum by (query_kind) (count_over_time({...}[5m]))` collapses every
 	// row into one `{query_kind:""}` series because `query_kind` lives in
 	// LogAttributes, not in the bare ResourceAttributes identity base
 	// (task #59). The enclosing `mapFilter((k, v) -> v != '')` drops the
 	// key on rows where neither map carries it, so a stream-only or
 	// absent key keeps its prior (empty-dropped) shape.
+	//
+	// `parsedLabels` carries the pipeline's parser-merged labels map so a
+	// key a parser stage extracted (`sum by (category) (count_over_time(
+	// {...} | json [5m]))`) resolves from the extraction rather than from
+	// the two raw columns, which never carry it. It must be a plain
+	// column reference — the caller materialises the merge into an
+	// intermediate projection first — because the merge itself contains
+	// lambdas and ClickHouse rejects a lambda whose source map is built
+	// by another lambda. A nil value means the pipeline has no parser
+	// stage to consult, and the two raw columns are the whole story.
 	for _, key := range structuredOuterByKeys(outerByLabels, s) {
-		args = append(
-			args,
-			&chplan.LitString{V: key},
-			structuredOrStreamLookup(s, key),
-		)
+		value := structuredOrStreamLookup(s, key)
+		if parsedLabels != nil {
+			value = structuredOrStreamLookupOnMap(s, parsedLabels, key)
+		}
+		args = append(args, &chplan.LitString{V: key}, value)
 	}
 	if len(args) == 0 {
 		return baseLabels
