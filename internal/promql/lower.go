@@ -510,7 +510,7 @@ func resolveSelectorRouting(metricName string, s schema.Metrics, ctx lowerCtx, d
 
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
-	if metricName == "" && hasUnpinnedMetricNameMatcher(v.LabelMatchers) && s.HistogramTable != "" {
+	if hasUnpinnedMetricNameMatcher(v.LabelMatchers) && s.HistogramTable != "" {
 		return lowerRegexHistogramSelector(v, s, ctx)
 	}
 	// Resolve the candidate physical tables for this matcher.
@@ -529,12 +529,18 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// bucket selectors below override to the histogram table without
 	// touching the union path. Existing fixtures stay byte-stable.
 	//
-	// When the selector carries no MatchEqual `__name__` (a regex name
-	// matcher, a negated matcher, or no name matcher at all) the scan
-	// fans across the same (Gauge, Sum) pair the unsuffixed arm uses —
-	// see schema.Metrics.TablesForUnknownName. A gauge-only fallback
-	// here made `{__name__=~".*cerberus_query_inflight.*"}` (the exact
-	// shape Grafana's Metrics Drilldown breakdown tab sends) return
+	// When s.HistogramTable == "", every unsuffixed-name selector lands
+	// here regardless of pin-ness; when a histogram table is configured,
+	// only a pinned selector does, since hasUnpinnedMetricNameMatcher
+	// above already routed anything unpinned (a regex `__name__`
+	// matcher, a negated matcher, or no `__name__` matcher at all)
+	// through lowerRegexHistogramSelector instead, which unions this same
+	// (Gauge, Sum) pair with the histogram companion/bucket arms. Either
+	// way the pair here must stay (Gauge, Sum) rather than gauge-only:
+	// metrics the OTel emitters store as cumulative sums under bare names
+	// (`cerberus_query_inflight`, `system_*`, `otelcol_*`) need the Sum
+	// arm too, or `{__name__=~".*cerberus_query_inflight.*"}` (the exact
+	// shape Grafana's Metrics Drilldown breakdown tab sends) returns
 	// empty for every sum-stored metric.
 	tables := s.TablesForUnknownName()
 	if metricName != "" {
@@ -1967,10 +1973,14 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerQuantileOverTime(c, s, ctx)
 	}
 	if len(c.Args) >= 1 {
-		if _, ok := c.Args[0].(*parser.MatrixSelector); ok {
+		// Parentheses are transparent grouping in PromQL — peel them (and
+		// any step-invariant wrapper) before deciding the argument's
+		// shape, so `rate((m[5m]))` dispatches identically to `rate(m[5m])`.
+		arg0 := peelWrappers(c.Args[0])
+		if _, ok := arg0.(*parser.MatrixSelector); ok {
 			return lowerRangeVectorCall(c, s, ctx)
 		}
-		if sq, ok := c.Args[0].(*parser.SubqueryExpr); ok {
+		if sq, ok := arg0.(*parser.SubqueryExpr); ok {
 			// `<range-vector-fn>(<subquery>)` — the canonical Grafana
 			// shape `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a
 			// chained RangeWindow: outer reducer over the inner matrix.
@@ -2084,10 +2094,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
 	}
-	ms, ok := c.Args[0].(*parser.MatrixSelector)
+	arg := peelWrappers(c.Args[0])
+	ms, ok := arg.(*parser.MatrixSelector)
 	if !ok {
 		return nil, fmt.Errorf("promql: %s argument must be a range-vector selector, got %T",
-			c.Func.Name, c.Args[0])
+			c.Func.Name, arg)
 	}
 	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
 	if !ok {

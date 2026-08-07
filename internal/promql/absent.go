@@ -209,9 +209,10 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: absent_over_time() expects 1 argument, got %d", len(c.Args))
 	}
-	ms, ok := c.Args[0].(*parser.MatrixSelector)
+	arg := peelWrappers(c.Args[0])
+	ms, ok := arg.(*parser.MatrixSelector)
 	if !ok {
-		return nil, fmt.Errorf("promql: absent_over_time() argument must be a range-vector selector, got %T", c.Args[0])
+		return nil, fmt.Errorf("promql: absent_over_time() argument must be a range-vector selector, got %T", arg)
 	}
 	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
 	if !ok {

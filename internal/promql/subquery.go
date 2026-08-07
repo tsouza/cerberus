@@ -349,15 +349,20 @@ func lowerSubqueryOverCall(
 		return nil, fmt.Errorf("promql: subquery inner %s expects exactly %d argument(s), got %d",
 			call.Func.Name, arity, len(call.Args))
 	}
-	if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok {
+	// Parentheses are transparent grouping — peel them (and any
+	// step-invariant wrapper) before deciding whether this argument is a
+	// nested subquery or a matrix selector, so `rate((m[5m]))[10m:1m]`
+	// routes identically to `rate(m[5m])[10m:1m]`.
+	matrixArgExpr := peelWrappers(call.Args[matrixArg])
+	if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok {
 		// Nested subquery: `<fn>(<inner-sub>)[<outer-range>:<step>]`.
 		// e.g. `max_over_time(rate(m[1m])[5m:30s])[1h:5m]`.
 		return lowerSubqueryOverCallSubquery(sub, call, innerSub, step, s, ctx)
 	}
-	ms, ok := call.Args[matrixArg].(*parser.MatrixSelector)
+	ms, ok := matrixArgExpr.(*parser.MatrixSelector)
 	if !ok {
 		return nil, fmt.Errorf("promql: subquery inner %s must wrap a MatrixSelector, got %T",
-			call.Func.Name, call.Args[matrixArg])
+			call.Func.Name, matrixArgExpr)
 	}
 	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
 	if !ok {

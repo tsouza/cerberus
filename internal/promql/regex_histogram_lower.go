@@ -1,7 +1,6 @@
 package promql
 
 import (
-	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -9,17 +8,19 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// hasUnpinnedMetricNameMatcher identifies selectors whose visible metric name
-// is a predicate rather than a literal. Such selectors need the histogram
-// arms below because classic histogram rows store the bare base name while
-// Prometheus exposes only synthetic `_bucket`, `_count`, and `_sum` names.
+// hasUnpinnedMetricNameMatcher identifies selectors whose visible metric
+// name is not pinned to a literal — a regex matcher, a negated matcher, or
+// no `__name__` matcher at all. All three shapes need the histogram arms
+// below because classic histogram rows store the bare base name while
+// Prometheus exposes only synthetic `_bucket`, `_count`, and `_sum` names;
+// "no `__name__` matcher at all" is strictly less pinned than a regex one
+// and must take the same fan-out, not the narrower TablesForUnknownName
+// path a literal absence would otherwise fall through to. Delegates to
+// wireArms's WireNamePinned split (#1756) rather than re-deriving the
+// pinned/unpinned line: a selector is unpinned exactly when it carries no
+// WireArmWireNamePinned matcher.
 func hasUnpinnedMetricNameMatcher(matchers []*labels.Matcher) bool {
-	for _, m := range matchers {
-		if m.Name == model.MetricNameLabel && m.Type != labels.MatchEqual {
-			return true
-		}
-	}
-	return false
+	return len(wireArms(matchers).WireNamePinned()) == 0
 }
 
 // Classification is delegated to wireArms (#1756): the union of
