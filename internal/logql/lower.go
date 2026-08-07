@@ -223,7 +223,7 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 // a labels merge — bare and typed `| logfmt`, bare and typed `| json`,
 // and `| regexp`. Both merge shapes route through a single pair of
 // constructors so the policy cannot be applied to one family and
-// skipped on another: [mergeParsedMap] wraps a query-time-unknown key
+// skipped on another: [LogfmtParsedLabels] wraps a query-time-unknown key
 // set in a `mapApply` rename, and [mergeParsedFields] wraps each
 // statically-known destination identifier in a per-key `if(...)`.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
@@ -699,6 +699,14 @@ func JSONParsedLabels(s schema.Logs) chplan.Expr {
 // concatParsedLabels merges an already-renamed parsed-label map onto the
 // running labels map. Stream-selector labels win on collision because
 // the renamed map has had its colliding keys suffixed already.
+//
+// Together with [mergeParsedFields] this is one of the only two ways to
+// build a parser-stage labels merge, and its argument comes from
+// [LogfmtParsedLabels] or [JSONParsedLabels] — the two constructors that
+// apply the collision policy. No parser family can therefore merge
+// extracted keys without the rename: the divergence that let `| json` /
+// `| regexp` extracted keys silently overwrite stream labels is closed
+// by construction rather than by repeating the rename at each call site.
 func concatParsedLabels(prev, renamedParsed chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "mapConcat",
@@ -713,28 +721,6 @@ type parsedField struct {
 	value chplan.Expr
 }
 
-// mergeParsedMap folds a parser stage's extracted `Map(String,String)`
-// onto the running labels map, applying Loki's collision policy to every
-// extracted key. Used by the parser forms whose extracted key set is only
-// known at query time — bare `| logfmt` and bare `| json` — so the rename
-// has to happen per-key inside a `mapApply` lambda.
-//
-// Together with [mergeParsedFields] this is one of the only two ways to
-// build a parser-stage labels merge. Both apply the collision policy
-// internally, so no parser family can merge extracted keys without it —
-// the divergence that let `| json` / `| regexp` extracted keys silently
-// overwrite stream labels is closed by construction rather than by
-// repeating the rename at each call site.
-func mergeParsedMap(prev chplan.Expr, s schema.Logs, extracted chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			prev,
-			renameExtractedOnCollision(s, extracted),
-		},
-	}
-}
-
 // mergeParsedFields folds a parser stage's statically-known destination
 // identifiers onto the running labels map, applying Loki's collision
 // policy to each name. Used by the parser forms whose destination
@@ -745,7 +731,8 @@ func mergeParsedMap(prev chplan.Expr, s schema.Logs, extracted chplan.Expr) chpl
 //
 // Callers hand over the raw identifier, never a pre-built key expression:
 // the rename is this constructor's job, so a new parser family cannot
-// forget it. See [mergeParsedMap] for the dynamic-key counterpart.
+// forget it. See [LogfmtParsedLabels] / [JSONParsedLabels] for the
+// dynamic-key counterparts.
 func mergeParsedFields(prev chplan.Expr, s schema.Logs, fields []parsedField) chplan.Expr {
 	args := make([]chplan.Expr, 0, len(fields)*2)
 	for _, f := range fields {
@@ -810,7 +797,8 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax
 //	    (k, v) -> (if(mapContains(<stream>, k), concat(k, '_extracted'), k), v),
 //	    <extracted>)
 //
-// Applied by [mergeParsedMap] for the bare `| logfmt` and bare `| json`
+// Applied by [LogfmtParsedLabels] and [JSONParsedLabels] for the bare
+// `| logfmt` and bare `| json`
 // forms, where the extracted-key set is unknown at SQL-emit time so the
 // rename has to happen per-key inside the lambda.
 func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Expr {
@@ -901,7 +889,7 @@ func extractKVPairs(s schema.Logs) chplan.Expr {
 // see the union of stream-selector labels and JSON-parsed top-level
 // key/value pairs — with stream-selector labels winning on key
 // collisions and the shadowed JSON value reachable under the
-// `_extracted`-suffixed name (see [mergeParsedMap]).
+// `_extracted`-suffixed name (see [LogfmtParsedLabels]).
 //
 // JSONExtractKeysAndValues(json, 'String') returns
 // `Array(Tuple(String, String))` for the top-level object keys with each
