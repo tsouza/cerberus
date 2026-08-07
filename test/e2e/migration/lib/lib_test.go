@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRepoRootFindsTheCerberusModule asserts the walk stops at the directory
@@ -222,12 +223,71 @@ func TestAssertGoldenRegeneratesLocallyOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("AssertGolden regenerated a golden under CI")
 	}
+	if !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("the refusal does not name the differing line, so the drift it refuses to "+
+			"rewrite is invisible to whoever reads it: %v", err)
+	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read golden after the refused regeneration: %v", err)
 	}
 	if string(after) != "CREATE TABLE a;\n" {
 		t.Fatalf("golden was rewritten under CI: %q", after)
+	}
+}
+
+// goldenBackdate is how far into the past the no-write assertion below moves a
+// golden's modification time. Any value past filesystem timestamp granularity
+// works; an hour is unambiguous on every filesystem the suite runs on.
+const goldenBackdate = time.Hour
+
+// TestAssertGoldenUnderCIComparesRatherThanRefusingOnSight is the property
+// post-merge-drift.yml runs on, and the one whose absence made that lane
+// unconditionally red from the day it landed.
+//
+// The lane regenerates every shard a merge implied and diffs the tree, so it
+// invokes `just migration-golden` — MIGRATION_UPDATE_GOLDENS=1 — with CI set.
+// While the update request was refused on sight, that was a guaranteed hard
+// error for every merge whose diff implied the `migration` shard, whatever the
+// goldens actually said. The refusal has to be about the WRITE: nothing is
+// rewritten under CI, and an in-sync artifact is a pass rather than a failure
+// nobody can act on.
+func TestAssertGoldenUnderCIComparesRatherThanRefusingOnSight(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "golden.sql")
+	golden := "CREATE TABLE a;\n"
+	if err := os.WriteFile(path, []byte(golden), goldenFileMode); err != nil {
+		t.Fatalf("write golden: %v", err)
+	}
+
+	// Byte-identical output makes a rewrite invisible in the CONTENT, so the
+	// no-write half is asserted on the modification time instead: backdate the
+	// golden, and any write at all drags it forward.
+	backdated := time.Now().Add(-goldenBackdate)
+	if err := os.Chtimes(path, backdated, backdated); err != nil {
+		t.Fatalf("backdate golden: %v", err)
+	}
+
+	t.Setenv(updateGoldensEnv, "1")
+	t.Setenv(ciEnv, "true")
+
+	if err := AssertGolden(path, []byte(golden)); err != nil {
+		t.Fatalf("AssertGolden in update mode under CI over an in-sync golden: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat golden: %v", err)
+	}
+	if !info.ModTime().Equal(backdated) {
+		t.Errorf("golden was rewritten under CI: mtime moved from %s to %s",
+			backdated, info.ModTime())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(after) != golden {
+		t.Fatalf("golden content changed under CI: %q", after)
 	}
 }
 

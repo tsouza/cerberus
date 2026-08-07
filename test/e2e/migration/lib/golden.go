@@ -12,9 +12,9 @@ import (
 // observed artifact instead of comparing against it.
 const updateGoldensEnv = "MIGRATION_UPDATE_GOLDENS"
 
-// ciEnv is the variable every CI provider sets. Regeneration is refused when it
-// is present: a golden is a reviewed artifact, and a lane that rewrites its own
-// expectations asserts only that the tool still does whatever it does.
+// ciEnv is the variable every CI provider sets. A golden is never REWRITTEN
+// when it is present: a golden is a reviewed artifact, and a lane that rewrites
+// its own expectations asserts only that the tool still does whatever it does.
 const ciEnv = "CI"
 
 // goldenFileMode / goldenDirMode are the permissions a regenerated golden and
@@ -31,16 +31,28 @@ const maxGoldenDiffLines = 20
 
 // AssertGolden compares actual against the committed golden at path, returning
 // an error naming the first differing lines when they diverge. Under
-// MIGRATION_UPDATE_GOLDENS the golden is rewritten instead — unless CI is set,
-// where regeneration is refused.
+// MIGRATION_UPDATE_GOLDENS the golden is rewritten from actual instead — but
+// only off CI.
+//
+// Under CI the request to regenerate degrades to the COMPARISON, and nothing is
+// ever written. That is not a weakening in either direction:
+//
+//   - Nothing is rewritten, so the hazard the rule exists for is closed as hard
+//     as before. A CI lane cannot rewrite the expectations it then reports a
+//     verdict from, and a drifted golden is still a hard error, never a skip.
+//   - The comparison is the STRONGER of the two verdicts. Rewriting asserts
+//     only that the tool still does whatever it does; comparing asserts that
+//     what it does is what was reviewed.
+//
+// A blanket refusal instead — an error regardless of whether the artifact
+// matched — is what post-merge-drift.yml tripped over. That lane regenerates
+// every shard a merge implied and diffs the tree, and it reports on `main`
+// where no PR check can gate it. Refusing on sight made it unconditionally red
+// for every merge that implied this shard, whatever the goldens said, which is
+// the same as having no post-merge check at all.
 func AssertGolden(path string, actual []byte) error {
-	if os.Getenv(updateGoldensEnv) != "" {
-		if os.Getenv(ciEnv) != "" {
-			return fmt.Errorf(
-				"migration harness: refusing to regenerate golden %s under %s: a golden is reviewed in a pull request, never rewritten by the lane that checks it",
-				path, ciEnv,
-			)
-		}
+	regenerating := os.Getenv(updateGoldensEnv) != ""
+	if regenerating && os.Getenv(ciEnv) == "" {
 		return writeGolden(path, actual)
 	}
 
@@ -50,6 +62,12 @@ func AssertGolden(path string, actual []byte) error {
 	}
 	if bytes.Equal(want, actual) {
 		return nil
+	}
+	if regenerating {
+		return fmt.Errorf(
+			"migration harness: golden %s does not match the artifact, and %s refuses to regenerate it under %s: a golden is reviewed in a pull request, never rewritten by the lane that checks it. Regenerate locally with `just update-golden migration` and commit the result.\n%s",
+			path, updateGoldensEnv, ciEnv, diff(want, actual),
+		)
 	}
 	return fmt.Errorf("migration harness: golden %s does not match the artifact:\n%s", path, diff(want, actual))
 }

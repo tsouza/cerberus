@@ -14,6 +14,15 @@
 // stands in for a generator whose output does or does not match the committed
 // bytes. Pointing this at a live shard would test chDB and the Go toolchain
 // instead, and would take minutes to say the same thing.
+//
+// The stub is also this file's one blind spot, and it is worth naming: it says
+// nothing about whether a real shard command can run in the environment the
+// lane runs it in. It could not, for the whole life of the lane — the migration
+// harness refused ON SIGHT to regenerate a golden with `CI` set, so every merge
+// whose diff implied the `migration` shard went red whatever the goldens said.
+// The stub answers to the recipe NAME and never to its behaviour, so it passed
+// throughout. That half belongs to the shard's own harness and is pinned there:
+// test/e2e/migration/lib's TestAssertGoldenUnderCIComparesRatherThanRefusingOnSight.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
