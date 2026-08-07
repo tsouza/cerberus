@@ -1,0 +1,57 @@
+# `timestamp(<vector selector>)` under query_range with the native
+# `timeSeriesResampleToGridWithStaleness` strategy wired on — issue #1941.
+#
+# timeSeriesResampleToGridWithStaleness returns ONLY the resampled value per
+# grid point (an Array(Nullable(Float64))); no member of the timeSeries*ToGrid
+# family publishes the timestamp of the sample each grid point carried forward.
+# So the native strategy cannot express this one shape and delegates it to its
+# fan-out Fallback — the chplan below is a RangeLWR carrying `lwr_sample_ts`,
+# exactly as with the flag off.
+#
+# That delegation is the point of this fixture: a fix correct only on the
+# default path would leave the bug live wherever the native path is enabled.
+# The rows here are identical to timestamp_of_metric_range_step.txtar, which is
+# the assertion that both paths agree.
+-- query.promql --
+timestamp(up)
+-- range_step --
+60s
+-- experimental_ts_grid_resample --
+on
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2025-12-31 23:59:23', 9), 1.0),
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:02:17', 9), 1.0);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 1767225563],
+  ["", {"job": "api"}, "2026-01-01T00:01:00Z", 1767225563],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 1767225563],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 1767225737],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 1767225737],
+  ["", {"job": "api"}, "2026-01-01T00:05:00Z", 1767225737]
+]
+-- args --
+[0] string = ""
+[1] float64 = 1e+09
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = ""
+[7] string = "service_name"
+[8] string = "up"
+-- chplan --
+Project ["" AS MetricName, Attributes, TimeUnix, toFloat64((toUnixTimestamp64Nano(lwr_sample_ts) / 1e+09)) AS Value]
+  RangeLWR step=1m0s lookback=5m0s ts=TimeUnix value=Value sample_ts=lwr_sample_ts start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName = "up")
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64((toUnixTimestamp64Nano(`lwr_sample_ts`) / toFloat64(?))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value`, lwr_sample_ts AS `lwr_sample_ts` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value, max(`TimeUnix`) AS lwr_sample_ts FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `MetricName`, `Attributes`, `anchor_ts`))
