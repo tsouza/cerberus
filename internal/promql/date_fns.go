@@ -12,8 +12,8 @@ import (
 // lowerDateFn maps PromQL date-component functions to their ClickHouse
 // equivalents. Each function takes one instant-vector argument whose
 // `Value` column is interpreted as a Unix timestamp in seconds — except
-// `timestamp(v)`, which reads each sample's `TimeUnix` column and
-// converts it to float seconds.
+// `timestamp(v)`, which ignores `Value` and reports a timestamp chosen by
+// the argument's parser shape (see [timestampResultExpr]).
 //
 // When called without an argument the PromQL spec defaults the input to
 // `vector(time())` — a single instant-vector entry whose value is the
@@ -36,9 +36,12 @@ import (
 //     because CH has no direct `daysInMonth` builtin; the day-of-month
 //     of the last day in the month is the day count for that month.
 //
-//   - `timestamp(v)` ignores `Value` and reads the sample's TimeUnix
-//     column instead, converting the DateTime64(9) to fractional Unix
-//     seconds via `toUnixTimestamp64Nano(TimeUnix) / 1e9`.
+//   - `timestamp(v)` ignores `Value`. For a VECTOR SELECTOR argument it
+//     reads the sample's own TimeUnix column; for every other argument
+//     shape it reads the evaluation instant instead, matching the two
+//     reference implementations ([timestampResultExpr]). Either way the
+//     chosen DateTime64(9) becomes fractional Unix seconds via
+//     `toUnixTimestamp64Nano(<ts>) / 1e9`.
 //
 // Type-coercion note: every CH date-component function (`toYear`,
 // `toMonth`, `toDayOfMonth`, `toDayOfWeek`, `toHour`, `toMinute`)
@@ -63,7 +66,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err != nil {
 		return nil, err
 	}
-	newValue := dateFnExpr(c.Func.Name, valueAsDateTime(s), &chplan.ColumnRef{Name: s.TimestampColumn})
+	newValue := dateFnExpr(c.Func.Name, valueAsDateTime(s), timestampResultExpr(c.Args[0], s, ctx))
 	if newValue == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
@@ -110,6 +113,72 @@ func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node,
 	return syntheticScalarVector(asFloat64(expr), nil, s, ctx), nil
 }
 
+// timestampResultExpr returns the expression `timestamp(v)` reports as
+// its result, chosen by the PARSER SHAPE of the argument. Reference
+// Prometheus implements `timestamp` twice and the argument's shape —
+// not its value — picks between them:
+//
+//   - `timestamp(<VectorSelector>)` is special-cased by the reference
+//     engine (promql/engine.go, rangeEvalTimestampFunctionOverVectorSelector),
+//     which stamps each output sample with the RAW sample timestamp
+//     (`F: float64(s.T) / 1000`). That is the sample's own `TimeUnix`.
+//   - EVERY other argument shape falls through to `funcTimestamp`, which
+//     returns `float64(enh.Ts) / 1000` — the EVALUATION instant of the
+//     step being computed, with the input sample's own timestamp
+//     discarded.
+//
+// The two answers coincide only when the selected sample sits exactly on
+// the eval instant; under the default 5m lookback they differ by up to
+// the lookback delta, so `timestamp(abs(m))` and `timestamp(m)` are
+// genuinely different queries.
+//
+// The unwrap is load-bearing and mirrors the reference engine's own:
+// upstream peels ParenExpr and StepInvariantExpr before its type test, so
+// `timestamp((m))` and an `@`-pinned `timestamp(m @ 100)` still take the
+// selector branch. [unwrapVectorSelector] peels exactly that pair.
+//
+// The tsRef slot is only consulted by the `timestamp` arm of
+// [dateFnExpr]; every other date function reads `Value`, so the choice
+// made here is inert for them.
+func timestampResultExpr(arg parser.Expr, s schema.Metrics, ctx lowerCtx) chplan.Expr {
+	if _, isSelector := unwrapVectorSelector(arg); isSelector {
+		return &chplan.ColumnRef{Name: s.TimestampColumn}
+	}
+	return evalInstantExpr(s, ctx)
+}
+
+// evalInstantExpr renders the evaluation instant of the step whose row is
+// being projected — Prometheus's `enh.Ts` — for a projection sitting
+// directly above an already-lowered instant vector.
+//
+// In RANGE mode the answer is the sample timestamp column, and that is a
+// structural property of cerberus's range lowering rather than a
+// coincidence: every range-mode source stamps `TimeUnix` with the STEP
+// ANCHOR, not with the underlying sample's own time. [wrapRangeLatestPerSeries]
+// collapses each (series, anchor) bucket and emits the canonical Sample
+// contract with `TimeUnix = anchor_ts`; [wrapRangeAbsoluteAtBroadcast]
+// projects the StepGrid's `anchor_ts` as `TimeUnix`; a RangeWindow does
+// the same for matrix functions. So above any range lowering the
+// timestamp column already IS the eval instant.
+//
+// In INSTANT mode it is not: the instant LWR emits `max(TimeUnix) AS
+// lwr_ts`, i.e. the newest in-window SAMPLE's own timestamp, which is
+// what makes the selector and non-selector forms differ. There the eval
+// instant is the request anchor, rendered as the same literal
+// `toDateTime64(...)` [anchorBaseExpr] gives every other anchor-reading
+// lowering, falling back to `now64(9)` when no anchor was threaded (a
+// plain [Lower] without range threading) — exactly the fallback `time()`
+// uses in the same situation.
+func evalInstantExpr(s schema.Metrics, ctx lowerCtx) chplan.Expr {
+	if ctx.step > 0 {
+		return &chplan.ColumnRef{Name: s.TimestampColumn}
+	}
+	if !ctx.end.IsZero() {
+		return anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+	}
+	return anchorBaseExpr(evalAnchor{})
+}
+
 // asFloat64 wraps e in `toFloat64(...)`. Used by the date-function
 // lowerings to coerce CH integer return types (toYear → UInt16,
 // toMonth/toHour/etc → UInt8) into Float64, matching the Sample.Value
@@ -123,7 +192,10 @@ func asFloat64(e chplan.Expr) chplan.Expr {
 // dateFnExpr returns the CH expression that computes the date-component
 // for the given PromQL function name. valueDT is the DateTime expression
 // derived from the input sample's Value (interpreted as Unix seconds);
-// tsRef is the raw `TimeUnix` column reference used by `timestamp(v)`.
+// tsRef is the timestamp expression `timestamp(v)` reports, chosen by the
+// caller from the argument's shape (see [timestampResultExpr]) — the raw
+// `TimeUnix` column for a vector selector, the evaluation instant
+// otherwise. No other date function reads it.
 //
 // Returns nil when name is not a recognised date function — caller
 // translates that into an "unsupported" error.
@@ -164,10 +236,10 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 	case "minute":
 		return &chplan.FuncCall{Name: "toMinute", Args: []chplan.Expr{valueDT}}
 	case "timestamp":
-		// `timestamp(v)` returns each sample's TimeUnix as float
-		// seconds — NOT a function of Value. Convert the DateTime64(9)
-		// column to nanoseconds (Int64) and divide by 1e9 to get
-		// fractional seconds.
+		// `timestamp(v)` returns tsRef as float seconds — NOT a
+		// function of Value. Convert the DateTime64(9) expression to
+		// nanoseconds (Int64) and divide by 1e9 to get fractional
+		// seconds.
 		return &chplan.Binary{
 			Op:    chplan.OpDiv,
 			Left:  &chplan.FuncCall{Name: "toUnixTimestamp64Nano", Args: []chplan.Expr{tsRef}},

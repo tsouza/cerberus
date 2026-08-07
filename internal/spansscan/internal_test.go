@@ -301,3 +301,117 @@ func TestTopLevelScopeForwardKeepsBrackets(t *testing.T) {
 		}
 	}
 }
+
+// TestWordEndingAt pins the backward-anchored keyword recogniser, whose only
+// logic of its own is the `start < 0` underflow guard: without it, a keyword
+// longer than the text before j computes a negative slice index. The remaining
+// cases confirm it delegates the standalone-token rules to wordAt rather than
+// re-deriving them.
+func TestWordEndingAt(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		sql  string
+		j    int
+		kw   string
+		want bool
+	}{
+		// Keyword ends exactly at j and starts exactly at 0: start == 0, the
+		// boundary the underflow guard must ADMIT. A `<`→`<=` flip rejects it.
+		{"exact_start", "FROM (", 3, "FROM", true},
+		// j sits before the keyword could fit: start == -1. The guard must
+		// reject rather than index negatively.
+		{"underflow", "ROM (", 2, "FROM", false},
+		// Standalone rules still apply through wordAt: an identifier byte in
+		// front means this is not the keyword.
+		{"preceded_by_ident", "xFROM ", 4, "FROM", false},
+		// j must be the keyword's LAST byte, not any byte inside it.
+		{"anchored_at_last_byte", " FROM ", 3, "FROM", false},
+		{"case_insensitive", " from", 4, "FROM", true},
+	}
+	for _, tc := range cases {
+		if got := wordEndingAt(tc.sql, tc.j, tc.kw); got != tc.want {
+			t.Errorf("%s: wordEndingAt(%q, %d, %q) = %v, want %v", tc.name, tc.sql, tc.j, tc.kw, got, tc.want)
+		}
+	}
+}
+
+// TestPrecedingToken pins the backward skip that finds the token introducing a
+// derived table's `SELECT`. Its return value is asserted EXACTLY rather than
+// through derivedTableScan, because two of its branches are invisible from
+// there: an answer of 0 and an answer of -1 both make wordEndingAt reject (a
+// four-byte keyword cannot end at offset 0), so only a direct assertion can tell
+// "the token starts at the very first byte" from "there is no token".
+func TestPrecedingToken(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		sql  string
+		sel  int
+		want int
+	}{
+		// Ordinary case: `FROM (SELECT` — the run of `(` and spaces is skipped
+		// and the `M` ending `FROM` is returned.
+		{"skips_paren_and_space", "FROM (SELECT", 6, 3},
+		// Nested set-op group `FROM ((SELECT` — every opening parenthesis in the
+		// run is skipped, so the outermost bracket is recognised.
+		{"skips_paren_run", "FROM ((SELECT", 7, 3},
+		// Tabs and newlines are skippable too, not just spaces.
+		{"skips_tab_and_newline", "JOIN\t\n(SELECT", 7, 3},
+		// The token ends at the very FIRST byte. Answering 0 rather than -1 is
+		// what a `k >= 0` → `k > 0` boundary would get wrong, and the two are
+		// indistinguishable downstream.
+		{"token_at_offset_zero", "x (SELECT", 3, 0},
+		// Only skippable bytes precede sel → no token.
+		{"only_skippable", " ((SELECT", 3, -1},
+		// sel at the statement root: nothing precedes it at all.
+		{"root_select", "SELECT * FROM t", 0, -1},
+		// owningSelect found no owner; the negative offset passes straight
+		// through rather than indexing out of range.
+		{"no_owning_select", "FROM t", -1, -1},
+	}
+	for _, tc := range cases {
+		if got := precedingToken(tc.sql, tc.sel); got != tc.want {
+			t.Errorf("%s: precedingToken(%q, %d) = %d, want %d", tc.name, tc.sql, tc.sel, got, tc.want)
+		}
+	}
+}
+
+// TestOwningSelect pins the backward scope walk that decides which SELECT a
+// clause belongs to. Its three branches are all reachable and all load-bearing
+// for the derived-table verdict: a `)` opens a nested group that must be
+// skipped WHOLE (else a subquery's own SELECT is mistaken for the owner), a `(`
+// at depth zero means the enclosing scope opened with no intervening SELECT
+// (there is no owner), and a depth-zero SELECT is the answer.
+func TestOwningSelect(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		sql  string
+		// i is the offset whose owning SELECT is sought; want is the expected
+		// SELECT offset, or -1 for none.
+		i, want int
+	}{
+		// Plain case: the only SELECT precedes i at the same depth.
+		{"same_depth", "SELECT a FROM t", 9, 0},
+		// A completed subquery sits between i and the real owner. Scanning
+		// back, its `)` must open a skip that swallows its `SELECT` whole —
+		// without the depth counter the inner SELECT (offset 21) would win.
+		{"skips_nested_group", "SELECT a FROM x WHERE (SELECT 1) AND b FROM t", 39, 0},
+		// i sits directly inside a bracket that no SELECT opened — a function
+		// argument list or a bracketed conjunct. The `(` is met at depth 0, so
+		// there is no owning SELECT to report.
+		{"paren_without_select", "SELECT f(a FROM t)", 11, -1},
+		// No SELECT anywhere before i.
+		{"none", "FROM t", 5, -1},
+		// The owning SELECT is at offset 0 — the statement root. This is the
+		// value derivedTableScan must then classify as NOT a derived table,
+		// so it has to be distinguishable from the -1 "no owner" answer.
+		{"root_select", "SELECT * FROM `otel_traces`", 9, 0},
+	}
+	for _, tc := range cases {
+		if got := owningSelect(tc.sql, tc.i); got != tc.want {
+			t.Errorf("%s: owningSelect(%q, %d) = %d, want %d", tc.name, tc.sql, tc.i, got, tc.want)
+		}
+	}
+}
