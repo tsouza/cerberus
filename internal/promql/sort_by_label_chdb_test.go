@@ -42,6 +42,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // sortByLabelSeed creates and populates an Attributes Map table with a
@@ -221,7 +222,7 @@ func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
 					got = append(got, h)
 				}
 			}
-			if err := rows.Err(); err != nil && !strings.Contains(err.Error(), "empty row") {
+			if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 				t.Fatalf("rows.Err: %v", err)
 			}
 			if len(got) != len(tc.want) {

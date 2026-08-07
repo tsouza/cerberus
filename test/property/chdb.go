@@ -10,23 +10,6 @@ import (
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 )
 
-// chdbEOFSentinel is the spurious end-of-iteration error chdb-go's
-// parquet driver returns instead of io.EOF (see chdb-go v1.11.0
-// `parquet.go`: `return fmt.Errorf("empty row")`). Replicated here so
-// the property runner doesn't depend on test/spec internals.
-const chdbEOFSentinel = "empty row"
-
-// tolerantRowsErr mirrors the helper used by spec/runner_chdb.go.
-func tolerantRowsErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), chdbEOFSentinel) {
-		return nil
-	}
-	return err
-}
-
 // openChDB returns a fresh ephemeral chDB session bound to t's
 // lifetime. Replicated from test/spec/runner_chdb.go; kept local so
 // test/property doesn't import test/spec.
