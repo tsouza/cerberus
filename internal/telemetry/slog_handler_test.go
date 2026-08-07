@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/logtest"
 	lognoop "go.opentelemetry.io/otel/log/noop"
@@ -279,10 +280,10 @@ func flattenRecorder(r *logtest.Recorder) []logtest.Record {
 	return out
 }
 
-func attrMap(attrs []otellog.KeyValue) map[string]string {
+func attrMap(attrs []attribute.KeyValue) map[string]string {
 	out := map[string]string{}
 	for _, kv := range attrs {
-		out[kv.Key] = kv.Value.AsString()
+		out[string(kv.Key)] = kv.Value.AsString()
 	}
 	return out
 }
