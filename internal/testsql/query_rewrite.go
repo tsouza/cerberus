@@ -49,6 +49,9 @@ func TolerantRowsErr(err error) error {
 //     source column so the toJSONString wrap cannot shadow the raw map a
 //     WHERE / GROUP BY predicate references — ClickHouse resolves those
 //     identifiers against SELECT aliases before FROM columns.
+//   - logfmt_fields / json_fields are the `| logfmt` / `| json` parser-stage
+//     extractions loki.buildDetectedFieldsSQL projects alongside the peek
+//     row — Map(String,String) like every other entry here.
 var mapColumnNames = []string{
 	"Attributes",
 	"ExemplarAttributes",
@@ -57,8 +60,10 @@ var mapColumnNames = []string{
 	"ResourceAttrs",
 	"ScopeAttributes",
 	"SpanAttributes",
+	"json_fields",
 	"labels",
 	"log_attributes",
+	"logfmt_fields",
 	"stream_labels",
 }
 

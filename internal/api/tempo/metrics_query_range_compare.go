@@ -316,7 +316,7 @@ func (h *Handler) execCompareRange(
 	}
 	h.Logger.Debug("cerberus tempo metrics_query_range compare",
 		"traceql", telemetry.SanitizeForLog(q), "start", start, "end", end, "step", step,
-		"sql", res.SQL, "args", res.Args)
+		"sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	series := postProcessCompare(res.Samples, cmp.TopN, compareAnchorGrid(start, end, step))
 	return series, res.Headers, nil

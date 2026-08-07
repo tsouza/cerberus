@@ -260,11 +260,23 @@ var stubFixtures = map[string]func() *StubQuerier{
 	// loki-detected-fields mirrors the logfmt fixture in
 	// internal/api/loki/detected_fields_test.go (duration-typed field
 	// included — the type drives Logs Drilldown's unwrap query
-	// generation).
+	// generation). LogfmtFields is what ClickHouse returns for the
+	// peek row's `| logfmt` projection; the handler does not re-parse
+	// Line in Go, so a row without it contributes no parsed fields.
 	"loki-detected-fields": func() *StubQuerier {
 		return &StubQuerier{DetectedRows: []chclient.DetectedFieldRow{
-			{Line: `level=info method=GET status=200 duration=12ms`},
-			{Line: `level=error method=POST status=500 duration=1s`},
+			{
+				Line: `level=info method=GET status=200 duration=12ms`,
+				LogfmtFields: map[string]string{
+					"level": "info", "method": "GET", "status": "200", "duration": "12ms",
+				},
+			},
+			{
+				Line: `level=error method=POST status=500 duration=1s`,
+				LogfmtFields: map[string]string{
+					"level": "error", "method": "POST", "status": "500", "duration": "1s",
+				},
+			},
 		}}
 	},
 

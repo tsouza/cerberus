@@ -131,7 +131,8 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 // Mount registers the Loki-compatible endpoints under /loki/api/v1/ on
 // mux. Query + range + index/stats + index/volume cover the data-plane;
 // the metadata endpoints (/labels, /label/{name}/values, /series,
-// /detected_fields, /patterns) cover what Grafana's logs UI queries to
+// /detected_fields, /detected_field/{name}/values, /detected_labels,
+// /patterns) cover what Grafana's logs UI queries to
 // populate label autocomplete, the streams chooser, and the patterns
 // panel. /patterns trains a drain template miner over the peek window.
 func (h *Handler) Mount(mux *http.ServeMux) {
@@ -163,6 +164,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("POST /loki/api/v1/series", h.handleSeries)
 	register("GET /loki/api/v1/detected_fields", h.handleDetectedFields)
 	register("POST /loki/api/v1/detected_fields", h.handleDetectedFields)
+	register("GET /loki/api/v1/detected_field/{name}/values", h.handleDetectedFieldValues)
+	register("POST /loki/api/v1/detected_field/{name}/values", h.handleDetectedFieldValues)
 	register("GET /loki/api/v1/detected_labels", h.handleDetectedLabels)
 	register("POST /loki/api/v1/detected_labels", h.handleDetectedLabels)
 	register("GET /loki/api/v1/patterns", h.handlePatterns)
@@ -289,7 +292,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
-	h.Logger.Debug("cerberus loki query", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus loki query", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	data, err := buildInstantData(expr, res.Samples, ts, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
@@ -375,7 +378,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		h.onQueryRangeDrain(res.Inspected)
 	}
 	expr, _ := res.Meta.Extra["expr"].(syntax.Expr)
-	h.Logger.Debug("cerberus loki query_range", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", res.Args)
+	h.Logger.Debug("cerberus loki query_range", "logql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	data, err := buildRangeData(expr, res.Samples, start, end, step, h.Schema, limit, dir, wantsCategorizedLabels(r))
 	if err != nil {
