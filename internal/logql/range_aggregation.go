@@ -941,12 +941,22 @@ func materialiseParserMergedLabels(
 	// Same reasoning for the top-level scalar columns an outer
 	// `by (TraceId, ...)` names: the identity wrap reads them straight off
 	// the scan, and a Project that did not carry them through leaves CH
-	// resolving an identifier that no longer exists. The columns above are
-	// already in the list, so only the ones outside it need appending.
+	// resolving an identifier that no longer exists. Only the ones not
+	// already projected need appending, and which those are is read back
+	// off the list built above rather than restated as a set of column
+	// names — a restatement drifts the moment a projection is added here,
+	// and duplicating a column in a Project is a CH-level ambiguity.
+	projected := make(map[string]bool, len(projections))
+	for _, p := range projections {
+		if ref, ok := p.Expr.(*chplan.ColumnRef); ok && p.Alias == "" {
+			projected[ref.Name] = true
+		}
+	}
 	for _, col := range topLevelColumnsReferencedBy(lc.OuterByLabels, s) {
-		if col == s.TimestampColumn || col == s.BodyColumn || col == s.SeverityColumn || col == s.ResourceAttributesColumn {
+		if projected[col] {
 			continue
 		}
+		projected[col] = true
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
 	}
 	return &chplan.Project{Input: inner, Projections: projections}, &chplan.ColumnRef{Name: mergedAlias}
