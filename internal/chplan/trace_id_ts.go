@@ -70,8 +70,8 @@ func TraceIDTsBounds(table, startColumn, endColumn, timestampColumn string, coho
 // TraceIDTsEnvelopeAlias names the ClickHouse scalar binding that
 // [TraceIDTsEnvelopeBounds] reads its two bounds from: one
 // `(min(startColumn), max(endColumn))` tuple over the cohort's trace_id_ts
-// rows, declared once on the outermost statement and therefore evaluated
-// once however many bounds reference it.
+// rows, declared once on the innermost statement that contains every bound
+// reading it and therefore evaluated once however many bounds reference it.
 const TraceIDTsEnvelopeAlias = "_cerberus_trace_id_ts_env"
 
 // TraceIDTsEnvelopeStartElement / TraceIDTsEnvelopeEndElement are the 1-based

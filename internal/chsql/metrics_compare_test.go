@@ -23,6 +23,36 @@ func containsInt64Arg(args []any, want int64) bool {
 	return false
 }
 
+// compareRootLegSpan returns the byte span of the root ('r') leg's own derived
+// table inside sql: the balanced-paren region opened by the `LEFT JOIN (`
+// marker. chsql always parenthesises a join side (subqueryFrag), so that region
+// is a complete SELECT — which is exactly the property under test, and the same
+// extraction test/perf's compare guards use to EXPLAIN the root scan's part
+// pruning in isolation.
+func compareRootLegSpan(t *testing.T, sql string) (start, end int) {
+	t.Helper()
+	const joinMarker = "LEFT JOIN ("
+	idx := strings.Index(sql, joinMarker)
+	if idx < 0 {
+		t.Fatalf("expected %q (the s/r join) in emitted SQL:\n%s", joinMarker, sql)
+	}
+	start = idx + len(joinMarker)
+	depth := 1
+	for i := start; i < len(sql); i++ {
+		switch sql[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return start, i
+			}
+		}
+	}
+	t.Fatalf("unbalanced parens extracting the root ('r') leg from:\n%s", sql)
+	return 0, 0
+}
+
 // compareNode builds a minimal valid MetricsCompare (no root lookup —
 // the join shape is covered by the lowering-level tests + TXTAR
 // fixtures; this file pins the emitter's own contract).
@@ -266,6 +296,9 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 // and the root scan's own membership gate), never once per bound, and the
 // trace_id_ts table is scanned once. A test that only checked the two bounds
 // are present would pass on the shape that re-derives the envelope per bound.
+//
+// It pins the binding's PLACEMENT too: the declaration and its readers are one
+// statement, the root ('r') leg, so that leg stands alone as a runnable query.
 func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 	t.Parallel()
 
@@ -286,14 +319,29 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	// The envelope body is declared once, on the statement's outermost SELECT,
-	// as the `(min(Start), max(End))` tuple both bounds read.
+	// The `(min(Start), max(End))` tuple both bounds read is declared on the
+	// root ('r') leg — the innermost statement containing every reader, since
+	// the bounds sit in that leg's own scan filter several subqueries down.
+	//
+	// Counting alias occurrences cannot tell a resolvable binding from an
+	// unresolvable one: a declaration hoisted onto some enclosing SELECT
+	// satisfies the count while leaving the leg a fragment that names an
+	// identifier it does not declare. So assert the placement instead — the
+	// declaration opens the extracted leg, and no reference to the alias
+	// escapes it.
+	legStart, legEnd := compareRootLegSpan(t, sql)
+	rootLeg := sql[legStart:legEnd]
 	const wantBinding = "WITH (SELECT tuple(min(`Start`), max(`End`)) FROM `otel_traces_trace_id_ts` WHERE "
-	if !strings.HasPrefix(sql, wantBinding) {
-		t.Fatalf("expected the envelope binding on the outermost SELECT, got:\n%s", sql)
+	if !strings.HasPrefix(rootLeg, wantBinding) {
+		t.Fatalf("expected the envelope binding to open the root ('r') leg, got:\n%s", rootLeg)
 	}
 	if got := strings.Count(sql, "AS "+chplan.TraceIDTsEnvelopeAlias); got != 1 {
 		t.Errorf("envelope binding declared %d times, want exactly 1:\n%s", got, sql)
+	}
+	if inLeg, total := strings.Count(rootLeg, chplan.TraceIDTsEnvelopeAlias),
+		strings.Count(sql, chplan.TraceIDTsEnvelopeAlias); inLeg != total {
+		t.Errorf("%s is referenced %d times but only %d live in the leg that declares it:\n%s",
+			chplan.TraceIDTsEnvelopeAlias, total, inLeg, sql)
 	}
 	// One binding body means one trace_id_ts scan and one aggregate per bound
 	// column. The pre-binding shape re-derived the envelope per bound, which

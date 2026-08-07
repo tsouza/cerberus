@@ -95,9 +95,17 @@ const (
 // when the push succeeded, so
 // compareBaseQuery can skip boundedRootLeg's now-redundant wrap instead
 // of re-filtering an already-seeded result by the same trace-id set.
+//
+// rootEnvelope carries the scalar-binding body those pushed-down bounds read
+// (rootLookupTraceIDTsBounds' envelope) alongside the flag that says they
+// landed, so compareBaseQuery declares the binding on the very relation it
+// renders the readers into. Non-nil only when rootSeeded is true: bounds that
+// never reached a scan have no reader, and an unread scalar WITH still costs a
+// full trace_id_ts scan.
 type compareScanBound struct {
-	lo, hi     Frag
-	rootSeeded bool
+	lo, hi       Frag
+	rootSeeded   bool
+	rootEnvelope *QueryBuilder
 }
 
 // compareBaseQuery builds the innermost SELECT — cohort flag +
@@ -138,6 +146,9 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 		root, rerr := e.subqueryFrag(m.RootLookup)
 		if rerr != nil {
 			return nil, rerr
+		}
+		if bound != nil {
+			root = bindRootLookupTraceIDTsEnvelope(root, bound.rootEnvelope)
 		}
 		// Right ('r') leg: bound the per-trace root lookup to the same
 		// windowed cohort the 's' leg scans, restricting root rows to
@@ -357,14 +368,15 @@ func tsBoundExprs(tsCol string, startNano, endNano int64) (lo, hi chplan.Expr) {
 // envelope query that predicate lives in.
 //
 // envelope is the body of the scalar binding the two bounds read: one
-// `(min(Start), max(End))` tuple over the cohort's trace_id_ts rows, which the
-// caller declares on the statement's outermost SELECT. Collapsing the two
-// aggregates into one tuple is what takes the seed from three renders per
-// statement to two (the binding body, and the root scan's own membership
-// gate): a cohort here is a whole subquery, so each bound that carries its own
-// copy of it is another scan of the spans table. Measured on chDB over a
-// 2M-span OTel-shaped table whose cohort envelope spans 30 days, the root leg
-// runs ~15% faster in the bound form.
+// `(min(Start), max(End))` tuple over the cohort's trace_id_ts rows, which
+// bindRootLookupTraceIDTsEnvelope declares on the rendered root-lookup
+// relation — the same statement the bounds are pushed into, so the leg is
+// self-contained. Collapsing the two aggregates into one tuple is what takes
+// the seed from three renders per statement to two (the binding body, and the
+// root scan's own membership gate): a cohort here is a whole subquery, so each
+// bound that carries its own copy of it is another scan of the spans table.
+// Measured on chDB over a 2M-span OTel-shaped table whose cohort envelope
+// spans 30 days, the root leg runs ~15% faster in the bound form.
 //
 // The seed's third render — the `TraceId IN (<seed>)` gate on the root scan —
 // stays a subquery deliberately. Binding the id SET instead (a groupArray
@@ -410,6 +422,45 @@ func rootLookupTraceIDTsBounds(
 		Where(func(b *Builder) { _ = b.Expr(cohortPred) })
 	lo, hi = chplan.TraceIDTsEnvelopeBounds(chplan.TraceIDTsEnvelopeAlias, timestampColumn)
 	return lo, hi, envelope
+}
+
+// bindRootLookupTraceIDTsEnvelope declares rootLookupTraceIDTsBounds' envelope
+// on root — the rendered root-lookup relation whose own scan filter carries the
+// only readers of the binding — and returns the bound relation. A nil envelope
+// (no trace_id_ts gate, or bounds that never reached a scan) returns root
+// untouched, keeping the unbound shape byte-identical.
+//
+// The declaration belongs on the INNERMOST statement containing every reader,
+// not on the compare statement's outermost SELECT. Both placements are legal
+// and both cost the same: a ClickHouse WITH alias resolves from subqueries
+// nested arbitrarily deep inside the statement that declares it, and the body
+// is evaluated exactly once either way. Measured on chDB against a ~330ms
+// binding body read twice from inside a join leg's own nested scan filter, the
+// leg-level declaration ran 363ms and the outermost-SELECT declaration 377ms —
+// one body evaluation in both, the difference inside run-to-run noise; the same
+// body inlined per reader instead of bound grew 344ms to 412ms.
+//
+// What the inner placement buys is locality. The bounds live several subqueries
+// down, inside the root lookup's scan-level Filter (windowRootLookupTraceIDSeed
+// puts them there); declaring the binding at the top left the root leg a
+// fragment that could not be read, reasoned about, or executed without the rest
+// of the statement around it. Declared here, the leg is a complete statement:
+// whatever renders it — the compare join, or a perf guard extracting the leg to
+// EXPLAIN its part pruning in isolation — gets the binding with it.
+//
+// The wrapper is a `SELECT * FROM (<root>)`, the same typed shape emitBound
+// uses to attach chplan.BoundedTraceScopeAlias to a rendered plan: `SELECT *`
+// forwards the root lookup's own column names and row shape unchanged, so the
+// join's `ON s.TraceId = r.TraceId` resolves exactly as it did.
+func bindRootLookupTraceIDTsEnvelope(root Frag, envelope *QueryBuilder) Frag {
+	if envelope == nil {
+		return root
+	}
+	return NewQuery().
+		WithScalar(chplan.TraceIDTsEnvelopeAlias, envelope).
+		Select(Star()).
+		From(root).
+		Frag()
 }
 
 // pushPredicateToSpansScanFilter walks n in place looking for the Filter
@@ -596,10 +647,10 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	// e.ctxSpansTable, so this fires uniformly on every emit path — no
 	// context-threading gate needed here.
 	// envelope is the trace_id_ts cohort envelope's scalar-binding body, set by
-	// the non-root-scoped arm below and declared on the outermost SELECT so the
-	// bounds it feeds — which sit inside the root leg's own scan filter, several
-	// subqueries down — resolve against one evaluation of it.
-	var envelope *QueryBuilder
+	// the non-root-scoped arm below. It travels to compareBaseQuery on the
+	// bound, which declares it on the root-lookup relation itself — the same
+	// statement whose scan filter carries the bounds that read it (see
+	// bindRootLookupTraceIDTsEnvelope).
 	if bound != nil && m.RootLookup != nil {
 		// The seed must bound Inner by the SAME (Start-Offset-range, End-Offset]
 		// window the 's' leg's own scan uses (innerScanTsBoundsFrags above) —
@@ -620,6 +671,7 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 		// to look up there is no envelope to derive either, so the scan keeps
 		// #1214's unbounded-but-lossless shape.
 		var rootLo, rootHi chplan.Expr
+		var envelope *QueryBuilder
 		switch {
 		case m.InnerRootScoped:
 			rootLo, rootHi = lo, hi
@@ -630,12 +682,14 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 		windowed.RootLookup = rootLookup
 		boundCopy := *bound
 		boundCopy.rootSeeded = seeded
+		if seeded {
+			boundCopy.rootEnvelope = envelope
+		}
+		// A !seeded arm leaves rootEnvelope nil: the bounds never reached a
+		// scan, so nothing reads the binding and declaring it would buy a full
+		// trace_id_ts scan for no reader.
 		bound = &boundCopy
 		m = &windowed
-		if !seeded {
-			// The bounds never reached a scan, so nothing reads the binding.
-			envelope = nil
-		}
 	}
 	base, err := e.compareBaseQuery(m, bound, tsCol)
 	if err != nil {
@@ -654,9 +708,6 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	)
 
 	outer := NewQuery().From(fanout.Frag())
-	if envelope != nil {
-		outer.WithScalar(chplan.TraceIDTsEnvelopeAlias, envelope)
-	}
 	outer.Select(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
 	outer.SelectAs(compareCountValueFrag(), compareValueOut(m))
 	outer.GroupBy(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
