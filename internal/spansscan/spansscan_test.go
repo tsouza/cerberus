@@ -110,12 +110,12 @@ const metricsWindowRecursiveUnwindowed = "SELECT `anchor_ts`, sum(in_window) AS 
 	"WHERE `Timestamp` > toDateTime64('2026-06-27 14:43:12.000000000', 9) AND `Timestamp` <= toDateTime64('2026-06-27 15:13:12.000000000', 9) " +
 	"GROUP BY `anchor_ts`"
 
-// matrixFamilyWrapper is the CONFIRMED-FINE range-window matrix shape: a plain
-// pass-through `(SELECT * FROM otel_traces WHERE …)` whose Timestamp window sits
-// on the enclosing wrapper — CH pushes it into the scan. The outer GROUP BY must
-// NOT cause a flag, because the scan is a `SELECT *` pass-through. Renders its
-// window as toDateTime64, so it also pins that the broadened precondition does
-// not over-fire on the pass-through shape.
+// matrixFamilyWrapper is the CONFIRMED-FINE range-window matrix shape: a derived
+// table `(SELECT * FROM otel_traces WHERE …)` whose Timestamp window sits on the
+// enclosing wrapper — CH pushes it into the scan. The outer GROUP BY must NOT
+// cause a flag, because the scan sits in a derived table. Renders its window as
+// toDateTime64, so it also pins that the broadened precondition does not
+// over-fire on the derived-table shape.
 const matrixFamilyWrapper = "SELECT `anchor_ts`, toFloat64(sum(in_window)) / 300 AS `Value` " +
 	"FROM (SELECT arrayJoin(range(0, 61)) AS `anchor_ts`, 1 AS `in_window` " +
 	"FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) WHERE `Timestamp` > toDateTime64('2026-06-27 14:43:12.000000000', 9) AND `Timestamp` <= toDateTime64('2026-06-27 15:13:12.000000000', 9)) " +
@@ -393,11 +393,10 @@ const recursiveArmBracketedWindow = "WITH RECURSIVE _struct_closure_1 AS (" +
 // columnPrunedSeedInRecursiveBody is the #1889 production shape: the nested-set
 // numbering CTE's `TraceId IN (<seed>)` list holds a union of three seed arms,
 // and the optimizer's late-materialisation rewrite has replaced one arm's
-// `SELECT *` pass-through with an explicit column list. That arm is a fully
-// windowed physical scan carrying its own bracketed `Timestamp` bounds, but it
-// no longer matches the `SELECT *` pass-through exclusion — so the ONLY thing
-// that can clear it is reading its own bracketed WHERE as co-scope. It must NOT
-// be flagged.
+// `SELECT *` projection with an explicit column list. That arm is a fully
+// windowed physical scan carrying its own bracketed `Timestamp` bounds, and it
+// is cleared by reading that bracketed WHERE as co-scope — independently of the
+// derived-table exclusion, which also covers it. It must NOT be flagged.
 const columnPrunedSeedInRecursiveBody = "WITH RECURSIVE _cerberus_ns_paths AS (" +
 	"SELECT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS `_depth` FROM `otel_traces` " +
 	"WHERE `ParentSpanId` = '' AND `TraceId` IN (" +
@@ -514,6 +513,77 @@ func TestUnwindowedSpansScans_BracketingDoesNotChangeVerdict(t *testing.T) {
 						tc.name, depth, got, tc.want, sql)
 				}
 				wrapped = "(" + wrapped + ")"
+			}
+		})
+	}
+}
+
+// The three fixtures below pin that pass-through membership is decided by the
+// scan's TABLE POSITION and never by the wrapper's projection spelling (#1912).
+// Each fails under the superseded `SELECT\s+\*\s+FROM` exclusion, and they fail
+// in OPPOSITE directions, so neither a blanket exclusion nor a blanket flag can
+// satisfy the set.
+
+// columnListedDerivedTableSeed is a recursive anchor arm whose seed derived
+// table carries an EXPLICIT COLUMN LIST and no window of its own; the window
+// sits on the enclosing arm. The scan is a bare relational operand, so CH pushes
+// that window in and prunes — it must NOT be flagged. Under the projection-
+// keyed exclusion the wrapper stopped matching the moment late materialisation
+// dropped the `*`, and this pruning-safe scan was reported as unbounded, taking
+// a live query off the wire (#1889).
+const columnListedDerivedTableSeed = "WITH RECURSIVE _closure AS (" +
+	"SELECT `TraceId`, `SpanId`, 0 AS _depth " +
+	"FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId` FROM `otel_traces`) AS _seed " +
+	"WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000) " +
+	"UNION ALL " +
+	"SELECT t.`TraceId`, t.`SpanId`, c._depth + 1 " +
+	"FROM `otel_traces` AS t INNER JOIN _closure AS c ON t.`TraceId` = c.`TraceId` " +
+	"WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)" +
+	") SELECT `TraceId`, `SpanId` FROM _closure"
+
+// starProjectedRecursiveArm is the mirror image: a genuinely windowless scan
+// that WEARS the `SELECT *` spelling while sitting as a recursive CTE arm, not
+// as a derived table. Nothing encloses a CTE body that CH could push a window in
+// from, so this closure reads the whole table and MUST be flagged. The
+// projection-keyed exclusion skipped it on the strength of its `*` alone — the
+// whole-table read the guard exists to stop (#1109).
+const starProjectedRecursiveArm = "WITH RECURSIVE _closure AS (" +
+	"SELECT * FROM `otel_traces` WHERE `ParentSpanId` = '' " +
+	"UNION ALL " +
+	"SELECT t.`TraceId`, t.`SpanId`, c._depth + 1 " +
+	"FROM `otel_traces` AS t INNER JOIN _closure AS c ON t.`TraceId` = c.`TraceId` " +
+	"WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)" +
+	") SELECT `TraceId`, `SpanId` FROM _closure"
+
+// starProjectedRootGroupBy puts the same `SELECT *` spelling at the STATEMENT
+// ROOT, above a `GROUP BY` and a windowed `TraceId IN (<seed>)`. The seed is
+// inert for pruning and the root scan has no enclosing scope at all, so the
+// aggregation runs over the whole table and it MUST be flagged — the GROUP BY
+// leg of the same false negative.
+const starProjectedRootGroupBy = "SELECT * FROM `otel_traces` " +
+	"WHERE `TraceId` IN (SELECT `TraceId` FROM `otel_traces` WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000)) " +
+	"GROUP BY `TraceId`"
+
+// TestUnwindowedSpansScans_PassThroughIsPositional pins that the derived-table
+// position, not the projection list, decides the pass-through exclusion.
+func TestUnwindowedSpansScans_PassThroughIsPositional(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		sql  string
+		want int
+	}{
+		{"column_listed_derived_table_seed", columnListedDerivedTableSeed, 0},
+		{"star_projected_recursive_arm", starProjectedRecursiveArm, 1},
+		{"star_projected_root_group_by", starProjectedRootGroupBy, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := len(spansscan.UnwindowedSpansScans(tc.sql, spansTable))
+			if got != tc.want {
+				t.Fatalf("UnwindowedSpansScans(%s): got %d finding(s), want %d — pass-through membership must follow the scan's table position, not its projection spelling\nSQL:\n%s",
+					tc.name, got, tc.want, tc.sql)
 			}
 		})
 	}

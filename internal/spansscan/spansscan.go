@@ -67,34 +67,21 @@ var (
 	reTimestampCmp = regexp.MustCompile("`Timestamp`\\s*(>=|<=|>|<|=)|(>=|<=|>|<|=)\\s*`Timestamp`")
 )
 
-// tableRegexps bundles the two spans-table-name-dependent matchers.
-type tableRegexps struct {
-	// spansFrom matches every physical scan of the spans table —
-	// `FROM `otel_traces`` and `FROM `otel_traces` AS t`.
-	spansFrom *regexp.Regexp
-	// passthroughFrom matches the plain pass-through wrapper
-	// `SELECT * FROM `otel_traces`` (submatch 1 = the FROM token). This is the
-	// matrix-family / seed-leaf shape: a Timestamp predicate on the wrapper's
-	// own (or the enclosing) scope DOES push into this scan, so it is excluded.
-	passthroughFrom *regexp.Regexp
-}
-
-// regexpCache memoises the per-table compiled regexps so the emit chokepoint
-// (which runs on every query, almost always with the same default table) does
-// not recompile on each call. Keyed by spans-table name; value is tableRegexps.
+// regexpCache memoises the per-table compiled `FROM <spans table>` matcher so
+// the emit chokepoint (which runs on every query, almost always with the same
+// default table) does not recompile on each call. Keyed by spans-table name;
+// value is *regexp.Regexp.
 var regexpCache sync.Map
 
-func regexpsFor(spansTable string) tableRegexps {
+// spansFromRegexp returns the matcher for every physical scan of the spans
+// table — `FROM `otel_traces“ and `FROM `otel_traces` AS t`.
+func spansFromRegexp(spansTable string) *regexp.Regexp {
 	if v, ok := regexpCache.Load(spansTable); ok {
-		return v.(tableRegexps)
+		return v.(*regexp.Regexp)
 	}
-	q := regexp.QuoteMeta(spansTable)
-	tr := tableRegexps{
-		spansFrom:       regexp.MustCompile("FROM\\s+`" + q + "`"),
-		passthroughFrom: regexp.MustCompile("SELECT\\s+\\*\\s+(FROM\\s+`" + q + "`)"),
-	}
-	regexpCache.Store(spansTable, tr)
-	return tr
+	re := regexp.MustCompile("FROM\\s+`" + regexp.QuoteMeta(spansTable) + "`")
+	regexpCache.Store(spansTable, re)
+	return re
 }
 
 // UnwindowedSpansScans returns every physical scan of spansTable in sql that
@@ -109,9 +96,9 @@ func regexpsFor(spansTable string) tableRegexps {
 //     metrics grid's toDateTime64) — there is nothing to push down, so the
 //     unbounded concern belongs to the resource-bound gate, not this
 //     partition-pruning matcher;
-//   - the scan is a pass-through wrapper (`SELECT * FROM <spans table>`), whose
-//     enclosing-scope Timestamp predicate pushes in and prunes (the validated
-//     matrix-family wrapper shape);
+//   - the scan is the table of a DERIVED TABLE — a subquery in `FROM (…)` /
+//     `JOIN (…)` position — whose enclosing-scope Timestamp predicate pushes in
+//     and prunes (the validated matrix-family wrapper and seed-leaf shape);
 //   - the scan carries a co-scope `Timestamp` comparison (already prunes);
 //   - the SQL contains no scan of spansTable at all.
 //
@@ -147,22 +134,14 @@ func UnwindowedSpansScans(sql, spansTable string) []Finding {
 		return nil
 	}
 
-	tr := regexpsFor(spansTable)
-
-	// Pass-through wrappers (`SELECT * FROM <spans table>`) are pruning-safe;
-	// record their FROM offsets so they are excluded.
-	passthrough := make(map[int]struct{})
-	for _, m := range tr.passthroughFrom.FindAllStringSubmatchIndex(sql, -1) {
-		// m[2] = start of submatch 1 (the FROM token).
-		passthrough[m[2]] = struct{}{}
-	}
-
 	recBodies := recursiveBodySpans(sql)
 
 	var out []Finding
-	for _, m := range tr.spansFrom.FindAllStringIndex(sql, -1) {
+	for _, m := range spansFromRegexp(spansTable).FindAllStringIndex(sql, -1) {
 		from := m[0]
-		if _, ok := passthrough[from]; ok {
+		if derivedTableScan(sql, from) {
+			// A derived table is a bare relational operand: an enclosing-scope
+			// Timestamp predicate pushes through it and prunes. Fine.
 			continue
 		}
 		scope := topLevelScopeForward(sql, from)
@@ -317,6 +296,91 @@ func opensSubquery(sql string, j int) bool {
 		}
 	}
 	return false
+}
+
+// derivedTableScan reports whether the physical scan whose `FROM` token begins
+// at byte offset i belongs to a DERIVED TABLE — a subquery sitting in a table
+// position, `FROM (SELECT …)` or `JOIN (SELECT …)`.
+//
+// That position IS the pruning-safe pass-through shape: a derived table is a
+// bare relational operand, so a `Timestamp` predicate in the ENCLOSING scope
+// pushes through it and prunes this scan's partitions. Deciding it by position
+// replaces an exclusion keyed on ONE literal rendering of that wrapper
+// (`SELECT\s+\*\s+FROM\s+`<table>“), which made the guard's verdict a function
+// of the emitter's projection spelling and was wrong in both directions:
+//
+//   - FALSE POSITIVE. The optimizer's late-materialisation rule rewrote a
+//     wrapper from `SELECT *` into an explicit column list, the exclusion
+//     stopped matching, and a pruning-safe scan was flagged as unbounded — a
+//     500 on a live surface (#1889).
+//   - FALSE NEGATIVE. A genuinely unwindowed scan that KEPT the `SELECT *`
+//     spelling — a `WITH RECURSIVE … AS (SELECT * FROM <table> …)` arm, or a
+//     top-level `SELECT * FROM <table> … GROUP BY …` — was skipped by the guard
+//     entirely, which is the whole-table read it exists to stop (#1109).
+//
+// A projection list is a rendering choice; a table position is structure. Only
+// structure may decide this, so an added alias, an explicit column list, a
+// `SELECT *` carrying a `REPLACE` / `EXCEPT` modifier and any whitespace change
+// all leave the verdict untouched.
+//
+// The owning `SELECT` is located by owningSelect; whitespace and any run of
+// opening parentheses before it are then skipped so a set-op group
+// (`FROM ((SELECT …) UNION ALL (SELECT …))`) is recognised at its outermost
+// bracket — the backward mirror of what opensSubquery does forward. A `SELECT`
+// reached from `AS` (a CTE body, which is every `WITH RECURSIVE` arm) or from
+// the statement root is NOT a derived table: nothing encloses it that ClickHouse
+// could push a window in from.
+func derivedTableScan(sql string, i int) bool {
+	sel := owningSelect(sql, i)
+	if sel < 0 {
+		return false
+	}
+	for k := sel - 1; k >= 0; k-- {
+		switch sql[k] {
+		case ' ', '\t', '\n', '\r', '(':
+			continue
+		default:
+			return wordEndingAt(sql, k, "FROM") || wordEndingAt(sql, k, "JOIN")
+		}
+	}
+	return false
+}
+
+// owningSelect returns the byte offset of the `SELECT` keyword that owns the
+// clause at offset i — the nearest preceding `SELECT` sitting at i's OWN
+// parenthesis depth. Scanning backwards, a `)` opens a nested group that must be
+// skipped whole and a `(` closes one; a `(` met at depth zero means the
+// enclosing scope opened without an intervening `SELECT`, so there is no owning
+// SELECT to report. Returns -1 when none is found.
+func owningSelect(sql string, i int) int {
+	depth := 0
+	for j := i - 1; j >= 0; j-- {
+		switch sql[j] {
+		case ')':
+			depth++
+		case '(':
+			if depth == 0 {
+				return -1
+			}
+			depth--
+		default:
+			if depth == 0 && wordAt(sql, j, "SELECT") {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// wordEndingAt reports whether the standalone keyword kw ENDS at sql[j]
+// (inclusive) — the backward-scan counterpart of wordAt, which anchors at a
+// keyword's first byte instead.
+func wordEndingAt(sql string, j int, kw string) bool {
+	start := j - len(kw) + 1
+	if start < 0 {
+		return false
+	}
+	return wordAt(sql, start, kw)
 }
 
 // setOpBoundaryAt reports whether a set-operation arm boundary begins at sql[j]:
