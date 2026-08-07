@@ -359,11 +359,119 @@ func updateModeWriters(t *testing.T, tracked []string) []string {
 	return writers
 }
 
+// joinCall matches a path-join expression in either language a generator here
+// is written in: Go's `filepath.Join(` and Node's `path.join(`. The argument
+// list is captured whole and split by resolveJoin; `[^()]*` stops the match at
+// the first nested call, which is deliberate — an argument this gate cannot
+// read as a constant is an argument it must not guess at.
+var joinCall = regexp.MustCompile(`(?:filepath|path)\.[Jj]oin\(([^()]*)\)`)
+
+// stringConstant matches a `name = "value"` binding — a Go `const`/`var` inside
+// or outside a group, and a JS `const`, all of which share this shape. Values
+// carrying an escape are skipped rather than half-decoded: a destination this
+// gate is not certain of is one it must not claim.
+var stringConstant = regexp.MustCompile(`(\w+)\s*=\s*"([^"\\]*)"`)
+
+// stringLiteralArg matches a join argument written inline rather than named.
+var stringLiteralArg = regexp.MustCompile(`^"([^"\\]*)"$`)
+
+// writerDestinations resolves the directories an update-mode writer writes INTO,
+// for the writers whose destination is not their own directory.
+//
+// A generator almost always writes next to itself, and for those this adds
+// nothing. One does not: test/oracle/inventory/promql_test.go holds
+// `inventoryDir = "../../e2e/grafana/ql-inventory"` and writes the PromQL
+// feature inventory there. Its destination is territory today only because
+// rostered artefacts already sit in it — so the hole is live-shaped but not yet
+// live, and a NEW generator writing its FIRST artefact into a NEW directory
+// would land in no territory at all and be caught only if its filename happened
+// to match one of the four surviving legacy markers. That fragility is #1868
+// exactly, one level up.
+//
+// The resolution is deliberately narrow, and the narrowness is the feature. It
+// follows a join whose every argument resolves to a string constant in the same
+// file and whose LAST argument names a data file. It does not follow a
+// directory that is merely mentioned, a local variable, a function result, or a
+// join it cannot read end to end. A looser rule that resolved paths by
+// proximity pulls test/e2e/grafana/dashboards and
+// test/e2e/grafana/compose/dashboards — eight hand-written Grafana dashboards —
+// into territory as pure noise, and a gate that cries wolf is a gate that gets
+// ignored, which costs more than the hole it was widened to close. The existing
+// false-positive rate is zero and TestTerritoryFollowsTheDestination pins it
+// there in both directions.
+func writerDestinations(t *testing.T, writers []string) []string {
+	t.Helper()
+
+	var destinations []string
+	for _, writer := range writers {
+		body, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(writer)))
+		if err != nil {
+			t.Fatalf("read %s: %v. It was just read as an update-mode writer, so it must still "+
+				"be readable from the repository root this gate resolves against.", writer, err)
+		}
+
+		constants := make(map[string]string)
+		for _, m := range stringConstant.FindAllStringSubmatch(string(body), -1) {
+			constants[m[1]] = m[2]
+		}
+
+		for _, m := range joinCall.FindAllStringSubmatch(string(body), -1) {
+			dir, ok := resolveJoin(m[1], constants)
+			if !ok {
+				continue
+			}
+			dest := path.Join(path.Dir(writer), dir)
+			// A join resolving above the repository root cannot name a tracked
+			// directory, so there is nothing there to classify.
+			if dest == ".." || strings.HasPrefix(dest, "../") {
+				continue
+			}
+			destinations = append(destinations, dest)
+		}
+	}
+
+	return destinations
+}
+
+// resolveJoin turns a join's argument list into the directory part it names,
+// reporting false unless every argument resolves to a string constant and the
+// last one names a data file. Requiring the filename is what separates a write
+// to a destination from the many joins that merely walk a directory.
+func resolveJoin(args string, constants map[string]string) (string, bool) {
+	fields := strings.Split(args, ",")
+	if len(fields) < 2 {
+		return "", false
+	}
+
+	resolved := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if m := stringLiteralArg.FindStringSubmatch(field); m != nil {
+			resolved = append(resolved, m[1])
+
+			continue
+		}
+		value, ok := constants[field]
+		if !ok {
+			return "", false
+		}
+		resolved = append(resolved, value)
+	}
+
+	if !hasExtension(resolved[len(resolved)-1], generatedDataExtensions) {
+		return "", false
+	}
+
+	return path.Join(resolved[:len(resolved)-1]...), true
+}
+
 // generatedTerritory is the set of directories in which a committed data file
 // has to be classified. It is DERIVED, never listed:
 //
 //   - the directory of every update-mode writer, because a generator almost
 //     always writes next to itself;
+//   - every directory a writer writes INTO when that is not its own, so the one
+//     generator that aims elsewhere carries its destination with it;
 //   - the directory of every rostered artefact, so a generated artefact's
 //     siblings are policed by its presence;
 //   - the directory of every hand-authored record, for the same reason from the
@@ -375,10 +483,18 @@ func updateModeWriters(t *testing.T, tracked []string) []string {
 // new artefact dropped next to its generator is therefore loud on arrival
 // whatever it is called, which is exactly what divergence-ceiling.json was not
 // (#1868).
-func generatedTerritory(roster []generatedArtifact, records map[string]string, writers []string) map[string]struct{} {
+func generatedTerritory(
+	roster []generatedArtifact,
+	records map[string]string,
+	writers []string,
+	destinations []string,
+) map[string]struct{} {
 	territory := make(map[string]struct{})
 	for _, writer := range writers {
 		territory[path.Dir(writer)] = struct{}{}
+	}
+	for _, destination := range destinations {
+		territory[destination] = struct{}{}
 	}
 	for _, artifact := range roster {
 		territory[path.Dir(artifact.path)] = struct{}{}
@@ -468,7 +584,8 @@ func TestNoGeneratedArtifactEscapesTheMergeGate(t *testing.T) {
 	}
 
 	tracked := trackedFiles(t)
-	territory := generatedTerritory(roster, records, updateModeWriters(t, tracked))
+	writers := updateModeWriters(t, tracked)
+	territory := generatedTerritory(roster, records, writers, writerDestinations(t, writers))
 
 	var candidates []string
 	for _, file := range tracked {
@@ -566,11 +683,173 @@ func TestTerritoryCatchesWhatTheNameNetCannot(t *testing.T) {
 			ratchet, len(writers), ceiling, ceiling)
 	}
 
-	if _, ok := generatedTerritory(nil, nil, writers)[path.Dir(ceiling)]; !ok {
+	if _, ok := generatedTerritory(nil, nil, writers, nil)[path.Dir(ceiling)]; !ok {
 		t.Errorf("%s is not generated territory even though %s writes into it. Territory derived "+
 			"from the writers alone is what has to reach this directory — deriving it from the "+
 			"roster instead would only ever confirm what someone already classified.",
 			path.Dir(ceiling), ratchet)
+	}
+}
+
+// TestTerritoryFollowsTheDestination pins #1875: territory has to follow where a
+// generator WRITES, not merely where its source file sits.
+//
+// Both halves are load-bearing and the second is the harder one. Asserting only
+// that the cross-directory destination is found would pass just as happily with
+// a loose resolver that drags every path-shaped string in a writer into
+// territory — and that resolver pulls in the two hand-written Grafana dashboard
+// directories, at which point the gate reports on eight files nobody generates
+// and starts being ignored. So this pins the delta EXACTLY: the destinations
+// derived from the whole tree are precisely the one directory the one
+// cross-directory writer aims at, and nothing else.
+func TestTerritoryFollowsTheDestination(t *testing.T) {
+	t.Parallel()
+
+	const (
+		// The one writer in the tree whose destination is not its own directory.
+		crossWriter = "test/oracle/inventory/promql_test.go"
+		crossDest   = "test/e2e/grafana/ql-inventory"
+	)
+
+	// Hand-written Grafana dashboards. A resolver loose enough to reach these
+	// is the failure mode this test exists to reject.
+	handWritten := []string{
+		"test/e2e/grafana/dashboards",
+		"test/e2e/grafana/compose/dashboards",
+	}
+
+	writers := updateModeWriters(t, trackedFiles(t))
+	destinations := writerDestinations(t, writers)
+
+	if !slices.Contains(destinations, crossDest) {
+		t.Errorf("writerDestinations did not resolve %s, which %s writes into via its "+
+			"inventoryDir/inventoryFile constants. Territory derived from the writer's own "+
+			"directory alone never reaches it, so a new generator writing its first artefact "+
+			"into a new directory would land in no territory at all (#1875).",
+			crossDest, crossWriter)
+	}
+
+	// The destination set is derived from writers alone here — deliberately not
+	// from the roster — because crossDest is already territory today by way of
+	// the rostered artefacts sitting in it. Passing the roster would let this
+	// test pass with the destination resolution deleted outright.
+	territory := generatedTerritory(nil, nil, writers, destinations)
+	if _, ok := territory[crossDest]; !ok {
+		t.Errorf("%s is not generated territory derived from the writers alone. It is territory "+
+			"today only because rostered artefacts happen to live in it, which is exactly the "+
+			"accident this derivation must not depend on.", crossDest)
+	}
+
+	for _, dir := range handWritten {
+		if _, ok := territory[dir]; ok {
+			t.Errorf("%s is generated territory, but its dashboards are hand-written. The "+
+				"destination resolution has been widened past the shape it is allowed to "+
+				"follow (a directory constant joined to a filename constant), and the gate now "+
+				"reports on files nobody generates. The false-positive rate was zero and has "+
+				"to stay zero — a gate that cries wolf gets ignored, which costs more than the "+
+				"hole widening it was meant to close.", dir)
+		}
+	}
+
+	// The exact delta, both directions at once. A destination this gate claims
+	// that no generator actually writes is a false positive regardless of which
+	// directory it names, so the assertion is on the whole set rather than on a
+	// list of directories someone remembered to exclude.
+	unique := slices.Clone(destinations)
+	slices.Sort(unique)
+	unique = slices.Compact(unique)
+	if !slices.Equal(unique, []string{crossDest}) {
+		t.Errorf("writerDestinations resolved %v, want exactly [%s]. Every entry beyond that one "+
+			"is a directory this gate would police on the strength of a string it guessed at.",
+			unique, crossDest)
+	}
+}
+
+// TestResolveJoinReadsOnlyWhatItCanProve pins the resolver's contract directly.
+//
+// TestTerritoryFollowsTheDestination pins the DELTA over the real tree, which is
+// the assertion that matters — but it can only exercise the guards the tree
+// happens to trip. The tree holds exactly one cross-directory writer and its two
+// joins both end in a data filename, so the guard that rejects a join NOT ending
+// in one is never reached there: deleting it leaves that test green. A guard no
+// test can fail is not a guard, so the contract is pinned here where every
+// rejection reason is reachable.
+func TestResolveJoinReadsOnlyWhatItCanProve(t *testing.T) {
+	t.Parallel()
+
+	constants := map[string]string{
+		"inventoryDir":  "../../e2e/grafana/ql-inventory",
+		"inventoryFile": "promql-feature-inventory.json",
+		"nested":        "sub",
+		"goldenDir":     "testdata",
+		"sourceFile":    "lower.go",
+		"noExtension":   "README",
+	}
+
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+		ok   bool
+	}{
+		{
+			name: "a directory constant joined to a data filename is a destination",
+			args: "inventoryDir, inventoryFile",
+			want: "../../e2e/grafana/ql-inventory",
+			ok:   true,
+		},
+		{
+			name: "an inline filename literal resolves like a named one",
+			args: `inventoryDir, "promql-feature-inventory.json"`,
+			want: "../../e2e/grafana/ql-inventory",
+			ok:   true,
+		},
+		{
+			name: "every leading argument contributes to the directory",
+			args: "goldenDir, nested, inventoryFile",
+			want: "testdata/sub",
+			ok:   true,
+		},
+		{
+			name: "a join not ending in a data file is a directory walk, not a destination",
+			args: "goldenDir, nested",
+			ok:   false,
+		},
+		{
+			name: "a join ending in source rather than data is not a destination",
+			args: "goldenDir, sourceFile",
+			ok:   false,
+		},
+		{
+			name: "a join ending in an extensionless name is not a destination",
+			args: "goldenDir, noExtension",
+			ok:   false,
+		},
+		{
+			name: "an argument that is not a constant is never guessed at",
+			args: "dir, inventoryFile",
+			ok:   false,
+		},
+		{
+			name: "a single argument names no directory at all",
+			args: "inventoryFile",
+			ok:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := resolveJoin(tc.args, constants)
+			if ok != tc.ok {
+				t.Fatalf("resolveJoin(%q) ok = %v, want %v. Reading a join this gate cannot prove "+
+					"the shape of is how a hand-written directory becomes policed territory; "+
+					"refusing one it can prove is how a real generated artefact stays unclassified.",
+					tc.args, ok, tc.ok)
+			}
+			if ok && got != tc.want {
+				t.Errorf("resolveJoin(%q) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
