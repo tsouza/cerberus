@@ -2,6 +2,9 @@ package regression
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -59,12 +62,11 @@ const (
 	datasetMetadataTypeDecl = "type DatasetMetadata struct {"
 )
 
-// vendoredWriterReference matches a qualified reach for the vendored writer —
-// `bench.SaveMetadata(...)` as a call, or as a value passed somewhere else. The
-// qualifier is what makes the pattern precise: cerberus code lives outside
-// package `bench`, so it cannot name the writer without one, and this file's own
-// unqualified prose mentions do not trip the net.
-var vendoredWriterReference = regexp.MustCompile(`\.SaveMetadata\b`)
+// vendoredWriterName is the writer this guard keeps unwired. A reach for it is
+// a qualified selector — `bench.SaveMetadata`, called or passed as a value —
+// because cerberus code lives outside package `bench` and cannot name the
+// writer without a qualifier.
+const vendoredWriterName = "SaveMetadata"
 
 // jsonStructTag captures the wire name from a struct field tag.
 var jsonStructTag = regexp.MustCompile(`json:"([^",]+)`)
@@ -124,6 +126,39 @@ func TestHandAuthoredLokiMetadataOutlivesTheVendoredMarshaller(t *testing.T) {
 	}
 }
 
+// namesVendoredWriter reports whether the Go source in body reaches for the
+// vendored writer through a qualified selector.
+//
+// The question is answered from the parsed syntax rather than from a text
+// match, because a text match cannot tell a reach from a mention. The
+// distinction is not academic: this very file names `bench.SaveMetadata` in
+// the failure message below, so a regexp over the bytes reports the guard as
+// its own first violator. Comments and string literals are not selector
+// expressions, so deriving the answer from the AST puts prose out of scope by
+// construction rather than by asking every future author to phrase around a
+// pattern.
+func namesVendoredWriter(t *testing.T, file string, body []byte) bool {
+	t.Helper()
+
+	parsed, err := parser.ParseFile(token.NewFileSet(), file, body, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", file, err)
+	}
+
+	found := false
+	ast.Inspect(parsed, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != vendoredWriterName {
+			return !found
+		}
+		if _, ok := sel.X.(*ast.Ident); ok {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 // TestNoCerberusCodeReachesForTheVendoredMetadataWriter keeps the destructive
 // call unwired. The vendored writer is harmless while nothing calls it; the
 // moment cerberus code does, a curated file becomes a generated one without
@@ -141,7 +176,7 @@ func TestNoCerberusCodeReachesForTheVendoredMetadataWriter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		if vendoredWriterReference.Match(body) {
+		if namesVendoredWriter(t, file, body) {
 			callers = append(callers, file)
 		}
 	}
