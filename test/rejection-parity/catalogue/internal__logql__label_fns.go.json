@@ -5,7 +5,7 @@
       "site": "internal/logql/label_fns.go:lowerLabelReplace#8cd9f67b",
       "message": "logql: label_replace: %w",
       "class": "divergence",
-      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
+      "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea?)|(?P\u003cdup\u003eb)\")",
       "tracking_issue": 1768,
       "evidence": {
         "guard": [

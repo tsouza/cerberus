@@ -1,0 +1,86 @@
+# A replacement referencing a capture-group NAME that TWO groups carry.
+# Go's ExpandString — the engine reference Prometheus runs label_replace's
+# replacement through — resolves `$dup` to the first group named `dup`
+# that TOOK PART in the row's match, whichever alternation branch that
+# was.
+#
+# ClickHouse's `extractGroups` cannot report participation: a group that
+# took no part and a group that took part matching the empty string are
+# both `''`. But neither group here CAN match the empty string (`[a-z]+`
+# and `[0-9]+` are both at least one character wide), so for these two
+# "took part" and "captured something non-empty" are the same predicate,
+# and the choice becomes an ordinary array search —
+# `arrayFirst(x -> x != '', [g[1], g[2]])`. That equivalence is why this
+# query is answered rather than rejected (#1768); a nullable group among
+# the carriers is still rejected, because then the two states really are
+# indistinguishable.
+#
+# The two seeded series cover both directions of the search. `web-alpha`
+# matches through the FIRST branch, so group one carries `alpha` and the
+# search stops immediately. `api-77` matches through the SECOND, so group
+# one is empty and the search must SKIP it — the case a translation that
+# simply took the first like-named group would answer with an empty
+# `service` label (and the outer mapFilter would then drop the label
+# entirely).
+#
+# Cross-checked against Go's own regexp: for `^web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)$`,
+# ExpandString gives `svc-alpha` for `web-alpha` (match offsets [0 9 4 9 -1 -1])
+# and `svc-77` for `api-77` (match offsets [0 6 -1 -1 4 6]).
+
+-- query.promql --
+label_replace(temperature, "service", "svc-$dup", "host", "web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)")
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'web-alpha'), toDateTime64('2026-01-01 00:00:00', 9), 22.5),
+    ('temperature', map('host', 'api-77'), toDateTime64('2026-01-01 00:00:00', 9), 19.5);
+-- expected_rows --
+[
+  ["temperature", {"host": "api-77", "service": "svc-77"}, "2026-01-01T00:00:00Z", 19.5],
+  ["temperature", {"host": "web-alpha", "service": "svc-alpha"}, "2026-01-01T00:00:00Z", 22.5]
+]
+-- args --
+[0] string = "host"
+[1] string = "^web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)$"
+[2] string = "service"
+[3] string = "host"
+[4] string = "svc-"
+[5] string = "svc-"
+[6] string = ""
+[7] string = "host"
+[8] string = "^web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)$"
+[9] int64 = 1
+[10] string = "host"
+[11] string = "^web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)$"
+[12] int64 = 2
+[13] string = "service.name"
+[14] string = "service_name"
+[15] string = "service.name"
+[16] string = "service_name"
+[17] string = ""
+[18] string = "service_name"
+[19] string = "temperature"
+[20] string = "2026-01-01 00:00:01.000000000"
+[21] int64 = 9
+[22] string = "2026-01-01 00:00:01.000000000"
+[23] int64 = 9
+[24] int64 = 300000000000
+[25] int64 = 1
+[26] int64 = 0
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, Value]
+  Aggregate groupBy=[Attributes AS Attributes, MetricName AS MetricName] funcs=[any(Value) AS Value, any(TimeUnix) AS TimeUnix] having=(throwIf((count() > 1), "vector cannot contain metrics with the same labelset") = 0)
+    Project [MetricName, labelReplace(Attributes, dst="service", replacement="", src="host", regex="web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)", emptyReplacement="svc-", segments=["svc-", $1|$2]) AS Attributes, TimeUnix, Value]
+      Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+        Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+          Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+            Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+              Filter predicate=(MetricName = "temperature")
+                Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, any(`Value`) AS `Value`, any(`TimeUnix`) AS `TimeUnix` FROM (SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, concat(?, arrayFirst(x -> x != ?, [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))) GROUP BY `Attributes`, `MetricName` HAVING (throwIf((count() > ?), 'vector cannot contain metrics with the same labelset') = ?))
