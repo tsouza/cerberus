@@ -89,6 +89,15 @@ type stalenessLowerInput struct {
 	// bounds verbatim.
 	stepAligned bool
 
+	// sampleTimestamp asks for the selected sample's OWN timestamp to be
+	// published alongside the per-anchor value, as
+	// chplan.RangeLWRSampleTimestampColumn. Only the range-mode
+	// `timestamp(<vector-selector>)` lowering sets it: that is the one PromQL
+	// shape whose result is the sample's time rather than the evaluation
+	// step. It is intrinsic query SHAPE, not feature state — which is why a
+	// strategy is allowed to read it.
+	sampleTimestamp bool
+
 	metricNameCol, attributesCol string
 	timestampCol, valueCol       string
 }
@@ -261,13 +270,15 @@ type FanoutStalenessLowerer struct{}
 // LowerStaleness builds the fan-out RangeLWR node from in.
 func (FanoutStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node {
 	return &chplan.RangeLWR{
-		Input:         in.input,
-		Start:         in.start,
-		End:           in.end,
-		Step:          in.step,
-		Lookback:      in.lookback,
-		Offset:        in.offset,
-		StepAlign:     in.stepAligned,
+		Input:           in.input,
+		Start:           in.start,
+		End:             in.end,
+		Step:            in.step,
+		Lookback:        in.lookback,
+		Offset:          in.offset,
+		StepAlign:       in.stepAligned,
+		SampleTimestamp: in.sampleTimestamp,
+
 		MetricNameCol: in.metricNameCol,
 		AttributesCol: in.attributesCol,
 		TimestampCol:  in.timestampCol,
@@ -287,12 +298,24 @@ type NativeStalenessLowerer struct {
 	Fallback StalenessLowerer
 }
 
-// LowerStaleness returns a RangeWindowResample for the (already shape-validated
-// by the caller) range-mode staleness input. The caller only reaches the
-// staleness seam in range mode over a non-@-pinned bare selector, so the native
-// shape always applies; the embedded Fallback is reserved for future shape
-// carve-outs without changing the seam contract.
-func (NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node {
+// LowerStaleness returns a RangeWindowResample for the range-mode staleness
+// input, or delegates to the embedded Fallback for the one shape the native
+// aggregate cannot express.
+//
+// That carve-out is `in.sampleTimestamp`.
+// timeSeriesResampleToGridWithStaleness returns ONLY the resampled VALUE per
+// grid point (an Array(Nullable(Float64))); the timestamp of the sample each
+// grid point carried forward is not among its outputs, and no member of the
+// timeSeries*ToGrid family exposes it. The fan-out RangeLWR can express it —
+// its collapse is an explicit GROUP BY over the fanned rows, so a second
+// aggregate over the same bucket recovers the sample's own time — so the
+// carve-out delegates rather than emitting an answer the native shape would
+// have to fake from the anchor. Both paths therefore agree on
+// `timestamp(<selector>)`; they simply reach the agreement on the fan-out.
+func (n NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node {
+	if in.sampleTimestamp {
+		return n.Fallback.LowerStaleness(in)
+	}
 	return &chplan.RangeWindowResample{
 		Input:         in.input,
 		Start:         in.start,

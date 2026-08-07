@@ -62,7 +62,12 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		return lowerDateFnNoArg(c.Func.Name, s, ctx)
 	}
 
-	inner, err := lower(c.Args[0], s, ctx)
+	// The argument is lowered under an ARGUMENT ctx rather than the caller's
+	// own, because `timestamp(<vector-selector>)` needs the selector seam to
+	// publish a column no other consumer asks for. Every other function/shape
+	// pair leaves the ctx untouched.
+	argCtx := dateFnArgCtx(c.Func.Name, c.Args[0], ctx)
+	inner, err := lower(c.Args[0], s, argCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +75,57 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if newValue == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(inner, c.Args[0], s, asFloat64(newValue)), nil
+	return guardedValueProjection(inner, c.Args[0], s, asFloat64(newValue), carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...), nil
+}
+
+// dateFnArgCtx returns the ctx the date function's argument is lowered under.
+//
+// It differs from the caller's ctx in exactly one case: a range-mode
+// `timestamp(<vector-selector>)`, where the result is the SELECTED SAMPLE's
+// own timestamp and the range-mode selector seam publishes only the step
+// anchor by default. [lowerCtx.withSampleTimestamp] asks it for the sample's
+// timestamp as well; [timestampResultExpr] reads the column it publishes.
+//
+// Instant mode needs nothing: the instant seam already emits
+// `max(TimeUnix) AS lwr_ts` and re-aliases it back over the schema timestamp
+// column, so the sample's own time IS the timestamp column there.
+func dateFnArgCtx(name string, arg parser.Expr, ctx lowerCtx) lowerCtx {
+	if !readsRangeSampleTimestamp(name, arg, ctx) {
+		return ctx
+	}
+	return ctx.withSampleTimestamp()
+}
+
+// carriedSampleTimestampColumns names the columns a duplicate-labelset guard
+// between the selector seam and the value projection must carry through, so
+// the projection can still read them.
+//
+// Only the range-mode `timestamp(<vector-selector>)` shape has one: its value
+// expression references [chplan.RangeLWRSampleTimestampColumn], which is not
+// one of the four canonical Sample columns the guard carries by default. A
+// selector that spans several metric names (`timestamp({job="api"})`) puts a
+// guard there, and without this the projection above it would reference a
+// column the guard's GROUP BY had dropped.
+func carriedSampleTimestampColumns(name string, arg parser.Expr, ctx lowerCtx) []string {
+	if !readsRangeSampleTimestamp(name, arg, ctx) {
+		return nil
+	}
+	return []string{chplan.RangeLWRSampleTimestampColumn}
+}
+
+// readsRangeSampleTimestamp reports whether this date-function call reports the
+// selected sample's OWN timestamp out of a range-mode selector seam — i.e. it
+// is `timestamp`, its argument is a vector selector, and the lowering is in
+// range mode. It is the single predicate [dateFnArgCtx],
+// [carriedSampleTimestampColumns] and [timestampResultExpr] all answer from, so
+// the column cannot be requested without being read or read without being
+// requested.
+func readsRangeSampleTimestamp(name string, arg parser.Expr, ctx lowerCtx) bool {
+	if name != "timestamp" || ctx.step <= 0 {
+		return false
+	}
+	_, isSelector := unwrapVectorSelector(arg)
+	return isSelector
 }
 
 // lowerDateFnNoArg synthesises a single-row constant instant vector for
@@ -140,8 +195,23 @@ func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node,
 // The tsRef slot is only consulted by the `timestamp` arm of
 // [dateFnExpr]; every other date function reads `Value`, so the choice
 // made here is inert for them.
+//
+// WHICH COLUMN holds "the sample's own timestamp" is mode-dependent, and
+// getting that wrong is what made the selector branch report the step
+// anchor in range mode. In INSTANT mode the selector seam's `TimeUnix` IS
+// the raw sample time (`max(TimeUnix) AS lwr_ts`). In RANGE mode it is
+// not: every range-mode seam stamps `TimeUnix` with the STEP ANCHOR, and
+// the per-(series, anchor) `argMax(Value, TimeUnix)` collapse throws the
+// selecting sample's own time away. That is what
+// [chplan.RangeLWRSampleTimestampColumn] exists to publish, requested by
+// [readsRangeSampleTimestamp] on the way down, and it is the column the
+// selector branch has to read here — otherwise `time() - timestamp(up)`
+// is a constant near zero instead of the sample's age.
 func timestampResultExpr(arg parser.Expr, s schema.Metrics, ctx lowerCtx) chplan.Expr {
 	if _, isSelector := unwrapVectorSelector(arg); isSelector {
+		if ctx.step > 0 {
+			return &chplan.ColumnRef{Name: chplan.RangeLWRSampleTimestampColumn}
+		}
 		return &chplan.ColumnRef{Name: s.TimestampColumn}
 	}
 	return evalInstantExpr(s, ctx)

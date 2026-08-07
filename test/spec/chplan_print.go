@@ -252,6 +252,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.ValueCol != "" {
 			fmt.Fprintf(b, " value=%s", v.ValueCol)
 		}
+		if v.SampleTimestamp {
+			fmt.Fprintf(b, " sample_ts=%s", chplan.RangeLWRSampleTimestampColumn)
+		}
 		if !v.Start.IsZero() || !v.End.IsZero() {
 			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
 		}
