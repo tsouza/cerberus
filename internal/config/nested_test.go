@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // writeConfigFile stages a cerberus.yaml in a fresh temp dir and makes it the
@@ -213,6 +215,31 @@ prom:
 	}
 	if got, want := cfg.Schema.PromResourceLabels, []string{"service.name", "k8s.namespace.name"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("prom.resourceLabels = %v, want %v", got, want)
+	}
+	// The file must reach the schema shape carrying its PROVENANCE too, not
+	// just its values: cerberus's boot-time metric-table existence check
+	// exits on a configured-but-absent table and waits on a defaulted one
+	// (cmd/cerberus's fatalAbsentMetricTablesErr), so a resolver refactor
+	// here that assigned the names without recording where they came from
+	// would silently make that gate unreachable for every deployment.
+	if want := (schema.MetricTableOverrides{Gauge: true}); cfg.Schema.TableOverrides != want {
+		t.Errorf("schema.metrics table provenance = %+v, want %+v", cfg.Schema.TableOverrides, want)
+	}
+}
+
+// The negative half of the provenance assertion above: a config file that
+// names no metric table leaves every name defaulted, so nothing in it may
+// read as operator-set.
+func TestFromEnv_NestedConfigFileNoSchemaShapeSetsNoProvenance(t *testing.T) {
+	clearAllEnv(t)
+	writeConfigFile(t, "clickhouse:\n  database: otel\n")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if got := cfg.Schema.TableOverrides; got != (schema.MetricTableOverrides{}) {
+		t.Errorf("no schema.metrics.* configured: provenance = %+v, want the zero value", got)
 	}
 }
 

@@ -1445,8 +1445,9 @@ type requirementsOutcome struct {
 // runs, so a genuinely unreachable server or a not-yet-created database
 // never gets misclassified as a fatal missing-table config error — see
 // fatalAbsentMetricTablesErr's own doc for why that reachable-vs-absent
-// boundary matters (#1905). The remaining (non-metrics) AbsentTables stay
-// on preflight's original transient path.
+// boundary matters (#1905). Every other AbsentTables entry — including a
+// metric table whose name cerberus defaulted rather than the operator
+// setting it — stays on preflight's original transient path.
 func decideRequirementsOutcome(res preflight.Result, m schema.Metrics, database string) requirementsOutcome {
 	if res.Fatal != nil {
 		// Wrong-shape / too-old / unreadable — never self-heals. Exit even if
@@ -1476,12 +1477,12 @@ func decideRequirementsOutcome(res preflight.Result, m schema.Metrics, database 
 		}
 	}
 	if err := fatalAbsentMetricTablesErr(m, res.AbsentTables); err != nil {
-		// Fatal, unlike the general AbsentTables tolerance below (#1905): a
-		// misconfigured metric table name never self-heals the way an
-		// unprovisioned schema does, and a silently degraded metadata
-		// surface (empty /api/v1/series responses, never an error) is harder
-		// for an operator to notice than a boot failure that names the table
-		// and the config key.
+		// Fatal, unlike the general AbsentTables tolerance below (#1905): an
+		// explicitly configured metric table name that is absent never
+		// self-heals the way an unprovisioned schema does, and a silently
+		// degraded metadata surface (empty /api/v1/series responses, never
+		// an error) is harder for an operator to notice than a boot failure
+		// that names the table and the config key.
 		return requirementsOutcome{fatalErr: err}
 	}
 	if !res.SchemaProvisioned() {
@@ -1496,23 +1497,29 @@ func decideRequirementsOutcome(res preflight.Result, m schema.Metrics, database 
 }
 
 // metricTableBinding pairs a resolved metric-table name with the
-// schema.metrics.* config key that set it (see internal/config/nested.go's
-// schema.metrics.* bindings, the source of truth these key strings mirror).
+// schema.metrics.* config key that would set it (see
+// internal/config/nested.go's schema.metrics.* bindings, the source of truth
+// these key strings mirror) and with whether that key actually did.
 type metricTableBinding struct {
 	table     string
 	configKey string
+	// explicit reports whether configuration set this table name, as
+	// opposed to it defaulting. Only an explicit name is an operator
+	// assertion that the table exists, and only an assertion can be
+	// falsified — see fatalAbsentMetricTablesErr.
+	explicit bool
 }
 
 // metricTableBindings lists the metric tables the /api/v1/series,
 // /api/v1/labels, and /api/v1/label/<name>/values handlers union across
 // (schema.Metrics.ConfiguredMetricTables' Gauge/Sum/Histogram set) paired
 // with the config key each came from, for fatalAbsentMetricTablesErr's
-// error text.
+// decision and error text.
 func metricTableBindings(m schema.Metrics) []metricTableBinding {
 	return []metricTableBinding{
-		{table: m.GaugeTable, configKey: "schema.metrics.gaugeTable"},
-		{table: m.SumTable, configKey: "schema.metrics.sumTable"},
-		{table: m.HistogramTable, configKey: "schema.metrics.histogramTable"},
+		{table: m.GaugeTable, configKey: "schema.metrics.gaugeTable", explicit: m.TableOverrides.Gauge},
+		{table: m.SumTable, configKey: "schema.metrics.sumTable", explicit: m.TableOverrides.Sum},
+		{table: m.HistogramTable, configKey: "schema.metrics.histogramTable", explicit: m.TableOverrides.Histogram},
 	}
 }
 
@@ -1526,14 +1533,30 @@ func metricTableBindings(m schema.Metrics) []metricTableBinding {
 // schema-shape gate, which treats an entirely-absent table as the
 // transient cerberus-boots-before-the-collector race and waits rather than
 // exiting (see internal/preflight's package doc, "Fatal vs transient: the
-// absent-schema race"); the boundary is unchanged, though — the two
-// callers below that already returned before this point cover "ClickHouse
-// unreachable" (res.Unreachable) and "database not yet provisioned"
-// (res.DatabaseAbsent), so neither reaches here, and an unconfigured
-// (empty-string) table name never appears in absentTables in the first
-// place, since preflight's checkSchema skips empty table names before
-// ever probing them. What is left, by construction, is exactly "the
-// server answered and this specific configured table is not there".
+// absent-schema race"); the two callers before this point keep that
+// boundary intact by covering "ClickHouse unreachable" (res.Unreachable)
+// and "database not yet provisioned" (res.DatabaseAbsent), so neither
+// reaches here.
+//
+// The gate is scoped to EXPLICITLY CONFIGURED names, which is what makes
+// the extra strictness sound. Only a name configuration set is an operator
+// asserting that a table exists under exactly that spelling; a defaulted
+// name is nothing more than cerberus's built-in guess at where a stock
+// OTel-CH deployment writes metrics. A deployment that ingests only logs
+// and traces never provisions otel_metrics_gauge / _sum / _histogram and is
+// not misconfigured for it, and one whose collector has not written its
+// first metric yet has not provisioned them YET — treating either as fatal
+// turns the ordinary cerberus-before-the-collector race into a crash loop
+// for every metrics-less deployment, which is the exact failure this gate
+// exists to keep OUT of the metadata surface. Defaulted-and-absent
+// therefore falls through to the transient not-ready path below, where an
+// absent table has always belonged. schema.MetricTableOverrides carries the
+// provenance here because the two cases are identical strings by the time
+// they reach this function.
+//
+// An empty table name is never explicit (the resolvers treat unset and
+// whitespace-only alike) and is never probed either, since preflight's
+// checkSchema skips empty names before ever reaching system.columns.
 func fatalAbsentMetricTablesErr(m schema.Metrics, absentTables []string) error {
 	absent := make(map[string]bool, len(absentTables))
 	for _, t := range absentTables {
@@ -1541,7 +1564,7 @@ func fatalAbsentMetricTablesErr(m schema.Metrics, absentTables []string) error {
 	}
 	var problems []string
 	for _, b := range metricTableBindings(m) {
-		if b.table != "" && absent[b.table] {
+		if b.explicit && absent[b.table] {
 			problems = append(problems, fmt.Sprintf("table %q (set via %s) does not exist", b.table, b.configKey))
 		}
 	}

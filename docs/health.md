@@ -294,7 +294,10 @@ server, a not-yet-created database (`UNKNOWN_DATABASE`, surfaced even by the
 `version()` probe because the connection carries the database as its session
 default), or an absent schema — re-probing until the dependency appears. What
 it converts into a fail-fast boot **error** is a *reachable* server that fails
-the contract: a too-old / unparseable version, or a wrong-shape table. Set
+the contract: a too-old / unparseable version, a wrong-shape table, or a
+missing metric table the deployment named itself through
+`schema.metrics.*` / `CERBERUS_SCHEMA_METRICS_*_TABLE` (a name nobody typed
+is the transient absent-schema case above). Set
 `CERBERUS_REQUIREMENTS_CHECK=false` to skip the gate entirely.
 
 ## Implementation pointers

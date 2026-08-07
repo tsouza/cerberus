@@ -29,6 +29,14 @@ type Metrics struct {
 	// (Prometheus-style quantile samples).
 	SummaryTable string
 
+	// TableOverrides records which of the five table names above an
+	// operator SET, as opposed to inheriting from DefaultOTelMetrics.
+	// Only the configuration-reading resolvers populate it
+	// (DefaultOTelMetricsFrom and its FromEnv wrapper); a Metrics built by
+	// DefaultOTelMetrics alone leaves it zero, which reads correctly as
+	// "every table name here is a built-in default".
+	TableOverrides MetricTableOverrides
+
 	// MetricNameColumn names the column holding the metric name.
 	MetricNameColumn string
 	// AttributesColumn names the column holding metric labels (Map(String, String)).
@@ -615,6 +623,51 @@ func (m Metrics) TablesForUnknownName() []string {
 // classic-histogram row shapes only, matching TableFor/TablesFor above.
 func (m Metrics) ConfiguredMetricTables() []string {
 	return distinctTables(m.GaugeTable, m.SumTable, m.HistogramTable)
+}
+
+// MetricTableOverrides records, per metrics table, whether the name carried
+// by the corresponding Metrics field was SET by configuration — a
+// CERBERUS_SCHEMA_METRICS_*_TABLE variable, or the `schema.metrics.*` path
+// of a cerberus.yaml, which lowers to the same variable — rather than
+// inherited from DefaultOTelMetrics.
+//
+// The distinction is not cosmetic: it is the difference between an
+// ASSERTION and an ASSUMPTION. A name an operator typed is a claim that the
+// table exists under exactly that name, so a reachable ClickHouse that does
+// not have it is a misconfiguration (a typo, or a table nobody provisioned)
+// that never self-heals. A name nobody typed is only cerberus's built-in
+// guess at where a stock OTel-CH deployment writes metrics; a deployment
+// that ingests logs and traces alone never provisions those tables and is
+// not misconfigured for it, so their absence is the ordinary
+// not-yet-provisioned schema race. Resolving both to the same string makes
+// them indistinguishable at the point of decision, which is why the
+// provenance travels with the value.
+//
+// cmd/cerberus's fatalAbsentMetricTablesErr is the only consumer, and it
+// decides on Gauge / Sum / Histogram alone — the three tables the Prom
+// metadata surface unions across (see ConfiguredMetricTables): configured
+// and absent exits the boot, defaulted and absent boots NOT READY and
+// re-probes. ExpHistogram and Summary are recorded for uniformity across
+// the five names the resolver manages, so that whichever surface needs them
+// next reads the same provenance rather than re-deriving a second, subtly
+// different answer; nothing consumes them today.
+//
+// A whitespace-only configured value counts as UNSET, matching how the
+// resolvers treat it: the field keeps its default and the flag stays false.
+type MetricTableOverrides struct {
+	// Gauge reports whether Metrics.GaugeTable was set by configuration.
+	Gauge bool
+	// Sum reports whether Metrics.SumTable was set by configuration.
+	Sum bool
+	// Histogram reports whether Metrics.HistogramTable was set by
+	// configuration.
+	Histogram bool
+	// ExpHistogram reports whether Metrics.ExpHistogramTable was set by
+	// configuration.
+	ExpHistogram bool
+	// Summary reports whether Metrics.SummaryTable was set by
+	// configuration.
+	Summary bool
 }
 
 // The Prom-convention metric-name suffixes this package routes on.
