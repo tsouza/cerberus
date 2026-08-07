@@ -115,8 +115,8 @@ func TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo(t *testing.T) {
 // half of the `| unpack` contract: because the stage's extraction is
 // modelled in SQL, a label filter that follows it — including one on
 // the `__error__` family, which only exists as unpack's own marker —
-// lowers to a predicate over the extracted map rather than being
-// deferred to Go or silently pushed at the wrong columns.
+// lowers to a predicate over the extracted map rather than surviving
+// into a Go pass or silently pushing at the wrong columns.
 //
 // The assertion is that the SQL DIFFERS from the same query without the
 // filter. A filter that resolved against columns unpack never writes
