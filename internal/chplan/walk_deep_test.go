@@ -193,7 +193,7 @@ func TestNodeExprs_FindsEveryNodeTypeWithExprSlots(t *testing.T) {
 	const wantNodeTypesWithExprSlots = 13
 	if withSlots != wantNodeTypesWithExprSlots {
 		t.Fatalf("reflection found Expr slots on %d Node types, expected %d — the IR gained or lost an "+
-			"Expr-bearing Node type: revisit nodeExprs in walk_deep.go and this count",
+			"Expr-bearing Node type: update nodeExprs in walk_deep.go and this count",
 			withSlots, wantNodeTypesWithExprSlots)
 	}
 }
