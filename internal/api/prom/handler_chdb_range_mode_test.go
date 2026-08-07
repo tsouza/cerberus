@@ -1101,6 +1101,18 @@ const expHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
     NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);`
 
+// expHistCounterBaselineLead is how far before the evaluation timestamp
+// the all-zero counter baseline sample of each exp-histogram series sits.
+// `rate()` reduces each SERIES' in-window samples to that series' increase,
+// so a series holding a single sample in the window has no increase to
+// report and reference Prometheus emits nothing for it. Seeding an all-zero
+// sample one scrape earlier makes each series' window increase equal the
+// counts its later sample records, which is why the expected quantiles below
+// are unchanged by its presence. Any instant strictly inside the 5m lookback
+// and before the later sample works; two minutes keeps the two visibly
+// distinct scrapes.
+const expHistCounterBaselineLead = 2 * time.Minute
+
 // TestQuery_HistogramQuantileNativeAgg_ChDB pins
 // `histogram_quantile(phi, sum by(le)(rate(<sel>_exp_hist[r])))` over
 // `/api/v1/query` against the OTel-CH exp-histogram table. The
@@ -1109,9 +1121,11 @@ const expHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
 // zero-pad + element-wise sum, before HistogramQuantileNative walks
 // the merged distribution.
 //
-// Seed: two series sharing Scale=0 with parallel positive bucket
-// arrays [1,2,3] and [3,4,3], both at PositiveOffset=0 → merged
-// distribution [4, 6, 6] (total 16). For phi=0.95 the cum array
+// Seed: two series sharing Scale=0, each with an all-zero counter
+// baseline one scrape earlier (see expHistCounterBaselineLead) and
+// parallel positive bucket arrays [1,2,3] and [3,4,3] at
+// PositiveOffset=0, so each series' window increase is those same
+// counts → merged distribution [4, 6, 6] (total 16). For phi=0.95 the cum array
 // (prefixed with ZeroCount=0) is [0, 4, 10, 16]; the target value
 // 0.95 * 16 = 15.2 lands in the third positive bucket, log-linear
 // interpolation yields 2^(0 + 2 + (15.2-10)/(16-10)) ≈ 7.2938.
@@ -1122,11 +1136,14 @@ const expHistogramDDL = `CREATE TABLE otel_metrics_exponential_histogram (
 func TestQuery_HistogramQuantileNativeAgg_ChDB(t *testing.T) {
 	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
+	baseTS := evalTS.Add(-expHistCounterBaselineLead).Format("2006-01-02 15:04:05.000000000")
 	seed := expHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('%s', 9), 0, 0, 0, [0, 0, 0], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('%s', 9), 0, 0, 0, [0, 0, 0], 0, []),
     ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('%s', 9), 0, 0, 0, [1, 2, 3], 0, []),
     ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('%s', 9), 0, 0, 0, [3, 4, 3], 0, []);`,
-		seedTS, seedTS)
+		baseTS, baseTS, seedTS, seedTS)
 	srv, _ := newChDBServer(t, seed)
 
 	q := "histogram_quantile(0.95, sum by(le)(rate(http_server_duration_exp_hist[5m])))"
@@ -1183,6 +1200,11 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 //
 //	"coarse" Scale=0, off=0, buckets=[5,10] (2 buckets at S=0).
 //
+// Each series also carries an all-zero counter baseline one scrape
+// earlier at its own Scale (see expHistCounterBaselineLead), so the
+// per-series `rate()` increase is exactly the counts above and the two
+// Scales still differ where the across-series merge sees them.
+//
 // Downscale "fine" to S=0 via `targetIdx`: abs idx 0,1,2,3 at S=1 →
 //
 //	abs idx 0,0,1,1 at S=0 → consolidated buckets [1+2, 3+4] = [3,7].
@@ -1194,11 +1216,14 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 func TestQuery_HistogramQuantileNativeAgg_MixedScale_ChDB(t *testing.T) {
 	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 	seedTS := evalTS.Add(-time.Second).Format("2006-01-02 15:04:05.000000000")
+	baseTS := evalTS.Add(-expHistCounterBaselineLead).Format("2006-01-02 15:04:05.000000000")
 	seed := expHistogramDDL + fmt.Sprintf(`
 INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'fine'),   toDateTime64('%s', 9), 1, 0, 0, [0, 0, 0, 0], 0, []),
+    ('http_server_duration_exp_hist', map('series', 'coarse'), toDateTime64('%s', 9), 0, 0, 0, [0, 0],       0, []),
     ('http_server_duration_exp_hist', map('series', 'fine'),   toDateTime64('%s', 9), 1, 0, 0, [1, 2, 3, 4], 0, []),
     ('http_server_duration_exp_hist', map('series', 'coarse'), toDateTime64('%s', 9), 0, 0, 0, [5, 10],       0, []);`,
-		seedTS, seedTS)
+		baseTS, baseTS, seedTS, seedTS)
 	srv, _ := newChDBServer(t, seed)
 
 	q := "histogram_quantile(0.95, sum by(le)(rate(http_server_duration_exp_hist[5m])))"

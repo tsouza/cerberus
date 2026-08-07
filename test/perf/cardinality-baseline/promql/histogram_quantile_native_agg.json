@@ -1,8 +1,8 @@
 {
   "fixture": "promql/histogram_quantile_native_agg",
   "fan_factor": 1,
-  "scan_rows": 2,
-  "peak_intermediate": 2,
+  "scan_rows": 4,
+  "peak_intermediate": 4,
   "has_cross_join": false,
   "has_array_join": false,
   "has_recursive_cte": false,
