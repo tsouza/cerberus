@@ -197,38 +197,39 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
-      "class": "divergence",
-      "trigger_query": "max_over_time(rate((demo_memory_usage_bytes[5m]))[10m:1m])",
-      "tracking_issue": 1896,
+      "class": "internal",
+      "rationale": "matrixArgExpr is peelWrappers(call.Args[matrixArg]) (#1896); the parser only ever gives this argument position a Matrix-typed expression (a MatrixSelector or a SubqueryExpr, optionally wrapped in ParenExpr/StepInvariantExpr), and peeling strips every such wrapper, so after peeling matrixArgExpr can only be a MatrixSelector or a SubqueryExpr -- this assertion cannot fail on any parseable query.",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
           "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
           "past returning if len(call.Args) != arity",
-          "past returning if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok",
+          "past returning if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok",
           "if !ok"
         ],
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
+        ],
+        "cited": [
+          "peelWrappers"
         ]
-      },
-      "since": "2026-08-06"
+      }
     },
     {
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
       "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only ever builds a MatrixSelector around a VectorSelector, so the inner assertion cannot fail on any parseable query",
+      "rationale": "the parser only ever builds a MatrixSelector around a VectorSelector, so the inner assertion cannot fail on any parseable query.",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
           "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
           "past returning if len(call.Args) != arity",
-          "past returning if innerSub, ok := call.Args[matrixArg].(*parser.SubqueryExpr); ok",
+          "past returning if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok",
           "past returning if !ok",
           "if !ok"
         ],

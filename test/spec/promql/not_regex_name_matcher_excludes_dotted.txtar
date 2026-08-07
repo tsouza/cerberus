@@ -5,12 +5,15 @@
 # underscored negative regex (via the NOT match(<normalised>, re) arm);
 # only the unrelated `up` series survives.
 #
-# A bare `{...}` selector has no metric-name suffix to narrow the table set,
-# so the scan is `merge('^(otel_metrics_gauge|otel_metrics_sum)$')` — BOTH
-# tables. The seed therefore creates otel_metrics_sum EMPTY: without it the
-# fixture reads whatever rows an EARLIER fixture in the shared chDB session
-# happened to leave there, which is a corpus-order dependency, not a round
-# trip (it read native_resets_range_step's http_requests_total rows).
+# A negated `__name__` regex matcher is unpinned (#1549 residue 2), so the
+# plan fans across every physical layout — the (Gauge, Sum) merge scan, the
+# classic-histogram companion/bucket arms, and the exp-histogram companion
+# arms. The seed explicitly creates ALL FOUR tables EMPTY-or-decoy-free: the
+# fixture must round-trip on its own seed, not on whatever row an EARLIER
+# fixture in the shared chDB session happened to leave in a table this one
+# scans but never populates (that would be a corpus-order dependency, not a
+# round trip — see #1549 residue 2's histogram fixtures for the concrete
+# failure mode this once produced for otel_metrics_histogram).
 
 -- query.promql --
 {job="api", __name__!~".*container_cpu_usage.*"}
@@ -30,10 +33,24 @@ CREATE TABLE otel_metrics_sum (
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    ExplicitBounds Array(Float64),
+    BucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 -- expected_rows --
 [
-  ["mko_exp_hist_count", {"dc": "eu", "job": "api"}, "2026-01-01T00:00:00Z", 25],
-  ["mko_exp_hist_sum", {"dc": "eu", "job": "api"}, "2026-01-01T00:00:00Z", 250],
   ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- sql --
