@@ -28,7 +28,7 @@ var queryExemplarsFixtureDir = filepath.Join("..", "..", "test", "spec", "promql
 // shape. Mirrors the pattern in emit_test.go's plans map — adding a
 // fixture is:
 //  1. Create the .txtar with at least an empty `-- sql --` section.
-//  2. Register an entry here.
+//  2. Register an entry here — one ExemplarArm per candidate table.
 //  3. Run `GOLDEN_UPDATE=1 just test-spec` to materialise the SQL.
 //  4. Review the diff and commit both files.
 //
@@ -36,18 +36,53 @@ var queryExemplarsFixtureDir = filepath.Join("..", "..", "test", "spec", "promql
 // summary short-circuit) live in PR B's handler tests; this layer-2a
 // harness asserts only the SQL shape the emitter produces.
 var queryExemplarsCases = map[string]struct {
-	table     string
-	predicate chsql.Frag
-	start     time.Time
-	end       time.Time
-	schema    schema.Metrics
+	arms   []chsql.ExemplarArm
+	start  time.Time
+	end    time.Time
+	schema schema.Metrics
 }{
 	"exemplars_basic": {
-		table: schema.DefaultOTelMetrics().SumTable,
-		predicate: chsql.Eq(
-			chsql.Col(schema.DefaultOTelMetrics().MetricNameColumn),
-			chsql.Lit("http_request_duration_seconds"),
-		),
+		arms: []chsql.ExemplarArm{{
+			Table: schema.DefaultOTelMetrics().SumTable,
+			Predicate: chsql.Eq(
+				chsql.Col(schema.DefaultOTelMetrics().MetricNameColumn),
+				chsql.Lit("http_request_duration_seconds"),
+			),
+		}},
+		start:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		end:    time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+		schema: schema.DefaultOTelMetrics(),
+	},
+	// The `<base>_count` fan-out: one arm per physical layout that can
+	// carry the name, each with its own row key — bare on the
+	// histogram arm (the OTel-CH exporter writes the companion series as
+	// columns of the bare-named row), suffixed on the sum and gauge arms.
+	// The arm list mirrors what schema.Metrics.ExemplarSources resolves
+	// and internal/api/prom/exemplars.go hands the emitter.
+	"exemplars_companion_fanout": {
+		arms: []chsql.ExemplarArm{
+			{
+				Table: schema.DefaultOTelMetrics().HistogramTable,
+				Predicate: chsql.Eq(
+					chsql.Col(schema.DefaultOTelMetrics().MetricNameColumn),
+					chsql.Lit("http_request_duration_seconds"),
+				),
+			},
+			{
+				Table: schema.DefaultOTelMetrics().SumTable,
+				Predicate: chsql.Eq(
+					chsql.Col(schema.DefaultOTelMetrics().MetricNameColumn),
+					chsql.Lit("http_request_duration_seconds_count"),
+				),
+			},
+			{
+				Table: schema.DefaultOTelMetrics().GaugeTable,
+				Predicate: chsql.Eq(
+					chsql.Col(schema.DefaultOTelMetrics().MetricNameColumn),
+					chsql.Lit("http_request_duration_seconds_count"),
+				),
+			},
+		},
 		start:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		end:    time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
 		schema: schema.DefaultOTelMetrics(),
@@ -86,16 +121,15 @@ func TestEmitQueryExemplars_Fixtures(t *testing.T) {
 				t.Fatalf("no case registered for fixture %s; add it to queryExemplarsCases in query_exemplars_spec_test.go", c.Name)
 			}
 
-			sql, args, err := chsql.EmitQueryExemplars(
+			sql, args, err := chsql.EmitQueryExemplarsUnion(
 				context.Background(),
-				tc.table,
-				tc.predicate,
+				tc.arms,
 				tc.start,
 				tc.end,
 				tc.schema,
 			)
 			if err != nil {
-				t.Fatalf("EmitQueryExemplars: %v", err)
+				t.Fatalf("EmitQueryExemplarsUnion: %v", err)
 			}
 
 			spec.Match(t, c, map[string]string{

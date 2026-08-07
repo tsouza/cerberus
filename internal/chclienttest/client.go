@@ -15,6 +15,7 @@ import (
 	_ "github.com/chdb-io/chdb-go/chdb/driver" // registers "chdb" sql driver
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // metadataColumn is the trailing projection alias the Loki log-stream
@@ -94,11 +95,11 @@ func (c *Client) Seed(t testing.TB, ddl string) {
 	if c.db == nil {
 		t.Fatalf("chclienttest: Seed called on error-only client")
 	}
-	for _, stmt := range backfillMetricsColumns(splitStatements(ddl)) {
-		if isBlank(stmt) {
+	for _, stmt := range testsql.BackfillMetricsColumns(testsql.SplitStatements(ddl)) {
+		if strings.TrimSpace(stmt) == "" {
 			continue
 		}
-		stmt = promoteCreateTable(stmt)
+		stmt = testsql.PromoteCreateTable(stmt)
 		if _, err := c.db.Exec(stmt); err != nil {
 			t.Fatalf("chclienttest: seed exec failed:\n--- stmt ---\n%s\n--- err ---\n%v", stmt, err)
 		}
@@ -115,7 +116,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := withQuerySettings(ctx, rewriteMapProjections(query))
+	rewritten := withQuerySettings(ctx, testsql.RewriteMapProjections(query))
 	rows, err := c.db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -166,7 +167,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 			Metadata:   metadata,
 		})
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -209,7 +210,7 @@ func (c *Client) QueryStrings(ctx context.Context, query string, args ...any) ([
 		}
 		out = append(out, s)
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -225,7 +226,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := rewriteMapProjections(query)
+	rewritten := testsql.RewriteMapProjections(query)
 	rows, err := c.db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -252,7 +253,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 		}
 		out = append(out, chclient.DetectedFieldRow{Line: line, Attributes: attrs, Resource: resource})
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -283,7 +284,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, query string, args .
 		}
 		out = append(out, chclient.TimestampedLine{Timestamp: ts, Body: body, Severity: severity})
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -299,7 +300,7 @@ func (c *Client) QueryExemplars(ctx context.Context, query string, args ...any) 
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := rewriteMapProjections(query)
+	rewritten := testsql.RewriteMapProjections(query)
 	rows, err := c.db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -337,7 +338,7 @@ func (c *Client) QueryExemplars(ctx context.Context, query string, args ...any) 
 		r.ExemplarAttributes = exAttrs
 		out = append(out, r)
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -350,7 +351,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, query string, args ...any) 
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := rewriteMapProjections(query)
+	rewritten := testsql.RewriteMapProjections(query)
 	rows, err := c.db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -369,7 +370,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, query string, args ...any) 
 		}
 		out = append(out, labels)
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -400,7 +401,7 @@ func (c *Client) QueryMetricMeta(
 		}
 		out = append(out, r)
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -425,7 +426,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, query string, args ...any)
 			return chclient.IndexStatsRow{}, fmt.Errorf("chclienttest: scan: %w", err)
 		}
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return chclient.IndexStatsRow{}, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
@@ -437,7 +438,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := rewriteMapProjections(query)
+	rewritten := testsql.RewriteMapProjections(query)
 	rows, err := c.db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -459,7 +460,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 		}
 		out = append(out, chclient.IndexVolumeRow{Labels: labels, Bytes: bytes})
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
 	}
 	return out, nil
