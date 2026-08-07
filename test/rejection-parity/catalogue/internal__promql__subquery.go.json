@@ -315,14 +315,19 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverTopK#c28ffcca",
       "message": "promql: subquery over %s K: %w",
       "class": "internal",
-      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin",
+      "rationale": "error-propagation wrapper (%w): the wrapped rejection is raised by lowerScalarArg and is catalogued at its origin. The registerScalarGuard arm above it returns its own error directly and never reaches this wrap, so now that the K domain is enforced at execution time nothing this wrapper carries is a domain rejection.",
       "evidence": {
         "guard": [
           "else of if kF, ok := tryScalarLiteral(agg.Param); ok",
+          "past returning if err := registerScalarGuard(ctx, agg.Op.String()+\" K\", agg.Param, s, func(values []float64) error { _, err := aggregationParamDomain(values) return err }); err != nil",
           "if err != nil"
         ],
         "callers": [
           "lowerSubqueryOverAggregate"
+        ],
+        "cited": [
+          "lowerScalarArg",
+          "registerScalarGuard"
         ]
       }
     },

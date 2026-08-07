@@ -1,8 +1,8 @@
 {
   "query": "round_scalar_to_nearest",
-  "routed": true,
-  "k": 8,
-  "reason": "routed",
+  "routed": false,
+  "k": 0,
+  "reason": "scalar-heavy",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "5m0s",

@@ -883,68 +883,30 @@ func (p *Planner) walkExpr(e chplan.Expr, sig *signals) {
 // would otherwise pass every gate and route B, replicating a per-shard
 // wall-clock scalar across time-slices. Flag it here so it fails closed to
 // route A exactly as a top-level instant join does.
+//
+// It reads the interior through chplan.WalkDeep and chplan.InspectNodeExprs —
+// the IR's own total traversal and its single enumeration of the Expr slots a
+// node carries — rather than naming the node kinds whose expressions can hold
+// a now64. Naming them left the unlisted slots (an Aggregate's HAVING, a
+// TopK's sort key, a histogram_quantile's phi) unswept, so a now64 reachable
+// only through one of those escaped the gate and routed B.
 func (p *Planner) walkScalarInterior(n chplan.Node, sig *signals) {
-	chplan.Walk(n, func(node chplan.Node) bool {
+	chplan.WalkDeep(n, func(node chplan.Node) bool {
 		if !chplan.IsSliceInvariant(node) {
 			sig.allSliceInvariant = false
 		}
-		switch v := node.(type) {
-		case *chplan.VectorJoin:
-			if !v.StepAligned {
-				sig.sawInstantVectorJoin = true
-			}
-		case *chplan.Filter:
-			p.scanExprForNow64(v.Predicate, sig)
-		case *chplan.Project:
-			for _, pr := range v.Projections {
-				p.scanExprForNow64(pr.Expr, sig)
-			}
-		case *chplan.RangeWindow:
-			for _, e := range v.ScalarExprs {
-				p.scanExprForNow64(e, sig)
-			}
-		case *chplan.Aggregate:
-			// scalar(sum(... now64 ...)) — the interior Aggregate's group
-			// keys + agg args must be swept too, else a now64 inside a
-			// ScalarSubquery-interior aggregate escapes the now64 gate.
-			for _, e := range v.GroupBy {
-				p.scanExprForNow64(e, sig)
-			}
-			for _, fn := range v.AggFuncs {
-				for _, e := range fn.Params {
-					p.scanExprForNow64(e, sig)
-				}
-				for _, e := range fn.Args {
-					p.scanExprForNow64(e, sig)
-				}
-			}
-		case *chplan.RangeBucketFanout:
-			for _, e := range v.GroupBy {
-				p.scanExprForNow64(e, sig)
-			}
-			for _, fn := range v.AggFuncs {
-				for _, e := range fn.Params {
-					p.scanExprForNow64(e, sig)
-				}
-				for _, e := range fn.Args {
-					p.scanExprForNow64(e, sig)
-				}
-			}
+		if v, ok := node.(*chplan.VectorJoin); ok && !v.StepAligned {
+			sig.sawInstantVectorJoin = true
 		}
+		chplan.InspectNodeExprs(node, func(e chplan.Expr) {
+			chplan.InspectExpr(e, func(x chplan.Expr) bool {
+				if fc, ok := x.(*chplan.FuncCall); ok && fc.Name == "now64" {
+					sig.sawNow64 = true
+				}
+				return true
+			})
+		})
 		return true
-	})
-}
-
-// scanExprForNow64 sweeps an expr tree (and nested scalar interiors) for
-// now64 without re-entering the cost / grid logic.
-func (p *Planner) scanExprForNow64(e chplan.Expr, sig *signals) {
-	chplan.InspectExprNodes(e, func(x chplan.Expr) bool {
-		if fc, ok := x.(*chplan.FuncCall); ok && fc.Name == "now64" {
-			sig.sawNow64 = true
-		}
-		return true
-	}, func(inner chplan.Node) {
-		p.walkScalarInterior(inner, sig)
 	})
 }
 

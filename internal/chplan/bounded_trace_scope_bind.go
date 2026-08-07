@@ -150,21 +150,18 @@ func collectBoundedTraceScopes(root Node) []*BoundedTraceScope {
 	return out
 }
 
-// collectNodeExprs feeds visit every predicate-position Expr reachable from n
-// and its children.
+// collectNodeExprs feeds visit every Expr reachable from n and its children.
 //
-// Only the node types that can HOLD a gate are enumerated: the traceql
-// stamping pass (pushLeafPredicate) conjoins the gate into leaf
+// It reads the IR through nodeExprs, the single enumeration of the Expr slots
+// each Node carries, rather than naming the node types that can hold a gate.
+// The traceql stamping pass (pushLeafPredicate) conjoins the gate into leaf
 // [Filter].Predicate slots and into the [InSubquery] cohort subplans hanging
-// off them, and nothing else in the IR grows one. A node type this switch
-// does not know contributes no gates, so the worst case of the list falling
-// behind the IR is that some gates keep their own subquery — a smaller
-// saving, never a wrong answer.
+// off them, so the enumerated superset finds exactly those today; sharing the
+// enumeration means a gate that reaches any other slot is bound rather than
+// silently left with its own subquery.
 func collectNodeExprs(n Node, visit func(Expr)) {
 	Walk(n, func(cur Node) bool {
-		if f, ok := cur.(*Filter); ok && f.Predicate != nil {
-			visit(f.Predicate)
-		}
+		nodeExprs(cur, visit)
 		return true
 	})
 }
