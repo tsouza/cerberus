@@ -317,6 +317,31 @@ const REACT_ID_TOKEN_PATTERN = String.raw`(:r[0-9a-z]+:|«r[0-9a-z]+»)`;
 /** What an erased React `useId` token reads as. */
 const REACT_ID_PLACEHOLDER = '{rid}';
 
+/**
+ * react-select's own element-id prefix (`react-select-<n>-input`,
+ * `react-select-<n>-listbox`), as a source pattern for the same two
+ * consumers as REACT_ID_TOKEN_PATTERN.
+ *
+ * `<n>` is the same kind of token by a different mechanism: a
+ * MODULE-GLOBAL instance counter that react-select increments on every
+ * mount for the lifetime of the page, so the number a given control
+ * carries is a function of how many selects mounted before it — which
+ * varies with the route that mounted it and with how much of an app's
+ * scene had rendered by the time the control appeared. A control keyed
+ * by it is keyed by mount order.
+ *
+ * Traces Drilldown's primary-signal picker is one: it has no testid and
+ * no aria-label, so its key falls all the way through to the element id.
+ */
+const REACT_SELECT_INSTANCE_ID_PATTERN = String.raw`react-select-\d+-`;
+
+/**
+ * What an erased react-select instance counter reads as. The
+ * `react-select-` prefix survives erasure so an inventory row still
+ * names the widget family the key addresses.
+ */
+const REACT_SELECT_INSTANCE_ID_REPLACEMENT = `react-select-${REACT_ID_PLACEHOLDER}-`;
+
 type RawControl = {
   kind: ControlKind;
   key: string;
@@ -346,7 +371,14 @@ type RawControl = {
  */
 async function discoverStaticControls(page: Page): Promise<RawControl[]> {
   return await page.evaluate(
-    ({ chromeSelector, maxClickHops, reactIdPattern, reactIdPlaceholder }) => {
+    ({
+      chromeSelector,
+      maxClickHops,
+      reactIdPattern,
+      reactIdPlaceholder,
+      reactSelectPattern,
+      reactSelectReplacement,
+    }) => {
       const out: Array<{
         kind: string;
         key: string;
@@ -604,17 +636,22 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
             : '') ||
           placeholder ||
           cb.id;
-        // Two render-order / selection-dependent token classes must
+        // Three render-order / selection-dependent token classes must
         // never reach an inventory key:
         //   - React useId tokens (`:rNN:` / React 19's `«rNN»`) —
         //     downshift inputs fall back to them for element ids;
+        //   - react-select instance counters (`react-select-3-input`) —
+        //     the same thing from react-select's own module-global
+        //     counter, reached by any select with neither a testid nor
+        //     an aria-label;
         //   - count-bearing placeholders (`1000 logs`, `500 logs`) —
         //     the line-limit picker's placeholder mirrors the current
         //     selection, so it flickers per surface.
-        // Normalize both to fixed tokens; assignUniqueKeys' DOM-order
-        // `#n` suffix keeps same-page twins distinct.
+        // Normalize all three to fixed tokens; assignUniqueKeys'
+        // DOM-order `#n` suffix keeps same-page twins distinct.
         const key = rawKey
           .replace(new RegExp(reactIdPattern, 'g'), reactIdPlaceholder)
+          .replace(new RegExp(reactSelectPattern, 'g'), reactSelectReplacement)
           .replace(/^\d+ (logs|lines|rows)$/, '{n} $1');
         if (key === '') continue;
         // Resolve the click target and the rendered test in one walk
@@ -690,6 +727,8 @@ async function discoverStaticControls(page: Page): Promise<RawControl[]> {
       maxClickHops: COMBOBOX_CLICK_TARGET_MAX_HOPS,
       reactIdPattern: REACT_ID_TOKEN_PATTERN,
       reactIdPlaceholder: REACT_ID_PLACEHOLDER,
+      reactSelectPattern: REACT_SELECT_INSTANCE_ID_PATTERN,
+      reactSelectReplacement: REACT_SELECT_INSTANCE_ID_REPLACEMENT,
     },
   ) as RawControl[];
 }
@@ -801,6 +840,29 @@ const MENU_MOUNT_TIMEOUT_MS = 8_000;
 
 /** Hard cap on an Escape actually dismissing an open dropdown. */
 const MENU_CLOSE_TIMEOUT_MS = 5_000;
+
+/**
+ * The label Grafana renders as the SOLE item of an option list whose
+ * options are still in flight — its shared `loadingMessage`, used by
+ * core Select, by Combobox and by the scenes ad-hoc filter pickers
+ * (Metrics Drilldown's `+ label = value` is one).
+ *
+ * It is a placeholder, not an option: it carries no value, it is not
+ * clickable to any effect, and — this is what makes it dangerous — a
+ * list showing it holds perfectly still for as long as the fetch takes,
+ * so it settles. Two consecutive crawl runs disagreed on the SAME
+ * control in opposite directions because of it: one discovered the real
+ * option set and then drove against the placeholder, the next
+ * discovered the placeholder and then drove against the real set. Both
+ * died in clickMenuOption, and an interaction that dies takes the
+ * surfaces it would have minted with it.
+ *
+ * Excluding it from "settled" is synchronisation, not tolerance: the
+ * read still has to reach a stable list of REAL options within
+ * MENU_SETTLE_TIMEOUT_MS, and a list that never loads throws with the
+ * placeholder named in the message.
+ */
+const MENU_LOADING_PLACEHOLDER_LABEL = 'Loading options...';
 
 /**
  * How long a page must be watched before an EMPTY control set is
@@ -927,18 +989,21 @@ async function readSettledControls(
   return await sampleUntilStable(
     page,
     async () => assignUniqueKeys(await discoverStaticControls(page)),
-    // React `useId` tokens are erased from the SIGNATURE only: the
-    // returned controls keep the live hints the locators need, but a
-    // remount that changes nothing except a mount counter must not read
-    // as the page still moving. The keys already erase the token, so
-    // leaving it in the signature would compare mount generations the
-    // control model itself declares meaningless — and, when a component
-    // remounts on every render, would make settling impossible.
+    // Mount-counter tokens — React `useId` and react-select's instance
+    // counter alike — are erased from the SIGNATURE only: the returned
+    // controls keep the live hints the locators need, but a remount that
+    // changes nothing except a counter must not read as the page still
+    // moving. The keys already erase both, so leaving them in the
+    // signature would compare mount generations the control model itself
+    // declares meaningless — and, when a component remounts on every
+    // render, would make settling impossible.
     (controls) =>
-      JSON.stringify(controls).replace(
-        new RegExp(REACT_ID_TOKEN_PATTERN, 'g'),
-        REACT_ID_PLACEHOLDER,
-      ),
+      JSON.stringify(controls)
+        .replace(new RegExp(REACT_ID_TOKEN_PATTERN, 'g'), REACT_ID_PLACEHOLDER)
+        .replace(
+          new RegExp(REACT_SELECT_INSTANCE_ID_PATTERN, 'g'),
+          REACT_SELECT_INSTANCE_ID_REPLACEMENT,
+        ),
     CONTROL_SET_SETTLE_TIMEOUT_MS,
     requiredKey === undefined
       ? 'the page control set'
@@ -955,7 +1020,9 @@ async function readSettledControls(
  *
  * Returns `[]` only when NO option mounts within
  * MENU_MOUNT_TIMEOUT_MS — the free-text-input verdict discoverControls
- * acts on. A list that mounts and then keeps changing throws.
+ * acts on. A list that mounts and then keeps changing throws, and so
+ * does one still showing MENU_LOADING_PLACEHOLDER_LABEL at the settle
+ * deadline.
  *
  * Labels are trimmed but NOT filtered: the returned array is
  * positionally aligned with `openMenuOptions(page)`, which is what
@@ -975,6 +1042,11 @@ async function readSettledMenuOptions(page: Page): Promise<string[]> {
     (labels) => JSON.stringify(labels),
     MENU_SETTLE_TIMEOUT_MS,
     'the open dropdown option list',
+    // A list still fetching its options is not the list — see
+    // MENU_LOADING_PLACEHOLDER_LABEL. Failing the readiness test resets
+    // the streak, so the placeholder's own stillness can never be
+    // mistaken for the option set having settled.
+    (labels) => !labels.includes(MENU_LOADING_PLACEHOLDER_LABEL),
   );
 }
 
