@@ -1,0 +1,89 @@
+Explore Traces' Structure tab issues one query per surface from the template
+`({<primary signal>} &>> { <filters> }) || ({<primary signal>}) | select(...)`
+against a windowed /api/search. Every emitter-synthetic recursive arm the shape
+renders — the two `_struct_closure_*` closures and the `_cerberus_ns_paths`
+numbering CTE — must carry the request window as a bare `Timestamp` conjunct on
+its own physical `otel_traces` scan, because `otel_traces` is
+`PARTITION BY toDate(Timestamp)` and only a predicate on the scan itself prunes
+partitions: a windowed `TraceId IN (<seed>)` membership is inert (#1109).
+
+The lane proves that twice over. The `-- sql --` golden records the conjunct
+literally, and the post-optimizer re-emit runs `chsql.GuardEmittedSQL`, which
+rejects any recursive arm reading `otel_traces` without a co-scope `Timestamp`
+predicate — so a fixture here fails the moment the predicate goes missing or
+the guard stops recognising it (#1889).
+
+The structural arm on its own, with no `||` union: one `_struct_closure_*`
+recursive arm plus the numbering CTE, both windowed.
+
+-- search_limit --
+20
+-- search_window --
+1782571392 1782573192
+-- query.traceql --
+{ true } &>> { } | select(nestedSetParent)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    SpanKind String,
+    Duration Int64,
+    Timestamp DateTime64(9),
+    StatusCode String,
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String,
+    SpanAttributes Map(String, String),
+    ResourceAttributes Map(String, String)
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '1000000000000001', '', 'root', 'Server', 300, toDateTime64('2026-06-27 14:50:00.000000001', 9), 'Unset', '', '', '', map(), map()),
+    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', 'child', 'Client', 200, toDateTime64('2026-06-27 14:50:00.000000002', 9), 'Error', '', '', '', map(), map()),
+    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000002', 'grandchild', 'Server', 100, toDateTime64('2026-06-27 14:50:00.000000003', 9), 'Unset', '', '', '', map(), map()),
+    ('b0000000000000000000000000000001', '2000000000000001', '', 'root', 'Server', 300, toDateTime64('2026-06-27 14:51:00.000000001', 9), 'Unset', '', '', '', map(), map()),
+    ('b0000000000000000000000000000001', '2000000000000002', '2000000000000001', 'child', 'Client', 200, toDateTime64('2026-06-27 14:51:00.000000002', 9), 'Unset', '', '', '', map(), map());
+-- args --
+[0] bool = true
+[1] int64 = 1782571392000000000
+[2] int64 = 1782573192000000000
+[3] bool = true
+[4] int64 = 1782571392000000000
+[5] int64 = 1782573192000000000
+[6] bool = true
+[7] int64 = 1782571392000000000
+[8] int64 = 1782573192000000000
+[9] bool = true
+[10] int64 = 1782571392000000000
+[11] int64 = 1782573192000000000
+[12] bool = true
+[13] int64 = 1782571392000000000
+[14] int64 = 1782573192000000000
+[15] bool = true
+[16] int64 = 1782571392000000000
+[17] int64 = 1782573192000000000
+[18] bool = true
+[19] int64 = 1782571392000000000
+[20] int64 = 1782573192000000000
+[21] bool = true
+[22] int64 = 1782571392000000000
+[23] int64 = 1782573192000000000
+-- chplan --
+Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent]
+  NestedSetAnnotate table=otel_traces
+    StructuralJoin op=&>> maxDepth=128
+      Filter predicate=(true AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+        Scan(otel_traces)
+      Filter predicate=(true AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+        Scan(otel_traces)
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `__cerberus_ns_parent` AS `nestedSetParent` FROM (SELECT m.*, ifNull(`ns`.`_ns_left`, 0) AS `__cerberus_ns_left`, ifNull(`ns`.`_ns_right`, 0) AS `__cerberus_ns_right`, ifNull(`ns`.`_ns_parent`, 0) AS `__cerberus_ns_parent` FROM (SELECT `TraceId`, `SpanId`, `ParentSpanId`, `SpanName`, `Duration`, `Timestamp`, `ResourceAttributes`, `SpanAttributes`, `StatusCode`, `StatusMessage`, `SpanKind`, `ScopeName`, `ScopeVersion` FROM ((SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS _seed UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_1 WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`) UNION ALL (SELECT L.`TraceId` AS `TraceId`, L.`SpanId` AS `SpanId`, L.`ParentSpanId` AS `ParentSpanId`, L.`SpanName` AS `SpanName`, L.`Duration` AS `Duration`, L.`Timestamp` AS `Timestamp`, L.`ResourceAttributes` AS `ResourceAttributes`, L.`SpanAttributes` AS `SpanAttributes`, L.`StatusCode` AS `StatusCode`, L.`StatusMessage` AS `StatusMessage`, L.`SpanKind` AS `SpanKind`, L.`ScopeName` AS `ScopeName`, L.`ScopeVersion` AS `ScopeVersion` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS L INNER JOIN (WITH RECURSIVE _struct_closure_inv_2 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS _seed UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_inv_2 AS c ON t.`TraceId` = c.`TraceId` AND t.`SpanId` = c.`ParentSpanId` WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_inv_2 WHERE _depth > 0) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`)) LIMIT 1 BY `TraceId`, `SpanId`) AS m LEFT JOIN (WITH RECURSIVE _cerberus_ns_paths AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, concat(leftPad(toString(toUnixTimestamp64Nano(`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`SpanId`)), 20, '0')) AS `_path`, 0 AS `_depth` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` IN ((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))))) AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000) UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, concat(leftPad(toString(toUnixTimestamp64Nano(`t`.`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`t`.`SpanId`)), 20, '0'))), c.`_depth` + 1 AS `_depth` FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND t.`TraceId` IN ((SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))) UNION ALL (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))))) AND `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)) SELECT `TraceId`, `SpanId`, toInt64(maxIf(`_erank`, `_etype` = 0)) AS `_ns_left`, toInt64(maxIf(`_erank`, `_etype` = 2)) AS `_ns_right`, if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent` FROM (SELECT `TraceId`, `SpanId`, `_etype`, `_erank`, first_value(`_erank`) OVER (PARTITION BY `TraceId`, `_ekey` ORDER BY `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank` FROM (SELECT `TraceId`, `SpanId`, `_ekey`, `_etype`, sum(`_etype` != 1) OVER (PARTITION BY `TraceId` ORDER BY `_ekey` ASC, `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank` FROM (SELECT `TraceId`, `SpanId`, `_ev`.1 AS `_ekey`, `_ev`.2 AS `_etype` FROM `_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - 40), 1)]) AS `_ev`))) GROUP BY `TraceId`, `SpanId`) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`)
+-- expected_rows --
+[
+  ["child", {"__cerberus_parentSpanID": "1000000000000001", "__cerberus_sel_int_nestedSetParent": "1", "__cerberus_spanID": "1000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2026-06-27T14:50:00.000000002Z", 200],
+  ["child", {"__cerberus_parentSpanID": "2000000000000001", "__cerberus_sel_int_nestedSetParent": "1", "__cerberus_spanID": "2000000000000002", "__cerberus_traceID": "b0000000000000000000000000000001"}, "2026-06-27T14:51:00.000000002Z", 200],
+  ["grandchild", {"__cerberus_parentSpanID": "1000000000000002", "__cerberus_sel_int_nestedSetParent": "2", "__cerberus_spanID": "1000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2026-06-27T14:50:00.000000003Z", 100],
+  ["root", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_spanID": "1000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2026-06-27T14:50:00.000000001Z", 300],
+  ["root", {"__cerberus_parentSpanID": "", "__cerberus_sel_int_nestedSetParent": "-1", "__cerberus_spanID": "2000000000000001", "__cerberus_traceID": "b0000000000000000000000000000001"}, "2026-06-27T14:51:00.000000001Z", 300]
+]

@@ -1,6 +1,10 @@
 package telemetry
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+	"time"
+)
 
 func TestSanitizeForLog(t *testing.T) {
 	cases := []struct {
@@ -45,5 +49,43 @@ func TestSanitizeForLog_FastPathIdentity(t *testing.T) {
 	got := SanitizeForLog(clean)
 	if got != clean {
 		t.Fatalf("SanitizeForLog(%q) = %q, want unchanged", clean, got)
+	}
+}
+
+func TestSanitizeArgsForLog(t *testing.T) {
+	ts := time.Unix(1700000000, 0).UTC()
+	in := []any{
+		`{job="api"}`,
+		"forged\nlevel=ERROR msg=\"fake entry\"",
+		int64(5000),
+		ts,
+		3.5,
+		nil,
+	}
+	want := []any{
+		`{job="api"}`,
+		`forged\nlevel=ERROR msg="fake entry"`,
+		int64(5000),
+		ts,
+		3.5,
+		nil,
+	}
+
+	got := SanitizeArgsForLog(in)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SanitizeArgsForLog(%#v) = %#v, want %#v", in, got, want)
+	}
+
+	// The driver still receives the caller's own slice, so sanitising for
+	// the log must not rewrite the bound parameters.
+	if in[1] != "forged\nlevel=ERROR msg=\"fake entry\"" {
+		t.Fatalf("input slice was mutated: in[1] = %q", in[1])
+	}
+}
+
+func TestSanitizeArgsForLog_Empty(t *testing.T) {
+	got := SanitizeArgsForLog(nil)
+	if len(got) != 0 {
+		t.Fatalf("SanitizeArgsForLog(nil) = %#v, want empty", got)
 	}
 }

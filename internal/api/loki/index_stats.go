@@ -60,7 +60,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki index_stats", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki index_stats", "logql", telemetry.SanitizeForLog(q), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	row, err := h.Client.QueryIndexStats(r.Context(), sqlStr, args...)
 	if err != nil {

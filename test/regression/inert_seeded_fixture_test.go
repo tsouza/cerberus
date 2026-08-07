@@ -112,7 +112,8 @@ func seededFixtureProblems(executable, hasMarker bool, marker string) []string {
 			"has a non-empty `-- seed --` but is NOT executable, and declares no reason. "+
 				"A seeded fixture with no `-- expected_rows --` is inert in every lane and "+
 				"regeneration cannot create the section. Either bootstrap it — add "+
-				"`-- expected_rows --` with `[]` and run `just update-golden` to fill the real "+
+				"`-- expected_rows --` with `[]` and run `just update-golden <shard>...` (the "+
+				"recipe names the shards it needs) to fill the real "+
 				"cell — or, if the query needs a ClickHouse feature above the chDB floor, add:\n"+
 				"\t-- %s --\n\t%s <ClickHouse function/version>\n\t%s <lane that proves it instead>",
 			aboveChDBFloorSection, floorFeatureKey, floorValidatedKey,

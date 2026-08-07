@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // DetectedLabel is one entry in the /loki/api/v1/detected_labels response.
@@ -63,7 +64,7 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki detected_labels", "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki detected_labels", "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	rows, err := h.Client.QueryLabelSets(r.Context(), sqlStr, args...)
 	if err != nil {

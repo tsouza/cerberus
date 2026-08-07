@@ -52,7 +52,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
 	}
-	h.Logger.Debug("cerberus loki label values", "name", telemetry.SanitizeForLog(name), "sql", sqlStr, "args", args)
+	h.Logger.Debug("cerberus loki label values", "name", telemetry.SanitizeForLog(name), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
 	vals, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
 	if err != nil {

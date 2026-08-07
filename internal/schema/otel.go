@@ -584,8 +584,9 @@ func (m Metrics) TablesFor(metricName string) []string {
 // Classic-histogram series under a regex name matcher are surfaced by a
 // separate per-arm UnionAll lowering instead
 // (lowerRegexHistogramSelector in internal/promql/regex_histogram_lower.go,
-// wired from lowerVectorSelector for any selector with an unpinned
-// __name__ matcher): it unions this unknown-name candidate set with a
+// wired from lowerVectorSelector for any selector whose __name__ is not
+// pinned to a literal — a regex matcher, a negated matcher, or no
+// __name__ matcher at all): it unions this unknown-name candidate set with a
 // companion arm per `_count`/`_sum` suffix and a `_bucket` arm, PLUS a
 // `_count`/`_sum` companion arm per suffix reading ExpHistogramTable
 // (#1549 residue 1) — the same pair, mirroring
@@ -599,6 +600,21 @@ func (m Metrics) TablesForUnknownName() []string {
 		return []string{m.GaugeTable, m.SumTable}
 	}
 	return []string{m.GaugeTable}
+}
+
+// ConfiguredMetricTables returns the distinct, non-empty plain-Sample and
+// classic-histogram table names this schema is configured to read — Gauge,
+// Sum, and Histogram, in that order, once duplicates collapse (a schema may
+// point GaugeTable and SumTable at the same physical table). It is the same
+// "which tables back this metric surface" question metricTables()
+// (internal/api/prom/metadata.go) and cerberus's boot-time existence check
+// (cmd/cerberus's runRequirementsCheck, #1905) both need answered; both
+// consume this method instead of re-deriving the set, so the answer stays
+// in exactly one place. ExpHistogramTable is deliberately excluded: the
+// UNION-construction callers this serves project the plain-Sample /
+// classic-histogram row shapes only, matching TableFor/TablesFor above.
+func (m Metrics) ConfiguredMetricTables() []string {
+	return distinctTables(m.GaugeTable, m.SumTable, m.HistogramTable)
 }
 
 // The Prom-convention metric-name suffixes this package routes on.

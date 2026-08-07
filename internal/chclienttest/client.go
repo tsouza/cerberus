@@ -216,10 +216,13 @@ func (c *Client) QueryStrings(ctx context.Context, query string, args ...any) ([
 	return out, nil
 }
 
-// QueryDetectedFieldRows runs sql and decodes a (String,
-// Map(String,String), Map(String,String)) three-column result set into
-// chclient.DetectedFieldRow tuples. Used by /loki/api/v1/detected_fields.
-// The two Map columns are wrapped server-side in toJSONString(...) by
+// QueryDetectedFieldRows runs sql and decodes a (String, Map, Map, Map,
+// Map) five-column result set into chclient.DetectedFieldRow tuples.
+// Used by /loki/api/v1/detected_fields and
+// /loki/api/v1/detected_field/{name}/values: the line, its structured
+// metadata, its stream labels, and the `| logfmt` / `| json`
+// parser-stage extractions ClickHouse evaluated for it. The four Map
+// columns are wrapped server-side in toJSONString(...) by
 // rewriteMapProjections and decoded back on the Go side per the chDB
 // driver Map-panic probe.
 func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args ...any) ([]chclient.DetectedFieldRow, error) {
@@ -239,8 +242,10 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 			line         string
 			attrsJSON    string
 			resourceJSON string
+			logfmtJSON   string
+			jsonJSON     string
 		)
-		if err := rows.Scan(&line, &attrsJSON, &resourceJSON); err != nil {
+		if err := rows.Scan(&line, &attrsJSON, &resourceJSON, &logfmtJSON, &jsonJSON); err != nil {
 			return nil, fmt.Errorf("chclienttest: scan: %w", err)
 		}
 		attrs, err := decodeMapJSON(attrsJSON)
@@ -251,7 +256,21 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, chclient.DetectedFieldRow{Line: line, Attributes: attrs, Resource: resource})
+		logfmtFields, err := decodeMapJSON(logfmtJSON)
+		if err != nil {
+			return nil, err
+		}
+		jsonFields, err := decodeMapJSON(jsonJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, chclient.DetectedFieldRow{
+			Line:         line,
+			Attributes:   attrs,
+			Resource:     resource,
+			LogfmtFields: logfmtFields,
+			JSONFields:   jsonFields,
+		})
 	}
 	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)

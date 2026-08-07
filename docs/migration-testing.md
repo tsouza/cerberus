@@ -1013,13 +1013,17 @@ effect.
 
 The Tier-0 explain reports record emitted SQL verbatim, so any change that
 moves a plan shape drifts them even when nothing under `test/e2e/migration/`
-was touched. `just update-golden` therefore chains `migration-golden` as a
-prior dependency, and its closing diff-stat covers
-`test/e2e/migration/archetypes/` alongside `test/spec/`: one command
-regenerates every fixture-derived artefact, and one review prompt shows all of
-it. Run `just migration-golden` directly when the migration corpus is the only
-thing that moved. `test/regression/update_golden_migration_chain_test.go` pins
-the chaining, its position in the dependency list, and the diff-stat's scope.
+was touched. `just update-golden`'s `migration` shard therefore runs
+`migration-golden`, ahead of the fixture-golden body so its output lands inside
+the closing diff-stat, whose scope covers `test/e2e/migration/archetypes/`
+alongside `test/spec/`. The shard does not have to be remembered: the recipe's
+coverage check derives the reports' inputs from the package closure of the
+Tier-0 harness *and the binary it spawns*, so a change to SQL emission is
+refused until `migration` is named. Run `just migration-golden` directly when
+the migration corpus is the only thing that moved.
+`test/regression/update_golden_migration_chain_test.go` pins all four: that the
+shard reaches the recipe, that a plan-shape change pulls the shard in, its
+position relative to the body, and the diff-stat's scope.
 
 Every scenario writes its `migrate` JSON outputs into a per-scenario evidence
 dir, uploaded via `actions/upload-artifact` under a per-archetype name (a static
