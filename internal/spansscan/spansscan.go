@@ -277,9 +277,10 @@ func topLevelScopeForward(sql string, i int) string {
 				b.WriteByte(c)
 			}
 		case ')':
-			if subqueryDepth == depth {
+			switch subqueryDepth {
+			case depth:
 				subqueryDepth = notEliding
-			} else if subqueryDepth == notEliding {
+			case notEliding:
 				b.WriteByte(c)
 			}
 			depth--
@@ -308,8 +309,8 @@ func topLevelScopeForward(sql string, i int) string {
 // expression group belonging to the enclosing SELECT's own scope.
 func opensSubquery(sql string, j int) bool {
 	for k := j + 1; k < len(sql); k++ {
-		switch c := sql[k]; {
-		case c == '(' || c == ' ' || c == '\t' || c == '\n' || c == '\r':
+		switch sql[k] {
+		case '(', ' ', '\t', '\n', '\r':
 			continue
 		default:
 			return wordAt(sql, k, "SELECT") || wordAt(sql, k, "WITH")
