@@ -1,6 +1,4 @@
-//go:build chdb
-
-package spec
+package testsql
 
 import (
 	"strings"
@@ -18,7 +16,7 @@ import (
 // parquet driver panics with `could not cast to type: MAP`. The
 // expander must reach through the parenthesised UNION into the first
 // branch's CTE body and borrow its projection aliases so the outer
-// SELECT names the columns and rewriteMapProjections can wrap the Map.
+// SELECT names the columns and RewriteMapProjections can wrap the Map.
 func TestExpandStarProjection_CTEUnionResolvesAliases(t *testing.T) {
 	t.Parallel()
 
@@ -33,7 +31,7 @@ func TestExpandStarProjection_CTEUnionResolvesAliases(t *testing.T) {
 		"WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) " +
 		"AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`"
 
-	got := expandStarProjection(query, nil)
+	got := ExpandStarProjection(query, nil)
 
 	// The outer star must have been replaced by the CTE body's explicit
 	// alias list.
@@ -63,7 +61,7 @@ func TestExpandStarProjection_CTEUnionResolvesAliases(t *testing.T) {
 	}
 
 	// The Map-wrap pass must now find the named Map column and wrap it.
-	full := rewriteMapProjections(got)
+	full := RewriteMapProjections(got)
 	if !strings.Contains(full, "toJSONString(`ResourceAttrs`)") {
 		t.Errorf("Map column ResourceAttrs was not wrapped in toJSONString:\n%s", full)
 	}
@@ -93,7 +91,7 @@ func TestExpandStarProjection_BareTableResolvesFromSeedDDL(t *testing.T) {
 		"(SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?)) " +
 		"GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 2)"
 
-	got := expandStarProjection(query, seedTableColumns(seed))
+	got := ExpandStarProjection(query, SeedTableColumns(seed))
 
 	head, _ := splitOuterSelect(got)
 	proj := strings.TrimSpace(head)
@@ -115,7 +113,7 @@ func TestExpandStarProjection_BareTableResolvesFromSeedDDL(t *testing.T) {
 	}
 
 	// The Map-wrap pass must now find the named Map column and wrap it.
-	full := rewriteMapProjections(got)
+	full := RewriteMapProjections(got)
 	if !strings.Contains(full, "toJSONString(") || !strings.Contains(full, "SpanAttributes") {
 		t.Errorf("Map column SpanAttributes was not wrapped in toJSONString:\n%s", full)
 	}
@@ -131,7 +129,7 @@ func TestExpandStarProjection_BareTableWithoutSeedStillBails(t *testing.T) {
 	query := "SELECT s.* FROM (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) AS s " +
 		"WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`)"
 
-	got := expandStarProjection(query, nil)
+	got := ExpandStarProjection(query, nil)
 	if got != query {
 		t.Errorf("expected query to pass through unchanged without a seed column map, got:\n%s", got)
 	}

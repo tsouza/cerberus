@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/testsql"
+
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 )
 
@@ -36,7 +38,7 @@ import (
 //
 // chDB / libchdb is an EMBEDDED ClickHouse: a single native engine is
 // shared by every `sql.Open("chdb", "")` in the process (the empty-DSN
-// sessions are NOT isolated — see applySeed's "chdb-go shares one engine
+// sessions are NOT isolated — see ApplySeed's "chdb-go shares one engine
 // across a process" note). That engine is NOT thread-safe for concurrent
 // in-process execution. The round-trip suite runs fixtures under
 // t.Parallel() (see roundtrip_chdb_test.go) and spec.Walk fans each
@@ -54,12 +56,6 @@ import (
 // parallel; the engine span itself is single-threaded.
 var chdbEngineMu sync.Mutex
 
-// chdbEOFSentinel is the spurious end-of-iteration error chdb-go's
-// parquet driver returns instead of io.EOF (see chdb-go v1.11.0's
-// `parquet.go`: `return fmt.Errorf("empty row")`). It surfaces on
-// rows.Err() and must be ignored — any other error is real.
-const chdbEOFSentinel = "empty row"
-
 // nowAnchorLiteral, substituteNow64, the seed-statement splitter, the
 // idempotency promotion, and the ResourceAttributes backfill now live in the
 // build-tag-free roundtrip_prep.go so the `integration`-tagged strict-scan
@@ -74,19 +70,19 @@ const chdbEOFSentinel = "empty row"
 // anchor `internal/promql/lower_test.go` feeds into `LowerAt`
 // (`time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)`), so each round-trip
 // fixture sees the same wall-clock the lowering pass used to compute
-// filter bounds. [nowAnchorLiteral] is `chNow64Literal(defaultNowAnchor)`
+// filter bounds. [nowAnchorLiteral] is `CHNow64Literal(defaultNowAnchor)`
 // by construction (asserted in TestNowAnchorLiteralMatchesDefault), so
 // the fixed-anchor and per-eval substitution paths share one source of
 // truth for the default instant.
 var defaultNowAnchor = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
-// chNow64Literal renders a `time.Time` as the CH DateTime64(9) literal
+// CHNow64Literal renders a `time.Time` as the CH DateTime64(9) literal
 // shape `substituteNow64` splices in — `toDateTime64('YYYY-MM-DD
 // HH:MM:SS.fffffffff', 9, 'UTC')`. The nanosecond field is always nine
 // digits so the parser sees a fractional-second literal (matching
 // [nowAnchorLiteral]'s shape). Used by the eval-instant sweep to anchor
 // the residual outer-projection `now64(?)` to the swept eval time T.
-func chNow64Literal(at time.Time) string {
+func CHNow64Literal(at time.Time) string {
 	u := at.UTC()
 	return fmt.Sprintf(
 		"toDateTime64('%04d-%02d-%02d %02d:%02d:%02d.%09d', 9, 'UTC')",
@@ -95,865 +91,10 @@ func chNow64Literal(at time.Time) string {
 	)
 }
 
-// tolerantRowsErr matches the helper used by the chDB probe in
-// internal/chclient/chdb_probe_test.go.
-func tolerantRowsErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), chdbEOFSentinel) {
-		return nil
-	}
-	return err
-}
-
-// mapColumnNames is the conservative list of OTel-CH Map column names
-// the runner will rewrite to `toJSONString(<name>)` in the emitted
-// SQL before execution. We don't have type information at this
-// layer; the rewrite is a textual transform keyed off this allow-
-// list. Authors with custom Map columns can extend the list as
-// fixtures grow.
-var mapColumnNames = []string{
-	"Attributes",
-	"ResourceAttributes",
-	"ResourceAttrs",
-	"ScopeAttributes",
-	"SpanAttributes",
-	"LogAttributes",
-}
-
-// isMapColumn reports whether name (a backtick-quoted alias) is one
-// of the known OTel Map column names.
-func isMapColumn(name string) bool {
-	for _, c := range mapColumnNames {
-		if name == c {
-			return true
-		}
-	}
-	return false
-}
-
-// nestMapOrderBy guards the Map-wrap output against an outer
-// `ORDER BY <MapColumn>[<key>]` clause — the shape the `sort_by_label`
-// / `sort_by_label_desc` lowering emits (`SELECT * FROM (<sub>) ORDER
-// BY ` + "`Attributes`" + `['<label>']`). After [expandStarProjection]
-// + [rewriteMapProjections] rewrite the OUTER projection so the Map
-// column is emitted as `toJSONString(Attributes) AS Attributes`, the
-// ORDER BY's `Attributes[...]` subscript binds to that String-typed
-// SELECT alias (ClickHouse resolves ORDER BY identifiers to SELECT
-// aliases ahead of the source column), so the map subscript fails with
-// `arrayElement … got 'String'`. Production never hits this — the live
-// query path has no toJSONString wrap, so `SELECT * … ORDER BY
-// Attributes[k]` keeps `Attributes` a Map. The collision is purely an
-// artefact of the test harness's parquet-Map workaround.
-//
-// This runs AFTER the wrap passes and pushes the ORDER BY one level
-// below the wrapped projection: rewrite
-//
-//	SELECT <…>, toJSONString(Attributes) AS Attributes, <…>
-//	  FROM (<sub>) ORDER BY `Attributes`['h']
-//
-// into
-//
-//	SELECT <…>, toJSONString(Attributes) AS Attributes, <…>
-//	  FROM (SELECT * FROM (<sub>) ORDER BY `Attributes`['h'])
-//
-// The inner subquery sorts against the still-raw Map; the outer
-// wrapped projection produces the wire shape. ClickHouse preserves the
-// inner ORDER BY's row order through the outer projection (no outer
-// ORDER BY / GROUP BY reshuffles it), so the pinned `expected_rows:`
-// ordering survives.
-//
-// The transform is conservative: it fires only when the query is a
-// `SELECT <projs> FROM (<single subquery>) ORDER BY …` (no WITH head)
-// whose ORDER BY references a known Map column via `[`-subscript, and
-// the FROM clause is exactly one parenthesised subquery. Every other
-// shape passes through untouched.
-func nestMapOrderBy(query string) string {
-	q := strings.TrimSpace(query)
-	head, tail := splitOuterSelect(q)
-	if head == "" {
-		return query
-	}
-	upperTail := strings.ToUpper(tail)
-	obIdx := strings.Index(upperTail, " ORDER BY ")
-	if obIdx < 0 {
-		return query
-	}
-	orderBy := tail[obIdx+len(" ORDER BY "):]
-	if !orderByReferencesMapSubscript(orderBy) {
-		return query
-	}
-	// `tail` is ` FROM (<sub>) ORDER BY <orderBy>`. Carve the
-	// parenthesised subquery out of the FROM so we can re-wrap it with
-	// the ORDER BY pushed inside.
-	fromBody := strings.TrimSpace(strings.TrimPrefix(tail[:obIdx], " FROM "))
-	if !strings.HasPrefix(fromBody, "(") || !strings.HasSuffix(fromBody, ")") {
-		return query
-	}
-	return "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " ORDER BY " + orderBy + ")"
-}
-
-// orderByReferencesMapSubscript reports whether an ORDER BY clause body
-// sorts on a known Map column via `[`-subscript (e.g.
-// "`Attributes`['handler'] DESC"). Used by [nestMapOrderBy] to detect
-// the sort_by_label collision shape.
-func orderByReferencesMapSubscript(orderBy string) bool {
-	for _, name := range mapColumnNames {
-		if strings.Contains(orderBy, "`"+name+"`[") {
-			return true
-		}
-	}
-	return false
-}
-
-// expandStarProjection rewrites a top-level `SELECT * FROM (SELECT
-// <projs> FROM ...) ...` into `SELECT <alias-list> FROM (SELECT
-// <projs> FROM ...) ...` so the subsequent [rewriteMapProjections]
-// pass can wrap Map-typed columns in `toJSONString(...)`. cerberus's
-// emitter sometimes hoists a star projection over a fully-aliased
-// inner SELECT (e.g. the `Filter ... Project ...` lowering shape of
-// `<scalar> < metric`); without expansion, the outer `*` carries the
-// inner Map column through unwrapped and chdb-go's parquet driver
-// panics with `could not cast to type: MAP`.
-//
-// The transform is conservative: it fires only when the outer
-// projection is exactly `*` or a single qualified star `<t>.*` (the
-// spanset-intersect shape `SELECT L.* FROM (<left>) AS L INNER JOIN
-// (<right>) AS R ON …`, whose columns come from the FIRST subquery —
-// the same one this function already borrows from), and the inner
-// subquery starts with `SELECT ` (case-insensitive). Anything else
-// passes through. tableCols is the fixture's own seed DDL (see
-// [seedTableColumns]) — a lower-cased table name -> declared column
-// names in CREATE TABLE order — the fallback catalog [expandQualifiedStar]
-// consults when the inner relation is a bare table scan with no
-// projection list of its own to borrow from (#1431). May be nil, in
-// which case that shape still bails as before. The inner subquery's
-// projections are re-rendered as
-// their aliases (preferring explicit `AS <alias>` over the implicit
-// form), re-qualified with the star's own table alias so the JOIN
-// shape stays unambiguous, which lets the outer SELECT name the
-// columns and the Map-wrap pass do its work without touching the inner
-// shape.
-func expandStarProjection(query string, tableCols map[string][]string) string {
-	// A `WITH <cte> AS (...) SELECT …` head (the vector-set-op CSE CTE,
-	// or the structural-join WITH RECURSIVE closure) precedes the outer
-	// SELECT — peel it so the projection split sees the real outer
-	// SELECT, then re-prepend it on the rewritten result. The CTE
-	// bodies keep their raw Map columns (consumed server-side); only
-	// the outer projection needs the toJSONString wrap.
-	withHead, body := stripWithHead(query)
-	if withHead != "" {
-		return withHead + expandStarProjectionWithCTEs(body, withHead, tableCols)
-	}
-	return expandStarProjectionWithCTEs(query, "", tableCols)
-}
-
-// expandStarProjectionWithCTEs is [expandStarProjection] with the
-// enclosing `WITH <cte> AS (...)` definitions available for name
-// discovery. The Tempo-compatible `&&` shape (chsql.intersectQuery)
-// emits `WITH l AS (...), r AS (...) SELECT * FROM ((SELECT * FROM l)
-// UNION ALL (SELECT * FROM r)) …`, so the outer star's columns are not
-// borrowable from the inner FROM directly — the inner is a parenthesised
-// UNION whose branches reference CTEs by bare identifier. Name discovery
-// therefore peels the union to its first branch and, when that branch is
-// `SELECT * FROM <cte-ident>`, resolves the identifier back to its CTE
-// body in `withHead`. Everything else is delegated unchanged.
-func expandStarProjectionWithCTEs(query, withHead string, tableCols map[string][]string) string {
-	head, tail := splitOuterSelect(query)
-	if head == "" {
-		return query
-	}
-	star := strings.TrimSpace(head)
-	if star != "*" {
-		return expandQualifiedStar(query, tableCols)
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
-	if !strings.HasPrefix(rest, "(") {
-		return expandQualifiedStar(query, tableCols)
-	}
-	depth, end := 0, -1
-	for i := 0; i < len(rest) && end < 0; i++ {
-		switch rest[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				end = i
-			}
-		}
-	}
-	if end < 0 {
-		return expandQualifiedStar(query, tableCols)
-	}
-	inner := strings.TrimSpace(rest[1:end])
-	// Peel a parenthesised UNION down to its leading branch, then
-	// resolve a bare-CTE-reference branch (`SELECT * FROM <ident>`)
-	// against the WITH head so the column names come from the CTE body.
-	branch := peelUnionPrefix(inner)
-	names := cteBranchAliases(branch, withHead, tableCols)
-	if len(names) == 0 {
-		return expandQualifiedStar(query, tableCols)
-	}
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = "`" + n + "`"
-	}
-	return "SELECT " + strings.Join(quoted, ", ") + tail
-}
-
-// cteBranchAliases returns the projected column aliases of a UNION
-// branch of the form `SELECT * FROM <cte-ident>` by looking the CTE up
-// in withHead and borrowing its body's projection aliases. Returns nil
-// for any shape it cannot canonically enumerate, so the caller falls
-// back to the conservative [expandStarProjection] path.
-func cteBranchAliases(branch, withHead string, tableCols map[string][]string) []string {
-	bHead, bTail := splitOuterSelect(branch)
-	if strings.TrimSpace(bHead) != "*" {
-		return nil
-	}
-	ident := strings.TrimSpace(strings.TrimPrefix(bTail, " FROM "))
-	// The FROM target must be a single bare identifier (the CTE name),
-	// not a subquery or a further expression.
-	if ident == "" || strings.ContainsAny(ident, " ,()`*") {
-		return nil
-	}
-	body := cteBody(withHead, ident)
-	if body == "" {
-		return nil
-	}
-	// The CTE body is itself a `SELECT * FROM (SELECT <aliased projs>…)`
-	// shape with no further WITH head; reuse the CTE-unaware star
-	// expander for name discovery only.
-	expanded := expandQualifiedStar(body, tableCols)
-	eHead, _ := splitOuterSelect(expanded)
-	if eHead == "" || strings.TrimSpace(eHead) == "*" {
-		return nil
-	}
-	var names []string
-	for _, p := range splitProjections(eHead) {
-		expr, alias := splitAlias(p)
-		if alias == "" {
-			alias = mapColAlias(strings.TrimSpace(expr))
-		}
-		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
-			return nil
-		}
-		names = append(names, alias)
-	}
-	return names
-}
-
-// cteBody returns the parenthesised body of the named CTE from a
-// `WITH a AS (...), b AS (...)` head, or "" if not found. The name match
-// is anchored on the `<name> AS (` token at depth 0 within the head.
-func cteBody(withHead, name string) string {
-	needle := name + " AS ("
-	idx := strings.Index(withHead, needle)
-	if idx < 0 {
-		return ""
-	}
-	open := idx + len(needle) - 1 // points at the '('
-	depth, end := 0, -1
-	for i := open; i < len(withHead) && end < 0; i++ {
-		switch withHead[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				end = i
-			}
-		}
-	}
-	if end < 0 {
-		return ""
-	}
-	return strings.TrimSpace(withHead[open+1 : end])
-}
-
-// expandQualifiedStar is the CTE-unaware star expander: it rewrites a
-// top-level `SELECT * FROM (SELECT <projs> …) …` (or the qualified
-// `SELECT L.* FROM (<left>) AS L …` JOIN shape) into an explicit alias
-// list borrowed from the inner subquery's projections, so
-// [rewriteMapProjections] can wrap Map columns. It is the fallback path
-// [expandStarProjectionWithCTEs] delegates to whenever the outer FROM is
-// a borrowable subquery rather than a CTE-referencing UNION.
-func expandQualifiedStar(query string, tableCols map[string][]string) string {
-	head, tail := splitOuterSelect(query)
-	if head == "" {
-		return query
-	}
-	// `qual` is the star's table qualifier ("" for a bare `*`, "L" for
-	// the intersect shape's `L.*`); it is re-attached to every borrowed
-	// alias so the expanded projection stays unambiguous across the JOIN.
-	star := strings.TrimSpace(head)
-	qual := ""
-	if star != "*" {
-		base, ok := strings.CutSuffix(star, ".*")
-		// A qualifier must be a single bare identifier — anything with a
-		// space, comma, paren, backtick or further star is a projection
-		// list or an expression, not the star shape this pass expands.
-		if !ok || base == "" || strings.ContainsAny(base, " ,()`*") {
-			return query
-		}
-		qual = base + "."
-	}
-	// `tail` starts with " FROM "; the next non-space token should be
-	// `(` opening an inner subquery whose projection list we can
-	// borrow. Bail out otherwise.
-	rest := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
-	if !strings.HasPrefix(rest, "(") {
-		return query
-	}
-	// Find the matching `)` for the subquery.
-	depth := 0
-	end := -1
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				end = i
-			}
-		}
-		if end >= 0 {
-			break
-		}
-	}
-	if end < 0 {
-		return query
-	}
-	inner := strings.TrimSpace(rest[1:end])
-	// The inner subquery may itself project a star over a further
-	// subquery (the spanset shape nests `SELECT * FROM (<aggregate>)
-	// WHERE …` inside the JOIN arm). Expand it recursively for NAME
-	// DISCOVERY only — the rewritten inner is never spliced back, tail
-	// keeps the original subquery verbatim.
-	inner = expandStarProjection(inner, tableCols)
-	innerHead, innerTail := splitOuterSelect(inner)
-	if innerHead == "" {
-		return query
-	}
-	// The inner relation may itself be a BARE TABLE SCAN (`SELECT *
-	// FROM <table> ...`, no subquery) rather than a subquery with its
-	// own projection list to borrow from — exactly the shape
-	// emitSearchTraceLimit's drain produces (`SELECT s.* FROM (SELECT *
-	// FROM otel_traces ...) AS s ...`). The recursive expandStarProjection
-	// call above cannot rewrite that inner star (there is no nested
-	// subquery to name-discover against), so it comes back unchanged and
-	// innerHead is still the literal "*". Resolve the table's own column
-	// list from the fixture's seed DDL instead of bailing (#1431).
-	if strings.TrimSpace(innerHead) == "*" {
-		if names, ok := bareTableColumns(innerTail, tableCols); ok {
-			aliases := make([]string, len(names))
-			for i, n := range names {
-				aliases[i] = qual + "`" + n + "`"
-			}
-			return "SELECT " + strings.Join(aliases, ", ") + tail
-		}
-		return query
-	}
-	innerProjs := splitProjections(innerHead)
-	aliases := make([]string, 0, len(innerProjs))
-	for _, p := range innerProjs {
-		expr, alias := splitAlias(p)
-		if alias == "" {
-			alias = mapColAlias(strings.TrimSpace(expr))
-		}
-		// Bail when the inner projection is itself a star, a
-		// function call, or anything else that doesn't reduce to a
-		// stable column name. Returning the original query keeps
-		// the existing Map-panic failure mode for shapes the
-		// rewriter cannot canonically enumerate.
-		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
-			return query
-		}
-		aliases = append(aliases, qual+"`"+alias+"`")
-	}
-	return "SELECT " + strings.Join(aliases, ", ") + tail
-}
-
-// bareTableColumns resolves the column list for a bare `SELECT * FROM
-// <table> ...` inner relation — no subquery, so there is no projection
-// list [expandQualifiedStar] can borrow names from — by looking <table>
-// up in tableCols, the fixture's own seed DDL parsed by
-// [seedTableColumns]. Returns (nil, false) when tableCols is empty, the
-// FROM target isn't a single bare (optionally backtick-quoted)
-// identifier, or that identifier has no known column list — any of
-// which sends the caller back to the original conservative bail.
-func bareTableColumns(innerTail string, tableCols map[string][]string) ([]string, bool) {
-	if len(tableCols) == 0 {
-		return nil, false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(innerTail, " FROM "))
-	table := firstToken(rest)
-	table = strings.TrimSuffix(strings.TrimPrefix(table, "`"), "`")
-	if table == "" {
-		return nil, false
-	}
-	names, ok := tableCols[strings.ToLower(table)]
-	if !ok || len(names) == 0 {
-		return nil, false
-	}
-	return names, true
-}
-
-// seedTableColumns parses a fixture's `-- seed --` script and returns a
-// map from lower-cased table name to its declared column names, in
-// CREATE TABLE order. It is the authoritative catalog
-// [expandQualifiedStar] falls back to (via [bareTableColumns]) when the
-// star's inner relation is a bare table scan rather than a subquery
-// with a borrowable projection list — the DDL is the only place those
-// names exist (#1431). Statements other than a `CREATE [OR REPLACE |
-// TEMPORARY] TABLE [IF NOT EXISTS] <name> (...)` are ignored; a table
-// with zero recognisable column definitions is omitted rather than
-// mapped to an empty slice, so a lookup miss and an empty declaration
-// both read as "unknown" to callers.
-//
-// MATERIALIZED and ALIAS columns are excluded from the list: a plain
-// `SELECT *` never projects them (that is ClickHouse's own semantics,
-// not a rewriter choice), so including one would hand
-// [expandQualifiedStar] a column name the real query never returns —
-// exactly the shape that broke the spanset_pipeline_intersect fixture
-// (its MATERIALIZED SpanAttributes) during development of this fix.
-func seedTableColumns(seed string) map[string][]string {
-	cols := map[string][]string{}
-	for _, stmt := range splitStatements(seed) {
-		trimmed := stripLeadingNoise(stmt)
-		rest, ok := createTableTail(trimmed)
-		if !ok {
-			continue
-		}
-		name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
-		open := strings.IndexByte(stmt, '(')
-		if open < 0 {
-			continue
-		}
-		closeParen := matchParen(stmt, open)
-		if closeParen < 0 {
-			continue
-		}
-		defs := splitTopLevelCommas(stmt[open+1 : closeParen])
-		names := make([]string, 0, len(defs))
-		for _, d := range defs {
-			d = strings.TrimSpace(d)
-			cn := firstToken(d)
-			if cn == "" || isGeneratedColumnDef(d) {
-				continue
-			}
-			names = append(names, cn)
-		}
-		if len(names) > 0 {
-			cols[name] = names
-		}
-	}
-	return cols
-}
-
-// isGeneratedColumnDef reports whether a CREATE TABLE column definition
-// declares a MATERIALIZED or ALIAS column — the two ClickHouse column
-// kinds a bare `SELECT *` omits from its result set (DEFAULT columns,
-// by contrast, ARE included). Matched the same way
-// normalizeTracesColumnDef locates `MATERIALIZED`: a space-delimited
-// token search, which is safe here because both keywords only ever
-// appear as the modifier between a column's type and its generating
-// expression, never as (part of) a bare identifier or type name.
-func isGeneratedColumnDef(def string) bool {
-	upper := " " + strings.ToUpper(def) + " "
-	return strings.Contains(upper, " MATERIALIZED ") || strings.Contains(upper, " ALIAS ")
-}
-
-// rewriteMapProjections wraps any top-level SELECT projection whose
-// alias is a known Map column in toJSONString(...). The transform
-// fires on the OUTER SELECT only — subqueries keep their Map columns
-// as raw maps because CH consumes them server-side.
-//
-// Two shapes are handled:
-//
-//	`Attributes`                       → toJSONString(`Attributes`) AS `Attributes`
-//	<expr> AS `Attributes`             → toJSONString(<expr>) AS `Attributes`
-//	`Attributes` AS `Attributes`       → toJSONString(`Attributes`) AS `Attributes`
-//
-// Anything else passes through; chdb-go will raise a Parquet panic
-// at scan time if a Map column slips through unwrapped, which makes
-// the failure mode loud and easy to debug.
-func rewriteMapProjections(query string) string {
-	// Peel a leading `WITH <cte> AS (...)` head so the outer-SELECT
-	// projection split sees the real outer SELECT; re-prepend it after
-	// rewriting. The CTE bodies are subqueries — CH consumes their Map
-	// columns server-side, so they stay raw (the same rule the
-	// subquery branches already follow).
-	if withHead, body := stripWithHead(query); withHead != "" {
-		return withHead + rewriteMapProjections(body)
-	}
-	head, tail := splitOuterSelect(query)
-	if head == "" {
-		// Top-level UNION (`(SELECT ...) UNION DISTINCT (SELECT ...)`):
-		// rewrite each branch independently so a Map column projected
-		// at the union level still reaches chdb-go as JSON. Without
-		// this, chdb-go's parquet driver panics with `index out of
-		// range` when a Map cell flows through the unioned result.
-		// Surfaced by the structural-union TXTAR fixtures after
-		// PR #523 added ResourceAttributes to the wrap projection.
-		if rewritten, ok := rewriteUnionMapProjections(query); ok {
-			return rewritten
-		}
-		return query
-	}
-	projs := splitProjections(head)
-	for i, p := range projs {
-		expr, alias := splitAlias(p)
-		// Implicit alias: bare `Col` or `Qual.\`Col\`` projection.
-		if alias == "" {
-			alias = mapColAlias(strings.TrimSpace(expr))
-		}
-		if !isMapColumn(alias) {
-			continue
-		}
-		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
-	}
-	return "SELECT " + strings.Join(projs, ", ") + tail
-}
-
-// rewriteUnionMapProjections walks a top-level UNION query
-// (`(SELECT ...) UNION DISTINCT (SELECT ...) UNION DISTINCT (...) ...`)
-// and rewrites Map columns inside each parenthesised branch. Returns
-// (rewritten, true) on success, ("", false) when the shape doesn't
-// match the expected union form. Branches that don't parse as
-// `SELECT ... FROM ...` are left alone.
-func rewriteUnionMapProjections(query string) (string, bool) {
-	query = strings.TrimSpace(query)
-	if !strings.HasPrefix(query, "(") {
-		return "", false
-	}
-	var out strings.Builder
-	rewrote := false
-	i := 0
-	for i < len(query) {
-		// Skip whitespace + UNION glue between branches.
-		for i < len(query) && (query[i] == ' ' || query[i] == '\n' || query[i] == '\t' || query[i] == '\r') {
-			out.WriteByte(query[i])
-			i++
-		}
-		if i >= len(query) {
-			break
-		}
-		if query[i] == '(' {
-			// Find the matching `)` at depth 0.
-			depth := 0
-			end := -1
-			for j := i; j < len(query); j++ {
-				switch query[j] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-					if depth == 0 {
-						end = j
-					}
-				}
-				if end >= 0 {
-					break
-				}
-			}
-			if end < 0 {
-				return "", false
-			}
-			inner := query[i+1 : end]
-			rewrittenInner := rewriteMapProjections(strings.TrimSpace(inner))
-			if rewrittenInner != strings.TrimSpace(inner) {
-				rewrote = true
-			}
-			out.WriteByte('(')
-			out.WriteString(rewrittenInner)
-			out.WriteByte(')')
-			i = end + 1
-			continue
-		}
-		// Non-paren token (UNION DISTINCT, UNION ALL, etc.) — copy through.
-		for i < len(query) && query[i] != '(' {
-			out.WriteByte(query[i])
-			i++
-		}
-	}
-	if !rewrote {
-		return "", false
-	}
-	return out.String(), true
-}
-
-// mapColAlias derives the implicit projection alias for a bare column
-// reference. Handles both `\`Col\“ (unqualified) and `Q.\`Col\“
-// (qualifier-prefixed, e.g. the `L.\`Attributes\“ form vector_join
-// emits) so the surrounding Map-rewrite pass can recognise Attributes
-// projected through the join's left / right side.
-func mapColAlias(s string) string {
-	if i := strings.LastIndexByte(s, '.'); i >= 0 {
-		s = s[i+1:]
-	}
-	return unquoteBackticks(s)
-}
-
-// stripWithHead peels a leading `WITH <cte> AS (...)[, <cte> AS (...)]`
-// CTE chain off query, returning (head, body) where head is the verbatim
-// `WITH … ` prefix (including the single trailing space before SELECT)
-// and body is the outer `SELECT …` that follows. The `RECURSIVE` keyword
-// is optional. When query does not begin with `WITH ` (case-insensitive)
-// it returns ("", "") so callers fall through to the bare-SELECT path.
-//
-// The outer SELECT is the first `SELECT` keyword reached at paren depth 0
-// after the CTE chain — CTE bodies are parenthesised, so their nested
-// SELECTs sit at depth > 0 and are skipped. This lets the Map-rewrite
-// passes operate on the real outer projection of the vector-set-op CSE
-// CTE (`WITH _setop_lhs_<n> AS (...) SELECT …`) and the structural-join
-// `WITH RECURSIVE` closure alike.
-func stripWithHead(query string) (head, body string) {
-	upper := strings.ToUpper(query)
-	if !strings.HasPrefix(upper, "WITH ") {
-		return "", ""
-	}
-	depth := 0
-	for i := 0; i < len(query); i++ {
-		switch query[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		// The outer SELECT is the first depth-0 `SELECT ` token after the
-		// `WITH ` keyword itself (i > 0 guards against matching at the
-		// very start, which can't happen here anyway since we begin with
-		// WITH).
-		if depth == 0 && i+len("SELECT ") <= len(query) &&
-			strings.EqualFold(query[i:i+len("SELECT ")], "SELECT ") {
-			// Only treat it as the outer SELECT when it's a standalone
-			// keyword (preceded by whitespace), not a substring of an
-			// identifier.
-			if i > 0 && (query[i-1] == ' ' || query[i-1] == ')' || query[i-1] == '\n' || query[i-1] == '\t') {
-				return query[:i], query[i:]
-			}
-		}
-	}
-	return "", ""
-}
-
-// splitOuterSelect returns the (projection-list, rest) split of a
-// `SELECT <projs> FROM ...` query. If the query doesn't start with
-// SELECT or the FROM is missing at depth 0, returns ("", "").
-func splitOuterSelect(query string) (head, tail string) {
-	upper := strings.ToUpper(query)
-	if !strings.HasPrefix(upper, "SELECT ") {
-		return "", ""
-	}
-	rest := query[len("SELECT "):]
-	depth := 0
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if depth == 0 && i+6 <= len(rest) && strings.EqualFold(rest[i:i+6], " FROM ") {
-			return rest[:i], rest[i:]
-		}
-	}
-	return "", ""
-}
-
-// peelUnionPrefix strips leading `(...)` wrappers from a UNION-shaped
-// query so the inner SELECT becomes visible. It handles the recursive
-// `((SELECT ...) UNION DISTINCT (SELECT ...)) UNION DISTINCT (SELECT ...)`
-// shape that cerberus emits for n-way `||` set operations. Used only by
-// extractProjectionCount so we can count the leading branch's columns;
-// the rewriteMapProjections pass still operates on the unmodified query
-// because the Map columns survive the union without being projected at
-// the outer level (each branch already projects them).
-func peelUnionPrefix(query string) string {
-	query = strings.TrimSpace(query)
-	for strings.HasPrefix(query, "(") {
-		// Find the matching `)` at depth 0.
-		depth := 0
-		end := -1
-		for i := 0; i < len(query); i++ {
-			switch query[i] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-				if depth == 0 {
-					end = i
-				}
-			}
-			if end >= 0 {
-				break
-			}
-		}
-		if end < 0 {
-			return query
-		}
-		// `(<inner>) <maybe UNION...>` — descend into <inner> if it
-		// starts with SELECT (or another paren) at the head.
-		inner := strings.TrimSpace(query[1:end])
-		innerUpper := strings.ToUpper(inner)
-		if strings.HasPrefix(innerUpper, "SELECT ") || strings.HasPrefix(inner, "(") {
-			query = inner
-			continue
-		}
-		break
-	}
-	return query
-}
-
-// splitProjections splits a projection list on depth-0 commas.
-// Quoted strings (single-quotes, backticks) shield commas. The
-// returned slices have leading/trailing whitespace trimmed.
-func splitProjections(s string) []string {
-	var (
-		out   []string
-		buf   strings.Builder
-		depth int
-		inStr byte
-	)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case inStr != 0:
-			if c == inStr {
-				inStr = 0
-			}
-			buf.WriteByte(c)
-		case c == '\'' || c == '`':
-			inStr = c
-			buf.WriteByte(c)
-		case c == '(':
-			depth++
-			buf.WriteByte(c)
-		case c == ')':
-			depth--
-			buf.WriteByte(c)
-		case c == ',' && depth == 0:
-			out = append(out, strings.TrimSpace(buf.String()))
-			buf.Reset()
-		default:
-			buf.WriteByte(c)
-		}
-	}
-	if buf.Len() > 0 {
-		out = append(out, strings.TrimSpace(buf.String()))
-	}
-	return out
-}
-
-// splitAlias separates `<expr> AS \`alias\“ into (expr, alias). When
-// no AS clause is present returns (s, "").
-func splitAlias(s string) (expr, alias string) {
-	// Find the last depth-0 " AS " (case-insensitive). Backtick-
-	// quoted "AS" is shielded.
-	depth := 0
-	inStr := byte(0)
-	lower := strings.ToLower(s)
-	for i := 0; i+4 <= len(s); i++ {
-		c := s[i]
-		switch {
-		case inStr != 0:
-			if c == inStr {
-				inStr = 0
-			}
-		case c == '\'' || c == '`':
-			inStr = c
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-		}
-		if depth == 0 && inStr == 0 && lower[i:i+4] == " as " {
-			alias = strings.TrimSpace(s[i+4:])
-			alias = unquoteBackticks(alias)
-			return strings.TrimSpace(s[:i]), alias
-		}
-	}
-	return s, ""
-}
-
-func unquoteBackticks(s string) string {
-	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// extractProjectionCount counts top-level SELECT projections by
-// re-splitting the outer SELECT's projection list on depth-0 commas.
-// Used to size the scan-target slice without calling
-// rows.ColumnTypes() (which panics on Map columns per the chDB probe).
-//
-// Returns 0 when the outer projection list contains a `*` wildcard
-// (bare `*`, `R.*`, etc.) — the caller falls back to `rows.Columns()`
-// to size the destination slice once the query has executed. Wildcard
-// projections appear in structural-join lowerings (`SELECT R.* FROM
-// ...`) where the fixture seed schema determines the actual column
-// count.
-//
-// For top-level UNION queries (`(SELECT ...) UNION DISTINCT (SELECT ...)`),
-// the function peels the outer paren / UNION wrappers down to the first
-// branch's SELECT — every UNION branch shares the same projection shape
-// by construction so any branch's count is authoritative.
-func extractProjectionCount(query string) int {
-	// Peel a leading `WITH <cte> AS (...)` head so the column count is
-	// read off the real outer SELECT, not the (absent) WITH-prefixed
-	// one. Without this the WITH-shaped vector-set-op CSE SQL falls to
-	// the wildcard (count 0 → rows.Columns()) path.
-	if _, body := stripWithHead(query); body != "" {
-		query = body
-	}
-	head, _ := splitOuterSelect(peelUnionPrefix(query))
-	if head == "" {
-		return 0
-	}
-	projs := splitProjections(head)
-	for _, p := range projs {
-		if isWildcardProjection(p) {
-			return 0
-		}
-	}
-	return len(projs)
-}
-
-// isWildcardProjection reports whether p is a `*`, `<qualifier>.*`, or
-// `<qualifier>.* EXCEPT (...)` projection. The qualifier may be a
-// bare identifier or a backtick-quoted alias. The `EXCEPT` variant
-// surfaces in the structural-join emitter's projection list (which
-// pairs explicit join-key aliases with `R.* EXCEPT (TraceId, ...)`
-// to keep all non-key columns flowing through without duplicating
-// the keys); the runner can't know the post-EXCEPT column count at
-// parse time, so the caller falls back to `rows.Columns()` for sizing.
-func isWildcardProjection(p string) bool {
-	p = strings.TrimSpace(p)
-	if p == "*" {
-		return true
-	}
-	// `<qualifier>.* EXCEPT (...)` — wildcard with an exclusion list.
-	// We strip a trailing parenthesised `EXCEPT (...)` clause (case-
-	// insensitive) before checking the bare-wildcard suffix.
-	upper := strings.ToUpper(p)
-	if idx := strings.LastIndex(upper, " EXCEPT "); idx >= 0 {
-		p = strings.TrimSpace(p[:idx])
-	}
-	if i := strings.LastIndex(p, "."); i >= 0 {
-		return strings.TrimSpace(p[i+1:]) == "*"
-	}
-	return false
-}
-
-// openChDB returns a fresh ephemeral chDB session. The empty DSN
+// OpenChDB returns a fresh ephemeral chDB session. The empty DSN
 // triggers a temp-dir-backed session that's torn down with the
 // connection — there is no `:memory:` literal in chdb-go.
-func openChDB(t *testing.T) *sql.DB {
+func OpenChDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("chdb", "")
 	if err != nil {
@@ -962,7 +103,7 @@ func openChDB(t *testing.T) *sql.DB {
 	// db.Close tears down native engine state (chdb-purego result Free),
 	// so it must not race another case's engine call. The cleanup runs
 	// AFTER RunRoundTrip returns and has released chdbEngineMu, so it
-	// takes the lock itself here. (openChDB itself is always called with
+	// takes the lock itself here. (OpenChDB itself is always called with
 	// chdbEngineMu already held by RunRoundTrip, hence no lock around the
 	// Open/Ping/Exec below.)
 	t.Cleanup(func() {
@@ -994,7 +135,7 @@ func openChDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// applySeed splits a multi-statement script on top-level semicolons
+// ApplySeed splits a multi-statement script on top-level semicolons
 // and exec's each piece. Statements wrapped in single-quoted strings
 // keep their semicolons literal (handled by a tiny state machine).
 //
@@ -1005,25 +146,25 @@ func openChDB(t *testing.T) *sql.DB {
 // process is idempotent. Fixture authors who want strict CH semantics
 // can opt out by writing `CREATE OR REPLACE TABLE` /
 // `CREATE TABLE IF NOT EXISTS` themselves.
-func applySeed(t *testing.T, db *sql.DB, seed string) {
+func ApplySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
-	stmts := backfillMetricsColumns(splitStatements(seed))
+	stmts := testsql.BackfillMetricsColumns(testsql.SplitStatements(seed))
 	// Also backfill the otel_traces columns wrapWithSampleProjection reads
 	// unconditionally (TraceId / SpanId / ParentSpanId / SpanName / Duration /
 	// Timestamp / ResourceAttributes) — a no-op for promql/logql seeds, which
 	// never declare a table named otel_traces. Needed so
-	// ReconstructTraceQLSearchWrap's reconstructed wrap-projected SQL doesn't
+	// the traceql lane's [SQLReconstructor] wrap-projected SQL doesn't
 	// fail with an unknown-column error against a fixture seed that
 	// (deliberately) only declares the columns its OWN pre-wrap `-- sql --`
 	// touches. Mirrors applyStrictScanSeed's identical backfill in
 	// strictscan_integration_test.go.
-	stmts = backfillTracesColumns(stmts)
+	stmts = testsql.BackfillTracesColumns(stmts)
 	for _, stmt := range stmts {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
-		stmt = promoteCreateTable(stmt)
+		stmt = testsql.PromoteCreateTable(stmt)
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("seed exec failed:\n--- stmt ---\n%s\n--- err ---\n%v", stmt, err)
 		}
@@ -1043,8 +184,9 @@ func applySeed(t *testing.T, db *sql.DB, seed string) {
 // emit one explicitly in the seed/SQL — none do today.
 // Map column comparison uses reflect.DeepEqual on map[string]any so
 // JSON key ordering is irrelevant.
-func RunRoundTrip(t *testing.T, c *Case) {
+func RunRoundTrip(t *testing.T, c *Case, opts ...RoundTripOption) {
 	t.Helper()
+	cfg := newRoundTripConfig(opts)
 	rt, err := LoadRoundTrip(c)
 	if err != nil {
 		t.Fatalf("LoadRoundTrip: %v", err)
@@ -1058,19 +200,18 @@ func RunRoundTrip(t *testing.T, c *Case) {
 
 	sql, args := rt.SQL, rt.Args
 
-	// TraceQL search-shaped fixtures are captured pre-ProjectSamples (see
-	// ReconstructTraceQLSearchWrap's doc comment) — the SAME gap #1635 fixed
-	// for the strict-scan differential (issue #1653). Substitute the
-	// wrap-projected reconstruction in place before the chDB prep pipeline
-	// runs, so this required check's `expected_rows` assertions are pinned
-	// against the SQL production actually sends. A no-op (ok=false) for
-	// every promql/logql fixture (no `query.traceql` section) and for
-	// TraceQL metrics-pipeline fixtures, which never reach traceqlLang in
-	// production.
-	if wrapSQL, wrapArgs, ok, err := ReconstructTraceQLSearchWrap(c); err != nil {
-		t.Fatalf("fixture %s: traceql wrap reconstruction: %v", c.Name, err)
-	} else if ok {
-		sql, args = wrapSQL, wrapArgs
+	// A lane whose fixtures record SQL from an earlier pipeline stage than
+	// the one production sends supplies a reconstruction (see
+	// [WithSQLReconstructor]); it replaces the recorded SQL/args before the
+	// chDB prep pipeline runs, so `expected_rows:` is pinned against the SQL
+	// production actually executes. Lanes whose fixtures already record the
+	// production stage pass no option and execute what they recorded.
+	if cfg.reconstruct != nil {
+		if reSQL, reArgs, ok, err := cfg.reconstruct(c); err != nil {
+			t.Fatalf("fixture %s: sql reconstruction: %v", c.Name, err)
+		} else if ok {
+			sql, args = reSQL, reArgs
+		}
 	}
 
 	// expected_rows is ground truth for the pre-optimizer SQL above, so a
@@ -1138,8 +279,8 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 	chdbEngineMu.Lock()
 	defer chdbEngineMu.Unlock()
 
-	db := openChDB(t)
-	applySeed(t, db, rt.Seed)
+	db := OpenChDB(t)
+	ApplySeed(t, db, rt.Seed)
 
 	// substituteNow64 must run BEFORE rewriteMapProjections so the
 	// `now64(?)`-consumed args are dropped before the Map rewrite
@@ -1147,10 +288,10 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 	// the args side is global, and ordering them this way keeps the
 	// argIdx accounting in substituteNow64 simple.
 	query, queryArgs := substituteNow64(sql, args)
-	query = expandStarProjection(query, seedTableColumns(rt.Seed))
-	query = rewriteMapProjections(query)
-	query = nestMapOrderBy(query)
-	colCount := extractProjectionCount(query)
+	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
+	colCount := testsql.ProjectionCount(query)
 
 	rows, err := db.Query(query, queryArgs...)
 	if err != nil {
@@ -1192,11 +333,11 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 		}
 		row := make([]any, colCount)
 		for i, v := range cells {
-			row[i] = decodeCell(v, rt.RawStrings)
+			row[i] = DecodeCell(v, rt.RawStrings)
 		}
 		got = append(got, row)
 	}
-	if err := tolerantRowsErr(rows.Err()); err != nil {
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
 		t.Fatalf("rows.Err: %v", err)
 	}
 
@@ -1325,7 +466,7 @@ func sortRows(rows [][]any) {
 	})
 }
 
-// decodeCell turns a chdb-go driver-native value into the Go value
+// DecodeCell turns a chdb-go driver-native value into the Go value
 // used for comparison. The driver hands back time.Time, int64,
 // float64, bool, string, []byte — see chdb/driver/parquet.go's
 // switch table.
@@ -1339,7 +480,7 @@ func sortRows(rows [][]any) {
 // is skipped — the runner returns the raw string. Fixtures opt in
 // via the `raw_strings:` section when they need to assert literal
 // brace-prefixed payloads against the SQL output.
-func decodeCell(v any, rawStrings bool) any {
+func DecodeCell(v any, rawStrings bool) any {
 	switch x := v.(type) {
 	case nil:
 		return nil

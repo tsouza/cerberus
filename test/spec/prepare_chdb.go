@@ -21,15 +21,18 @@
 // This file hoists that pipeline behind an exported, test-free seam.
 // [PrepareRoundTrip] returns the prepared seed + query + bound args for
 // a loaded [Case], or (nil, false) when the fixture has not opted into
-// round-trip execution. The rewrite helpers it calls
-// (substituteNow64 / expandStarProjection / rewriteMapProjections /
-// extractProjectionCount) stay unexported and shared with RunRoundTrip
-// — there is exactly one rewrite pipeline, consumed two ways.
+// round-trip execution. The rewrite helpers it calls are
+// [SubstituteNow64] plus internal/testsql's ExpandStarProjection /
+// RewriteMapProjections / ProjectionCount — there is exactly one rewrite
+// pipeline, consumed twice here and a third time by the handler-level
+// chDB fake in internal/chclienttest.
 package spec
 
 import (
 	"errors"
 	"strings"
+
+	"github.com/tsouza/cerberus/internal/testsql"
 )
 
 // ErrRoundTripNotExecutable reports a fixture that DECLARED a round trip
@@ -60,10 +63,10 @@ var ErrRoundTripNotExecutable = errors.New("round trip declared (seed + expected
 // round-trip assertion uses — without depending on `*testing.T`.
 type PreparedRoundTrip struct {
 	// Seed is the raw `seed:` DDL+INSERT script. Callers split it on
-	// top-level semicolons (see [SplitSeedStatements]) and promote bare
-	// `CREATE TABLE` to `CREATE OR REPLACE TABLE` (see
-	// [PromoteCreateTable]) for cross-fixture idempotency, exactly as
-	// the round-trip runner's applySeed does.
+	// top-level semicolons (testsql.SplitStatements) and promote bare
+	// `CREATE TABLE` to `CREATE OR REPLACE TABLE`
+	// (testsql.PromoteCreateTable) for cross-fixture idempotency, exactly as
+	// the round-trip runner's ApplySeed does.
 	Seed string
 
 	// Query is the fully-rewritten SQL: now64(...) substituted to the
@@ -121,20 +124,21 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	// the round-trip assertion executes — the perf profiler reads this
 	// prepared Query directly.
 	query, queryArgs := substituteNow64(rt.SQL, rt.Args)
-	query = expandStarProjection(query, seedTableColumns(rt.Seed))
-	query = rewriteMapProjections(query)
-	query = nestMapOrderBy(query)
-	colCount := extractProjectionCount(query)
+	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
+	colCount := testsql.ProjectionCount(query)
 
 	return &PreparedRoundTrip{
-		Seed:        strings.Join(backfillMetricsColumns(splitStatements(rt.Seed)), ";\n"),
+		Seed:        strings.Join(testsql.BackfillMetricsColumns(testsql.SplitStatements(rt.Seed)), ";\n"),
 		Query:       query,
 		Args:        queryArgs,
 		ColumnCount: colCount,
 	}, true, nil
 }
 
-// SplitSeedStatements and PromoteCreateTable now live in the build-tag-free
-// roundtrip_prep.go so the perf profiler (chdb-tagged), the chDB round-trip
-// runner, and the integration-tagged strict-scan differential all share one
-// copy. They remain reachable from this package under any build tag.
+// The seed splitter and the CREATE TABLE promotion live in
+// internal/testsql (SplitStatements / PromoteCreateTable) so the perf
+// profiler (chdb-tagged), the chDB round-trip runner, the
+// integration-tagged strict-scan differential and the handler-level chDB
+// fake all share one copy under any build tag.

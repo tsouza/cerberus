@@ -12,14 +12,14 @@
 // the chDB round-trip lane (RunRoundTrip, runner_chdb.go), which backs the
 // required `roundtrip (traceql)` status check.
 //
-// ReconstructTraceQLSearchWrap is the ONE reconstruction path both lanes
+// ReconstructSearchWrap is the ONE reconstruction path both lanes
 // share, so a change to the wrap logic (or to how a fixture's
 // search_limit/search_window sections thread through) only needs updating
 // here. It is build-tag-free (unlike its two callers — chdb and integration
 // respectively) because it has no execution-substrate dependency of its own:
 // it only parses + lowers + re-emits, using the exact same tempo.Lang the
 // production /api/search handler drives.
-package spec
+package traceqlwrap
 
 import (
 	"context"
@@ -34,17 +34,19 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	traceqllower "github.com/tsouza/cerberus/internal/traceql"
 	traceqlast "github.com/tsouza/cerberus/internal/traceql/ast"
+
+	"github.com/tsouza/cerberus/test/spec"
 )
 
-// traceqlWrapExplainStep is passed to tempo.NewExplainLang but never
-// actually exercised: ReconstructTraceQLSearchWrap only calls lang.Parse for
+// explainStep is passed to tempo.NewExplainLang but never
+// actually exercised: ReconstructSearchWrap only calls lang.Parse for
 // fixtures whose query is NOT a metrics pipeline, so explainLang.Parse
 // always takes its non-metrics branch, which ignores step. Kept a nonzero,
 // human-legible value only to satisfy NewExplainLang's documented "must be
 // > 0" contract defensively.
-const traceqlWrapExplainStep = time.Minute
+const explainStep = time.Minute
 
-// ReconstructTraceQLSearchWrap reconstructs the wrap-projected SQL
+// ReconstructSearchWrap reconstructs the wrap-projected SQL
 // production actually sends to ClickHouse for a TraceQL round-trip
 // fixture's search-shaped plan. c must carry a `query.traceql` section (the
 // TraceQL round-trip fixture contract); optional `search_limit` /
@@ -66,8 +68,8 @@ const traceqlWrapExplainStep = time.Minute
 // embeds the SAME unexported traceqlLang the handler drives, so Parse +
 // ProjectSamples here are byte-for-byte what engine.QueryPlan would run for
 // this query.
-func ReconstructTraceQLSearchWrap(c *Case) (sqlStr string, args []any, ok bool, err error) {
-	plan, ok, err := ReconstructTraceQLSearchWrapPlan(c)
+func ReconstructSearchWrap(c *spec.Case) (sqlStr string, args []any, ok bool, err error) {
+	plan, ok, err := ReconstructSearchWrapPlan(c)
 	if err != nil || !ok {
 		return "", nil, ok, err
 	}
@@ -78,7 +80,7 @@ func ReconstructTraceQLSearchWrap(c *Case) (sqlStr string, args []any, ok bool, 
 	return sqlStr, args, true, nil
 }
 
-// ReconstructTraceQLSearchWrapPlan is [ReconstructTraceQLSearchWrap]'s
+// ReconstructSearchWrapPlan is [ReconstructSearchWrap]'s
 // plan-level twin: it returns the WRAPPED, pre-optimizer chplan.Node
 // instead of already-emitted SQL, so a caller can run its own optimizer
 // pass before emitting — see internal/traceql/lower_test.go's post-
@@ -86,9 +88,9 @@ func ReconstructTraceQLSearchWrap(c *Case) (sqlStr string, args []any, ok bool, 
 // production actually optimizes for search-shaped queries, not the raw
 // pre-wrap plan its own `-- chplan --` / `-- sql --` golden sections
 // capture. ok/err follow the exact same contract as
-// ReconstructTraceQLSearchWrap; see that function's doc comment for the
+// ReconstructSearchWrap; see that function's doc comment for the
 // two "leave the fixture's original plan untouched" cases.
-func ReconstructTraceQLSearchWrapPlan(c *Case) (plan chplan.Node, ok bool, err error) {
+func ReconstructSearchWrapPlan(c *spec.Case) (plan chplan.Node, ok bool, err error) {
 	query, hasQuery := c.Section("query.traceql")
 	if !hasQuery {
 		return nil, false, nil
@@ -124,7 +126,7 @@ func ReconstructTraceQLSearchWrapPlan(c *Case) (plan chplan.Node, ok bool, err e
 		ctx = traceqllower.WithSearchWindow(ctx, time.Unix(startSec, 0).UTC(), time.Unix(endSec, 0).UTC())
 	}
 
-	lang := tempo.NewExplainLang(schema.DefaultOTelTraces(), traceqlWrapExplainStep)
+	lang := tempo.NewExplainLang(schema.DefaultOTelTraces(), explainStep)
 	rawPlan, meta, err := lang.Parse(ctx, query)
 	if err != nil {
 		return nil, false, fmt.Errorf("traceql lower (wrap reconstruction): %w", err)
