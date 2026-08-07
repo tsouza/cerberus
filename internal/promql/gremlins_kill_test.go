@@ -347,6 +347,32 @@ func TestFoldBinaryScalar_DivByZeroNegativeBranches(t *testing.T) {
 	}
 }
 
+// labelRewriteProject descends to the Project that carries the
+// label_replace / label_join rewrite expression.
+//
+// The lowering wraps that Project in the duplicate-labelset guard (#1839)
+// — Project(Aggregate(rewrite Project)) — so the rewrite expression these
+// mutation tests read sits two layers below the root. The walk asserts
+// each layer rather than searching for the first Project it can find, so a
+// future shape change fails loudly here instead of silently reading the
+// wrong node and turning a mutation-kill assertion inert.
+func labelRewriteProject(t *testing.T, plan chplan.Node) *chplan.Project {
+	t.Helper()
+	outer, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("expected *chplan.Project at the root, got %T", plan)
+	}
+	agg, ok := outer.Input.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("expected the duplicate-labelset guard *chplan.Aggregate under the root Project, got %T", outer.Input)
+	}
+	rewrite, ok := agg.Input.(*chplan.Project)
+	if !ok {
+		t.Fatalf("expected the rewrite *chplan.Project under the guard Aggregate, got %T", agg.Input)
+	}
+	return rewrite
+}
+
 // TestLowerLabelJoin_SrcsSliceCapacityIsTight kills the two adjacent
 // arithmetic mutants at label_fns.go:81:39 inside lowerLabelJoin's
 // slice-capacity hint:
@@ -386,10 +412,7 @@ func TestLowerLabelJoin_SrcsSliceCapacityIsTight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lowerLabelJoin: %v", err)
 	}
-	proj, ok := plan.(*chplan.Project)
-	if !ok {
-		t.Fatalf("expected *chplan.Project, got %T", plan)
-	}
+	proj := labelRewriteProject(t, plan)
 	// Inner is a non-RangeWindow LWR shape (Aggregate over Filter over
 	// Scan), so attrs sits at Projections[1] per
 	// projectAttributesOverInner.
@@ -441,10 +464,7 @@ func TestLowerLabelJoin_SrcsSliceCapacityIsTight_FiveSrcs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lowerLabelJoin: %v", err)
 	}
-	proj, ok := plan.(*chplan.Project)
-	if !ok {
-		t.Fatalf("expected *chplan.Project, got %T", plan)
-	}
+	proj := labelRewriteProject(t, plan)
 	lj, ok := proj.Projections[1].Expr.(*chplan.LabelJoin)
 	if !ok {
 		t.Fatalf("expected projections[1].Expr to be *chplan.LabelJoin, got %T", proj.Projections[1].Expr)

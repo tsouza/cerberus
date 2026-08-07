@@ -1,0 +1,67 @@
+# Duplicate-labelset guard on a label REWRITE (#1839).
+#
+# `label_replace(v, "dst", "<const>", "src", ".*")` overwrites `dst` with a
+# constant on every input series. Two series that differed ONLY in `dst`
+# therefore land on one label set — and unlike the name-drop half, their
+# `__name__` values are EQUAL, so `uniqExact(MetricName) > 1` would answer
+# 1 and wave the collision through. The rewrite guard counts ROWS per
+# output identity instead: `throwIf(count() > 1, …) = 0` grouped by the
+# identity the rewrite PRESERVES, which here is (Attributes, MetricName).
+#
+# Upstream reaches the same verdict from the same generic per-step site as
+# every other shape (prometheus/promql/engine.go:1531, :1552) — it does not
+# special-case label_replace, and neither does the message.
+#
+# The group key reads the REWRITTEN Attributes, which is why the guard sits
+# ABOVE the rewrite Project rather than below it: grouping the pre-rewrite
+# column would check the label set the query is moving away from.
+#
+# The outer canonical 4-column Project is load-bearing. A `chplan.Aggregate`
+# is classified derived-shape, and the HTTP layer stamps an empty
+# MetricName over a derived shape — which would silently discard the name
+# `label_replace` deliberately preserves. Naming all four canonical outputs
+# restores the classification.
+#
+# Seedless for the same reason as
+# rate_multi_name_duplicate_labelset_guard.txtar: the round-trip runner has
+# no shape for an expected error. The executable half is in
+# internal/api/prom/handler_chdb_duplicate_labelset_test.go.
+-- query.promql --
+label_replace(cpu_temp, "core", "all", "core", ".*")
+-- args --
+[0] string = "core"
+[1] string = "^.*$"
+[2] string = "core"
+[3] string = "core"
+[4] string = "all"
+[5] string = "core"
+[6] string = "^.*$"
+[7] string = "all"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = "service.name"
+[11] string = "service_name"
+[12] string = ""
+[13] string = "service_name"
+[14] string = "cpu_temp"
+[15] string = "cpu.temp"
+[16] string = "cpu/temp"
+[17] string = "2026-01-01 00:00:01.000000000"
+[18] int64 = 9
+[19] string = "2026-01-01 00:00:01.000000000"
+[20] int64 = 9
+[21] int64 = 300000000000
+[22] int64 = 1
+[23] int64 = 0
+-- chplan --
+Project [MetricName, Attributes, TimeUnix, Value]
+  Aggregate groupBy=[Attributes AS Attributes, MetricName AS MetricName] funcs=[any(Value) AS Value, any(TimeUnix) AS TimeUnix] having=(throwIf((count() > 1), "vector cannot contain metrics with the same labelset") = 0)
+    Project [MetricName, labelReplace(Attributes, dst="core", replacement="all", src="core", regex=".*", emptyReplacement="all") AS Attributes, TimeUnix, Value]
+      Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+        Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[max(TimeUnix) AS lwr_ts, argMax(Value, TimeUnix) AS lwr_value]
+          Filter predicate=((TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+            Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+              Filter predicate=(MetricName IN ("cpu_temp", "cpu.temp", "cpu/temp"))
+                Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, any(`Value`) AS `Value`, any(`TimeUnix`) AS `TimeUnix` FROM (SELECT `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, replaceRegexpOne(`Attributes`[?], ?, ?)))), `Attributes`)) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))) GROUP BY `Attributes`, `MetricName` HAVING (throwIf((count() > ?), 'vector cannot contain metrics with the same labelset') = ?))

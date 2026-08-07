@@ -60,7 +60,7 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		Regex:            regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),
 	}
-	return projectAttributesOverInner(inner, s, attrs), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
 }
 
 // lowerLabelJoin lowers
@@ -103,7 +103,7 @@ func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node
 		Separator: separator,
 		Srcs:      srcs,
 	}
-	return projectAttributesOverInner(inner, s, attrs), nil
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
 }
 
 // stringArg extracts a static string literal from a Call argument,
@@ -119,25 +119,65 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 	return sl.Val, nil
 }
 
+// rangeWindowAnchorColumn is the column a MATRIX chplan.RangeWindow
+// publishes its per-row grid anchor under. The emitter fixes the name
+// (internal/chsql range_window.go renders `… AS anchor_ts`), and
+// api/prom.wrapWithSampleProjection reads it back by that name to bucket a
+// matrix response's points, so any projection that sits between the two
+// has to forward it under the same name.
+const rangeWindowAnchorColumn = "anchor_ts"
+
 // projectAttributesOverInner wraps inner with a Project that keeps every
 // other column and replaces only Attributes with the new attrs
 // expression. Mirrors projectValueOverInner (instant_fns.go) but
 // targets the Attributes column instead of Value.
 //
-// When inner is a RangeWindow, MetricName / TimeUnix don't survive the
-// windowed groupArray and the projection lists only Attributes + Value.
+// When inner is a RangeWindow, MetricName doesn't survive the windowed
+// groupArray, so the projection drops it.
+//
+// A MATRIX RangeWindow (OuterRange > 0) does NOT lose its timestamp: it
+// emits one row per (series, anchor) and publishes that anchor both as
+// `anchor_ts` and as `anchor_ts AS TimeUnix`. Listing only Attributes and
+// Value here therefore does not describe the input, it CONTRADICTS it —
+// api/prom.wrapWithSampleProjection reads `anchor_ts` back off the plan
+// root to bucket each series' points, and dropping the column left it
+// selecting an identifier that no longer existed:
+//
+//	Code: 47. DB::Exception: Unknown expression identifier `anchor_ts`
+//
+// for `label_replace(rate(m[5m]), …)` at /api/v1/query_range. Forwarding
+// both columns mirrors what [projectValueOverInner] already does for the
+// same shape, and for the same two reasons: the matrix wrapper reads
+// `anchor_ts`, and a step-aligned vector-vector join reads TimeUnix off
+// each arm.
+//
+// An INSTANT RangeWindow (OuterRange == 0) genuinely has no timestamp to
+// forward — it has already reduced each series to a single row — which is
+// why the columns are conditional rather than unconditional.
+//
 // Every other inner shape (Scan / Filter / Project / Aggregate / LWR)
 // keeps the full Sample-row schema, so we forward all four canonical
 // columns.
-func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) chplan.Node {
-	if _, ok := inner.(*chplan.RangeWindow); ok {
-		return &chplan.Project{
-			Input: inner,
-			Projections: []chplan.Projection{
-				{Expr: attrs, Alias: s.AttributesColumn},
-				{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
-			},
+// The return type is the concrete *chplan.Project rather than the Node
+// interface because [guardLabelRewriteCollision] reads the projection list
+// back to learn which canonical columns this rewrite actually exposes —
+// the same derive-don't-declare question [chplan.IsDerivedShape] answers
+// for the emitter and the HTTP layer.
+func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) *chplan.Project {
+	if rw, ok := inner.(*chplan.RangeWindow); ok {
+		projections := []chplan.Projection{{Expr: attrs, Alias: s.AttributesColumn}}
+		if rw.OuterRange > 0 {
+			projections = append(
+				projections,
+				chplan.Projection{Expr: &chplan.ColumnRef{Name: rangeWindowAnchorColumn}},
+				chplan.Projection{
+					Expr:  &chplan.ColumnRef{Name: s.TimestampColumn},
+					Alias: s.TimestampColumn,
+				},
+			)
 		}
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}})
+		return &chplan.Project{Input: inner, Projections: projections}
 	}
 	return &chplan.Project{
 		Input: inner,

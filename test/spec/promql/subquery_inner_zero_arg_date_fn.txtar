@@ -1,0 +1,23 @@
+# A zero-argument date function as a SUBQUERY INNER (issue #1866).
+#
+# `day_of_month()` takes no arguments, so the subquery-inner reducer
+# table — which reports arity 1 for every name it does not list —
+# rejected it with "expects exactly 1 argument(s), got 0". Reference
+# Prometheus evaluates it at each anchor of the [5m:1m] grid, stamping
+# each row with the anchor instant, and reduces the resulting matrix with
+# `max_over_time`. Every anchor here falls on 2026-01-01 or the last
+# minutes of 2025-12-31, so the reduction spans a month boundary and the
+# answer is the larger day-of-month of the two.
+
+-- query.promql --
+max_over_time(day_of_month()[5m:1m])
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+-- chplan --
+RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, toFloat64(toDayOfMonth(anchor_ts)) AS Value]
+      StepGrid start=2025-12-31T23:56:00.000000000Z end=2026-01-01T00:00:00.000000000Z step=1m0s
+-- sql --
+SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(toDayOfMonth(`anchor_ts`)) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2025-12-31 23:56:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`))) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`
