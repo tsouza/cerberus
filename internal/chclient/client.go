@@ -1420,21 +1420,35 @@ func (c *Client) QueryStrings(ctx context.Context, sql string, args ...any) ([]s
 // Line carries the raw log body the handler runs the JSON / logfmt
 // detection over; Attributes carries the record-level attribute map
 // (Loki's structured-metadata analogue in the OTel-CH schema);
-// Resource carries the stream-identity label map the parser uses for
-// collision renaming (a parsed key that shadows a stream label is
-// surfaced as `<key>_extracted`, mirroring upstream Loki).
+// Resource carries the stream-identity label map (a parsed key that
+// shadows a stream label is surfaced as `<key>_extracted`, mirroring
+// upstream Loki — the rename itself now happens in the peek SQL).
 type DetectedFieldRow struct {
 	Line       string
 	Attributes map[string]string
 	Resource   map[string]string
+	// LogfmtFields and JSONFields are the labels the LogQL query path's
+	// OWN `| logfmt` / `| json` parser stages extract from this row's
+	// body — evaluated by ClickHouse inside the peek SQL, with the
+	// stream-label collision rename already applied.
+	//
+	// The handler advertises these verbatim rather than running a
+	// second, Go-side extractor over Line. Cerberus's parser stages
+	// lower to CH built-ins (`extractKeyValuePairs`,
+	// `JSONExtractKeysAndValues`) whose key grammar differs from a
+	// Loki-shaped Go decoder, so a second derivation advertises field
+	// names the query path can never return (issue #1888).
+	LogfmtFields map[string]string
+	JSONFields   map[string]string
 }
 
 // QueryDetectedFieldRows runs sql and decodes a (String,
-// Map(String,String), Map(String,String)) three-column result set into
-// a flat slice. Used by /loki/api/v1/detected_fields to feed the
-// field-detection heuristic — the handler needs the body for parsing
-// plus both attribute maps for structured-metadata fields and
-// stream-label collision handling.
+// Map(String,String), Map(String,String), Map(String,String),
+// Map(String,String)) five-column result set into a flat slice. Used by
+// /loki/api/v1/detected_fields: the handler needs both attribute maps
+// for structured-metadata fields plus the two parser-stage extractions
+// that define which body-parsed fields the query path can actually
+// return.
 //
 // Guarded by the circuit breaker (see [Client] doc).
 func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ...any) ([]DetectedFieldRow, error) {
@@ -1459,15 +1473,24 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, sql string, args ..
 	var buffered int64
 	for rows.Next() {
 		var (
-			line     string
-			attrs    map[string]string
-			resource map[string]string
+			line       string
+			attrs      map[string]string
+			resource   map[string]string
+			logfmtVals map[string]string
+			jsonVals   map[string]string
 		)
-		if err := rows.Scan(&line, &attrs, &resource); err != nil {
+		if err := rows.Scan(&line, &attrs, &resource, &logfmtVals, &jsonVals); err != nil {
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
-		out = append(out, DetectedFieldRow{Line: line, Attributes: attrs, Resource: resource})
-		buffered += int64(len(line)) + mapBytes(attrs) + mapBytes(resource)
+		out = append(out, DetectedFieldRow{
+			Line:         line,
+			Attributes:   attrs,
+			Resource:     resource,
+			LogfmtFields: logfmtVals,
+			JSONFields:   jsonVals,
+		})
+		buffered += int64(len(line)) + mapBytes(attrs) + mapBytes(resource) +
+			mapBytes(logfmtVals) + mapBytes(jsonVals)
 		if err := logPeekBytesExceeded(buffered); err != nil {
 			return nil, err
 		}

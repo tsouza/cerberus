@@ -1889,8 +1889,8 @@ func metricNamePredicateOn(m *labels.Matcher, s schema.Metrics, nameExpr func() 
 //
 // Fixture impact: every PromQL fixture whose matcher name contains an
 // internal underscore now emits the if-chain. The chplan IR snapshot
-// expands accordingly; `just update-golden` regenerates the SQL +
-// chplan sections in lock-step.
+// expands accordingly; `just update-golden promql` regenerates the SQL
+// + chplan sections in lock-step.
 // attributeLookupKeys returns the storage keys [attributeLookup] probes
 // for the Prom label `key`, in probe order. Callers that need to know
 // which spellings the chain already covers (see

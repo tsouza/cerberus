@@ -223,7 +223,7 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 // a labels merge — bare and typed `| logfmt`, bare and typed `| json`,
 // and `| regexp`. Both merge shapes route through a single pair of
 // constructors so the policy cannot be applied to one family and
-// skipped on another: [mergeParsedMap] wraps a query-time-unknown key
+// skipped on another: [LogfmtParsedLabels] wraps a query-time-unknown key
 // set in a `mapApply` rename, and [mergeParsedFields] wraps each
 // statically-known destination identifier in a per-key `if(...)`.
 func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
@@ -303,13 +303,9 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
 }
 
-// isDynamicLabelStage reports whether stage is a `| pattern` parser
-// stage — see [lowerPipelineWithLabels]'s dynamicLabels gate.
-//
-// `| unpack` used to belong here. It no longer does: its extraction is
-// modelled in SQL by [unpackMergeLabels], so its `__error__` /
-// `__error_details__` markers are real entries in the labels map a
-// filter can resolve against.
+// isDynamicLabelStage reports whether stage is a `| unpack` / `|
+// pattern` parser stage — see [lowerPipelineWithLabels]'s dynamicLabels
+// gate.
 func isDynamicLabelStage(stage syntax.StageExpr) bool {
 	lp, ok := stage.(*syntax.LineParserExpr)
 	if !ok {
@@ -394,43 +390,6 @@ func PipelineLabelsExpr(expr syntax.Expr, s schema.Logs) (chplan.Expr, error) {
 	return labelsExpr, nil
 }
 
-// PipelineLineExpr returns the expression a log-stream query should
-// project as its line column, or nil when no stage rewrites the line in
-// SQL and the caller can project the body column directly.
-//
-// Only `| unpack` rewrites the line in SQL today: it replaces the packed
-// payload with its `_entry` member. The rewrite has to happen here
-// rather than after the rows return, because the labels the same stage
-// extracts are already computed in SQL — splitting one stage's line
-// across two evaluation sites is how the two answers drift apart.
-//
-// `| line_format` and `| decolorize` still rewrite the line in Go, which
-// leaves one ordering the projection cannot honour: a `| line_format`
-// BEFORE an `| unpack` feeds the reformatted line to unpack upstream,
-// while here unpack reads the stored body. That ordering is already the
-// shape every SQL-side parser stage has — `| line_format | json` reads
-// the stored body too — so unpack now shares it rather than introducing
-// it.
-func PipelineLineExpr(expr syntax.Expr, s schema.Logs) (chplan.Expr, error) {
-	pipe, ok := expr.(*syntax.PipelineExpr)
-	if !ok {
-		return nil, nil
-	}
-	var lineExpr chplan.Expr
-	for _, stage := range pipe.MultiStages {
-		lp, ok := stage.(*syntax.LineParserExpr)
-		if !ok || lp.Op != syntax.OpParserTypeUnpack {
-			continue
-		}
-		prev := lineExpr
-		if prev == nil {
-			prev = &chplan.ColumnRef{Name: s.BodyColumn}
-		}
-		lineExpr = unpackLineExpr(prev, s)
-	}
-	return lineExpr, nil
-}
-
 // pipelineStageLabels returns the post-stage labels-map expression for a
 // single pipeline stage, or nil if the stage doesn't alter the visible
 // label set. Mirrors the `newLabels` branch of [lowerStage] but isolates
@@ -475,16 +434,53 @@ func pipelineStageLabels(stage syntax.StageExpr, s schema.Logs, labelsExpr chpla
 	return nil, nil
 }
 
+// PipelineLineExpr returns the expression a log-stream query should
+// project as its line column, or nil when no stage rewrites the line in
+// SQL and the caller can project the body column directly.
+//
+// Only `| unpack` rewrites the line in SQL today: it replaces the packed
+// payload with its `_entry` member. The rewrite has to happen here
+// rather than after the rows return, because the labels the same stage
+// extracts are already computed in SQL — splitting one stage's line
+// across two evaluation sites is how the two answers drift apart.
+//
+// `| line_format` and `| decolorize` still rewrite the line in Go, which
+// leaves one ordering the projection cannot honour: a `| line_format`
+// BEFORE an `| unpack` feeds the reformatted line to unpack upstream,
+// while here unpack reads the stored body. That ordering is already the
+// shape every SQL-side parser stage has — `| line_format | json` reads
+// the stored body too — so unpack now shares it rather than introducing
+// it.
+func PipelineLineExpr(expr syntax.Expr, s schema.Logs) (chplan.Expr, error) {
+	pipe, ok := expr.(*syntax.PipelineExpr)
+	if !ok {
+		return nil, nil
+	}
+	var lineExpr chplan.Expr
+	for _, stage := range pipe.MultiStages {
+		lp, ok := stage.(*syntax.LineParserExpr)
+		if !ok || lp.Op != syntax.OpParserTypeUnpack {
+			continue
+		}
+		prev := lineExpr
+		if prev == nil {
+			prev = &chplan.ColumnRef{Name: s.BodyColumn}
+		}
+		lineExpr = unpackLineExpr(prev, s)
+	}
+	return lineExpr, nil
+}
+
 // HasParserStage reports whether the parsed LogQL expression contains a
-// parser stage (`| logfmt`, `| json`, `| regexp ...`, typed-variants)
-// that the SQL lowering folds into the labels map. Used by
-// [Lang.ProjectSamples] to gate the parser-extracted labels surface —
+// parser stage (`| logfmt`, `| json`, `| unpack`, `| regexp ...`,
+// typed-variants) that the SQL lowering folds into the labels map. Used
+// by [Lang.ProjectSamples] to gate the parser-extracted labels surface —
 // when true, the projection uses [PipelineLabelsExpr]'s output for the
 // Attributes column so per-row labels include extracted keys.
 //
-// `| unpack` and `| pattern` return false: those parsers extract their
-// labels in Go after the rows return (see post_process.go), not in SQL,
-// so the SQL projection has nothing to surface for them — the
+// `| pattern` returns false: it is the one parser whose labels are still
+// extracted in Go after the rows return (see post_process.go) rather
+// than in SQL, so the SQL projection has nothing to surface for it — the
 // post-process step mutates the labels map per-row instead.
 func HasParserStage(expr syntax.Expr) bool {
 	pipe, ok := expr.(*syntax.PipelineExpr)
@@ -599,13 +595,14 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (
 		// parsed expression on the handler side.
 		return nil, nil, nil
 	case *syntax.LineParserExpr:
-		// `| pattern` extracts labels from the line in Go after the rows
-		// return — it has no SQL impact (lowering returns no predicate).
-		// The API handler pulls it out of the parsed expression via
-		// postProcessExtract and applies it per row.
+		// `| unpack` and `| pattern` are parser stages that extract
+		// labels from the line in Go after the rows return — they have
+		// no SQL impact (lowering returns no predicate). The API handler
+		// pulls them out of the parsed expression via postProcessExtract
+		// and applies them per row.
 		//
-		// `| unpack`, `| json` and `| regexp` lower to a labels-map merge
-		// so subsequent label filters resolve against the parsed keys —
+		// `| json` and `| regexp` lower to a labels-map merge so
+		// subsequent label filters resolve against the parsed keys —
 		// mirroring how `| logfmt` is handled below.
 		switch st.Op {
 		case syntax.OpParserTypePattern:
@@ -705,7 +702,53 @@ const duplicateSuffix = "_extracted"
 // pair-delimiter / quote arguments mirror Loki's logfmt parser
 // defaults.
 func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
-	return mergeParsedMap(prev, s, extractKVPairs(s))
+	return concatParsedLabels(prev, LogfmtParsedLabels(s))
+}
+
+// LogfmtParsedLabels returns the `Map(String, String)` of labels a bare
+// `| logfmt` stage contributes to the label set — the CH-side extraction
+// with Loki's stream-label collision rename already applied, but WITHOUT
+// the merge onto the running labels map.
+//
+// It is exported because the Loki metadata surface has to answer "which
+// fields can a `| logfmt` query actually read?" and the only answer that
+// cannot drift is the expression the query path itself runs.
+// `/loki/api/v1/detected_fields` projects this very expression into its
+// peek SQL rather than re-deriving the field set with a second, Go-side
+// extractor: a second derivation is what advertised logfmt keys the
+// query path could never produce (issue #1888). Cerberus's `| logfmt`
+// lowers to ClickHouse's `extractKeyValuePairs`, whose key grammar skips
+// characters Loki's own decoder would rewrite to `_`, so the two
+// extractors genuinely disagree on the KEY NAMES — `(method='GET')`
+// yields `method` here and `_method` under a Loki-shaped decoder.
+func LogfmtParsedLabels(s schema.Logs) chplan.Expr {
+	return renameExtractedOnCollision(s, extractKVPairs(s))
+}
+
+// JSONParsedLabels is the `| json` counterpart of [LogfmtParsedLabels]:
+// the top-level key/value pairs a bare `| json` stage contributes, with
+// the collision rename applied. Same single-source-of-truth contract —
+// `/detected_fields` projects it instead of re-parsing bodies in Go.
+func JSONParsedLabels(s schema.Logs) chplan.Expr {
+	return renameExtractedOnCollision(s, jsonFlattenedMap(s))
+}
+
+// concatParsedLabels merges an already-renamed parsed-label map onto the
+// running labels map. Stream-selector labels win on collision because
+// the renamed map has had its colliding keys suffixed already.
+//
+// Together with [mergeParsedFields] this is one of the only two ways to
+// build a parser-stage labels merge, and its argument comes from
+// [LogfmtParsedLabels] or [JSONParsedLabels] — the two constructors that
+// apply the collision policy. No parser family can therefore merge
+// extracted keys without the rename: the divergence that let `| json` /
+// `| regexp` extracted keys silently overwrite stream labels is closed
+// by construction rather than by repeating the rename at each call site.
+func concatParsedLabels(prev, renamedParsed chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{prev, renamedParsed},
+	}
 }
 
 // parsedField pairs a parser stage's statically-known destination label
@@ -713,28 +756,6 @@ func logfmtMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 type parsedField struct {
 	name  string
 	value chplan.Expr
-}
-
-// mergeParsedMap folds a parser stage's extracted `Map(String,String)`
-// onto the running labels map, applying Loki's collision policy to every
-// extracted key. Used by the parser forms whose extracted key set is only
-// known at query time — bare `| logfmt` and bare `| json` — so the rename
-// has to happen per-key inside a `mapApply` lambda.
-//
-// Together with [mergeParsedFields] this is one of the only two ways to
-// build a parser-stage labels merge. Both apply the collision policy
-// internally, so no parser family can merge extracted keys without it —
-// the divergence that let `| json` / `| regexp` extracted keys silently
-// overwrite stream labels is closed by construction rather than by
-// repeating the rename at each call site.
-func mergeParsedMap(prev chplan.Expr, s schema.Logs, extracted chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			prev,
-			renameExtractedOnCollision(s, extracted),
-		},
-	}
 }
 
 // mergeParsedFields folds a parser stage's statically-known destination
@@ -747,7 +768,8 @@ func mergeParsedMap(prev chplan.Expr, s schema.Logs, extracted chplan.Expr) chpl
 //
 // Callers hand over the raw identifier, never a pre-built key expression:
 // the rename is this constructor's job, so a new parser family cannot
-// forget it. See [mergeParsedMap] for the dynamic-key counterpart.
+// forget it. See [LogfmtParsedLabels] / [JSONParsedLabels] for the
+// dynamic-key counterparts.
 func mergeParsedFields(prev chplan.Expr, s schema.Logs, fields []parsedField) chplan.Expr {
 	args := make([]chplan.Expr, 0, len(fields)*2)
 	for _, f := range fields {
@@ -812,7 +834,8 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax
 //	    (k, v) -> (if(mapContains(<stream>, k), concat(k, '_extracted'), k), v),
 //	    <extracted>)
 //
-// Applied by [mergeParsedMap] for the bare `| logfmt` and bare `| json`
+// Applied by [LogfmtParsedLabels] and [JSONParsedLabels] for the bare
+// `| logfmt` and bare `| json`
 // forms, where the extracted-key set is unknown at SQL-emit time so the
 // rename has to happen per-key inside the lambda.
 func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Expr {
@@ -954,21 +977,22 @@ const (
 )
 
 // jsonBareMergeLabels wraps the current labelsExpr with a
-// `mapConcat(<prev>, mapApply(<rename>, <flattened>))` so subsequent
-// label filters see the union of stream-selector labels and the
-// JSON-parsed key/value pairs — with stream-selector labels winning on
-// key collisions and the shadowed JSON value reachable under the
-// `_extracted`-suffixed name (see [mergeParsedMap]).
+// `mapConcat(<prev>, mapApply(<rename>, CAST(JSONExtractKeysAndValues(
+// Body, 'String') AS Map(String,String))))` so subsequent label filters
+// see the union of stream-selector labels and JSON-parsed top-level
+// key/value pairs — with stream-selector labels winning on key
+// collisions and the shadowed JSON value reachable under the
+// `_extracted`-suffixed name (see [LogfmtParsedLabels]).
 //
-// `<flattened>` reproduces Loki's JSONParser (pkg/logql/log/parser.go)
-// exactly, which means recursively flattening nested objects into
-// `parent_child` label names rather than leaving a nested object as its
-// stringified JSON under the parent key. `internal/api/loki`'s
-// jsonExtractor is the clean-room Go statement of the same semantics and
-// the comparand the extraction-parity test drives this expression
-// against.
+// JSONExtractKeysAndValues(json, 'String') returns
+// `Array(Tuple(String, String))` for the top-level object keys with each
+// value cast to String. CAST to Map(String, String) gives the same shape
+// the rest of the pipeline expects (mirrors the `| logfmt` lowering).
+// Nested objects stringify to their JSON form rather than flattening to
+// `parent_child` keys — that's an approximation of Loki's bare `| json`
+// semantics; the common flat-object case is exact.
 func jsonBareMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
-	return mergeParsedMap(prev, s, jsonFlattenedMap(s))
+	return concatParsedLabels(prev, JSONParsedLabels(s))
 }
 
 // jsonFlattenedMap renders the `Map(String, String)` of every scalar leaf
@@ -1379,10 +1403,19 @@ func unpackMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
 		Name: "mapConcat",
 		Args: []chplan.Expr{
-			mergeParsedMap(prev, s, unpackExtractedMap(s)),
+			concatParsedLabels(prev, UnpackParsedLabels(s)),
 			unpackErrorMarkers(s),
 		},
 	}
+}
+
+// UnpackParsedLabels is the `| unpack` counterpart of
+// [LogfmtParsedLabels] and [JSONParsedLabels]: the labels a packed
+// payload contributes, with the collision rename applied and without the
+// merge onto the running map. Same single-source-of-truth contract, so
+// the field surface and the query path read one expression.
+func UnpackParsedLabels(s schema.Logs) chplan.Expr {
+	return renameExtractedOnCollision(s, unpackExtractedMap(s))
 }
 
 // unpackLineExpr renders the line `| unpack` yields: the unescaped

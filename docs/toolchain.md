@@ -100,7 +100,8 @@ rather than a Go module dependency.
 
 The chdb-tagged lanes — the `-- expected_rows --` roundtrip cells in `test/spec/`, the property
 tests, and the cardinality baseline — link `libchdb.so`, installed by `just chdb-install`. Without
-it, `just update-golden` refuses to run rather than regenerating a partial corpus.
+it, `just update-golden` refuses to run any chdb-tagged shard rather than regenerating a partial
+corpus.
 
 chDB and a production ClickHouse server differ in scan strictness: chDB coerces some column types
 that the server rejects outright. An emit-type bug can therefore pass every chDB lane and fail
