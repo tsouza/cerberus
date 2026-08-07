@@ -37,6 +37,7 @@ import (
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/routememo"
+	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 	"github.com/tsouza/cerberus/internal/solver"
@@ -1400,59 +1401,17 @@ func runRequirementsCheck(
 	for _, w := range res.Warnings {
 		logger.Warn(w)
 	}
-	if res.Fatal != nil {
-		// Wrong-shape / too-old / unreadable — never self-heals. Exit even if
-		// some tables are also absent: a too-old server won't fix itself by
-		// waiting, and a wrong-shape table is a genuine misconfiguration.
-		return nil, res.Fatal
-	}
 
-	if res.Unreachable {
-		// Transient: ClickHouse is not accepting connections yet (cerberus
-		// booted ahead of the database). A dial / connection-refused error is
-		// NOT a misconfiguration and self-heals once the server appears, so
-		// boot but stay NOT READY; the same background re-probe that waits on
-		// an absent schema also waits out an unreachable server. No restart.
-		reason := res.UnreachableReason()
-		logger.Warn(
-			"clickhouse not reachable at startup; serving unready until it appears (/readyz gates traffic)",
-			"reason", reason,
-		)
-		present := newSchemaPresentSignal(reason)
-		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
-		return present.Func(), nil
+	outcome := decideRequirementsOutcome(res, cfg.Schema, cfg.ClickHouse.Database)
+	if outcome.fatalErr != nil {
+		return nil, outcome.fatalErr
 	}
-
-	if res.DatabaseAbsent {
-		// Transient: ClickHouse is up but the configured database does not exist
-		// yet (UNKNOWN_DATABASE / code 81). The connection carries the database
-		// as its session default, so even SELECT version() fails until the
-		// database is created — by the collector that owns schema creation, or by
-		// the auto-create hook once it can reach the server. This is the same
-		// class of cold-cluster race as an absent schema, NOT a misconfiguration,
-		// so boot but stay NOT READY; the background re-probe flips readiness once
-		// the database (and its tables) appear. No restart.
-		reason := res.DatabaseAbsentReason(cfg.ClickHouse.Database)
-		logger.Warn(
-			"clickhouse database not yet provisioned; serving unready until it is created (/readyz gates traffic)",
-			"reason", reason,
-		)
-		present := newSchemaPresentSignal(reason)
-		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
-		return present.Func(), nil
-	}
-
-	if !res.SchemaProvisioned() {
-		// Transient: the schema has not been provisioned yet (cerberus booted
-		// ahead of the collector that owns schema creation). Boot but stay
-		// NOT READY; a background re-probe flips readiness once the writer
-		// creates the schema. No restart.
-		reason := res.AbsentReason()
-		logger.Warn(
-			"schema not yet provisioned; serving unready until an external writer creates it (/readyz gates traffic)",
-			"reason", reason,
-		)
-		present := newSchemaPresentSignal(reason)
+	if outcome.notReadyReason != "" {
+		// Transient: boot but stay NOT READY; the background re-probe (reusing
+		// the auto-create retry cadence) flips readiness once the condition
+		// decideRequirementsOutcome named clears. No restart.
+		logger.Warn(outcome.logMsg, "reason", outcome.notReadyReason)
+		present := newSchemaPresentSignal(outcome.notReadyReason)
 		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
 		return present.Func(), nil
 	}
@@ -1463,6 +1422,133 @@ func runRequirementsCheck(
 		"native_rate", cfg.ExperimentalTSGridRange,
 	)
 	return nil, nil
+}
+
+// requirementsOutcome is the boot decision decideRequirementsOutcome derives
+// from a preflight.Result. Exactly one of fatalErr (exit non-zero) or
+// notReadyReason (boot proceeds NOT READY until a background re-probe
+// clears it, logged via logMsg) is set; both empty means the check passed
+// outright.
+type requirementsOutcome struct {
+	fatalErr       error
+	notReadyReason string
+	logMsg         string
+}
+
+// decideRequirementsOutcome turns a preflight.Result into the boot
+// decision. It performs no I/O of its own — every branch is a pure
+// function of res, m, and database — which is what makes the ordering
+// unit-testable without a real ClickHouse (see main_test.go).
+//
+// Order is load-bearing: res.Fatal, then res.Unreachable, then
+// res.DatabaseAbsent each short-circuit BEFORE fatalAbsentMetricTablesErr
+// runs, so a genuinely unreachable server or a not-yet-created database
+// never gets misclassified as a fatal missing-table config error — see
+// fatalAbsentMetricTablesErr's own doc for why that reachable-vs-absent
+// boundary matters (#1905). The remaining (non-metrics) AbsentTables stay
+// on preflight's original transient path.
+func decideRequirementsOutcome(res preflight.Result, m schema.Metrics, database string) requirementsOutcome {
+	if res.Fatal != nil {
+		// Wrong-shape / too-old / unreadable — never self-heals. Exit even if
+		// some tables are also absent: a too-old server won't fix itself by
+		// waiting, and a wrong-shape table is a genuine misconfiguration.
+		return requirementsOutcome{fatalErr: res.Fatal}
+	}
+	if res.Unreachable {
+		// Transient: ClickHouse is not accepting connections yet (cerberus
+		// booted ahead of the database). A dial / connection-refused error is
+		// NOT a misconfiguration and self-heals once the server appears.
+		return requirementsOutcome{
+			notReadyReason: res.UnreachableReason(),
+			logMsg:         "clickhouse not reachable at startup; serving unready until it appears (/readyz gates traffic)",
+		}
+	}
+	if res.DatabaseAbsent {
+		// Transient: ClickHouse is up but the configured database does not exist
+		// yet (UNKNOWN_DATABASE / code 81). The connection carries the database
+		// as its session default, so even SELECT version() fails until the
+		// database is created — by the collector that owns schema creation, or by
+		// the auto-create hook once it can reach the server. This is the same
+		// class of cold-cluster race as an absent schema, NOT a misconfiguration.
+		return requirementsOutcome{
+			notReadyReason: res.DatabaseAbsentReason(database),
+			logMsg:         "clickhouse database not yet provisioned; serving unready until it is created (/readyz gates traffic)",
+		}
+	}
+	if err := fatalAbsentMetricTablesErr(m, res.AbsentTables); err != nil {
+		// Fatal, unlike the general AbsentTables tolerance below (#1905): a
+		// misconfigured metric table name never self-heals the way an
+		// unprovisioned schema does, and a silently degraded metadata
+		// surface (empty /api/v1/series responses, never an error) is harder
+		// for an operator to notice than a boot failure that names the table
+		// and the config key.
+		return requirementsOutcome{fatalErr: err}
+	}
+	if !res.SchemaProvisioned() {
+		// Transient: the schema has not been provisioned yet (cerberus booted
+		// ahead of the collector that owns schema creation).
+		return requirementsOutcome{
+			notReadyReason: res.AbsentReason(),
+			logMsg:         "schema not yet provisioned; serving unready until an external writer creates it (/readyz gates traffic)",
+		}
+	}
+	return requirementsOutcome{}
+}
+
+// metricTableBinding pairs a resolved metric-table name with the
+// schema.metrics.* config key that set it (see internal/config/nested.go's
+// schema.metrics.* bindings, the source of truth these key strings mirror).
+type metricTableBinding struct {
+	table     string
+	configKey string
+}
+
+// metricTableBindings lists the metric tables the /api/v1/series,
+// /api/v1/labels, and /api/v1/label/<name>/values handlers union across
+// (schema.Metrics.ConfiguredMetricTables' Gauge/Sum/Histogram set) paired
+// with the config key each came from, for fatalAbsentMetricTablesErr's
+// error text.
+func metricTableBindings(m schema.Metrics) []metricTableBinding {
+	return []metricTableBinding{
+		{table: m.GaugeTable, configKey: "schema.metrics.gaugeTable"},
+		{table: m.SumTable, configKey: "schema.metrics.sumTable"},
+		{table: m.HistogramTable, configKey: "schema.metrics.histogramTable"},
+	}
+}
+
+// fatalAbsentMetricTablesErr turns preflight's already-computed
+// reachable-but-absent table list into a boot-fatal error scoped to the
+// metrics surface (#1905): a cerberus.yaml table name that will never
+// exist — a typo, or a table the operator forgot to provision — must not
+// silently degrade every /api/v1/series, /api/v1/labels, and
+// /api/v1/label/<name>/values request into a ClickHouse UNKNOWN_TABLE
+// error. This is deliberately STRICTER than preflight's own general
+// schema-shape gate, which treats an entirely-absent table as the
+// transient cerberus-boots-before-the-collector race and waits rather than
+// exiting (see internal/preflight's package doc, "Fatal vs transient: the
+// absent-schema race"); the boundary is unchanged, though — the two
+// callers below that already returned before this point cover "ClickHouse
+// unreachable" (res.Unreachable) and "database not yet provisioned"
+// (res.DatabaseAbsent), so neither reaches here, and an unconfigured
+// (empty-string) table name never appears in absentTables in the first
+// place, since preflight's checkSchema skips empty table names before
+// ever probing them. What is left, by construction, is exactly "the
+// server answered and this specific configured table is not there".
+func fatalAbsentMetricTablesErr(m schema.Metrics, absentTables []string) error {
+	absent := make(map[string]bool, len(absentTables))
+	for _, t := range absentTables {
+		absent[t] = true
+	}
+	var problems []string
+	for _, b := range metricTableBindings(m) {
+		if b.table != "" && absent[b.table] {
+			problems = append(problems, fmt.Sprintf("table %q (set via %s) does not exist", b.table, b.configKey))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("metric table existence check failed: %s", strings.Join(problems, "; "))
 }
 
 // schemaPresentSignal is the concurrency-safe carrier behind the

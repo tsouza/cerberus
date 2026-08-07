@@ -1785,13 +1785,13 @@ func labelValueCandidates(name string) []string {
 }
 
 // metricTables returns the configured metric-table names in a stable
-// order, used for UNION construction.
+// order, used for UNION construction. Delegates to schema.Metrics's own
+// resolved table set (#1905) rather than re-deriving it, so this handler
+// and cerberus's boot-time existence check (cmd/cerberus's
+// runRequirementsCheck) always agree on which tables the metrics surface
+// reads.
 func (h *Handler) metricTables() []string {
-	return []string{
-		h.Schema.GaugeTable,
-		h.Schema.SumTable,
-		h.Schema.HistogramTable,
-	}
+	return h.Schema.ConfiguredMetricTables()
 }
 
 // arrayJoinMapKeysFrag emits `arrayJoin(mapKeys(<col>))` — the CH idiom

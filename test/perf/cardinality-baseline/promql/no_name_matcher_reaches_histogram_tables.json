@@ -1,8 +1,8 @@
 {
-  "fixture": "promql/not_regex_name_matcher_excludes_dotted",
+  "fixture": "promql/no_name_matcher_reaches_histogram_tables",
   "fan_factor": 1,
-  "scan_rows": 1,
-  "peak_intermediate": 1,
+  "scan_rows": 5,
+  "peak_intermediate": 5,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
