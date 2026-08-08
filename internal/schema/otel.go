@@ -370,6 +370,37 @@ func DefaultOTelMetrics() Metrics {
 	}
 }
 
+// AggregationTemporality enum values, matching the OTLP
+// opentelemetry.proto.metrics.v1.AggregationTemporality wire values
+// (AggregationTemporalityColumn stores this Int32 verbatim). Every
+// range-vector lowering that needs to know whether a counter's stored
+// samples are DELTA or CUMULATIVE reads one of these back out of a
+// per-series `any(AggregationTemporality)` group-read — see issue #1628.
+const (
+	// AggregationTemporalityUnspecified is the OTLP zero value — a
+	// producer that never set the field, or a physical schema with no
+	// AggregationTemporality column at all (Gauge-table input, or a
+	// Scan.UnionTables cross-table read, which drops the Sum-only
+	// column from its projection). Cerberus treats it the same as
+	// AggregationTemporalityCumulative everywhere: the historical,
+	// pre-#1628 assumption every range-vector function made
+	// unconditionally, and still the only sound default absent a
+	// positive DELTA signal.
+	AggregationTemporalityUnspecified int64 = 0
+	// AggregationTemporalityDelta means each stored sample is already
+	// the increase since the immediately PRECEDING sample only — an
+	// `increase()` over a window is therefore the straight sum of the
+	// window's raw values, not a sum of Prometheus's counter-reset-aware
+	// consecutive deltas (applying the reset rule to already-exclusive
+	// increments double-counts every sample but the first).
+	AggregationTemporalityDelta int64 = 1
+	// AggregationTemporalityCumulative means each stored sample is the
+	// running total since the series started (or last reset) — the
+	// classic Prometheus counter reading. An `increase()` over a window
+	// applies the counter-reset-aware delta rule.
+	AggregationTemporalityCumulative int64 = 2
+)
+
 // IsExpHistogramMetric reports whether the given metric name should be
 // routed to the exponential / native histogram table. Returns false if
 // ExpHistogramSuffix is empty (routing disabled).

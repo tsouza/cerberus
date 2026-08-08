@@ -350,8 +350,13 @@ func insertTargetTable(t *testing.T, name, sql string) string {
 }
 
 // parseMirrorSources reads the remote_write source lists out of the mirror's
-// Go source. All are declared with positional composite literals of
-// (metric name, table).
+// Go source. All are declared with composite literals whose first two
+// fields are (metric name, table) — positional (fixtureSources' original
+// 2-field shape) or keyed (fixtureSources.accumulateToCumulative's optional
+// 3rd field, which this parser ignores: it only needs to know a family IS
+// mirrored, not how). Either way basicLitValue reads the metric-name and
+// table string literals directly off the first two field values, keyed or
+// positional.
 func parseMirrorSources(t *testing.T) []seedFixture {
 	t.Helper()
 
@@ -365,17 +370,30 @@ func parseMirrorSources(t *testing.T) []seedFixture {
 			if !ok {
 				t.Fatalf("%s: %s element is %T, want a composite literal", compatMirrorSource, varName, elt)
 			}
-			if len(entry.Elts) != 2 {
-				t.Fatalf("%s: %s entry has %d fields, want (metric name, table)",
+			if len(entry.Elts) < 2 {
+				t.Fatalf("%s: %s entry has %d fields, want at least (metric name, table)",
 					compatMirrorSource, varName, len(entry.Elts))
 			}
 			out = append(out, seedFixture{
-				name:  basicLitValue(t, compatMirrorSource, entry.Elts[0]),
-				table: basicLitValue(t, compatMirrorSource, entry.Elts[1]),
+				name:  basicLitValue(t, compatMirrorSource, mirrorFieldValue(t, entry.Elts[0])),
+				table: basicLitValue(t, compatMirrorSource, mirrorFieldValue(t, entry.Elts[1])),
 			})
 		}
 	}
 	return out
+}
+
+// mirrorFieldValue unwraps a composite-literal field expr to its value,
+// whether the field was written positionally (expr IS the value) or keyed
+// (expr is a `field: value` ast.KeyValueExpr, whose .Value is what
+// basicLitValue needs).
+func mirrorFieldValue(t *testing.T, expr ast.Expr) ast.Expr {
+	t.Helper()
+
+	if kv, ok := expr.(*ast.KeyValueExpr); ok {
+		return kv.Value
+	}
+	return expr
 }
 
 // findSliceLiteral locates `var <name> = []T{...}` in a Go source file.

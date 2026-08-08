@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // Builder accumulates a parameterised ClickHouse SQL fragment plus the
@@ -1730,6 +1731,58 @@ func CounterDelta(seriesArr Frag) Frag {
 		Lambda2("p", "c", lambdaBody),
 		Call("arrayPopBack", valsArr()),
 		Call("arrayPopFront", valsArr()),
+	)
+}
+
+// CounterOrDeltaSum renders the window's total increase over `pairs`
+// (an Array(Tuple(ts, value)), typically `window_pairs`), branching at
+// RUNTIME on a per-series-window AggregationTemporality read
+// (`temporality`) between:
+//
+//   - DELTA (schema.AggregationTemporalityDelta): each stored sample is
+//     already the increase since the PREVIOUS sample only, so the
+//     window's total increase is the straight sum of its raw values —
+//     `arraySum(arrayMap(x -> tupleElement(x, 2), pairs))`.
+//   - anything else (CUMULATIVE, or the legacy zero/UNSPECIFIED
+//     reading): Prometheus's counter-reset-aware delta,
+//     `arraySum(CounterDelta(pairs))` — the historical, pre-#1628
+//     behaviour every rate / increase lowering applied unconditionally.
+//
+// temporality is nil for callers whose RangeWindow carries no
+// TemporalityColumn (Gauge-table input, or the Scan.UnionTables
+// cross-table routing, which drops the Sum-only column from its
+// projection so the union's column list still matches) — with a nil
+// temporality, CounterOrDeltaSum renders the CUMULATIVE branch
+// unconditionally, byte-identical to every query emitted before #1628.
+//
+// This is the ONE branch every counter-reading range function shares:
+// rate / increase call it here; the classic-histogram bucket fold
+// (internal/promql's counterIncreaseFold) transcribes the identical
+// branch into the bucket-array domain, since that path builds a
+// chplan.Expr tree rather than a chsql.Frag and so cannot call this
+// function directly — see counterIncreaseFold's doc comment for the
+// cross-reference. See issue #1628.
+func CounterOrDeltaSum(pairs, temporality Frag) Frag {
+	cumulative := Call("arraySum", CounterDelta(pairs))
+	if temporality == nil {
+		return cumulative
+	}
+	delta := Call("arraySum", pairsValuesFrag(pairs))
+	return If(Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)), delta, cumulative)
+}
+
+// pairsValuesFrag renders `arrayMap(x -> tupleElement(x, 2), <pairs>)`
+// — the values-only projection out of an arbitrary Array(Tuple(ts,
+// value)) Frag. Distinct from range_window.go's windowValsFrag, which
+// hard-wires the `window_pairs` alias; this variant takes the pairs
+// Frag as an argument so CounterOrDeltaSum works for both the
+// `window_pairs`-aliased row-shape path and any future caller with a
+// differently-named or inline pairs expression.
+func pairsValuesFrag(pairs Frag) Frag {
+	return Call(
+		"arrayMap",
+		Lambda1("x", Call("tupleElement", BareIdent("x"), InlineLit(int64(2)))),
+		pairs,
 	)
 }
 

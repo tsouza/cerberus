@@ -150,6 +150,21 @@ type lowerCtx struct {
 	// guards is the sink [registerScalarGuard] appends to. Nil when the
 	// caller did not ask for guards — see [LowerOpts.Guards].
 	guards *[]ScalarGuard
+
+	// wantsTemporalityColumn asks augmentSelectorAttributes to widen its
+	// canonical 4-column selector Project (MetricName, Attributes,
+	// TimeUnix, Value) with a 5th passthrough column,
+	// schema.Metrics.AggregationTemporalityColumn, so a rate() / increase()
+	// range-vector call over an unambiguous Sum- or Histogram-table scan
+	// can read it back downstream (chplan.RangeWindow.TemporalityColumn —
+	// see issue #1628). lowerRangeVectorCall sets this ONLY when it has
+	// already confirmed, via the SAME resolveSelectorRouting call the inner
+	// lowerVectorSelector is about to make, that the selector resolves to a
+	// single Sum/Histogram scan — so augmentSelectorAttributes does not
+	// re-derive that eligibility itself, it only widens the projection.
+	// Every other selector lowering leaves this false, keeping their
+	// emitted SQL byte-identical to before #1628.
+	wantsTemporalityColumn bool
 }
 
 // withSampleTimestamp returns a copy of c that asks the range-mode selector
