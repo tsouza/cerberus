@@ -59,6 +59,15 @@ import (
 // precisely the defect this stage exists to remove.
 const hqWindowZeroCountsArrayAlias = "_hq_zero_counts"
 
+// hqWindowCountArrayAlias holds the group's groupArray of each row's
+// total-observation Count — the same field reference Prometheus's native-
+// histogram `extrapolatedRate` reads for the durationToZero
+// zero-crossing clamp (`samples.Histograms[0].H.Count` /
+// `resultHistogram.Count`). It is the exponential-histogram counterpart
+// of a classic rung's own cumulative values, which durationToZero reads
+// directly for that path instead — see histogramWindowFold's doc.
+const hqWindowCountArrayAlias = "_hq_count_list"
+
 // paramExpRowCount binds one row's already-rescaled count while it is
 // cast into the float domain the window fold needs.
 const paramExpRowCount = "n"
@@ -89,6 +98,7 @@ func expHistogramWindowAggs(s schema.Metrics) []chplan.AggFunc {
 	return append(aggs, []chplan.AggFunc{
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: hqWindowZeroCountsArrayAlias},
+		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqWindowCountArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
@@ -266,13 +276,26 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 	}
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr()),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,
 		}},
 		s,
 	)
+}
+
+// expHistogramWindowCountValuesExpr casts the per-series stage's
+// groupArray(Count) into the float domain histogramWindowFold's
+// durationToZero clamp needs — the same cast expHistogramWindowFloatsExpr
+// applies to every bucket contribution array, applied here to the
+// whole-histogram Count series instead of any one bucket's counts. Both
+// the instant (expHistogramWindowStage) and range-mode
+// (buildHistogramNativeRangeTreeMerge) callers share this: both read
+// hqWindowCountArrayAlias off expHistogramWindowAggs's output, one via a
+// chplan.Aggregate, the other via the RangeBucketFanout underneath it.
+func expHistogramWindowCountValuesExpr() chplan.Expr {
+	return expHistogramWindowFloatsExpr(&chplan.ColumnRef{Name: hqWindowCountArrayAlias})
 }
 
 // expHistogramMergeAggs are the ACROSS-SERIES stage's aggregates: the

@@ -317,7 +317,10 @@ func lowerHistogramQuantileClassicAggRange(
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, aggWindowFor(shape))
 	perSeries := classicBucketWindowReshape(
 		fanout,
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd),
+		// countValues=nil — see classicBucketWindowStage's identical call
+		// for why the classic caller reads durationToZero off each rung's
+		// own values rather than a separate count series.
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -665,7 +668,10 @@ func buildHistogramNativeRangeTreeMerge(
 			[]string{s.AttributesColumn},
 			expHistogramWindowAggs(s), s, ctx,
 		),
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd),
+		// countValues: the range-mode fanout collects the SAME
+		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
+		// for the instant path — see expHistogramWindowCountValuesExpr.
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr()),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},

@@ -137,14 +137,30 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // selector", which resolves to at most the single newest sample per
 // series in the staleness lookback — so it gets its own fold rather than
 // falling into the sum_over_time default.
-func histogramWindowFold(fn string, rangeStart, rangeEnd chplan.Expr) histogramWindowTimeFold {
+//
+// countValues is the series-wide "total observation count" time series
+// histogramExtrapolationFactorExpr's durationToZero clamp reads (see that
+// function's doc) — nil for the classic-histogram caller, which folds a
+// SINGLE `le` rung and so reads durationToZero off that very rung's own
+// (values, order), exactly as reference Prometheus's float-series
+// extrapolatedRate does; non-nil for the exponential-histogram caller,
+// which folds a DIFFERENT bucket array on every call but needs the SAME
+// whole-histogram Count series regardless of which bucket is being
+// folded, exactly as reference's histogram-typed extrapolatedRate reads
+// resultHistogram.Count / samples.Histograms[0].H.Count rather than any
+// one bucket's own values.
+func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues chplan.Expr) histogramWindowTimeFold {
 	switch fn {
 	case "rate", "increase":
 		return func(values, order chplan.Expr) chplan.Expr {
+			cv := values
+			if countValues != nil {
+				cv = countValues
+			}
 			return &chplan.Binary{
 				Op:    chplan.OpMul,
 				Left:  counterIncreaseFold(values, order),
-				Right: histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd),
+				Right: histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, cv),
 			}
 		}
 	case "":
@@ -183,7 +199,8 @@ const histogramExtrapolationThresholdFactor = 1.1
 // own first/last timestamp out to the shared window edges rangeStart /
 // rangeEnd, each clamped to half the average inter-sample gap once the
 // raw gap grows past histogramExtrapolationThresholdFactor times that
-// average (see that constant's doc).
+// average (see that constant's doc), and durationToStart is clamped a
+// SECOND time by durationToZero below.
 //
 // Reusing whatever `order` the caller already folds over — rather than a
 // single series-wide timestamp list computed once — matters for the
@@ -201,16 +218,24 @@ const histogramExtrapolationThresholdFactor = 1.1
 // histogram `histogramRate`, which computes ONE factor for the whole
 // histogram (every bucket scaled alike) rather than per bucket.
 //
-// Deliberately NOT implemented: Prom's counter zero-crossing clamp
-// (`durationToZero`, functions.go lines 277-298), which shortens
-// durationToStart further when extrapolating past the window's start
-// edge would imply a negative counter value. It only engages within one
-// average-sample-interval of a genuine counter reset landing at the
-// window's leading edge — a shape no seeded fixture exercises — and
-// adding it needs a per-series (per-rung, for classic) COUNT/total
-// timestamp series this fold doesn't currently collect. See #1628's
-// sibling follow-up rather than bundling it here unverified.
-func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd chplan.Expr) chplan.Expr {
+// durationToZero is Prom's counter zero-crossing clamp (functions.go's
+// `extrapolatedRate`, the `if isCounter` block): a counter cannot have
+// been negative, so if `countValues` rose at all across the window, the
+// duration back to where the counter would have crossed zero —
+// `sampledInterval * (firstCount / resultCount)` — caps how far
+// durationToStart may extrapolate, on top of the threshold clamp above.
+// It is NOT a reset-only correction: it engages for a counter that
+// genuinely started recently relative to the window, which
+// demo_shifting_latency_exp_hist's compat corpus exercises directly —
+// every series in that fixture starts at the seed's own time anchor, so
+// the corpus's EARLIEST evaluated timestamps see a `firstCount` still
+// small next to the window's `resultCount`, exactly the shape that
+// clamps durationToStart. An earlier revision of this function judged the
+// omission safe because it believed the clamp only bound near a genuine
+// mid-window reset; the corpus proved that judgment wrong at a bucket-
+// ratio-visible margin (a prior version of this comment cited a #1628
+// follow-up for this — that citation was itself part of the mistake).
+func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, countValues chplan.Expr) chplan.Expr {
 	sortedOrder := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{order}}
 	firstTs := &chplan.Subscript{Container: sortedOrder, Key: &chplan.LitInt{V: 1}}
 	lastTs := &chplan.Subscript{
@@ -236,8 +261,36 @@ func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd chplan.Expr) c
 			halfAvgGap, raw,
 		}}
 	}
-	durationToStart := clamp(secondsBetweenTsExpr(rangeStart, firstTs))
+	thresholdClampedStart := clamp(secondsBetweenTsExpr(rangeStart, firstTs))
 	durationToEnd := clamp(secondsBetweenTsExpr(lastTs, rangeEnd))
+
+	// durationToZero: a counter that rose across the window
+	// (resultCount > 0) could not have been negative firstCount seconds
+	// ago at its own average rate, so the zero-crossing distance caps
+	// durationToStart on top of the threshold clamp. `resultCount <= 0`
+	// (flat or reset-dominated window) leaves durationToStart at its
+	// threshold-clamped value — reference's own fallback
+	// (`durationToZero := durationToStart`) — via the `if` below never
+	// finding a SMALLER value than thresholdClampedStart itself.
+	// firstCount is never negative here (a stored UInt64 total-observation
+	// count), so reference's extra `Floats[0].F >= 0` / `H.Count >= 0`
+	// guard is always true and is not encoded separately.
+	resultCount := counterIncreaseFold(countValues, order)
+	firstCount := firstInTimeExpr(countValues, order)
+	durationToZero := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+		&chplan.Binary{Op: chplan.OpGt, Left: resultCount, Right: &chplan.LitInt{V: 0}},
+		&chplan.Binary{
+			Op:    chplan.OpMul,
+			Left:  sampledInterval,
+			Right: &chplan.Binary{Op: chplan.OpDiv, Left: firstCount, Right: resultCount},
+		},
+		thresholdClampedStart,
+	}}
+	durationToStart := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+		&chplan.Binary{Op: chplan.OpLt, Left: durationToZero, Right: thresholdClampedStart},
+		durationToZero,
+		thresholdClampedStart,
+	}}
 
 	factor := &chplan.Binary{
 		Op: chplan.OpDiv,
@@ -307,6 +360,26 @@ func latestSampleFold(values, order chplan.Expr) chplan.Expr {
 		Container: sorted,
 		Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sorted}},
 	}
+}
+
+// firstInTimeExpr is latestSampleFold's mirror image: the value from the
+// row with the EARLIEST timestamp rather than the latest. Prometheus's
+// `extrapolatedRate` reads exactly this — `samples.Floats[0].F` /
+// `samples.Histograms[0].H.Count`, the first-in-window sample's own
+// value — as the durationToZero clamp's numerator (see
+// histogramExtrapolationFactorExpr); it is not itself a fold over the
+// whole window (unlike counterIncreaseFold), so it is a plain helper
+// rather than a histogramWindowTimeFold.
+func firstInTimeExpr(values, order chplan.Expr) chplan.Expr {
+	sorted := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramCurrCum, paramRowTime},
+			Body:   &chplan.BareIdent{Name: paramRowTime},
+		},
+		values,
+		order,
+	}}
+	return &chplan.Subscript{Container: sorted, Key: &chplan.LitInt{V: 1}}
 }
 
 // counterIncreaseFold sums consecutive deltas of a counter's in-window
@@ -410,7 +483,12 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 	}
 	return classicBucketWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd),
+		// countValues=nil: classicBucketWindowLadderExpr folds one `le`
+		// rung's own cumulative values per call, so histogramWindowFold's
+		// durationToZero clamp reads THAT rung's own (values, order) —
+		// matching reference Prometheus's per-rung float-series
+		// extrapolatedRate exactly (see histogramWindowFold's doc).
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,
