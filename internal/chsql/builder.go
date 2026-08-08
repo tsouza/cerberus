@@ -1735,14 +1735,30 @@ func CounterDelta(seriesArr Frag) Frag {
 }
 
 // CounterOrDeltaSum renders the window's total increase over `pairs`
-// (an Array(Tuple(ts, value)), typically `window_pairs`), branching at
-// RUNTIME on a per-series-window AggregationTemporality read
-// (`temporality`) between:
+// (an Array(Tuple(ts, value)), typically `window_pairs`, ascending by
+// timestamp), branching at RUNTIME on a per-series-window
+// AggregationTemporality read (`temporality`) between:
 //
 //   - DELTA (schema.AggregationTemporalityDelta): each stored sample is
 //     already the increase since the PREVIOUS sample only, so the
-//     window's total increase is the straight sum of its raw values —
-//     `arraySum(arrayMap(x -> tupleElement(x, 2), pairs))`.
+//     window's total increase is the sum of its raw values EXCLUDING the
+//     earliest (first-in-time) sample —
+//     `arraySum(arrayMap(x -> tupleElement(x, 2), pairs)) - tupleElement(pairs[1], 2)`.
+//     The earliest sample's own value already covers the interval ENDING
+//     at (and therefore starting BEFORE) `pairs[1]`'s timestamp — the same
+//     coverage the shared extrapolation layer's `duration_to_start`
+//     independently reconstructs from the window's edge to `first_ts`.
+//     Summing every raw value including that first one would double-count
+//     that leading interval: it both feeds the raw sum AND gets
+//     re-extrapolated via `first_ts`. Dropping it makes this the exact
+//     analogue of the CUMULATIVE branch's `last - first` telescoping sum
+//     (a running total built by prefix-summing these same DELTA values
+//     satisfies `running(last_ts) - running(first_ts) ==
+//     sum(pairs[2:]) `, an identity independent of how uniform the deltas
+//     are), which is what makes a DELTA counter and its equivalent
+//     CUMULATIVE running-total counter agree exactly, not just
+//     approximately, once the shared extrapolation factor is layered on
+//     top of either.
 //   - anything else (CUMULATIVE, or the legacy zero/UNSPECIFIED
 //     reading): Prometheus's counter-reset-aware delta,
 //     `arraySum(CounterDelta(pairs))` — the historical, pre-#1628
@@ -1767,7 +1783,8 @@ func CounterOrDeltaSum(pairs, temporality Frag) Frag {
 	if temporality == nil {
 		return cumulative
 	}
-	delta := Call("arraySum", pairsValuesFrag(pairs))
+	firstVal := tupleElemFrag(Subscript(pairs, InlineLit(int64(1))), 2)
+	delta := Sub(Call("arraySum", pairsValuesFrag(pairs)), firstVal)
 	return If(Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)), delta, cumulative)
 }
 

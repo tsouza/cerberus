@@ -111,12 +111,17 @@ var (
 // the rc.5 read path projects mapUpdate(sanitize(ResourceAttributes), …),
 // so the seed table must carry the column or the chDB round-trip 502s with
 // UNKNOWN_IDENTIFIER. Each INSERT is column-explicit (sans
-// ResourceAttributes) so the empty default fills it.
+// ResourceAttributes) so the empty default fills it. AggregationTemporality
+// (DEFAULT 2 = schema.AggregationTemporalityCumulative) is read the same
+// unconditional way by rate()/increase()'s DELTA-vs-CUMULATIVE branch (see
+// issue #1628) — DEFAULT 2 preserves the counter-reset-rule behaviour every
+// fixture in this lane already assumes.
 const laneSeed = `CREATE OR REPLACE TABLE otel_metrics_sum (
   MetricName String,
   Attributes Map(String, String),
   ResourceAttributes Map(String, String) DEFAULT map(),
   ServiceName LowCardinality(String),
+  AggregationTemporality Int32 DEFAULT 2,
   TimeUnix DateTime64(9),
   Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
@@ -1102,6 +1107,7 @@ func TestSolver_AvsB_ChDB_LiveEdgeBoundary(t *testing.T) {
 	Attributes Map(String, String),
 	ResourceAttributes Map(String, String) DEFAULT map(),
 	ServiceName LowCardinality(String),
+	AggregationTemporality Int32 DEFAULT 2,
 	TimeUnix DateTime64(9),
 	Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);

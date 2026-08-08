@@ -190,14 +190,22 @@ func latestSampleFold(values, order chplan.Expr) chplan.Expr {
 // (when non-nil) is the caller's per-series `any(AggregationTemporality)`
 // read: when it equals schema.AggregationTemporalityDelta, each stored
 // value is already the increase since the PREVIOUS sample only, so the
-// window's total increase is the straight sum of `values` — applying the
-// reset rule on top would double-count every sample but the first. Any
-// other reading (CUMULATIVE, or the legacy zero/UNSPECIFIED default, or a
-// nil temporality) keeps the reset-rule sum. This is the SAME branch
-// chsql.CounterOrDeltaSum applies for the ordinary counter path,
-// transcribed into the bucket-array domain because this function builds a
-// chplan.Expr tree rather than a chsql.Frag and so cannot call it
-// directly. See issue #1628.
+// window's total increase is the sum of `values` EXCLUDING the
+// earliest-in-time one (`sorted[1]`) — that leading value already covers
+// the interval ENDING at (and so starting before) the window's first
+// timestamp, the same coverage the caller's own extrapolation
+// independently reconstructs from the window edge to that first
+// timestamp. Summing it too would double-count that leading interval.
+// Dropping it makes this the exact analogue of the reset-rule sum's
+// `last - first` telescoping (a running total built by prefix-summing
+// these same DELTA values satisfies `running(last) - running(first) ==
+// sum(values) - sorted[1]`, an identity independent of how uniform the
+// deltas are) — this is the SAME branch chsql.CounterOrDeltaSum applies
+// for the ordinary counter path, transcribed into the bucket-array domain
+// because this function builds a chplan.Expr tree rather than a
+// chsql.Frag and so cannot call it directly. Any other temporality
+// reading (CUMULATIVE, or the legacy zero/UNSPECIFIED default, or a nil
+// temporality) keeps the reset-rule sum. See issue #1628.
 func counterIncreaseFold(values, order, temporality chplan.Expr) chplan.Expr {
 	sorted := chplan.Expr(&chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
 		&chplan.Lambda{
@@ -232,7 +240,12 @@ func counterIncreaseFold(values, order, temporality chplan.Expr) chplan.Expr {
 	if temporality == nil {
 		return cumulative
 	}
-	delta := &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}}
+	earliest := &chplan.Subscript{Container: sorted, Key: &chplan.LitInt{V: 1}}
+	delta := &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}},
+		Right: earliest,
+	}
 	return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
 		&chplan.Binary{
 			Op:    chplan.OpEq,
