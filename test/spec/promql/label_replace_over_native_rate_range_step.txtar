@@ -1,0 +1,78 @@
+# `label_replace` wrapped around a range-mode `rate(...)`, lowered through
+# the ClickHouse-NATIVE timeSeriesRateToGrid table: the
+# `experimental_ts_grid_range` section wires NativeRateLowerer, so the
+# inner windowed node is a chplan.RangeWindowNative rather than the
+# fan-out chplan.RangeWindow.
+#
+# This is the half that pins the shape of the live 502. The two node
+# kinds carry the SAME row shape (one row per (series, anchor), the
+# anchor published as `anchor_ts AS TimeUnix`, MetricName already grouped
+# away), so the label rewrite must forward the anchor and must NOT list
+# MetricName — a decision that has to be read off the derived row shape,
+# because the kind differs between the two arms while the correct answer
+# does not.
+#
+# The query, seed and grid are IDENTICAL to
+# label_replace_over_rate_range_step.txtar, so `expected_rows` matching
+# between the two files is the assertion: whichever table a deployment
+# wires, `label_replace(rate(...), …)` answers the same.
+
+-- query.promql --
+label_replace(rate(cerberus_queries_total[5m]), "engine", "engine-$1", "cerberus_ql", "(.*)")
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:03:00', 9), 36.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:04:00', 9), 48.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:05:00', 9), 60.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:01:00', 9), 6.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:02:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:03:00', 9), 18.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:04:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:05:00', 9), 30.0);
+-- expected_rows --
+-- args --
+[0] string = "cerberus_ql"
+[1] string = "^(.*)$"
+[2] string = "engine"
+[3] string = "cerberus_ql"
+[4] string = "engine-"
+[5] string = "cerberus_ql"
+[6] string = "^(.*)$"
+[7] string = "engine-\\1"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = "service.name"
+[11] string = "service_name"
+[12] string = ""
+[13] string = "service_name"
+[14] string = "cerberus_queries_total"
+[15] string = "cerberus.queries.total"
+[16] string = "cerberus.queries/total"
+[17] string = "cerberus.queries_total"
+[18] string = "cerberus/queries/total"
+[19] string = "cerberus/queries_total"
+[20] string = "cerberus_queries.total"
+[21] int64 = 1
+[22] int64 = 0
+-- chplan --
+Aggregate groupBy=[Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix] funcs=[any(Value) AS Value] having=(throwIf((count() > 1), "vector cannot contain metrics with the same labelset") = 0)
+  Project [labelReplace(Attributes, dst="engine", replacement="engine-\\1", src="cerberus_ql", regex="(.*)", emptyReplacement="engine-") AS Attributes, anchor_ts, TimeUnix AS TimeUnix, Value]
+    RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total"))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, any(`Value`) AS `Value` FROM (SELECT mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, replaceRegexpOne(`Attributes`[?], ?, ?)))), `Attributes`)) AS `Attributes`, `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` FROM (SELECT `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`, timeSeriesRateToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL)) GROUP BY `Attributes`, `anchor_ts`, `TimeUnix` HAVING (throwIf((count() > ?), 'vector cannot contain metrics with the same labelset') = ?)
