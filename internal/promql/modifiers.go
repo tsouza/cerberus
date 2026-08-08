@@ -340,30 +340,41 @@ func applyStepGridFanout(rw *chplan.RangeWindow, ctx lowerCtx) {
 	rw.OuterRange = ctx.end.Sub(ctx.start)
 }
 
+// windowRightBoundExpr renders the right (eval-time) edge of a
+// selector's window: `<anchor> [- <offset>]`. Shared by timeBoundExpr
+// (the `<=` filter predicate) and the histogram window fold's
+// extrapolation arithmetic (histogramExtrapolationFactorExpr), which both
+// need the IDENTICAL expression for the window they read — building it
+// twice would risk the filter's window and the extrapolation's window
+// drifting apart.
+//
+// `a.Offset != 0` so a negative offset (Prom's forward-shift form,
+// `metric offset -5m` evaluates at `t - (-5m) = t + 5m`) still emits the
+// subtract — CH interval arithmetic flips the sign for us and renders
+// `anchor - toIntervalNanosecond(-N)` as `anchor + N`.
+func windowRightBoundExpr(a evalAnchor) chplan.Expr {
+	base := anchorBaseExpr(a)
+	if a.Offset == 0 {
+		return base
+	}
+	return &chplan.Binary{
+		Op:   chplan.OpSub,
+		Left: base,
+		Right: &chplan.FuncCall{
+			Name: "toIntervalNanosecond",
+			Args: []chplan.Expr{&chplan.LitInt{V: a.Offset.Nanoseconds()}},
+		},
+	}
+}
+
 // timeBoundExpr builds `<col> <= <anchor>` for an instant-vector
 // VectorSelector with `@` or `offset`. The anchor is `now64(9)` (or a
 // literal toDateTime64) optionally minus a nanosecond interval.
 func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
-	base := anchorBaseExpr(a)
-	bound := base
-	// `a.Offset != 0` so a negative offset (Prom's forward-shift form,
-	// `metric offset -5m` evaluates at `t - (-5m) = t + 5m`) still
-	// emits the subtract — CH interval arithmetic flips the sign for us
-	// and renders `anchor - toIntervalNanosecond(-N)` as `anchor + N`.
-	if a.Offset != 0 {
-		bound = &chplan.Binary{
-			Op:   chplan.OpSub,
-			Left: base,
-			Right: &chplan.FuncCall{
-				Name: "toIntervalNanosecond",
-				Args: []chplan.Expr{&chplan.LitInt{V: a.Offset.Nanoseconds()}},
-			},
-		}
-	}
 	return &chplan.Binary{
 		Op:    chplan.OpLe,
 		Left:  &chplan.ColumnRef{Name: col},
-		Right: bound,
+		Right: windowRightBoundExpr(a),
 	}
 }
 

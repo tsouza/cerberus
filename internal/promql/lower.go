@@ -1545,15 +1545,16 @@ func selectorAnchor(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, error)
 	return evalAnchor{}, nil
 }
 
-// stalenessLowerBoundExpr renders the strict-lower-bound half of the
-// LWR window:  `<col> > (<anchor> - <lookback>)`. Combined with the
-// non-strict upper bound `<col> <= <anchor>` (from timeBoundExpr), the
-// pair matches Prometheus's `Timestamp <= T AND T - Timestamp <
-// lookback` rule.
-func stalenessLowerBoundExpr(col string, a evalAnchor, lookback time.Duration) chplan.Expr {
+// windowLeftBoundExpr renders the left (window-start) edge of a
+// selector's window: `<anchor> - <lookback> [- <offset>]`. Shared by
+// stalenessLowerBoundExpr (the `>` filter predicate) and the histogram
+// window fold's extrapolation arithmetic (histogramExtrapolationFactorExpr)
+// for the same reason windowRightBoundExpr is — the filter and the
+// extrapolation correction must read the identical window.
+func windowLeftBoundExpr(a evalAnchor, lookback time.Duration) chplan.Expr {
 	anchor := anchorBaseExpr(a)
 	offsetNs := lookback.Nanoseconds() + a.Offset.Nanoseconds()
-	right := &chplan.Binary{
+	return &chplan.Binary{
 		Op:   chplan.OpSub,
 		Left: anchor,
 		Right: &chplan.FuncCall{
@@ -1561,10 +1562,18 @@ func stalenessLowerBoundExpr(col string, a evalAnchor, lookback time.Duration) c
 			Args: []chplan.Expr{&chplan.LitInt{V: offsetNs}},
 		},
 	}
+}
+
+// stalenessLowerBoundExpr renders the strict-lower-bound half of the
+// LWR window:  `<col> > (<anchor> - <lookback>)`. Combined with the
+// non-strict upper bound `<col> <= <anchor>` (from timeBoundExpr), the
+// pair matches Prometheus's `Timestamp <= T AND T - Timestamp <
+// lookback` rule.
+func stalenessLowerBoundExpr(col string, a evalAnchor, lookback time.Duration) chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpGt,
 		Left:  &chplan.ColumnRef{Name: col},
-		Right: right,
+		Right: windowLeftBoundExpr(a, lookback),
 	}
 }
 

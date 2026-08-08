@@ -101,11 +101,29 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // which this transcribes into the bucket-array domain. Prometheus divides
 // that total by the range for `rate`, but `histogram_quantile` reads only
 // the ratios between rungs and a per-series constant cancels out of every
-// ratio, so the division is left out rather than emitted and undone.
+// ratio, so THAT division is left out rather than emitted and undone.
+//
+// Prometheus's `extrapolatedRate` applies a SECOND correction first,
+// though, and that one does NOT cancel: the boundary-extrapolation factor
+// (sampledInterval + durationToStart + durationToEnd) / sampledInterval,
+// which stretches the observed increase to cover the requested window
+// when the series' own samples don't quite reach its edges. It reads
+// EACH series' own in-window sample timestamps against the shared window
+// bounds, so it is a per-series constant, not a per-query one — two
+// series scraped on the same cadence and phase compute the identical
+// factor (which is why omitting it entirely, as this fold did before
+// #1958's investigation, went unnoticed: every classic-histogram family
+// in the corpus shares one scrape cadence), but two series on different
+// cadences do not, and reference Prometheus weighs each series' rate by
+// its OWN factor before summing them together. rangeStart / rangeEnd
+// carry the window bounds that correction needs — see
+// histogramExtrapolationFactorExpr.
 //
 // `sum_over_time` reads the samples as VALUES and sums them, whatever
 // they represent — the canonical shape for delta-temporality histograms,
-// where each sample is already a per-window increment.
+// where each sample is already a per-window increment. It has no
+// extrapolation counterpart in Prometheus (only rate/increase/delta
+// extrapolate), so rangeStart / rangeEnd go unused on that branch.
 //
 // The engine reads `rate` / `increase` as cumulative everywhere, not just
 // here: the ordinary counter lowering applies the identical reset rule
@@ -119,16 +137,146 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // selector", which resolves to at most the single newest sample per
 // series in the staleness lookback — so it gets its own fold rather than
 // falling into the sum_over_time default.
-func histogramWindowFold(fn string) histogramWindowTimeFold {
+func histogramWindowFold(fn string, rangeStart, rangeEnd chplan.Expr) histogramWindowTimeFold {
 	switch fn {
 	case "rate", "increase":
-		return counterIncreaseFold
+		return func(values, order chplan.Expr) chplan.Expr {
+			return &chplan.Binary{
+				Op:    chplan.OpMul,
+				Left:  counterIncreaseFold(values, order),
+				Right: histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd),
+			}
+		}
 	case "":
 		return latestSampleFold
 	default:
 		return func(values, _ chplan.Expr) chplan.Expr {
 			return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}}
 		}
+	}
+}
+
+// histogramExtrapolationThresholdFactor is Prom's `extrapolationThreshold
+// = averageDurationBetweenSamples * 1.1` cutoff (promql/functions.go): a
+// gap to a window edge past this multiple of the average inter-sample gap
+// is deemed "the series starts or ends inside the window" rather than
+// "the series just didn't happen to land a sample on the edge", and gets
+// clamped to half the average gap instead of extrapolated the full
+// distance. Named apart from chsql's identical `extrapolationThresholdFactor`
+// (internal/chsql/range_window.go) because that one is unexported and this
+// fold builds chplan IR rather than chsql Frags — see that constant's doc
+// for the shared derivation.
+const histogramExtrapolationThresholdFactor = 1.1
+
+// histogramExtrapolationFactorExpr renders Prometheus's rate/increase
+// boundary-extrapolation correction (functions.go's `extrapolatedRate`;
+// internal/chsql's ordinary-counter twin lives at
+// range_window.go's durationToStartFrag / durationToEndFrag /
+// extrapolatedValueFrag) as a single scalar factor over one fold call's
+// own `order` argument — the in-window sample timestamps that same call
+// is about to fold `values` over:
+//
+//	factor = (sampledInterval + durationToStart + durationToEnd) / sampledInterval
+//
+// sampledInterval is the gap between the EARLIEST and LATEST timestamp in
+// `order`; durationToStart / durationToEnd are the gaps from `order`'s
+// own first/last timestamp out to the shared window edges rangeStart /
+// rangeEnd, each clamped to half the average inter-sample gap once the
+// raw gap grows past histogramExtrapolationThresholdFactor times that
+// average (see that constant's doc).
+//
+// Reusing whatever `order` the caller already folds over — rather than a
+// single series-wide timestamp list computed once — matters for the
+// classic-histogram ladder: reference Prometheus treats every `le` rung
+// as its OWN float time series, so `rate(hist_bucket{le="1"}[5m])` and
+// `rate(hist_bucket{le="2"}[5m])` extrapolate independently. In the
+// common case (a series' bucket layout is stable across the window) every
+// rung sees the same sample set and the factor is the same for all of
+// them; classicBucketWindowLadderExpr's per-rung `order` (filtered to the
+// rows that actually reported that bound) only diverges from the
+// series-wide list on the rarer layout-change case, and diverging THERE
+// is exactly what matches reference rather than what would flatten it.
+// The exponential-histogram fold passes the full per-series timestamp
+// list for every bucket instead, matching reference's own native-
+// histogram `histogramRate`, which computes ONE factor for the whole
+// histogram (every bucket scaled alike) rather than per bucket.
+//
+// Deliberately NOT implemented: Prom's counter zero-crossing clamp
+// (`durationToZero`, functions.go lines 277-298), which shortens
+// durationToStart further when extrapolating past the window's start
+// edge would imply a negative counter value. It only engages within one
+// average-sample-interval of a genuine counter reset landing at the
+// window's leading edge — a shape no seeded fixture exercises — and
+// adding it needs a per-series (per-rung, for classic) COUNT/total
+// timestamp series this fold doesn't currently collect. See #1628's
+// sibling follow-up rather than bundling it here unverified.
+func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd chplan.Expr) chplan.Expr {
+	sortedOrder := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{order}}
+	firstTs := &chplan.Subscript{Container: sortedOrder, Key: &chplan.LitInt{V: 1}}
+	lastTs := &chplan.Subscript{
+		Container: sortedOrder,
+		Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sortedOrder}},
+	}
+	nMinusOne := &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{order}},
+		Right: &chplan.LitInt{V: 1},
+	}
+
+	sampledInterval := secondsBetweenTsExpr(firstTs, lastTs)
+	avgGap := &chplan.Binary{Op: chplan.OpDiv, Left: sampledInterval, Right: nMinusOne}
+	threshold := &chplan.Binary{
+		Op: chplan.OpMul, Left: &chplan.LitFloat{V: histogramExtrapolationThresholdFactor}, Right: avgGap,
+	}
+	halfAvgGap := &chplan.Binary{Op: chplan.OpDiv, Left: avgGap, Right: &chplan.LitFloat{V: 2}}
+
+	clamp := func(raw chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+			&chplan.Binary{Op: chplan.OpGe, Left: raw, Right: threshold},
+			halfAvgGap, raw,
+		}}
+	}
+	durationToStart := clamp(secondsBetweenTsExpr(rangeStart, firstTs))
+	durationToEnd := clamp(secondsBetweenTsExpr(lastTs, rangeEnd))
+
+	factor := &chplan.Binary{
+		Op: chplan.OpDiv,
+		Left: &chplan.Binary{
+			Op:    chplan.OpAdd,
+			Left:  &chplan.Binary{Op: chplan.OpAdd, Left: sampledInterval, Right: durationToStart},
+			Right: durationToEnd,
+		},
+		Right: sampledInterval,
+	}
+	// A degenerate `order` (fewer than two DISTINCT timestamps — e.g. a
+	// classic-histogram rung a mid-window layout change left under-
+	// reported) collapses sampledInterval to 0, which the division above
+	// leaves undefined. counterIncreaseFold already answers 0 for that
+	// shape (arraySum of an empty consecutive-diff array), so multiplying
+	// by 1 rather than by the undefined factor preserves that fallback
+	// instead of turning it into a NaN that poisons every downstream sum.
+	return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+		&chplan.Binary{Op: chplan.OpGt, Left: sampledInterval, Right: &chplan.LitInt{V: 0}},
+		factor,
+		&chplan.LitFloat{V: 1},
+	}}
+}
+
+// secondsBetweenTsExpr renders the signed gap `to - from` between two
+// DateTime64(9) expressions as a Float64 number of seconds:
+// `toFloat64(dateDiff('nanosecond', from, to)) / 1e9`. Mirrors chsql's
+// `secondsBetweenFrag` (range_window.go) at nanosecond precision, kept as
+// a chplan-IR twin because this fold builds plan expressions rather than
+// chsql Frags directly.
+func secondsBetweenTsExpr(from, to chplan.Expr) chplan.Expr {
+	return &chplan.Binary{
+		Op: chplan.OpDiv,
+		Left: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "dateDiff", Args: []chplan.Expr{
+				&chplan.LitString{V: "nanosecond"}, from, to,
+			}},
+		}},
+		Right: &chplan.LitFloat{V: 1e9},
 	}
 }
 
@@ -246,7 +394,13 @@ func windowSampleCountAgg(s schema.Metrics) chplan.AggFunc {
 // uses (see latestSampleAgg). The Attributes column it aliases out is
 // already canonical, which is why the aggregation stage above binds its
 // keys from that column rather than re-deriving them from the table.
-func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, s schema.Metrics) chplan.Node {
+//
+// rangeStart / rangeEnd are the window's own edges — the same ones the
+// caller already used to build the Filter this stage's `input` reads
+// through (timeBoundExpr / stalenessLowerBoundExpr) — threaded down so
+// the `rate` / `increase` fold can apply Prometheus's boundary-
+// extrapolation correction (see histogramWindowFold).
+func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
 	group := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
@@ -256,7 +410,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, s sche
 	}
 	return classicBucketWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		histogramWindowFold(shape.windowFn),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,

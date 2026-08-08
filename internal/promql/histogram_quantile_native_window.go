@@ -253,7 +253,10 @@ func expHistogramWindowReshape(
 // uses. The Attributes column it aliases out is already canonical,
 // which is why the across-series stage above binds its keys from that
 // column rather than re-deriving them from the table.
-func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, s schema.Metrics) chplan.Node {
+//
+// rangeStart / rangeEnd are the window's own edges — see
+// classicBucketWindowStage's twin doc.
+func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
 	group := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
@@ -263,7 +266,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, s schem
 	}
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		histogramWindowFold(shape.windowFn),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,

@@ -1191,9 +1191,16 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 		anchor.End = ctx.end.UTC()
 	}
 	// Upper bound: TimeUnix <= anchor (Prom's right-closed window).
+	rangeEnd := windowRightBoundExpr(anchor)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	// Lower bound: TimeUnix > anchor - Range (Prom's left-open window).
+	// rangeStart defaults to rangeEnd (a zero-width window) for the #1692
+	// bare-selector shape (shape.windowRange == 0): classicBucketWindowStage's
+	// fold is latestSampleFold there, which ignores both bounds, so the
+	// placeholder never reaches SQL.
+	rangeStart := rangeEnd
 	if shape.windowRange > 0 {
+		rangeStart = windowLeftBoundExpr(anchor, shape.windowRange)
 		pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
 	}
 
@@ -1207,7 +1214,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// the range-vector function's own reduction and its per-series sample
 	// floor. Without it the stage below would fold across time and series
 	// at once — see histogram_quantile_window.go.
-	perSeries := classicBucketWindowStage(input, shape, s)
+	perSeries := classicBucketWindowStage(input, shape, rangeStart, rangeEnd, s)
 
 	// Stage 2: the user's aggregation across those per-series rows.
 	// GroupBy comes from the surrounding `sum` clause (dropping `le` from
@@ -1844,8 +1851,13 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	if anchor.End.IsZero() && !ctx.end.IsZero() {
 		anchor.End = ctx.end.UTC()
 	}
+	rangeEnd := windowRightBoundExpr(anchor)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
+	// rangeStart defaults to rangeEnd for the #1692 bare-selector shape —
+	// see lowerHistogramQuantileAgg's identical comment.
+	rangeStart := rangeEnd
 	if shape.windowRange > 0 {
+		rangeStart = windowLeftBoundExpr(anchor, shape.windowRange)
 		pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
 	}
 
@@ -1859,7 +1871,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// per-series sample floor. Without it the stage below would fold
 	// across time and series at once — see
 	// histogram_quantile_native_window.go.
-	perSeries := expHistogramWindowStage(input, shape, s)
+	perSeries := expHistogramWindowStage(input, shape, rangeStart, rangeEnd, s)
 
 	// Stage 2: the user's aggregation across those per-series rows. Its
 	// keys bind from the per-series stage's already-canonical Attributes
