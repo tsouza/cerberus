@@ -771,10 +771,10 @@ var fixtureInserts = []namedStmt{
                 instance,
                 if(instance = 'demo.promlabs.com:10001', 1, 0) AS offset,
                 if(instance = 'demo.promlabs.com:10002', -1, 0) AS scale,
-                [{steps:UInt64} * (step + 1) - intDiv(step * (step + 1), 2),
-                 step + 1,
-                 step + 1,
-                 intDiv((step + 1) * (step + 2), 2)] AS counts
+                [toUInt64({steps:UInt64} * (step + 1) - intDiv(step * (step + 1), 2)),
+                 toUInt64(step + 1),
+                 toUInt64(step + 1),
+                 toUInt64(intDiv((step + 1) * (step + 2), 2))] AS counts
             FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
             CROSS JOIN (
                 SELECT arrayJoin(['demo.promlabs.com:10000',
