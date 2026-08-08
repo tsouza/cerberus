@@ -47,17 +47,21 @@ type Client struct {
 // interfaces. Each test gets an isolated session — there is no
 // process-wide shared state.
 //
-// One session carries at most one FAILING query. chDB hands results back
-// as Parquet, and chdb-go v1.12.0 emits an undecodable page index for the
-// first query that SUCCEEDS on a session where an earlier query raised a
-// ClickHouse exception; parquet-go v0.29.0 panics inside NewGenericReader
-// rather than returning an error, so the handler under test answers 500
-// and the assertion reads as a cerberus regression. A test that asserts a
-// rejection and a success — the guard tests, which raise through throwIf —
-// therefore opens a session per phase. Sessions are independent: a fresh
-// one is unaffected by any earlier session's exception. Real ClickHouse
-// speaks the native protocol and has no such coupling, so this binds the
-// chdb lane only.
+// A test that asserts a rejection followed by a success on the SAME
+// session (the guard tests, which raise through throwIf) does not need
+// to split that into two sessions. chDB hands results back as Parquet,
+// and chdb-go v1.12.0 emits an undecodable page index for the first
+// query that SUCCEEDS on a session where an earlier query raised a
+// ClickHouse exception; parquet-go v0.30.1 panics inside NewGenericReader
+// rather than returning an error (issue #1917). queryContext (see below)
+// contains this at the source: it recovers the panic as a plain error
+// and, after any query error, flushes the session with a trivial Exec
+// that empirically prevents the corruption from reaching the next
+// query — proven by TestSessionSurvivesErrorThenSuccess in
+// session_recovery_test.go. Opening a fresh session per phase (as
+// several existing chdb-tagged tests do) still works and remains
+// harmless, just no longer necessary. Real ClickHouse speaks the native
+// protocol and has no such coupling, so this binds the chdb lane only.
 func NewChDB(t testing.TB) *Client {
 	t.Helper()
 	// Empty DSN -> chdb-go provisions a temp-dir-backed session that
@@ -84,6 +88,77 @@ func NewChDBWithError(_ *testing.T, err error) *Client {
 		err = fmt.Errorf("chclienttest: injected error")
 	}
 	return &Client{err: err}
+}
+
+// queryContext is the single choke point every Querier method routes
+// its QueryContext call through. It exists to contain issue #1917: a
+// chDB session that raised a ClickHouse exception corrupts the Parquet
+// page index of the NEXT query's result set, and chdb-go v1.12.0 /
+// parquet-go v0.30.1 (both current as of the fix) still exhibit it —
+// parquet-go panics inside NewGenericReader decoding the corrupted
+// index instead of returning an error.
+//
+// Two independent layers address it:
+//
+//  1. flushSessionAfterError: measured empirically, issuing a trivial
+//     ExecContext (a statement that never goes through the Parquet
+//     decode path at all — Exec, not Query) on the SAME session
+//     immediately after ANY query error reliably prevents the
+//     corruption from reaching the next query. This is the real fix:
+//     it is what makes the NEXT query come back with a genuine 200
+//     instead of a spurious failure, which a recover() alone cannot
+//     do (recover only stops a crash; it can't manufacture the correct
+//     result). Best-effort: the flush's own error is discarded, since
+//     if it fails there is nothing more we can do here and the
+//     caller's original error is already on its way.
+//  2. The recover in safeQueryContext converts the parquet-go panic
+//     into a normal Go error rather than letting it unwind past this
+//     package into the panic-recovery middleware, where it would read
+//     as a genuine handler regression. This is defense-in-depth for
+//     any sequence the flush does not fully cover (multiple pooled
+//     connections, a caller that bypasses Seed) — it guarantees a
+//     *caller-visible error*, never a guarantee of a correct result;
+//     recovering a panic cannot undo corrupted bytes that already
+//     decoded wrong.
+//
+// Both are test-harness-only mitigations for a third-party decoder
+// that must not assume its input is well-formed; they narrowly recover
+// from ONE documented panic site and never suppress a genuine cerberus
+// bug — a real handler regression still surfaces as its own error or
+// wrong-shaped response, not as this recovered panic.
+func (c *Client) queryContext(ctx context.Context, queryText string, args ...any) (*sql.Rows, error) {
+	rows, err := safeQueryContext(ctx, c.db, queryText, args...)
+	if err != nil {
+		flushSessionAfterError(ctx, c.db)
+	}
+	return rows, err
+}
+
+// safeQueryContext runs db.QueryContext and converts a parquet-go
+// decode panic (issue #1917) into a plain error. The panic surfaces
+// synchronously from inside QueryContext itself (chdb-go's PARQUET
+// driver decodes the page index eagerly, before returning rows), so
+// wrapping this one call site is sufficient — there is no rows object
+// in flight yet when the panic fires.
+func safeQueryContext(ctx context.Context, db *sql.DB, queryText string, args ...any) (rows *sql.Rows, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("chclienttest: recovered chdb/parquet-go decode panic on corrupted "+
+				"Parquet page index (see #1917): %v", r)
+		}
+	}()
+	return db.QueryContext(ctx, queryText, args...)
+}
+
+// flushSessionAfterError issues a trivial statement on db that never
+// touches the Parquet decode path (Exec, not Query). Measured
+// empirically against chdb-go v1.12.0 / parquet-go v0.30.1: this is
+// what actually prevents issue #1917's corruption from reaching the
+// next query on the same session. Best-effort — its own error is
+// discarded because the caller's real error from the query that
+// triggered it is already the one being returned.
+func flushSessionAfterError(ctx context.Context, db *sql.DB) {
+	_, _ = db.ExecContext(ctx, "SELECT 1")
 }
 
 // Seed runs ddl (a multi-statement script of `CREATE …; INSERT …;` etc)
@@ -129,7 +204,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 		return nil, c.err
 	}
 	rewritten := withQuerySettings(ctx, testsql.RewriteMapProjections(query))
-	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -208,7 +283,7 @@ func (c *Client) QueryStrings(ctx context.Context, query string, args ...any) ([
 	if c.err != nil {
 		return nil, c.err
 	}
-	rows, err := c.db.QueryContext(ctx, query, args...)
+	rows, err := c.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -242,7 +317,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 		return nil, c.err
 	}
 	rewritten := testsql.RewriteMapProjections(query)
-	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -297,7 +372,7 @@ func (c *Client) QueryTimestampedLines(ctx context.Context, query string, args .
 	if c.err != nil {
 		return nil, c.err
 	}
-	rows, err := c.db.QueryContext(ctx, query, args...)
+	rows, err := c.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -332,7 +407,7 @@ func (c *Client) QueryExemplars(ctx context.Context, query string, args ...any) 
 		return nil, c.err
 	}
 	rewritten := testsql.RewriteMapProjections(query)
-	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -383,7 +458,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, query string, args ...any) 
 		return nil, c.err
 	}
 	rewritten := testsql.RewriteMapProjections(query)
-	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -417,7 +492,7 @@ func (c *Client) QueryMetricMeta(
 	if c.err != nil {
 		return nil, c.err
 	}
-	rows, err := c.db.QueryContext(ctx, query, args...)
+	rows, err := c.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -445,7 +520,7 @@ func (c *Client) QueryIndexStats(ctx context.Context, query string, args ...any)
 	if c.err != nil {
 		return chclient.IndexStatsRow{}, c.err
 	}
-	rows, err := c.db.QueryContext(ctx, query, args...)
+	rows, err := c.queryContext(ctx, query, args...)
 	if err != nil {
 		return chclient.IndexStatsRow{}, fmt.Errorf("chclienttest: query: %w", err)
 	}
@@ -470,7 +545,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 		return nil, c.err
 	}
 	rewritten := testsql.RewriteMapProjections(query)
-	rows, err := c.db.QueryContext(ctx, rewritten, args...)
+	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
 	}
