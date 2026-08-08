@@ -3,8 +3,8 @@
   "_contract": "Per head: 'cases' is the exact, sorted roster of corpus case IDs, every one of which agreed with the reference backend; 'passed' and 'total' are the human-facing counts the README and docs cite, and the ratchet asserts passed == total == cases.length so they cannot drift from the roster. The baseline records FULL parity for every head — this file has no shape for recording a divergence as acceptable, because a diff against a reference backend is a bug to fix at the source. When the corpus legitimately changes, replace the head's entry in the SAME PR, taking the roster from the run's compat-cases.json artefact rather than hand-editing it.",
   "heads": {
     "prometheus": {
-      "passed": 873,
-      "total": 873,
+      "passed": 886,
+      "total": 886,
       "cases": [
         "\"a string literal\"",
         "(1 * 2 + 4 / 6 - (10%7)^2) != demo_memory_usage_bytes",
@@ -462,6 +462,12 @@
         "increase(demo_cpu_usage_seconds_total[5m] offset 1m)",
         "increase(demo_cpu_usage_seconds_total[5m] offset 5m)",
         "increase(demo_cpu_usage_seconds_total[5m])",
+        "increase(demo_delta_requests_total[15m])",
+        "increase(demo_delta_requests_total[15s])",
+        "increase(demo_delta_requests_total[1h])",
+        "increase(demo_delta_requests_total[1m])",
+        "increase(demo_delta_requests_total[1s])",
+        "increase(demo_delta_requests_total[5m])",
         "increase(nonexistent_metric[5m])",
         "irate(demo_cpu_usage_seconds_total[15m])",
         "irate(demo_cpu_usage_seconds_total[15s])",
@@ -708,6 +714,12 @@
         "rate(demo_cpu_usage_seconds_total[5m] offset 5m)",
         "rate(demo_cpu_usage_seconds_total[5m])",
         "rate(demo_cpu_usage_seconds_total[5m]) or rate(demo_http_requests_total[5m])",
+        "rate(demo_delta_requests_total[15m])",
+        "rate(demo_delta_requests_total[15s])",
+        "rate(demo_delta_requests_total[1h])",
+        "rate(demo_delta_requests_total[1m])",
+        "rate(demo_delta_requests_total[1s])",
+        "rate(demo_delta_requests_total[5m])",
         "rate(nonexistent_metric[5m])",
         "rate({__name__=~\"demo_memory_usage_bytes|demo_disk_usage_bytes\"}[5m])",
         "rate({__name__=~\"demo_memory_usage_bytes|demo_sparse_memory_bytes\"}[5m])",
@@ -768,6 +780,7 @@
         "stdvar_over_time(demo_memory_usage_bytes[5m])",
         "sum by() (demo_memory_usage_bytes)",
         "sum by(instance) (demo_memory_usage_bytes)",
+        "sum by(instance) (rate(demo_delta_requests_total[5m]))",
         "sum by(instance, type) (demo_memory_usage_bytes)",
         "sum by(instance, type) (demo_memory_usage_bytes) != on(instance, type) group_left(job) demo_memory_usage_bytes",
         "sum by(instance, type) (demo_memory_usage_bytes) % on(instance, type) group_left(job) demo_memory_usage_bytes",
@@ -877,7 +890,7 @@
         "{__name__=~\"demo_cpu_usage_seconds.*\"}",
         "{__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"} * 2",
         "{__name__=~\"demo_memory_usage_byte.+\"}",
-        "{job=\"demo\", __name__!~\"demo_cpu_usage_seconds.*\"}",
+        "{job=\"demo\", __name__!~\"demo_cpu_usage_seconds.*|demo_delta_requests_total\"}",
         "{type=\"free\", instance!=\"demo.promlabs.com:10000\"}"
       ]
     },

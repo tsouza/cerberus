@@ -263,7 +263,10 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, s schem
 	}
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		histogramWindowFold(shape.windowFn),
+		// nil temporality: the exponential/native-histogram path stays out
+		// of #1628's scope — see the analogous range-mode call site in
+		// histogram_quantile_range.go.
+		histogramWindowFold(shape.windowFn, nil),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,

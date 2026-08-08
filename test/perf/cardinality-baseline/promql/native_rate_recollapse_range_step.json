@@ -1,8 +1,8 @@
 {
   "fixture": "promql/native_rate_recollapse_range_step",
-  "fan_factor": 1.5,
+  "fan_factor": 5.833333333333333,
   "scan_rows": 12,
-  "peak_intermediate": 18,
+  "peak_intermediate": 70,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,

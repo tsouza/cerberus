@@ -110,6 +110,7 @@ func renderCounterDupDDL(series []property.SeriesData) string {
 	b.WriteString(`CREATE TABLE `)
 	b.WriteString(CounterSumTableName)
 	b.WriteString(` (
+    AggregationTemporality Int32 DEFAULT 2,
     MetricName String,
     Attributes Map(String, String),
     TimeUnix DateTime64(9),

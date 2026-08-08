@@ -121,6 +121,32 @@ type RangeWindow struct {
 	// on Input (typically "Value" for OTel-CH).
 	ValueColumn string
 
+	// TemporalityColumn names the column carrying the OTel
+	// AggregationTemporality enum for the scanned series (typically
+	// "AggregationTemporality" for an OTel-CH Sum / Histogram table).
+	// Only "rate" / "increase" consult it today.
+	//
+	// Empty (the default) means "not applicable to this Input" — a
+	// Gauge-table scan carries no such column, neither does the
+	// Scan.UnionTables cross-table read (which deliberately drops the
+	// Sum-only column from its projection so the union's column list
+	// still matches) — and the emitter falls back to the historical,
+	// pre-#1628 behaviour of applying Prometheus's counter-reset rule
+	// unconditionally.
+	//
+	// When set, the emitter reads `any(<TemporalityColumn>)` once per
+	// series-window group (a single OTel time series has ONE
+	// temporality for its lifetime, so any() over the window's rows is
+	// exact, not a lossy pick) and branches at RUNTIME between the
+	// DELTA reading (schema.AggregationTemporalityDelta — sum the
+	// window's raw, already-exclusive samples) and the CUMULATIVE
+	// reading (anything else — the counter-reset-aware delta). See
+	// chsql.CounterOrDeltaSum, the shared primitive both the ordinary
+	// counter path and the classic-histogram bucket fold
+	// (internal/promql's counterIncreaseFold) apply the same branch
+	// through, and issue #1628.
+	TemporalityColumn string
+
 	// GroupBy lists the expressions that identify a series for grouping
 	// (typically `[ColumnRef("Attributes")]` for OTel-CH, since the map
 	// column carries all the labels). May be nil/empty, in which case
@@ -245,6 +271,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		return false
 	}
 	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn {
+		return false
+	}
+	if r.TemporalityColumn != o.TemporalityColumn {
 		return false
 	}
 	if len(r.GroupBy) != len(o.GroupBy) {

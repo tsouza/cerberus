@@ -990,14 +990,25 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 		// fixtures byte-identical.
 		return input
 	}
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+		{Expr: attrsExpr, Alias: s.AttributesColumn},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+	}
+	// A rate() / increase() range-vector call over an unambiguous Sum- or
+	// Histogram-table scan needs the AggregationTemporality column past
+	// this Project's otherwise-canonical 4-column narrowing — see
+	// lowerCtx.wantsTemporalityColumn and issue #1628.
+	if ctx.wantsTemporalityColumn && s.AggregationTemporalityColumn != "" {
+		projections = append(projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: s.AggregationTemporalityColumn},
+			Alias: s.AggregationTemporalityColumn,
+		})
+	}
 	return &chplan.Project{
-		Input: input,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-			{Expr: attrsExpr, Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
+		Input:       input,
+		Projections: projections,
 	}
 }
 
@@ -2153,19 +2164,42 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	vsNoModifier.StartOrEnd = 0
 	rangeCtx := ctx
 	rangeCtx.inRangeVector = true
+	// rate() / increase() apply Prometheus's counter-reset rule, which
+	// assumes CUMULATIVE storage — reading a DELTA-temporality counter the
+	// same way silently inflates every window (see issue #1628). Decide
+	// UPFRONT, via the same routing resolveSelectorRouting is about to make
+	// inside lowerVectorSelector, whether this selector resolves to a
+	// single, unambiguous Sum- or Histogram-table scan: a Gauge-table scan
+	// has no AggregationTemporality column, and the Scan.UnionTables
+	// cross-table routing (ambiguous unsuffixed names that could live in
+	// either table) deliberately drops the Sum-only column from its
+	// projection so the union's column list still matches — either shape
+	// keeps temporalityCol empty, reproducing every pre-#1628 emitted query
+	// byte for byte. Deciding this BEFORE lowerVectorSelector runs (rather
+	// than inspecting its output afterward) is what lets
+	// rangeCtx.wantsTemporalityColumn ask augmentSelectorAttributes to keep
+	// the column in scope past its otherwise-canonical 4-column narrowing
+	// Project — inspecting the already-built, already-narrowed output
+	// cannot recover a column that Project already dropped.
+	var temporalityCol string
+	if c.Func.Name == "rate" || c.Func.Name == "increase" {
+		temporalityCol = rangeVectorCounterTemporalityColumn(vs, s, rangeCtx)
+	}
+	rangeCtx.wantsTemporalityColumn = temporalityCol != ""
 	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
 	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Func:            c.Func.Name,
-		Range:           ms.Range,
-		End:             anchor.End,
-		Offset:          anchor.Offset,
-		TimestampColumn: s.TimestampColumn,
-		ValueColumn:     s.ValueColumn,
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		Input:             inner,
+		Func:              c.Func.Name,
+		Range:             ms.Range,
+		End:               anchor.End,
+		Offset:            anchor.Offset,
+		TimestampColumn:   s.TimestampColumn,
+		ValueColumn:       s.ValueColumn,
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		TemporalityColumn: temporalityCol,
 	}
 	// Name-drop collision guard. When the function drops `__name__` and the
 	// selector spans several metrics, two source series that differ only by
@@ -2409,6 +2443,18 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 	if !isNativeRateInput(rw.Input, s) {
 		return nil
 	}
+	// A DELTA-temporality counter needs the per-row runtime branch
+	// chsql.CounterOrDeltaSum applies (see issue #1628); ClickHouse's
+	// timeSeries*ToGrid aggregates have no such per-row branch, so any
+	// window that carries a TemporalityColumn falls back to the fan-out
+	// path unconditionally rather than risk emitting the CUMULATIVE-only
+	// answer for a DELTA series. This is a correctness guard, not a shape
+	// classifier: it fires even for a CUMULATIVE-temporality window,
+	// trading the native path's performance for the runtime branch that
+	// proves the answer right regardless of what the data turns out to be.
+	if rw.TemporalityColumn != "" {
+		return nil
+	}
 	input, groupBy := rw.Input, rw.GroupBy
 	var recollapseProjections []chplan.Projection
 	if recollapse {
@@ -2500,6 +2546,69 @@ func isPlainScanFilter(n chplan.Node) bool {
 			return false
 		}
 	}
+}
+
+// rangeVectorCounterTemporalityColumn reports which column
+// chplan.RangeWindow.TemporalityColumn should carry for a rate() /
+// increase() call over vs, or "" when none applies. It calls the SAME
+// resolveSelectorRouting the inner lowerVectorSelector is about to call
+// for this exact selector, so the two never disagree about which table(s)
+// the selector resolves to — see rangeCtx.wantsTemporalityColumn's doc for
+// why this has to run BEFORE lowerVectorSelector rather than inspect its
+// output.
+//
+// The column only applies when the selector resolves to EXACTLY ONE
+// table, and that table is the Sum or (classic) Histogram table: a
+// Gauge-table scan carries no AggregationTemporality column in production,
+// the exp-histogram / companion-union arms stay out of #1628's scope (see
+// the nil-temporality call sites in histogram_quantile_range.go /
+// histogram_quantile_native_window.go), and the (Gauge, Sum)
+// Scan.UnionTables ambiguous-routing shape (an unsuffixed metric name that
+// could live in either table) deliberately drops the Sum-only column from
+// its projection so the union's column list still matches. A
+// resolveSelectorRouting error here is not this function's to report —
+// the real lowerVectorSelector call right after it will hit the identical
+// error and report it through the normal path — so an error conservatively
+// answers "no column" instead.
+func rangeVectorCounterTemporalityColumn(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) string {
+	if s.AggregationTemporalityColumn == "" {
+		return ""
+	}
+	metricName := metricNameFromMatchers(vs.LabelMatchers)
+	if hasUnpinnedMetricNameMatcher(vs.LabelMatchers) && s.HistogramTable != "" {
+		// The regex-histogram fan-out (lowerRegexHistogramSelector) unions
+		// several arms — never a single unambiguous Sum/Histogram scan.
+		return ""
+	}
+	tables := s.TablesForUnknownName()
+	if metricName != "" {
+		tables = s.TablesFor(metricName)
+	}
+	route, err := resolveSelectorRouting(metricName, s, ctx, tables, vs.LabelMatchers)
+	if err != nil || len(route.tables) != 1 {
+		return ""
+	}
+	if route.tables[0] != s.SumTable && route.tables[0] != s.HistogramTable {
+		return ""
+	}
+	// The `_bucket` fan-out (wrapHistogramBucketFanout) and the `_count` /
+	// `_sum` / exp-histogram companion routing (buildHistogramCompanionArm,
+	// lowerCompanionUnion, expHistogramSelectorRouting) all pre-merge
+	// resource attributes themselves and pass augmentSelectorAttributes a
+	// ctx with attributesPreMerged set — which makes selectorAttributesExpr
+	// return the bare Attributes ColumnRef, taking augmentSelectorAttributes'
+	// EARLY RETURN before it ever reaches the temporality-widening branch.
+	// route.tables reporting a single Sum/Histogram table doesn't rule any
+	// of these out (the companion-union case still reports
+	// route.tables == [HistogramTable] even though its real output is a
+	// 4-column UnionAll with the Sum-table arm, which cannot carry
+	// AggregationTemporality through at all). Restricting eligibility to a
+	// route with NONE of these set is what keeps this to the plain-selector
+	// path augmentSelectorAttributes actually widens.
+	if route.bucketSuffixed != "" || route.companionValueColumn != "" || route.expHistogramCompanion {
+		return ""
+	}
+	return s.AggregationTemporalityColumn
 }
 
 // noRecollapse spells out the [nativeTSGridMatrixNode] recollapse argument for

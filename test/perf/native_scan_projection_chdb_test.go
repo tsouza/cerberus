@@ -137,7 +137,20 @@ func innerScanColumns(t *testing.T, optimize bool) []string {
 	}
 	rangeStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	rangeEnd := rangeStart.Add(5 * time.Minute)
-	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
+	// AggregationTemporalityColumn cleared: this A/B measures the native
+	// ts_grid_range projection-pushdown optimizer rule specifically, a
+	// concern orthogonal to issue #1628's DELTA-vs-CUMULATIVE runtime
+	// branch. A `rate()` window whose schema DOES declare that column is,
+	// correctly, no longer eligible for native routing
+	// (chplan.RangeWindow.TemporalityColumn forces the fan-out fallback —
+	// see nativeTSGridMatrixNode), which would make this test measure the
+	// fan-out shape's projected columns instead of the native pushdown it
+	// exists to A/B — and the seed table below never gained the column
+	// either, so the byte lookup fails outright once native falls back to a
+	// widened selector Project that does reference it.
+	s := schema.DefaultOTelMetrics()
+	s.AggregationTemporalityColumn = ""
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s,
 		rangeStart, rangeEnd, 30*time.Second,
 		promql.LowerOpts{Lowerers: promql.RangeLowerers{Rate: promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}}})
 	if err != nil {

@@ -145,7 +145,18 @@ test_cases:
     # series from BOTH tables, not just the gauge arm.
   - query: '{__name__=~"demo_cpu_usage_seconds.*"}'
   - query: '{__name__=~"demo_memory_usage_byte.+"}'
-  - query: '{job="demo", __name__!~"demo_cpu_usage_seconds.*"}'
+    # demo_delta_requests_total is also excluded here (issue #1628): it is a
+    # DELTA-temporality counter whose CH-stored raw value and reference-Prom
+    # mirrored value are DELIBERATELY different representations (see the
+    # comment on the rate()/increase() cases below and on
+    # prom_remote.go's accumulateToCumulative) — cerberus answers this bare
+    # selector with the raw per-step delta, while the reference answers it
+    # with prom_remote.go's synthesized cumulative running sum, so the two
+    # sides diverge by construction and a bare-selector comparison here would
+    # pin a difference the fixture intends, not a bug. The rate()/increase()
+    # cases below are where this family's cross-backend comparison is
+    # meaningful.
+  - query: '{job="demo", __name__!~"demo_cpu_usage_seconds.*|demo_delta_requests_total"}'
   - query: "nonexistent_metric_name"
   - query: 'demo_memory_usage_bytes offset {{.offset}}'
     variant_args: ['offset']
@@ -276,6 +287,19 @@ test_cases:
   # Chained set operators linearise into one n-ary node; the per-
   # timestamp key has to survive that rewrite.
   - query: 'demo_sparse_memory_bytes or demo_memory_usage_bytes or demo_disk_usage_bytes'
+
+  # demo_delta_requests_total is a DELTA-temporality (AggregationTemporality
+  # = 1) counter (issue #1628): each stored ClickHouse row is the increase
+  # since the PREVIOUS row only, not a running total. The seeder mirrors it
+  # to the reference Prometheus as the EQUIVALENT CUMULATIVE running sum
+  # (prom_remote.go's accumulateToCumulative), so a matching cerberus /
+  # Prometheus answer here proves the runtime DELTA-vs-CUMULATIVE branch —
+  # not just that both sides return SOME number.
+  - query: 'rate(demo_delta_requests_total[{{.range}}])'
+    variant_args: ['range']
+  - query: 'increase(demo_delta_requests_total[{{.range}}])'
+    variant_args: ['range']
+  - query: 'sum by(instance) (rate(demo_delta_requests_total[5m]))'
 
   # NaN/Inf/-Inf support.
   - query: 'demo_num_cpus * Inf'

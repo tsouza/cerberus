@@ -253,6 +253,7 @@ func seedCounterAtScale(t *testing.T, db *sql.DB) int64 {
 		// them (left empty via DEFAULT) or the chDB round-trip 502s with
 		// UNKNOWN_IDENTIFIER.
 		`CREATE TABLE otel_metrics_sum (
+    AggregationTemporality Int32 DEFAULT 2,
 		  MetricName String, Attributes Map(String,String),
 		  ResourceAttributes Map(String,String) DEFAULT map(),
 		  ServiceName LowCardinality(String) DEFAULT '',

@@ -94,8 +94,26 @@ var nativeScanBoundCases = map[string]nativeScanBoundCase{
 	},
 }
 
-// lowerNativeScanBound lowers q in range mode over the default OTel-CH metrics
-// schema with the supplied boot-wired strategy table. Going through the REAL
+// nativeScanBoundSchema is the default OTel-CH metrics schema with
+// AggregationTemporalityColumn cleared. This suite proves the native
+// ts_grid_range scan-bound plumbing — a concern entirely orthogonal to
+// issue #1628's DELTA-vs-CUMULATIVE runtime branch. A `rate()` window
+// whose schema DOES declare that column is, correctly, no longer eligible
+// for native routing (rw.TemporalityColumn set forces the fan-out
+// fallback — see nativeTSGridMatrixNode), which would make every case
+// here fall back and assert nothing about the scan bound it exists to
+// pin. Clearing the column is a real, supported schema shape (an operator
+// whose OTel-CH deployment doesn't carry AggregationTemporality at all),
+// not a workaround: it keeps this suite testing exactly what it always
+// tested.
+func nativeScanBoundSchema() schema.Metrics {
+	s := schema.DefaultOTelMetrics()
+	s.AggregationTemporalityColumn = ""
+	return s
+}
+
+// lowerNativeScanBound lowers q in range mode over nativeScanBoundSchema
+// with the supplied boot-wired strategy table. Going through the REAL
 // lowering (rather than hand-building the node) is what makes these tests
 // evidence about the shape the server actually emits.
 func lowerNativeScanBound(t *testing.T, q string, lowerers promql.RangeLowerers) chplan.Node {
@@ -107,7 +125,7 @@ func lowerNativeScanBound(t *testing.T, q string, lowerers promql.RangeLowerers)
 		t.Fatalf("parse %q: %v", q, err)
 	}
 	start, end := nativeScanBoundGrid()
-	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, nativeScanBoundSchema(),
 		start, end, nativeScanBoundStep, promql.LowerOpts{Lowerers: lowerers})
 	if err != nil {
 		t.Fatalf("lower %q: %v", q, err)
