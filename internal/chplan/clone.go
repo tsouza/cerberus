@@ -192,6 +192,8 @@ func cloneCompositeNode(n Node) Node {
 		return cloneHistogramQuantile(v)
 	case *HistogramQuantileNative:
 		return cloneHistogramQuantileNative(v)
+	case *HistogramProjection:
+		return cloneHistogramProjection(v)
 	case *MetricsAggregate:
 		return cloneMetricsAggregate(v)
 	case *MetricsCompare:
@@ -256,6 +258,17 @@ func cloneHistogramQuantileNative(v *HistogramQuantileNative) Node {
 	c := *v
 	c.Input = CloneNode(v.Input)
 	c.PhiExpr = cloneExpr(v.PhiExpr)
+	c.GroupBy = cloneExprs(v.GroupBy)
+	c.GroupByAliases = cloneStrings(v.GroupByAliases)
+	return &c
+}
+
+// cloneHistogramProjection deep-copies a native-histogram bucket-column
+// projection node. Split out of cloneCompositeNode so that switch stays
+// within the funlen budget.
+func cloneHistogramProjection(v *HistogramProjection) Node {
+	c := *v
+	c.Input = CloneNode(v.Input)
 	c.GroupBy = cloneExprs(v.GroupBy)
 	c.GroupByAliases = cloneStrings(v.GroupByAliases)
 	return &c

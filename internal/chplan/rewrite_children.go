@@ -186,6 +186,12 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			cp.Input = in
 			return &cp
 		})
+	case *HistogramProjection:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *MetricsAggregate:
 		out, changed = rewriteSingleInput(v, v.Inner, fn, func(in Node) Node {
 			cp := *v

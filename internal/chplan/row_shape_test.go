@@ -38,6 +38,7 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	"Filter":                   chplan.SampleRowShape,
 	"HistogramQuantile":        chplan.SampleRowShape,
 	"HistogramQuantileNative":  chplan.SampleRowShape,
+	"HistogramProjection":      chplan.HistogramRowShape,
 	"InfoJoin":                 chplan.SampleRowShape,
 	"Limit":                    chplan.SampleRowShape,
 	"MetricsAggregate":         chplan.SampleRowShape,
@@ -139,7 +140,7 @@ func TestRowShapeOf_RangeWindowSplitsOnOuterRange(t *testing.T) {
 func TestRowShapeString(t *testing.T) {
 	t.Parallel()
 
-	const outsideDeclaredSet = chplan.ReducedWindowRowShape + 1
+	const outsideDeclaredSet = chplan.HistogramRowShape + 1
 
 	for _, tc := range []struct {
 		shape chplan.RowShape
@@ -148,6 +149,7 @@ func TestRowShapeString(t *testing.T) {
 		{chplan.SampleRowShape, "sample"},
 		{chplan.GridWindowRowShape, "grid-window"},
 		{chplan.ReducedWindowRowShape, "reduced-window"},
+		{chplan.HistogramRowShape, "histogram"},
 		{outsideDeclaredSet, "unknown"},
 	} {
 		if got := tc.shape.String(); got != tc.want {

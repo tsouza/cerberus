@@ -375,6 +375,8 @@ func (e *emitter) emitMetricNode(n chplan.Node) (bool, error) {
 		return true, e.emitHistogramQuantile(v)
 	case *chplan.HistogramQuantileNative:
 		return true, e.emitHistogramQuantileNative(v)
+	case *chplan.HistogramProjection:
+		return true, e.emitHistogramProjection(v)
 	}
 	return false, nil
 }

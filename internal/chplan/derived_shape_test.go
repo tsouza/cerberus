@@ -46,6 +46,7 @@ var derivedShapeVerdicts = map[string]bool{
 	"Filter":                  false,
 	"HistogramQuantile":       false,
 	"HistogramQuantileNative": false,
+	"HistogramProjection":     false,
 	"InfoJoin":                false,
 	"Limit":                   false,
 	"MetricsCompare":          false,

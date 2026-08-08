@@ -227,7 +227,14 @@ func runCerberusInstant(ctx context.Context, baseURL string, q property.Query) p
 			stripped[k] = v
 		}
 
-		ts, val, perr := parseSample(s.Value)
+		if s.Value == nil {
+			// A histogram-valued sample (s.Histogram set instead) has no
+			// float Value; this harness only exercises float-valued PromQL
+			// shapes today, so treat it as a decode error rather than a
+			// nil-pointer panic.
+			return property.Outcome{Err: fmt.Errorf("property: vector sample %v has no float value (histogram-valued?)", s.Metric)}
+		}
+		ts, val, perr := parseSample(*s.Value)
 		if perr != nil {
 			return property.Outcome{Err: fmt.Errorf("property: parse sample: %w", perr)}
 		}

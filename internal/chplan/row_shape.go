@@ -75,6 +75,21 @@ const (
 	// ReducedWindowRowShape is the instant window row: `(group keys…,
 	// Value)` — no timestamp of any kind and no `MetricName`.
 	ReducedWindowRowShape
+
+	// HistogramRowShape is [HistogramProjection]'s row: `(group keys…,
+	// Histogram*Column…)` — nine named histogram columns instead of a
+	// `Value`, and no `MetricName` of its own (a wrapping Project adds
+	// one, the same way HistogramQuantileNative's wrapping Project
+	// does). It answers false to every `shape != SampleRowShape` check
+	// the existing PromQL forwarders (projectValueOverInner,
+	// projectAttributesOverInner) make, which is correct: neither
+	// forwarder builds a column list a histogram-shaped row satisfies
+	// (both unconditionally reference `Value` by name), so a future
+	// histogram-valued lowering that needs those forwarders to work
+	// over a HistogramProjection must teach them this shape first — see
+	// the doc comment on HistogramProjection. No lowering builds this
+	// node yet, so no forwarder is called with it today.
+	HistogramRowShape
 )
 
 // String names the shape for test and error output. The names are the
@@ -86,6 +101,8 @@ func (s RowShape) String() string {
 		return "grid-window"
 	case ReducedWindowRowShape:
 		return "reduced-window"
+	case HistogramRowShape:
+		return "histogram"
 	case SampleRowShape:
 		return "sample"
 	}
@@ -118,6 +135,8 @@ func RowShapeOf(n Node) RowShape {
 		return ReducedWindowRowShape
 	case *RangeWindowNative:
 		return GridWindowRowShape
+	case *HistogramProjection:
+		return HistogramRowShape
 	case *RangeWindowResample:
 		// Spelled out because it is the third `RangeWindow*` node and the
 		// one most likely to be swept in here by analogy. Its emitter
