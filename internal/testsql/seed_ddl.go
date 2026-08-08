@@ -64,7 +64,24 @@ var backfilledColumns = []backfilledColumn{
 	{name: "ServiceName", ddl: "ServiceName LowCardinality(String) DEFAULT ''"},
 	{name: "Count", ddl: "Count UInt64 DEFAULT 0", tables: histogramCountSumTables},
 	{name: "Sum", ddl: "Sum Float64 DEFAULT 0", tables: histogramCountSumTables},
+	// AggregationTemporality backs the rate() / increase() DELTA-vs-CUMULATIVE
+	// runtime branch (chsql.CounterOrDeltaSum / internal/promql's
+	// counterIncreaseFold — see issue #1628). DEFAULT 2 is
+	// schema.AggregationTemporalityCumulative, matching the historical,
+	// pre-#1628 unconditional reading every existing seed that omits the
+	// column implicitly relied on. Scoped to the sum + classic-histogram
+	// tables (temporalityTables) — the two tables rate/increase's
+	// TemporalityColumn wiring ever reads from; the gauge table has no such
+	// column in production and exp-histogram stays out of #1628's scope
+	// (see the nil-temporality call sites in histogram_quantile_range.go /
+	// histogram_quantile_native_window.go).
+	{name: "AggregationTemporality", ddl: "AggregationTemporality Int32 DEFAULT 2", tables: temporalityTables},
 }
+
+// temporalityTables are the OTel-CH metric tables rate() / increase()'s
+// DELTA-vs-CUMULATIVE branch ever reads AggregationTemporality from — see
+// the AggregationTemporality entry in backfilledColumns.
+var temporalityTables = []string{"otel_metrics_sum", "otel_metrics_histogram"}
 
 // tracesTableName is the fixed table name TraceQL round-trip seeds declare
 // for the spans table — schema.DefaultOTelTraces().SpansTable, mirrored here

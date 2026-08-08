@@ -172,7 +172,18 @@ func TestPromQL_RateDupTimestamp_RowAndNative(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cli := &sqlSpyClient{Client: chclienttest.NewChDB(t)}
-			h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
+			// AggregationTemporalityColumn cleared: this suite proves the
+			// dup-timestamp dedup fix agrees between the row-path and native
+			// ts_grid_range emitters, a concern orthogonal to issue #1628's
+			// DELTA-vs-CUMULATIVE runtime branch. A `rate()` window whose
+			// schema DOES declare that column is, correctly, no longer
+			// eligible for native routing (chplan.RangeWindow.TemporalityColumn
+			// forces the fan-out fallback — see nativeTSGridMatrixNode), which
+			// would make native_path/rate fall back and assert nothing about
+			// the native aggregate this suite exists to pin.
+			s := schema.DefaultOTelMetrics()
+			s.AggregationTemporalityColumn = ""
+			h := prom.New(cli, s, nil)
 			if tc.native {
 				// Boot-wire the native rate strategy exactly as
 				// cmd/cerberus does when ts_grid_range is enabled. The

@@ -184,6 +184,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.ValueColumn != "" {
 			fmt.Fprintf(b, " value=%s", v.ValueColumn)
 		}
+		if v.TemporalityColumn != "" {
+			fmt.Fprintf(b, " temporality=%s", v.TemporalityColumn)
+		}
 		if len(v.GroupBy) > 0 {
 			gb := make([]string, len(v.GroupBy))
 			for i, e := range v.GroupBy {

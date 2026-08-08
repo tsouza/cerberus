@@ -109,6 +109,19 @@ func remoteWriteFixture(ctx context.Context, conn driver.Conn, promURL string, l
 type fixtureSource struct {
 	metricName string
 	table      string
+	// accumulateToCumulative mirrors a DELTA-temporality CH fixture (each
+	// stored sample is the increase since the PREVIOUS sample only) as its
+	// EQUIVALENT CUMULATIVE running-sum series on the reference Prometheus
+	// side — reference Prometheus's remote-write wire format and its own
+	// rate() / increase() have no delta-temporality concept at all, so a
+	// literal passthrough of the raw delta values would hand Prometheus a
+	// wrong, non-monotonic "counter" and produce a meaningless diff. Per
+	// series (keyed by label set), readFixtureSeries adds each row's raw
+	// value to a running total and mirrors THAT instead of the raw value —
+	// see issue #1628. False (the default) is the literal passthrough
+	// every pre-#1628 family uses, byte-identical to before this field
+	// existed.
+	accumulateToCumulative bool
 }
 
 // fixtureSources, histogramFixtureSources and expHistogramFixtureSources
@@ -118,17 +131,23 @@ type fixtureSource struct {
 // test/regression/compat_promql_seed_corpus_test.go fails when the lists
 // diverge.
 var fixtureSources = []fixtureSource{
-	{"demo_cpu_usage_seconds_total", "otel_metrics_sum"},
-	{"demo_memory_usage_bytes", "otel_metrics_gauge"},
-	{"demo_sparse_memory_bytes", "otel_metrics_gauge"},
-	{"demo_http_requests_total", "otel_metrics_sum"},
-	{"demo_disk_usage_bytes", "otel_metrics_gauge"},
-	{"demo_disk_total_bytes", "otel_metrics_gauge"},
-	{"demo_num_cpus", "otel_metrics_gauge"},
-	{"demo_batch_last_success_timestamp_seconds", "otel_metrics_gauge"},
-	{"demo_intermittent_metric", "otel_metrics_gauge"},
-	{"up", "otel_metrics_gauge"},
-	{"demo_gauge_with_nan_run", "otel_metrics_gauge"},
+	{metricName: "demo_cpu_usage_seconds_total", table: "otel_metrics_sum"},
+	{metricName: "demo_memory_usage_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_sparse_memory_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_http_requests_total", table: "otel_metrics_sum"},
+	{metricName: "demo_disk_usage_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_disk_total_bytes", table: "otel_metrics_gauge"},
+	{metricName: "demo_num_cpus", table: "otel_metrics_gauge"},
+	{metricName: "demo_batch_last_success_timestamp_seconds", table: "otel_metrics_gauge"},
+	{metricName: "demo_intermittent_metric", table: "otel_metrics_gauge"},
+	{metricName: "up", table: "otel_metrics_gauge"},
+	{metricName: "demo_gauge_with_nan_run", table: "otel_metrics_gauge"},
+	// demo_delta_requests_total: a DELTA-temporality counter (issue #1628).
+	// The CH fixture stores raw per-step increments with
+	// AggregationTemporality = 1; the reference Prometheus side has no
+	// delta-temporality concept, so it needs the equivalent CUMULATIVE
+	// running sum instead — see fixtureSource.accumulateToCumulative.
+	{metricName: "demo_delta_requests_total", table: "otel_metrics_sum", accumulateToCumulative: true},
 }
 
 // histogramFixtureSource mirrors a classic-histogram fixture. `base` is
@@ -303,12 +322,26 @@ func readFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource)
 	defer func() { _ = rows.Close() }()
 
 	acc := newPromSeriesSet()
+	// running holds the per-series accumulated total for
+	// src.accumulateToCumulative, keyed the same way promSeriesSet keys a
+	// series (canonicalised label set) — the ORDER BY Attributes, TimeUnix
+	// above guarantees one series' rows arrive together and in time order,
+	// so a running total keyed by that string never mixes two series.
+	var running map[string]float64
+	if src.accumulateToCumulative {
+		running = map[string]float64{}
+	}
 	for rows.Next() {
 		var attrs map[string]string
 		var tsMS int64
 		var val float64
 		if err := rows.Scan(&attrs, &tsMS, &val); err != nil {
 			return nil, err
+		}
+		if running != nil {
+			key := canonicaliseLabels(attrs)
+			running[key] += val
+			val = running[key]
 		}
 		acc.add(src.metricName, attrs, tsMS, val)
 	}

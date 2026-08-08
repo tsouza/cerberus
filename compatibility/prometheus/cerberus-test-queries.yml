@@ -277,6 +277,19 @@ test_cases:
   # timestamp key has to survive that rewrite.
   - query: 'demo_sparse_memory_bytes or demo_memory_usage_bytes or demo_disk_usage_bytes'
 
+  # demo_delta_requests_total is a DELTA-temporality (AggregationTemporality
+  # = 1) counter (issue #1628): each stored ClickHouse row is the increase
+  # since the PREVIOUS row only, not a running total. The seeder mirrors it
+  # to the reference Prometheus as the EQUIVALENT CUMULATIVE running sum
+  # (prom_remote.go's accumulateToCumulative), so a matching cerberus /
+  # Prometheus answer here proves the runtime DELTA-vs-CUMULATIVE branch —
+  # not just that both sides return SOME number.
+  - query: 'rate(demo_delta_requests_total[{{.range}}])'
+    variant_args: ['range']
+  - query: 'increase(demo_delta_requests_total[{{.range}}])'
+    variant_args: ['range']
+  - query: 'sum by(instance) (rate(demo_delta_requests_total[5m]))'
+
   # NaN/Inf/-Inf support.
   - query: 'demo_num_cpus * Inf'
   - query: 'demo_num_cpus * -Inf'
