@@ -74,6 +74,7 @@ var resourceBoundClassification = map[string]struct {
 	// Per-row compute — axis 7, runtime net.
 	"HistogramQuantile":       {boundRuntimeNet, "axis 7: per-row quantile over the bounded bucket set"},
 	"HistogramQuantileNative": {boundRuntimeNet, "axis 7: native per-row histogram quantile over the bounded input"},
+	"HistogramProjection":     {boundStructural, "1:1 row map — publishes the bounded input's native-histogram structural columns verbatim (no fan-out, no aggregation, no per-row quantile compute); same shape as Project"},
 
 	// Binary / set vector ops over two already-bounded operand vectors.
 	"VectorJoin":  {boundRuntimeNet, "axis 4: on()/ignoring() match join over two bounded vectors; max_memory_usage"},
