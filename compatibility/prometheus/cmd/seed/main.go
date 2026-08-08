@@ -88,6 +88,24 @@ const (
 // series by instance deterministically instead of by an accident of ties.
 const intermittentInstanceOffset = 1000
 
+// shiftingExpHistSparsePeriodSteps writes the third instance of
+// demo_shifting_latency_exp_hist every 6th step. 6 × fixtureStepSeconds =
+// 90s, which straddles the two range windows the corpus asks that family
+// about on purpose:
+//
+//	90s > 60s  → a [1m] window is narrower than the sample spacing, so that
+//	             instance can NEVER hold the two samples rate() requires and
+//	             is dropped from every [1m] rate;
+//	90s ≤ 150s → a [5m] window always holds at least three of its samples,
+//	             so it always participates in a [5m] rate.
+//
+// The instance is seeded at Scale -1 while the other two are at Scale 0, and
+// Prometheus merges native histograms at the COARSEST schema of the group.
+// Admitting the sparse instance into a [1m] rate therefore drags the merged
+// schema from 0 to -1 and moves the quantile, so the two-sample floor is
+// observable in the answer rather than only in the series count.
+const shiftingExpHistSparsePeriodSteps = 6
+
 // nanRunStartStep / nanRunSteps carve a 2-sample NaN-NaN run out of
 // demo_gauge_with_nan_run. Two consecutive NaN samples are required to
 // exercise Prometheus's changes() NaN-both-sides carve-out (#1489) — a
@@ -213,6 +231,8 @@ func insertFixture(ctx context.Context, conn driver.Conn) error {
 			clickhouse.Named("intermittent_instance_offset", uint64(intermittentInstanceOffset)),
 			clickhouse.Named("nan_run_start_step", uint64(nanRunStartStep)),
 			clickhouse.Named("nan_run_steps", uint64(nanRunSteps)),
+			clickhouse.Named("shifting_exp_hist_sparse_period_steps",
+				uint64(shiftingExpHistSparsePeriodSteps)),
 		); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
@@ -647,6 +667,122 @@ var fixtureInserts = []namedStmt{
                 SELECT arrayJoin(['demo.promlabs.com:10000','demo.promlabs.com:10001']) AS instance,
                 indexOf(['demo.promlabs.com:10000','demo.promlabs.com:10001'], instance) - 1 AS instance_idx
             ) AS i
+        )`,
+	},
+	// demo_shifting_latency_exp_hist: 3 instances, exponential (native)
+	// histograms whose RELATIVE bucket shape moves across the window.
+	//
+	// demo_latency_exp_hist above holds its shape fixed and scales it by
+	// (step + 1). That makes it useless as an oracle for the aggregated
+	// range-vector shape `histogram_quantile(phi, sum(rate(<exp_hist>[w])))`,
+	// because the two candidate lowerings of that shape — the correct
+	// two-stage "per-series rate, then merge" and the flat single-stage fold
+	// that sums every in-window sample's raw cumulative counts — differ there
+	// only by a POSITIVE SCALAR factor, and histogram_quantile reads bucket
+	// RATIOS only. Same array, different scalar, identical quantile: the
+	// harness would score green through the bug and through a regression of
+	// it. This family removes the scalar-invariance.
+	//
+	// Geometry:
+	//
+	//	per-step INCREMENT at step s = [steps - s, 1, 1, s + 1]
+	//	                             → 243 events every step, constant total,
+	//	                               mass migrating lowest bucket → highest
+	//	stored CUMULATIVE counts at step s
+	//	  b1 = steps*(s+1) - s*(s+1)/2      b2 = b3 = s + 1
+	//	  b4 = (s+1)*(s+2)/2                Count = 243*(s+1)
+	//
+	//	instance :10000 → Scale  0, PositiveOffset 0 → edges (1,2] (2,4] (4,8] (8,16]
+	//	instance :10001 → Scale  0, PositiveOffset 1 → edges (2,4] (4,8] (8,16] (16,32]
+	//	instance :10002 → Scale -1, PositiveOffset 0 → edges (1,4] (4,16] (16,64] (64,256]
+	//	                  written every shiftingExpHistSparsePeriodSteps step
+	//
+	// Why the two candidate answers differ NUMERICALLY, by construction. Take
+	// the eval step e = 200 and a [1m] window: at fixtureStepSeconds = 15 that
+	// is four samples (steps 197..200), three increments, and only the two
+	// dense instances clear the two-sample floor.
+	//
+	//	correct  per-series delta = increments at 198,199,200
+	//	                          = [42,1,1,199]+[41,1,1,200]+[40,1,1,201]
+	//	                          = [123, 3, 3, 600]      (729 events)
+	//	wrong    per-series fold  = C(197)+C(198)+C(199)+C(200)
+	//	                          = [112316, 798, 798, 80002]  (193914 events)
+	//
+	// Merging :10000 with :10001 (whose identical counts sit one bucket up):
+	//
+	//	correct  (1,2]:123 (2,4]:126 (4,8]:6 (8,16]:603 (16,32]:600
+	//	         half = 729 falls in (8,16]  → q ≈ 8 * 2^(474/603)  ≈ 13.79
+	//	wrong    (1,2]:112316 (2,4]:113114 (4,8]:1596 (8,16]:80800 (16,32]:80002
+	//	         half = 193914 falls in (2,4] → q ≈ 2 * 2^(81598/113114) ≈ 3.30
+	//
+	// Different BUCKET, ~4.2x apart — a gap no interpolation convention can
+	// close. The separation grows monotonically with the eval step as the mass
+	// migrates, and the tester evaluates instant queries at the end of the
+	// window, so the corpus reads it at its widest.
+	//
+	// The third instance is the two-sample floor made observable. Its 90s
+	// spacing puts at most one sample in a [1m] window, so rate() must drop
+	// it; its Scale -1 is coarser than the other two, and Prometheus merges a
+	// group of native histograms at the group's COARSEST schema. A lowering
+	// that admitted a one-sample series would therefore not merely add a
+	// series — it would drag the merged schema from 0 to -1 and move the
+	// merged quantile, which is the mechanism
+	// test/spec/promql/histogram_quantile_native_agg_min_samples.txtar pins
+	// against chDB and this family pins against a real reference.
+	//
+	// Sum is derived from the bucket UPPER BOUNDS rather than stated as a
+	// literal, so it stays consistent with a moving shape: bucket k of a
+	// series at scale <= 0 with offset o has upper bound 2^((o+k) * 2^-scale)
+	// — 2/4/8/16, 4/8/16/32 and 4/16/64/256 for the three instances, all exact
+	// powers of two, so histogram_sum / histogram_avg carry no float drift.
+	//
+	// Labels are `instance` only, for the reason demo_latency_exp_hist states.
+	{
+		name: "demo_shifting_latency_exp_hist",
+		sql: `INSERT INTO otel_metrics_exponential_histogram
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix,
+             Count, Sum, Scale, ZeroCount,
+             PositiveOffset, PositiveBucketCounts,
+             NegativeOffset, NegativeBucketCounts,
+             Flags, AggregationTemporality)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_shifting_latency_exp_hist',
+            'Request latency as an exponential histogram whose bucket shape moves',
+            'seconds',
+            map('instance', instance),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            arraySum(counts),
+            arraySum(arrayMap((c, k) -> toFloat64(c) * pow(2, (offset + k) * pow(2, -scale)),
+                              counts, arrayEnumerate(counts))),
+            toInt32(scale),
+            0,
+            toInt32(offset),
+            counts,
+            0,
+            emptyArrayUInt64(),
+            0,
+            2
+        FROM (
+            SELECT
+                step,
+                instance,
+                if(instance = 'demo.promlabs.com:10001', 1, 0) AS offset,
+                if(instance = 'demo.promlabs.com:10002', -1, 0) AS scale,
+                [{steps:UInt64} * (step + 1) - intDiv(step * (step + 1), 2),
+                 step + 1,
+                 step + 1,
+                 intDiv((step + 1) * (step + 2), 2)] AS counts
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(['demo.promlabs.com:10000',
+                                  'demo.promlabs.com:10001',
+                                  'demo.promlabs.com:10002']) AS instance
+            ) AS i
+            WHERE instance != 'demo.promlabs.com:10002'
+               OR step % {shifting_exp_hist_sparse_period_steps:UInt64} = 0
         )`,
 	},
 	// demo_batch_last_success_timestamp_seconds: 3 instances, gauge whose
