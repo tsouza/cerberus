@@ -43,6 +43,26 @@ INSERT INTO otel_metrics_sum VALUES
     ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:04:00', 9), 24.0),
     ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:05:00', 9), 30.0);
 -- expected_rows --
+[
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.02],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 0.03],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 0.04],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 0.05],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 0.060000000000000005],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 0.07],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 0.08],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 0.09],
+  [{"cerberus_ql": "logql", "engine": "engine-logql"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 0.1],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 0.04],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 0.06],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 0.08],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 0.1],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 0.12000000000000001],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 0.14],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 0.16],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 0.18],
+  [{"cerberus_ql": "promql", "engine": "engine-promql"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 0.2]
+]
 -- args --
 [0] string = "cerberus_ql"
 [1] string = "^(.*)$"
