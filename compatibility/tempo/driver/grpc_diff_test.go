@@ -14,6 +14,8 @@ import (
 	"github.com/grafana/tempo/pkg/tempopb"
 	v1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // The gRPC transport's whole claim is that it is a transport-only
@@ -632,6 +634,89 @@ func TestDiffCaseGRPC_HardErrorsNameTheFailingSide(t *testing.T) {
 	}
 }
 
+func TestDiffStatusParityCaseGRPC_BothMatchExpectation_Passes(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "bad_scope", ExpectedGRPCCode: codes.InvalidArgument}
+	terr := grpcstatus.Error(codes.InvalidArgument, "invalid scope: all")
+	cerr := grpcstatus.Error(codes.InvalidArgument, "invalid scope: all")
+	res := diffStatusParityCaseGRPC(tc, terr, cerr)
+	if !res.passed() {
+		t.Fatalf("expected passed()==true, got HardError=%q Assertions=%v Diff=%+v", res.HardError, res.Assertions, res.Diff)
+	}
+	if len(res.Assertions) != 0 {
+		t.Fatalf("expected no assertions, got %v", res.Assertions)
+	}
+	if res.TempoStatus != int(codes.InvalidArgument) || res.CerberusStatus != int(codes.InvalidArgument) {
+		t.Fatalf("TempoStatus/CerberusStatus = %d/%d, want both %d", res.TempoStatus, res.CerberusStatus, codes.InvalidArgument)
+	}
+}
+
+// TestDiffStatusParityCaseGRPC_MismatchCaught proves the axis is
+// non-vacuous: a corpus case declaring expect_grpc_code must actually
+// FAIL when either backend's real code diverges from the declaration.
+func TestDiffStatusParityCaseGRPC_MismatchCaught(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name               string
+		terr               error
+		cerr               error
+		wantAssertionCount int
+	}{
+		{"tempo returns OK instead of the declared code", nil, grpcstatus.Error(codes.InvalidArgument, "x"), 1},
+		{"cerberus returns OK instead of the declared code", grpcstatus.Error(codes.InvalidArgument, "x"), nil, 1},
+		{"both sides diverge from the declaration", grpcstatus.Error(codes.Internal, "x"), nil, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			tc := CorpusCase{Name: "bad_scope", ExpectedGRPCCode: codes.InvalidArgument}
+			res := diffStatusParityCaseGRPC(tc, c.terr, c.cerr)
+			if res.passed() {
+				t.Fatalf("expected passed()==false for terr=%v cerr=%v expect=%s", c.terr, c.cerr, codes.InvalidArgument)
+			}
+			if res.HardError != "" {
+				t.Fatalf("a code mismatch is a real outcome, not a hard error; got HardError=%q", res.HardError)
+			}
+			if len(res.Assertions) != c.wantAssertionCount {
+				t.Fatalf("Assertions = %v, want %d entries", res.Assertions, c.wantAssertionCount)
+			}
+			for _, a := range res.Assertions {
+				if a.Kind != "grpc_code_mismatch" {
+					t.Errorf("assertion Kind = %q, want grpc_code_mismatch", a.Kind)
+				}
+			}
+		})
+	}
+}
+
+func TestDiffStatusParityCaseGRPC_NonStatusErrorIsHardError(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "bad_scope", ExpectedGRPCCode: codes.InvalidArgument}
+	res := diffStatusParityCaseGRPC(tc, errors.New("dial tcp: connection refused"), grpcstatus.Error(codes.InvalidArgument, "x"))
+	if res.HardError == "" {
+		t.Fatal("a non-status error (no real gRPC response at all) must hard-error rather than being graded as a mismatch")
+	}
+	if res.passed() {
+		t.Fatal("a hard error must never pass")
+	}
+}
+
+// TestDiffCaseGRPC_RoutesExpectedGRPCCodeToStatusParity proves the
+// wiring end-to-end: a case carrying ExpectedGRPCCode never reaches the
+// ordinary body-diff path even though fetchGRPCForEndpoint's open-stream
+// error is what actually carries the code.
+func TestDiffCaseGRPC_RoutesExpectedGRPCCodeToStatusParity(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{Name: "bad_scope", Endpoint: "tags_v2", Scope: "all", ExpectedGRPCCode: codes.InvalidArgument}
+	rejecting := func() *fakeQuerier {
+		return &fakeQuerier{openErr: grpcstatus.Error(codes.InvalidArgument, "invalid scope: all")}
+	}
+	res := diffCaseGRPC(context.Background(), rejecting(), rejecting(), tc, testOpts())
+	if !res.passed() {
+		t.Fatalf("expected passed()==true for two agreeing rejections, got HardError=%q Assertions=%v", res.HardError, res.Assertions)
+	}
+}
+
 func TestWriteReportGRPC_DocumentsSkippedCases(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nested", "report.md")
@@ -657,7 +742,7 @@ func TestWriteReportGRPC_DocumentsSkippedCases(t *testing.T) {
 	if !strings.Contains(report, "## Skipped — no StreamingQuerier RPC for this endpoint") {
 		t.Fatalf("no-RPC skip section missing:\n%s", report)
 	}
-	if !strings.Contains(report, "## Skipped — expect_status axis not yet implemented for gRPC") {
+	if !strings.Contains(report, "## Skipped — expect_status has no gRPC-side expect_grpc_code") {
 		t.Fatalf("status-parity skip section missing:\n%s", report)
 	}
 	// The count in the explanation is the section's own case count.

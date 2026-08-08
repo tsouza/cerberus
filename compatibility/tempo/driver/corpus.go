@@ -73,6 +73,27 @@
 //	                            endpoint=traces / traces_v2 (those two run
 //	                            through the proto-aware differ in
 //	                            proto_fetch.go, which this axis does not cover).
+//	-- expect_grpc_code --      the gRPC-transport SIBLING of expect_status
+//	                            (#1714) — a google.golang.org/grpc/codes.Code
+//	                            both backends' StreamingQuerier RPC must fail
+//	                            with (status-parity axis — see
+//	                            grpc_diff.go::diffStatusParityCaseGRPC). Named
+//	                            either by the code's canonical String() form
+//	                            (e.g. "InvalidArgument") or its small integer
+//	                            value (e.g. "3"); "OK"/"0" is rejected — this
+//	                            axis exists for rejection parity, and the
+//	                            ordinary body-diff path already covers success.
+//	                            Independent of expect_status: HTTP status ints
+//	                            and gRPC codes are different domains with no
+//	                            canonical mapping between them, so a case
+//	                            wanting rejection-parity coverage on both
+//	                            transports sets both fields explicitly rather
+//	                            than one being derived from the other. Same
+//	                            mutual-exclusion rules as expect_status
+//	                            (no body-shape assertion), plus it is only
+//	                            valid on an endpoint grpcSupportsEndpoint
+//	                            recognizes (grpc_diff.go) — there is no RPC to
+//	                            fail on the others.
 //
 // There is intentionally no opt-out marker on a per-case basis: a case
 // that can't run is removed from the corpus, not flagged. Keeping the
@@ -102,6 +123,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"google.golang.org/grpc/codes"
 )
 
 // CorpusCase is one entry parsed out of the TXTAR file.
@@ -247,6 +270,25 @@ type CorpusCase struct {
 	// beyond both sides answering the usual way" and leaves the
 	// pre-existing 2xx-required behaviour untouched.
 	ExpectedStatus int
+
+	// ExpectedGRPCCode, when non-OK (the zero value, and the default),
+	// switches the case onto the gRPC transport's status-parity axis
+	// (grpc_diff.go::diffStatusParityCaseGRPC): the differ asserts BOTH
+	// backends' StreamingQuerier RPC fails with exactly this
+	// google.golang.org/grpc/codes.Code instead of requiring a clean
+	// response + running the body diff. This is the gRPC-transport
+	// SIBLING of ExpectedStatus (#1714), not a replacement for it — HTTP
+	// status ints and gRPC codes are different domains with no canonical
+	// 1:1 mapping, so a case wanting rejection-parity coverage on both
+	// transports sets BOTH fields independently. A case that sets only
+	// ExpectedStatus is HTTP-transport-only and is excluded from the
+	// tempo-grpc score (grpc_diff.go's skippedStatusParity accounting,
+	// documented in its report); one that sets only ExpectedGRPCCode
+	// runs the ordinary 2xx-required body-diff path on HTTP and the
+	// status-parity path on gRPC. parseGRPCCode (corpus.go) refuses to
+	// ever parse codes.OK, so the zero value is unambiguous: it can only
+	// mean "section absent," never "explicitly expects success."
+	ExpectedGRPCCode codes.Code
 }
 
 // LoadCorpus opens a corpus file and parses it into CorpusCases.
@@ -287,6 +329,7 @@ const (
 	secSamplesPerSeries = "expected_samples_per_series"
 	secSemanticChecks   = "semantic_checks"
 	secExpectStatus     = "expect_status"
+	secExpectGRPCCode   = "expect_grpc_code"
 )
 
 // stripCommentLines returns the body with comment-only lines (`# ...`
@@ -364,8 +407,90 @@ func applySection(cur *CorpusCase, section, body string) error {
 		appendNonEmptyLines(body, &cur.SemanticChecks)
 	case secExpectStatus:
 		return applyIntSection(body, "expect_status", &cur.ExpectedStatus)
+	case secExpectGRPCCode:
+		return applyGRPCCodeSection(body, &cur.ExpectedGRPCCode)
 	}
 	return nil
+}
+
+// applyGRPCCodeSection parses a -- expect_grpc_code -- body via
+// parseGRPCCode and stores it. An empty body (a header with no content)
+// is a no-op, matching applyIntSection's convention for the other
+// optional integer sections.
+func applyGRPCCodeSection(body string, dst *codes.Code) error {
+	if body == "" {
+		return nil
+	}
+	code, err := parseGRPCCode(body)
+	if err != nil {
+		return fmt.Errorf("expect_grpc_code: %w", err)
+	}
+	*dst = code
+	return nil
+}
+
+// grpcCodeByName maps every documented grpc/codes.Code's canonical
+// String() spelling (e.g. "InvalidArgument") back to its Code value, so
+// -- expect_grpc_code -- can name a code the way test failures and
+// grpcurl output already print it instead of forcing a corpus author to
+// memorise the small integer wire value. Built from the codes package's
+// own constants + their own String() method, rather than a hand-typed
+// string table, so it can never drift from what codes.Code.String()
+// actually produces.
+var grpcCodeByName = buildGRPCCodeByName()
+
+func buildGRPCCodeByName() map[string]codes.Code {
+	known := []codes.Code{
+		codes.OK, codes.Canceled, codes.Unknown, codes.InvalidArgument,
+		codes.DeadlineExceeded, codes.NotFound, codes.AlreadyExists,
+		codes.PermissionDenied, codes.ResourceExhausted, codes.FailedPrecondition,
+		codes.Aborted, codes.OutOfRange, codes.Unimplemented, codes.Internal,
+		codes.Unavailable, codes.DataLoss, codes.Unauthenticated,
+	}
+	m := make(map[string]codes.Code, len(known))
+	for _, c := range known {
+		m[c.String()] = c
+	}
+	return m
+}
+
+// maxKnownGRPCCode bounds the integer form -- expect_grpc_code -- accepts.
+// codes.Unauthenticated (16) is the highest code the grpc/codes package
+// defines as of the pinned dependency version — see buildGRPCCodeByName's
+// list, the single source of truth this is derived from rather than a
+// separately hand-typed number.
+const maxKnownGRPCCode = codes.Unauthenticated
+
+// parseGRPCCode parses a -- expect_grpc_code -- body as either an
+// explicit codes.Code name (its canonical String() spelling, e.g.
+// "InvalidArgument") or the equivalent small integer (e.g. "3"). Mirrors
+// -- expect_status --'s int-only parsing, adjusted for gRPC's status-code
+// domain: unlike HTTP status ints, codes.Code values are single small
+// digits with no memorable convention of their own, so the name form is
+// the one a corpus author will actually reach for.
+//
+// codes.OK is always rejected, regardless of which spelling names it —
+// this axis exists to express rejection parity, and the ordinary
+// body-diff path already covers the success case. That refusal is also
+// what keeps CorpusCase.ExpectedGRPCCode's zero value unambiguous: it can
+// only mean "section absent," never "explicitly expects OK."
+func parseGRPCCode(body string) (codes.Code, error) {
+	trimmed := strings.TrimSpace(body)
+	var code codes.Code
+	if n, err := strconv.Atoi(trimmed); err == nil {
+		if n < 0 || n > int(maxKnownGRPCCode) {
+			return 0, fmt.Errorf("integer code %d is outside the known range 0-%d", n, maxKnownGRPCCode)
+		}
+		code = codes.Code(n) //nolint:gosec // n is bounds-checked immediately above
+	} else if c, ok := grpcCodeByName[trimmed]; ok {
+		code = c
+	} else {
+		return 0, fmt.Errorf("unrecognised gRPC code %q (want an integer 0-%d or a codes.Code name like %q)", trimmed, maxKnownGRPCCode, codes.InvalidArgument)
+	}
+	if code == codes.OK {
+		return 0, fmt.Errorf("OK is not a valid expectation — this axis exists to express rejection parity, not success parity, which the ordinary body-diff path already covers")
+	}
+	return code, nil
 }
 
 // appendNonEmptyLines splits `body` on newlines and appends every
@@ -439,6 +564,9 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if err := validateExpectedStatus(cur); err != nil {
 		return cur, err
 	}
+	if err := validateExpectedGRPCCode(cur); err != nil {
+		return cur, err
+	}
 	return cur, nil
 }
 
@@ -493,11 +621,41 @@ func validateExpectedStatus(cur CorpusCase) error {
 	if cur.Endpoint == "traces" || cur.Endpoint == "traces_v2" {
 		return fmt.Errorf("case %q: -- expect_status -- is not supported on endpoint=%s (that endpoint runs through the proto-aware differ, which this axis does not cover)", cur.Name, cur.Endpoint)
 	}
-	// Every field below is a body-shape assertion; diffStatusParityCase
-	// never parses the body, so any of these set alongside expect_status
-	// would be silently dead corpus weight — parsed but never checked.
-	// Rejecting the combination at load time beats a passing assertion
-	// that isn't actually asserting anything.
+	if hasBodyShapeAssertion(cur) {
+		return fmt.Errorf("case %q: -- expect_status -- cannot be combined with a body-shape assertion (expected_*/semantic_checks) — the status-parity path never parses the body", cur.Name)
+	}
+	return nil
+}
+
+// validateExpectedGRPCCode enforces the gRPC transport's status-parity
+// axis's invariants (#1714) — the sibling of validateExpectedStatus. A
+// zero ExpectedGRPCCode (the default, and the only value parseGRPCCode
+// will ever accept for codes.OK, which it refuses) skips every check
+// below — the case has no gRPC-side rejection expectation and none of
+// this applies.
+func validateExpectedGRPCCode(cur CorpusCase) error {
+	if cur.ExpectedGRPCCode == codes.OK {
+		return nil
+	}
+	if !grpcSupportsEndpoint(cur.Endpoint) {
+		return fmt.Errorf("case %q: -- expect_grpc_code -- is not supported on endpoint=%s (no StreamingQuerier RPC exists for it — see grpc_diff.go's grpcSupportsEndpoint)", cur.Name, cur.Endpoint)
+	}
+	// Same rationale as validateExpectedStatus: diffStatusParityCaseGRPC
+	// never parses either body, so a body-shape assertion alongside
+	// expect_grpc_code would be silently dead corpus weight.
+	if hasBodyShapeAssertion(cur) {
+		return fmt.Errorf("case %q: -- expect_grpc_code -- cannot be combined with a body-shape assertion (expected_*/semantic_checks) — the gRPC status-parity path never parses the body", cur.Name)
+	}
+	return nil
+}
+
+// hasBodyShapeAssertion reports whether the case carries any assertion
+// that requires a parsed response body. Shared by validateExpectedStatus
+// and validateExpectedGRPCCode: both status-parity axes short-circuit
+// before either body is ever parsed (diff.go's diffStatusParityCase,
+// grpc_diff.go's diffStatusParityCaseGRPC), so any of these fields set
+// alongside either axis would be an assertion that never runs.
+func hasBodyShapeAssertion(cur CorpusCase) bool {
 	switch {
 	case cur.ExpectedMinTraces != 0, cur.ExpectedMaxTraces != 0,
 		cur.ExpectedMinValues != 0, cur.ExpectedMaxValues != 0,
@@ -506,9 +664,9 @@ func validateExpectedStatus(cur CorpusCase) error {
 		len(cur.ExpectedServices) != 0, cur.ExpectedRootNameRE != nil,
 		cur.ExpectedMinSeries != 0, cur.ExpectedMaxSeries != 0,
 		cur.ExpectedSamplesPerSeries != 0, len(cur.SemanticChecks) != 0:
-		return fmt.Errorf("case %q: -- expect_status -- cannot be combined with a body-shape assertion (expected_*/semantic_checks) — the status-parity path never parses the body", cur.Name)
+		return true
 	}
-	return nil
+	return false
 }
 
 // isTagEndpoint reports whether the given endpoint is one of the four
@@ -533,7 +691,7 @@ func isKnownSection(name string) bool {
 		secMinTraces, secMaxTraces, secMinValues, secMaxValues,
 		secValues, secAbsentValues, secScopes, secServices, secRootNameRE,
 		secMinSeries, secMaxSeries, secSamplesPerSeries, secSemanticChecks,
-		secExpectStatus:
+		secExpectStatus, secExpectGRPCCode:
 		return true
 	}
 	return false

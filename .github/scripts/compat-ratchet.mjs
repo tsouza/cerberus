@@ -27,13 +27,17 @@
 // its count down a second time buys nothing a reader cannot get from the
 // baseline while costing every corpus-adding PR a merge conflict in this
 // file. doc-counts.mjs asserts the absence, so the restatement cannot
-// come back. tempo-grpc's floor is 3 below tempo's, and that difference
+// come back. tempo-grpc's floor is 2 below tempo's, and that difference
 // IS worth stating because it is structural rather than a count: traces
 // / traces_v2 have no StreamingQuerier RPC
-// (see compatibility/tempo/driver/grpc_diff.go), so those 2 corpus
-// cases never enter its roster, and one more (a -- expect_status --
-// rejection-parity case) is excluded pending #1714 (gRPC has no status
-// axis yet — see grpc_diff.go's skippedStatusParity).
+// (see compatibility/tempo/driver/grpc_diff.go), so those 2 corpus cases
+// never enter its roster. A corpus case that carries -- expect_status --
+// (the HTTP-only rejection-parity axis) without a sibling
+// -- expect_grpc_code -- (#1714's gRPC-side rejection-parity axis) is
+// excluded from the tempo-grpc roster the same way — see
+// grpc_diff.go's skippedStatusParity — but every case in THIS corpus
+// declares both, so today that exclusion is structural coverage rather
+// than an active gap.
 //
 // This is NOT an allow-list. An allow-list names the cases you are
 // permitted to fail; the roster names the cases that must pass, and

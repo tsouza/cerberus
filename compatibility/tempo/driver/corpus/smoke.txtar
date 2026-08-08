@@ -790,8 +790,19 @@ all
 # reject with "invalid scope: all", so this proves the axis end-to-end.
 # The four cases below pin the other direction: every scope upstream
 # *does* accept is a 200 here too.
+#
+# Also carries the gRPC-side sibling (#1714): -- expect_grpc_code --.
+# Grounded by reading both implementations rather than guessed —
+# cerberus's SearchTagsV2 (internal/api/tempo/grpc/tags.go) wraps a
+# ParseTagScope failure as status.Error(codes.InvalidArgument, ...);
+# reference Tempo's streaming combiner
+# (modules/frontend/combiner/common.go's erroredResponse) maps its own
+# HTTP 400 sub-response to the identical codes.InvalidArgument. Both
+# sides agree without a mapping function existing anywhere.
 -- expect_status --
 400
+-- expect_grpc_code --
+InvalidArgument
 
 -- name --
 tags_v2_event
