@@ -33,6 +33,7 @@ import {
   DEFERRAL_MARKERS,
   candidatesFor,
   citationVerdict,
+  descriptionSurface,
   evaluate,
   findMarkers,
   headingLevel,
@@ -42,10 +43,10 @@ import {
   parseDiff,
   scanDiff,
   eventPayloadAuthor,
+  eventPayloadNumber,
   scanProse,
   scansDescription,
   sectionAt,
-  sharedAuthor,
   stripFencedBlocks,
 } from './forbid-deferral.mjs';
 
@@ -680,8 +681,7 @@ const surfacesOf = (candidates) => candidates.map((c) => c.surface).sort();
 
 test('a generated description is quoted release notes, not this change’s commitment', () => {
   const found = candidatesFor({
-    description: GENERATED_BODY,
-    author: BOT,
+    descriptionParts: [{ text: GENERATED_BODY, author: BOT, number: 100 }],
     commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
     diffText: EMPTY_DIFF,
     repoSlug: REPO,
@@ -691,20 +691,20 @@ test('a generated description is quoted release notes, not this change’s commi
 
 test('the same description on an ordinary pull request is still read', () => {
   const found = candidatesFor({
-    description: GENERATED_BODY,
-    author: HUMAN,
+    descriptionParts: [{ text: GENERATED_BODY, author: HUMAN, number: null }],
     commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
     diffText: EMPTY_DIFF,
     repoSlug: REPO,
   });
   assert.deepEqual(surfacesOf(found), ['pr-body']);
+  // No number on the part (the shape a pull_request-event run with an
+  // unresolvable payload produces) falls back to the un-numbered location.
   assert.equal(found[0].location, 'PR description line 3');
 });
 
 test('a marker in a generated pull request’s COMMIT MESSAGE is still reported', () => {
   const found = candidatesFor({
-    description: GENERATED_BODY,
-    author: BOT,
+    descriptionParts: [{ text: GENERATED_BODY, author: BOT, number: 100 }],
     commits: COMMITS_WITH_MARKER,
     diffText: EMPTY_DIFF,
     repoSlug: REPO,
@@ -716,8 +716,7 @@ test('a marker in a generated pull request’s COMMIT MESSAGE is still reported'
 
 test('a marker in a generated pull request’s DIFF is still reported', () => {
   const found = candidatesFor({
-    description: GENERATED_BODY,
-    author: BOT,
+    descriptionParts: [{ text: GENERATED_BODY, author: BOT, number: 100 }],
     commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
     diffText: DIFF_WITH_MARKER,
     repoSlug: REPO,
@@ -729,8 +728,7 @@ test('a marker in a generated pull request’s DIFF is still reported', () => {
 test('an unknown author scans the description as normal', () => {
   for (const author of [null, undefined, '', '   ']) {
     const found = candidatesFor({
-      description: GENERATED_BODY,
-      author,
+      descriptionParts: [{ text: GENERATED_BODY, author, number: 100 }],
       commits: [{ sha: 'b'.repeat(40), message: 'chore(deps): bump otel' }],
       diffText: EMPTY_DIFF,
       repoSlug: REPO,
@@ -748,6 +746,110 @@ test('scansDescription narrows on exactly one login and nothing near it', () => 
   assert.equal(scansDescription('Dependabot[bot]'), false, 'a login is not case-sensitive');
   for (const near of ['dependabot', 'dependabot-preview[bot]', 'notdependabot[bot]', 'renovate[bot]', HUMAN]) {
     assert.equal(scansDescription(near), true, `${near} is not the generated-description account`);
+  }
+});
+
+// --- the merge-queue batching bug (#1943) ------------------------------------
+//
+// A merge-queue batch or a push resolves its description surface from EVERY
+// pull request associated with the head commit — a LIST, not one pull
+// request. The bug: descriptionSurface used to concatenate every pull's body
+// into one string and average their authors into a single `sharedAuthor`,
+// which is null the moment the batch disagrees on one — a Dependabot pull
+// request riding beside any human pull request. A null author scans as an
+// ordinary surface, so Dependabot's generated changelog (which quotes
+// upstream commit subjects verbatim, and upstream commit subjects are
+// ordinary prose that can accidentally contain marker vocabulary — this is
+// what made #1937 go red) got scanned as if a human had written it, and the
+// required check failed the WHOLE batch on a marker nobody in it wrote.
+//
+// The fix scans PER PULL REQUEST: candidatesFor takes `descriptionParts`, one
+// entry per pull request, each carrying its own text/author/number, so a
+// bot's part is exempted on its own authorship regardless of what rides
+// alongside it, and a human's part is scanned under that human's own
+// authorship, unaffected by any bot in the same batch.
+const MIXED_BATCH_BOT_PART = { text: GENERATED_BODY, author: BOT, number: 100 };
+
+test('a merge-queue batch with a Dependabot PR and a clean human PR passes', () => {
+  const humanBody =
+    'Adds a guardrail around the offset modifier so slicing never crosses a partial window.';
+  const found = candidatesFor({
+    descriptionParts: [MIXED_BATCH_BOT_PART, { text: humanBody, author: HUMAN, number: 101 }],
+    commits: [{ sha: 'c'.repeat(40), message: 'chore(deps): bump otel' }],
+    diffText: EMPTY_DIFF,
+    repoSlug: REPO,
+  });
+  assert.deepEqual(
+    found,
+    [],
+    'the bot part is exempted on its own authorship and the human part carries no marker',
+  );
+});
+
+test('a merge-queue batch fails on the human PR’s own untracked deferral, attributed to that PR', () => {
+  // Same batch, but the human pull request's body genuinely defers work and
+  // cites nothing. The gate must still fail — the fix is about WHO a marker is
+  // attributed to, never about weakening the scan — and the reported location
+  // and author must name the human pull request, not the bot riding beside it.
+  const humanBody = `Adds the guardrail. The retry-budget rework is ${DEFERRED_WORD}.`;
+  const found = candidatesFor({
+    descriptionParts: [MIXED_BATCH_BOT_PART, { text: humanBody, author: HUMAN, number: 101 }],
+    commits: [{ sha: 'c'.repeat(40), message: 'chore(deps): bump otel' }],
+    diffText: EMPTY_DIFF,
+    repoSlug: REPO,
+  });
+  assert.equal(found.length, 1, "only the human PR's marker surfaces; the bot PR stays exempt");
+  assert.equal(found[0].location, 'PR #101 description line 1');
+  assert.equal(found[0].markerId, 'deferral-to-later');
+  const violations = evaluate(found, RESOLVED);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].location, /#101/, 'the violation must point at the PR that wrote it');
+});
+
+test('descriptionSurface resolves a merge-queue batch into one part per pull request', async () => {
+  // The end-to-end wiring: a batch of two associated pull requests with
+  // different authors used to collapse to a single concatenated blob and a
+  // null shared author. It must now come back as independent parts, each
+  // carrying its own author and number, with the pre-existing combined
+  // text/origin kept alongside for pr-body-check.mjs.
+  const head = '0123456789abcdef0123456789abcdef01234567';
+  const apiBase = 'https://api.github.test';
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.equal(url, `${apiBase}/repos/${REPO}/commits/${head}/pulls`);
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => [
+        { number: 100, body: GENERATED_BODY, user: { login: BOT } },
+        { number: 101, body: 'Adds a guardrail.', user: { login: HUMAN } },
+      ],
+    };
+  };
+  try {
+    const description = await descriptionSurface({
+      eventName: 'merge_group',
+      repo: REPO,
+      head,
+      token: 't',
+      apiBase,
+    });
+    assert.equal(description.parts.length, 2);
+    assert.deepEqual(
+      description.parts.map((p) => [p.number, p.author]),
+      [
+        [100, BOT],
+        [101, HUMAN],
+      ],
+    );
+    assert.equal(description.parts[0].text, GENERATED_BODY);
+    assert.equal(description.parts[1].text, 'Adds a guardrail.');
+    // The combined view pr-body-check.mjs reads survives unchanged.
+    assert.match(description.origin, /#100, #101/);
+    assert.equal(description.text, `${GENERATED_BODY}\n\nAdds a guardrail.`);
+  } finally {
+    globalThis.fetch = real;
   }
 });
 
@@ -780,15 +882,21 @@ test('every unreadable payload yields no author, which scans the description', (
   }
 });
 
-test('a push-resolved surface takes its author only when the pull requests agree', () => {
-  assert.equal(sharedAuthor([{ user: { login: BOT } }]), BOT);
-  assert.equal(sharedAuthor([{ user: { login: BOT } }, { user: { login: BOT } }]), BOT);
-  assert.equal(
-    sharedAuthor([{ user: { login: BOT } }, { user: { login: HUMAN } }]),
-    null,
-    'two authors, one concatenated body — attributing it to either would be a guess',
-  );
-  for (const empty of [[], null, undefined, [{}], [{ user: {} }]]) {
-    assert.equal(sharedAuthor(empty), null, 'no author means nothing to narrow');
+test('the pull request number is read from the event payload alongside the author', () => {
+  const path = withPayload(JSON.stringify({ pull_request: { number: 101, user: { login: HUMAN } } }));
+  assert.equal(eventPayloadNumber(path), 101);
+});
+
+test('every unreadable payload yields no number either', () => {
+  const cases = {
+    'no path at all': undefined,
+    'a path that does not exist': join(tmpdir(), 'forbid-deferral-absent', 'event.json'),
+    'a file that is not JSON': withPayload('not json {'),
+    'a payload with no pull request': withPayload(JSON.stringify({ ref: 'refs/heads/main' })),
+    'a pull request with no number': withPayload(JSON.stringify({ pull_request: {} })),
+    'a number that is not a number': withPayload(JSON.stringify({ pull_request: { number: '101' } })),
+  };
+  for (const [what, path] of Object.entries(cases)) {
+    assert.equal(eventPayloadNumber(path), null, what);
   }
 });
