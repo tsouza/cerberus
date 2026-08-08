@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
 )
 
 // CheckSeedCoversFanOut asserts that a fixture's own seed script is
@@ -196,7 +195,7 @@ func armsFromPattern(lit string) ([]string, error) {
 	var arms []string
 	for _, raw := range strings.Split(body, "|") {
 		arm := strings.ReplaceAll(raw, `\`, "")
-		if arm == "" || strings.ContainsFunc(arm, func(r rune) bool { return r > unicode.MaxASCII || !isIdentByte(byte(r)) }) {
+		if arm == "" || !isIdentWord(arm) {
 			return nil, fmt.Errorf("merge() table pattern %q holds a non-literal arm %q that this check cannot resolve to a table name", pattern, raw)
 		}
 		arms = append(arms, arm)
@@ -340,6 +339,25 @@ func skipStringLiteral(s string, start int) int {
 // in.
 func unquoteIdent(s string) string {
 	return strings.Trim(strings.TrimSpace(s), "`")
+}
+
+// isIdentWord reports whether every byte of s may appear inside an
+// unquoted SQL identifier — that is, whether s is a bare table name
+// rather than a pattern arm this check cannot resolve.
+//
+// It scans BYTES rather than runes deliberately. Every byte of a
+// multi-byte UTF-8 rune is >= 0x80, so [isIdentByte] rejects it anyway,
+// and the byte scan reaches the same verdict without narrowing a rune
+// to a byte — a conversion that is provably safe here only because of a
+// short-circuited guard, which is exactly the shape a reader (and
+// gosec's G115) cannot check locally.
+func isIdentWord(s string) bool {
+	for i := range len(s) {
+		if !isIdentByte(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // isIdentByte reports whether c may appear inside an unquoted SQL
