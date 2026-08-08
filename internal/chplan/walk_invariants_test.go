@@ -156,6 +156,15 @@ func TestHistogramQuantileNative_Walk_VisitsInput(t *testing.T) {
 	assertSentinels(t, visitScans(root), []string{"hqn_input"})
 }
 
+func TestHistogramProjection_Walk_VisitsInput(t *testing.T) {
+	t.Parallel()
+	root := &chplan.HistogramProjection{
+		Input:       &chplan.Scan{Table: "hp_input"},
+		CountColumn: "Count",
+	}
+	assertSentinels(t, visitScans(root), []string{"hp_input"})
+}
+
 func TestMetricsAggregate_Walk_VisitsInner(t *testing.T) {
 	t.Parallel()
 	root := &chplan.MetricsAggregate{
@@ -432,6 +441,16 @@ func TestChildren_HistogramQuantileNativeReturnsExactlyInput(t *testing.T) {
 	kids := h.Children()
 	if len(kids) != 1 || kids[0] != input {
 		t.Errorf("HistogramQuantileNative.Children() should return [Input], got %v", kids)
+	}
+}
+
+func TestChildren_HistogramProjectionReturnsExactlyInput(t *testing.T) {
+	t.Parallel()
+	input := &chplan.Scan{Table: "t"}
+	h := &chplan.HistogramProjection{Input: input}
+	kids := h.Children()
+	if len(kids) != 1 || kids[0] != input {
+		t.Errorf("HistogramProjection.Children() should return [Input], got %v", kids)
 	}
 }
 

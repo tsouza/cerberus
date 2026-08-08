@@ -98,6 +98,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"RangeBucketFanout", &RangeBucketFanout{Input: sentinelChild()}, false},
 		{"HistogramQuantile", &HistogramQuantile{Input: sentinelChild(), Phi: 0.5}, false},
 		{"HistogramQuantileNative", &HistogramQuantileNative{Input: sentinelChild(), Phi: 0.5}, false},
+		{"HistogramProjection", &HistogramProjection{Input: sentinelChild()}, false},
 		{"MetricsAggregate", &MetricsAggregate{Inner: sentinelChild()}, false},
 		{"MetricsHistogramOverTime", &MetricsHistogramOverTime{Inner: sentinelChild()}, false},
 		{"MetricsSecondStage", &MetricsSecondStage{Input: sentinelChild()}, false},
@@ -130,7 +131,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 // implementations. Cross-checked against
 // `grep -rn 'planNode()' internal/chplan/*.go`. Bump this (and add a table
 // row + a RewriteChildren arm) when a new Node type lands.
-const expectedNodeTypeCount = 31
+const expectedNodeTypeCount = 32
 
 // TestRewriteChildren_TableCoversEveryNodeType is the count guard. If a new
 // Node type is added without a corresponding allNodeCases() row, the

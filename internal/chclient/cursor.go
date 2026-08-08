@@ -192,6 +192,17 @@ type rowsCursor struct {
 	// leaving hasMetadata false and the scan byte-identical to before.
 	metadataProbed bool
 	hasMetadata    bool
+	// histogramProbed / hasHistogram are the histogram-shaped sibling of
+	// metadataProbed / hasMetadata: hasHistogram records whether the
+	// projection carries the nine trailing Histogram*Column columns a
+	// chplan.HistogramProjection subquery publishes (see issue #1926),
+	// so the scan binds thirteen destinations (the base four plus the
+	// nine histogram fields) instead of four. No lowering builds that
+	// plan shape yet, so hasHistogram is false — and the scan
+	// byte-identical to before — on every query today; it exists so the
+	// decode side has a stable contract ready the moment one does.
+	histogramProbed bool
+	hasHistogram    bool
 }
 
 // metadataColumn is the projection alias the Loki log-stream path appends
@@ -199,6 +210,26 @@ type rowsCursor struct {
 // LogAttributes map) into [Sample.Metadata]. The shared cursor probes the
 // result-set columns for this name once and adapts its positional scan.
 const metadataColumn = "Metadata"
+
+// histogramColumnCount is the number of trailing columns a
+// chplan.HistogramProjection subquery appends after the base four —
+// the nine Histogram*Column output aliases. The scan binds
+// 4+histogramColumnCount destinations when hasHistogram latches true.
+const histogramColumnCount = 9
+
+// histogramLastColumn is the LAST of the nine Histogram*Column aliases
+// chplan.HistogramProjection's emitter produces (see
+// internal/chplan/histogram_projection.go), in the exact positional
+// order the scan below binds. The shared cursor probes the result-set's
+// final column for this name once, mirroring the metadataColumn probe.
+//
+// chclient may not import chplan (see .go-arch-lint.yml: chclient
+// declares no internal dependencies), so this string is duplicated by
+// convention rather than imported — the same pairing metadataColumn
+// already has with the literal "Metadata" alias
+// internal/logql/lang.go emits. Changing chplan.HistogramNegativeBucketCountsColumn
+// requires changing this literal too.
+const histogramLastColumn = "HistogramNegativeBucketCounts"
 
 // Next advances the cursor to the next row. Returns false when the
 // stream is exhausted or when a decode error occurred; in the error case
@@ -231,7 +262,10 @@ func (c *rowsCursor) Next() bool {
 	// string scans cleanly on both, and is json.Unmarshal'd back below.
 	var metadataJSON string
 	// Probe the result-set shape once: the Loki log-stream projection
-	// appends a fifth `Metadata` column, every other path projects four.
+	// appends a fifth `Metadata` column, a chplan.HistogramProjection
+	// subquery appends nine Histogram*Column columns (issue #1926 — no
+	// lowering builds that shape yet, so this branch is untaken by
+	// every query today), every other path projects four.
 	// driver.Rows.Columns() is stable across the stream, so latch the
 	// decision on the first row and bind the scan accordingly.
 	if !c.metadataProbed {
@@ -239,14 +273,34 @@ func (c *rowsCursor) Next() bool {
 		c.hasMetadata = len(cols) > 0 && cols[len(cols)-1] == metadataColumn
 		c.metadataProbed = true
 	}
-	if c.hasMetadata {
+	if !c.histogramProbed {
+		cols := c.rows.Columns()
+		c.hasHistogram = len(cols) > 0 && cols[len(cols)-1] == histogramLastColumn
+		c.histogramProbed = true
+	}
+	var hv HistogramValue
+	switch {
+	case c.hasHistogram:
+		if err := c.rows.Scan(
+			&s.MetricName, &labels, &s.Timestamp, &s.Value,
+			&hv.Count, &hv.Sum, &hv.Scale, &hv.ZeroThreshold, &hv.ZeroCount,
+			&hv.PositiveOffset, &hv.PositiveBucketCounts,
+			&hv.NegativeOffset, &hv.NegativeBucketCounts,
+		); err != nil {
+			c.err = fmt.Errorf("chclient: scan: %w", err)
+			return false
+		}
+		s.Histogram = &hv
+	case c.hasMetadata:
 		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value, &metadataJSON); err != nil {
 			c.err = fmt.Errorf("chclient: scan: %w", err)
 			return false
 		}
-	} else if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
-		c.err = fmt.Errorf("chclient: scan: %w", err)
-		return false
+	default:
+		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
+			c.err = fmt.Errorf("chclient: scan: %w", err)
+			return false
+		}
 	}
 	c.seen++
 	// A per-request shared budget (set by QueryCursor from the ctx) takes

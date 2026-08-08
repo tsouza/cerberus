@@ -67,6 +67,8 @@ func nodeExprs(n Node, visit func(Expr)) {
 	case *HistogramQuantileNative:
 		visitExpr(v.PhiExpr, visit)
 		visitExprs(v.GroupBy, visit)
+	case *HistogramProjection:
+		visitExprs(v.GroupBy, visit)
 	case *MetricsAggregate:
 		visitExpr(v.Attr, visit)
 		visitExprs(v.GroupBy, visit)

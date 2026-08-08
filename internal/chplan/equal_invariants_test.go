@@ -2345,3 +2345,85 @@ func TestSearchTraceLimit_Equal_Negative_OtherType(t *testing.T) {
 		t.Errorf("SearchTraceLimit should not Equal a bare Scan")
 	}
 }
+
+func TestHistogramProjection_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	build := func() *chplan.HistogramProjection {
+		return &chplan.HistogramProjection{
+			Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+			CountColumn:                "Count",
+			SumColumn:                  "Sum",
+			ScaleColumn:                "Scale",
+			ZeroCountColumn:            "ZeroCount",
+			ZeroThresholdColumn:        "ZeroThreshold",
+			PositiveOffsetColumn:       "PositiveOffset",
+			PositiveBucketCountsColumn: "PositiveBucketCounts",
+			NegativeOffsetColumn:       "NegativeOffset",
+			NegativeBucketCountsColumn: "NegativeBucketCounts",
+			GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+			GroupByAliases:             []string{"attrs"},
+			MetricNameColumn:           "MetricName",
+			AttributesColumn:           "Attributes",
+			TimestampColumn:            "TimeUnix",
+		}
+	}
+	if !build().Equal(build()) {
+		t.Fatalf("identical HistogramProjection trees should be Equal")
+	}
+}
+
+func TestHistogramProjection_Equal_Negative_CountColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramProjection{Input: &chplan.Scan{Table: "t"}, CountColumn: "Count"}
+	b := &chplan.HistogramProjection{Input: &chplan.Scan{Table: "t"}, CountColumn: "Other"}
+	if a.Equal(b) {
+		t.Errorf("different CountColumn should not be Equal")
+	}
+}
+
+func TestHistogramProjection_Equal_Negative_NegativeBucketCountsColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramProjection{
+		Input: &chplan.Scan{Table: "t"}, NegativeBucketCountsColumn: "A",
+	}
+	b := &chplan.HistogramProjection{
+		Input: &chplan.Scan{Table: "t"}, NegativeBucketCountsColumn: "B",
+	}
+	if a.Equal(b) {
+		t.Errorf("different NegativeBucketCountsColumn should not be Equal")
+	}
+}
+
+func TestHistogramProjection_Equal_Negative_OtherType(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramProjection{Input: &chplan.Scan{Table: "t"}, CountColumn: "Count"}
+	b := &chplan.Scan{Table: "t"}
+	if a.Equal(b) {
+		t.Errorf("HistogramProjection should not Equal a bare Scan")
+	}
+}
+
+// TestHistogramProjection_Equal_InputNilAsymmetric pins the
+// `h.Input == nil || o.Input == nil` branch. Mutating `||` to `&&`
+// makes the original-side dereference `h.Input.Equal(o.Input)` on a
+// nil receiver when only one side has a nil Input.
+func TestHistogramProjection_Equal_InputNilAsymmetric(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramProjection{CountColumn: "Count"}
+	b := &chplan.HistogramProjection{CountColumn: "Count", Input: &chplan.Scan{Table: "t"}}
+	if a.Equal(b) {
+		t.Errorf("nil vs non-nil Input should not be Equal")
+	}
+	if b.Equal(a) {
+		t.Errorf("nil vs non-nil Input should not be Equal (reverse)")
+	}
+}
+
+func TestHistogramProjection_Equal_InputNilBoth(t *testing.T) {
+	t.Parallel()
+	a := &chplan.HistogramProjection{CountColumn: "Count"}
+	b := &chplan.HistogramProjection{CountColumn: "Count"}
+	if !a.Equal(b) {
+		t.Errorf("both Input nil with equal sibling fields should be Equal")
+	}
+}
