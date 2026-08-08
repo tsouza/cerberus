@@ -18,9 +18,32 @@ import (
 func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	t.Parallel()
 
-	// A capture-group NAME two capture groups share: Go's ExpandString
-	// picks whichever of them took part in the row's match, and SQL cannot
-	// observe participation.
+	// A capture-group NAME two capture groups share, one of which can
+	// match the empty string: Go's ExpandString picks whichever of them
+	// took part in the row's match, and `extractGroups` renders "took part
+	// matching empty" exactly like "took no part", so SQL cannot observe
+	// which.
+	const q = `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
+		`"service", "$dup", "host", "(?P<dup>a?)|(?P<dup>b)")`
+
+	expr, err := syntax.ParseExpr(q)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Lower(context.Background(), expr, schema.DefaultOTelLogs()); err == nil {
+		t.Fatal("lowering accepted a nullable capture group sharing a name; want an error")
+	} else if !strings.Contains(err.Error(), "label_replace") {
+		t.Fatalf("error does not name the function that failed: %v", err)
+	}
+}
+
+// TestLowerLabelReplace_AcceptsSharedCaptureName is the LogQL twin of the
+// PromQL test with the same name: when every group sharing the name is
+// non-nullable, participation and a non-empty capture coincide, so the
+// reference is expressible and this head must lower it.
+func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
+	t.Parallel()
+
 	const q = `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
 		`"service", "$dup", "host", "(?P<dup>a)|(?P<dup>b)")`
 
@@ -28,10 +51,8 @@ func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if _, err := Lower(context.Background(), expr, schema.DefaultOTelLogs()); err == nil {
-		t.Fatal("lowering accepted a capture-group name two groups share; want an error")
-	} else if !strings.Contains(err.Error(), "label_replace") {
-		t.Fatalf("error does not name the function that failed: %v", err)
+	if _, err := Lower(context.Background(), expr, schema.DefaultOTelLogs()); err != nil {
+		t.Fatalf("lowering rejected a shared capture-group name whose carriers are all non-nullable: %v", err)
 	}
 }
 

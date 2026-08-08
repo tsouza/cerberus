@@ -1062,6 +1062,20 @@ func (b *Builder) labelReplaceSubstitution(l *chplan.LabelReplace, anchored stri
 // source value directly — the regex is anchored, so a match spans the
 // entire source string, and `extractGroups` numbers from the first real
 // group.
+//
+// A segment carrying Fallbacks references a NAME that several capture
+// groups share. Go's ExpandString expands it to the first of those groups
+// that took part in the match, and the lowering only produces this shape
+// once it has proved none of the groups can match the empty string — so
+// "took part" is exactly "captured something non-empty", and the choice
+// becomes an ordinary array search:
+//
+//	arrayFirst(x -> x != '', [<subscript>, <subscript>, …])
+//
+// `arrayFirst` returns the element type's default — the empty string —
+// when no element qualifies, which is what ExpandString substitutes when
+// none of the like-named groups took part. See
+// chplan.LabelReplaceSegment.Fallbacks.
 func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelReplaceSegment, anchored string) error {
 	switch seg.Group {
 	case chplan.NoCaptureGroup:
@@ -1070,16 +1084,45 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 	case chplan.WholeMatchGroup:
 		return b.srcValue(l)
 	}
-	b.sb.WriteString("extractGroups(")
-	if err := b.srcValue(l); err != nil {
-		return err
+	// srcValue renders a plan sub-expression and can fail, while a Frag
+	// cannot report an error. The closure records the first failure and
+	// the caller surfaces it once rendering is done.
+	var srcErr error
+	src := Frag(func(fb *Builder) {
+		if err := fb.srcValue(l); err != nil && srcErr == nil {
+			srcErr = err
+		}
+	})
+	if len(seg.Fallbacks) == 0 {
+		captureGroupAt(src, anchored, seg.Group)(b)
+		return srcErr
 	}
-	b.sb.WriteString(", ")
-	b.Arg(anchored)
-	b.sb.WriteString(")[")
-	b.Arg(int64(seg.Group))
-	b.sb.WriteByte(']')
-	return nil
+	candidates := make([]Frag, 0, 1+len(seg.Fallbacks))
+	candidates = append(candidates, captureGroupAt(src, anchored, seg.Group))
+	for _, idx := range seg.Fallbacks {
+		candidates = append(candidates, captureGroupAt(src, anchored, idx))
+	}
+	Call(
+		"arrayFirst",
+		Lambda1(labelReplaceCandidateParam, Neq(BareIdent(labelReplaceCandidateParam), Lit(""))),
+		Array(candidates...),
+	)(b)
+	return srcErr
+}
+
+// labelReplaceCandidateParam is the lambda parameter naming one
+// like-named capture group's capture inside the `arrayFirst` search
+// labelReplaceSegment emits. It is emitter-chosen and never collides with
+// a column: CH resolves a lambda parameter ahead of any outer name.
+const labelReplaceCandidateParam = "x"
+
+// captureGroupAt returns a Frag for one capture group's value:
+// `extractGroups(<src>, <anchored>)[<group>]`.
+func captureGroupAt(src Frag, anchored string, group int) Frag {
+	return Subscript(
+		Call("extractGroups", src, Lit(anchored)),
+		Lit(int64(group)),
+	)
 }
 
 // srcValue renders the source label's value: `<map>[<src>]`. CH map

@@ -152,11 +152,20 @@ func TestReplacementToCH(t *testing.T) {
 
 // TestReplacementToCHRejectsInexpressibleBackrefs pins the one shape that
 // Go's ExpandString resolves to a real capture but no ClickHouse
-// expression can reproduce: a name several capture groups share.
-// ExpandString picks the first of them that TOOK PART in the row's match,
-// and participation is not observable from SQL — `extractGroups` reports a
-// group that did not participate and a group that matched the empty
-// string identically, as `”`.
+// expression can reproduce: a name several capture groups share where at
+// least one of them can match the EMPTY STRING. ExpandString picks the
+// first carrier that TOOK PART in the row's match, and participation is
+// not observable from SQL — `extractGroups` reports a group that did not
+// participate and a group that matched the empty string identically, as
+// `”`. A nullable carrier is exactly the case where those two states can
+// both occur, so the choice is unrecoverable.
+//
+// Carriers that CANNOT match the empty string are a different matter, and
+// are translated rather than rejected — see
+// TestReplacementToCHSegmentsSharedCaptureName. That is why every case
+// here has a nullable carrier: without one the guard does not fire, so a
+// case whose carriers are all non-nullable would pass this test for the
+// wrong reason.
 //
 // It used to be emitted as literal template text — a 200 carrying a label
 // whose value was the template rather than an expansion of it, which is
@@ -171,13 +180,40 @@ func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 		regex    string
 		wantErrs []string
 	}{
-		// Go permits several groups to share a name and picks the first
-		// that took part in the row's match; SQL cannot see which did.
 		{
-			"ambiguous_named_capture",
+			// Carrier 1 is `a?`, which matches the empty string: it can
+			// take part AND report `''`, which is also what a carrier that
+			// took no part reports.
+			"nullable_first_carrier",
 			"$dup",
-			`(?P<dup>a)|(?P<dup>b)`,
-			[]string{`"dup"`, "2 capture groups"},
+			`(?P<dup>a?)|(?P<dup>b)`,
+			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
+		},
+		{
+			// Nullability anywhere in the carrier set is disqualifying,
+			// not just at the front: Go picks the FIRST participant, so a
+			// later nullable carrier that matched empty must not be
+			// skipped over by a "first non-empty" search either.
+			"nullable_later_carrier",
+			"$dup",
+			`(?P<dup>a)|(?P<dup>b*)`,
+			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 2"},
+		},
+		{
+			// Nullability is a property of the whole subpattern, not of
+			// its outermost operator: `x*y*` is a concat of two nullable
+			// parts and so is itself nullable.
+			"nullable_via_concatenation",
+			"$dup",
+			`(?P<dup>x*y*)|(?P<dup>b)`,
+			[]string{`"dup"`, "2 capture groups", "empty string"},
+		},
+		{
+			// One nullable branch makes the alternation nullable.
+			"nullable_via_alternation_branch",
+			"$dup",
+			`(?P<dup>ab|)|(?P<dup>c)`,
+			[]string{`"dup"`, "2 capture groups", "empty string"},
 		},
 	}
 	for _, tc := range cases {
