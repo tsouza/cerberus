@@ -126,50 +126,14 @@ func TestLower(t *testing.T) {
 				if perr != nil {
 					t.Fatalf("fixture %s: parse range_step %q: %v", c.Name, rs, perr)
 				}
-				// An `experimental_ts_grid_range:` section (any non-empty
-				// body) wires the boot-decided native-rate strategy into the
-				// fixture's lowering — the always-on SQL-shape coverage floor
-				// for the native timeSeriesRateToGrid path. An
-				// `experimental_ts_grid_resample:` section wires the
-				// native-staleness strategy (timeSeriesResampleToGridWithStaleness);
-				// `experimental_ts_grid_changes:` wires NativeChangesLowerer
-				// (timeSeriesChangesToGrid); `experimental_ts_grid_resets:` wires
-				// NativeResetsLowerer (timeSeriesResetsToGrid);
-				// `experimental_ts_grid_deriv:` wires NativeDerivLowerer
-				// (timeSeriesDerivToGrid); `experimental_ts_grid_predict_linear:`
-				// wires NativePredictLinearLowerer (timeSeriesPredictLinearToGrid).
-				// An `experimental_ts_grid_recollapse:` section additionally turns on
-				// the deferred label-shaping (-State/-Merge) shape, and is only read
-				// alongside `experimental_ts_grid_range:`.
-				// Without any of these sections the default all-fan-out table is
-				// used, so every existing fixture stays byte-identical.
-				var lowerers promql.RangeLowerers
-				if _, native := c.Section("experimental_ts_grid_range"); native {
-					// `experimental_ts_grid_recollapse:` nests INSIDE this section
-					// (mirroring the boot wiring in cmd/cerberus): the deferred
-					// label-shaping shape only exists on top of a native rate grid,
-					// so it is read only where one is being built.
-					_, recollapse := c.Section("experimental_ts_grid_recollapse")
-					lowerers.Rate = promql.NativeRateLowerer{
-						Fallback:   promql.FanoutRateLowerer{},
-						Recollapse: recollapse,
-					}
-				}
-				if _, resample := c.Section("experimental_ts_grid_resample"); resample {
-					lowerers.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
-				}
-				if _, changes := c.Section("experimental_ts_grid_changes"); changes {
-					lowerers.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
-				}
-				if _, resets := c.Section("experimental_ts_grid_resets"); resets {
-					lowerers.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
-				}
-				if _, deriv := c.Section("experimental_ts_grid_deriv"); deriv {
-					lowerers.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
-				}
-				if _, predict := c.Section("experimental_ts_grid_predict_linear"); predict {
-					lowerers.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
-				}
+				// Each row of [nativeStrategies] binds one RangeLowerers
+				// field to the marker section that opts a fixture into
+				// that field's ClickHouse-native strategy; carrying no
+				// marker section leaves the all-fan-out default, so every
+				// fixture without one stays byte-identical.
+				lowerers := wireNativeStrategies(func(name string) bool {
+					return hasSection(c, name)
+				})
 				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, fixtureSchema, rangeStart, rangeEnd, stepDur,
 					promql.LowerOpts{Lowerers: lowerers})
 			} else {
