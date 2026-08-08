@@ -403,17 +403,21 @@ func (p *Planner) analyze(plan chplan.Node, meta RequestMeta) signals {
 	// grid-prediction check can predict the right (start, end) per level.
 	// The outermost windowed node predicts [meta.Start, meta.End]; each
 	// nested matrix window widens its start by the parent's Range.
-	p.walkNode(plan, meta.Start, meta.End, 0, &sig)
+	p.walkNode(plan, meta.Start, meta.End, meta.Step, 0, &sig)
 
 	return sig
 }
 
 // walkNode visits one node, threading the grid bounds predicted at this spine
-// depth. predStart/predEnd are what the request grid predicts here; depth is
-// the matrix-spine nesting level (0 = outermost). On a windowed node it
-// records cost signals and recurses into its widened inner spine; off the
-// spine it recurses into children with the same predicted bounds.
-func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth int, sig *signals) {
+// depth. predStart/predEnd are what the request grid predicts here; predStep
+// is the evaluation cadence a windowed node embedded HERE would have to match
+// to be judged anchor-compatible by checkScalarHeavy — a windowed node's own
+// Step once one is found on the way down, the request Step everywhere above
+// the first one; depth is the matrix-spine nesting level (0 = outermost). On
+// a windowed node it records cost signals and recurses into its widened
+// inner spine; off the spine it recurses into children with the same
+// predicted bounds.
+func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep time.Duration, depth int, sig *signals) {
 	if n == nil {
 		return
 	}
@@ -425,25 +429,30 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 	case *chplan.RangeWindow:
 		p.recordGridCarrier(v, depth, sig)
 		p.checkRangeWindowGrid(v, predStart, predEnd, depth, sig)
-		// Walk this node's exprs for now64 / scalar-heavy.
+		// Walk this node's exprs for now64 / scalar-heavy. GroupBy /
+		// ScalarExprs are evaluated at THIS window's own level and cadence,
+		// so any embedded ScalarSubquery / InSubquery is checked against
+		// THIS (predStart, predEnd, v.Step) — not the widened inner-spine
+		// bounds v.Input recurses into below, and not a step inherited from
+		// further up (a nested subquery resolution can differ from it).
 		for _, e := range v.GroupBy {
-			p.walkExpr(e, sig)
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
 		}
 		for _, e := range v.ScalarExprs {
-			p.walkExpr(e, sig)
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
 		}
 		// Recurse into the inner spine widened via the single shared owner
 		// of this arithmetic (mirrors ReanchorRange / widenSubquerySpine) so
 		// the grid this predicts for the child matches what re-anchoring
 		// actually produces — including the Offset term (#1464).
 		inStart, inEnd := v.InputWindow(predStart, predEnd)
-		p.walkNode(v.Input, inStart, inEnd, depth+1, sig)
+		p.walkNode(v.Input, inStart, inEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.RangeLWR:
 		p.recordGridCarrier(v, depth, sig)
 		p.checkRangeLWRGrid(v, predStart, predEnd, depth, sig)
-		p.walkNode(v.Input, predStart, predEnd, depth+1, sig)
+		p.walkNode(v.Input, predStart, predEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.RangeWindowNative:
@@ -455,15 +464,15 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// recordGridCarrier's reanchorable check is what keeps it on route A.
 		p.recordGridCarrier(v, depth, sig)
 		for _, e := range v.GroupBy {
-			p.walkExpr(e, sig)
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
 		}
 		for _, pr := range v.Recollapse {
-			p.walkExpr(pr.Expr, sig)
+			p.walkExpr(pr.Expr, predStart, predEnd, v.Step, sig)
 		}
 		// Each anchor reduces the samples in its own `Range` window, so the
 		// inner spine reaches back that far — the same widening the RangeWindow
 		// arm above applies.
-		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, depth+1, sig)
+		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.RangeWindowResample:
@@ -473,7 +482,7 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// the unwidened bounds, mirroring the RangeLWR arm it is the native
 		// sibling of.
 		p.recordGridCarrier(v, depth, sig)
-		p.walkNode(v.Input, predStart, predEnd, depth+1, sig)
+		p.walkNode(v.Input, predStart, predEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.AbsentOverTime:
@@ -481,7 +490,7 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// exprs (only SynthLabels, which are literal label pairs), so the
 		// default child recursion below the record call is the whole sweep.
 		p.recordGridCarrier(v, depth, sig)
-		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, depth+1, sig)
+		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.Aggregate:
@@ -492,17 +501,17 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// plan would route despite two shards seeing different now64
 		// wall-clocks. Sweep them explicitly before recursing.
 		for _, e := range v.GroupBy {
-			p.walkExpr(e, sig)
+			p.walkExpr(e, predStart, predEnd, predStep, sig)
 		}
 		for _, fn := range v.AggFuncs {
 			for _, e := range fn.Params {
-				p.walkExpr(e, sig)
+				p.walkExpr(e, predStart, predEnd, predStep, sig)
 			}
 			for _, e := range fn.Args {
-				p.walkExpr(e, sig)
+				p.walkExpr(e, predStart, predEnd, predStep, sig)
 			}
 		}
-		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
 		return
 
 	case *chplan.RangeBucketFanout:
@@ -515,17 +524,17 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// route A while still measuring the grid it does carry.
 		p.recordGridCarrier(v, depth, sig)
 		for _, e := range v.GroupBy {
-			p.walkExpr(e, sig)
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
 		}
 		for _, fn := range v.AggFuncs {
 			for _, e := range fn.Params {
-				p.walkExpr(e, sig)
+				p.walkExpr(e, predStart, predEnd, v.Step, sig)
 			}
 			for _, e := range fn.Args {
-				p.walkExpr(e, sig)
+				p.walkExpr(e, predStart, predEnd, v.Step, sig)
 			}
 		}
-		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		p.walkNode(v.Input, predStart, predEnd, v.Step, depth, sig)
 		return
 
 	case *chplan.StepGrid:
@@ -539,15 +548,15 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		return
 
 	case *chplan.Filter:
-		p.walkExpr(v.Predicate, sig)
-		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		p.walkExpr(v.Predicate, predStart, predEnd, predStep, sig)
+		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
 		return
 
 	case *chplan.Project:
 		for _, pr := range v.Projections {
-			p.walkExpr(pr.Expr, sig)
+			p.walkExpr(pr.Expr, predStart, predEnd, predStep, sig)
 		}
-		p.walkNode(v.Input, predStart, predEnd, depth, sig)
+		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
 		return
 
 	case *chplan.VectorJoin:
@@ -566,8 +575,8 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 		// independent windowed spines evaluating over the SAME [predStart,
 		// predEnd] at this depth (no widening at the join level — each arm's
 		// own RangeWindow / RangeLWR widens its inner scan). Recurse both.
-		p.walkNode(v.Left, predStart, predEnd, depth, sig)
-		p.walkNode(v.Right, predStart, predEnd, depth, sig)
+		p.walkNode(v.Left, predStart, predEnd, predStep, depth, sig)
+		p.walkNode(v.Right, predStart, predEnd, predStep, depth, sig)
 		return
 	}
 
@@ -586,7 +595,7 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, depth in
 	// exprs the node carries via the generic node walk + a defensive expr
 	// sweep of nested ScalarSubqueries.
 	for _, c := range n.Children() {
-		p.walkNode(c, predStart, predEnd, depth, sig)
+		p.walkNode(c, predStart, predEnd, predStep, depth, sig)
 	}
 }
 
@@ -764,8 +773,7 @@ func (p *Planner) checkRangeWindowGrid(v *chplan.RangeWindow, predStart, predEnd
 	// (4) Grid-prediction: a pinned windowed node must sit exactly on the
 	// grid predicted at this depth.
 	if !startZero || !endZero {
-		predOuter := predEnd.Sub(predStart)
-		if !v.Start.Equal(predStart) || !v.End.Equal(predEnd) || v.OuterRange != predOuter {
+		if !rangeWindowGridMatches(v, predStart, predEnd) {
 			sig.sawGridMismatch = true
 		}
 	}
@@ -798,11 +806,8 @@ func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.
 		if startZero || endZero {
 			sig.sawUnpinnedBound = true
 		}
-		if !startZero && !endZero {
-			predOuter := predEnd.Sub(predStart)
-			if !v.Start.Equal(predStart) || !v.End.Equal(predEnd) || v.End.Sub(v.Start) != predOuter {
-				sig.sawGridMismatch = true
-			}
+		if !startZero && !endZero && !rangeLWRGridMatches(v, predStart, predEnd) {
+			sig.sawGridMismatch = true
 		}
 	} else if startZero != endZero {
 		sig.sawUnpinnedBound = true
@@ -819,6 +824,25 @@ func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.
 	if depth > 0 && v.Step > 0 && !v.StepAlign {
 		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
 	}
+}
+
+// rangeWindowGridMatches reports whether v's own (Start, End, OuterRange)
+// sit exactly on the grid predicted at (predStart, predEnd) — the signal-4
+// equality checkRangeWindowGrid applies to a matrix RangeWindow on the main
+// spine. Factored out so checkScalarHeavy's interior walk
+// (scalarInteriorAnchorCompatible, signal 7) can apply the IDENTICAL test to
+// a windowed node reached through an Expr slot instead of a Node child —
+// the two call sites must never drift apart, since the interior walk's
+// whole safety argument is "the same grid-prediction proof the main spine
+// already relies on".
+func rangeWindowGridMatches(v *chplan.RangeWindow, predStart, predEnd time.Time) bool {
+	return v.Start.Equal(predStart) && v.End.Equal(predEnd) && v.OuterRange == predEnd.Sub(predStart)
+}
+
+// rangeLWRGridMatches is rangeWindowGridMatches for a RangeLWR: it carries
+// no separate OuterRange field, so the predicted span is End-Start directly.
+func rangeLWRGridMatches(v *chplan.RangeLWR, predStart, predEnd time.Time) bool {
+	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
 }
 
 // sliceQuantumCommensurate reports whether the quantum emitted by slice() is
@@ -851,18 +875,25 @@ func sliceQuantumCommensurate(sig signals, outerStep time.Duration, k int) bool 
 }
 
 // walkExpr sweeps an expr tree for now64 and recurses into any embedded
-// ScalarSubquery.Input plan (which chplan.Walk does not reach), running the
-// scalar-heavy cost check and the full node walk inside the subquery.
-func (p *Planner) walkExpr(e chplan.Expr, sig *signals) {
+// ScalarSubquery.Input / InSubquery.Subquery plan (which chplan.Walk does not
+// reach), running the scalar-heavy cost check and the full node walk inside
+// the subquery. predStart/predEnd/predStep is the grid predicted at THIS
+// point in the main spine (the same bounds+cadence walkNode threads to e's
+// owning node) — the anchor-compatibility check inside checkScalarHeavy needs
+// them to judge a windowed node buried in the embedded plan against the grid
+// actually predicted here, not against the top-level request grid
+// unconditionally (a scalar embedded under a subquery's inner spine must be
+// judged against the SUBQUERY's own inner grid and resolution).
+func (p *Planner) walkExpr(e chplan.Expr, predStart, predEnd time.Time, predStep time.Duration, sig *signals) {
 	chplan.InspectExprNodes(e, func(x chplan.Expr) bool {
 		if fc, ok := x.(*chplan.FuncCall); ok && fc.Name == "now64" {
 			sig.sawNow64 = true
 		}
 		return true
 	}, func(inner chplan.Node) {
-		// A ScalarSubquery interior. Walk it for slice-invariance / now64,
-		// and apply the scalar-heavy cost gate.
-		p.checkScalarHeavy(inner, sig)
+		// A ScalarSubquery / InSubquery interior. Walk it for
+		// slice-invariance / now64, and apply the scalar-heavy cost gate.
+		p.checkScalarHeavy(inner, predStart, predEnd, predStep, sig)
 		// The interior is below the spine and anchor-independent; walk it
 		// for now64 / un-sliceable markers but pin its depth so its bounds
 		// are not treated as a grid level.
@@ -910,23 +941,117 @@ func (p *Planner) walkScalarInterior(n chplan.Node, sig *signals) {
 	})
 }
 
-// checkScalarHeavy implements signal (6): a ScalarSubquery whose interior
-// scan-span × fan-out exceeds a configured fraction of the outer plan cannot
-// be cheaply replicated. The scalar is not hoisted (executed once with the
-// literal bound), so any scalar interior carrying its own windowed spine is
-// conservatively treated as heavy — replicating it K× is the cost a hoist
-// would avoid. A purely row-wise scalar (no windowed
-// node inside) is cheap and admissible.
-func (p *Planner) checkScalarHeavy(inner chplan.Node, sig *signals) {
-	hasWindowedInterior := false
-	chplan.Walk(inner, func(node chplan.Node) bool {
-		switch node.(type) {
-		case *chplan.RangeWindow, *chplan.RangeLWR, *chplan.RangeBucketFanout:
-			hasWindowedInterior = true
-		}
-		return true
-	})
-	if hasWindowedInterior {
+// checkScalarHeavy implements signal (7): a ScalarSubquery / InSubquery
+// interior whose own windowed spine cannot be proven anchor-compatible with
+// the grid predicted at the point it is embedded is too expensive to
+// replicate K×, since the scalar itself is never hoisted (route B never
+// re-anchors an Expr-embedded plan — see scalarInteriorAnchorCompatible's
+// doc for why that is exactly what makes the equality test below safe) and
+// is instead re-evaluated once per shard.
+//
+// A windowed node whose own (Start, End[, OuterRange], Step) sit EXACTLY on
+// the grid+cadence predicted at that point is evaluating one value per OUTER
+// anchor — the same per-step cadence #1455/#1886 made computed scalar
+// arguments bind at — so its own read span is bounded by what a single
+// anchor of the outer spine already reads, not by an independent,
+// unboundedly wide scan. The (Start, End[, OuterRange]) half of that is the
+// identical slice-invariance argument signal 4/5's grid-prediction guard
+// already accepts for the main spine (checkRangeWindowGrid /
+// checkRangeLWRGrid), applied to a node reached through an Expr slot instead
+// of a Node child; the Step equality is this check's OWN addition, absent
+// from the main-spine guard because a nested subquery resolution there is
+// legitimately allowed to differ from its parent's Step — a freedom this
+// check does NOT extend, because nothing here re-derives the interior's own
+// fan-out (F = Range/Step) the way the main spine's recordGridCarrier does,
+// so a same-bounds-different-cadence interior (e.g. a nested one-minute grid
+// under a fifteen-second outer request) is NOT provably a bounded one value
+// per OUTER anchor and stays heavy. A node that does NOT match — a
+// different span, a different cadence, an @-pinned anchor, a
+// RangeBucketFanout, or a Step<=0 instant leaf with no established per-step
+// argument — is conservatively still heavy: see scalarInteriorAnchorCompatible.
+func (p *Planner) checkScalarHeavy(inner chplan.Node, predStart, predEnd time.Time, predStep time.Duration, sig *signals) {
+	if !scalarInteriorAnchorCompatible(inner, predStart, predEnd, predStep) {
 		sig.sawScalarHeavy = true
 	}
+}
+
+// scalarInteriorAnchorCompatible walks a scalar/subquery interior's node
+// tree threading grid predictions exactly as walkNode threads them down the
+// main spine — a matrix RangeWindow widens the prediction via InputWindow
+// and recurses into Input (mirroring the RangeWindow arm of walkNode /
+// chplan.ReanchorRange / promql.widenSubquerySpine, the three consumers
+// RangeWindow.InputWindow's doc names as the single shared owner of that
+// arithmetic), a RangeLWR is a spine leaf checked against the current
+// predicted grid — and reports false the moment it finds a windowed node
+// that is NOT provably anchor-compatible. predStep is carried UNCHANGED
+// through the whole walk (never re-derived from a nested node's own Step,
+// unlike predStart/predEnd): every windowed node anywhere in the interior
+// must match the SAME cadence the ScalarSubquery / InSubquery was embedded
+// at, because that single cadence is the only one this check has an argument
+// for — see checkScalarHeavy's doc for why a same-bounds-different-cadence
+// nested node does not get the same argument.
+//
+// It never needs to handle an UNPINNED (zero Start/End) windowed node: the
+// plan reaching the Planner has already been through lowering's own
+// subquery-widening pass (promql.widenSubquerySpine, invoked self-contained
+// by every subquery lowering, including one nested inside a computed scalar
+// argument), so every windowed node anywhere in a route-A-emittable plan —
+// on the main spine or inside an Expr-embedded interior — already carries
+// concrete bounds. A zero-bound comparison here would therefore only ever
+// fail the equality test below, which is the conservative outcome anyway.
+//
+// "Anchor-compatible" is deliberately narrower than "correct": route B never
+// re-anchors an Expr-embedded interior (chplan.ReanchorRange's default case
+// shares any node reached only through a Node's Children() verbatim, and
+// Expr slots — ScalarSubquery.Input, InSubquery.Subquery — are invisible to
+// that walk entirely; unpinSpineCOW's own doc says the same), so whatever
+// this function admits keeps evaluating the FULL span it always evaluated
+// under route A, identically in every shard — correctness cannot regress
+// from admitting a node here. What DOES vary is cost: an interior that
+// matches the predicted grid AND cadence costs route B at most what the
+// outer spine's own per-shard share already costs; the equality test is how
+// this package tells that shape apart from a genuinely independent,
+// unboundedly wide scan (an @-pinned interior, an interior whose span or
+// cadence has nothing to do with the outer grid) that really would multiply
+// K× into real extra cost. A RangeBucketFanout is never admitted regardless
+// of its bounds: it is excluded from the routable spine family on the MAIN
+// spine too (signal 1b, carrierGeometry.reanchorable), and this package has
+// no argument that makes it safe here that it does not already have there.
+// RangeWindowNative, RangeWindowResample and AbsentOverTime are absent from
+// chplan.IsSliceInvariant's registry, so one appearing inside an interior
+// already fails the whole plan via walkScalarInterior's slice-invariance
+// sweep before this function's answer can matter. StepGrid IS registered
+// slice-invariant and falls through the switch below to the generic
+// Children() walk unchecked — deliberately: it is the bare, data-free anchor
+// axis behind `time()` / `vector(scalar)` / the zero-arg date functions, it
+// reads no samples at all, so replicating it K× costs nothing regardless of
+// where its own anchors sit, and this was already true of the pre-existing
+// (kind-based) check this function replaces.
+func scalarInteriorAnchorCompatible(n chplan.Node, predStart, predEnd time.Time, predStep time.Duration) bool {
+	if n == nil {
+		return true
+	}
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		// A Step<=0 instant leaf carries no established per-step argument
+		// (no anchor grid to match against) and stays conservatively heavy.
+		if v.Step <= 0 || v.Step != predStep || !rangeWindowGridMatches(v, predStart, predEnd) {
+			return false
+		}
+		inStart, inEnd := v.InputWindow(predStart, predEnd)
+		return scalarInteriorAnchorCompatible(v.Input, inStart, inEnd, predStep)
+	case *chplan.RangeLWR:
+		if v.Step <= 0 || v.Step != predStep || !rangeLWRGridMatches(v, predStart, predEnd) {
+			return false
+		}
+		return scalarInteriorAnchorCompatible(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, predStep)
+	case *chplan.RangeBucketFanout:
+		return false
+	}
+	for _, c := range n.Children() {
+		if !scalarInteriorAnchorCompatible(c, predStart, predEnd, predStep) {
+			return false
+		}
+	}
+	return true
 }

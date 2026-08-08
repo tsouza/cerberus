@@ -77,10 +77,32 @@ The signals, each gathered in the one pass:
    of its own `Step`) is phase-0 for **any** `End`, so its per-shard anchor set
    is always a subset of the unsliced one and it imposes no quantum constraint
    at all — the ordinary `expr[range:res]` subquery keeps routing.
-7. **Scalar replication cost.** A `ScalarSubquery` whose interior carries its
-   own windowed spine is too expensive to replicate `K×`, so it routes A: the
-   slice benefit cannot pay for `K` copies of an expensive scalar. A purely
-   row-wise scalar interior is cheap and admissible.
+7. **Scalar replication cost.** A `ScalarSubquery` / `InSubquery` whose
+   interior carries a windowed node is expensive to replicate `K×` UNLESS
+   that node is anchor-compatible with the grid predicted at the point it is
+   embedded — the same `(Start, End[, OuterRange])` equality signal 5 already
+   requires of the main spine, applied to a node reached through an Expr slot
+   instead of a Node child, PLUS an exact `Step` match against the cadence
+   predicted there (`scalarInteriorAnchorCompatible`, called from
+   `Planner.checkScalarHeavy`). The `Step` half is this check's own addition
+   — the main spine's own guard deliberately allows a nested subquery
+   resolution to differ from its parent's `Step`, but nothing here re-derives
+   an interior node's fan-out the way the main spine's `recordGridCarrier`
+   does, so a same-bounds-different-cadence interior is not provably bounded
+   and stays heavy. Route B
+   never re-anchors an Expr-embedded interior — `chplan.ReanchorRange` and the
+   slicer's `UnpinSpine` both share it verbatim into every shard, unmodified —
+   so an anchor-compatible node still evaluates the exact span it always
+   evaluated under route A, identically in every shard: admitting it changes
+   cost, never correctness. What the equality test buys is telling that
+   bounded shape (one value per OUTER anchor, e.g. the per-step scalar
+   argument `clamp_max(v, scalar(bound))` binds since #1455/#1886) apart from
+   a genuinely independent, unboundedly wide scan — an `@`-pinned interior, or
+   one whose span has nothing to do with the outer grid — which really would
+   multiply `K×` into real extra cost and stays heavy. A `RangeBucketFanout`
+   is never admitted regardless of its bounds (it is outside the routable
+   spine family on the main spine too, signal 2); a purely row-wise scalar
+   interior (no windowed node at all) was always cheap and stays admissible.
 
 When every signal passes, the plan is **eligible**. The cost grid then decides
 whether slicing is worthwhile:

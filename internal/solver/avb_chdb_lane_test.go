@@ -206,6 +206,23 @@ var laneFixtures = []string{
 	//   sliced ratio equals route A's. The offset drops the first ~10m of
 	//   anchors on the errors arm, but job=a/job=b stay dense afterward.
 	"sum by (job) (rate(http_requests_total[5m])) / sum by (job) (rate(http_errors_total[5m] offset 5m))",
+	// Per-step computed scalar arguments (EPIC #1469's checkScalarHeavy half:
+	// Planner.scalarInteriorAnchorCompatible admits a ScalarSubquery interior
+	// anchored to the outer step grid instead of rejecting on node kind
+	// alone). Both bind their scalar argument via a RangeLWR sitting EXACTLY
+	// on the outer [laneStart, laneEnd]/laneStep grid — the shape
+	// #1455/#1886 produce for `clamp_max(v, scalar(bound))` /
+	// `clamp_min(v, scalar(bound))` — so the Planner now routes them instead
+	// of declining with scalar-heavy, and this lane proves route B's
+	// concatenated shards equal route A's single pass byte-for-byte even
+	// though the ScalarSubquery interior itself is shared verbatim into
+	// every shard (chplan.ReanchorRange never re-anchors an Expr-embedded
+	// plan — see checkScalarHeavy's doc). job=a / job=b single-series
+	// selectors keep scalar()'s one-row rule satisfied (no NaN from a
+	// multi-series scalar argument), so the boundary case stays isolated to
+	// the ratio fixtures above.
+	"clamp_max(http_requests_total, scalar(http_requests_total{job=\"a\"}))",
+	"clamp_min(http_requests_total, scalar(http_requests_total{job=\"b\"}))",
 }
 
 // TestSolver_AvsB_ChDB_Differential is the per-PR parity workhorse. For each

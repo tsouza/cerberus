@@ -573,6 +573,146 @@ func TestPlan_ScalarHeavyRejected(t *testing.T) {
 	}
 }
 
+// TestPlan_ScalarAnchorCompatibleRoutes: a ScalarSubquery whose interior is a
+// per-step RangeLWR sitting EXACTLY on the grid the request predicts at the
+// point it is embedded — the shape #1455/#1886 produce for a computed scalar
+// argument such as `clamp_max(v, scalar(bound))` — must be admitted (NOT
+// scalar-heavy), because route B never re-anchors an Expr-embedded interior:
+// it is shared verbatim into every shard exactly as route A would evaluate
+// it, so admitting it changes cost, never correctness. This pins EPIC #1469's
+// checkScalarHeavy half: kind-based conservatism is replaced by an
+// anchor-compatibility proof.
+func TestPlan_ScalarAnchorCompatibleRoutes(t *testing.T) {
+	t.Parallel()
+	agg := oomWindow().(*chplan.Aggregate)
+	anchoredInner := &chplan.RangeLWR{
+		Input:         leafScan(),
+		Start:         gridStart,
+		End:           gridEnd,
+		Step:          gridStep,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+	plan := &chplan.Filter{
+		Input: agg,
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.ColumnRef{Name: "Value"},
+			Right: &chplan.ScalarSubquery{Input: anchoredInner},
+		},
+	}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(plan, oomMeta())
+	if !routed {
+		t.Fatalf("anchor-compatible scalar interior must route; reason=%q", d.Reason)
+	}
+	if d.Reason != ReasonRouted {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
+	}
+	if d.K != 8 {
+		t.Fatalf("K = %d, want 8 (same OOM shape as TestPlan_OOMShapeRoutes)", d.K)
+	}
+}
+
+// TestPlan_ScalarAnchorIncompatibleRejected is the negative table for the
+// anchor-compatibility carve-out: each case builds a windowed interior that
+// resembles TestPlan_ScalarAnchorCompatibleRoutes's admitted shape in every
+// way but ONE, and every one of them must still be scalar-heavy — a false
+// ADMISSION here would let route B replicate a genuinely unbounded scan K×,
+// which is the mistake this check exists to rule out.
+func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		inner chplan.Node
+	}{
+		{
+			// Same (Start, End) as the outer grid, but a DIFFERENT cadence
+			// (1m vs the outer grid's 15s): the interior is not provably
+			// bounded to one value per OUTER anchor, so it stays heavy even
+			// though its span coincides with the outer grid's span. Mirrors
+			// TestPlan_ScalarHeavyRejected's heavyInner.
+			name: "grid matches, step diverges",
+			inner: &chplan.RangeWindow{
+				Input:           leafScan(),
+				Func:            "sum_over_time",
+				Range:           24 * time.Hour,
+				Step:            time.Minute,
+				OuterRange:      time.Hour,
+				Start:           gridStart,
+				End:             gridEnd,
+				TimestampColumn: "TimeUnix",
+				ValueColumn:     "Value",
+			},
+		},
+		{
+			// Same cadence as the outer grid, but a completely independent
+			// span (a window 30 days in the past) — an @-pinned-style
+			// divergence that really would need full, unbounded replication.
+			name: "step matches, span diverges",
+			inner: &chplan.RangeLWR{
+				Input:         leafScan(),
+				Start:         gridStart.Add(-30 * 24 * time.Hour),
+				End:           gridEnd.Add(-30 * 24 * time.Hour),
+				Step:          gridStep,
+				Lookback:      5 * time.Minute,
+				MetricNameCol: "MetricName",
+				AttributesCol: "Attributes",
+				TimestampCol:  "TimeUnix",
+				ValueCol:      "Value",
+			},
+		},
+		{
+			// A RangeBucketFanout sitting EXACTLY on the outer grid and
+			// cadence — still never admitted, because it is outside the
+			// routable spine family on the main spine too (signal 1b) and
+			// this package has no argument that makes it safe here that it
+			// does not already have there.
+			name: "RangeBucketFanout, grid AND step match",
+			inner: &chplan.RangeBucketFanout{
+				Input:        leafScan(),
+				Start:        gridStart,
+				End:          gridEnd,
+				Step:         gridStep,
+				Lookback:     5 * time.Minute,
+				AnchorAlias:  "anchor_ts",
+				TimestampCol: "TimeUnix",
+				AggFuncs: []chplan.AggFunc{{
+					Name:  "sumForEach",
+					Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
+					Alias: "BucketCounts",
+				}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			agg := oomWindow().(*chplan.Aggregate)
+			plan := &chplan.Filter{
+				Input: agg,
+				Predicate: &chplan.Binary{
+					Op:    chplan.OpGt,
+					Left:  &chplan.ColumnRef{Name: "Value"},
+					Right: &chplan.ScalarSubquery{Input: tc.inner},
+				},
+			}
+			p := &Planner{Cfg: autoCfg()}
+			d, routed := p.Plan(plan, oomMeta())
+			if routed {
+				t.Fatalf("%s: must not route", tc.name)
+			}
+			if d.Reason != ReasonScalarHeavy {
+				t.Fatalf("%s: reason = %q, want %q", tc.name, d.Reason, ReasonScalarHeavy)
+			}
+		})
+	}
+}
+
 // nestedSpineStep is the outer grid step the commensurability tests classify
 // on: a 1-minute grid keeps the N / K / quantum arithmetic in each test's
 // comment checkable by hand.
