@@ -6,7 +6,7 @@
       "message": "logql: label_replace: %w",
       "class": "divergence",
       "trigger_query": "label_replace(rate({app=\"x\"}[5m]), \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea?)|(?P\u003cdup\u003eb)\")",
-      "tracking_issue": 1768,
+      "tracking_issue": 1956,
       "evidence": {
         "guard": [
           "past returning if e.Left == nil",
