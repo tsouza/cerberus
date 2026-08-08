@@ -160,10 +160,8 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 		t.Fatalf("load %s: %v", rejectionCatalogueDir, err)
 	}
 
-	m := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	checked := 0
-	sawUnseededExpHistogramTrigger := false
 	for _, e := range cat.Entries {
 		if e.Head != promHead || e.TriggerQuery == "" {
 			continue
@@ -177,23 +175,6 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 		collectSelectorNames(expr, names)
 		checked++
 		for _, name := range sortedSetKeys(names) {
-			// Exp-histogram routing rejects on the NAME alone
-			// (schema.Metrics.IsExpHistogramMetric is a pure suffix
-			// predicate, consulted before any row is read), so the suffix
-			// IS the trigger and an UNSEEDED exp-histogram family still
-			// scores the guard at its site. That — and only that — is what
-			// this arm exempts: a seeded exp-histogram family needs no
-			// exemption and falls through to the ordinary check below.
-			//
-			// Narrowing the arm to the unseeded case is what keeps it from
-			// outliving its premise: the moment every exp-histogram trigger
-			// names a seeded family, nothing sets the flag and the liveness
-			// assertion after the loop fails, demanding the arm's deletion.
-			// The arm names no specific metric and grows no entries.
-			if m.IsExpHistogramMetric(name) && !seeded[name] {
-				sawUnseededExpHistogramTrigger = true
-				continue
-			}
 			if !seeded[name] {
 				t.Errorf("%s: trigger %q selects %q, which the compat seeder never writes.\n"+
 					"Both backends answer it empty, so the parity (or divergence) verdict "+
@@ -205,11 +186,6 @@ func TestPromQLRejectionTriggersUseSeededMetrics(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no PromQL trigger queries found in the catalogue; this test would compare nothing")
-	}
-	if !sawUnseededExpHistogramTrigger {
-		t.Error("every exp-histogram-suffixed name a PromQL trigger selects is one the seeder " +
-			"writes, so the exemption arm of this gate exempts nothing the ordinary seeded " +
-			"check would not already accept; it is dead and should be removed")
 	}
 }
 

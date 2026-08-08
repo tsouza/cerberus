@@ -74,6 +74,20 @@
 #    set", so a wrong answer there is an empty result at status 200 rather
 #    than an error. The block's last row is the injective control that
 #    discriminates the two.
+# 9. A cerberus-owned block is appended to the native-histogram section for
+#    `demo_shifting_latency_exp_hist` (cmd/seed/main.go). `demo_latency_exp_hist`
+#    (edit 7) holds its bucket shape fixed and only scales it, which makes it
+#    scalar-invariant to the two candidate lowerings of the aggregated
+#    range-vector shape `histogram_quantile(phi, sum(rate(<exp_hist>[w])))` —
+#    the correct two-stage "per-series rate, then merge" and a flat
+#    single-stage fold that sums raw cumulative counts across the window
+#    differ there only by a positive scalar, and histogram_quantile reads
+#    bucket ratios, so a differential case over it would score green through
+#    the bug. `demo_shifting_latency_exp_hist`'s shape moves across the
+#    window, so the two lowerings land in different buckets, ~4.2x apart at
+#    the tester's eval point; its sparse third instance further pins the
+#    two-sample rate() floor into the merged answer, via a schema
+#    coarsening a wrong floor would admit one window early.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -568,6 +582,37 @@ test_cases:
   # Same walk under a label matcher: one series, one known bucket layout,
   # so the result pins that instance's offset rather than either instance's.
   - query: 'histogram_quantile(0.9, demo_latency_exp_hist{instance="demo.promlabs.com:10000"})'
+  # demo_shifting_latency_exp_hist: the aggregated range-vector shape
+  # `histogram_quantile(phi, sum(rate(<exp_hist>[w])))`. demo_latency_exp_hist
+  # above holds its bucket shape fixed and only scales it, so the correct
+  # two-stage lowering (per-series rate, then merge) and a flat single-stage
+  # fold that sums every in-window sample's raw cumulative counts differ
+  # there by a positive scalar only — histogram_quantile reads bucket
+  # RATIOS, so the two lowerings are indistinguishable and the harness would
+  # score green through the bug. demo_shifting_latency_exp_hist's shape
+  # moves across the window instead, so the two lowerings land in different
+  # buckets (~4.2x apart at the tester's instant-query eval point; see
+  # cmd/seed/main.go for the worked geometry). [1m] excludes the sparse
+  # third instance (:10002, written every 90s, never twice inside a 60s
+  # window, so rate() must drop it); [5m] always admits it, which drags the
+  # merged native-histogram schema from 0 to -1 and is how a wrong
+  # two-sample floor shows up in the quantile rather than only in a series
+  # count.
+  - query: 'histogram_quantile(0, sum(rate(demo_shifting_latency_exp_hist[1m])))'
+  - query: 'histogram_quantile(0.1, sum(rate(demo_shifting_latency_exp_hist[1m])))'
+  - query: 'histogram_quantile(0.5, sum(rate(demo_shifting_latency_exp_hist[1m])))'
+  - query: 'histogram_quantile(0.9, sum(rate(demo_shifting_latency_exp_hist[1m])))'
+  - query: 'histogram_quantile(1, sum(rate(demo_shifting_latency_exp_hist[1m])))'
+  - query: 'histogram_quantile(0, sum(rate(demo_shifting_latency_exp_hist[5m])))'
+  - query: 'histogram_quantile(0.1, sum(rate(demo_shifting_latency_exp_hist[5m])))'
+  - query: 'histogram_quantile(0.5, sum(rate(demo_shifting_latency_exp_hist[5m])))'
+  - query: 'histogram_quantile(0.9, sum(rate(demo_shifting_latency_exp_hist[5m])))'
+  - query: 'histogram_quantile(1, sum(rate(demo_shifting_latency_exp_hist[5m])))'
+  # Per-series (ungrouped) form, mirroring the classic-histogram case above
+  # (`histogram_quantile({{.quantile}}, rate(demo_api_request_duration_seconds_bucket[1m]))`):
+  # no cross-series merge, so this pins the per-series rate/delta step alone.
+  - query: 'histogram_quantile({{.quantile}}, rate(demo_shifting_latency_exp_hist[1m]))'
+    variant_args: ['quantile']
   # Float inputs: the native-histogram value functions skip float samples
   # rather than erroring, so a float family and an absent family both
   # answer the empty vector on both backends. These pin that acceptance,

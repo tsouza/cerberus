@@ -158,6 +158,7 @@ type expHistogramFixtureSource struct {
 
 var expHistogramFixtureSources = []expHistogramFixtureSource{
 	{"demo_latency_exp_hist", "otel_metrics_exponential_histogram"},
+	{"demo_shifting_latency_exp_hist", "otel_metrics_exponential_histogram"},
 }
 
 // promBucketIndexShift is the one-bucket offset between the two sparse
