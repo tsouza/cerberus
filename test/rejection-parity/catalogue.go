@@ -18,7 +18,10 @@ import (
 // heads maps each lowering package directory (relative to the repo
 // root) to its head identifier. The head identifier doubles as the
 // required error-message prefix ("promql: ..."), which every error
-// site in the three packages carries by convention.
+// site in the three packages carries by convention — except a site
+// built through [verbatimErrorConstructor], whose message is a
+// reference backend's own wording and is exempt; see
+// isErrorConstructor.
 var heads = map[string]string{
 	"internal/promql":  "promql",
 	"internal/logql":   "logql",
@@ -93,6 +96,23 @@ type Entry struct {
 	// rejections set "traceql_metrics" because /api/search does not
 	// accept metrics expressions.
 	Endpoint string `json:"endpoint,omitempty"`
+
+	// GuardValues (class=rejection only, promql head only) is the
+	// per-step value series fed directly to a registered
+	// promql.ScalarGuard's Check when TriggerQuery alone cannot reach
+	// the site: a lowering-time rejection is proved by lowering and
+	// requiring an error (the TestRejectionTriggersExerciseSites
+	// default), but an execution-time guard's Check only ever runs
+	// against values ClickHouse would have produced, and some domain
+	// branches (the int64-underflow arm of aggregationParamDomain) are
+	// reachable only by a multi-step series a single lowering call can
+	// never produce. When GuardValues is set, the exerciser instead
+	// lowers TriggerQuery with a guard sink, requires lowering to
+	// SUCCEED with exactly one registered guard, and applies that
+	// guard's Check to GuardValues — mirroring the call shape
+	// internal/engine/engine.go's runGuards uses in production, minus
+	// the ClickHouse round trip.
+	GuardValues []float64 `json:"guard_values,omitempty"`
 
 	// Rationale (class=internal) documents why the site is not a
 	// wire-reachable semantic rejection.
@@ -406,11 +426,15 @@ func scanFunc(sc *astScope, fn *ast.FuncDecl, relPath, head, prefix string) ([]S
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		if !isErrorConstructor(call.Fun) {
+		verbatim, ok := isErrorConstructor(call.Fun)
+		if !ok {
 			return true
 		}
 		msg, ok := stringLiteral(call.Args[0])
-		if !ok || !strings.HasPrefix(msg, prefix) {
+		if !ok {
+			return true
+		}
+		if !verbatim && !strings.HasPrefix(msg, prefix) {
 			return true
 		}
 		seen[msg]++
@@ -429,23 +453,51 @@ func scanFunc(sc *astScope, fn *ast.FuncDecl, relPath, head, prefix string) ([]S
 	return out, evidence
 }
 
-// isErrorConstructor matches fmt.Errorf and errors.New selector calls.
-func isErrorConstructor(fun ast.Expr) bool {
-	sel, ok := fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
+// verbatimErrorConstructor is the identifier of the package-local
+// wrapper a lowering package calls to construct an error whose message
+// reproduces a reference backend's own wording byte for byte — see
+// promql.verbatimErrorf, the one definition today. Matched by name only,
+// the same way fmt.Errorf and errors.New are matched below: the scanner
+// does not type-check or resolve imports, so any lowering package that
+// declares a same-named function opts its calls into the catalogue on
+// the same terms. That is deliberate — the exemption from the head
+// prefix belongs to the call site that asks for it, not to a blanket
+// rule over unprefixed errors, which would admit every accidental typo
+// of the "<head>: " convention along with the handful of sites that
+// truly need it.
+const verbatimErrorConstructor = "verbatimErrorf"
+
+// isErrorConstructor reports whether fun is a call shape the scanner
+// treats as an error-construction site (ok), and — when it is — whether
+// the site's message is exempt from the head-prefix requirement
+// scanFunc otherwise enforces (verbatim).
+//
+// fmt.Errorf and errors.New sites carry cerberus's own words and must
+// start with "<head>: " by convention (see the heads map's doc
+// comment). A verbatimErrorConstructor site is the deliberate exception:
+// its message is a reference backend's own wording, reproduced so the
+// parity harness can diff against the exact string reference itself
+// reports, and prefixing it would fabricate an annotation reference
+// never wrote.
+func isErrorConstructor(fun ast.Expr) (verbatim, ok bool) {
+	if id, isIdent := fun.(*ast.Ident); isIdent {
+		return id.Name == verbatimErrorConstructor, id.Name == verbatimErrorConstructor
 	}
-	pkg, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return false
+	sel, isSel := fun.(*ast.SelectorExpr)
+	if !isSel {
+		return false, false
+	}
+	pkg, isPkgIdent := sel.X.(*ast.Ident)
+	if !isPkgIdent {
+		return false, false
 	}
 	switch {
 	case pkg.Name == "fmt" && sel.Sel.Name == "Errorf":
-		return true
+		return false, true
 	case pkg.Name == "errors" && sel.Sel.Name == "New":
-		return true
+		return false, true
 	}
-	return false
+	return false, false
 }
 
 // stringLiteral folds an expression into its constant string value:
@@ -509,6 +561,7 @@ func Generate(repoRoot string, prev *Catalogue) (*Catalogue, error) {
 			e.Class = p.Class
 			e.TriggerQuery = p.TriggerQuery
 			e.Endpoint = p.Endpoint
+			e.GuardValues = p.GuardValues
 			e.Rationale = p.Rationale
 			e.TrackingIssue = p.TrackingIssue
 			e.Since = p.Since
