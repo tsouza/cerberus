@@ -149,12 +149,43 @@ test('the CLI FAILS on a committed binary, naming the file and the format', () =
   assert.match(out, /perf-profile: ELF executable/);
 });
 
+// #1938: every scan used to read the tracked INDEX only (`git ls-files`),
+// so a file present in the working tree but never `git add`-ed was invisible
+// — the gate reported clean on content it would reject the instant the file
+// was staged. Deliberately NOT calling stage() here is the point: these two
+// cases pin that an UNTRACKED violation is still caught.
+test('the CLI FAILS on an UNTRACKED binary, naming the file and the format (#1938)', () => {
+  const { dir } = newFixtureRepo();
+  writeFileSync(join(dir, 'perf-profile'), syntheticElf());
+  const { status, out } = runGate('binary', dir);
+  assert.notEqual(
+    status,
+    0,
+    `the binary scan must fail on an untracked binary; a tracked-only regression would exit 0 here:\n${out}`,
+  );
+  assert.match(out, /::error::/);
+  assert.match(out, /perf-profile: ELF executable/);
+});
+
 test('the CLI FAILS on a stray root file, naming it', () => {
   const { dir, stage } = newFixtureRepo();
   writeFileSync(join(dir, 'release-pr-body.md'), fixtureContent);
   stage();
   const { status, out } = runGate('root-allowlist', dir);
   assert.notEqual(status, 0, `the root scan must fail; got:\n${out}`);
+  assert.match(out, /::error::/);
+  assert.match(out, /release-pr-body\.md/);
+});
+
+test('the CLI FAILS on an UNTRACKED stray root file, naming it (#1938)', () => {
+  const { dir } = newFixtureRepo();
+  writeFileSync(join(dir, 'release-pr-body.md'), fixtureContent);
+  const { status, out } = runGate('root-allowlist', dir);
+  assert.notEqual(
+    status,
+    0,
+    `the root scan must fail on an untracked stray file; a tracked-only regression would exit 0 here:\n${out}`,
+  );
   assert.match(out, /::error::/);
   assert.match(out, /release-pr-body\.md/);
 });
@@ -166,13 +197,14 @@ test('the CLI rejects an unknown CHECK rather than passing silently', () => {
   assert.match(out, /unknown CHECK/);
 });
 
-// newWorkflowFixtureRepo — a throwaway repo carrying one tracked workflow.
-// Deliberately NOT newFixtureRepo(): that helper materialises every
+// newWorkflowFixtureRepo — a throwaway repo carrying one workflow, tracked by
+// default. Deliberately NOT newFixtureRepo(): that helper materialises every
 // ROOT_ALLOWLIST entry as a plain FILE, so `.github` there is a file and
 // could never hold `.github/workflows/*.yml`. The registry-login scan reads
-// the tracked workflow set and ignores the rest of the root, so a minimal
+// the workflow set in scope and ignores the rest of the root, so a minimal
 // repo is both sufficient and honest about what the scan actually looks at.
-function newWorkflowFixtureRepo(workflowYaml) {
+// Pass `stage: false` to leave the workflow file untracked (#1938 case).
+function newWorkflowFixtureRepo(workflowYaml, { stage = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'repo-hygiene-wf-'));
   const run = (args) => {
     const res = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
@@ -181,7 +213,7 @@ function newWorkflowFixtureRepo(workflowYaml) {
   run(['init', '--quiet']);
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(dir, '.github', 'workflows', 'probe.yml'), workflowYaml);
-  run(['add', '-A']);
+  if (stage) run(['add', '-A']);
   return dir;
 }
 
@@ -213,6 +245,21 @@ test('the CLI FAILS on a workflow that uses docker/login-action, naming file:lin
   assert.match(out, /::error::/);
   assert.match(out, /\.github\/workflows\/probe\.yml:4/);
   assert.match(out, /registry-login\.mjs/);
+});
+
+test('the CLI FAILS on an UNTRACKED workflow that uses docker/login-action (#1938)', () => {
+  const dir = newWorkflowFixtureRepo(
+    ['jobs:', '  a:', '    steps:', '      - uses: docker/login-action@v4', ''].join('\n'),
+    { stage: false },
+  );
+  const { status, out } = runGate('registry-login', dir);
+  assert.notEqual(
+    status,
+    0,
+    `the registry-login scan must fail on an untracked workflow; a tracked-only regression would exit 0 here:\n${out}`,
+  );
+  assert.match(out, /::error::/);
+  assert.match(out, /\.github\/workflows\/probe\.yml:4/);
 });
 
 test('the CLI PASSES on a workflow that runs the retrying login script', () => {

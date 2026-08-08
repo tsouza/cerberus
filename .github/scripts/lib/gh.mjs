@@ -157,11 +157,24 @@ export function git(args, opts = {}) {
   return capture('git', args, opts);
 }
 
-// lsFiles() — `git ls-files -z <pathspecs>` -> string[] of tracked paths.
+// lsFiles() — `git ls-files -z <pathspecs>` -> string[] of paths in scope.
 // Honours include globs and `:!:`/`:(exclude)` exclude pathspecs exactly
-// as the extracted bash did (git ls-files already drops .gitignored paths).
+// as the extracted bash did.
+//
+// `--cached --others --exclude-standard` rather than the bare tracked-only
+// default: a file a generator just wrote but nobody `git add`-ed yet is
+// invisible to a plain `git ls-files`, which reads the INDEX and nothing
+// else. That is sound in CI (the runner checks out a committed tree, so
+// nothing in scope is ever untracked) and sound in the pre-push hook (by
+// push time everything scanned is committed), but it is a real gap for a
+// scan run directly against a local working tree mid-edit — exactly the
+// narrowed local reproduction CLAUDE.md's contribution rules ask for after
+// a red CI check (issue #1938). `--exclude-standard` keeps `.gitignore`d
+// paths out of scope exactly as before; only the untracked-but-NOT-ignored
+// subset is newly included, and it is included for every caller (every
+// `forbid-skip.mjs` scan routes through this one function).
 export function lsFiles(pathspecs, opts = {}) {
-  const res = git(['ls-files', '-z', '--', ...pathspecs], opts);
+  const res = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...pathspecs], opts);
   if (res.status !== 0) {
     error(`git ls-files failed: ${res.stderr.trim()}`);
     process.exit(res.status);

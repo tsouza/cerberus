@@ -38,10 +38,17 @@
 //                         `uses:` form only, so prose that NAMES the Action
 //                         (this comment included) stays legal.
 //
-// All three scans read the tracked set from `git ls-files`, so .gitignored
-// paths are out of scope by construction: the companion fix for an artefact
-// this gate catches is usually a `git rm` PLUS a .gitignore rule, and the
-// ignore rule alone is what keeps it from coming back.
+// All three scans read their file set from `git ls-files`, restricted to the
+// tracked INDEX plus every untracked-but-NOT-ignored working-tree path
+// (`pathsInScope()` / `blobsInScope()` below) — so a `.gitignore`d path stays
+// out of scope by construction (the companion fix for an artefact this gate
+// catches is usually a `git rm` PLUS a .gitignore rule, and the ignore rule
+// alone is what keeps it from coming back), but a file that merely has not
+// been `git add`-ed yet does not. Reading the INDEX alone would miss exactly
+// that case: a generator writes a new file and nobody has staged it, which is
+// sound on CI (the runner checks out a committed tree) but a real gap for
+// `node .github/scripts/repo-hygiene.mjs` run directly against a local
+// working tree mid-edit (issue #1938).
 //
 // The gate fails CLOSED. A tracked blob whose content cannot be read is an
 // error, not a pass: we retry it out of the object store via `git cat-file`
@@ -55,7 +62,7 @@
 //
 // Exit codes: 0 = clean, 1 = a violation was found (or bad $CHECK).
 
-import { closeSync, openSync, readFileSync, readSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readFileSync, readSync } from 'node:fs';
 import process from 'node:process';
 
 import { capture, error, git, log, notice } from './lib/gh.mjs';
@@ -198,16 +205,51 @@ export function loginActionUses(source) {
   return hits;
 }
 
-// trackedBlobs — `git ls-files -s` -> [{ mode, sha, path }] for the entries
-// that carry sniffable content. Submodule gitlinks and symlinks are dropped
-// here (they have no blob in this repository / store a path, not content).
-function trackedBlobs() {
+// pathsInScope — `git ls-files` restricted to CONTENT this gate should ever
+// see: every tracked path (the git INDEX) PLUS every untracked path git
+// itself would not ignore (`--others --exclude-standard`). `--exclude-standard`
+// keeps `.gitignore`d paths out of scope exactly as before; only the
+// untracked-but-NOT-ignored subset is newly in scope (issue #1938). Shared by
+// the root-allowlist and registry-login scans, which only need paths.
+function pathsInScope(pathspecs = []) {
+  const res = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...pathspecs]);
+  if (res.status !== 0) {
+    error(`git ls-files failed: ${res.stderr.trim()}`);
+    process.exit(res.status);
+  }
+  return res.stdout.split('\0').filter((p) => p.length > 0);
+}
+
+// untrackedPaths — the `--others` half of pathsInScope() in isolation, as
+// bare paths with no mode/sha (untracked paths carry no index record).
+// blobsInScope() below is the only caller: it needs the tracked and
+// untracked halves separately, because only the tracked half has a blob SHA
+// to fall back on.
+function untrackedPaths() {
+  const res = git(['ls-files', '-z', '--others', '--exclude-standard']);
+  if (res.status !== 0) {
+    error(`git ls-files failed: ${res.stderr.trim()}`);
+    process.exit(res.status);
+  }
+  return res.stdout.split('\0').filter((p) => p.length > 0);
+}
+
+// blobsInScope — [{ mode, sha, path }] for every entry that carries
+// sniffable content: every tracked blob (`git ls-files -s`, mode + blob SHA)
+// PLUS every untracked-but-not-ignored working-tree file (`sha: null` — the
+// working tree is the ONLY source of its content, since it was never
+// written to the object store). Submodule gitlinks and symlinks are dropped
+// for the tracked half (they have no blob in this repository / store a
+// path, not content); an untracked symlink is dropped the same way, by
+// `lstat`ing it directly since it carries no index mode to read.
+function blobsInScope() {
   const res = git(['ls-files', '-s', '-z']);
   if (res.status !== 0) {
     error(`git ls-files failed: ${res.stderr.trim()}`);
     process.exit(res.status);
   }
   const out = [];
+  const tracked = new Set();
   for (const record of res.stdout.split('\0')) {
     if (record.length === 0) continue;
     // Format: `<mode> <sha> <stage>\t<path>`
@@ -217,16 +259,31 @@ function trackedBlobs() {
       process.exit(1);
     }
     const [mode, sha] = record.slice(0, tab).split(/\s+/);
-    out.push({ mode, sha, path: record.slice(tab + 1) });
+    const path = record.slice(tab + 1);
+    tracked.add(path);
+    out.push({ mode, sha, path });
+  }
+  for (const path of untrackedPaths()) {
+    if (tracked.has(path)) continue; // defensive; --others never reports a tracked path
+    let stat;
+    try {
+      stat = lstatSync(path);
+    } catch {
+      continue; // vanished between the listing and the stat — nothing left to scan
+    }
+    if (!stat.isFile()) continue; // symlink (or anything else that isn't a plain file)
+    out.push({ mode: modeRegularFile, sha: null, path });
   }
   return out;
 }
 
-// readHead — the leading sniff block of a tracked blob. Prefers the working
+// readHead — the leading sniff block of a blob in scope. Prefers the working
 // tree (one bounded read, no subprocess) and falls back to the object store
-// when the file is absent or unreadable there. Exits non-zero if neither
-// route yields content: an unreadable tracked blob is a gate failure, never
-// an implicit pass.
+// when the file is absent or unreadable there AND a blob SHA exists to read
+// it from — an untracked entry (`sha: null`) has no object-store copy at
+// all, so the working tree is its only possible source. Exits non-zero if no
+// route yields content: an unreadable entry is a gate failure, never an
+// implicit pass.
 function readHead({ sha, path }) {
   const buf = Buffer.alloc(gitBinarySniffBytes);
   try {
@@ -241,6 +298,10 @@ function readHead({ sha, path }) {
     // Fall through to the object store: a tracked path can legitimately be
     // missing from the working tree (sparse checkout, mid-rebase).
   }
+  if (!sha) {
+    error(`repo-hygiene: cannot read untracked file ${path} from the working tree — refusing to classify it as text`);
+    process.exit(1);
+  }
   const res = capture('git', ['cat-file', 'blob', sha], { encoding: 'buffer' });
   if (res.status !== 0) {
     error(
@@ -254,7 +315,7 @@ function readHead({ sha, path }) {
 
 function scanBinary() {
   const violations = [];
-  for (const entry of trackedBlobs()) {
+  for (const entry of blobsInScope()) {
     if (entry.mode !== modeRegularFile && entry.mode !== modeExecutableFile) continue;
     const { binary, format } = classifyBlob(readHead(entry));
     if (binary) violations.push({ path: entry.path, format });
@@ -274,12 +335,7 @@ function scanBinary() {
 }
 
 function scanRootAllowlist() {
-  const res = git(['ls-files', '-z']);
-  if (res.status !== 0) {
-    error(`git ls-files failed: ${res.stderr.trim()}`);
-    process.exit(res.status);
-  }
-  const entries = rootEntriesOf(res.stdout.split('\0').filter((p) => p.length > 0));
+  const entries = rootEntriesOf(pathsInScope());
   const { unexpected, stale } = diffAllowlist(entries, ROOT_ALLOWLIST);
   for (const e of unexpected) log(`${e}: untracked-by-policy entry at the repository root`);
   for (const e of stale) log(`${e}: allow-listed root entry that is no longer tracked`);
@@ -305,13 +361,7 @@ function scanRootAllowlist() {
 }
 
 function scanRegistryLogin() {
-  const res = git(['ls-files', '-z', '.github/workflows']);
-  if (res.status !== 0) {
-    error(`git ls-files failed: ${res.stderr.trim()}`);
-    process.exit(res.status);
-  }
-  const workflows = res.stdout
-    .split('\0')
+  const workflows = pathsInScope(['.github/workflows'])
     .filter((p) => p.endsWith('.yml') || p.endsWith('.yaml'))
     .sort();
   const violations = [];
