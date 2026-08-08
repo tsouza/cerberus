@@ -21,11 +21,11 @@ import (
 // | count() > 0` returns one row per matching trace, NOT a single
 // corpus-wide row. The lowering therefore groups by TraceId and
 // piggybacks the per-trace envelope columns (representative SpanName,
-// merged ResourceAttributes, earliest Timestamp) onto the Aggregate's
-// AggFunc list so the wrap projection (internal/api/tempo/handler.go:
-// wrapWithSampleProjection's aggregate-shape branch) can surface a
-// real per-trace summary instead of synthesising empty
-// rootServiceName / rootTraceName fields.
+// merged ResourceAttributes, representative ParentSpanId, earliest
+// Timestamp) onto the Aggregate's AggFunc list so the wrap projection
+// (internal/api/tempo/handler.go: wrapWithSampleProjection's
+// aggregate-shape branch) can surface a real per-trace summary instead
+// of synthesising empty rootServiceName / rootTraceName fields.
 //
 // `aggResourceAttrsAlias` names an `any(ResourceAttributes)`
 // projection on the inner Aggregate; the wrap-projection then merges
@@ -34,11 +34,30 @@ import (
 // keys + aggregate calls only — no derived expressions wrapping both)
 // while still threading the per-trace identity into the search
 // envelope.
+//
+// `aggParentSpanIDAlias` names an `any(ParentSpanId)` projection
+// piggybacked alongside SpanName / ResourceAttributes (issue #1481).
+// ClickHouse evaluates every aggregate function in a SELECT list
+// against the same input row per group-key update, so the three
+// `any(...)` calls always read the same underlying span row — see
+// anyAggFunc's doc comment. Threading that row's ParentSpanId into the
+// search envelope (spansetAggregateSampleProjections in
+// internal/api/tempo/handler.go) lets the existing /api/search
+// root-resolution machinery (observeRoot / resolveTraceRoots /
+// applyRootMetadata in internal/api/tempo) tell whether the
+// arbitrarily-picked row happens to be the trace's true root — and, if
+// not, fetch the real one via the same follow-up lookup every other
+// /api/search shape already relies on. That correction is what turns
+// "any span, could be the root, could be a random child, and which one
+// isn't even stable across runs" into "always the true root
+// eventually", without inventing a second notion of "root" in the
+// aggregate path.
 const (
 	aggTraceIDAlias       = "TraceId"
 	aggValueAlias         = "Value"
 	aggMetricNameAlias    = "MetricName"
 	aggResourceAttrsAlias = "ResourceAttrs"
+	aggParentSpanIDAlias  = "ParentSpanId"
 	aggTimeUnixAlias      = "TimeUnix"
 	// aggTraceStartNsAlias / aggTraceEndNsAlias name the two per-trace
 	// timestamp aggregates used to derive the per-trace duration. Tempo's
@@ -59,10 +78,13 @@ const (
 //
 // Per-trace identity is preserved by grouping on TraceId and
 // piggybacking representative envelope columns (SpanName,
-// ResourceAttributes, Timestamp) via `any(...)` / `min(...)`
-// aggregates so the search envelope surfaces real
+// ResourceAttributes, ParentSpanId, Timestamp) via `any(...)` /
+// `min(...)` aggregates so the search envelope surfaces real
 // rootServiceName / rootTraceName / startTime values for each
 // returned trace rather than collapsing the whole corpus into one row.
+// The piggybacked ParentSpanId lets the /api/search shaper detect and
+// correct the case where the arbitrarily-`any()`-picked row isn't
+// actually the trace's root (see anyAggFunc's doc comment, issue #1481).
 func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
 	chFunc, err := mapAggregateOp(agg.Op())
 	if err != nil {
@@ -99,6 +121,7 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 					{Name: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: aggValueAlias},
 					anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
 					anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
+					anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),
 					minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
 					traceStartNsAggFunc(s.TimestampColumn),
 					traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
@@ -134,6 +157,7 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 			valueFunc,
 			anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
 			anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
+			anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),
 			minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
 			traceStartNsAggFunc(s.TimestampColumn),
 			traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
@@ -197,14 +221,27 @@ func traceEndNsAggFunc(timestampColumn, durationColumn string) chplan.AggFunc {
 
 // anyAggFunc returns an `any(<col>) AS <alias>` AggFunc — the
 // per-trace envelope helper used by lowerAggregate to surface a
-// representative SpanName / ResourceAttributes value alongside the
-// numeric Value. `any` picks an arbitrary row's value within the
-// group; for ResourceAttributes that's fine because every span in a
-// trace shares the same service identity in the OTel-CH layout (the
-// resource map is denormalised per-span). For SpanName a real
-// implementation would surface the root span via `argMin(SpanName,
-// Timestamp)`; we use `any` for the first cut so the canonical-row
-// shape is identical regardless of the inner span-set.
+// representative SpanName / ResourceAttributes / ParentSpanId value
+// alongside the numeric Value. `any` picks an arbitrary row's value
+// within the group; for ResourceAttributes that's fine because every
+// span in a trace shares the same service identity in the OTel-CH
+// layout (the resource map is denormalised per-span).
+//
+// For SpanName specifically, `any` alone would report an arbitrary
+// span's name as the trace's root — nondeterministic across runs of
+// the identical query, since ClickHouse's `any` is order-dependent
+// across parts/threads (issue #1481). lowerAggregate compensates by
+// also piggybacking `any(ParentSpanId)` (aggParentSpanIDAlias): CH
+// evaluates every aggregate function in a query against the same
+// current row per group-key update (a single pass over the input
+// updates all accumulator states together), so the three `any(...)`
+// calls are guaranteed to read the *same* underlying span row, not
+// three independently-chosen ones. Piggybacking ParentSpanId lets the
+// /api/search shaper (internal/api/tempo: observeRoot /
+// resolveTraceRoots / applyRootMetadata) recognise when that row is
+// not the true root and correct it via the same follow-up root-lookup
+// query every other /api/search shape already uses — so the
+// SQL-level arbitrariness of `any` never reaches the wire response.
 func anyAggFunc(col, alias string) chplan.AggFunc {
 	return chplan.AggFunc{
 		Name:  "any",

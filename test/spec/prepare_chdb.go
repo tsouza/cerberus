@@ -129,8 +129,22 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	query = testsql.NestMapOrderBy(query)
 	colCount := testsql.ProjectionCount(query)
 
+	// Mirror ApplySeed's exact backfill ordering (runner_chdb.go): metrics
+	// columns first, then the otel_traces canonical columns
+	// wrapWithSampleProjection reads unconditionally (TraceId / SpanId /
+	// ParentSpanId / SpanName / Duration / Timestamp /
+	// ResourceAttributes). Without the second pass, a fixture whose seed
+	// only declares the columns its OWN pre-wrap `-- sql --` touches
+	// round-trips fine through RunRoundTrip (which calls both backfills
+	// via ApplySeed) but fails here with an unknown-column error the
+	// moment the emitted SQL references a canonical column the fixture
+	// never had to declare (see issue #1481's aggParentSpanIDAlias
+	// piggyback) — the seed pipeline all consumers document sharing
+	// (see this package's PrepareRoundTrip callers) must actually match.
+	seedStmts := testsql.BackfillTracesColumns(testsql.BackfillMetricsColumns(testsql.SplitStatements(rt.Seed)))
+
 	return &PreparedRoundTrip{
-		Seed:        strings.Join(testsql.BackfillMetricsColumns(testsql.SplitStatements(rt.Seed)), ";\n"),
+		Seed:        strings.Join(seedStmts, ";\n"),
 		Query:       query,
 		Args:        queryArgs,
 		ColumnCount: colCount,

@@ -1,7 +1,7 @@
 -- query.traceql --
 {} | by(resource.service.name)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `GroupKey`
+SELECT `ResourceAttributes`[?] AS `GroupKey`, any(`TraceId`) AS `TraceId`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `GroupKey`
 -- args --
 [0] string = "service.name"
 [1] int64 = 1
@@ -19,9 +19,9 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000001', '0000000000000001', 'span', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend'), 1000000);
 -- expected_rows --
 [
-  ["span", {"__cerberus_traceDurationNs": "1000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 1]
+  ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- chplan --
-Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)
