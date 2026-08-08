@@ -143,12 +143,31 @@ spec:
               value: dark
             # Deliberately NO GF_INSTALL_PLUGINS for the drilldown
             # apps: on Grafana 12.x grafana-lokiexplore-app,
-            # grafana-exploretraces-app, and
-            # grafana-metricsdrilldown-app are first-party preinstalled
+            # grafana-exploretraces-app, grafana-metricsdrilldown-app
+            # and grafana-pyroscope-app are first-party preinstalled
             # (hardcoded in Grafana's pkg/setting/setting_plugins.go
             # preinstall list), so installing them again via
             # GF_INSTALL_PLUGINS would only race the built-in flow.
-            # Note: the preinstall is an ASYNC boot-time download from
+            #
+            # That built-in list pins no VERSION — each entry carries
+            # `update_strategy = minor`, so a pod start resolves it
+            # against grafana.com's catalogue and installs whatever is
+            # latest that day. The image tag pins Grafana, not the apps,
+            # and the apps are what the crawl's surface inventory
+            # asserts. GF_PLUGINS_PREINSTALL names each id AT a version
+            # to close that: an id named here resolves to exactly that
+            # version, and the list MERGES with the built-in one rather
+            # than replacing it, so every id has to be named or the
+            # unnamed one still floats. Keep in step with the same pin
+            # in docker-compose.yml; a bump is a deliberate change with
+            # an inventory regeneration attached.
+            - name: GF_PLUGINS_PREINSTALL
+              value: >-
+                grafana-exploretraces-app@2.1.0,
+                grafana-lokiexplore-app@2.5.0,
+                grafana-metricsdrilldown-app@2.4.0,
+                grafana-pyroscope-app@2.2.0
+            # The preinstall is an ASYNC boot-time download from
             # grafana.com that starts after /api/health goes green —
             # the pod needs egress to grafana.com, and
             # /api/plugins/<id>/settings can briefly 404 right after

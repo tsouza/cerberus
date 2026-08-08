@@ -13,11 +13,37 @@ import (
 // TestLowerLabelReplace_RejectsInexpressibleBackref pins the head's
 // error path. `qlcommon.ReplacementToCH` refuses the one replacement
 // template no ClickHouse expression can carry — a capture-group NAME
-// several groups share, where Go picks the first group that took part in
-// the row's match and SQL cannot see which did. Lowering must surface
-// that as a query error rather than fall through and emit a plan whose
-// destination label silently holds the wrong text.
+// several groups share where at least one of them can match the empty
+// string. Go picks the first carrier that took part in the row's match,
+// and `extractGroups` renders "took part matching empty" and "took no
+// part" identically, so which one Go would pick is unobservable from
+// SQL. Lowering must surface that as a query error rather than fall
+// through and emit a plan whose destination label silently holds the
+// wrong text.
 func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
+	t.Parallel()
+
+	const q = `label_replace(temperature, "service", "$dup", "host", "(?P<dup>a?)|(?P<dup>b)")`
+
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(q)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Lower(context.Background(), expr, schema.DefaultOTelMetrics()); err == nil {
+		t.Fatal("lowering accepted a nullable capture group sharing a name; want an error")
+	} else if !strings.Contains(err.Error(), "label_replace") {
+		t.Fatalf("error does not name the function that failed: %v", err)
+	}
+}
+
+// TestLowerLabelReplace_AcceptsSharedCaptureName is the boundary's other
+// side. When EVERY group sharing the name is non-nullable, taking part
+// in the match and capturing a non-empty string are the same event, so
+// "the first carrier Go picks" is exactly "the first carrier whose
+// capture is non-empty" — which `arrayFirst` over `extractGroups` says
+// directly. This shape must lower rather than be refused along with the
+// nullable one.
+func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
 	t.Parallel()
 
 	const q = `label_replace(temperature, "service", "$dup", "host", "(?P<dup>a)|(?P<dup>b)")`
@@ -26,10 +52,8 @@ func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if _, err := Lower(context.Background(), expr, schema.DefaultOTelMetrics()); err == nil {
-		t.Fatal("lowering accepted a capture-group name two groups share; want an error")
-	} else if !strings.Contains(err.Error(), "label_replace") {
-		t.Fatalf("error does not name the function that failed: %v", err)
+	if _, err := Lower(context.Background(), expr, schema.DefaultOTelMetrics()); err != nil {
+		t.Fatalf("lowering rejected a shared capture-group name whose carriers are all non-nullable: %v", err)
 	}
 }
 

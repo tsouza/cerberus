@@ -22,8 +22,8 @@
 // chdb-go parquet driver, and that rewrite is incompatible with the
 // WHERE-clause map operations the ratio offset needs (CH mis-dispatches
 // `concat` to `arrayConcat`). Instead it lowers + emits the production
-// SQL directly, runs it against an ephemeral chDB session seeded with a
-// known series set, and asserts the surviving `instance` label set
+// SQL directly, runs it against the package-shared chDB session seeded
+// with a known series set, and asserts the surviving `instance` label set
 // matches the set computed independently in Go via the real
 // `prometheus/model/labels` Hash — the reference behaviour itself.
 //
@@ -33,7 +33,6 @@ package promql_test
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"math"
 	"sort"
@@ -41,7 +40,6 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/chdb-io/chdb-go/chdb/driver"
 	prommodel "github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
@@ -80,16 +78,7 @@ func refSelected(ratio float64) []string {
 }
 
 func TestLimitRatio_ChDBParity(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
-
-	seedLimitRatioCorpus(t, db)
+	fixture := newChDBFixture(t, limitRatioSeed())
 
 	s := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
@@ -111,7 +100,7 @@ func TestLimitRatio_ChDBParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit(%q): %v", query, err)
 			}
-			got := selectInstances(t, db, sqlStr, args)
+			got := selectInstances(t, fixture, sqlStr, args)
 			want := refSelected(ratio)
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Errorf("limit_ratio(%g) selected %v; reference HashRatioSampler selects %v\n(offsets: %s)",
@@ -136,15 +125,7 @@ func offsetsDebug() string {
 // `(r>=0 AND off<r) OR (r<0 AND off>=1+r)` runtime predicate. The
 // selected set must match the literal-ratio reference for the same r.
 func TestLimitRatio_ChDBParity_ComputedRatio(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
-	seedLimitRatioCorpus(t, db)
+	fixture := newChDBFixture(t, limitRatioSeed())
 
 	s := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
@@ -172,7 +153,7 @@ func TestLimitRatio_ChDBParity_ComputedRatio(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit(%q): %v", tc.query, err)
 			}
-			got := selectInstances(t, db, sqlStr, args)
+			got := selectInstances(t, fixture, sqlStr, args)
 			want := refSelected(tc.ratio)
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Errorf("%s selected %v; reference (r=%g) selects %v\n(offsets: %s)",
@@ -182,40 +163,45 @@ func TestLimitRatio_ChDBParity_ComputedRatio(t *testing.T) {
 	}
 }
 
-// seedLimitRatioCorpus creates the gauge + sum metric tables and inserts
-// the five-instance `up` corpus into the gauge table.
-func seedLimitRatioCorpus(t *testing.T, db *sql.DB) {
-	t.Helper()
-	// ResourceAttributes (DEFAULT map()) mirrors the OTel-CH default schema:
-	// the rc.5 read path projects mapUpdate(sanitize(ResourceAttributes), …),
-	// so the seed tables must carry the column or the chDB round-trip 502s
-	// with UNKNOWN_IDENTIFIER. The INSERTs stay column-explicit (sans
-	// ResourceAttributes) so the empty default fills it.
-	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
-		t.Fatalf("create gauge: %v", err)
-	}
-	if _, err := db.Exec("CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`)"); err != nil {
-		t.Fatalf("create sum: %v", err)
-	}
+// limitRatioSeed declares BOTH arms of the metrics fan-out the emitted
+// SQL scans — `merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')`
+// — even though every `up` row lands in the gauge table. merge() takes
+// its column set from the union of the tables that match, so a seed
+// missing an arm silently borrows that arm from whichever sibling fixture
+// last ran in the process-shared chDB session, and the fixture then fails
+// on its own under a narrowed `-run`.
+// [chdbFixture.queryOverEmitted] asserts the arms are all present here.
+//
+// ResourceAttributes (DEFAULT map()) mirrors the OTel-CH default schema:
+// the read path projects mapUpdate(sanitize(ResourceAttributes), …) and
+// toString(ServiceName) unconditionally, so both columns must exist or
+// the chDB round-trip fails with UNKNOWN_IDENTIFIER. The INSERTs stay
+// column-explicit (naming neither) so the DEFAULTs fill them.
+//
+// CREATE OR REPLACE keeps the seed idempotent against that shared
+// session, which outlives any single test.
+const limitRatioSeedDDL = "" +
+	"CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n" +
+	"CREATE OR REPLACE TABLE otel_metrics_sum (`MetricName` String, `Attributes` Map(String, String), `ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', `TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n"
+
+// limitRatioSeed is the DDL plus the five-instance `up` corpus, all of
+// which lands in the gauge table.
+func limitRatioSeed() string {
+	var b strings.Builder
+	b.WriteString(limitRatioSeedDDL)
 	for _, inst := range seriesInstances {
-		ins := fmt.Sprintf(
-			"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES ('up', map('instance', '%s', 'job', 'demo'), toDateTime64('2026-01-01 00:00:00', 9), 1.0)", inst,
-		)
-		if _, err := db.Exec(ins); err != nil {
-			t.Fatalf("seed %s: %v", inst, err)
-		}
+		fmt.Fprintf(&b,
+			"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES ('up', map('instance', '%s', 'job', 'demo'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);\n",
+			inst)
 	}
+	return b.String()
 }
 
 // selectInstances runs the lowered Sample-shape SQL and returns the
 // sorted set of surviving `instance` labels.
-func selectInstances(t *testing.T, db *sql.DB, sqlStr string, args []any) []string {
+func selectInstances(t *testing.T, fixture *chdbFixture, sqlStr string, args []any) []string {
 	t.Helper()
-	wrapped := "SELECT `Attributes`['instance'] FROM (" + sqlStr + ")"
-	rows, err := db.Query(wrapped, args...)
-	if err != nil {
-		t.Fatalf("query: %v\nSQL: %s", err, wrapped)
-	}
+	rows := fixture.queryOverEmitted(t, "`Attributes`['instance']", sqlStr, args)
 	defer func() { _ = rows.Close() }()
 	var got []string
 	for rows.Next() {

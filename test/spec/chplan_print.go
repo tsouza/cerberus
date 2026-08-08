@@ -755,9 +755,13 @@ func formatGroupByEntry(expr, alias, display string) string {
 
 // printLabelReplaceSegments renders the replacement decomposition a
 // label_replace carries when its template references a capture group
-// above ClickHouse's `\9` substitution ceiling, and nothing at all
-// otherwise — so the fixtures that take the replaceRegexpOne path keep
-// their existing golden line unchanged.
+// above ClickHouse's `\9` substitution ceiling, or a name several capture
+// groups share, and nothing at all otherwise — so the fixtures that take
+// the replaceRegexpOne path keep their existing golden line unchanged.
+//
+// A shared-name reference prints as its carrier indices joined by `|`
+// (`$1|$2`), the "first of these with a non-empty capture" selection
+// chplan.LabelReplaceSegment.Fallbacks describes.
 func printLabelReplaceSegments(segments []chplan.LabelReplaceSegment) string {
 	if len(segments) == 0 {
 		return ""
@@ -768,7 +772,11 @@ func printLabelReplaceSegments(segments []chplan.LabelReplaceSegment) string {
 			parts = append(parts, fmt.Sprintf("%q", seg.Literal))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("$%d", seg.Group))
+		indices := []string{fmt.Sprintf("$%d", seg.Group)}
+		for _, idx := range seg.Fallbacks {
+			indices = append(indices, fmt.Sprintf("$%d", idx))
+		}
+		parts = append(parts, strings.Join(indices, "|"))
 	}
 	return ", segments=[" + strings.Join(parts, ", ") + "]"
 }

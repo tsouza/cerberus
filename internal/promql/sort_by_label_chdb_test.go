@@ -9,8 +9,8 @@
 // functions exist to produce: a stable ROW ORDER keyed on label values.
 // This test closes that gap. It lowers each function through the real
 // promql.Lower → chsql.Emit pipeline, executes the emitted SQL against
-// an ephemeral chDB session seeded with a Map-typed Attributes column,
-// and asserts the resulting handler/method label order matches what
+// the package-shared chDB session seeded with a Map-typed Attributes
+// column, and asserts the resulting handler/method label order matches what
 // reference Prometheus's funcSortByLabel / funcSortByLabelDesc produce:
 // a NATURAL-ORDER sort (github.com/facette/natsort) on the named label
 // value(s), ascending for `sort_by_label` and descending for
@@ -31,12 +31,9 @@ package promql_test
 
 import (
 	"context"
-	"database/sql"
-	"strings"
 	"testing"
 	"time"
 
-	_ "github.com/chdb-io/chdb-go/chdb/driver"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -55,17 +52,37 @@ import (
 // are the natural-vs-lexicographic discriminators: byte order ranks
 // `v10` before `v2`, natural order ranks `v2` before `v10`. They are
 // inserted in a scrambled order that matches neither target ordering.
+// The seed declares BOTH arms of the metrics fan-out these queries scan
+// — `merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')`
+// — even though every row lands in the gauge table. merge() takes its
+// column set from the union of the tables that match, so a seed that
+// declares only the gauge arm resolves `toString(ServiceName)` off
+// whatever otel_metrics_sum a sibling fixture happened to leave in the
+// shared session: green for the whole package, UNKNOWN_IDENTIFIER for a
+// narrowed `-run` of this test alone. Both arms carry the full read-path
+// column set (ResourceAttributes for the resource merge, ServiceName for
+// the dedicated-column overlay) so the fixture stands on its own.
+// [chdbFixture.queryOverEmitted] asserts exactly that before executing.
+//
 // CREATE OR REPLACE so re-running against the process-shared in-process
-// chDB session (every openChDB uses the empty DSN → one global session)
-// is idempotent: a sibling fixture (limit_ratio_chdb_test.go) already
-// materialises otel_metrics_gauge, and a bare CREATE TABLE trips
-// TABLE_ALREADY_EXISTS when the package's chDB tests share the session.
-// Mirrors the OR-REPLACE limit_ratio_chdb_test.go already uses.
+// chDB session (every sql.Open("chdb", "") uses the empty DSN → one
+// global session) is idempotent: a sibling fixture
+// (limit_ratio_chdb_test.go) declares the same two tables, and a bare
+// CREATE TABLE would trip TABLE_ALREADY_EXISTS on whichever ran second.
 const sortByLabelSeed = `
 CREATE OR REPLACE TABLE otel_metrics_gauge (
     MetricName String,
     Attributes Map(String, String),
     ResourceAttributes Map(String, String) DEFAULT map(),
+    ServiceName LowCardinality(String) DEFAULT '',
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE OR REPLACE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    ServiceName LowCardinality(String) DEFAULT '',
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
@@ -81,23 +98,7 @@ INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('node_load', map('instance', 'v2',  'rack', 'r10'), toDateTime64('2026-01-01 00:00:00', 9), 21.0);`
 
 func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
-	for _, stmt := range strings.Split(strings.TrimSpace(sortByLabelSeed), ";") {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
-		}
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("seed %q: %v", stmt, err)
-		}
-	}
+	fixture := newChDBFixture(t, sortByLabelSeed)
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
@@ -193,20 +194,17 @@ func TestSortByLabel_OrderParityVsPrometheus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
-			// Read the sort-key label values out as plain String columns —
+			// Read the sort-key label values out as plain String columns:
 			// projecting `Attributes[<primary>]` / `Attributes[<secondary>]`
-			// over the emitted (ORDER BY-bearing) subquery sidesteps the
+			// over the emitted (ORDER BY-bearing) statement sidesteps the
 			// chdb-go parquet Map-scan panic while preserving the row order
 			// the inner ORDER BY produced.
 			secCol := tc.secondary
 			if secCol == "" {
 				secCol = tc.primary // harmless duplicate read; m is ignored
 			}
-			wrapped := "SELECT `Attributes`['" + tc.primary + "'] AS h, `Attributes`['" + secCol + "'] AS m FROM (" + sqlStr + ")"
-			rows, err := db.Query(wrapped, args...)
-			if err != nil {
-				t.Fatalf("query: %v\nSQL: %s", err, wrapped)
-			}
+			projection := "`Attributes`['" + tc.primary + "'] AS h, `Attributes`['" + secCol + "'] AS m"
+			rows := fixture.queryOverEmitted(t, projection, sqlStr, args)
 			defer func() { _ = rows.Close() }()
 
 			var got []string

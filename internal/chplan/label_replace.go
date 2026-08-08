@@ -52,6 +52,11 @@ package chplan
 // arbitrary group index is an ordinary array subscript and the ceiling
 // disappears. `Segments` and `Replacement` are alternatives: exactly one
 // of them describes the value.
+//
+// The same decomposition also carries a `$name` reference that binds to
+// several like-named capture groups, which no `replaceRegexpOne`
+// substitution string can express either — the emitter selects among
+// their subscripts with `arrayFirst`. See [LabelReplaceSegment.Fallbacks].
 type LabelReplace struct {
 	Map              Expr
 	Dst              string
@@ -75,11 +80,27 @@ const NoCaptureGroup = -1
 const WholeMatchGroup = 0
 
 // LabelReplaceSegment is one piece of a decomposed replacement template:
-// either a run of literal text or a reference to one capture group.
+// a run of literal text, a reference to one capture group, or a reference
+// to a NAME that several capture groups share.
 type LabelReplaceSegment struct {
 	// Literal is the text this segment contributes when Group is
 	// [NoCaptureGroup].
 	Literal string
+	// Fallbacks holds the further capture-group indices sharing the
+	// referenced name, in regex order, when a `$name` reference binds to
+	// several groups; it is empty for every other segment shape. The
+	// segment then contributes the first of Group followed by Fallbacks
+	// whose capture is non-empty, which the emitter renders as
+	//
+	//	arrayFirst(x -> x != '', [<group>, <fallback>, …])
+	//
+	// Go's `ExpandString` picks the first of the like-named groups that
+	// TOOK PART in the match, and ClickHouse cannot see participation
+	// directly — but for a group whose subpattern cannot match the empty
+	// string, "took part" and "captured something non-empty" coincide.
+	// The lowering only ever populates Fallbacks once it has established
+	// that of every carrier; see qlcommon's captureGroups.resolve.
+	Fallbacks []int
 	// Group is the capture-group index to substitute, or [NoCaptureGroup]
 	// when this segment is literal text.
 	Group int
@@ -87,6 +108,14 @@ type LabelReplaceSegment struct {
 
 // Equal reports whether two segments describe the same contribution.
 func (s LabelReplaceSegment) Equal(o LabelReplaceSegment) bool {
+	if len(s.Fallbacks) != len(o.Fallbacks) {
+		return false
+	}
+	for i := range s.Fallbacks {
+		if s.Fallbacks[i] != o.Fallbacks[i] {
+			return false
+		}
+	}
 	return s.Literal == o.Literal && s.Group == o.Group
 }
 

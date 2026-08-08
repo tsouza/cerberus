@@ -465,14 +465,28 @@ func cloneStrings(in []string) []string {
 	return out
 }
 
-// cloneLabelReplaceSegments copies a replacement decomposition. The
-// elements are value types carrying no pointers, so a shallow copy of the
-// backing array is a deep copy of the slice.
+// cloneLabelReplaceSegments copies a replacement decomposition. Each
+// element carries its own Fallbacks slice, so the backing arrays are
+// copied too — a shallow copy would leave the clone aliasing the
+// original's index lists.
 func cloneLabelReplaceSegments(in []LabelReplaceSegment) []LabelReplaceSegment {
 	if in == nil {
 		return nil
 	}
 	out := make([]LabelReplaceSegment, len(in))
+	copy(out, in)
+	for i := range out {
+		out[i].Fallbacks = cloneInts(in[i].Fallbacks)
+	}
+	return out
+}
+
+// cloneInts copies a slice of capture-group indices.
+func cloneInts(in []int) []int {
+	if in == nil {
+		return nil
+	}
+	out := make([]int, len(in))
 	copy(out, in)
 	return out
 }

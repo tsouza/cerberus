@@ -462,6 +462,34 @@ services:
       # home page. Path is the in-container mount location of the JSON,
       # not a Grafana URL or UID.
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/cerberus/cerberus.json
+      # Pin the four Drilldown apps by VERSION, not just by image tag.
+      #
+      # Grafana 12 preinstalls these four from a list hardcoded in its
+      # own binary (pkg/setting/setting_plugins.go), and that list pins
+      # no version: each entry carries `update_strategy = minor`, so a
+      # container start resolves it against grafana.com's catalogue and
+      # downloads whatever is latest THAT DAY. The Grafana image tag
+      # therefore does not pin the app surface — two runs of the same
+      # `grafana/grafana:12.2.9`, days apart, boot different Drilldown
+      # code with different routes, tabs and picker options.
+      #
+      # The crawl asserts a committed inventory of exactly those
+      # surfaces, so an unpinned app makes the pin a race against the
+      # catalogue: Traces Drilldown 1.1.0 restored three primary-signal
+      # options ("Bring back all primary signals"), which is a surface
+      # set the committed inventory had been generated without.
+      #
+      # Naming an id here does NOT replace the built-in list, it merges
+      # with it — an id named with a version resolves to that version,
+      # and one left out still installs at latest. All four are
+      # therefore named, and this list is the whole preinstall set.
+      # Bumping a version here is a deliberate change with an inventory
+      # regeneration attached.
+      GF_PLUGINS_PREINSTALL: >-
+        grafana-exploretraces-app@2.1.0,
+        grafana-lokiexplore-app@2.5.0,
+        grafana-metricsdrilldown-app@2.4.0,
+        grafana-pyroscope-app@2.2.0
     volumes:
       - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
       # Dashboard provider config tells Grafana to scan the `cerberus`

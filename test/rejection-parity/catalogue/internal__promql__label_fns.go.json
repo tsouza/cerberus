@@ -35,8 +35,8 @@
       "site": "internal/promql/label_fns.go:lowerLabelReplace#d11e3df4",
       "message": "promql: label_replace: %w",
       "class": "divergence",
-      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea)|(?P\u003cdup\u003eb)\")",
-      "tracking_issue": 1768,
+      "trigger_query": "label_replace(up, \"d\", \"$dup\", \"src\", \"(?P\u003cdup\u003ea?)|(?P\u003cdup\u003eb)\")",
+      "tracking_issue": 1956,
       "evidence": {
         "guard": [
           "past returning if len(c.Args) != 5",
