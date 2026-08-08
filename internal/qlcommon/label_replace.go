@@ -8,6 +8,7 @@ package qlcommon
 import (
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"unicode"
@@ -75,12 +76,15 @@ const unresolvedGroup = -1
 //   - A `$` that starts no reference at all (end of string, `$-`,
 //     `${unclosed`) is emitted verbatim, again as ExpandString does.
 //
-// A reference to a capture group above CH's `\9` substitution ceiling is
-// expressible, just not as a `replaceRegexpOne` template: the result
-// carries [CHReplacement.Segments] instead, which the emitter renders as
-// a `concat` of literal runs and `extractGroups` subscripts. The single
-// shape with no faithful translation at all is a reference to a name
-// several capture groups share — see [captureGroups.resolve].
+// Two shapes are expressible, just not as a `replaceRegexpOne` template:
+// a reference to a capture group above CH's `\9` substitution ceiling,
+// and a reference to a name several capture groups share. Both carry
+// [CHReplacement.Segments] instead, which the emitter renders as a
+// `concat` of literal runs and `extractGroups` subscripts — the second
+// selecting among the like-named groups' subscripts with `arrayFirst`.
+// The single shape with no faithful translation at all is that second one
+// when any of the like-named groups can match the EMPTY STRING — see
+// [captureGroups.resolve].
 //
 // regex is the regex string the replacement is applied against; it is
 // compiled to resolve capture-group names and to count groups so
@@ -99,7 +103,12 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 		return CHReplacement{}, err
 	}
 	for _, seg := range segments {
-		if seg.Group > maxCHBackref {
+		// A group above CH's `\9` ceiling has no `\N` spelling, and a
+		// reference to a name several groups share is a SELECTION among
+		// indices rather than one index — neither fits a
+		// `replaceRegexpOne` substitution string, and both are expressible
+		// over the `extractGroups` decomposition.
+		if seg.Group > maxCHBackref || len(seg.Fallbacks) > 0 {
 			return CHReplacement{Segments: segments}, nil
 		}
 	}
@@ -108,8 +117,10 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 
 // CHReplacement is the ClickHouse-side form of a Go replacement template.
 // Exactly one of its fields describes the substituted value: Template
-// when every referenced capture group fits CH's `\0`–`\9` substitution
-// syntax, Segments when one does not.
+// when every reference resolves to a single capture group that fits CH's
+// `\0`–`\9` substitution syntax, Segments when one does not — because it
+// names a group above the ceiling, or because it names a group NAME
+// several groups share and so denotes a selection rather than an index.
 type CHReplacement struct {
 	// Template is the `replaceRegexpOne` substitution string.
 	Template string
@@ -158,13 +169,16 @@ func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, erro
 	// #499 (the mutant-kill tests) and the follow-up PR that landed this
 	// refactor for the full diagnosis.
 	for i := 0; i < len(repl); {
-		idx, step, err := replacementStep(&literal, repl, i, groups)
+		ref, step, err := replacementStep(&literal, repl, i, groups)
 		if err != nil {
 			return nil, err
 		}
-		if idx != unresolvedGroup {
+		if ref.group != unresolvedGroup {
 			flush()
-			segments = append(segments, chplan.LabelReplaceSegment{Group: idx})
+			segments = append(segments, chplan.LabelReplaceSegment{
+				Group:     ref.group,
+				Fallbacks: ref.fallbacks,
+			})
 		}
 		i += step
 	}
@@ -209,6 +223,13 @@ type captureGroups struct {
 	// slice rather than a single index. Empty when the regex did not
 	// compile, so every named reference then binds to nothing.
 	byName map[string][]int
+	// nullable reports, per capture-group index, whether that group's
+	// subpattern can match the empty string. It is what makes a
+	// shared-name reference expressible or not — see
+	// [captureGroups.resolve]. A group missing from the map is treated as
+	// nullable, so an unparseable or unclassifiable regex keeps the
+	// rejection rather than risking a wrong answer.
+	nullable map[int]bool
 }
 
 // newCaptureGroups compiles regex for its capture-group metadata.
@@ -221,11 +242,16 @@ type captureGroups struct {
 func newCaptureGroups(regex string) captureGroups {
 	// Anchored to mirror the SQL emitter. Anchoring shifts no group
 	// index, so the metadata read back is the unanchored regex's.
-	compiled, err := regexp.Compile("^" + regex + "$")
+	anchored := "^" + regex + "$"
+	compiled, err := regexp.Compile(anchored)
 	if err != nil {
 		return captureGroups{count: maxCHBackref}
 	}
-	g := captureGroups{count: compiled.NumSubexp(), byName: map[string][]int{}}
+	g := captureGroups{
+		count:    compiled.NumSubexp(),
+		byName:   map[string][]int{},
+		nullable: nullableGroups(anchored),
+	}
 	for i, name := range compiled.SubexpNames() {
 		if name == "" {
 			continue
@@ -235,89 +261,236 @@ func newCaptureGroups(regex string) captureGroups {
 	return g
 }
 
-// resolve maps one extracted reference to its capture-group index, or
-// [unresolvedGroup] when the reference binds to nothing. It errors on the
-// one reference shape no ClickHouse form can express.
+// nullableGroups reports, per capture-group index, whether that group's
+// subpattern can match the empty string.
+//
+// It re-parses regex with the same syntax flags `regexp.Compile` uses, so
+// the `OpCapture.Cap` indices it walks are the very indices
+// `Regexp.SubexpNames` reports. An unparseable regex yields a nil map —
+// every group then reads as nullable, which is the conservative answer.
+func nullableGroups(regex string) map[int]bool {
+	parsed, err := syntax.Parse(regex, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	out := map[int]bool{}
+	collectNullableGroups(parsed, out)
+	return out
+}
+
+// collectNullableGroups walks re, recording each capture group's
+// nullability into out.
+func collectNullableGroups(re *syntax.Regexp, out map[int]bool) {
+	if re.Op == syntax.OpCapture {
+		out[re.Cap] = matchesEmpty(re.Sub[0])
+	}
+	for _, sub := range re.Sub {
+		collectNullableGroups(sub, out)
+	}
+}
+
+// matchesEmpty reports whether re's language contains the empty string.
+//
+// This is the hinge the shared-capture-group-name translation rests on
+// ([captureGroups.resolve]): a capture group whose subpattern CANNOT
+// match the empty string captures at least one character whenever it
+// takes part in a match, so ClickHouse's `extractGroups` — which reports
+// "did not take part" and "took part, matched empty" identically, as `”`
+// — tells the two apart after all, by non-emptiness.
+//
+// Deliberately conservative: any operator this switch does not classify
+// falls through to `true` (nullable), which keeps today's rejection
+// rather than emitting SQL whose answer might be wrong.
+func matchesEmpty(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpLiteral:
+		// A parsed literal is normally non-empty; the zero-rune form is
+		// the empty string and matches it.
+		return len(re.Rune) == 0
+	case syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		// Every member of a character class is exactly one rune wide.
+		return false
+	case syntax.OpEmptyMatch,
+		syntax.OpBeginLine, syntax.OpEndLine,
+		syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		// Zero-width: matches the empty string (subject, for the
+		// assertions, to a condition on the surrounding text).
+		return true
+	case syntax.OpCapture:
+		return matchesEmpty(re.Sub[0])
+	case syntax.OpStar, syntax.OpQuest:
+		// Zero repetitions is always in the language.
+		return true
+	case syntax.OpPlus:
+		// At least one repetition, so nullable exactly when the body is.
+		return matchesEmpty(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min == 0 {
+			return true
+		}
+		return matchesEmpty(re.Sub[0])
+	case syntax.OpConcat:
+		// Every part must be able to contribute nothing.
+		for _, sub := range re.Sub {
+			if !matchesEmpty(sub) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpAlternate:
+		// One nullable branch is enough.
+		for _, sub := range re.Sub {
+			if matchesEmpty(sub) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// resolvedRef is where one template reference points in the regex.
+type resolvedRef struct {
+	// group is the capture-group index the reference resolves to, or
+	// [unresolvedGroup] when it binds to nothing.
+	group int
+	// fallbacks holds the FURTHER capture-group indices that share the
+	// referenced name, in regex order, when several groups carry it. It
+	// is empty for every other reference shape. The value contributed is
+	// the first of `group` followed by `fallbacks` whose capture is
+	// non-empty — see [captureGroups.resolve] for why that reproduces
+	// Go's choice exactly.
+	fallbacks []int
+}
+
+// resolve maps one extracted reference to the capture group(s) it points
+// at, or to [unresolvedGroup] when the reference binds to nothing. It
+// errors on the one reference shape no ClickHouse form can express.
 //
 // A group index above CH's `\9` ceiling is NOT such a shape: it is
 // returned like any other, and [ReplacementToCH] switches the whole
 // template to the ceiling-free `extractGroups` decomposition.
-func (g captureGroups) resolve(ref templateRef) (int, error) {
-	idx := unresolvedGroup
+//
+// # Names several groups share
+//
+// Go's regexp permits several capture groups to share one name, and
+// ExpandString then picks the first of them that TOOK PART in the row's
+// match (its start offset is not -1), regardless of which alternation
+// branch matched. Participation is not directly observable from SQL:
+// `extractGroups` reports a group that did not take part and a group that
+// took part matching the empty string identically, as `”` (verified
+// against ClickHouse: `extractGroups('b', '^(a)|(b)$')` → `[”, 'b']`,
+// and `extractGroups(”, '^(x?)$')` → `[”]`).
+//
+// Note what separates those two ClickHouse results: only the second has a
+// group whose subpattern can match the empty string. That is the whole
+// hinge. For a group whose subpattern CANNOT match the empty string,
+// "took part" and "captured something non-empty" are the same predicate:
+//
+//   - a group that took part matched a string in its subpattern's
+//     language, and the empty string is not in that language, so the
+//     capture is non-empty;
+//   - a group that did not take part reports `”`.
+//
+// So when EVERY group sharing the name is non-nullable, "the first
+// carrier with a non-empty capture" is exactly Go's "the first carrier
+// that took part", and the reference is expressible — as
+// `arrayFirst(x -> x != ”, [g[i], g[j], …])` over the same
+// `extractGroups` decomposition the ceiling-free form already uses.
+// (`arrayFirst` yields `”` when no element qualifies, which is what
+// ExpandString substitutes when no carrier took part.)
+//
+// The condition is ALL carriers, not just the first: a nullable earlier
+// carrier that takes part matching the empty string is one Go picks (and
+// expands to `”`), while "first non-empty" would wrongly skip past it to
+// a later carrier. So a single nullable carrier keeps the rejection.
+func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
+	out := resolvedRef{group: unresolvedGroup}
 	switch carriers := g.byName[ref.name]; {
 	case ref.num != unresolvedGroup:
 		// A numbered reference past the regex's group count binds to
 		// nothing, which is the empty string — not an error.
 		if ref.num <= g.count {
-			idx = ref.num
+			out.group = ref.num
 		}
 	case len(carriers) > 1:
-		// Go's regexp permits several groups to share one name, and
-		// ExpandString then picks the first of them that TOOK PART in the
-		// row's match. Participation is not observable from SQL:
-		// `extractGroups` reports a group that did not participate and a
-		// group that matched the empty string identically, as `''`
-		// (verified against ClickHouse: `extractGroups('b', '^(a)|(b)$')`
-		// → `['', 'b']`, and `extractGroups('', '^(x?)$')` → `['']`). With
-		// the two indistinguishable there is no expression that reproduces
-		// Go's choice, so this stays a rejection.
-		return 0, fmt.Errorf(
-			"references capture-group name %q, which %d capture groups share — "+
-				"which one contributes depends on the per-row match, "+
-				"and ClickHouse cannot observe which groups took part",
-			ref.name, len(carriers),
-		)
+		if nullable, ok := g.firstNullable(carriers); ok {
+			return resolvedRef{}, fmt.Errorf(
+				"references capture-group name %q, which %d capture groups share, "+
+					"and capture group %d among them can match the empty string — "+
+					"ClickHouse's extractGroups reports a group that matched empty and "+
+					"a group that took no part in the match identically, so which one "+
+					"Go's expansion would pick is not observable from SQL",
+				ref.name, len(carriers), nullable,
+			)
+		}
+		out.group, out.fallbacks = carriers[0], carriers[1:]
 	case len(carriers) == 1:
-		idx = carriers[0]
+		out.group = carriers[0]
 	}
-	return idx, nil
+	return out, nil
+}
+
+// firstNullable returns the first of carriers whose subpattern can match
+// the empty string, and whether there was one. A carrier the nullability
+// walk could not classify counts as nullable, so an unrecognised regex
+// shape keeps the rejection.
+func (g captureGroups) firstNullable(carriers []int) (int, bool) {
+	for _, idx := range carriers {
+		if nullable, known := g.nullable[idx]; nullable || !known {
+			return idx, true
+		}
+	}
+	return 0, false
 }
 
 // replacementStep handles a single dispatch step of
 // [ReplacementSegments] at offset `i` of `repl`. Literal text is appended
-// to `b`; a resolved capture reference is returned as its group index
-// (and [unresolvedGroup] otherwise, which covers both "this step was
-// literal text" and "this reference binds to nothing"). The second return
-// is the number of input bytes consumed — always >= 1 on the success
-// path, so the outer loop always makes progress.
+// to `b`; a resolved capture reference is returned as a [resolvedRef]
+// (whose group is [unresolvedGroup] otherwise, which covers both "this
+// step was literal text" and "this reference binds to nothing"). The
+// second return is the number of input bytes consumed — always >= 1 on
+// the success path, so the outer loop always makes progress.
 //
 // Splitting this out of the loop body keeps the per-iteration consumed
 // count observable in the caller's iterator clause, so the gremlins
 // INVERT_LOOPCTRL operator can't swap `continue` ↔ `break` and produce
 // an equivalent mutant — the dispatch keywords don't live in a `for`
 // scope at all here.
-func replacementStep(b *strings.Builder, repl string, i int, groups captureGroups) (int, int, error) {
+func replacementStep(b *strings.Builder, repl string, i int, groups captureGroups) (resolvedRef, int, error) {
+	unbound := resolvedRef{group: unresolvedGroup}
 	c := repl[i]
 	if c != '$' {
 		// Backslashes are kept verbatim here; each output form escapes
 		// them the way its own syntax requires.
 		b.WriteByte(c)
-		return unresolvedGroup, 1, nil
+		return unbound, 1, nil
 	}
 	// Lone `$` at end of string — ExpandString emits it verbatim.
 	if i+1 >= len(repl) {
 		b.WriteByte('$')
-		return unresolvedGroup, 1, nil
+		return unbound, 1, nil
 	}
 	if repl[i+1] == '$' {
 		// `$$` → literal `$`.
 		b.WriteByte('$')
-		return unresolvedGroup, 2, nil
+		return unbound, 2, nil
 	}
 	ref, ok := extractRef(repl[i+1:])
 	if !ok {
 		// Not a reference at all (`$-`, `${unclosed`) — ExpandString
 		// emits the `$` verbatim and resumes at the next byte.
 		b.WriteByte('$')
-		return unresolvedGroup, 1, nil
+		return unbound, 1, nil
 	}
-	idx, err := groups.resolve(ref)
+	resolved, err := groups.resolve(ref)
 	if err != nil {
-		return 0, 0, fmt.Errorf("replacement %q %w", repl, err)
+		return resolvedRef{}, 0, fmt.Errorf("replacement %q %w", repl, err)
 	}
 	// An unresolved reference binds to nothing; ExpandString substitutes
 	// the empty string for it, so it contributes no segment either.
-	return idx, 1 + ref.width, nil
+	return resolved, 1 + ref.width, nil
 }
 
 // templateRef is one `$…` reference split off the front of a Go
