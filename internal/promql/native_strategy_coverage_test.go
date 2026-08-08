@@ -57,9 +57,9 @@ var nativeStrategies = []nativeStrategy{
 		wire: func(l *promql.RangeLowerers, has func(string) bool) {
 			// `experimental_ts_grid_recollapse:` nests INSIDE this
 			// section (mirroring the boot wiring in cmd/cerberus): the
-			// deferred label-shaping (-State/-Merge) shape only exists on
-			// top of a native rate grid, so it is read only where one is
-			// being built.
+			// two-stage label-shaping (-State/-Merge) shape only exists
+			// on top of a native rate grid, so it is read only where one
+			// is being built.
 			l.Rate = promql.NativeRateLowerer{
 				Fallback:   promql.FanoutRateLowerer{},
 				Recollapse: has("experimental_ts_grid_recollapse"),
