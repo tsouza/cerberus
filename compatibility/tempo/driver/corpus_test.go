@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc/codes"
 )
 
 func TestParseCorpus_Basic(t *testing.T) {
@@ -487,6 +489,160 @@ search
 `
 	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
 		t.Fatal("expect_status combined with a body-shape assertion should fail — the status-parity path never parses the body, so expected_min_traces would silently never run")
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeByName(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad_scope
+-- endpoint --
+tags_v2
+-- scope --
+all
+-- expect_grpc_code --
+InvalidArgument
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].ExpectedGRPCCode != codes.InvalidArgument {
+		t.Fatalf("ExpectedGRPCCode = %s, want InvalidArgument", got[0].ExpectedGRPCCode)
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeByInt(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad_scope
+-- endpoint --
+tags_v2
+-- scope --
+all
+-- expect_grpc_code --
+3
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].ExpectedGRPCCode != codes.InvalidArgument {
+		t.Fatalf("ExpectedGRPCCode = %s, want InvalidArgument (int form)", got[0].ExpectedGRPCCode)
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeRejectsOK(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{"OK", "0"} {
+		body := body
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- expect_grpc_code --
+` + body + "\n"
+			if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+				t.Fatal("expect_grpc_code OK should fail — this axis exists to express rejection parity, not success parity")
+			}
+		})
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeRejectsUnrecognisedName(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- expect_grpc_code --
+NotACode
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_grpc_code with an unrecognised name should fail")
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeRejectsOutOfRangeInt(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- expect_grpc_code --
+999
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_grpc_code with an out-of-range int should fail")
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeRejectsEndpointWithNoRPC(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- endpoint --
+traces
+-- traceid_template --
+svc/0
+-- expect_grpc_code --
+InvalidArgument
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_grpc_code on endpoint=traces should fail — no StreamingQuerier RPC exists for it")
+	}
+}
+
+func TestParseCorpus_ExpectGRPCCodeRejectsBodyAssertionCombo(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad
+-- query --
+{ x = 1 }
+-- endpoint --
+search
+-- expect_grpc_code --
+InvalidArgument
+-- expected_min_traces --
+1
+`
+	if _, err := parseCorpus(strings.NewReader(in), "test"); err == nil {
+		t.Fatal("expect_grpc_code combined with a body-shape assertion should fail — the gRPC status-parity path never parses the body")
+	}
+}
+
+// TestParseCorpus_ExpectGRPCCodeIndependentOfExpectStatus pins the
+// sibling relationship (#1714): a case may carry expect_grpc_code
+// without expect_status (HTTP-transport runs the ordinary body-diff
+// path; only the gRPC transport treats this case as a rejection).
+func TestParseCorpus_ExpectGRPCCodeIndependentOfExpectStatus(t *testing.T) {
+	t.Parallel()
+	in := `-- name --
+bad_scope
+-- endpoint --
+tags_v2
+-- scope --
+all
+-- expect_grpc_code --
+InvalidArgument
+`
+	got, err := parseCorpus(strings.NewReader(in), "test")
+	if err != nil {
+		t.Fatalf("parseCorpus: %v", err)
+	}
+	if got[0].ExpectedStatus != 0 {
+		t.Fatalf("ExpectedStatus = %d, want 0 (unset)", got[0].ExpectedStatus)
+	}
+	if got[0].ExpectedGRPCCode != codes.InvalidArgument {
+		t.Fatalf("ExpectedGRPCCode = %s, want InvalidArgument", got[0].ExpectedGRPCCode)
 	}
 }
 
