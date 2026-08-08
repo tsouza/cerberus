@@ -113,15 +113,32 @@ func carriedSampleTimestampColumns(name string, arg parser.Expr, ctx lowerCtx) [
 	return []string{chplan.RangeLWRSampleTimestampColumn}
 }
 
-// readsRangeSampleTimestamp reports whether this date-function call reports the
-// selected sample's OWN timestamp out of a range-mode selector seam — i.e. it
-// is `timestamp`, its argument is a vector selector, and the lowering is in
-// range mode. It is the single predicate [dateFnArgCtx],
-// [carriedSampleTimestampColumns] and [timestampResultExpr] all answer from, so
-// the column cannot be requested without being read or read without being
-// requested.
+// readsRangeSampleTimestamp reports whether this date-function call reports
+// the selected sample's OWN timestamp out of a range-mode selector seam —
+// i.e. it is `timestamp`, its argument is a vector selector, and the
+// argument lowers through the RangeLWR AGGREGATED seam that collapses each
+// (series, anchor) group and stamps `TimeUnix` with the step anchor. It is
+// the single predicate [dateFnArgCtx], [carriedSampleTimestampColumns] and
+// [timestampResultExpr] all answer from, so the column cannot be requested
+// without being read or read without being requested.
+//
+// `ctx.step > 0` alone is NOT that seam: it is also true wherever a
+// subquery-inner or range-vector-reducer argument lowers with
+// `ctx.inRangeVector` set, and that path takes the OPPOSITE branch of
+// [lowerVectorSelector] — it suppresses the RangeLWR wrap so every
+// in-window sample survives as its own row, with `TimeUnix` already the
+// raw sample time and no [chplan.RangeLWRSampleTimestampColumn] ever
+// published. `ctx.step > 0` was exactly that kind of proxy: true for the
+// aggregated seam this predicate means to name, but also true — for an
+// unrelated reason, the OUTER query's own step — for the raw-row seam a
+// subquery inner selector builds. Requesting the column there asks for
+// one that does not exist in the SQL this branch actually emits
+// (`max_over_time(timestamp(<selector>)[5m:1m])`, a live 502: `Unknown
+// expression identifier lwr_sample_ts`). Deciding from `inRangeVector`
+// instead answers from which seam the argument's OWN lowering takes, not
+// from a step value that means something else on that path.
 func readsRangeSampleTimestamp(name string, arg parser.Expr, ctx lowerCtx) bool {
-	if name != "timestamp" || ctx.step <= 0 {
+	if name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector {
 		return false
 	}
 	_, isSelector := unwrapVectorSelector(arg)
@@ -200,16 +217,23 @@ func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node,
 // getting that wrong is what made the selector branch report the step
 // anchor in range mode. In INSTANT mode the selector seam's `TimeUnix` IS
 // the raw sample time (`max(TimeUnix) AS lwr_ts`). In RANGE mode it is
-// not: every range-mode seam stamps `TimeUnix` with the STEP ANCHOR, and
-// the per-(series, anchor) `argMax(Value, TimeUnix)` collapse throws the
-// selecting sample's own time away. That is what
+// not: every range-mode AGGREGATED seam stamps `TimeUnix` with the STEP
+// ANCHOR, and the per-(series, anchor) `argMax(Value, TimeUnix)` collapse
+// throws the selecting sample's own time away. That is what
 // [chplan.RangeLWRSampleTimestampColumn] exists to publish, requested by
 // [readsRangeSampleTimestamp] on the way down, and it is the column the
 // selector branch has to read here — otherwise `time() - timestamp(up)`
 // is a constant near zero instead of the sample's age.
+//
+// This mirrors [readsRangeSampleTimestamp] exactly, and for the same
+// reason: `ctx.inRangeVector` excludes the RAW-row seam a subquery-inner
+// or range-vector-reducer argument lowers through, where `TimeUnix` is
+// already the sample's own time and [chplan.RangeLWRSampleTimestampColumn]
+// was never requested — so it was never published, and reading it here
+// would reference a column the emitted SQL does not have.
 func timestampResultExpr(arg parser.Expr, s schema.Metrics, ctx lowerCtx) chplan.Expr {
 	if _, isSelector := unwrapVectorSelector(arg); isSelector {
-		if ctx.step > 0 {
+		if ctx.step > 0 && !ctx.inRangeVector {
 			return &chplan.ColumnRef{Name: chplan.RangeLWRSampleTimestampColumn}
 		}
 		return &chplan.ColumnRef{Name: s.TimestampColumn}
