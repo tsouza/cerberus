@@ -283,6 +283,25 @@ echo "==> running rejection-parity driver (promql)"
     -report "$ROOT_DIR/rejection-parity.json")
 echo "==> rejection-parity report written to $ROOT_DIR/rejection-parity.json"
 
+# Metadata match[] parity pass: the differential sibling of
+# internal/api/prom/metadata_test.go's matchSelectorRejectedShapes
+# table. #1487 fixed the metadata endpoints (/api/v1/series,
+# /api/v1/labels, /api/v1/label/<name>/values) to parse match[] with
+# upstream's ParseMetricSelector grammar, but the fix was only ever
+# pinned as a handler-level unit test against the documented upstream
+# contract — never diffed live against a reference Prometheus. This
+# driver fires the same fixed shape set (a valid selector, the empty
+# {} selector, a range-vector call, offset, @, and an aggregation) at
+# both backends across all three endpoints and asserts they agree on
+# the expected status, closing the gap #1729 describes. See
+# compatibility/prometheus/cmd/metadata-parity/main.go's package doc.
+echo "==> running metadata-parity driver"
+(cd "$ROOT_DIR/../.." && go run ./compatibility/prometheus/cmd/metadata-parity \
+    -ref http://localhost:29090 \
+    -cerberus http://localhost:29091 \
+    -report "$ROOT_DIR/metadata-parity.json")
+echo "==> metadata-parity report written to $ROOT_DIR/metadata-parity.json"
+
 # Build + run the in-tree scorer. The scorer reads report.json and
 # writes the shields.io endpoint-badge compat-score JSON to $SCORE plus
 # the per-case parity roster to $CASES.
