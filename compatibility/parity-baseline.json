@@ -1101,8 +1101,8 @@
       ]
     },
     "tempo": {
-      "passed": 74,
-      "total": 74,
+      "passed": 75,
+      "total": 75,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -1166,6 +1166,7 @@
         "tag_values_v2 | tag_values_v2_service_name",
         "tag_values_v2 | tag_values_v2_unknown_tag_empty",
         "tags_v1 | tags_v1_all",
+        "tags_v1 | tags_v1_malformed_query",
         "tags_v1 | tags_v1_scoped_by_query",
         "tags_v2 | tags_v2_event",
         "tags_v2 | tags_v2_instrumentation",
@@ -1181,8 +1182,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 72,
-      "total": 72,
+      "passed": 73,
+      "total": 73,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -1246,6 +1247,7 @@
         "tag_values_v2 | tag_values_v2_service_name",
         "tag_values_v2 | tag_values_v2_unknown_tag_empty",
         "tags_v1 | tags_v1_all",
+        "tags_v1 | tags_v1_malformed_query",
         "tags_v1 | tags_v1_scoped_by_query",
         "tags_v2 | tags_v2_event",
         "tags_v2 | tags_v2_instrumentation",
