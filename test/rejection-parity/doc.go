@@ -16,7 +16,11 @@
 //  1. ScanSites enumerates every `fmt.Errorf("<head>: ...")` /
 //     `errors.New("<head>: ...")` construction site in the three
 //     lowering packages via go/ast — the mechanical universe of
-//     rejection candidates.
+//     rejection candidates — plus every site built through a
+//     package-local `verbatimErrorf` wrapper (promql.verbatimErrorf is
+//     the one definition today), the deliberate, opt-in exception for a
+//     message that reproduces a reference backend's own wording and so
+//     carries no head prefix to scan for. See isErrorConstructor.
 //  2. The catalogue/ shard directory classifies every site into one of
 //     three classes — `rejection`, `internal`, or `divergence` (see
 //     below). It is stored as one shard per lowering SOURCE FILE
@@ -28,11 +32,16 @@
 //  3. The meta-tests in catalogue_test.go pin the three-way ratchet:
 //     scanned-site set == catalogue set (regenerable via
 //     CERBERUS_UPDATE_INVENTORY=1), every `rejection`/`divergence`
-//     entry's trigger query parses AND fails lowering with the site's
-//     message, the parity-corpus case set is derived 1:1 from the
-//     `rejection` + `divergence` entries via BuildCases, and every
-//     entry's reachability evidence still matches what evidence.go
-//     derives from the lowering source today (see below).
+//     entry's trigger query parses AND reaches an error matching the
+//     site's message — lowering itself for the overwhelming majority,
+//     or (an entry carrying GuardValues) lowering cleanly and applying
+//     the registered execution-time guard's Check, for the handful of
+//     sites reference Prometheus itself only rejects once a value
+//     exists to judge (see lowerGuardTrigger) — the parity-corpus case
+//     set is derived 1:1 from the `rejection` + `divergence` entries via
+//     BuildCases, and every entry's reachability evidence still matches
+//     what evidence.go derives from the lowering source today (see
+//     below).
 //  4. compatibility/cmd/rejection-parity consumes BuildCases inside
 //     each compat harness and, per case, asserts the class's claim:
 //     for `rejection`, that the REFERENCE backend also rejects the

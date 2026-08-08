@@ -137,9 +137,27 @@ type lowerCtx struct {
 	// optimisation.
 	pinScalarsOnce bool
 
+	// needSampleTimestamp marks a descent whose CONSUMER reads the selected
+	// sample's own timestamp rather than the evaluation step — set only by
+	// the range-mode `timestamp(<vector-selector>)` lowering, the one PromQL
+	// shape for which the two differ observably (see [timestampResultExpr]).
+	// The range-mode selector seam threads it onto
+	// chplan.RangeLWR.SampleTimestamp, which publishes the extra column the
+	// projection above then reads. False for every other lowering, so no
+	// other query shape changes.
+	needSampleTimestamp bool
+
 	// guards is the sink [registerScalarGuard] appends to. Nil when the
 	// caller did not ask for guards — see [LowerOpts.Guards].
 	guards *[]ScalarGuard
+}
+
+// withSampleTimestamp returns a copy of c that asks the range-mode selector
+// seam to publish the selected sample's own timestamp alongside the per-anchor
+// value. Only the `timestamp(<vector-selector>)` lowering calls it.
+func (c lowerCtx) withSampleTimestamp() lowerCtx {
+	c.needSampleTimestamp = true
+	return c
 }
 
 // withPinnedScalars returns a copy of c that binds a computed scalar

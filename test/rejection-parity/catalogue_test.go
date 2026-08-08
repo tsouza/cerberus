@@ -256,6 +256,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			if e.Since != "" {
 				t.Errorf("rejection entry %s carries a since date — since dates belong to divergence entries", e.Site.Site)
 			}
+			if len(e.GuardValues) > 0 && e.Head != "promql" {
+				t.Errorf("rejection entry %s carries guard_values but head %s has no ScalarGuard mechanism — guard_values is promql-only", e.Site.Site, e.Head)
+			}
 		case ClassInternal:
 			if e.Evidence == nil {
 				t.Errorf("internal entry %s carries no evidence block — a rationale with nothing derived beneath it is an unchecked assertion; regenerate with CERBERUS_UPDATE_INVENTORY=1", e.Site.Site)
@@ -272,6 +275,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			if e.Since != "" {
 				t.Errorf("internal entry %s carries a since date — since dates belong to divergence entries", e.Site.Site)
 			}
+			if len(e.GuardValues) > 0 {
+				t.Errorf("internal entry %s carries guard_values — guard_values belongs to rejection entries", e.Site.Site)
+			}
 		case ClassDivergence:
 			if strings.TrimSpace(e.TriggerQuery) == "" {
 				t.Errorf("divergence entry %s has no trigger query", e.Site.Site)
@@ -282,6 +288,9 @@ func TestCatalogueEntriesAreClassified(t *testing.T) {
 			}
 			if !ValidEndpoint(e.Head, ep) {
 				t.Errorf("divergence entry %s: endpoint %q invalid for head %s", e.Site.Site, ep, e.Head)
+			}
+			if len(e.GuardValues) > 0 {
+				t.Errorf("divergence entry %s carries guard_values — the guard exerciser is only wired for rejection entries", e.Site.Site)
 			}
 			if e.Rationale != "" {
 				t.Errorf("divergence entry %s carries a rationale — rationales belong to internal entries; a divergence justifies itself via its trigger query + tracking issue", e.Site.Site)
@@ -651,13 +660,17 @@ func evidenceOfFixture(t *testing.T, src string) map[string]*Evidence {
 // TestRejectionTriggersExerciseSites is the centrepiece pin: for every
 // class=rejection or class=divergence entry, the trigger query (a)
 // parses with the head's reference parser — proving the rejection is
-// semantic, not a parse error — and (b) fails the head's lowering with
-// an error matching the site's message — proving the trigger actually
-// exercises the catalogued site, so the parity corpus diffs the claim
-// the site makes and not some other failure. Divergence entries share
-// this reachability proof with rejection entries — the two classes
-// only disagree about what the REFERENCE backend does with the same
-// trigger, never about whether cerberus itself rejects it.
+// semantic, not a parse error — and (b) reaches an error matching the
+// site's message — proving the trigger actually exercises the
+// catalogued site, so the parity corpus diffs the claim the site makes
+// and not some other failure. For the overwhelming majority that error
+// comes from lowering itself; a GuardValues entry reaches it instead by
+// lowering cleanly and applying the registered guard's Check (see
+// lowerGuardTrigger) — a different WHEN, not a different WHAT, so both
+// still land in the one ErrorMatchesMessage comparison below. Divergence
+// entries share this reachability proof with rejection entries — the
+// two classes only disagree about what the REFERENCE backend does with
+// the same trigger, never about whether cerberus itself rejects it.
 func TestRejectionTriggersExerciseSites(t *testing.T) {
 	t.Parallel()
 
@@ -719,14 +732,29 @@ func TestParityCorpusMatchesCatalogue(t *testing.T) {
 }
 
 // lowerTrigger parses + lowers one trigger query through the same
-// entrypoints the HTTP handlers use and returns the lowering error
-// string. Parse failures and lowering successes are both fatal — a
-// trigger must be a valid-language query that the lowering rejects.
+// entrypoints the HTTP handlers use and returns the error string that
+// proves the site is reachable. For every class it handles except one,
+// that proof is a lowering failure — parse failures and lowering
+// successes are both fatal, because a trigger must be a valid-language
+// query that lowering itself rejects.
+//
+// An entry carrying GuardValues proves reachability differently: its
+// rejection exists only once ClickHouse has produced a value
+// [internal/promql.ScalarGuard]'s Check inspects, so lowering the
+// trigger must SUCCEED (with the guard registered, not raised) and
+// lowerGuardTrigger applies Check to the entry's own value series —
+// see that function's doc comment for why this mirrors
+// internal/engine/engine.go's runGuards rather than inventing a
+// different call shape.
 func lowerTrigger(t *testing.T, e Entry) string {
 	t.Helper()
 	ctx := context.Background()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(5 * time.Minute)
+
+	if len(e.GuardValues) > 0 {
+		return lowerGuardTrigger(t, e, ctx, end)
+	}
 
 	switch e.Head {
 	case "promql":
@@ -767,6 +795,49 @@ func lowerTrigger(t *testing.T, e Entry) string {
 		return lerr.Error()
 	}
 	t.Fatalf("entry %s has unknown head %q", e.Site.Site, e.Head)
+	return ""
+}
+
+// lowerGuardTrigger proves reachability for a class=rejection entry
+// whose site only ever raises once ClickHouse has run — an
+// [internal/promql.ScalarGuard]'s Check applied to a value series, not
+// a lowering-time error.
+//
+// The shape mirrors internal/engine/engine.go's runGuards: lower with a
+// guard sink, then run each registered guard's Check on the values its
+// plan would have produced. The difference is where the values come
+// from — runGuards gets them from ClickHouse; this exerciser gets them
+// from the entry's own GuardValues, so the site is proved without a
+// database. Requiring exactly one registered guard keeps the mapping
+// from GuardValues to "the guard it checks" unambiguous; an entry whose
+// trigger registers more than one would need a name to disambiguate,
+// which is unneeded by every site GuardValues covers today.
+func lowerGuardTrigger(t *testing.T, e Entry, ctx context.Context, end time.Time) string {
+	t.Helper()
+	if e.Head != "promql" {
+		t.Fatalf("entry %s: guard_values is only meaningful for promql, the only head with a ScalarGuard mechanism", e.Site.Site)
+	}
+	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
+	expr, err := p.ParseExpr(e.TriggerQuery)
+	if err != nil {
+		t.Fatalf("trigger %q does not parse as PromQL: %v", e.TriggerQuery, err)
+	}
+	var guards []promql.ScalarGuard
+	// Instant query shape, matching the non-guard promql path above;
+	// the guard's own Plan projects one value per evaluation step
+	// regardless, and the exerciser never runs that Plan — it feeds
+	// GuardValues to Check directly.
+	_, lerr := promql.LowerAtRangeOpts(ctx, expr, schema.DefaultOTelMetrics(), end, end, 0, promql.LowerOpts{Guards: &guards})
+	if lerr != nil {
+		t.Fatalf("trigger %q failed lowering with %v — a guard-only rejection must lower cleanly; the guard's Check is what rejects, at execution time", e.TriggerQuery, lerr)
+	}
+	if len(guards) != 1 {
+		t.Fatalf("trigger %q registered %d scalar guards, want exactly 1 — the exerciser cannot tell which one guard_values checks", e.TriggerQuery, len(guards))
+	}
+	if cerr := guards[0].Check(e.GuardValues); cerr != nil {
+		return cerr.Error()
+	}
+	t.Fatalf("trigger %q's guard %q accepted %v — the catalogued rejection is unreachable via this value series", e.TriggerQuery, guards[0].Name, e.GuardValues)
 	return ""
 }
 

@@ -58,13 +58,22 @@ import (
 // Every caller that drops the name routes through here rather than
 // calling [projectValueOverInner] directly, so a new name-dropping
 // lowering inherits the guard by using the same helper its siblings use.
+//
+// `carry` names EXTRA columns `newValue` reads out of `inner` beyond the
+// canonical four — today only [chplan.RangeLWRSampleTimestampColumn], which
+// range-mode `timestamp(<vector-selector>)` reads. The guard's Aggregate
+// outputs exactly its key plus its aggregates, so a column not named here is
+// DROPPED and `newValue` would reference something that no longer exists.
+// They are needed only as INPUT to the projection: [projectValueOverInner]
+// re-projects the canonical four above, so nothing extra escapes downstream.
 func guardedValueProjection(
 	inner chplan.Node,
 	arg parser.Expr,
 	s schema.Metrics,
 	newValue chplan.Expr,
+	carry ...string,
 ) chplan.Node {
-	return projectValueOverInner(guardNameDropCollision(inner, arg, s), s, newValue)
+	return projectValueOverInner(guardNameDropCollision(inner, arg, s, carry...), s, newValue)
 }
 
 // guardKeysOnTimestamp reports whether a collision guard over `inner` must
@@ -143,7 +152,7 @@ func guardKeysOnTimestamp(inner chplan.Node, s schema.Metrics) bool {
 // The RangeWindow branch is never reached from here: a RangeWindow has
 // already grouped the name away, so [nodeCarriesMetricName] answers false
 // for it and the guard is a no-op by construction.
-func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics) chplan.Node {
+func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics, carry ...string) chplan.Node {
 	if !collidesOnNameDrop(arg, inner, s) {
 		return inner
 	}
@@ -181,6 +190,17 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 			Name:  "any",
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			Alias: s.TimestampColumn,
+		})
+	}
+
+	// Caller-named extra columns ride through as `any(col) AS col`, exact for
+	// the same reason the value's `any` is: the HAVING has already aborted
+	// every group fed by more than one row.
+	for _, name := range carry {
+		aggs = append(aggs, chplan.AggFunc{
+			Name:  "any",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
+			Alias: name,
 		})
 	}
 

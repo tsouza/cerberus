@@ -55,6 +55,12 @@ import (
 //
 // Zero Start/End (the deterministic fixture shape) falls back to
 // `now64(9)` for both bases via timeOrNowFrag.
+//
+// chplan.RangeLWR.SampleTimestamp adds ONE column to both the collapse and
+// the outer SELECT — `max(TimeUnix) AS lwr_sample_ts` — carrying the own
+// timestamp of the sample argMax selected, which the collapse otherwise
+// discards. The four canonical columns are untouched: TimeUnix remains the
+// step anchor.
 func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	if r.Step <= 0 {
 		return fmt.Errorf("%w: RangeLWR requires Step > 0", ErrUnsupported)
@@ -144,6 +150,24 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 		}),
 		lwrValueAlias,
 	))
+	// The selecting sample's OWN timestamp, on request. `argMax(Value,
+	// TimeUnix)` above keeps the value and throws the timestamp that picked
+	// it away, so it has to be aggregated separately or it is unrecoverable
+	// once this SELECT closes. `max(TimeUnix)` over the bucket IS that
+	// timestamp: every fanned row in a (series, anchor) bucket is in the same
+	// staleness window and argMax picks the newest of them, so the newest
+	// timestamp and the argMax-selecting timestamp are the same value.
+	// Its own alias keeps it clear of the inner TimeUnix column that
+	// argMax's second argument must resolve to (see the note above).
+	if r.SampleTimestamp {
+		collapse.Select(RawAs(
+			aggFuncFrag(chplan.AggFunc{
+				Name: "max",
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: r.TimestampCol}},
+			}),
+			chplan.RangeLWRSampleTimestampColumn,
+		))
+	}
 	collapse.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol), Col("anchor_ts"))
 
 	// Outer SELECT: re-alias anchor_ts → TimeUnix and lwr_value → Value so
@@ -155,6 +179,14 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	outer.Select(As(Col(r.AttributesCol), r.AttributesCol))
 	outer.Select(As(verbatim("anchor_ts"), r.TimestampCol))
 	outer.Select(As(verbatim(lwrValueAlias), r.ValueCol))
+	// The requested fifth column rides through under its own name — it is
+	// NOT re-aliased over TimestampCol, which stays the step anchor.
+	if r.SampleTimestamp {
+		outer.Select(As(
+			verbatim(chplan.RangeLWRSampleTimestampColumn),
+			chplan.RangeLWRSampleTimestampColumn,
+		))
+	}
 
 	return e.emitSelect(outer)
 }

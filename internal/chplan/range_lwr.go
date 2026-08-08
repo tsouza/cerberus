@@ -2,6 +2,22 @@ package chplan
 
 import "time"
 
+// RangeLWRSampleTimestampColumn is the name of the OPTIONAL fifth column
+// [RangeLWR] publishes when [RangeLWR.SampleTimestamp] is set: the own
+// timestamp of the sample the LWR selected for each (series, anchor)
+// bucket, as distinct from the anchor the row is indexed by.
+//
+// The two are genuinely different values. `TimestampCol` on a RangeLWR row
+// is the STEP ANCHOR — a range query's rows are indexed by step, and two
+// adjacent anchors under one lookback window carry the SAME sample. This
+// column is that sample's own time, which is what PromQL's
+// `timestamp(<selector>)` reports as its VALUE (reference Prometheus's
+// rangeEvalTimestampFunctionOverVectorSelector emits `float64(s.T)/1000`,
+// the selected sample's time, while `rangeEval` stamps the output point
+// with the step). Nothing else needs it, so it is published on request
+// rather than always — see [RangeLWR.SampleTimestamp].
+const RangeLWRSampleTimestampColumn = "lwr_sample_ts"
+
 // RangeLWR is the single-pass, bounded last-with-respect-to (LWR) plan
 // node for a BARE instant-vector selector evaluated over a PromQL
 // `query_range` window. It replaces the O(rows × anchors) StepGrid
@@ -76,6 +92,26 @@ type RangeLWR struct {
 	// phase is anchored to the request's own start/end, not to epoch 0.
 	StepAlign bool
 
+	// SampleTimestamp asks the emitter to publish ONE EXTRA output column,
+	// [RangeLWRSampleTimestampColumn], carrying `max(TimestampCol)` over each
+	// (series, anchor) bucket — the own timestamp of the sample the
+	// `argMax(ValueCol, TimestampCol)` collapse picked. The collapse keeps the
+	// VALUE and discards the timestamp that selected it, so without this the
+	// sample's time is unrecoverable above the node and the only timestamp in
+	// scope is the anchor.
+	//
+	// The four canonical columns are unchanged when it is set: TimestampCol
+	// still carries the STEP ANCHOR, because a range query's rows are indexed
+	// by step. Only a consumer that asked for the fifth column sees it, and
+	// the projection that reads it drops it again, so the canonical Sample
+	// contract holds either side of the request.
+	//
+	// Set by the `timestamp(<vector-selector>)` lowering in range mode
+	// (internal/promql.timestampResultExpr), the one PromQL shape whose result
+	// is the selected sample's own time rather than the evaluation step. False
+	// everywhere else, which keeps every other range query's SQL unchanged.
+	SampleTimestamp bool
+
 	// Column names on Input (canonical OTel-CH: MetricName / Attributes /
 	// TimeUnix / Value).
 	MetricNameCol string
@@ -99,7 +135,7 @@ func (r *RangeLWR) Equal(other Node) bool {
 	if r.Step != o.Step || r.Lookback != o.Lookback || r.Offset != o.Offset {
 		return false
 	}
-	if r.StepAlign != o.StepAlign {
+	if r.StepAlign != o.StepAlign || r.SampleTimestamp != o.SampleTimestamp {
 		return false
 	}
 	if r.MetricNameCol != o.MetricNameCol || r.AttributesCol != o.AttributesCol {

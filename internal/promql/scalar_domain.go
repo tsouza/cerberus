@@ -5,6 +5,25 @@ import (
 	"math"
 )
 
+// verbatimErrorf constructs an error whose message reproduces a
+// reference backend's own wording byte for byte — never prefixed with
+// "promql: " the way every other lowering error is, because the prefix
+// would be cerberus's own annotation on a sentence reference itself
+// wrote.
+//
+// It exists as a named wrapper, rather than a bare fmt.Errorf call,
+// so the rejection-parity scanner (isErrorConstructor in
+// test/rejection-parity/catalogue.go) can recognise these five call
+// sites by name and admit them into the catalogue despite the missing
+// prefix its normal filter requires. That recognition is scoped to
+// calls written exactly this way — the five domain-violation sites in
+// this file are the only ones in the package that should ever call it;
+// see the doc comment on this file for why their wording cannot be
+// cerberus's own.
+func verbatimErrorf(format string, args ...any) error {
+	return fmt.Errorf(format, args...)
+}
+
 // Reference Prometheus rejects a handful of scalar *parameter* values at
 // evaluation time rather than at parse time: a topk K that is NaN or too
 // large to become an int64, a limit_ratio ratio that is NaN, a
@@ -77,11 +96,11 @@ func aggregationParamDomain(values []float64) (empty bool, err error) {
 	case mx < aggregationParamMinK:
 		return true, nil
 	case hasAnyNaN(values):
-		return false, fmt.Errorf("Parameter value is NaN") //nolint:staticcheck,revive // reference Prometheus's own error text, reproduced verbatim
+		return false, verbatimErrorf("Parameter value is NaN")
 	case mn <= aggParamMinInt64:
-		return false, fmt.Errorf("Scalar value %v underflows int64", mn) //nolint:staticcheck,revive // reference Prometheus's own error text, reproduced verbatim
+		return false, verbatimErrorf("Scalar value %v underflows int64", mn)
 	case mx >= aggParamMaxInt64:
-		return false, fmt.Errorf("Scalar value %v overflows int64", mx) //nolint:staticcheck,revive // reference Prometheus's own error text, reproduced verbatim
+		return false, verbatimErrorf("Scalar value %v overflows int64", mx)
 	}
 	return false, nil
 }
@@ -103,7 +122,7 @@ func limitRatioParamDomain(values []float64) (empty bool, err error) {
 	case mx == 0 && mn == 0:
 		return true, nil
 	case hasAnyNaN(values):
-		return false, fmt.Errorf("Ratio value is NaN") //nolint:staticcheck,revive // reference Prometheus's own error text, reproduced verbatim
+		return false, verbatimErrorf("Ratio value is NaN")
 	}
 	return false, nil
 }
@@ -149,7 +168,7 @@ var (
 func holtWintersFactorDomain(kind holtWintersFactorKind, values []float64) error {
 	for _, v := range values {
 		if v <= 0 || v >= 1 {
-			return fmt.Errorf( //nolint:staticcheck,revive // reference Prometheus's own error text, reproduced verbatim
+			return verbatimErrorf(
 				"invalid %s factor. Expected: 0 < %s < 1, got: %f", kind.noun, kind.symbol, v,
 			)
 		}

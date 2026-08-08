@@ -1181,8 +1181,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 71,
-      "total": 71,
+      "passed": 72,
+      "total": 72,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -1252,6 +1252,7 @@
         "tags_v2 | tags_v2_intrinsic",
         "tags_v2 | tags_v2_link",
         "tags_v2 | tags_v2_resource",
+        "tags_v2 | tags_v2_scope_all_rejected",
         "tags_v2 | tags_v2_span",
         "tags_v2 | tags_v2_span_scoped_by_query",
         "tags_v2 | tags_v2_trace"

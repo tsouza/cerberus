@@ -63,7 +63,9 @@ import (
 
 	"github.com/grafana/tempo/pkg/tempopb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/compatibility/internal/score"
 )
@@ -204,17 +206,18 @@ func runDiffGRPC(args []string) error {
 		case !grpcSupportsEndpoint(tc.Endpoint):
 			skippedNoRPC = append(skippedNoRPC, tc)
 			continue
-		case tc.ExpectedStatus != 0:
-			// The status-parity axis (-- expect_status --, diff.go's
-			// diffStatusParityCase) compares HTTP status ints. gRPC
-			// surfaces failures as codes.Code via status.FromError — a
-			// different domain with no canonical mapping — and
-			// diffCaseGRPC treats any non-nil RPC error as an
-			// unconditional HardError, so running an ExpectedStatus case
-			// through this transport unmodified would silently mis-grade
-			// it. Tracked as a distinct gRPC-side axis in #1714; until
-			// that lands, these cases are HTTP-transport-only, reported
-			// here rather than dropped.
+		case tc.ExpectedStatus != 0 && tc.ExpectedGRPCCode == codes.OK:
+			// The HTTP-only status-parity axis (-- expect_status --,
+			// diff.go's diffStatusParityCase) compares HTTP status ints.
+			// gRPC surfaces failures as codes.Code via status.FromError —
+			// a different domain with no canonical mapping — so a case
+			// with no -- expect_grpc_code -- sibling (#1714) has nothing
+			// for this transport to grade against. Running it through
+			// diffCaseGRPC unmodified would silently mis-grade a genuine
+			// rejection-parity case as a HardError, so it's skipped and
+			// reported here instead. A case that DOES carry
+			// -- expect_grpc_code -- falls through to diffCaseGRPC below,
+			// which routes it to diffStatusParityCaseGRPC.
 			skippedStatusParity = append(skippedStatusParity, tc)
 			continue
 		}
@@ -265,6 +268,15 @@ func diffCaseGRPC(ctx context.Context, tempoClient, cerbClient tempopb.Streaming
 
 	tempoBody, terr := fetchGRPCForEndpoint(ctx, tempoClient, tc, opts)
 	cerbBody, cerr := fetchGRPCForEndpoint(ctx, cerbClient, tc, opts)
+
+	// gRPC-side status-parity axis (#1714), the sibling of diff.go's
+	// ExpectedStatus branch: a case declaring -- expect_grpc_code --
+	// never reaches the body-diff path below — the whole point is that
+	// an RPC error IS the correct outcome here, not a hard error.
+	if tc.ExpectedGRPCCode != codes.OK {
+		return diffStatusParityCaseGRPC(tc, terr, cerr)
+	}
+
 	if terr != nil {
 		res.HardError = fmt.Sprintf("tempo grpc: %v", terr)
 	}
@@ -313,6 +325,53 @@ func diffCaseGRPC(ctx context.Context, tempoClient, cerbClient tempopb.Streaming
 		return res
 	}
 	res.Diff = d
+	return res
+}
+
+// diffStatusParityCaseGRPC is diffCaseGRPC's status-parity branch, taken
+// when the corpus case sets ExpectedGRPCCode (#1714). It is the gRPC
+// transport's sibling of diff.go's diffStatusParityCase: gRPC surfaces
+// failures as a google.golang.org/grpc/codes.Code via status.FromError
+// rather than an HTTP status int, so this compares that instead — the
+// same rejection-parity shape as the HTTP axis, on a different wire
+// domain, deliberately not mapped onto it (see corpus.go's
+// ExpectedGRPCCode doc for why the two axes stay independent).
+//
+// status.FromError's `ok` return is the signal this uses to tell "the
+// RPC completed with a real status" from "no usable response at all":
+// per its doc, ok is true whenever err is nil (codes.OK) or err carries
+// an actual gRPC Status, and false only for a non-status error (a
+// transport-level failure such as a refused dial before any RPC frame
+// was exchanged). The latter is a genuine hard error — there is no code
+// to grade — exactly like diffStatusParityCase's zero-HTTP-status case.
+func diffStatusParityCaseGRPC(tc CorpusCase, terr, cerr error) CaseResult {
+	tempoSt, tempoOK := grpcstatus.FromError(terr)
+	if !tempoOK {
+		return CaseResult{Case: tc, HardError: fmt.Sprintf("tempo grpc: %v", terr)}
+	}
+	cerbSt, cerbOK := grpcstatus.FromError(cerr)
+	if !cerbOK {
+		return CaseResult{Case: tc, HardError: fmt.Sprintf("cerberus grpc: %v", cerr)}
+	}
+
+	res := CaseResult{Case: tc, TempoStatus: int(tempoSt.Code()), CerberusStatus: int(cerbSt.Code())}
+	if tempoSt.Code() != tc.ExpectedGRPCCode {
+		res.Assertions = append(res.Assertions, DiffReason{
+			Kind:   "grpc_code_mismatch",
+			Detail: fmt.Sprintf("tempo returned gRPC code %s, corpus -- expect_grpc_code -- says %s", tempoSt.Code(), tc.ExpectedGRPCCode),
+		})
+	}
+	if cerbSt.Code() != tc.ExpectedGRPCCode {
+		res.Assertions = append(res.Assertions, DiffReason{
+			Kind:   "grpc_code_mismatch",
+			Detail: fmt.Sprintf("cerberus returned gRPC code %s, corpus -- expect_grpc_code -- says %s", cerbSt.Code(), tc.ExpectedGRPCCode),
+		})
+	}
+	// No body was parsed, so there is no structural diff to compute —
+	// mark it trivially Equal so passed() (HardError=="" && Diff.Equal &&
+	// len(Assertions)==0) reduces to "did the codes match", mirroring
+	// diffStatusParityCase.
+	res.Diff = Diff{Equal: true}
 	return res
 }
 
@@ -607,7 +666,9 @@ func metricsSeriesFromProtoRange(ts *tempopb.TimeSeries) MetricsSeriesEntry {
 // transport genuinely can't run — documented, not silently dropped.
 // skippedNoRPC is endpoints with no StreamingQuerier RPC counterpart at
 // all (traces/traces_v2); skippedStatusParity is expect_status cases
-// this transport doesn't yet grade (tracked in #1714).
+// with no -- expect_grpc_code -- sibling declared (#1714 built the axis,
+// but a case must opt into gRPC-side grading explicitly — HTTP status
+// ints and gRPC codes are different domains with no canonical mapping).
 func writeReportGRPC(path string, results []CaseResult, skippedNoRPC, skippedStatusParity []CorpusCase) error {
 	if err := writeReport(path, grpcReportTitle, grpcStatusLabel, results); err != nil {
 		return err
@@ -637,13 +698,15 @@ func writeReportGRPC(path string, results []CaseResult, skippedNoRPC, skippedSta
 	if len(skippedStatusParity) > 0 {
 		if err := renderSkippedSection(
 			f, skippedStatusParity,
-			"## Skipped — expect_status axis not yet implemented for gRPC",
-			"These corpus cases carry -- expect_status --, a rejection-parity "+
-				"axis compared against the HTTP status int (diff.go's "+
-				"diffStatusParityCase). gRPC surfaces failures as "+
-				"codes.Code via status.FromError, a different domain with no "+
-				"canonical mapping to HTTP status, and this transport doesn't "+
-				"grade that yet (tracked in #1714). The %d case(s) below are "+
+			"## Skipped — expect_status has no gRPC-side expect_grpc_code",
+			"These corpus cases carry -- expect_status --, the HTTP-only "+
+				"rejection-parity axis compared against the HTTP status int "+
+				"(diff.go's diffStatusParityCase), but no -- expect_grpc_code -- "+
+				"sibling (#1714) declaring what this transport should see "+
+				"instead. HTTP status ints and gRPC codes.Code values are "+
+				"different domains with no canonical mapping between them, so a "+
+				"case wanting gRPC-side rejection-parity coverage must declare "+
+				"its own expectation explicitly. The %d case(s) below are "+
 				"excluded from the score denominator rather than counted as "+
 				"failures:\n\n",
 		); err != nil {

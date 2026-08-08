@@ -1,0 +1,89 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_domain.go:aggregationParamDomain#6dad295b",
+      "message": "Scalar value %v overflows int64",
+      "class": "rejection",
+      "trigger_query": "topk(1e300, up)",
+      "evidence": {
+        "guard": [
+          "case mx \u003e= aggParamMaxInt64 of switch"
+        ],
+        "callers": [
+          "lowerSubqueryOverTopK",
+          "lowerTopKComputed",
+          "topKDomain"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_domain.go:aggregationParamDomain#8c61644b",
+      "message": "Scalar value %v underflows int64",
+      "class": "rejection",
+      "trigger_query": "topk(scalar(up), demo_http_requests_total)",
+      "guard_values": [
+        1,
+        -9223372036854776000
+      ],
+      "evidence": {
+        "guard": [
+          "case mn \u003c= aggParamMinInt64 of switch"
+        ],
+        "callers": [
+          "lowerSubqueryOverTopK",
+          "lowerTopKComputed",
+          "topKDomain"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_domain.go:aggregationParamDomain#93e796ca",
+      "message": "Parameter value is NaN",
+      "class": "rejection",
+      "trigger_query": "topk(NaN, up)",
+      "evidence": {
+        "guard": [
+          "case hasAnyNaN(values) of switch"
+        ],
+        "callers": [
+          "lowerSubqueryOverTopK",
+          "lowerTopKComputed",
+          "topKDomain"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_domain.go:holtWintersFactorDomain#fd482ce3",
+      "message": "invalid %s factor. Expected: 0 \u003c %s \u003c 1, got: %f",
+      "class": "rejection",
+      "trigger_query": "double_exponential_smoothing(up[5m], 1.5, 0.3)",
+      "evidence": {
+        "guard": [
+          "if v \u003c= 0 || v \u003e= 1"
+        ],
+        "callers": [
+          "holtWintersFactors"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_domain.go:limitRatioParamDomain#4b08e802",
+      "message": "Ratio value is NaN",
+      "class": "rejection",
+      "trigger_query": "limit_ratio(NaN, up)",
+      "evidence": {
+        "guard": [
+          "case hasAnyNaN(values) of switch"
+        ],
+        "callers": [
+          "limitRatioPredicate"
+        ]
+      }
+    }
+  ]
+}
