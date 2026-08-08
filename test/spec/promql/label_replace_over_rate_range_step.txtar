@@ -63,12 +63,12 @@ INSERT INTO otel_metrics_sum VALUES
 ]
 -- args --
 [0] string = "cerberus_ql"
-[1] string = "^(.*)$"
+[1] string = "^(?s:(.*))$"
 [2] string = "engine"
 [3] string = "cerberus_ql"
 [4] string = "engine-"
 [5] string = "cerberus_ql"
-[6] string = "^(.*)$"
+[6] string = "^(?s:(.*))$"
 [7] string = "engine-\\1"
 [8] string = "service.name"
 [9] string = "service_name"

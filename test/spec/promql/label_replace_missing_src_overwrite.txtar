@@ -38,12 +38,12 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- args --
 [0] string = "nonexistent-src"
-[1] string = "^(.*)$"
+[1] string = "^(?s:(.*))$"
 [2] string = "job"
 [3] string = "nonexistent-src"
 [4] string = "value-"
 [5] string = "nonexistent-src"
-[6] string = "^(.*)$"
+[6] string = "^(?s:(.*))$"
 [7] string = "value-\\1"
 [8] string = "service.name"
 [9] string = "service_name"

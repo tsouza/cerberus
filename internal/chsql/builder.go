@@ -962,10 +962,12 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 //	             replaceRegexpOne(<map>[?src], ?anchoredRegex, ?replacement)))),
 //	       <map>))
 //
-// `anchoredRegex` is `^<regex>$` so the match is full-string, matching
-// Prometheus's `RE2 ^…$` anchoring rule. The outer mapFilter drops the
-// dst label when the substituted replacement is the empty string —
-// Prom's "labels set to empty values are dropped" rule.
+// `anchoredRegex` is `^(?s:<regex>)$` — see [anchorLabelReplaceRegex] —
+// so the match is full-string, matching Prometheus's `label_replace`
+// anchoring rule (`promql/functions.go`:
+// `"^(?s:" + regexStr + ")$"`). The outer mapFilter drops the dst label
+// when the substituted replacement is the empty string — Prom's "labels
+// set to empty values are dropped" rule.
 //
 // The inner `if(empty(src), emptyReplacement, replaceRegexpOne(…))`
 // short-circuit patches CH ≤ 24.8's divergent behaviour where
@@ -982,7 +984,7 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 // lock-step — the short-circuit stays because it is forward-safe and
 // keeps emission byte-identical across the version move.
 func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
-	anchored := "^" + l.Regex + "$"
+	anchored := anchorLabelReplaceRegex(l.Regex)
 	b.sb.WriteString("mapFilter((k, v) -> v != '', if(match(")
 	if err := b.Expr(l.Map); err != nil {
 		return err
@@ -1015,6 +1017,26 @@ func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	}
 	b.sb.WriteString("))")
 	return nil
+}
+
+// anchorLabelReplaceRegex anchors a `label_replace` regex to a
+// full-string match, the same way reference Prometheus does
+// (`promql/functions.go`: `"^(?s:" + regexStr + ")$"`). ClickHouse's RE2
+// engine accepts the `(?s:...)` non-capturing flag group natively, so no
+// other change is needed to the emitted pattern.
+//
+// The `internal/qlcommon` capture-group resolver (`newCaptureGroups`,
+// which decides which capture-group index a `$N` / `$name` replacement
+// reference in this same LabelReplace resolves to) anchors identically —
+// the two must never drift, or the group indices this emitter reads off
+// `l.Segments` stop lining up with the regex ClickHouse actually
+// evaluates. `internal/chsql` may not import `internal/qlcommon`
+// (`.go-arch-lint.yml`), so the anchoring form is duplicated rather than
+// shared — see [qlcommon.anchorRegex]'s doc comment for the two
+// independent behaviour differences a bare `^...$` gets wrong
+// (alternation escaping the anchors, `.` not matching newline).
+func anchorLabelReplaceRegex(regex string) string {
+	return "^(?s:" + regex + ")$"
 }
 
 // labelReplaceSubstitution renders the substituted value itself — the

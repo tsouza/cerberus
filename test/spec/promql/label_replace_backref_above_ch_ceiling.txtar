@@ -31,13 +31,13 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- args --
 [0] string = "host"
-[1] string = "^host-(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)$"
+[1] string = "^(?s:host-(.)(.)(.)(.)(.)(.)(.)(.)(.)(.))$"
 [2] string = "service"
 [3] string = "host"
 [4] string = "g--tail"
 [5] string = "g-"
 [6] string = "host"
-[7] string = "^host-(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)$"
+[7] string = "^(?s:host-(.)(.)(.)(.)(.)(.)(.)(.)(.)(.))$"
 [8] int64 = 10
 [9] string = "-tail"
 [10] string = "service.name"

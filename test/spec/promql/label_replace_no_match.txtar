@@ -15,12 +15,12 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- args --
 [0] string = "host"
-[1] string = "^nomatch-(.*)$"
+[1] string = "^(?s:nomatch-(.*))$"
 [2] string = "dst"
 [3] string = "host"
 [4] string = "renamed"
 [5] string = "host"
-[6] string = "^nomatch-(.*)$"
+[6] string = "^(?s:nomatch-(.*))$"
 [7] string = "renamed"
 [8] string = "service.name"
 [9] string = "service_name"

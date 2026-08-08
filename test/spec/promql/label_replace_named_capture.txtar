@@ -21,12 +21,12 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- args --
 [0] string = "host"
-[1] string = "^host-(?P<svc>.*)$"
+[1] string = "^(?s:host-(?P<svc>.*))$"
 [2] string = "service"
 [3] string = "host"
 [4] string = "svc-"
 [5] string = "host"
-[6] string = "^host-(?P<svc>.*)$"
+[6] string = "^(?s:host-(?P<svc>.*))$"
 [7] string = "svc-\\1"
 [8] string = "service.name"
 [9] string = "service_name"
