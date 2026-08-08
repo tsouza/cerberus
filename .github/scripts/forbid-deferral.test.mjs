@@ -55,6 +55,7 @@ const TODO_WORD = lit('TO', 'DO');
 const FIXME_WORD = lit('FIX', 'ME');
 const XXX_WORD = lit('XX', 'X');
 const DEFERRED_WORD = lit('defer', 'red');
+const DEFERRED_COLON = lit('DEFER', 'RED:');
 const REVISIT_WORD = lit('re', 'visit');
 const FOLLOWUP_WORD = lit('Follow', '-up');
 const OUT_OF_SCOPE_PR = lit('out of scope ', 'for this PR');
@@ -148,6 +149,35 @@ test("Go's defer statement is not a deferral", () => {
   }
   // …while the English participle still does match.
   assert.deepEqual(ids(`the hoist is ${DEFERRED_WORD}`), ['deferral-to-later']);
+});
+
+test('attributive "deferred NOUN" describing already-shipped work is not a deferral', () => {
+  // The exact false-positive class found in a real, in-flight pull request
+  // (#1955): the participle modifying a noun to NAME an existing pipeline
+  // stage, not a verb complement saying the work was put off. The bare
+  // `\bdeferred\b` alternative used to fire on all three of these; only the
+  // PREDICATE form — right after a linking or passive-voice verb — should.
+  for (const line of [
+    'the deferred label-shaping (-State/-Merge) shape only exists on top of ' +
+      'a native rate grid, so it is read only where one is being built.',
+    'recollapseTower is the deferred-label-shaping expression the lowering assembles.',
+    'Deferred label shaping on the native grid keeps the rate node byte-identical.',
+    'the deferred close runs after the scan tears down its cursor.',
+  ]) {
+    assert.deepEqual(ids(line), [], `matched on: ${line}`);
+  }
+  // The predicate form the row exists to catch is the regression guard: it
+  // must still fire after the narrowing.
+  assert.deepEqual(ids(`the hoist is ${DEFERRED_WORD}`), ['deferral-to-later']);
+});
+
+test('a colon-suffixed label still matches, mirroring the follow-up heading form', () => {
+  // A real pre-gate example: a test case excluded with a leading label
+  // naming genuinely postponed work, rather than a predicate sentence.
+  assert.deepEqual(
+    ids(`${DEFERRED_COLON} the broadcast semantics divergence, a real gap`),
+    ['deferral-to-later'],
+  );
 });
 
 test('recording completed work is not deferring it', () => {
