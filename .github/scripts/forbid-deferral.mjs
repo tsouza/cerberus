@@ -191,10 +191,25 @@ export const DEFERRAL_MARKERS = [
     // source of raw regex hits in this repository, and an unanchored
     // `defer(red|ring)?` would fire on `defer rows.Close()` in every file it
     // appears in. `defer` / `defers` / `defer func()` must not match; only the
-    // English participle does.
+    // English participle does, and only in PREDICATE position: right after a
+    // linking or passive-voice verb (a form of "to be", "remain", "stay",
+    // "get", or "left"), which is the grammar of a sentence whose whole point
+    // is that something did not happen. A bare, unconditional match on the
+    // participle is broader than that — it also matches ATTRIBUTIVE use,
+    // where the identical word modifies a noun to name an existing,
+    // already-shipped stage of a pipeline rather than postponed work. "the
+    // deferred label-shaping (-State/-Merge) shape" describes a feature that
+    // is fully built, not one whose work was put off, and reached a real diff
+    // (#1955) as exactly that false positive: a correct comment had to be
+    // reworded to get a clean run. Requiring the verb strips the attributive
+    // shape without losing the predicate one, which is the only shape the
+    // calibration corpus and this file's own test pin. A colon-suffixed label
+    // is kept as its own arm — the heading style commit messages on this repo
+    // used for a genuinely postponed test case before this gate existed —
+    // mirroring `followup-label` below.
     id: 'deferral-to-later',
     description: 'work postponed instead of done',
-    pattern: String.raw`\bdeferred\b|\bdefer(?:ring|red)\s+to\s+(?:a\s+)?(?:later|future|separate)\b`,
+    pattern: String.raw`\b(?:is|was|were|remains?|stays?|gets?|being|left)\s+deferred\b|\bdeferred[ \t]*:|\bdefer(?:ring|red)\s+to\s+(?:a\s+)?(?:later|future|separate)\b`,
   },
   {
     id: 'left-for-later',

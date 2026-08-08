@@ -76,12 +76,14 @@ test/e2e/playwright/playwright-report/
 # these next to the config; they're per-run artifacts uploaded by CI, not
 # source). The prometheus harness emits the tester report + the
 # shields.io badge score + the per-case roster the parity ratchet gates
-# on + the rejection-parity report. The roster's committed counterpart is
-# heads.prometheus.cases in compatibility/parity-baseline.json.
+# on + the rejection-parity report + the metadata match[] parity report.
+# The roster's committed counterpart is heads.prometheus.cases in
+# compatibility/parity-baseline.json.
 /compatibility/prometheus/report.json
 /compatibility/prometheus/compat-score.json
 /compatibility/prometheus/compat-cases.json
 /compatibility/prometheus/rejection-parity.json
+/compatibility/prometheus/metadata-parity.json
 /compatibility/prometheus/upstream/promql/cmd/promql-compliance-tester/promql-compliance-tester
 
 # Tier-1 migration substrate: the seeder's manifest is a per-run artifact
