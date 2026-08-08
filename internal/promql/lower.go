@@ -1356,13 +1356,19 @@ func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnc
 	// resample dual-emit parity test), so the surrounding plan tree is
 	// unaffected by which strategy is wired.
 	return ctx.lowerers.Staleness.LowerStaleness(stalenessLowerInput{
-		input:         rawSide,
-		start:         ctx.start.UTC(),
-		end:           ctx.end.UTC(),
-		step:          ctx.step,
-		lookback:      instantLookback,
-		offset:        anchor.Offset,
-		stepAligned:   ctx.stepAligned,
+		input:       rawSide,
+		start:       ctx.start.UTC(),
+		end:         ctx.end.UTC(),
+		step:        ctx.step,
+		lookback:    instantLookback,
+		offset:      anchor.Offset,
+		stepAligned: ctx.stepAligned,
+		// Intrinsic query SHAPE, not feature state: only the range-mode
+		// `timestamp(<vector-selector>)` lowering reads the selected sample's
+		// own timestamp, and the native resample cannot publish it, so the
+		// strategy uses this to route that one shape to the fan-out.
+		sampleTimestamp: ctx.needSampleTimestamp,
+
 		metricNameCol: s.MetricNameColumn,
 		attributesCol: s.AttributesColumn,
 		timestampCol:  s.TimestampColumn,
@@ -1456,6 +1462,23 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: lwrValueAlias},
 		},
 	}
+	// `timestamp(<selector> @ T)` in range mode reads the selected sample's
+	// OWN timestamp, which the argMax above keeps the value of and throws
+	// away. `max(TimeUnix)` over the same group IS that timestamp — argMax
+	// picks the newest sample at or before the pin, so the newest timestamp
+	// and the selecting timestamp coincide. It rides through under its own
+	// name; the canonical TimeUnix slot stays the step anchor.
+	if ctx.needSampleTimestamp {
+		innerAgg.AggFuncs = append(innerAgg.AggFuncs, chplan.AggFunc{
+			Name:  "max",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
+			Alias: chplan.RangeLWRSampleTimestampColumn,
+		})
+		innerProject.Projections = append(innerProject.Projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: chplan.RangeLWRSampleTimestampColumn},
+			Alias: chplan.RangeLWRSampleTimestampColumn,
+		})
+	}
 
 	joined := &chplan.CrossJoin{
 		Left:  &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step},
@@ -1464,7 +1487,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 
 	// Re-shape the joined output into the canonical Sample 4-column
 	// contract with TimeUnix sourced from the step grid's anchor_ts.
-	return &chplan.Project{
+	out := &chplan.Project{
 		Input: joined,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
@@ -1473,6 +1496,13 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
 		},
 	}
+	if ctx.needSampleTimestamp {
+		out.Projections = append(out.Projections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: chplan.RangeLWRSampleTimestampColumn},
+			Alias: chplan.RangeLWRSampleTimestampColumn,
+		})
+	}
+	return out
 }
 
 // selectorAnchor resolves the effective evaluation anchor for a vector
