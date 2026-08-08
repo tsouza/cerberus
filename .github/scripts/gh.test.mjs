@@ -13,8 +13,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { assertSafeArg, capture } from './lib/gh.mjs';
+import { assertSafeArg, capture, lsFiles } from './lib/gh.mjs';
 
 test('capture forwards the options it documents', () => {
   const res = capture('sh', ['-c', 'printf "%s" "$MARKER"'], {
@@ -72,4 +76,59 @@ test('assertSafeArg rejects a value that could be parsed as a flag', () => {
 
 test('assertSafeArg ignores non-string values (the common `undefined` no-override case)', () => {
   assert.equal(assertSafeArg(undefined, 'REV'), undefined);
+});
+
+// lsFiles() — issue #1938. A plain `git ls-files` reads the INDEX only, so a
+// file a generator just wrote but nobody `git add`-ed yet was invisible to
+// every forbid-skip.mjs scan (all of them route through this function): the
+// scan reported clean on content it would reject the moment it was staged.
+// `newRepo()` builds a throwaway git repository so the assertion is against
+// the real CLI, not a mock.
+function newRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-lsfiles-'));
+  const run = (args) => {
+    const res = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    assert.equal(res.status, 0, `git ${args.join(' ')} failed: ${res.stderr}`);
+  };
+  run(['init', '--quiet']);
+  writeFileSync(join(dir, 'tracked.go'), 'package main\n');
+  run(['add', 'tracked.go']);
+  run(['-c', 'user.email=a@a', '-c', 'user.name=a', 'commit', '--quiet', '-m', 'seed']);
+  return { dir, run };
+}
+
+test('lsFiles includes an untracked-but-not-ignored file, not just the git index', () => {
+  const { dir } = newRepo();
+  // A generator wrote this file but it was never `git add`-ed.
+  writeFileSync(join(dir, 'generated_test.go'), 'package main\n\nfunc TestFoo() {}\n');
+  const files = lsFiles(['*.go'], { cwd: dir });
+  assert.ok(
+    files.includes('generated_test.go'),
+    `expected the untracked file among ${JSON.stringify(files)}`,
+  );
+  assert.ok(files.includes('tracked.go'));
+});
+
+test('lsFiles still excludes a .gitignored file', () => {
+  const { dir, run } = newRepo();
+  writeFileSync(join(dir, '.gitignore'), 'ignored.go\n');
+  run(['add', '.gitignore']);
+  run(['-c', 'user.email=a@a', '-c', 'user.name=a', 'commit', '--quiet', '-m', 'gitignore']);
+  writeFileSync(join(dir, 'ignored.go'), 'package main\n');
+  const files = lsFiles(['*.go'], { cwd: dir });
+  assert.ok(!files.includes('ignored.go'), `.gitignore-d file leaked into ${JSON.stringify(files)}`);
+});
+
+test('lsFiles honours an exclude pathspec against an untracked file, same as a tracked one', () => {
+  const { dir } = newRepo();
+  // Deliberately left untracked (never `git add`-ed) — the exclude pathspec
+  // must still apply to it, not just to indexed paths.
+  const upstream = join(dir, 'compatibility', 'promql', 'upstream');
+  spawnSync('mkdir', ['-p', upstream]);
+  writeFileSync(join(upstream, 'vendored_test.go'), 'package main\n');
+  const files = lsFiles(['*_test.go', ':!:compatibility/*/upstream/**'], { cwd: dir });
+  assert.ok(
+    !files.some((f) => f.includes('upstream')),
+    `exclude pathspec did not apply to an untracked path: ${JSON.stringify(files)}`,
+  );
 });
