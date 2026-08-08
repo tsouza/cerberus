@@ -4,12 +4,15 @@
 CREATE TABLE otel_logs (
     ServiceName LowCardinality(String) DEFAULT 'clickhouse',
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'clickhouse'),
-    LogAttributes Map(String, String) MATERIALIZED map('tier', 'gold')
+    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'clickhouse', 'tier', 'gold'),
+    LogAttributes Map(String, String) MATERIALIZED map('tier', 'silver')
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('a'), ('b');
 -- expected_rows --
-[]
+[
+  ["clickhouse", "a"],
+  ["clickhouse", "b"]
+]
 -- chplan --
 Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (ResourceAttributes["tier"] = "gold"))
   Scan(otel_logs)
