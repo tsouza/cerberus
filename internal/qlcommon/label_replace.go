@@ -240,9 +240,15 @@ type captureGroups struct {
 // to the client — the same fallback the pre-name-resolution version of
 // this file used.
 func newCaptureGroups(regex string) captureGroups {
-	// Anchored to mirror the SQL emitter. Anchoring shifts no group
-	// index, so the metadata read back is the unanchored regex's.
-	anchored := "^" + regex + "$"
+	// Anchored to mirror the SQL emitter and reference Prometheus
+	// (promql/functions.go: `"^(?s:" + regexStr + ")$"`), including the
+	// non-capturing `(?s:...)` wrapper: without it, `^...$` binds only to
+	// the first/last arm of a top-level alternation (alternation has
+	// lower precedence than anchoring), and without the `s` flag `.`
+	// would not match a newline. `(?s:...)` is non-capturing, so it
+	// shifts no group index — the metadata read back is still the
+	// unanchored regex's.
+	anchored := anchorRegex(regex)
 	compiled, err := regexp.Compile(anchored)
 	if err != nil {
 		return captureGroups{count: maxCHBackref}
@@ -259,6 +265,31 @@ func newCaptureGroups(regex string) captureGroups {
 		g.byName[name] = append(g.byName[name], i)
 	}
 	return g
+}
+
+// anchorRegex anchors a `label_replace` regex to a full-string match, the
+// same way reference Prometheus does (`promql/functions.go`:
+// `"^(?s:" + regexStr + ")$"`). The chsql emitter's `exprLabelReplace`
+// must build the identical string for the `match(...)` / `extractGroups`
+// arguments it emits — the two sites are read together whenever this
+// changes.
+//
+// A bare `"^" + regex + "$"` gets two things wrong:
+//
+//   - Alternation binds looser than anchoring, so `^a|b$` parses as
+//     `(^a)|(b$)`, not `^(a|b)$` — the anchors bind only to the
+//     first/last arm of a top-level alternation, not the whole pattern.
+//     The non-capturing `(?s:...)` wrapper gives the anchors a single
+//     group to bind around, fixing that.
+//   - Without the `s` flag, `.` does not match a newline; Prometheus's
+//     anchoring always sets it, so a label_replace regex's `.` matches
+//     `\n` too.
+//
+// `(?s:...)` is non-capturing, so it introduces no new capture group and
+// shifts no existing group's index — the metadata callers read back
+// (count, names, nullability) is still the unanchored regex's.
+func anchorRegex(regex string) string {
+	return "^(?s:" + regex + ")$"
 }
 
 // nullableGroups reports, per capture-group index, whether that group's

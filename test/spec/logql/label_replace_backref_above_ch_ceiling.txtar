@@ -16,13 +16,13 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 ]
 -- args --
 [0] string = "host"
-[1] string = "^(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)$"
+[1] string = "^(?s:(.)(.)(.)(.)(.)(.)(.)(.)(.)(.))$"
 [2] string = "tenth"
 [3] string = "host"
 [4] string = "g--tail"
 [5] string = "g-"
 [6] string = "host"
-[7] string = "^(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)$"
+[7] string = "^(?s:(.)(.)(.)(.)(.)(.)(.)(.)(.)(.))$"
 [8] int64 = 10
 [9] string = "-tail"
 [10] string = ""
