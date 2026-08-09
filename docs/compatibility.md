@@ -200,6 +200,47 @@ behaviour change after a Prom/Loki/Tempo bump), the fix is to update
 the reference image pin or the seeder — never to add a per-case
 exception.
 
+## Known transcendental-function divergence (PromQL `atan2`)
+
+One proven exception to "every diff is a real bug": PromQL's `atan2`
+binary operator, when it involves a vector (e.g. `2 atan2 up`), lowers
+to ClickHouse's own SQL `atan2`, evaluated by ClickHouse's libm.
+Real Prometheus evaluates the same expression with Go's `math.Atan2`,
+a different IEEE-754 double-precision implementation. IEEE-754
+requires each implementation to be *correctly rounded* for its own
+algorithm, but it does not require two independent implementations to
+agree bit-for-bit on a transcendental function — only "faithfully
+rounded" within a small ULP (unit-in-the-last-place) bound, typically
+one. `test/spec/promql/binop_atan2_scalar_vector.txtar` measured
+exactly that: two of its four series disagree with the reference
+engine by 1 ULP (e.g. reference `1.3734007669450157` vs. cerberus
+`1.373400766945016`) — adjacent `float64` values, not a lowering bug.
+See [issue #1985](https://github.com/tsouza/cerberus/issues/1985) for
+the full evidence and the decision record.
+
+Production pushdown is unchanged: cerberus still evaluates
+vector-involving `atan2` in ClickHouse SQL rather than in Go, because
+buffering results client-side to chase bit-for-bit agreement on the
+17th significant digit would mean abandoning cerberus's
+push-down/never-buffer-unboundedly architecture for a divergence with
+no practical monitoring impact.
+
+The parity oracle (`test/spec/parity_chdb.go`,
+`test/spec/parityoracle/promql/oracle.go`) carries a **narrow, named,
+evidence-based exception** for exactly this case:
+`oracle.EqualAtan2Values` accepts values up to 1 ULP apart, and it is
+selected — automatically, from the fixture's own query text — only for
+a query that invokes the `atan2` operator. Every other fixture,
+including every other PromQL function named as a candidate for the
+same treatment in issue #1985 (`sin`, `cos`, `tan`, `asin`, `acos`,
+`atan`, `exp`, `ln`, `log2`, `log10`, `sqrt`), is still held to exact
+equality. **This does not extend to any other function without
+independent proof**: a function earns this treatment only by being
+enrolled at exact equality, run, and observed to diverge by a genuine
+small ULP distance, exactly as `atan2` was. Widening
+`atan2ULPTolerance`'s scope, or adding a second named tolerance without
+that evidence, defeats the whole point of it being narrow.
+
 ## Upstream-skip baseline (LogQL)
 
 The vendored `loki-bench` corpus contains a handful of queries that
