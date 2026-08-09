@@ -212,11 +212,14 @@ property:
 # fan-out round-trip baseline. Requires libchdb.so (see `just chdb-install`).
 # Mirrors the `perf-guards` CI job in chdb.yml. Distinct from the
 # informational `perf-benchmark.yml` lane, which only reports benchstat
-# deltas and never gates. The lane sits around 8 minutes and the ratchet grows
-# with the corpus, so the `-timeout` is the one number here with real slack
-# behind it: `perf-guards` budgets 20 minutes and this takes 15 of them.
+# deltas and never gates. The lane grows with the corpus: it was ~8 minutes
+# when this comment was first written and measured 867s (~14.5 min) against
+# the corpus the 2026-08-09 promql-parity-enrolment wave left behind — see
+# issue #2002 for the budget-margin tracking this convergence needs — so the
+# `-timeout` is bumped to keep real slack under `perf-guards`' 20-minute job
+# budget rather than letting the two converge silently.
 perf-chdb:
-    go test -timeout 15m -tags chdb -count=1 ./test/perf/...
+    go test -timeout 18m -tags chdb -count=1 ./test/perf/...
 
 # Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
 # Component B). Walks every executable fixture under test/spec/** (those
