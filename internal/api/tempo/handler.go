@@ -1468,6 +1468,19 @@ func isSpansetAggregateShape(plan chplan.Node) bool {
 		return aggregateCarriesSpansetEnvelope(v)
 	case *chplan.Filter:
 		return isSpansetAggregateShape(v.Input)
+	case *chplan.Project:
+		// internal/traceql's lowerArithmeticScalarFilter (#1708 — arithmetic
+		// between aggregates in a scalar filter, e.g.
+		// `max(duration) - min(duration) >= 0`) inserts a Project between
+		// the Filter and the shared Aggregate to compute a chplan.Binary
+		// over multiple aggregate outputs and republish the result under
+		// aggValueAlias ("Value"). Recurse so that shape is still recognised
+		// as the spanset-aggregate search envelope instead of falling
+		// through to the Scan/Filter(Scan) default branch below, which
+		// would reference raw span columns (SpanName, ResourceAttributes,
+		// Timestamp, Duration) that don't exist in the Aggregate's output
+		// scope.
+		return isSpansetAggregateShape(v.Input)
 	}
 	return false
 }

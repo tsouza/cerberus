@@ -86,69 +86,13 @@ const (
 // correct the case where the arbitrarily-`any()`-picked row isn't
 // actually the trace's root (see anyAggFunc's doc comment, issue #1481).
 func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
-	chFunc, err := mapAggregateOp(agg.Op())
+	valueFunc, needsNestedSet, err := scalarAggLeaf(agg, s, aggValueAlias)
 	if err != nil {
 		return nil, err
 	}
-
-	var valueFunc chplan.AggFunc
-	if agg.Op() == traceql.AggregateCount {
-		// count() takes no inner expression — aggregate a constant.
-		valueFunc = chplan.AggFunc{
-			Name:  chFunc,
-			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
-			Alias: aggValueAlias,
-		}
-	} else {
-		// sum/avg/max/min — read the inner FieldExpression via the fork
-		// accessor and lower it.
-		inner := agg.InnerExpr()
-		if inner == nil {
-			return nil, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
-		}
-		// An aggregate over a nested-set intrinsic (`min(nestedSetLeft)`)
-		// has no flat OTel-CH column; recompute the numbering with a
-		// NestedSetAnnotate pass over the input and aggregate the
-		// synthetic column. Reference Tempo materialises the same
-		// positions, so `/api/search` accepts it.
-		if col, ok := nestedSetColumnForFieldExpr(inner); ok {
-			prev = annotateNestedSet(prev, s)
-			return &chplan.Aggregate{
-				Input:          prev,
-				GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
-				GroupByAliases: []string{aggTraceIDAlias},
-				AggFuncs: []chplan.AggFunc{
-					{Name: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: aggValueAlias},
-					anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
-					anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
-					anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),
-					minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
-					traceStartNsAggFunc(s.TimestampColumn),
-					traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
-				},
-			}, nil
-		}
-		arg, err := lowerFieldExpr(inner, s)
-		if err != nil {
-			return nil, err
-		}
-
-		// Map(String, String) coercion: when the aggregate input is a
-		// FieldAccess against SpanAttributes / ResourceAttributes the value
-		// is a String. ClickHouse refuses `max(String) > 100` with
-		// NO_COMMON_TYPE; wrap in `toFloat64OrZero(...)` at lowering time so
-		// the aggregate sees a Float64 and the downstream numeric
-		// comparison resolves. Intrinsic ColumnRefs (Duration etc.) lower
-		// to a bare ColumnRef and pass through unchanged.
-		arg = coerceMapNumericAggInput(arg)
-
-		valueFunc = chplan.AggFunc{
-			Name:  chFunc,
-			Args:  []chplan.Expr{arg},
-			Alias: aggValueAlias,
-		}
+	if needsNestedSet {
+		prev = annotateNestedSet(prev, s)
 	}
-
 	return &chplan.Aggregate{
 		Input:          prev,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
@@ -163,6 +107,60 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 			traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
 		},
 	}, nil
+}
+
+// scalarAggLeaf lowers a single TraceQL aggregate (`count()`,
+// `sum(...)`, `avg(...)`, `min(...)`, `max(...)`) into the AggFunc that
+// computes its value, under the caller-supplied alias. Factored out of
+// lowerAggregate so lowerArithmeticScalarFilter (lower.go) can fold
+// MULTIPLE aggregate leaves — one per operand of a `ScalarOperation`
+// arithmetic tree, e.g. `max(duration) - min(duration)` — into the
+// AggFuncs list of ONE shared chplan.Aggregate node instead of one
+// independently-grouped Aggregate node per leaf, which would have no
+// common row for the arithmetic to read both operands from.
+//
+// Reports whether the leaf reads a nested-set intrinsic
+// (`min(nestedSetLeft)`), which has no flat OTel-CH column: the caller
+// must wrap the aggregate's shared Input in annotateNestedSet before
+// this AggFunc's Args can resolve. Reference Tempo materialises the
+// same positions, so `/api/search` accepts it.
+func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (chplan.AggFunc, bool, error) {
+	chFunc, err := mapAggregateOp(agg.Op())
+	if err != nil {
+		return chplan.AggFunc{}, false, err
+	}
+	if agg.Op() == traceql.AggregateCount {
+		// count() takes no inner expression — aggregate a constant.
+		return chplan.AggFunc{
+			Name:  chFunc,
+			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
+			Alias: alias,
+		}, false, nil
+	}
+	// sum/avg/max/min — read the inner FieldExpression via the fork
+	// accessor and lower it.
+	inner := agg.InnerExpr()
+	if inner == nil {
+		return chplan.AggFunc{}, false, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
+	}
+	if col, ok := nestedSetColumnForFieldExpr(inner); ok {
+		return chplan.AggFunc{Name: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: alias}, true, nil
+	}
+	arg, err := lowerFieldExpr(inner, s)
+	if err != nil {
+		return chplan.AggFunc{}, false, err
+	}
+
+	// Map(String, String) coercion: when the aggregate input is a
+	// FieldAccess against SpanAttributes / ResourceAttributes the value
+	// is a String. ClickHouse refuses `max(String) > 100` with
+	// NO_COMMON_TYPE; wrap in `toFloat64OrZero(...)` at lowering time so
+	// the aggregate sees a Float64 and the downstream numeric comparison
+	// resolves. Intrinsic ColumnRefs (Duration etc.) lower to a bare
+	// ColumnRef and pass through unchanged.
+	arg = coerceMapNumericAggInput(arg)
+
+	return chplan.AggFunc{Name: chFunc, Args: []chplan.Expr{arg}, Alias: alias}, false, nil
 }
 
 // traceStartNsAggFunc returns `min(toUnixTimestamp64Nano(<Timestamp>))

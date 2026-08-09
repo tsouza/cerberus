@@ -1,0 +1,14 @@
+-- query.traceql --
+{ resource.service.name = "frontend" } | max(duration) - min(duration) >= 0
+-- args --
+[0] int64 = 0
+[1] string = "service.name"
+[2] string = "frontend"
+-- chplan --
+Filter predicate=(Value >= __cerberus_scalar_rhs)
+  Project [(__cerberus_scalar_agg0 - __cerberus_scalar_agg1) AS Value, 0 AS __cerberus_scalar_rhs, MetricName AS MetricName, ResourceAttrs AS ResourceAttrs, TimeUnix AS TimeUnix, TraceStartNs AS TraceStartNs, TraceEndNs AS TraceEndNs, TraceId AS TraceId]
+    Aggregate groupBy=[TraceId AS TraceId] funcs=[max(Duration) AS __cerberus_scalar_agg0, min(Duration) AS __cerberus_scalar_agg1, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+      Filter predicate=(ResourceAttributes["service.name"] = "frontend")
+        Scan(otel_traces)
+-- sql --
+SELECT * FROM (SELECT (`__cerberus_scalar_agg0` - `__cerberus_scalar_agg1`) AS `Value`, ? AS `__cerberus_scalar_rhs`, `MetricName` AS `MetricName`, `ResourceAttrs` AS `ResourceAttrs`, `TimeUnix` AS `TimeUnix`, `TraceStartNs` AS `TraceStartNs`, `TraceEndNs` AS `TraceEndNs`, `TraceId` AS `TraceId` FROM (SELECT `TraceId` AS `TraceId`, max(`Duration`) AS `__cerberus_scalar_agg0`, min(`Duration`) AS `__cerberus_scalar_agg1`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`)) WHERE (`Value` >= `__cerberus_scalar_rhs`)

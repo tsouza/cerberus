@@ -302,7 +302,7 @@ search
 -- expected_max_traces --
 500
 
-# --- Inner aggregates (3) ---
+# --- Inner aggregates (4) ---
 # Inner aggregations run through /api/search today (no metrics
 # endpoint required); they're listed as a separate category because
 # the wire shape is the same SearchResponse envelope but the row
@@ -363,6 +363,17 @@ search
 500
 -- expected_root_name_re --
 ^GET /api/
+
+-- name --
+arithmetic_between_aggregates_per_trace
+-- query --
+{ resource.service.name =~ ".+" } | max(duration) - min(duration) >= 0
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+500
 
 # --- SpanSets (4) ---
 # Cases with an explicit -- spss -- switch on the differ's per-trace
