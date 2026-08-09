@@ -128,17 +128,27 @@ on:
     inputs:
       update_crawl_inventory:
         description: >-
-          Regenerate the k3d crawl surface inventory
-          (CERBERUS_UPDATE_INVENTORY=1) and upload it as an artifact to
-          commit. This is the bootstrap/regen path for
-          test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json —
-          it was bootstrapped in tsouza/cerberus#1539; a future surface-set
-          change is regenerated deliberately the same way (an empty or
-          stale inventory otherwise fails the k3d crawl lane loudly, by
-          design).
-        type: boolean
+          Regenerate one or both Grafana crawl surface inventories
+          (CERBERUS_UPDATE_INVENTORY=1, forced SWEEP_DEPTH=full on the
+          regenerated stack's crawl) and upload the result as an artifact to
+          commit. "k3d" writes
+          test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json (the
+          bootstrap/regen path from tsouza/cerberus#1539); "compose" writes
+          test/e2e/playwright/crawl/grafana-surface-inventory.compose.json
+          (the bootstrap/regen path from tsouza/cerberus#1826); "both"
+          regenerates both stacks in the same run. "none" (the default)
+          leaves every lane behaving exactly as an ordinary dispatch does
+          today. A future surface-set change on either stack is regenerated
+          deliberately the same way (an empty or stale inventory otherwise
+          fails that stack's crawl lane loudly, by design).
+        type: choice
         required: false
-        default: false
+        default: none
+        options:
+          - none
+          - k3d
+          - compose
+          - both
 
 permissions:
   contents: read
@@ -214,6 +224,13 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          # A workflow_dispatch requesting the compose (or both) inventory
+          # regen must boot the stack despite being on the NON_BOOTING_EVENTS
+          # list otherwise — see the module's own comment on that list. Empty
+          # (not `inputs.update_crawl_inventory`) off a workflow_dispatch
+          # event, which is exactly the "no regen requested" default the
+          # module already treats as short-circuiting.
+          UPDATE_CRAWL_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory || '' }}
 
   compose-smoke-setup:
     name: compose-smoke-setup
@@ -630,6 +647,16 @@ jobs:
       - name: install Playwright + browsers (cached)
         uses: ./.github/actions/setup-playwright-browsers
 
+      # SWEEP_DEPTH: the nightly `schedule` event always sweeps full, exactly as
+      # before. A `workflow_dispatch` requesting the compose (or both)
+      # inventory regen ALSO forces full — crawl.spec.ts hard-asserts
+      # `depth === 'full'` before it will write
+      # grafana-surface-inventory.compose.json (see the "inventory
+      # regeneration requires the exhaustive crawl" expect() in that file), so
+      # a dispatch that set CERBERUS_UPDATE_INVENTORY without this would fail
+      # by construction. Every other event/selection keeps the lean PR/push
+      # default. See CERBERUS_UPDATE_INVENTORY just below and the k3d
+      # equivalent in dashboard-shard (tsouza/cerberus#1826).
       - name: playwright compose-grafana-smoke (${{ matrix.name }})
         id: playwright_smoke
         working-directory: test/e2e/playwright
@@ -637,9 +664,43 @@ jobs:
           GRAFANA_BASE_URL: http://localhost:3000
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
-          SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
+          SWEEP_DEPTH: >-
+            ${{
+              (github.event_name == 'schedule' ||
+               (github.event_name == 'workflow_dispatch' &&
+                (inputs.update_crawl_inventory == 'compose' || inputs.update_crawl_inventory == 'both')))
+              && 'full' || 'lean'
+            }}
           CRAWL_STACK: compose
+          # Regen path for grafana-surface-inventory.compose.json — the
+          # compose-stack equivalent of the k3d dashboard-shard's
+          # CERBERUS_UPDATE_INVENTORY (tsouza/cerberus#1826). Only this shard
+          # (shard-crawl, the sole compose shard that runs crawl/crawl.spec.ts)
+          # can produce it.
+          CERBERUS_UPDATE_INVENTORY: >-
+            ${{
+              github.event_name == 'workflow_dispatch' &&
+              (inputs.update_crawl_inventory == 'compose' || inputs.update_crawl_inventory == 'both') &&
+              '1' || ''
+            }}
         run: npx playwright test ${{ matrix.specs }} --reporter=list,html
+
+      # Bootstrap/regen path for
+      # test/e2e/playwright/crawl/grafana-surface-inventory.compose.json —
+      # dispatch this workflow with update_crawl_inventory=compose (or
+      # =both), then commit the uploaded artifact. Mirrors "Upload
+      # regenerated k3d crawl inventory" in dashboard-shard above; kept
+      # stack-qualified (compose vs k3d) so the two artifacts can never be
+      # confused for one another.
+      - name: Upload regenerated compose crawl inventory
+        if: >-
+          always() && github.event_name == 'workflow_dispatch' &&
+          (inputs.update_crawl_inventory == 'compose' || inputs.update_crawl_inventory == 'both')
+        uses: actions/upload-artifact@v7
+        with:
+          name: grafana-surface-inventory-compose
+          path: test/e2e/playwright/crawl/grafana-surface-inventory.compose.json
+          retention-days: 14
 
       - name: upload Playwright report on failure
         if: steps.playwright_smoke.outcome == 'failure'
@@ -1097,7 +1158,9 @@ jobs:
       # k3d inventory (test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json)
       # was bootstrapped this way in tsouza/cerberus#1539. To deliberately
       # regenerate after surface growth: dispatch this workflow with
-      # update_crawl_inventory=true, then commit the uploaded artifact.
+      # update_crawl_inventory=k3d (or =both), then commit the uploaded
+      # artifact. See compose-smoke-shard-info below for the compose-stack
+      # equivalent (tsouza/cerberus#1826).
       - name: Run Playwright crawl (${{ matrix.name }}, CRAWL_STACK=k3d)
         id: playwright_crawl
         if: env.RUN_SHARD == 'true' && matrix.crawlStack == 'k3d'
@@ -1107,11 +1170,18 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           CRAWL_STACK: ${{ matrix.crawlStack }}
           SWEEP_DEPTH: full
-          CERBERUS_UPDATE_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory && '1' || '' }}
+          CERBERUS_UPDATE_INVENTORY: >-
+            ${{
+              github.event_name == 'workflow_dispatch' &&
+              (inputs.update_crawl_inventory == 'k3d' || inputs.update_crawl_inventory == 'both') &&
+              '1' || ''
+            }}
         run: npx playwright test ${{ matrix.specs }} --reporter=list,html
 
       - name: Upload regenerated k3d crawl inventory
-        if: always() && matrix.crawlStack == 'k3d' && github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory
+        if: >-
+          always() && matrix.crawlStack == 'k3d' && github.event_name == 'workflow_dispatch' &&
+          (inputs.update_crawl_inventory == 'k3d' || inputs.update_crawl_inventory == 'both')
         uses: actions/upload-artifact@v7
         with:
           name: grafana-surface-inventory-k3d

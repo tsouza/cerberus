@@ -1,7 +1,9 @@
 # Spec: CI regeneration path for the compose crawl surface inventory
 
 Tracks issue #1826. This document is the worked example for the plan-first workflow described in
-`docs/agent-workflow.md`; it is a specification, and no part of it has been implemented.
+`docs/agent-workflow.md`. **Implemented** — see the task list at the bottom for what shipped, where
+it diverged from the original design, and what still needs a real `workflow_dispatch` run to confirm
+end to end.
 
 ## Problem
 
@@ -52,7 +54,18 @@ developer machine and run a full-depth Playwright crawl locally.
 
 ## Design
 
-Three coordinated edits, all in `.github/workflows/e2e.yml`.
+Three coordinated edits, all in `.github/workflows/e2e.yml` — **plus a fourth this design missed**:
+`compose-smoke-scope.mjs` hard-codes `workflow_dispatch` as a `NON_BOOTING_EVENT`, unconditionally
+(the compose lane's only prior dispatch behaviour was "never boots" — the exclusion predates this
+issue and exists because the only dispatch input used to regenerate the k3d inventory alone). Without
+a fourth edit there, `compose-smoke-setup` (and therefore `compose-smoke-shard-info`, which is where
+the crawl actually runs) never fires on a dispatch at all, regardless of what the workflow-level
+`update_crawl_inventory` edits below do — the three-edit plan would ship a dead path. The fix is a
+narrow carve-out in `decide()`: a dispatch selection of `compose` or `both` boots the stack exactly
+like push/schedule; every other dispatch selection (`none`, `k3d`) still short-circuits, preserving
+the existing k3d-only-regen behaviour and its pinned test
+(`compose-smoke-scope.test.mjs`'s "workflow_dispatch does not boot the stack ... whatever the diff
+says").
 
 **1. Widen the dispatch surface to name a stack.** Replace the boolean `update_crawl_inventory` with
 an input that selects which inventories to regenerate — `none`, `k3d`, `compose`, or `both` — with
@@ -104,25 +117,38 @@ with its own unit test, not in inline YAML.
 
 ## Task list for owner review
 
-Ordered so the tree is green between any two tasks. Nothing here has been executed.
+Ordered so the tree is green between any two tasks.
 
-1. Determine whether one compose shard yields a complete inventory or the shards must be merged. Read
-   `.github/scripts/compose-smoke-matrix.mjs`, `test/e2e/playwright/crawl/stacks.ts`, and
-   `crawl.spec.ts`'s write path. Record the answer in this spec. No code change. This gates tasks 4
-   and 5.
-2. Reshape the `workflow_dispatch` input to a stack-selecting `choice` with default `none`, and
-   rewrite its description to name both inventory paths. Rewire the two existing k3d consumers to the
-   new input. Verify with `just lint-actions`; the k3d path must behave exactly as before.
-3. Resolve `SWEEP_DEPTH` to `full` on both lanes whenever this run regenerates that lane's inventory.
-   Verify with `just lint-actions` plus a reading of the resolved expression for all four selection
-   values.
-4. Set `CERBERUS_UPDATE_INVENTORY` on `compose-smoke-shard` when the selection includes compose.
-   Verify with `just lint-actions`.
-5. Add the stack-qualified artifact upload for `grafana-surface-inventory.compose.json`, including
-   the shard merge if task 1 found one is needed — as a `.github/scripts/` module with a unit test if
-   so.
-6. Run the dispatch on the branch for each of the four selection values. Download the compose
-   artifact and diff it against the committed inventory; attach the result to the PR. This is the
-   acceptance evidence.
-7. Update `docs/test-strategy.md`'s crawl-inventory section to state the regeneration path for both
+1. **Done.** One compose shard yields a complete inventory — no merge needed. `SHARDS` in
+   `compose-smoke-matrix.mjs` has exactly one entry in `GATE_EXCLUDED_SHARDS`
+   (`shard-crawl`), so it is also the only entry in `matrix_informational`; that single shard's
+   `crawl/crawl.spec.ts` is the sole spec anywhere in the compose cohort that touches
+   `CERBERUS_UPDATE_INVENTORY` or writes the inventory file. There is exactly one informational shard,
+   so the artifact upload can use a static, non-matrix-suffixed name, mirroring the k3d upload.
+2. **Done, plus the fourth edit this design missed** (see Design above): reshaped
+   `workflow_dispatch.inputs.update_crawl_inventory` to a `choice` (`none` default,
+   `k3d`/`compose`/`both`), rewired the two k3d consumers, and added the `compose-smoke-scope.mjs`
+   carve-out so a `compose`/`both` dispatch actually boots the compose lane in the first place.
+   Verified with `just lint-actions` (clean) and `node --test .github/scripts/compose-smoke-scope.test.mjs`
+   (15/15, including two new tests pinning the carve-out in both directions).
+3. **Done.** `SWEEP_DEPTH` on the compose crawl step (`compose-smoke-shard-info`) now resolves to
+   `full` on `schedule` OR a dispatch selecting `compose`/`both`. The k3d crawl step was already
+   hard-coded to `SWEEP_DEPTH: full` unconditionally, so it needed no change.
+4. **Done.** `CERBERUS_UPDATE_INVENTORY` is set on the `compose-smoke-shard-info` crawl step (the
+   step that actually runs `crawl/crawl.spec.ts`, not `compose-smoke-shard`, which never runs it —
+   see task 1) when the dispatch selection includes compose.
+5. **Done.** Added `Upload regenerated compose crawl inventory`, uploading
+   `grafana-surface-inventory.compose.json` as artifact `grafana-surface-inventory-compose`. No merge
+   step needed per task 1.
+6. **Not done — needs a real dispatch.** This is CLAUDE.md's `compose-smoke` local-verification
+   exception: it needs a real Docker Compose stack, not chDB, so it cannot be proven from an agent
+   worktree. What's confirmed locally: `just lint-actions` is clean; the `compose-smoke-scope.mjs`
+   unit tests pin the boot decision for all four selection values against both a real and a null/empty
+   diff; a manual read of the resolved `SWEEP_DEPTH` / `CERBERUS_UPDATE_INVENTORY` expressions for
+   `none`/`k3d`/`compose`/`both` confirms only `compose`/`both` flip either. What still needs the
+   dispatch: that the uploaded `grafana-surface-inventory-compose` artifact is well-formed and, on an
+   unchanged surface, byte-identical to the committed inventory; that a `none` dispatch is truly an
+   inert no-op end to end; and that the k3d path (re-verified, not merely re-read) still regenerates
+   correctly through the renamed input.
+7. **Done.** Updated `docs/test-strategy.md`'s crawl-inventory section to state the regeneration path for both
    stacks.

@@ -10,7 +10,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { HARNESS_PATHS, NON_BOOTING_EVENTS, SCOPE_PATHS, decide, stalePaths } from './compose-smoke-scope.mjs';
+import {
+  HARNESS_PATHS,
+  NON_BOOTING_EVENTS,
+  SCOPE_PATHS,
+  decide,
+  regeneratesCompose,
+  stalePaths,
+} from './compose-smoke-scope.mjs';
 
 const pr = { eventName: 'pull_request', headRef: 'fix/whatever' };
 
@@ -110,17 +117,51 @@ test('a merge-queue batch is scoped by its own diff, not swept wholesale', () =>
   assert.equal(decide({ ...inQueue, changed: null }).inScope, true);
 });
 
-test('workflow_dispatch does not boot the stack, whatever the diff says', () => {
+test('workflow_dispatch does not boot the stack by default, whatever the diff says', () => {
   // The guard this module replaced listed push / schedule / release-PR and left
   // workflow_dispatch out, so dispatching e2e.yml never booted compose. That
-  // exclusion is deliberate — the workflow's only dispatch input regenerates the
-  // k3d crawl inventory — and it is easy to lose by accident, because
-  // runsFullLane() answers `true` for every event it does not name. Pinned in
-  // both directions: even a diff that WOULD put a PR in scope must not boot here.
-  for (const changed of [['docs/engine.md'], ['internal/chsql/emit_node.go'], null]) {
-    const { inScope } = decide({ eventName: 'workflow_dispatch', headRef: '', changed });
-    assert.equal(inScope, false, `workflow_dispatch with changed=${JSON.stringify(changed)} must short-circuit`);
+  // exclusion is deliberate — most dispatch selections (none, or a k3d-only
+  // inventory regen) exercise no compose-visible surface — and it is easy to
+  // lose by accident, because runsFullLane() answers `true` for every event it
+  // does not name. Pinned in both directions: even a diff that WOULD put a PR
+  // in scope must not boot here. Covers the default ("none" / unset) and the
+  // k3d-only selection, which must behave identically to "none".
+  for (const updateCrawlInventory of [undefined, 'none', 'k3d']) {
+    for (const changed of [['docs/engine.md'], ['internal/chsql/emit_node.go'], null]) {
+      const { inScope } = decide({ eventName: 'workflow_dispatch', headRef: '', changed, updateCrawlInventory });
+      assert.equal(
+        inScope,
+        false,
+        `workflow_dispatch update_crawl_inventory=${updateCrawlInventory} changed=${JSON.stringify(changed)} must short-circuit`,
+      );
+    }
   }
+});
+
+test('a compose (or both) inventory-regen dispatch boots the stack regardless of the diff', () => {
+  // tsouza/cerberus#1826: the compose lane needs its own dispatch-driven regen
+  // path, mirroring the k3d one. "compose" and "both" must boot the stack even
+  // when the diff is empty or unrelated — the whole point is to run a
+  // full-depth crawl on demand, not because anything changed.
+  for (const updateCrawlInventory of ['compose', 'both']) {
+    for (const changed of [[], ['docs/engine.md'], null]) {
+      const { inScope, reason } = decide({ eventName: 'workflow_dispatch', headRef: '', changed, updateCrawlInventory });
+      assert.equal(
+        inScope,
+        true,
+        `workflow_dispatch update_crawl_inventory=${updateCrawlInventory} changed=${JSON.stringify(changed)} must boot`,
+      );
+      assert.match(reason, /compose crawl-inventory regen/);
+    }
+  }
+});
+
+test('regeneratesCompose is true only for "compose" and "both"', () => {
+  assert.equal(regeneratesCompose('compose'), true);
+  assert.equal(regeneratesCompose('both'), true);
+  assert.equal(regeneratesCompose('k3d'), false);
+  assert.equal(regeneratesCompose('none'), false);
+  assert.equal(regeneratesCompose(undefined), false);
 });
 
 test('the non-booting event list is explicit, never an allow-list', () => {

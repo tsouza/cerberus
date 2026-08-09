@@ -952,12 +952,25 @@ crawl's inventory is committed; only the regen run itself
 past this now — compose bootstrapped first, and the k3d stack
 bootstrapped in tsouza/cerberus#1539 (booting k3d locally is heavy, so
 that ran against a local `just e2e-up && just e2e-seed-rolling`
-cluster; the same regen also runs by dispatching the `e2e` workflow
-with `update_crawl_inventory=true` and committing the uploaded
-artifact). Deliberately regenerating either stack's inventory after
-surface growth follows the same path — the red crawl lane in the
-interim is deliberate pressure that keeps bootstrap (or a stale
-regen) from silently becoming permanent.
+cluster).
+
+**Regenerating from CI.** Both stacks' inventories can be regenerated
+without booting anything locally: dispatch the `e2e` workflow
+(`workflow_dispatch`) with `update_crawl_inventory` set to `k3d`,
+`compose`, or `both`, then download the matching
+`grafana-surface-inventory-<stack>` artifact and commit it through a
+PR like any other generated file (`grafana-surface-inventory.compose.json`
+is `-merge`-gated in `.gitattributes`, so it is never hand-edited).
+The selected stack(s) get `CERBERUS_UPDATE_INVENTORY=1` and forced
+`SWEEP_DEPTH=full` on their crawl shard — the compose lane otherwise
+runs `SWEEP_DEPTH=full` only on the nightly `schedule` event, and a
+regen dispatch below full depth would fail
+`crawl.spec.ts`'s own exhaustive-crawl assertion by construction. The
+default `none` selection leaves an ordinary dispatch behaving exactly
+as it always has (tsouza/cerberus#1826). Deliberately regenerating
+either stack's inventory after surface growth follows this path — the
+red crawl lane in the interim is deliberate pressure that keeps
+bootstrap (or a stale regen) from silently becoming permanent.
 
 **Doctrine: the AI sweep generates oracle classes; CI runs them.**
 The crawler exists because an off-CI AI screenshot sweep (2026-06-09)
