@@ -55,3 +55,7 @@ SetOperation op=||
     Scan(otel_traces)
 -- sql --
 SELECT * FROM ((SELECT * FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)))) UNION ALL (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?))) LIMIT 1 BY `TraceId`, `SpanId`
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

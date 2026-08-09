@@ -27,3 +27,7 @@ SetOperation op=&&
     Scan(otel_traces)
   Filter predicate=(SpanName = "right")
     Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

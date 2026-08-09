@@ -34,3 +34,7 @@ Project [TraceId, SpanId, Timestamp, SpanAttributes["http.method"] AS http.metho
     Scan(otel_traces)
 -- sql --
 SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanAttributes`[?] AS `http.method`, `ResourceAttributes`[?] AS `service.name` FROM (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?))
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

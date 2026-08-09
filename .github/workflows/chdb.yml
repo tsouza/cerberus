@@ -244,22 +244,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `tags` is per-leg because the LogQL leg additionally runs the
-        # parity check against the REAL upstream Loki engine, which is
-        # AGPLv3 and therefore lives behind `agpl_oracle` (invariant 14).
-        # Every `//go:build` line in this tree is a single term, so the
-        # composition `chdb && agpl_oracle` is carried by the synthetic
-        # `chdb_agpl_oracle` tag — the same three-tag set property.yml
-        # already passes. Without them the Loki oracle compiles out and
-        # RunParity FAILS rather than silently checking nothing; see
-        # test/spec/parity_chdb.go's lokiParityEvaluator.
+        # `tags` is per-leg because the LogQL and TraceQL legs additionally
+        # run the parity check against their REAL upstream reference
+        # engines (Loki, Tempo), both AGPLv3 and therefore living behind
+        # `agpl_oracle` (invariant 14). Every `//go:build` line in this
+        # tree is a single term, so the composition `chdb && agpl_oracle`
+        # is carried by the synthetic `chdb_agpl_oracle` tag — the same
+        # three-tag set property.yml already passes. Without them the
+        # Loki/Tempo oracles compile out (test/spec/parity_tempo_absent.go
+        # for Tempo) and RunParity either fails loudly (Loki, see
+        # test/spec/parity_chdb.go's lokiParityEvaluator) or the 42
+        # `parity:`-enrolled TraceQL fixtures round-trip against
+        # cerberus's own output alone.
         include:
           - ql: promql
             tags: chdb
           - ql: logql
             tags: chdb,agpl_oracle,chdb_agpl_oracle
           - ql: traceql
-            tags: chdb
+            tags: chdb,agpl_oracle,chdb_agpl_oracle
     steps:
       - uses: actions/checkout@v7
         if: needs.changes.outputs.docs_only != 'true'

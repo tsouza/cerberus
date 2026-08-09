@@ -33,3 +33,7 @@ Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

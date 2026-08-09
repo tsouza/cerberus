@@ -36,3 +36,7 @@ SetOperation op=||
       Scan(otel_traces)
   Filter predicate=(ResourceAttributes["service.name"] = "c")
     Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

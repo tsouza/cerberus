@@ -36,3 +36,7 @@ Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`SpanName`, `Timestamp`, (`ParentSpanId` IN (?, ?))) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` IN (?, ?))))
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

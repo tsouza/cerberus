@@ -79,7 +79,15 @@ var lokiParityEvaluator func(
 //
 // A fixture with no `parity:` section is a no-op, exactly as RunRoundTrip
 // is for a fixture with no `seed:`.
-func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Duration) {
+//
+// # Dispatch
+//
+// Which reference engine answers is the fixture's own declaration, so the
+// runner selects on it rather than on which head's test called. An oracle
+// with no runner compiled into this lane is a FATAL error, never a silent
+// pass: a fixture that believes it is enrolled and is not would be the
+// hollow green the whole mechanism exists to prevent.
+func RunParity(t *testing.T, c *Case, eval ParityEval) {
 	t.Helper()
 
 	p, enrolled, err := LoadParity(c)
@@ -102,6 +110,15 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 		)
 	}
 
+	// Tempo's spanset pipeline has no evaluation instant and compares the
+	// set of matched SPANS, not a sample stream, so it does not fit the
+	// sample-shaped dispatch below. runTempoParity owns its own chDB
+	// session, query section (`query.traceql`), and comparison entirely.
+	if p.Oracle == OracleTempo {
+		runTempoParity(t, c, p, rt)
+		return
+	}
+
 	querySection := parityQuerySections[p.Oracle]
 	if querySection == "" {
 		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
@@ -120,9 +137,9 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 
 	q := parityQuery{
 		Expr:  strings.TrimSpace(query),
-		Start: evalStart,
-		End:   evalEnd,
-		Step:  step,
+		Start: eval.Start,
+		End:   eval.End,
+		Step:  eval.Step,
 	}
 
 	var got []referenceSample
@@ -146,7 +163,7 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
 
-	compareAgainstReference(t, c, p, rt, got, comparesTimestamps(p.Oracle, step))
+	compareAgainstReference(t, c, p, rt, got, comparesTimestamps(p.Oracle, eval.Step))
 }
 
 // parityQuerySections maps an oracle to the TXTAR section holding the

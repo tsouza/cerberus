@@ -80,3 +80,7 @@ Project [TraceId, SpanId, Timestamp, StatusCode AS status, ResourceAttributes["s
       Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
         Filter predicate=(ParentSpanId = "")
           Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

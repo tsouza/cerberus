@@ -52,3 +52,7 @@ Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __
   NestedSetAnnotate table=otel_traces
     Filter predicate=(ParentSpanId = "")
       Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
