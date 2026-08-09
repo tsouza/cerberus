@@ -196,7 +196,7 @@ export const COMBOBOX_CARDINALITY_RULES: ReadonlyArray<ComboboxCardinalityRule> 
     keyPattern: /^select\[react-select-\{rid\}-input\](#\d+)?$/,
     mode: 'enumerate',
     values: [
-      'Server spansExplore server-specific segments traces',
+      'Server spansExplore server-specific segments of traces',
       'Consumer spansAnalyze interactions initiated by consumer services',
       'Database callsEvaluate performance issues in database interactions',
     ],

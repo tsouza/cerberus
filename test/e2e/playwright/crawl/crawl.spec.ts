@@ -876,7 +876,7 @@ test.describe('crawl: canonicalization pins', () => {
     // "Server spans…" — is the lean representative, matching the
     // committed `kind=server` baseline row.
     const serverLabel =
-      'Server spansExplore server-specific segments traces';
+      'Server spansExplore server-specific segments of traces';
     const consumerLabel =
       'Consumer spansAnalyze interactions initiated by consumer services';
     const databaseLabel =
