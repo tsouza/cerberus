@@ -6,10 +6,10 @@
 // to the fixed chplan.Histogram*Column names, rather than collapsed to
 // a scalar the way histogram_quantile_native.go's emitter is.
 //
-// No lowering builds a chplan.HistogramProjection today; see that
-// type's doc comment for the shared-prerequisite rationale (#1926).
-// This file's only consumer today is internal/chsql's own tests,
-// exercising the emitter directly against a hand-built plan node.
+// internal/promql's native-histogram lowerings — a bare selector and
+// `sum [by/without] (<selector>)` — are what build the node this emits;
+// see that type's doc comment for the output contract their shared cap
+// guarantees (#1926 / #1967).
 package chsql
 
 import (

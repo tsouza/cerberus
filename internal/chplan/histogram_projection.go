@@ -40,17 +40,15 @@ const (
 // had nowhere to put that answer — every existing node either emits a
 // scalar Value or, like HistogramQuantileNative, folds the bucket
 // structure away before it ever reaches a projection. This node is the
-// shared shape a future rate()/sum()/bare-selector lowering (issue
-// #1926 step 4, tracked separately — see docs/specs or the tracking
-// issue referenced from the PR that added this node) will wrap its
-// Input with once it exists, so its answer has a correct plan-level
-// home from day one.
+// shared shape every such lowering caps its Input with, so all of them
+// publish one output contract.
 //
-// No lowering builds this node yet. It is reachable only from
-// hand-constructed test plans until #1926 step 4 lands; see
-// internal/chclient.Sample.Histogram (the decode-side landing spot)
-// and internal/api/prom's `histogram` / `histograms` wire keys (the
-// HTTP-side landing spot) for the rest of the shared prerequisite.
+// internal/promql builds it from two lowerings today — a bare selector
+// (histogram_native_bare.go) and `sum [by/without] (<selector>)`
+// (histogram_native_sum.go). internal/chclient.Sample.Histogram is the
+// decode-side landing spot for the columns it publishes, and
+// internal/api/prom's `histogram` / `histograms` wire keys the HTTP-side
+// one.
 //
 // Column-name contract: every *Column field is REQUIRED except
 // ZeroThresholdColumn, mirroring HistogramQuantileNative — an empty
