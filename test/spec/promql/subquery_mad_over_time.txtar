@@ -16,6 +16,10 @@
 # 0.5 to 0.4 and the whole rate set stops being the round one above.
 -- query.promql --
 mad_over_time(rate(http_requests_total[5m])[30m:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

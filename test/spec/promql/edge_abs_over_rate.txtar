@@ -1,5 +1,9 @@
 -- query.promql --
 abs(rate(http_requests_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = "service.name"
 [1] string = "service_name"
