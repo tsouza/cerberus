@@ -26,6 +26,11 @@ const (
 	ShardCountEnv = "PERF_SHARD_COUNT"
 )
 
+// shardHashMask clears the top bit of the 32-bit FNV digest, bounding it below
+// 2^31 so it converts to a non-negative int on every platform. See [ShardOf]
+// for why the fold is done in signed arithmetic rather than unsigned.
+const shardHashMask = 1<<31 - 1
+
 // Shard is a deterministic partition of the profiled corpus into Count disjoint
 // pieces, of which this process owns piece Index. Index is 1-BASED so it reads
 // the same as the shard's own CI check name (`perf-guards-shard (3)` owns
@@ -87,14 +92,25 @@ func ShardOf(fixtureID string, count int) int {
 	h := fnv.New32a()
 	// hash.Hash's Write never returns an error (documented on the interface).
 	_, _ = h.Write([]byte(fixtureID))
-	// count > 1 is guarded above; the check is restated here so both gosec
-	// G115 and CodeQL go/incorrect-integer-conversion can prove the uint32
-	// conversion locally, matching the pattern in
-	// internal/api/loki/detected_fields.go.
-	if count <= 0 {
-		return 1
-	}
-	return int(h.Sum32()%uint32(count)) + 1
+	// Fold the digest into the shard range with the modulo taken in SIGNED
+	// arithmetic, so no int -> uint32 conversion happens at all.
+	//
+	// The natural spelling, `h.Sum32() % uint32(count)`, converts count — a
+	// signed int — to unsigned, and gosec rejects it as G115. That rejection
+	// is right rather than pedantic: the conversion silently WRAPS a negative
+	// count into a huge modulus instead of failing, so a caller that got its
+	// count from somewhere unvalidated would get a plausible-looking shard
+	// number out of a nonsensical partition. Restating `count > 0` next to the
+	// conversion does not help, because the value being converted is still of
+	// a type that can hold negatives.
+	//
+	// Masking off the digest's sign bit first is what removes the question.
+	// The result is below 2^31, which fits in an int on every platform Go
+	// supports (int is at least 32 bits), so the remaining `int(...)` widens
+	// rather than truncates and the modulo is plain int arithmetic against
+	// count itself. The cost is one bit of hash width — irrelevant for a
+	// partition into single digits of shards.
+	return int(h.Sum32()&shardHashMask)%count + 1
 }
 
 // ShardFromEnv reads the partition this process owns from the environment.
