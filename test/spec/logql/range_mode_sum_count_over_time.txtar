@@ -1,5 +1,9 @@
 -- query.logql --
 sum(count_over_time({service_name="web-server"}[5m]))
+-- parity --
+oracle: loki
+endpoint: /api/v1/query_range
+scope: full
 -- start --
 2026-01-01T00:00:00Z
 -- end --

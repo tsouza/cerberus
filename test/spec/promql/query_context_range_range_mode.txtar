@@ -6,6 +6,10 @@
 
 -- query.promql --
 range()
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

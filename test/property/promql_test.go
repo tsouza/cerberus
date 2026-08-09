@@ -89,13 +89,8 @@
 package property_test
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -106,6 +101,7 @@ import (
 	"github.com/tsouza/cerberus/test/property"
 	"github.com/tsouza/cerberus/test/property/gen"
 	oraclepromql "github.com/tsouza/cerberus/test/property/oracle/promql"
+	"github.com/tsouza/cerberus/test/spec/wire"
 )
 
 // TestPromQL_Property_FromScratch wires every layer together for the
@@ -141,7 +137,7 @@ func TestPromQL_Property_FromScratch(t *testing.T) {
 	// runs the query via the real Prom HTTP handler.
 	cerberusFn := func(d property.Dataset, q property.Query) property.Outcome {
 		cli.Seed(t, d.DDL)
-		return runCerberusInstant(t.Context(), srv.URL, q)
+		return wire.RunInstant(t.Context(), srv.URL, q, wire.InstantOptions{})
 	}
 
 	oracleFn := func(d property.Dataset, q property.Query) property.Outcome {
@@ -149,147 +145,4 @@ func TestPromQL_Property_FromScratch(t *testing.T) {
 	}
 
 	property.Run(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)
-}
-
-// runCerberusInstant POSTs to /api/v1/query and decodes the
-// Prom-shaped response into the framework's property.Outcome.
-//
-// Cerberus's instant-query response surfaces every series at the
-// requested eval timestamp (Prom convention — see prom/handler.go's
-// toVector); we extract that pair per series and reshape into the
-// canonical OutcomeRow shape.
-func runCerberusInstant(ctx context.Context, baseURL string, q property.Query) property.Outcome {
-	u := fmt.Sprintf(
-		"%s/api/v1/query?query=%s&time=%d",
-		baseURL,
-		urlEscape(q.String),
-		q.EvalTs,
-	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return property.Outcome{Err: fmt.Errorf("property: build request: %w", err)}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return property.Outcome{Err: fmt.Errorf("property: query roundtrip: %w", err)}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return property.Outcome{Err: fmt.Errorf("property: read body: %w", err)}
-	}
-
-	var parsed struct {
-		Status    string `json:"status"`
-		ErrorType string `json:"errorType"`
-		Error     string `json:"error"`
-		Data      struct {
-			ResultType string              `json:"resultType"`
-			Result     []prom.VectorSample `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return property.Outcome{
-			Err: fmt.Errorf("property: decode body: %w; status=%d body=%s",
-				err, resp.StatusCode, body),
-		}
-	}
-	if parsed.Status != "success" {
-		// A failed-status response is a legitimate outcome — the
-		// bridge oracle may also fail on the same query. Surface
-		// the error to the comparator; both sides erroring still
-		// counts as agreement.
-		return property.Outcome{
-			Err: fmt.Errorf("cerberus returned status=%q errorType=%q err=%q",
-				parsed.Status, parsed.ErrorType, parsed.Error),
-		}
-	}
-	if parsed.Data.ResultType != "vector" {
-		// PR 1 generates instant-only queries, so cerberus must
-		// answer with vector. Treat anything else as a mismatch so
-		// the framework reports.
-		return property.Outcome{
-			Err: fmt.Errorf("cerberus returned resultType=%q, want vector",
-				parsed.Data.ResultType),
-		}
-	}
-
-	out := property.Outcome{Rows: make([]property.OutcomeRow, 0, len(parsed.Data.Result))}
-	for _, s := range parsed.Data.Result {
-		// Strip __name__ so the comparator's labelKey() compares
-		// only the user-defined labels (the oracle strips it too).
-		stripped := make(map[string]string, len(s.Metric))
-		for k, v := range s.Metric {
-			if k == "__name__" {
-				continue
-			}
-			stripped[k] = v
-		}
-
-		if s.Value == nil {
-			// A histogram-valued sample (s.Histogram set instead) has no
-			// float Value; this harness only exercises float-valued PromQL
-			// shapes today, so treat it as a decode error rather than a
-			// nil-pointer panic.
-			return property.Outcome{Err: fmt.Errorf("property: vector sample %v has no float value (histogram-valued?)", s.Metric)}
-		}
-		ts, val, perr := parseSample(*s.Value)
-		if perr != nil {
-			return property.Outcome{Err: fmt.Errorf("property: parse sample: %w", perr)}
-		}
-		out.Rows = append(out.Rows, property.OutcomeRow{
-			Labels:      stripped,
-			TimestampMs: ts,
-			Value:       val,
-		})
-	}
-	return out
-}
-
-// parseSample turns Prom's [seconds_float, value_string] wire shape
-// into (unix_milliseconds, float64).
-func parseSample(s prom.Sample) (int64, float64, error) {
-	if len(s) < 2 {
-		return 0, 0, fmt.Errorf("expected 2-element sample, got %d", len(s))
-	}
-	tsSec, ok := s[0].(float64)
-	if !ok {
-		return 0, 0, fmt.Errorf("sample[0]: want float64, got %T (%v)", s[0], s[0])
-	}
-	valStr, ok := s[1].(string)
-	if !ok {
-		return 0, 0, fmt.Errorf("sample[1]: want string, got %T (%v)", s[1], s[1])
-	}
-	v, err := strconv.ParseFloat(valStr, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("sample[1]: parse float %q: %w", valStr, err)
-	}
-	return int64(tsSec * 1000), v, nil
-}
-
-// urlEscape is a minimal URL escape that covers the characters PromQL
-// queries actually carry — `{`, `}`, `"`, `=`, `,`, parens, brackets,
-// spaces. The full net/url package would do the same but pulling it
-// in to escape a handful of punctuation marks would be overkill.
-func urlEscape(s string) string {
-	const hex = "0123456789ABCDEF"
-	var out []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if shouldEscape(c) {
-			out = append(out, '%', hex[c>>4], hex[c&0xF])
-		} else {
-			out = append(out, c)
-		}
-	}
-	return string(out)
-}
-
-func shouldEscape(c byte) bool {
-	switch c {
-	case '{', '}', '"', '=', ',', '(', ')', '[', ']', ' ', '\n', '+', '&':
-		return true
-	}
-	return false
 }

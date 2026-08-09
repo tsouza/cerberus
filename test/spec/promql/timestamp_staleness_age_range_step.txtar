@@ -13,6 +13,10 @@
 # both sides — the bug — would make every row exactly 0.
 -- query.promql --
 time() - timestamp(up)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 60s
 -- seed --

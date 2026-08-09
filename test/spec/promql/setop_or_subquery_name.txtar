@@ -20,6 +20,10 @@
 # thing a dropped `MetricName` column would erase.
 -- query.promql --
 last_over_time((cpu_temp or gpu_temp)[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

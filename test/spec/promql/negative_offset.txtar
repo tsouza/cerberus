@@ -8,6 +8,10 @@
 
 -- query.promql --
 up offset -7m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

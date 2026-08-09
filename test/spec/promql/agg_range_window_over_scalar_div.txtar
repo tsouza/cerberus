@@ -1,5 +1,9 @@
 -- query.promql --
 sum(sum_over_time(loadbalancing_googleapis_com_https_request_count[5m])) / 300
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),

@@ -1,5 +1,9 @@
 -- query.promql --
 sum by(app_id) (rate(http_requests_a_total[5m])) + sum by(app_id) (rate(http_requests_b_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

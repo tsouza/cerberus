@@ -25,6 +25,10 @@
 
 -- query.promql --
 demo_sparse_bytes or demo_dense_bytes
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

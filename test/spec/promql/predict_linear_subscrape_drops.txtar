@@ -8,6 +8,10 @@
 
 -- query.promql --
 predict_linear(http_requests_total[15s] @ end(), 600)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] float64 = 600
 [1] string = "service.name"

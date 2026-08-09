@@ -17,6 +17,10 @@
 # alone is green either way.
 -- query.promql --
 last_over_time((cpu_temp or gpu_temp)[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- experimental_ts_grid_resample --

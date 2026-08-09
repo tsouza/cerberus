@@ -17,6 +17,23 @@
     },
     {
       "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerArithmeticScalarFilter#10314a74",
+      "message": "traceql: scalar-filter must aggregate to a series on at least one side (count() / sum(...) / avg(...) / min(...) / max(...)), got LHS %T and RHS %T",
+      "class": "rejection",
+      "trigger_query": "{} | 1 \u003e 2",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if len(aggFuncs) == 0"
+        ],
+        "callers": [
+          "lowerScalarFilter"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
       "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
       "class": "rejection",
@@ -89,7 +106,6 @@
           "past exhaustive switch v := e.(type) over [case *traceql.BinaryOperation; case *traceql.UnaryOperation; case traceql.UnaryOperation; case *traceql.Attribute; case traceql.Attribute; case *traceql.Static; case traceql.Static]"
         ],
         "callers": [
-          "lowerAggregate",
           "lowerBooleanFieldExpr",
           "lowerGroup",
           "lowerMetricsCompare",
@@ -97,7 +113,8 @@
           "lowerNestedIntrinsicBinary",
           "lowerNestedSetBinary",
           "lowerTraceScopedBinary",
-          "lowerUnaryMinus"
+          "lowerUnaryMinus",
+          "scalarAggLeaf"
         ]
       }
     },
@@ -383,51 +400,102 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerScalarExpr#187e881e",
       "message": "traceql: scalar expression %T is unsupported",
-      "class": "rejection",
-      "trigger_query": "{} | count() \u003e 1 + 1",
+      "class": "internal",
+      "rationale": "internal invariant: lowerScalarFilter only dispatches to lowerSimpleScalarFilter when isBareAggregate(sf.LHS) and isBareStatic(sf.RHS) both hold, so lowerScalarExpr is only ever called with an ast.Aggregate or an ast.Static — the default arm is unreachable at this call site.",
       "evidence": {
         "guard": [
           "past exhaustive switch v := e.(type) over [case traceql.Aggregate; case *traceql.Aggregate; case traceql.Static; case *traceql.Static]"
         ],
         "callers": [
-          "lowerScalarFilter"
+          "lowerSimpleScalarFilter"
+        ],
+        "cited": [
+          "isBareAggregate",
+          "isBareStatic",
+          "lowerScalarExpr",
+          "lowerScalarFilter",
+          "lowerSimpleScalarFilter"
         ]
       }
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerScalarFilter#37e7c55d",
-      "message": "traceql: scalar-filter RHS must be a literal, got %T",
-      "class": "rejection",
-      "trigger_query": "{} | count() \u003e count()",
+      "site": "internal/traceql/lower.go:lowerScalarOperand#187e881e",
+      "message": "traceql: scalar expression %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: parseScalarExpr/parseScalarPrimary (internal/traceql/ast/parser.go), the only constructor of ast.ScalarExpression values, yields Aggregate, Static, or ScalarOperation exclusively. ast.Pipeline also satisfies ScalarExpression (an interface-completeness marker), but the parser never places a Pipeline in a scalar-expression position, so that arm is unreachable from a parseable query.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := e.(type) over [case traceql.Aggregate; case *traceql.Aggregate; case traceql.Static; case *traceql.Static; case traceql.ScalarOperation; case *traceql.ScalarOperation]"
+        ],
+        "callers": [
+          "lowerArithmeticScalarFilter",
+          "lowerScalarOperationOperand"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarOperationOperand#72691ef6",
+      "message": "traceql: scalar operation operator %s: %w",
+      "class": "internal",
+      "rationale": "internal invariant: ast.ScalarOperation.Op is always one of Add/Sub/Mult/Div/Mod/Power — parseScalarExpr (internal/traceql/ast/parser.go) only builds a ScalarOperation node for a token scalarArithPrec assigns nonzero precedence, which is exactly {+, -, *, /, %, ^} — and mapBinaryOp maps all six, so the wrapped error is unreachable from a parseable query.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
+          "past returning if err != nil",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerScalarOperand"
+        ],
+        "cited": [
+          "mapBinaryOp"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerSimpleScalarFilter#37e7c55d",
+      "message": "traceql: scalar-filter RHS must be a literal, got %T",
+      "class": "internal",
+      "rationale": "internal invariant: lowerScalarFilter only dispatches here when isBareStatic(sf.RHS) holds, so lowerScalarExpr(sf.RHS) always resolves via the Static case to a chplan.Expr; the type-assert failure is unreachable at this call site.",
+      "evidence": {
+        "guard": [
           "past returning if err != nil",
           "past returning if err != nil",
           "past returning if !ok",
           "if !ok"
         ],
         "callers": [
-          "lowerFollowingElement"
+          "lowerScalarFilter"
+        ],
+        "cited": [
+          "isBareStatic",
+          "lowerScalarExpr",
+          "lowerScalarFilter"
         ]
       }
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerScalarFilter#ead2eeaf",
+      "site": "internal/traceql/lower.go:lowerSimpleScalarFilter#ead2eeaf",
       "message": "traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T",
-      "class": "rejection",
-      "trigger_query": "{} | 1 \u003e 2",
+      "class": "internal",
+      "rationale": "internal invariant: lowerScalarFilter only dispatches here when isBareAggregate(sf.LHS) holds, so lowerScalarExpr(sf.LHS) always resolves via the Aggregate case to a chplan.Node; the type-assert failure is unreachable at this call site.",
       "evidence": {
         "guard": [
-          "past returning if err != nil",
           "past returning if err != nil",
           "past returning if err != nil",
           "if !ok"
         ],
         "callers": [
-          "lowerFollowingElement"
+          "lowerScalarFilter"
+        ],
+        "cited": [
+          "isBareAggregate",
+          "lowerScalarExpr",
+          "lowerScalarFilter"
         ]
       }
     },
@@ -459,7 +527,8 @@
         ],
         "callers": [
           "lowerFieldExpr",
-          "lowerScalarExpr"
+          "lowerScalarExpr",
+          "lowerScalarOperand"
         ]
       }
     },
@@ -475,7 +544,8 @@
         ],
         "callers": [
           "lowerFieldExpr",
-          "lowerScalarExpr"
+          "lowerScalarExpr",
+          "lowerScalarOperand"
         ]
       }
     },
@@ -492,7 +562,8 @@
         ],
         "callers": [
           "lowerFieldExpr",
-          "lowerScalarExpr"
+          "lowerScalarExpr",
+          "lowerScalarOperand"
         ]
       }
     },
@@ -559,7 +630,8 @@
         "callers": [
           "lowerBinaryOperation",
           "lowerMetricsFilter",
-          "lowerScalarFilter"
+          "lowerScalarFilter",
+          "lowerScalarOperationOperand"
         ],
         "cited": [
           "lowerUnaryOperation"

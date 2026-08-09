@@ -1,5 +1,9 @@
 -- query.logql --
 absent_over_time({job="api"}[1m])
+-- parity --
+oracle: loki
+endpoint: /api/v1/query_range
+scope: full
 -- start --
 2026-01-01T00:00:00Z
 -- end --

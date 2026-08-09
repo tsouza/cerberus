@@ -9,6 +9,10 @@
 
 -- query.promql --
 {__name__=~".*cerberus_query_inflight.*"}
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

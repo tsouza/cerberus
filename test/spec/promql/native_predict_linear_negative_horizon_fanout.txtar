@@ -21,6 +21,10 @@
 
 -- query.promql --
 sum by(host) (predict_linear(disk_used_bytes[10m], -3600))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- experimental_ts_grid_predict_linear --

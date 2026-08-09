@@ -95,7 +95,45 @@ func TestLower(t *testing.T) {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
 		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+
+		// A fixture carrying a `parity:` section is additionally answered
+		// by the REAL upstream Loki engine over the same seeded data, and
+		// the two answers are compared. Unlike every other assertion in
+		// this function, that one has no GOLDEN_UPDATE branch: the
+		// reference answer is computed on each run rather than stored, so
+		// there is nothing for regeneration to overwrite. See
+		// test/spec/parity.go for why the fixture stores the parity
+		// CONTRACT and not the parity ANSWER.
+		parityStart, parityEnd, parityStep := parityWindow(start, end, step)
+		spec.RunParity(t, c, parityStart, parityEnd, parityStep)
 	})
+}
+
+// fixtureInstantAnchor is the eval instant a fixture without `start:` /
+// `end:` sections is answered at. It is the same instant the round-trip
+// runner splices in for `now64(...)` (test/spec/runner_chdb.go's
+// defaultNowAnchor), because the reference engine has to be asked the
+// question cerberus's emitted SQL was actually executed with — a
+// different instant would move the range window and diverge for a reason
+// that has nothing to do with the lowering.
+var fixtureInstantAnchor = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+
+// parityWindow maps a fixture's optional window sections onto the
+// evaluation the reference engine runs.
+//
+// A fixture with a `step:` is a range query over [start, end]. One with
+// `start:` / `end:` but no step lowers through LowerAt, which evaluates a
+// single instant at the window's END. One with no window sections at all
+// is answered at [fixtureInstantAnchor].
+func parityWindow(start, end time.Time, step time.Duration) (time.Time, time.Time, time.Duration) {
+	switch {
+	case start.IsZero() && end.IsZero():
+		return fixtureInstantAnchor, fixtureInstantAnchor, 0
+	case step > 0:
+		return start, end, step
+	default:
+		return end, end, 0
+	}
 }
 
 // readWindowSections pulls optional `start:` / `end:` (RFC3339Nano) and

@@ -885,8 +885,15 @@ export function byCodepoint(a: string, b: string): number {
  * canonicalizes identically REGARDLESS of which one folding picks
  * (the query value that made them distinct is exactly what the
  * canonical key drops), so a deterministic pick changes nothing about
- * correctness — it only makes it as reproducible as the path-segment
- * case, where the choice does matter.
+ * WHICH surface is reached — it only makes it as reproducible as the
+ * path-segment case, where the choice does matter.
+ *
+ * What the pick must NOT decide is any property of the GROUP. This
+ * function returns one candidate per canonical, so every other
+ * candidate's fields are discarded; anything that is true of the
+ * canonical because it is true of ANY member has to be unioned
+ * separately — see leanReachableCanonicals, and #1872's rule that a
+ * query-parameter collapse folds by union.
  */
 export function foldCanonicalCandidates<
   T extends { canonical: string; concrete: string },
@@ -897,6 +904,30 @@ export function foldCanonicalCandidates<
     if (existing === undefined || byCodepoint(candidate.concrete, existing.concrete) < 0) {
       out.set(candidate.canonical, candidate);
     }
+  }
+  return out;
+}
+
+/**
+ * The canonicals the LEAN plan can reach, unioned over every
+ * candidate — the group property foldCanonicalCandidates cannot
+ * carry.
+ *
+ * A single canonical is routinely minted by several driven states
+ * (the Traces Drilldown breakdown surface is reached both from the
+ * groupBy picker and from the per-attribute tiles, and every one of
+ * those collapses onto `?var-groupBy={var-groupBy}`). Only some of
+ * those states belong to the lean plan. Lean membership asks "does
+ * the lean lane visit this canonical", which is true if ANY candidate
+ * for it is a lean representative — it is not a fact about whichever
+ * concrete URL happened to sort first.
+ */
+export function leanReachableCanonicals<
+  T extends { canonical: string; leanRepresentative: boolean },
+>(candidates: ReadonlyArray<T>): Set<string> {
+  const out = new Set<string>();
+  for (const candidate of candidates) {
+    if (candidate.leanRepresentative) out.add(candidate.canonical);
   }
   return out;
 }

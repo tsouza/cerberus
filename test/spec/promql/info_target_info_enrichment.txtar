@@ -1,5 +1,9 @@
 -- query.promql --
 info(up)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = "instance"
 [1] string = "job"

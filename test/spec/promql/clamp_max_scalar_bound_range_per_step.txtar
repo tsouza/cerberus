@@ -22,6 +22,10 @@
 # which would silently clamp to 0.
 -- query.promql --
 clamp_max(cpu, scalar(bound))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --
