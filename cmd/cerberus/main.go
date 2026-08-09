@@ -1382,9 +1382,11 @@ const (
 // (#1949): a Head maps 1:1 onto a Signal (prom -> Metrics, loki -> Logs,
 // tempo -> Traces), so a deployment that narrows CERBERUS_ENABLED_HEADS
 // (e.g. a Loki-only split-mode pod) never gates readiness — or spends
-// boot-time introspection — on a signal's tables it will never ingest. Pure
-// function of cfg so it is unit-testable without a real ClickHouse client;
-// runRequirementsCheck is the only caller.
+// boot-time introspection — on a signal's tables it will never ingest. It
+// also carries the storage-tiering config (CERBERUS_SCHEMA_STORAGE_POLICY /
+// CERBERUS_SCHEMA_TIER_VOLUME) gate 3 checks for an accepted-but-inert
+// multi-volume policy. Pure function of cfg so it is unit-testable without a
+// real ClickHouse client; runRequirementsCheck is the only caller.
 func preflightRequirementsFromConfig(cfg config.Config) preflight.Requirements {
 	return preflight.Requirements{
 		Database:          cfg.ClickHouse.Database,
@@ -1392,6 +1394,8 @@ func preflightRequirementsFromConfig(cfg config.Config) preflight.Requirements {
 		Metrics:           cfg.Schema,
 		Logs:              cfg.Logs,
 		Traces:            cfg.Traces,
+		StoragePolicy:     cfg.SchemaProvisioning.StoragePolicy,
+		TierVolume:        cfg.SchemaProvisioning.TierVolume,
 		Signals: preflight.Signals{
 			Metrics: cfg.HeadEnabled(config.HeadProm),
 			Logs:    cfg.HeadEnabled(config.HeadLoki),

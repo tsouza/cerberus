@@ -32,7 +32,8 @@ func dialRefusedErr() error {
 }
 
 // stubQuerier is the in-memory ClickHouse stub the preflight tests drive.
-// It answers the version() scalar from Version (or VersionErr) and the
+// It answers the version() scalar from Version (or VersionErr), the volumes of
+// the configured storage policy from Volumes (or VolumesErr), and the
 // per-table system.columns read from Columns keyed by the bound table
 // name (the second positional arg the introspection SQL binds). A table
 // absent from Columns reports zero rows (== "not found").
@@ -40,12 +41,26 @@ type stubQuerier struct {
 	Version    string
 	VersionErr error
 
+	// Volumes is the system.storage_policies answer for the tiering gate, in
+	// volume_priority order (first = the hot volume). Nil means the policy is
+	// not defined on the server.
+	Volumes    []string
+	VolumesErr error
+
 	Columns      map[string][]chclient.NameTypePair
 	ColumnsErr   error
 	NoVersionRow bool
 }
 
-func (s *stubQuerier) QueryStrings(_ context.Context, _ string, _ ...any) ([]string, error) {
+func (s *stubQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]string, error) {
+	// Both string-scalar probes land here; the storage-policy gate is the only
+	// one reading system.storage_policies, so the table name dispatches them.
+	if strings.Contains(sql, "storage_policies") {
+		if s.VolumesErr != nil {
+			return nil, s.VolumesErr
+		}
+		return s.Volumes, nil
+	}
 	if s.VersionErr != nil {
 		return nil, s.VersionErr
 	}
@@ -861,6 +876,162 @@ func TestRunUnreachableSubstringFallback(t *testing.T) {
 		Columns:    healthyColumns(),
 	}
 	assertTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// --- Gate 3: storage tiering ---
+
+// supportedVersion clears the preflight version floor so a storage-tiering test
+// exercises gate 3 rather than tripping gate 1 first.
+const supportedVersion = "25.8.1.1"
+
+// tieringReq is defaultReq plus the storage-policy / tiering configuration
+// under test.
+func tieringReq(policy, tierVolume string) Requirements {
+	req := defaultReq()
+	req.StoragePolicy = policy
+	req.TierVolume = tierVolume
+	return req
+}
+
+// tieringQuerier is a healthy server whose named storage policy has the given
+// volumes.
+func tieringQuerier(volumes ...string) *stubQuerier {
+	return &stubQuerier{Version: supportedVersion, Columns: healthyColumns(), Volumes: volumes}
+}
+
+// assertWarns asserts exactly one warning is reported and that it names each
+// of the given substrings — the operator-actionable parts of the message.
+func assertWarns(t *testing.T, res Result, substrings ...string) {
+	t.Helper()
+	if res.Fatal != nil {
+		t.Fatalf("storage tiering must never be fatal, got: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+	for _, sub := range substrings {
+		if !strings.Contains(res.Warnings[0], sub) {
+			t.Errorf("warning does not mention %q: %s", sub, res.Warnings[0])
+		}
+	}
+}
+
+// TestStoragePolicyMultiVolumeWithNoTieringWarns is the gate this whole change
+// exists for: a hot/cold policy is attached to every table and nothing tiers
+// into it, so data sits on the expensive volume until retention deletes it.
+// The configuration is accepted, nothing errors, and the storage bill is the
+// only symptom — so the boot says so, loudly, naming the fix.
+func TestStoragePolicyMultiVolumeWithNoTieringWarns(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot", "cold")
+	res := Run(context.Background(), q, tieringReq("s3_tiered", ""))
+	assertWarns(
+		t, res,
+		`storage policy "s3_tiered"`,
+		"2 volumes",
+		"hot, cold",
+		"CERBERUS_SCHEMA_TIER_VOLUME",
+	)
+}
+
+// TestStoragePolicySingleVolumeIsSilent pins the other half: a single-volume
+// policy (the bundled-chart object-store shape) has nothing to tier into, so
+// demanding a tiering rule there would be noise — and noise is how a real
+// warning gets ignored.
+func TestStoragePolicySingleVolumeIsSilent(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("main")
+	res := Run(context.Background(), q, tieringReq("bwc_object_store", ""))
+	if res.Fatal != nil {
+		t.Fatalf("unexpected fatal: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("single-volume policy must warn about nothing, got: %v", res.Warnings)
+	}
+}
+
+// TestStoragePolicyTieringConfiguredIsSilent pins that a policy WITH a tiering
+// rule — the fixed configuration — is silent, so acting on the warning makes it
+// go away.
+func TestStoragePolicyTieringConfiguredIsSilent(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot", "cold")
+	res := Run(context.Background(), q, tieringReq("s3_tiered", "cold"))
+	if res.Fatal != nil {
+		t.Fatalf("unexpected fatal: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("a tiered policy with a move rule must be silent, got: %v", res.Warnings)
+	}
+}
+
+// TestStoragePolicyUnknownTierVolumeWarns covers the inert configuration a
+// CREATE TABLE cannot surface: on a cluster whose tables already exist the
+// create is a no-op, so a tiering volume the policy does not have never fails
+// anywhere — it just never moves anything.
+func TestStoragePolicyUnknownTierVolumeWarns(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot", "cold")
+	res := Run(context.Background(), q, tieringReq("s3_tiered", "frozen"))
+	assertWarns(t, res, `"frozen"`, `storage policy "s3_tiered"`, "hot, cold")
+}
+
+// TestStoragePolicyUndefinedWarns covers a policy name the server does not
+// define at all — every table cerberus auto-creates with it would be rejected.
+func TestStoragePolicyUndefinedWarns(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier()
+	res := Run(context.Background(), q, tieringReq("typo_tiered", ""))
+	assertWarns(t, res, `"typo_tiered"`, "not defined")
+}
+
+// TestStoragePolicyDefaultsToServerDefaultPolicy pins the no-storage-policy
+// case: a tiering rule is legitimate against the server's own `default` policy
+// (volumes can be declared on it in storage_configuration), so the gate probes
+// that policy by name rather than skipping the check.
+func TestStoragePolicyDefaultsToServerDefaultPolicy(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot")
+	res := Run(context.Background(), q, tieringReq("", "cold"))
+	assertWarns(t, res, `"cold"`, `storage policy "default"`)
+}
+
+// TestStoragePolicyGateSkippedWhenUnconfigured pins that the default
+// deployment — no storage policy, no tiering — pays for no probe at all.
+func TestStoragePolicyGateSkippedWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot", "cold")
+	res := Run(context.Background(), q, defaultReq())
+	if len(res.Warnings) != 0 {
+		t.Fatalf("no storage config → no tiering warnings, got: %v", res.Warnings)
+	}
+}
+
+// TestStoragePolicyProbeErrorWarns pins that an unreadable
+// system.storage_policies is reported rather than silently treated as "fine" —
+// a check that cannot run must not look like a check that passed.
+func TestStoragePolicyProbeErrorWarns(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot", "cold")
+	q.VolumesErr = errors.New("code 497: not enough privileges")
+	res := Run(context.Background(), q, tieringReq("s3_tiered", ""))
+	assertWarns(t, res, "could not verify storage policy", "not enough privileges")
+}
+
+// TestStoragePolicyProbeUnreachableIsTransient pins that a server that drops
+// mid-gate lands in the transient bucket, like every other probe here — not as
+// a tiering finding about a server that never answered.
+func TestStoragePolicyProbeUnreachableIsTransient(t *testing.T) {
+	t.Parallel()
+	q := tieringQuerier("hot", "cold")
+	q.VolumesErr = dialRefusedErr()
+	res := Run(context.Background(), q, tieringReq("s3_tiered", ""))
+	if !res.Unreachable {
+		t.Fatalf("want Unreachable, got %+v", res)
+	}
+	if res.Fatal != nil {
+		t.Fatalf("unreachable must not be fatal, got: %v", res.Fatal)
+	}
 }
 
 // TestIsUnreachableClassification pins the typed vs server-side split that the

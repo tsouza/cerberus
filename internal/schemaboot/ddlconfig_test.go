@@ -6,6 +6,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 )
 
@@ -117,6 +118,88 @@ func TestDDLConfig_StoragePolicyPinnedFirst(t *testing.T) {
 	}
 	if got.Settings[1].Key != "min_bytes_for_wide_part" {
 		t.Errorf("generic setting not preserved after storage_policy: %+v", got.Settings)
+	}
+}
+
+// TestDDLConfig_PerSignalTieringFallback pins that the tiering ages resolve
+// exactly like retention does — a non-zero per-signal override wins, a zero one
+// inherits the global CERBERUS_SCHEMA_TIER_AFTER — and that the destination
+// volume threads through to the ddl config that emits the TO VOLUME clause.
+func TestDDLConfig_PerSignalTieringFallback(t *testing.T) {
+	const day = 24 * time.Hour
+	cfg := config.Config{
+		SchemaProvisioning: config.SchemaProvisioning{
+			TTL:              90 * day,
+			StoragePolicy:    "s3_tiered",
+			TierVolume:       "cold",
+			TierAfter:        30 * day, // global default
+			TierAfterLogs:    3 * day,  // logs override
+			TierAfterTraces:  7 * day,  // traces override
+			TierAfterMetrics: 0,        // metrics inherit the global
+		},
+	}
+	got, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	if got.Tiering.Volume != "cold" {
+		t.Errorf("tiering volume = %q; want cold", got.Tiering.Volume)
+	}
+	if got.Tiering.Metrics != 30*day {
+		t.Errorf("metrics tiering age = %v; want global 30d (inherited)", got.Tiering.Metrics)
+	}
+	if got.Tiering.Logs != 3*day {
+		t.Errorf("logs tiering age = %v; want 3d (override)", got.Tiering.Logs)
+	}
+	if got.Tiering.Traces != 7*day {
+		t.Errorf("traces tiering age = %v; want 7d (override)", got.Tiering.Traces)
+	}
+}
+
+// TestDDLConfig_InertTieringRejected pins that an accepted-but-inert tiering
+// configuration fails at boot rather than being taken and silently doing
+// nothing. DDLConfig runs on EVERY boot, so this is where an operator finds
+// out — not on the storage bill months later.
+func TestDDLConfig_InertTieringRejected(t *testing.T) {
+	const day = 24 * time.Hour
+	cases := []struct {
+		name string
+		p    config.SchemaProvisioning
+	}{
+		{
+			name: "age_without_volume",
+			p:    config.SchemaProvisioning{TTL: 30 * day, TierAfter: 3 * day},
+		},
+		{
+			name: "volume_without_age",
+			p:    config.SchemaProvisioning{TTL: 30 * day, TierVolume: "cold"},
+		},
+		{
+			name: "move_not_shorter_than_retention",
+			p:    config.SchemaProvisioning{TTL: 30 * day, TierVolume: "cold", TierAfter: 30 * day},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := schemaboot.DDLConfig(config.Config{SchemaProvisioning: tc.p}); err == nil {
+				t.Fatal("want a rejection for the inert tiering config, got nil")
+			}
+		})
+	}
+}
+
+// TestDDLConfig_NoTieringIsValid pins that the default (no tiering) config —
+// what every existing deployment carries — still maps cleanly.
+func TestDDLConfig_NoTieringIsValid(t *testing.T) {
+	cfg := config.Config{
+		SchemaProvisioning: config.SchemaProvisioning{TTL: 30 * 24 * time.Hour},
+	}
+	got, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	if got.Tiering != (ddl.Tiering{}) {
+		t.Errorf("no tiering configured, want the zero Tiering, got %+v", got.Tiering)
 	}
 }
 
