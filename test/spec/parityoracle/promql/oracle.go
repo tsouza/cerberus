@@ -159,14 +159,44 @@ func Evaluate(tb testing.TB, series []Series, q Query) ([]Result, error) {
 
 // appendSeries writes every sample into the reference storage at its exact
 // timestamp.
+//
+// # Why the samples are flattened and globally time-sorted first
+//
+// Prometheus's TSDB head rejects a sample older than
+// `head.MaxTime() - chunkRange/2` with ErrOutOfBounds. That bound moves
+// forward as the head fills, so appending SERIES BY SERIES makes success
+// depend on the order the series happen to arrive in: a fixture seeding
+// one series near the epoch and another in the query's own year appends
+// fine in one order and fails in the other, for a reason that has nothing
+// to do with the query under test.
+//
+// Sorting every (series, sample) pair by timestamp before appending makes
+// each sample land at or after the current head max, so the bound can
+// never be crossed. This is not a relaxation of the storage's contract —
+// no sample is dropped, moved or coerced, and the resulting head is
+// identical to the one a lucky ordering would have produced. It only
+// removes an ordering dependency the fixture never chose.
 func appendSeries(storage *teststorage.TestStorage, series []Series) error {
-	app := storage.Appender(context.Background())
+	type sample struct {
+		labels labels.Labels
+		point  Point
+	}
+
+	var samples []sample
 	for _, s := range series {
 		lbls := labels.FromMap(s.Labels)
 		for _, p := range s.Points {
-			if _, err := app.Append(0, lbls, p.TMillis, p.Value); err != nil {
-				return fmt.Errorf("append %s at %d: %w", lbls.String(), p.TMillis, err)
-			}
+			samples = append(samples, sample{labels: lbls, point: p})
+		}
+	}
+	sort.SliceStable(samples, func(i, j int) bool {
+		return samples[i].point.TMillis < samples[j].point.TMillis
+	})
+
+	app := storage.Appender(context.Background())
+	for _, s := range samples {
+		if _, err := app.Append(0, s.labels, s.point.TMillis, s.point.Value); err != nil {
+			return fmt.Errorf("append %s at %d: %w", s.labels.String(), s.point.TMillis, err)
 		}
 	}
 	if err := app.Commit(); err != nil {

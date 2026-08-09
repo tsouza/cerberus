@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -389,7 +390,41 @@ func rowFloat(cell any, row int) (float64, error) {
 			return 0, fmt.Errorf("expected_rows[%d].Value %q: %w", row, v.String(), err)
 		}
 		return f, nil
+	case string:
+		f, ok := nonFiniteSentinel(v)
+		if !ok {
+			return 0, fmt.Errorf(
+				"expected_rows[%d].Value is the string %q, which is not a number and not one of "+
+					"the non-finite sentinels (%s, %s, %s)",
+				row, v, sentinelNaN, sentinelPosInf, sentinelNegInf,
+			)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("expected_rows[%d].Value is %T, want a number", row, cell)
 	}
+}
+
+// nonFiniteSentinel decodes the string spelling `expected_rows:` uses for a
+// value JSON cannot represent — ±Inf and NaN — back into the float it
+// stands for.
+//
+// This DECODES an encoding; it does not relax a comparison. The decoded
+// float goes through the same exact [oracle.EqualValues] every other value
+// does, and a fixture whose reference answer is +Inf still fails if
+// cerberus answers -Inf or 3. Without it, every fixture whose honest answer
+// is non-finite — a quantile with phi outside [0,1], a clamp against a NaN
+// bound — is unreachable by the parity check purely because of how JSON
+// spells infinity, which would silently confine the check to the fixtures
+// least likely to expose an edge-case lowering bug.
+func nonFiniteSentinel(s string) (float64, bool) {
+	switch s {
+	case sentinelNaN:
+		return math.NaN(), true
+	case sentinelPosInf, sentinelBareInf:
+		return math.Inf(+1), true
+	case sentinelNegInf:
+		return math.Inf(-1), true
+	}
+	return 0, false
 }
