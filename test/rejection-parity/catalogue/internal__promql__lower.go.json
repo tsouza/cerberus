@@ -73,8 +73,8 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:expHistogramSelectorRouting#bcc398d7",
-      "message": "promql: %q is an exponential histogram metric; only histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
+      "site": "internal/promql/lower.go:expHistogramSelectorRouting#367e416d",
+      "message": "promql: %q is an exponential histogram metric; only a bare %q selector, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
       "trigger_query": "rate(demo_latency_exp_hist[5m])",
       "tracking_issue": 1772,
@@ -111,14 +111,12 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm.",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
         ],
         "callers": [
-          "Lower",
-          "LowerAtRangeOpts",
           "LowerMetadataRange",
           "lower",
           "lowerAbsent",
@@ -136,6 +134,7 @@
           "lowerLimitK",
           "lowerLimitRatio",
           "lowerMetadataCatalog",
+          "lowerRoot",
           "lowerRoundToNearest",
           "lowerScalarArg",
           "lowerSort",
@@ -149,7 +148,8 @@
         ],
         "cited": [
           "lower",
-          "lowerHistogramQuantileClassicFloat"
+          "lowerHistogramQuantileClassicFloat",
+          "lowerRoot"
         ]
       }
     },

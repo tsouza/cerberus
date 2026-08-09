@@ -42,7 +42,7 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lower(expr, s, lowerCtx{lowerers: RangeLowerers{}.withDefaults()})
+	plan, err := lowerRoot(expr, s, lowerCtx{lowerers: RangeLowerers{}.withDefaults()})
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -124,7 +124,7 @@ type LowerOpts struct {
 func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lower(expr, s, lowerCtx{
+	plan, err := lowerRoot(expr, s, lowerCtx{
 		start:    start,
 		end:      end,
 		step:     step,
@@ -166,6 +166,36 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 	}
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
+}
+
+// lowerRoot lowers the ROOT of a query expression. It is [lower] plus the
+// one dispatch that can only be decided at the root: a bare selector over
+// an exponential (native) histogram returns a HISTOGRAM-VALUED sample, and
+// that answer has a wire representation only when the selector IS the whole
+// query.
+//
+// The distinction cannot be made inside [lowerVectorSelector], because the
+// selector in `sum(m_exp_hist)` and the selector in `m_exp_hist` arrive
+// there identically — same node, same instant-mode context. Every consumer
+// PromQL can wrap around a selector (a reducer, arithmetic,
+// `label_replace`, a range-vector function) reads a `Value` column that a
+// histogram row does not publish, so answering the nested shape with a
+// histogram projection would either fail in ClickHouse with code 47 or,
+// worse, silently reduce the placeholder Value. Deciding here — where the
+// absence of a parent is a fact rather than an inference — keeps those
+// shapes on [expHistogramSelectorRouting]'s explicit rejection until each
+// grows its own correct lowering (issue #1967), and never widens the
+// exemption by accident: a nested selector never reaches this function.
+//
+// Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
+// through here: it enumerates series and labels rather than evaluating an
+// expression, consumes no Value column, and already has its own
+// full-range bare-selector path.
+func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
+		return lowerExpHistogramBare(vs, s, ctx)
+	}
+	return lower(expr, s, ctx)
 }
 
 func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
@@ -371,17 +401,24 @@ func lowerHistogramSelectorInput(
 // the multi-table companion union).
 //
 // When ok is true and err is non-nil, every other shape over a pinned
-// exp-histogram selector — a bare selector, or one wrapped in
-// rate()/resets()/changes()/sum()/etc. — has no scalar Value column to
-// read: the exp-histogram row shape (Sum/Count/Scale/PositiveCounts/
-// NegativeCounts) is disjoint from the Sample contract these functions
-// reduce over. histogram_quantile()/histogram_count()/histogram_sum()
-// detect this shape themselves before ever reaching lowerVectorSelector
-// (see their own s.IsExpHistogramMetric checks), and the companion arm
-// above is the one column-backed exception — so any selector that
-// reaches here is a shape none of those paths recognise. err rejects it
-// explicitly rather than silently matching zero rows against the
-// Gauge/Sum tables.
+// exp-histogram selector — one wrapped in
+// rate()/resets()/changes()/sum()/avg()/arithmetic/etc. — has no scalar
+// Value column to read: the exp-histogram row shape (Sum/Count/Scale/
+// PositiveCounts/NegativeCounts) is disjoint from the Sample contract
+// these functions reduce over. histogram_quantile()/histogram_count()/
+// histogram_sum() detect this shape themselves before ever reaching
+// lowerVectorSelector (see their own s.IsExpHistogramMetric checks), and
+// the companion arm above is the one column-backed exception — so any
+// selector that reaches here is a shape none of those paths recognise.
+// err rejects it explicitly rather than silently matching zero rows
+// against the Gauge/Sum tables.
+//
+// A BARE selector no longer reaches here at all: it returns a
+// histogram-valued sample, which [lowerRoot] answers with a
+// chplan.HistogramProjection before the recursive descent that leads to
+// lowerVectorSelector ever starts. That is the whole of the narrowing —
+// a nested selector still arrives here and is still rejected, because
+// nothing above it can consume a histogram row yet (issue #1967).
 //
 // Metadata enumeration (/series, /labels — ctx.metadataFullRange) is
 // exempted: it doesn't consume a Value column, only MetricName +
@@ -396,9 +433,10 @@ func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerC
 	}
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(
-			"promql: %q is an exponential histogram metric; only histogram_quantile(), "+
-				"histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
-			metricName, metricName+"_count", metricName+"_sum",
+			"promql: %q is an exponential histogram metric; only a bare %q selector, "+
+				"histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q "+
+				"companion selectors are supported",
+			metricName, metricName, metricName+"_count", metricName+"_sum",
 		)
 	}
 	return nil, nil, "", "", false, nil

@@ -553,6 +553,27 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+	case *chplan.HistogramProjection:
+		// Only the projection's own output list is printed. The nine
+		// Histogram*Column source names are a mechanical function of the
+		// schema (and their output aliases are fixed constants), so
+		// spelling them in every golden would bury the one thing that
+		// varies between two histogram-valued plans: which columns the
+		// canonical quartet is bound from.
+		gb := make([]string, len(v.GroupBy))
+		for i, e := range v.GroupBy {
+			if i < len(v.GroupByAliases) && v.GroupByAliases[i] != "" {
+				gb[i] = fmt.Sprintf("%s AS %s", printExpr(e), v.GroupByAliases[i])
+			} else {
+				gb[i] = printExpr(e)
+			}
+		}
+		fmt.Fprintf(b, "%sHistogramProjection", indent)
+		if len(gb) > 0 {
+			fmt.Fprintf(b, " project=[%s]", strings.Join(gb, ", "))
+		}
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	default:
 		fmt.Fprintf(b, "%s<unknown:%T>\n", indent, n)
 	}
