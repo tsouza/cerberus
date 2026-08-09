@@ -137,6 +137,7 @@ import {
   inventoryPath,
   isSupersededDsQueryFailure,
   isTransientInitRaceFailure,
+  leanReachableCanonicals,
   loadExclusions,
   loadInventory,
   marshalInventory,
@@ -1096,6 +1097,51 @@ test.describe('crawl: canonicalization pins', () => {
     );
   });
 
+  test('lean membership survives a fold whose winner is not the lean representative', () => {
+    // The regression #1977 shipped: `?var-groupBy={var-groupBy}` is
+    // minted by SEVERAL driven states — the groupBy picker's lean
+    // representative among them — and folding keeps only the
+    // codepoint-smallest CONCRETE. Reading `leanRepresentative` off
+    // that winner demoted the canonical to `lean: false` even though
+    // the lean lane still visits it, and the lean ratchet then failed
+    // with "NEW surface … visited but not pinned" against a pin that
+    // had just been regenerated. Lean membership is a property of the
+    // GROUP (#1872: a query-parameter collapse folds by union), so it
+    // is unioned across candidates, never inherited from the winner.
+    const canonical = '/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}';
+    const candidates = [
+      // Codepoint-smallest concrete, driven by a non-lean state.
+      {
+        canonical,
+        concrete: '/a/grafana-exploretraces-app/explore?var-groupBy=a.tile',
+        leanRepresentative: false,
+      },
+      // The lean plan's own state sorts LATER, so the fold drops it.
+      {
+        canonical,
+        concrete: '/a/grafana-exploretraces-app/explore?var-groupBy=z.picker',
+        leanRepresentative: true,
+      },
+    ];
+
+    const folded = foldCanonicalCandidates(candidates);
+    expect(folded.get(canonical)?.leanRepresentative).toBe(false);
+
+    // …but the canonical IS lean-reachable, and stays so under any
+    // input order.
+    expect(leanReachableCanonicals(candidates)).toEqual(new Set([canonical]));
+    expect(leanReachableCanonicals([...candidates].reverse())).toEqual(
+      new Set([canonical]),
+    );
+
+    // A canonical no lean state reaches stays out of the lean set.
+    expect(
+      leanReachableCanonicals([
+        { canonical: 'B', concrete: '/b', leanRepresentative: false },
+      ]),
+    ).toEqual(new Set());
+  });
+
   test('#1872: a combobox with no declared cardinality rule parameterizes regardless of option count', () => {
     // The old defect: an UNDECLARED combobox's mode followed the
     // CURRENT option count against STRUCTURAL_MAX_OPTIONS, so a
@@ -1479,8 +1525,23 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
         // parameterized canonical. Which one gets enqueued — and so
         // which one the BFS actually visits — must be a function of
         // the candidate set, not of control-discovery/DOM order.
+        //
+        // Lean membership, however, is a property of the CANONICAL —
+        // "can the lean plan reach this surface at all" — and NOT of
+        // which concrete URL wins the codepoint tie-break. It is
+        // therefore unioned across every candidate BEFORE folding,
+        // which is exactly #1872's rule that a query-parameter
+        // collapse folds by union (every collapsed state keys the
+        // same visited page, so unioning is lossless). Reading the
+        // flag off the fold WINNER instead silently demotes a
+        // canonical the lean lane really does visit: the lean crawl
+        // then reaches a surface pinned `lean: false`, and the
+        // ratchet reports it as an unpinned NEW surface.
+        const leanReachable = leanReachableCanonicals(sweep.discovered);
         for (const d of foldCanonicalCandidates(sweep.discovered).values()) {
-          if (isLeanRoot && d.leanRepresentative) leanSet.add(d.canonical);
+          if (isLeanRoot && leanReachable.has(d.canonical)) {
+            leanSet.add(d.canonical);
+          }
           if (!visited.has(d.canonical)) {
             queue.push({
               canonical: d.canonical,
