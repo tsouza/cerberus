@@ -129,7 +129,7 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	var got []referenceSample
 	switch p.Oracle {
 	case OraclePrometheus:
-		got, err = evaluatePrometheusParity(t, db, c, q)
+		got, err = evaluatePrometheusParity(t, db, c, rt, q)
 	case OracleLoki:
 		if lokiParityEvaluator == nil {
 			t.Fatalf(
@@ -206,11 +206,11 @@ func comparesTimestamps(oracleName string, step time.Duration) bool {
 // evaluatePrometheusParity answers q with the real upstream Prometheus
 // engine over the rows the seed actually landed in chDB.
 func evaluatePrometheusParity(
-	t *testing.T, db *sql.DB, c *Case, q parityQuery,
+	t *testing.T, db *sql.DB, c *Case, rt *RoundTripSections, q parityQuery,
 ) ([]referenceSample, error) {
 	t.Helper()
 
-	series, err := readSeededSeries(db)
+	series, err := readSeededSeries(db, rt, resourceLabelAllowlist(c))
 	if err != nil {
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
@@ -254,19 +254,27 @@ var seededMetricsTables = []string{
 // coercion — instead of as the SQL claims it will land. Otherwise a
 // disagreement about what the seed means would be invisible to exactly the
 // check meant to find disagreements.
-func readSeededSeries(db *sql.DB) ([]oracle.Series, error) {
+func readSeededSeries(
+	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist,
+) ([]oracle.Series, error) {
 	byKey := map[string]*oracle.Series{}
+	seedCols := testsql.SeedTableColumns(rt.Seed)
 
 	for _, table := range seededMetricsTables {
-		//nolint:gosec // table comes from seededMetricsTables, not from fixture text.
-		q := "SELECT MetricName, toJSONString(Attributes), toUnixTimestamp64Milli(TimeUnix), Value " +
+		//nolint:gosec // every fragment is chosen from this file's own
+		// constants, keyed off the seed's declared columns; no fixture
+		// text reaches the query.
+		q := "SELECT MetricName, toJSONString(Attributes), " +
+			resourceAttributesProjection(seedCols[table]) + ", " +
+			serviceNameProjection(seedCols[table]) + ", " +
+			"toUnixTimestamp64Milli(TimeUnix), Value " +
 			"FROM " + table + " ORDER BY MetricName, TimeUnix"
 		rows, err := db.Query(q)
 		if err != nil {
 			// A fixture that never created this table is not an error.
 			continue
 		}
-		if err := scanSeriesRows(rows, byKey); err != nil {
+		if err := scanSeriesRows(rows, byKey, allow); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -285,15 +293,17 @@ func readSeededSeries(db *sql.DB) ([]oracle.Series, error) {
 	return out, nil
 }
 
-func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series) error {
+func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series, allow resourceAllowlist) error {
 	for rows.Next() {
-		var name, attrsJSON string
+		var name, attrsJSON, resAttrsJSON, serviceName string
 		var tsMillis int64
 		var value float64
-		if err := rows.Scan(&name, &attrsJSON, &tsMillis, &value); err != nil {
+		if err := rows.Scan(
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &value,
+		); err != nil {
 			return err
 		}
-		lbls, err := labelsFromAttributesJSON(name, attrsJSON)
+		lbls, err := labelsFromSeededRow(name, attrsJSON, resAttrsJSON, serviceName, allow)
 		if err != nil {
 			return err
 		}
@@ -426,28 +436,168 @@ func labelKey(lbls map[string]string) string {
 	return b.String()
 }
 
-// labelsFromAttributesJSON builds the reference-engine label set for one
-// seeded row: the OTel attribute map plus __name__.
-//
-// The empty-string metric name is dropped rather than written as an empty
-// __name__, because cerberus emits `” AS MetricName` for derived samples
-// (PromQL drops __name__ from a function's output) and Prometheus
-// represents that as the label being ABSENT.
-func labelsFromAttributesJSON(metricName, attrsJSON string) (map[string]string, error) {
-	attrs := map[string]string{}
-	if trimmed := strings.TrimSpace(attrsJSON); trimmed != "" && trimmed != "{}" {
-		if err := json.Unmarshal([]byte(trimmed), &attrs); err != nil {
-			return nil, fmt.Errorf("decode Attributes %q: %w", attrsJSON, err)
+// The OTel-CH columns beyond Attributes that carry Prometheus labels, and
+// the service-name key they resolve to.
+const (
+	colResourceAttributes = "ResourceAttributes"
+	colServiceName        = "ServiceName"
+	serviceNameLabel      = "service_name"
+	serviceNameOTelKey    = "service.name"
+)
+
+// resourceAllowlist narrows which ResourceAttributes keys become labels.
+// A nil allowlist promotes every key, which is the schema default —
+// the allowlist is opt-IN narrowing, not opt-in enabling.
+type resourceAllowlist map[string]bool
+
+// resourceLabelAllowlist reads the fixture's own `resource_labels:`
+// section, the same section the lowering harness uses to override the
+// schema's promotion allowlist. Reading it here keeps the two sides
+// looking at ONE declaration of which resource keys are labels; a fixture
+// that narrows the set for the lowering but not for the reference would
+// diverge on label sets for a reason unrelated to its query.
+func resourceLabelAllowlist(c *Case) resourceAllowlist {
+	body, ok := c.Section("resource_labels")
+	if !ok {
+		return nil
+	}
+	allow := resourceAllowlist{}
+	for _, line := range strings.Split(body, "\n") {
+		if key := strings.TrimSpace(line); key != "" {
+			allow[key] = true
 		}
 	}
-	out := make(map[string]string, len(attrs)+1)
+	return allow
+}
+
+// resourceAttributesProjection / serviceNameProjection select a column the
+// seed may not have declared.
+//
+// The corpus's seeds are minimal — each declares only the columns its own
+// query needs — so a fixture whose gauge table is (MetricName, Attributes,
+// TimeUnix, Value) has no ResourceAttributes and no ServiceName to read.
+// Substituting the empty literal keeps one reader able to serve every
+// seed, and an absent column and an empty one mean the same thing to the
+// promotion below.
+func resourceAttributesProjection(seedCols []string) string {
+	if !hasColumn(seedCols, colResourceAttributes) {
+		return "'{}'"
+	}
+	return "toJSONString(" + colResourceAttributes + ")"
+}
+
+func serviceNameProjection(seedCols []string) string {
+	if !hasColumn(seedCols, colServiceName) {
+		return "''"
+	}
+	return "toString(" + colServiceName + ")"
+}
+
+func hasColumn(cols []string, want string) bool {
+	for _, col := range cols {
+		if strings.EqualFold(col, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeLabelName rewrites an OTel key into the Prometheus label name it
+// is exposed as: every character outside [a-zA-Z0-9_] becomes '_', so
+// `k8s.namespace.name` is addressable as `k8s_namespace_name`.
+func sanitizeLabelName(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// labelsFromSeededRow builds the reference-engine label set for one seeded
+// row: the resource labels, overlaid by the metric attributes, plus
+// service_name and __name__.
+//
+// # Why the translator has to do this at all
+//
+// A series' IDENTITY is a data-model fact, not a query-semantics one. OTel
+// spreads a metric's labels across three columns — Attributes,
+// ResourceAttributes and the dedicated ServiceName — while Prometheus has
+// one flat label set and no notion of a resource. Something has to map
+// between them, and both sides must reach the same answer or there is no
+// series to align and every comparison degenerates into "the two engines
+// returned different series".
+//
+// Reading only Attributes, as this did before, was not a neutral choice:
+// it meant the reference engine could not see the labels cerberus promotes
+// from the other two columns, so `sum by (service_name) (...)` grouped
+// three ways on cerberus's side and one way on the reference's. That is
+// not a disagreement about the query — it is the oracle being shown
+// different data.
+//
+// # What this does and does not check
+//
+// The rule below is written out here rather than imported, because the
+// oracle side may not link internal/schema. It is an independent
+// expression of the same documented mapping, not a call into cerberus's,
+// so a cerberus lowering that DEVIATES from that mapping — stops promoting
+// ServiceName, sanitizes a key differently, resolves a collision the other
+// way — makes the two label sets disagree and fails here.
+//
+// What no amount of independence can catch is a misconception SHARED by
+// both: if the documented mapping is itself wrong, both sides implement
+// the same wrong thing and agree. That axis belongs to the live
+// compatibility harness, which compares against a real Prometheus fed by
+// the real exporter rather than against a reading of the same spec.
+func labelsFromSeededRow(
+	metricName, attrsJSON, resAttrsJSON, serviceName string, allow resourceAllowlist,
+) (map[string]string, error) {
+	resAttrs, err := decodeAttributes(resAttrsJSON)
+	if err != nil {
+		return nil, err
+	}
+	attrs, err := decodeAttributes(attrsJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]string, len(resAttrs)+len(attrs)+2)
+	// Resource labels first: the metric's own attributes win a collision,
+	// and service_name wins over both.
+	for k, v := range resAttrs {
+		if k == serviceNameOTelKey || k == serviceNameLabel {
+			continue
+		}
+		if allow != nil && !allow[k] {
+			continue
+		}
+		out[sanitizeLabelName(k)] = v
+	}
 	for k, v := range attrs {
-		out[k] = v
+		out[sanitizeLabelName(k)] = v
+	}
+	if serviceName != "" {
+		out[serviceNameLabel] = serviceName
 	}
 	if metricName != "" {
 		out[promNameLabel] = metricName
 	}
 	return out, nil
+}
+
+func decodeAttributes(attrsJSON string) (map[string]string, error) {
+	attrs := map[string]string{}
+	if trimmed := strings.TrimSpace(attrsJSON); trimmed != "" && trimmed != "{}" {
+		if err := json.Unmarshal([]byte(trimmed), &attrs); err != nil {
+			return nil, fmt.Errorf("decode attributes %q: %w", attrsJSON, err)
+		}
+	}
+	return attrs, nil
 }
 
 // promNameLabel is Prometheus's metric-name label.
