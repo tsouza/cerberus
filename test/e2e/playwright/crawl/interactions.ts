@@ -198,7 +198,7 @@ export const COMBOBOX_CARDINALITY_RULES: ReadonlyArray<ComboboxCardinalityRule> 
     values: [
       'Server spansExplore server-specific segments of traces',
       'Consumer spansAnalyze interactions initiated by consumer services',
-      'Database callsEvaluate performance issues in database interactions',
+      'Database callsEvaluate the performance issues in database interactions',
     ],
   },
 ];

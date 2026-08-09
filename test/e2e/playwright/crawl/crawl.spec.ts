@@ -880,7 +880,7 @@ test.describe('crawl: canonicalization pins', () => {
     const consumerLabel =
       'Consumer spansAnalyze interactions initiated by consumer services';
     const databaseLabel =
-      'Database callsEvaluate performance issues in database interactions';
+      'Database callsEvaluate the performance issues in database interactions';
     const control = {
       kind: 'combobox' as const,
       key: 'select[react-select-{rid}-input]',
