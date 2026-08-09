@@ -10,6 +10,10 @@
 # answers -10. Interpolating from 0 instead answers -8.75.
 -- query.promql --
 histogram_quantile(0.5, http_server_request_duration_bucket)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
