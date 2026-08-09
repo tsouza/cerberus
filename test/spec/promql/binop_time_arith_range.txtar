@@ -10,6 +10,10 @@
 # (TestQueryRange_StepLoop_TimeMetric_ChDB).
 -- query.promql --
 time() + http_requests_total
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --
