@@ -1,5 +1,9 @@
 -- query.promql --
 label_replace(metric_a, "dc", "eu", "", "") * metric_b
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
