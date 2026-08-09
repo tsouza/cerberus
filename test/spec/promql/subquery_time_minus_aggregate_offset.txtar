@@ -1,5 +1,9 @@
 -- query.promql --
 (time() - max(batch_last_success_timestamp_seconds))[1m:10s] offset 5m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = ""
 [1] int64 = 1000000000
