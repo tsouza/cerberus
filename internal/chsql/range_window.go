@@ -2683,6 +2683,31 @@ func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
 // Implementation: the standard arrayPopBack/arrayPopFront sandwich
 // gives parallel `prev` / `curr` lists; an arrayMap with a per-pair
 // `if(curr < prev, 1, 0)` indicator + arraySum reduces to the count.
+//
+// Float-only is intentionally complete, not partial. Upstream's
+// funcResets (promql/functions.go, github.com/tsouza/prometheus fork)
+// counts three conditions: a float-float pair with curr < prev (the one
+// this emitter implements), a float<->histogram type transition
+// (always a reset), and a histogram-histogram pair where
+// curr.H.DetectReset(prev.H) fires (bucket count or schema/count
+// regressing). Conditions 2 and 3 need a histogram-shaped sample to
+// ever occur, and no lowering path can produce one here:
+// expHistogramSelectorRouting (internal/promql/lower.go) rejects
+// `resets()` over an exponential-histogram selector at lowering time,
+// before a RangeWindow node exists to reach this emitter (pinned by
+// TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly/resets).
+// Classic-histogram `_bucket{le=...}` selectors don't need the extra
+// conditions either — wrapHistogramBucketFanout already fans each `le`
+// bucket into its own independent float series, so condition 1 alone
+// answers correctly. Every RangeWindow{Func: "resets"} this emitter (and
+// its native-grid counterpart, timeSeriesResetsToGrid in
+// range_window_native.go — itself a ClickHouse builtin with no
+// histogram-valued signature) ever receives is float-only by
+// construction. Tracked as a deliberate, documented divergence (cerberus
+// rejects what reference Prometheus answers) under #1772; extending
+// resets() to histogram input is scoped there alongside rate() (see
+// #1926/#1967) for whenever that lands — see #1493 (closed) for the
+// exact 3-condition kernel spec above.
 func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 	value := Cast(
 		Call(
