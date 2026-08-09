@@ -41,6 +41,13 @@ CREATE TABLE otel_metrics_histogram (
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
     ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);

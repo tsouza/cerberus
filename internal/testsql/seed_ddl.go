@@ -139,6 +139,10 @@ func BackfillTracesColumns(stmts []string) []string {
 // [parseMetricsCreate]).
 func parseTracesCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
 	trimmed := stripLeadingNoise(stmt)
+	// See [parseMetricsCreate]'s identical prefix/trimmed split: every
+	// paren search below must run against trimmed, never stmt, or a `(`
+	// inside the stripped leading comment corrupts bodyCols.
+	prefix := stmt[:len(stmt)-len(trimmed)]
 	rest, ok := createTableTail(trimmed)
 	if !ok {
 		return "", nil, "", false
@@ -147,15 +151,15 @@ func parseTracesCreate(stmt string) (table string, colNames []string, rewritten 
 	if name != tracesTableName {
 		return "", nil, "", false
 	}
-	open := strings.IndexByte(stmt, '(')
+	open := strings.IndexByte(trimmed, '(')
 	if open < 0 {
 		return "", nil, "", false
 	}
-	closeParen := matchParen(stmt, open)
+	closeParen := matchParen(trimmed, open)
 	if closeParen < 0 {
 		return "", nil, "", false
 	}
-	bodyCols := stmt[open+1 : closeParen]
+	bodyCols := trimmed[open+1 : closeParen]
 	defs := splitTopLevelCommas(bodyCols)
 	declared := make(map[string]bool, len(defs))
 	names := make([]string, 0, len(defs))
@@ -187,7 +191,7 @@ func parseTracesCreate(stmt string) (table string, colNames []string, rewritten 
 	for _, ddl := range missing {
 		newDefs = append(newDefs, " "+ddl)
 	}
-	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
+	rewritten = prefix + trimmed[:open+1] + strings.Join(newDefs, ",") + trimmed[closeParen:]
 	return name, names, rewritten, true
 }
 
@@ -321,6 +325,18 @@ func createTableTail(trimmed string) (string, bool) {
 // missing columns injected right after the Attributes column.
 func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten string, ok bool) {
 	trimmed := stripLeadingNoise(stmt)
+	// prefix is the leading noise (whitespace + `-- …` comment lines)
+	// [stripLeadingNoise] consumed. Every paren search below runs against
+	// trimmed, not stmt: a fixture's prose comment is free to contain its
+	// own literal `(` — e.g. "the anchors are in (23:59:01, 00:00:01]" —
+	// and searching stmt would match THAT paren instead of the column
+	// list's, corrupting bodyCols and silently skipping (or mis-slicing)
+	// the backfill. See issue #1987: this shipped a genuinely broken
+	// otel_metrics_gauge table for subquery_bare_aggregate_anchor_ts.txtar
+	// (missing ResourceAttributes/ServiceName), invisible for as long as
+	// the shared chDB session let a SIBLING fixture's correctly-backfilled
+	// table answer the query instead.
+	prefix := stmt[:len(stmt)-len(trimmed)]
 	rest, ok := createTableTail(trimmed)
 	if !ok {
 		return "", nil, "", false
@@ -329,7 +345,7 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	if !strings.HasPrefix(name, metricsTablePrefix) {
 		return "", nil, "", false
 	}
-	open := strings.IndexByte(stmt, '(')
+	open := strings.IndexByte(trimmed, '(')
 	if open < 0 {
 		return "", nil, "", false
 	}
@@ -337,11 +353,11 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	// — NOT strings.LastIndexByte, which would grab the ENGINE/ORDER BY
 	// `(MetricName, …)` paren and drag the engine clause into the column
 	// body.
-	closeParen := matchParen(stmt, open)
+	closeParen := matchParen(trimmed, open)
 	if closeParen < 0 {
 		return "", nil, "", false
 	}
-	bodyCols := stmt[open+1 : closeParen]
+	bodyCols := trimmed[open+1 : closeParen]
 	defs := splitTopLevelCommas(bodyCols)
 	hasAttributes := false
 	declared := make(map[string]bool, len(defs))
@@ -378,7 +394,7 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 			newDefs = append(newDefs, " "+ddl)
 		}
 	}
-	rewritten = stmt[:open+1] + strings.Join(newDefs, ",") + stmt[closeParen:]
+	rewritten = prefix + trimmed[:open+1] + strings.Join(newDefs, ",") + trimmed[closeParen:]
 	return name, names, rewritten, true
 }
 

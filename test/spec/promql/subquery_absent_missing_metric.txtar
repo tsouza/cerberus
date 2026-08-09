@@ -11,6 +11,10 @@ CREATE TABLE otel_metrics_gauge (
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Only an unrelated metric is present — the filtered Scan above
+-- produces 0 rows for `up`.
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 42.0);
 -- expected_rows --
 [
   [{}, 1]

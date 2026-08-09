@@ -105,7 +105,7 @@ func TestLower(t *testing.T) {
 		// test/spec/parity.go for why the fixture stores the parity
 		// CONTRACT and not the parity ANSWER.
 		parityStart, parityEnd, parityStep := parityWindow(start, end, step)
-		spec.RunParity(t, c, parityStart, parityEnd, parityStep)
+		spec.RunParity(t, c, spec.ParityEval{Start: parityStart, End: parityEnd, Step: parityStep})
 	})
 }
 

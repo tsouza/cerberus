@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
@@ -82,7 +84,15 @@ var lokiParityEvaluator func(
 //
 // A fixture with no `parity:` section is a no-op, exactly as RunRoundTrip
 // is for a fixture with no `seed:`.
-func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Duration) {
+//
+// # Dispatch
+//
+// Which reference engine answers is the fixture's own declaration, so the
+// runner selects on it rather than on which head's test called. An oracle
+// with no runner compiled into this lane is a FATAL error, never a silent
+// pass: a fixture that believes it is enrolled and is not would be the
+// hollow green the whole mechanism exists to prevent.
+func RunParity(t *testing.T, c *Case, eval ParityEval) {
 	t.Helper()
 
 	p, enrolled, err := LoadParity(c)
@@ -105,6 +115,15 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 		)
 	}
 
+	// Tempo's spanset pipeline has no evaluation instant and compares the
+	// set of matched SPANS, not a sample stream, so it does not fit the
+	// sample-shaped dispatch below. runTempoParity owns its own chDB
+	// session, query section (`query.traceql`), and comparison entirely.
+	if p.Oracle == OracleTempo {
+		runTempoParity(t, c, p, rt)
+		return
+	}
+
 	querySection := parityQuerySections[p.Oracle]
 	if querySection == "" {
 		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
@@ -122,10 +141,10 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	ApplySeed(t, db, rt.Seed)
 
 	q := parityQuery{
-		Expr:  resolveAtModifiers(strings.TrimSpace(query), evalStart, evalEnd, step),
-		Start: evalStart,
-		End:   evalEnd,
-		Step:  step,
+		Expr:  resolveAtModifiers(strings.TrimSpace(query), eval.Start, eval.End, eval.Step),
+		Start: eval.Start,
+		End:   eval.End,
+		Step:  eval.Step,
 	}
 
 	var got []referenceSample
@@ -162,7 +181,7 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	// includes timestamps. Failing here rather than defaulting the missing
 	// side to zero is the difference between reporting that the check
 	// cannot be made and silently making a different, weaker one.
-	compareTimestamps := comparesTimestamps(p.Oracle, step)
+	compareTimestamps := comparesTimestamps(p.Oracle, eval.Step)
 	if compareTimestamps && sc.ts < 0 {
 		t.Fatalf(
 			"fixture %s: its answer's timestamps participate in the comparison, but the "+
@@ -292,6 +311,35 @@ func comparesTimestamps(oracleName string, step time.Duration) bool {
 	return step > 0 || oracleName == OracleLoki
 }
 
+// exprReadsSeries reports whether a parsed PromQL expression can read ANY
+// vector or matrix selector — i.e. whether an empty seeded series set is a
+// meaningful signal that the seed is missing data the query needs, or the
+// query's own CORRECT, data-independent answer (a pure scalar/time
+// function like `pi()`, `time()`, `vector(5)`, `year()`). A parse error is
+// reported as err rather than silently treated as "no selector" — the
+// caller keeps its normal failure path in that case, exactly as it did
+// before this function existed.
+func exprReadsSeries(expr string) (bool, error) {
+	// EnableExperimentalFunctions matches internal/promql/lower_test.go's
+	// own parser construction, so a fixture exercising an experimental
+	// PromQL function parses the same way here as it does through the
+	// real lowering pipeline.
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	e, err := p.ParseExpr(expr)
+	if err != nil {
+		return false, err
+	}
+	reads := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		switch node.(type) {
+		case *parser.VectorSelector, *parser.MatrixSelector:
+			reads = true
+		}
+		return nil
+	})
+	return reads, nil
+}
+
 // evaluatePrometheusParity answers q with the real upstream Prometheus
 // engine over the rows the seed actually landed in chDB.
 func evaluatePrometheusParity(
@@ -304,10 +352,24 @@ func evaluatePrometheusParity(
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
 	if len(series) == 0 {
-		return nil, fmt.Errorf(
-			"fixture %s: seed produced no readable series, so the reference engine would "+
-				"trivially agree with any answer", c.Name,
-		)
+		// A genuinely empty series set is only a vacuous check — and
+		// therefore an error — when the query reads one. `pi()`, `time()`,
+		// `vector(5)`, `year()` and friends are pure scalar/time functions
+		// that read no selector at all, so zero series is their CORRECT,
+		// intended seeded state (see e.g. pi_constant.txtar, whose `seed:`
+		// deliberately creates otel_metrics_gauge with no INSERT). Before
+		// #1987's per-fixture session isolation, this branch was reachable
+		// only by accident: a selector-free fixture's `readSeededSeries`
+		// call actually saw a PRIOR fixture's leftover rows in the shared
+		// chDB session, so len(series) was spuriously nonzero and this
+		// guard never fired — it was never exercised against its own
+		// intended case until sessions became genuinely isolated.
+		if needsSeries, serr := exprReadsSeries(q.Expr); serr != nil || needsSeries {
+			return nil, fmt.Errorf(
+				"fixture %s: seed produced no readable series, so the reference engine would "+
+					"trivially agree with any answer", c.Name,
+			)
+		}
 	}
 
 	got, err := oracle.Evaluate(t, series, oracle.Query{

@@ -192,7 +192,7 @@ func TestLower(t *testing.T) {
 			}
 			parityStart, parityEnd, parityStep = rangeStart, rangeEnd, d
 		}
-		spec.RunParity(t, c, parityStart, parityEnd, parityStep)
+		spec.RunParity(t, c, spec.ParityEval{Start: parityStart, End: parityEnd, Step: parityStep})
 	})
 }
 

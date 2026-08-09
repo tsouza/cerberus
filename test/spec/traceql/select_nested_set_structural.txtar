@@ -60,3 +60,7 @@ Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __
         Scan(otel_traces)
       Filter predicate=(SpanKind = "Server")
         Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

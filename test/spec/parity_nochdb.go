@@ -16,12 +16,11 @@ package spec
 
 import (
 	"testing"
-	"time"
 )
 
 // RunParity is a no-op when the `chdb` build tag is not set. The real
 // implementation lives in parity_chdb.go.
-func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Duration) {
+func RunParity(t *testing.T, c *Case, eval ParityEval) {
 	t.Helper()
-	_, _, _, _, _ = c, evalStart, evalEnd, step, t
+	_, _, _ = c, eval, t
 }

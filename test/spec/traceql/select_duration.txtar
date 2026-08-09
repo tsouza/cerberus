@@ -24,3 +24,7 @@ Project [TraceId, SpanId, Timestamp, Duration AS duration]
     Scan(otel_traces)
 -- sql --
 SELECT `TraceId`, `SpanId`, `Timestamp`, `Duration` AS `duration` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
