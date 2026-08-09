@@ -1213,6 +1213,17 @@ func errContainsStage(msg, stage string) bool {
 // Projects from the canonical-shape Projects upstream lowerings (LWR,
 // instant fns over `temperature`, etc.) emit.
 func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
+	// A histogram-VALUED plan already publishes the full wire contract:
+	// the canonical quartet FIRST, then the nine chplan.Histogram*Column
+	// outputs that internal/chclient's cursor binds when it probes the
+	// result set's final column. Re-projecting the quartet on top would
+	// drop those nine, un-latch the probe, and hand every native-histogram
+	// answer back as the placeholder float — so the correct wrapper here
+	// is no wrapper at all. RowShapeOf is the one classifier for "what
+	// does this node publish"; see chplan.HistogramRowShape.
+	if chplan.RowShapeOf(plan) == chplan.HistogramRowShape {
+		return plan
+	}
 	projections := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
 		{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},

@@ -210,13 +210,43 @@ property:
 # regression of the landed perf wins: the metrics-table MetricName-first
 # ORDER BY granule prune (EXPLAIN indexes=1 ratio floor) and the /series
 # fan-out round-trip baseline. Requires libchdb.so (see `just chdb-install`).
-# Mirrors the `perf-guards` CI job in chdb.yml. Distinct from the
+# Mirrors the `perf-guards-shard` CI job in chdb.yml. Distinct from the
 # informational `perf-benchmark.yml` lane, which only reports benchstat
-# deltas and never gates. The lane sits around 8 minutes and the ratchet grows
-# with the corpus, so the `-timeout` is the one number here with real slack
-# behind it: `perf-guards` budgets 20 minutes and this takes 15 of them.
+# deltas and never gates.
+#
+# This recipe runs the guards over the corpus slice named by the environment:
+# PERF_SHARD_INDEX / PERF_SHARD_COUNT (test/perf/profile/shard.go). Both unset —
+# the local default — is the WHOLE corpus, exactly as before sharding existed.
+# CI sets them, one leg per slice, because TestCardinalityRatchet's runtime is a
+# straight line in corpus size and cannot be parallelised inside one process
+# (chdb-go caches one session per process, #1987); see chdb.yml for the topology
+# and issue #2002 for why the serial lane had to stop.
+#
+# The `-timeout` is sized for the recipe's WORST case, and sharding did NOT make
+# that case smaller: it is the unsharded whole-corpus sweep, the one invocation
+# a matrix cannot speed up. The lane was ~8 minutes when this comment was first
+# written, measured 867s on 2026-08-09 shortly before that day's
+# promql-parity-enrolment wave grew the corpus further, and a CI run under a
+# genuinely isolated runner hit ITS OWN -timeout at exactly 1020s (17m)
+# afterward. 27m is that worst case with room to keep growing. A CI LEG, by
+# contrast, finishes 6-8x under this ceiling, so for the matrix the number is a
+# hang detector rather than an estimate. It must also stay at least 3 minutes
+# under the job's `timeout-minutes` so Go aborts first and dumps goroutine
+# stacks — test/regression/go_test_timeout_budget_test.go enforces that ordering.
+#
+# Do not trust a local re-measurement taken while another chdb-tagged test
+# process is running concurrently on the same machine: TestCardinalityRatchet
+# is CPU- and chDB-engine-heavy, and two concurrent runs starve each other
+# on a resource-constrained box in a way that looks exactly like a hang
+# (long silent gaps between fixtures) but is not one — confirmed via
+# SIGQUIT goroutine dump showing an ordinary in-progress chDB query, and
+# `ps`/`uptime` showing another agent's own perf.test process pinning a
+# CPU core. Only a CI run, or a local run with nothing else chdb-tagged
+# active, is a trustworthy timing signal for this recipe. That caveat applies
+# to the per-shard figures too: the local sweep that first timed the eight
+# slices ran against exactly such a competing process.
 perf-chdb:
-    go test -timeout 15m -tags chdb -count=1 ./test/perf/...
+    go test -timeout 27m -tags chdb -count=1 ./test/perf/...
 
 # Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
 # Component B). Walks every executable fixture under test/spec/** (those

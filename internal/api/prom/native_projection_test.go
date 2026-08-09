@@ -123,3 +123,48 @@ func TestWrapSampleProjection_NativeRangeWindowOffsetNotReshifted(t *testing.T) 
 			ts.Expr, chplan.RangeWindowAnchorColumn)
 	}
 }
+
+// TestWrapSampleProjection_HistogramProjectionPassesThrough pins the
+// HTTP-layer wrapper's handling of a histogram-VALUED plan root (issue
+// #1967: a bare selector over an exponential histogram).
+//
+// chplan.HistogramProjection already publishes the complete wire contract
+// — the canonical sample quartet followed by the nine
+// chplan.Histogram*Column outputs — because internal/chclient's row cursor
+// decides how many destinations to bind by probing the result set's LAST
+// column name. Wrapping it in the usual four-column Project would emit
+// valid SQL that silently deletes those nine columns, un-latching the
+// probe and turning every native-histogram answer back into the
+// placeholder float. The correct wrapper is therefore no wrapper: this
+// test fails the moment someone re-adds one.
+func TestWrapSampleProjection_HistogramProjectionPassesThrough(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+
+	hp := &chplan.HistogramProjection{
+		Input:                      &chplan.Scan{Table: s.ExpHistogramTable},
+		CountColumn:                s.CountColumn,
+		SumColumn:                  s.SumColumn,
+		ScaleColumn:                s.ScaleColumn,
+		ZeroCountColumn:            s.ZeroCountColumn,
+		PositiveOffsetColumn:       s.PositiveOffsetColumn,
+		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
+		NegativeOffsetColumn:       s.NegativeOffsetColumn,
+		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.MetricNameColumn},
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+			&chplan.ColumnRef{Name: s.TimestampColumn},
+			&chplan.LitFloat{V: 0},
+		},
+		GroupByAliases: []string{
+			s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.ValueColumn,
+		},
+	}
+
+	if got := chplan.RowShapeOf(hp); got != chplan.HistogramRowShape {
+		t.Fatalf("RowShapeOf(HistogramProjection) = %s, want histogram", got)
+	}
+	if wrapped := wrapWithSampleProjection(hp, s); wrapped != chplan.Node(hp) {
+		t.Fatalf("wrapWithSampleProjection wrapped a histogram-shaped root in %T; it must pass through unchanged", wrapped)
+	}
+}

@@ -1256,6 +1256,33 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 
+- **`perf-guards-aggregate.mjs`** — `chdb.yml`, the `perf-guards` job. Rolls the
+  sharded `perf-guards-shard` matrix up into the single status check branch
+  protection and `release.yml`'s `RELEASE_REQUIRED_CHECKS` both resolve by exact
+  text. The lane was one process profiling the whole TXTAR corpus serially;
+  `TestCardinalityRatchet`'s runtime is a straight line in corpus size and the
+  corpus is deliberately growing, so it walked from ~8 minutes to 867s against a
+  900s budget in a single day (#2002). It cannot be parallelised in-process
+  (chdb-go caches ONE session per process regardless of DSN and is not
+  concurrency-safe — #1987), so the corpus is split across separate runner
+  processes, which renames what GitHub posts: `perf-guards-shard (n)`, never
+  `perf-guards`. An aggregator keeps the name, so no branch-protection entry
+  moves when the shard count changes — per-shard required contexts would have to
+  be added before they can first report (a window with the gate unenforced) and
+  a stale one blocks every PR on a check that never arrives. The verdict is a
+  strict `!== 'success'` on the matrix roll-up, which catches `failure`,
+  `cancelled` (how a `timeout-minutes` kill is recorded) and `skipped` in one
+  comparison. A docs-only skip is green only on TWO facts together — the
+  `changes` job SUCCEEDED and it is the one that said `docs_only` — because a
+  crashed `changes` job also skips the matrix, and that is a lane that failed to
+  decide rather than one with nothing to do.
+  `perf-guards-aggregate.test.mjs` is the `node --test` guard (run on `ci.yml`'s
+  scripts lane) that pins both directions.
+  - Env: `CHANGES_RESULT`, `DOCS_ONLY` (the `changes` job's output),
+    `SHARDS_RESULT` (the matrix's rolled-up result).
+  - Exit: `0` when every shard passed or the lane was correctly
+    short-circuited, `1` otherwise.
+
 - **`migration-e2e.mjs`** — `ci.yml`'s `lint` job (`MODE=verify`) and
   `migration-e2e.yml` (all four modes). The Layer-14 migration lane's
   coverage ratchet, tier-matrix emitter, scenario runner and lane roll-up.
