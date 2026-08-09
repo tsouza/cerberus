@@ -213,13 +213,23 @@ property:
 # Mirrors the `perf-guards` CI job in chdb.yml. Distinct from the
 # informational `perf-benchmark.yml` lane, which only reports benchstat
 # deltas and never gates. The lane grows with the corpus: it was ~8 minutes
-# when this comment was first written and measured 867s (~14.5 min) against
-# the corpus the 2026-08-09 promql-parity-enrolment wave left behind — see
-# issue #2002 for the budget-margin tracking this convergence needs — so the
-# `-timeout` is bumped to keep real slack under `perf-guards`' 20-minute job
-# budget rather than letting the two converge silently.
+# when this comment was first written, measured 867s on 2026-08-09 shortly
+# before that day's promql-parity-enrolment wave grew the corpus further,
+# and a CI run under a genuinely isolated runner (not local contention —
+# see below) hit ITS OWN -timeout at exactly 1020s (17m) afterward. See
+# issue #2002 for the budget-margin tracking this convergence needs.
+#
+# Do not trust a local re-measurement taken while another chdb-tagged test
+# process is running concurrently on the same machine: TestCardinalityRatchet
+# is CPU- and chDB-engine-heavy, and two concurrent runs starve each other
+# on a resource-constrained box in a way that looks exactly like a hang
+# (long silent gaps between fixtures) but is not one — confirmed via
+# SIGQUIT goroutine dump showing an ordinary in-progress chDB query, and
+# `ps`/`uptime` showing another agent's own perf.test process pinning a
+# CPU core. Only a CI run, or a local run with nothing else chdb-tagged
+# active, is a trustworthy timing signal for this recipe.
 perf-chdb:
-    go test -timeout 17m -tags chdb -count=1 ./test/perf/...
+    go test -timeout 27m -tags chdb -count=1 ./test/perf/...
 
 # Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
 # Component B). Walks every executable fixture under test/spec/** (those
