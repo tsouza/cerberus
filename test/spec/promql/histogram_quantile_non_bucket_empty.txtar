@@ -1,5 +1,9 @@
 -- query.promql --
 histogram_quantile(0.9, sum(up))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

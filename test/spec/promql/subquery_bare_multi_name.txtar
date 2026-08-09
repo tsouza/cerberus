@@ -15,6 +15,10 @@
 # the window's grouping key all the way out.
 -- query.promql --
 {__name__=~"cpu_temp|gpu_temp"}[10m:1m]
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

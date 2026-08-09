@@ -10,6 +10,10 @@
 
 -- query.promql --
 absent_over_time(http_requests_total{job="api"}[5m] @ 1767225600)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 60s
 -- seed --

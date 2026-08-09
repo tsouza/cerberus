@@ -13,6 +13,10 @@
 # test instead).
 -- query.promql --
 time() < http_requests_total
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

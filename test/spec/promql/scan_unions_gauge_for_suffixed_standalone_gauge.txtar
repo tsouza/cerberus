@@ -1,5 +1,9 @@
 -- query.promql --
 aws_alb_request_count_sum
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
