@@ -9,6 +9,10 @@
 # the inner Project re-aliasing.
 -- query.promql --
 http_requests_total - time()
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

@@ -3,6 +3,10 @@
 # a plain (non-subquery) predict_linear threads it via range_fns.go.
 -- query.promql --
 predict_linear(rate(http_requests_total[5m])[1h:5m], 3600)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

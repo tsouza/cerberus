@@ -7,6 +7,10 @@
 # range-vector selector, got *parser.ParenExpr".
 -- query.promql --
 quantile_over_time(0.5, (latency_ms[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

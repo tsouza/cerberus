@@ -23,6 +23,10 @@
 # key matches and the ratio is exact at every anchor.
 -- query.promql --
 sum(rate(cerberus_requests_total[2m])) / sum(rate(cerberus_attempts_total[2m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- experimental_ts_grid_range --

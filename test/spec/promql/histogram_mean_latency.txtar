@@ -6,6 +6,10 @@
 # to create those tables — a corpus-order dependency, not a round trip.
 -- query.promql --
 rate(http_server_request_duration_sum[1m]) / rate(http_server_request_duration_count[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

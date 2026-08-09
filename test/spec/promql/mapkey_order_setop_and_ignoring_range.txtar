@@ -1,5 +1,9 @@
 -- query.promql --
 metric_a and ignoring(env) metric_b
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

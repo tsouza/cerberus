@@ -17,6 +17,10 @@
 # sub-expressions had no common ClickHouse supertype.
 -- query.promql --
 histogram_quantiles(http_server_request_duration_bucket, "q", scalar(phi_k))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
 
@@ -145,7 +147,7 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 	var got []referenceSample
 	switch p.Oracle {
 	case OraclePrometheus:
-		got, err = evaluatePrometheusParity(t, db, c, q)
+		got, err = evaluatePrometheusParity(t, db, c, rt, q)
 	case OracleLoki:
 		if lokiParityEvaluator == nil {
 			t.Fatalf(
@@ -163,7 +165,29 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
 
-	compareAgainstReference(t, c, p, rt, got, comparesTimestamps(p.Oracle, eval.Step))
+	cols, err := parityProjectionColumns(db, rt)
+	if err != nil {
+		t.Fatalf("fixture %s: %v", c.Name, err)
+	}
+	sc, err := locateSampleColumns(cols)
+	if err != nil {
+		t.Fatalf("fixture %s: %v", c.Name, err)
+	}
+
+	// A projection with no TimeUnix column cannot answer a comparison that
+	// includes timestamps. Failing here rather than defaulting the missing
+	// side to zero is the difference between reporting that the check
+	// cannot be made and silently making a different, weaker one.
+	compareTimestamps := comparesTimestamps(p.Oracle, eval.Step)
+	if compareTimestamps && sc.ts < 0 {
+		t.Fatalf(
+			"fixture %s: its answer's timestamps participate in the comparison, but the "+
+				"projection (%s) carries no %s column to compare them against",
+			c.Name, strings.Join(cols, ", "), colTimeUnix,
+		)
+	}
+
+	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps)
 }
 
 // parityQuerySections maps an oracle to the TXTAR section holding the
@@ -200,11 +224,11 @@ func comparesTimestamps(oracleName string, step time.Duration) bool {
 // evaluatePrometheusParity answers q with the real upstream Prometheus
 // engine over the rows the seed actually landed in chDB.
 func evaluatePrometheusParity(
-	t *testing.T, db *sql.DB, c *Case, q parityQuery,
+	t *testing.T, db *sql.DB, c *Case, rt *RoundTripSections, q parityQuery,
 ) ([]referenceSample, error) {
 	t.Helper()
 
-	series, err := readSeededSeries(db)
+	series, err := readSeededSeries(db, rt, resourceLabelAllowlist(c))
 	if err != nil {
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
@@ -248,25 +272,37 @@ var seededMetricsTables = []string{
 // coercion — instead of as the SQL claims it will land. Otherwise a
 // disagreement about what the seed means would be invisible to exactly the
 // check meant to find disagreements.
-func readSeededSeries(db *sql.DB) ([]oracle.Series, error) {
+func readSeededSeries(
+	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist,
+) ([]oracle.Series, error) {
 	byKey := map[string]*oracle.Series{}
+	seedCols := testsql.SeedTableColumns(rt.Seed)
 
 	for _, table := range seededMetricsTables {
-		//nolint:gosec // table comes from seededMetricsTables, not from fixture text.
-		q := "SELECT MetricName, toJSONString(Attributes), toUnixTimestamp64Milli(TimeUnix), Value " +
+		//nolint:gosec // every fragment is chosen from this file's own
+		// constants, keyed off the seed's declared columns; no fixture
+		// text reaches the query.
+		q := "SELECT MetricName, toJSONString(Attributes), " +
+			resourceAttributesProjection(seedCols[table]) + ", " +
+			serviceNameProjection(seedCols[table]) + ", " +
+			"toUnixTimestamp64Milli(TimeUnix), Value " +
 			"FROM " + table + " ORDER BY MetricName, TimeUnix"
 		rows, err := db.Query(q)
 		if err != nil {
 			// A fixture that never created this table is not an error.
 			continue
 		}
-		if err := scanSeriesRows(rows, byKey); err != nil {
+		if err := scanSeriesRows(rows, byKey, allow); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		if err := rows.Close(); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := readSeededClassicHistograms(db, rt, allow, byKey); err != nil {
+		return nil, err
 	}
 
 	out := make([]oracle.Series, 0, len(byKey))
@@ -279,15 +315,17 @@ func readSeededSeries(db *sql.DB) ([]oracle.Series, error) {
 	return out, nil
 }
 
-func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series) error {
+func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series, allow resourceAllowlist) error {
 	for rows.Next() {
-		var name, attrsJSON string
+		var name, attrsJSON, resAttrsJSON, serviceName string
 		var tsMillis int64
 		var value float64
-		if err := rows.Scan(&name, &attrsJSON, &tsMillis, &value); err != nil {
+		if err := rows.Scan(
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &value,
+		); err != nil {
 			return err
 		}
-		lbls, err := labelsFromAttributesJSON(name, attrsJSON)
+		lbls, err := labelsFromSeededRow(name, attrsJSON, resAttrsJSON, serviceName, allow)
 		if err != nil {
 			return err
 		}
@@ -304,13 +342,49 @@ func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series) error {
 
 // compareAgainstReference is the assertion itself. See
 // [comparesTimestamps] for which axes participate and why.
+// parityProjectionColumns returns the column names of the projection that
+// produced this fixture's `expected_rows:`.
+//
+// The names come from the DRIVER, by running the fixture's own pinned
+// `sql:` section against the already-seeded session and asking the result
+// for its columns. The alternative — parsing the outer SELECT's aliases
+// out of the SQL text — would be a second, hand-written answer to a
+// question the driver already answers exactly, and the two would
+// eventually disagree on some projection nobody thought to test.
+//
+// Nothing about the comparison becomes self-referential: only the column
+// LABELLING is learned here. Every value still comes from the pinned
+// `expected_rows:`, which is the artefact regeneration can corrupt and
+// therefore the artefact the reference engine must be checked against.
+func parityProjectionColumns(db *sql.DB, rt *RoundTripSections) ([]string, error) {
+	query, args := substituteNow64(rt.SQL, rt.Args)
+	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("re-run the fixture's own sql to read its projection: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	// rows.Columns() returns names without instantiating the driver's
+	// column-type table, so it sidesteps the Map rows.ColumnTypes()
+	// panic the round-trip runner documents.
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("read the projection's column names: %w", err)
+	}
+	return cols, nil
+}
+
 func compareAgainstReference(
-	t *testing.T, c *Case, p *Parity, rt *RoundTripSections,
+	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, sc sampleColumns,
 	got []referenceSample, compareTimestamps bool,
 ) {
 	t.Helper()
 
-	want, err := referenceShapeOfExpectedRows(rt)
+	want, err := referenceShapeOfExpectedRows(rt, sc)
 	if err != nil {
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
@@ -351,6 +425,18 @@ func compareAgainstReference(
 	}
 }
 
+// arity is the number of columns a row must have for every located
+// Sample field to be in range.
+func (sc sampleColumns) arity() int {
+	n := 0
+	for _, idx := range []int{sc.name, sc.attrs, sc.ts, sc.value} {
+		if idx+1 > n {
+			n = idx + 1
+		}
+	}
+	return n
+}
+
 // labelKey renders a label set as a stable, comparable string. Both sides
 // are keyed through this one function so series identity can never differ
 // by map iteration order or by formatting.
@@ -372,23 +458,301 @@ func labelKey(lbls map[string]string) string {
 	return b.String()
 }
 
-// labelsFromAttributesJSON builds the reference-engine label set for one
-// seeded row: the OTel attribute map plus __name__.
+// classicHistogramTable is the OTel-CH table holding explicit-bounds
+// histograms. It is read separately from [seededMetricsTables] because its
+// rows are not samples: one row is a whole histogram.
+const classicHistogramTable = "otel_metrics_histogram"
+
+// The Prometheus series a classic histogram is exposed as, and the label
+// carrying a bucket's upper bound.
+const (
+	bucketSuffix   = "_bucket"
+	countSuffix    = "_count"
+	sumSuffix      = "_sum"
+	leLabel        = "le"
+	positiveInfSTR = "+Inf"
+)
+
+// readSeededClassicHistograms explodes each seeded explicit-bounds
+// histogram row into the float series Prometheus represents it as.
 //
-// The empty-string metric name is dropped rather than written as an empty
-// __name__, because cerberus emits `” AS MetricName` for derived samples
-// (PromQL drops __name__ from a function's output) and Prometheus
-// represents that as the label being ABSENT.
-func labelsFromAttributesJSON(metricName, attrsJSON string) (map[string]string, error) {
-	attrs := map[string]string{}
-	if trimmed := strings.TrimSpace(attrsJSON); trimmed != "" && trimmed != "{}" {
-		if err := json.Unmarshal([]byte(trimmed), &attrs); err != nil {
-			return nil, fmt.Errorf("decode Attributes %q: %w", attrsJSON, err)
+// # Why this needs no new oracle shape
+//
+// A classic histogram IS a set of plain float series in Prometheus's data
+// model: `<name>_bucket` carrying an `le` label per boundary, plus
+// `<name>_count` and `<name>_sum`. The reference engine has always been
+// able to express that, and cerberus emits exactly those series from this
+// table — so the only thing that was missing was a reader. Nothing about
+// [oracle.Series] or the comparator changes, and native histograms (whose
+// reference answer is a FloatHistogram rather than a float) remain out of
+// reach for a genuinely different reason.
+//
+// # The two translations that are not identity
+//
+// OTel stores BucketCounts PER BUCKET; Prometheus's `le` series are
+// CUMULATIVE, so the counts are accumulated as the bounds are walked. And
+// BucketCounts carries one more entry than ExplicitBounds — the overflow
+// bucket above the last boundary — which is Prometheus's `le="+Inf"`.
+//
+// A fixture that never created the table is not an error: most of the
+// corpus seeds only the tables its own query needs.
+func readSeededClassicHistograms(
+	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
+) error {
+	seedCols := testsql.SeedTableColumns(rt.Seed)[classicHistogramTable]
+	if len(seedCols) == 0 {
+		return nil
+	}
+
+	//nolint:gosec // every fragment is chosen from this file's own
+	// constants, keyed off the seed's declared columns.
+	q := "SELECT MetricName, toJSONString(Attributes), " +
+		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
+		"toUnixTimestamp64Milli(TimeUnix), Count, Sum, " +
+		"toJSONString(BucketCounts), toJSONString(ExplicitBounds) " +
+		"FROM " + classicHistogramTable + " ORDER BY MetricName, TimeUnix"
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var name, attrsJSON, resAttrsJSON, serviceName, countsJSON, boundsJSON string
+		var tsMillis int64
+		var count, sum float64
+		if err := rows.Scan(
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis,
+			&count, &sum, &countsJSON, &boundsJSON,
+		); err != nil {
+			return err
+		}
+		base, err := labelsFromSeededRow("", attrsJSON, resAttrsJSON, serviceName, allow)
+		if err != nil {
+			return err
+		}
+		var counts, bounds []float64
+		if err := json.Unmarshal([]byte(countsJSON), &counts); err != nil {
+			return fmt.Errorf("decode BucketCounts %q: %w", countsJSON, err)
+		}
+		if err := json.Unmarshal([]byte(boundsJSON), &bounds); err != nil {
+			return fmt.Errorf("decode ExplicitBounds %q: %w", boundsJSON, err)
+		}
+		// OTel's canonical shape carries one more count than bound — the
+		// overflow bucket above the last boundary. The corpus also seeds
+		// the equal-length shape, which simply states no overflow bucket.
+		// Both are well defined here because Prometheus's `+Inf` bucket is
+		// the total Count either way; anything else is a seed whose
+		// buckets cannot be read at all.
+		if len(counts) != len(bounds) && len(counts) != len(bounds)+1 {
+			return fmt.Errorf(
+				"histogram %s has %d BucketCounts and %d ExplicitBounds; a bucket series can only "+
+					"be reconstructed when the counts match the bounds, with or without a trailing "+
+					"overflow bucket", name, len(counts), len(bounds),
+			)
+		}
+
+		cumulative := 0.0
+		for i, bound := range bounds {
+			cumulative += counts[i]
+			appendPoint(byKey, base, name+bucketSuffix,
+				map[string]string{leLabel: formatBucketBound(bound)}, tsMillis, cumulative)
+		}
+		appendPoint(byKey, base, name+bucketSuffix,
+			map[string]string{leLabel: positiveInfSTR}, tsMillis, count)
+		appendPoint(byKey, base, name+countSuffix, nil, tsMillis, count)
+		appendPoint(byKey, base, name+sumSuffix, nil, tsMillis, sum)
+	}
+	return rows.Err()
+}
+
+// formatBucketBound renders a bucket boundary the way the `le` label
+// spells it, which must agree with ClickHouse's `toString(Float64)` — the
+// expression cerberus's own emitter uses — or the two sides' bucket series
+// carry different label sets and never align.
+//
+// Go's shortest round-trip formatting agrees with ClickHouse's across the
+// range the corpus uses. The two part company only at the exponent
+// thresholds ('g' switches to exponent form at >=1e21 and <1e-4), so a
+// fixture seeding a boundary out there would fail on the label rather than
+// silently compare the wrong bucket.
+func formatBucketBound(bound float64) string {
+	return strconv.FormatFloat(bound, 'g', -1, 64)
+}
+
+// appendPoint adds one sample to the series identified by the base label
+// set plus __name__ and any extra labels, creating the series on first
+// sight. The base map is never mutated: several synthesised series share
+// one row's labels.
+func appendPoint(
+	byKey map[string]*oracle.Series, base map[string]string,
+	name string, extra map[string]string, tsMillis int64, value float64,
+) {
+	lbls := make(map[string]string, len(base)+len(extra)+1)
+	for k, v := range base {
+		lbls[k] = v
+	}
+	for k, v := range extra {
+		lbls[k] = v
+	}
+	lbls[promNameLabel] = name
+
+	key := labelKey(lbls)
+	s, ok := byKey[key]
+	if !ok {
+		s = &oracle.Series{Labels: lbls}
+		byKey[key] = s
+	}
+	s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
+}
+
+// The OTel-CH columns beyond Attributes that carry Prometheus labels, and
+// the service-name key they resolve to.
+const (
+	colResourceAttributes = "ResourceAttributes"
+	colServiceName        = "ServiceName"
+	serviceNameLabel      = "service_name"
+	serviceNameOTelKey    = "service.name"
+)
+
+// resourceAllowlist narrows which ResourceAttributes keys become labels.
+// A nil allowlist promotes every key, which is the schema default —
+// the allowlist is opt-IN narrowing, not opt-in enabling.
+type resourceAllowlist map[string]bool
+
+// resourceLabelAllowlist reads the fixture's own `resource_labels:`
+// section, the same section the lowering harness uses to override the
+// schema's promotion allowlist. Reading it here keeps the two sides
+// looking at ONE declaration of which resource keys are labels; a fixture
+// that narrows the set for the lowering but not for the reference would
+// diverge on label sets for a reason unrelated to its query.
+func resourceLabelAllowlist(c *Case) resourceAllowlist {
+	body, ok := c.Section("resource_labels")
+	if !ok {
+		return nil
+	}
+	allow := resourceAllowlist{}
+	for _, line := range strings.Split(body, "\n") {
+		if key := strings.TrimSpace(line); key != "" {
+			allow[key] = true
 		}
 	}
-	out := make(map[string]string, len(attrs)+1)
+	return allow
+}
+
+// resourceAttributesProjection / serviceNameProjection select a column the
+// seed may not have declared.
+//
+// The corpus's seeds are minimal — each declares only the columns its own
+// query needs — so a fixture whose gauge table is (MetricName, Attributes,
+// TimeUnix, Value) has no ResourceAttributes and no ServiceName to read.
+// Substituting the empty literal keeps one reader able to serve every
+// seed, and an absent column and an empty one mean the same thing to the
+// promotion below.
+func resourceAttributesProjection(seedCols []string) string {
+	if !hasColumn(seedCols, colResourceAttributes) {
+		return "'{}'"
+	}
+	return "toJSONString(" + colResourceAttributes + ")"
+}
+
+func serviceNameProjection(seedCols []string) string {
+	if !hasColumn(seedCols, colServiceName) {
+		return "''"
+	}
+	return "toString(" + colServiceName + ")"
+}
+
+func hasColumn(cols []string, want string) bool {
+	for _, col := range cols {
+		if strings.EqualFold(col, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeLabelName rewrites an OTel key into the Prometheus label name it
+// is exposed as: every character outside [a-zA-Z0-9_] becomes '_', so
+// `k8s.namespace.name` is addressable as `k8s_namespace_name`.
+func sanitizeLabelName(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// labelsFromSeededRow builds the reference-engine label set for one seeded
+// row: the resource labels, overlaid by the metric attributes, plus
+// service_name and __name__.
+//
+// # Why the translator has to do this at all
+//
+// A series' IDENTITY is a data-model fact, not a query-semantics one. OTel
+// spreads a metric's labels across three columns — Attributes,
+// ResourceAttributes and the dedicated ServiceName — while Prometheus has
+// one flat label set and no notion of a resource. Something has to map
+// between them, and both sides must reach the same answer or there is no
+// series to align and every comparison degenerates into "the two engines
+// returned different series".
+//
+// Reading only Attributes, as this did before, was not a neutral choice:
+// it meant the reference engine could not see the labels cerberus promotes
+// from the other two columns, so `sum by (service_name) (...)` grouped
+// three ways on cerberus's side and one way on the reference's. That is
+// not a disagreement about the query — it is the oracle being shown
+// different data.
+//
+// # What this does and does not check
+//
+// The rule below is written out here rather than imported, because the
+// oracle side may not link internal/schema. It is an independent
+// expression of the same documented mapping, not a call into cerberus's,
+// so a cerberus lowering that DEVIATES from that mapping — stops promoting
+// ServiceName, sanitizes a key differently, resolves a collision the other
+// way — makes the two label sets disagree and fails here.
+//
+// What no amount of independence can catch is a misconception SHARED by
+// both: if the documented mapping is itself wrong, both sides implement
+// the same wrong thing and agree. That axis belongs to the live
+// compatibility harness, which compares against a real Prometheus fed by
+// the real exporter rather than against a reading of the same spec.
+func labelsFromSeededRow(
+	metricName, attrsJSON, resAttrsJSON, serviceName string, allow resourceAllowlist,
+) (map[string]string, error) {
+	resAttrs, err := decodeAttributes(resAttrsJSON)
+	if err != nil {
+		return nil, err
+	}
+	attrs, err := decodeAttributes(attrsJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]string, len(resAttrs)+len(attrs)+2)
+	// Resource labels first: the metric's own attributes win a collision,
+	// and service_name wins over both.
+	for k, v := range resAttrs {
+		if k == serviceNameOTelKey || k == serviceNameLabel {
+			continue
+		}
+		if allow != nil && !allow[k] {
+			continue
+		}
+		out[sanitizeLabelName(k)] = v
+	}
 	for k, v := range attrs {
-		out[k] = v
+		out[sanitizeLabelName(k)] = v
+	}
+	if serviceName != "" {
+		out[serviceNameLabel] = serviceName
 	}
 	if metricName != "" {
 		out[promNameLabel] = metricName
@@ -396,20 +760,90 @@ func labelsFromAttributesJSON(metricName, attrsJSON string) (map[string]string, 
 	return out, nil
 }
 
+func decodeAttributes(attrsJSON string) (map[string]string, error) {
+	attrs := map[string]string{}
+	if trimmed := strings.TrimSpace(attrsJSON); trimmed != "" && trimmed != "{}" {
+		if err := json.Unmarshal([]byte(trimmed), &attrs); err != nil {
+			return nil, fmt.Errorf("decode attributes %q: %w", attrsJSON, err)
+		}
+	}
+	return attrs, nil
+}
+
 // promNameLabel is Prometheus's metric-name label.
 const promNameLabel = "__name__"
 
-// expectedRowNameIdx / expectedRowAttrsIdx / expectedRowTimeIdx /
-// expectedRowValueIdx are the positions of the four canonical Sample
-// columns inside an `expected_rows:` row. The projection order is fixed by
-// the Sample contract (MetricName, Attributes, TimeUnix, Value).
+// The column names cerberus projects for each field of a Sample. They are
+// the emitter's own aliases, so locating a field by name rather than by
+// position is reading the projection's own labelling rather than assuming
+// one.
 const (
-	expectedRowNameIdx  = 0
-	expectedRowAttrsIdx = 1
-	expectedRowTimeIdx  = 2
-	expectedRowValueIdx = 3
-	expectedRowArity    = 4
+	colMetricName = "MetricName"
+	colAttributes = "Attributes"
+	colTimeUnix   = "TimeUnix"
+	colValue      = "Value"
 )
+
+// sampleColumns is where each field of a Sample sits inside one
+// `expected_rows:` row, or -1 when the projection does not carry it.
+//
+// # Why this is resolved by NAME and not by position
+//
+// The corpus projects five distinct column layouts, not one. The canonical
+// `(MetricName, Attributes, TimeUnix, Value)` covers most fixtures, but an
+// instant aggregation drops the two columns its result has no use for and
+// projects `(Attributes, Value)`, and a subquery interposes its own
+// `anchor_ts` between them. Pinning field positions therefore excluded
+// every aggregation and every subquery from the parity layer — over a
+// hundred fixtures — for a reason that had nothing to do with whether
+// their answer could be checked, since a label set and a value is all the
+// comparison needs.
+//
+// Resolving by name also fails LOUDLY on a projection this layer genuinely
+// cannot read: a metadata catalog query projects a single `value` column
+// that is a label value, not a sample, and no positional rule
+// distinguishes that from a one-column sample projection.
+type sampleColumns struct {
+	name  int
+	attrs int
+	ts    int
+	value int
+}
+
+// locateSampleColumns maps a projection's column names onto the Sample
+// fields the comparison needs.
+//
+// Attributes and Value are required: without a label set there is no
+// series identity to align the two answers on, and without a value there
+// is nothing to compare. MetricName and TimeUnix are optional — a function
+// that drops `__name__` projects no MetricName, and an instant query's
+// timestamps do not participate in the comparison at all (see
+// [comparesTimestamps]). Any other column, `anchor_ts` among them, is a
+// scaffolding column of the emitted query rather than a field of the
+// answer, and is ignored.
+func locateSampleColumns(cols []string) (sampleColumns, error) {
+	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1}
+	for i, col := range cols {
+		switch col {
+		case colMetricName:
+			sc.name = i
+		case colAttributes:
+			sc.attrs = i
+		case colTimeUnix:
+			sc.ts = i
+		case colValue:
+			sc.value = i
+		}
+	}
+	if sc.attrs < 0 || sc.value < 0 {
+		return sc, fmt.Errorf(
+			"projection (%s) carries no %s and/or no %s column, so it is not a Sample-shaped "+
+				"answer; this fixture's result cannot be parity-checked at the row layer",
+			strings.Join(cols, ", "), colAttributes, colValue,
+		)
+	}
+	return sc, nil
+}
 
 // referenceShapeOfExpectedRows converts cerberus's `expected_rows:` into
 // the same flat shape the oracle returns, so the two can be compared
@@ -419,29 +853,33 @@ const (
 // whose projection is not the canonical four-column Sample shape cannot be
 // parity-checked at this layer, and silently comparing nothing would be
 // the hollow green this mechanism exists to prevent.
-func referenceShapeOfExpectedRows(rt *RoundTripSections) ([]referenceSample, error) {
+func referenceShapeOfExpectedRows(rt *RoundTripSections, sc sampleColumns) ([]referenceSample, error) {
 	out := make([]referenceSample, 0, len(rt.ExpectedRows))
 	for i, row := range rt.ExpectedRows {
-		if len(row) != expectedRowArity {
+		if got, want := len(row), sc.arity(); got < want {
 			return nil, fmt.Errorf(
-				"expected_rows[%d] has %d column(s), not the canonical Sample shape "+
-					"(MetricName, Attributes, TimeUnix, Value); this fixture's projection cannot "+
-					"be parity-checked at the row layer", i, len(row),
+				"expected_rows[%d] has %d column(s), too few for the projection this fixture "+
+					"emits, whose Sample fields reach column %d", i, got, want,
 			)
 		}
-		name, err := rowString(row[expectedRowNameIdx], i, "MetricName")
+		var name string
+		var err error
+		if sc.name >= 0 {
+			if name, err = rowString(row[sc.name], i, colMetricName); err != nil {
+				return nil, err
+			}
+		}
+		attrs, err := rowAttrs(row[sc.attrs], i)
 		if err != nil {
 			return nil, err
 		}
-		attrs, err := rowAttrs(row[expectedRowAttrsIdx], i)
-		if err != nil {
-			return nil, err
+		var ts int64
+		if sc.ts >= 0 {
+			if ts, err = rowTimeMillis(row[sc.ts], i); err != nil {
+				return nil, err
+			}
 		}
-		ts, err := rowTimeMillis(row[expectedRowTimeIdx], i)
-		if err != nil {
-			return nil, err
-		}
-		value, err := rowFloat(row[expectedRowValueIdx], i)
+		value, err := rowFloat(row[sc.value], i)
 		if err != nil {
 			return nil, err
 		}

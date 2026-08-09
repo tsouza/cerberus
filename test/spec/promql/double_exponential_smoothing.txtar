@@ -1,5 +1,9 @@
 -- query.promql --
 double_exponential_smoothing(temperature[10m], 0.5, 0.5)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

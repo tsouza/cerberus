@@ -317,6 +317,18 @@ func decodeAttrsJSON(raw string) (map[string]string, error) {
 
 // --- comparison -------------------------------------------------------
 
+// spanRowAttrsIdx / spanRowArity are the position and width of the
+// canonical span shape (SpanName, Attributes, Timestamp, Duration) inside
+// an `expected_rows:` row. Distinct from parity_chdb.go's sampleColumns
+// (which locates the Sample family's MetricName/Attributes/TimeUnix/Value
+// shape dynamically, since that family's projection width varies by
+// metric kind): a TraceQL fixture's row is always this fixed four-column
+// span shape, so no dynamic location is needed here.
+const (
+	spanRowAttrsIdx = 1
+	spanRowArity    = 4
+)
+
 // spanIdentitiesOfExpectedRows reads cerberus's answer out of
 // `expected_rows:` as the set of spans it matched.
 //
@@ -330,14 +342,14 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 	seen := make(map[oracle.Result]bool, len(rt.ExpectedRows))
 
 	for i, row := range rt.ExpectedRows {
-		if len(row) != expectedRowArity {
+		if len(row) != spanRowArity {
 			return nil, fmt.Errorf(
 				"expected_rows[%d] has %d column(s), not the canonical span shape "+
 					"(SpanName, Attributes, Timestamp, Duration); this fixture's projection "+
 					"carries no span identity and cannot be parity-checked", i, len(row),
 			)
 		}
-		attrs, err := rowAttrs(row[expectedRowAttrsIdx], i)
+		attrs, err := rowAttrs(row[spanRowAttrsIdx], i)
 		if err != nil {
 			return nil, err
 		}

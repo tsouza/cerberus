@@ -1,5 +1,9 @@
 -- query.promql --
 increase(http_requests_total[5m] @ 1800)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

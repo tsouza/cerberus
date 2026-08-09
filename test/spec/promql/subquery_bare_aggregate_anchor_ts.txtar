@@ -1,5 +1,9 @@
 -- query.promql --
 max(up)[1m:10s]
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = "Map(String,String)"
 [1] string = "service.name"

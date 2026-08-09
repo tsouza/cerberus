@@ -21,6 +21,10 @@
 
 -- query.promql --
 ts_of_max_over_time(temperature[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

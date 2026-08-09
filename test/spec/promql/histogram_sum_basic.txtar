@@ -1,5 +1,9 @@
 -- query.promql --
 rate(http_server_request_duration_sum[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,
