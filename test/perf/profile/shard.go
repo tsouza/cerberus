@@ -87,6 +87,13 @@ func ShardOf(fixtureID string, count int) int {
 	h := fnv.New32a()
 	// hash.Hash's Write never returns an error (documented on the interface).
 	_, _ = h.Write([]byte(fixtureID))
+	// count > 1 is guarded above; the check is restated here so both gosec
+	// G115 and CodeQL go/incorrect-integer-conversion can prove the uint32
+	// conversion locally, matching the pattern in
+	// internal/api/loki/detected_fields.go.
+	if count <= 0 {
+		return 1
+	}
 	return int(h.Sum32()%uint32(count)) + 1
 }
 
