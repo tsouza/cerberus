@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -295,3 +296,85 @@ var errUnreachableProbe = errTestPlaceholder("simulated probe failure")
 type errTestPlaceholder string
 
 func (e errTestPlaceholder) Error() string { return string(e) }
+
+// TestPreflightRequirementsFromConfig_SignalsMapping (#1949) pins the
+// Head -> Signal translation in isolation from any ClickHouse connection:
+// each of the eight CERBERUS_ENABLED_HEADS subsets yields exactly the
+// matching Signals bits, so a Loki-only split-mode pod's preflight
+// Requirements never asks for the metrics/traces tables it will never
+// ingest, while the full default (all three heads, the zero-config case)
+// keeps requiring all three — preserving every deployment's behaviour from
+// before this field existed.
+func TestPreflightRequirementsFromConfig_SignalsMapping(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		heads config.EnabledHeads
+		want  preflight.Signals
+	}{
+		{
+			"all three heads (the default)",
+			config.EnabledHeads{config.HeadProm: {}, config.HeadLoki: {}, config.HeadTempo: {}},
+			preflight.Signals{Metrics: true, Logs: true, Traces: true},
+		},
+		{
+			"loki-only split-mode pod",
+			config.EnabledHeads{config.HeadLoki: {}},
+			preflight.Signals{Metrics: false, Logs: true, Traces: false},
+		},
+		{
+			"prom-only split-mode pod",
+			config.EnabledHeads{config.HeadProm: {}},
+			preflight.Signals{Metrics: true, Logs: false, Traces: false},
+		},
+		{
+			"tempo-only split-mode pod",
+			config.EnabledHeads{config.HeadTempo: {}},
+			preflight.Signals{Metrics: false, Logs: false, Traces: true},
+		},
+		{
+			"logs + traces, no metrics",
+			config.EnabledHeads{config.HeadLoki: {}, config.HeadTempo: {}},
+			preflight.Signals{Metrics: false, Logs: true, Traces: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Config{EnabledHeads: tc.heads}
+			got := preflightRequirementsFromConfig(cfg).Signals
+			if got != tc.want {
+				t.Errorf("Signals = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPreflightRequirementsFromConfig_ThreadsSchemaAndDatabase pins that the
+// translation carries the resolved database + schema shapes through
+// verbatim (the Signals mapping is the new #1949 behaviour; the rest must
+// stay byte-identical to what runRequirementsCheck built inline before the
+// extraction).
+func TestPreflightRequirementsFromConfig_ThreadsSchemaAndDatabase(t *testing.T) {
+	t.Parallel()
+	m := configuredMetrics()
+	cfg := config.Config{
+		EnabledHeads:            config.EnabledHeads{config.HeadProm: {}, config.HeadLoki: {}, config.HeadTempo: {}},
+		Schema:                  m,
+		Logs:                    schema.DefaultOTelLogs(),
+		Traces:                  schema.DefaultOTelTraces(),
+		ExperimentalTSGridRange: true,
+	}
+	cfg.ClickHouse.Database = "otel"
+
+	got := preflightRequirementsFromConfig(cfg)
+	if got.Database != "otel" {
+		t.Errorf("Database = %q, want %q", got.Database, "otel")
+	}
+	if !got.NativeRateEnabled {
+		t.Error("NativeRateEnabled = false, want true (mirrors cfg.ExperimentalTSGridRange)")
+	}
+	if got.Metrics.GaugeTable != m.GaugeTable {
+		t.Errorf("Metrics.GaugeTable = %q, want %q", got.Metrics.GaugeTable, m.GaugeTable)
+	}
+}
