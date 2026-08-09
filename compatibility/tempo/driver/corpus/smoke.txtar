@@ -307,6 +307,19 @@ search
 # endpoint required); they're listed as a separate category because
 # the wire shape is the same SearchResponse envelope but the row
 # semantics differ (group-by-trace vs per-span).
+#
+# Every case here compares two answers, so both backends have to
+# produce one. `max(duration) - min(duration) >= 0` does not qualify:
+# cerberus lowers it, but reference Tempo's validator admits exactly
+# one scalar-filter LHS shape (`pkg/traceql/ast_validate.go:183-187`,
+# `case Aggregate:` and nothing else) and returns 400 for arithmetic.
+# This corpus grades a case one of two ways — a body diff, which
+# presumes both sides answered 2xx, or `-- expect_status --`, which
+# corpus.go restricts to 4xx/5xx on both sides — so the pairing
+# (tempo 400, cerberus 200) is not expressible, and a case asserting
+# it grades ARRIVED-FAILING on every run no matter how correct
+# cerberus is. Issue #1984 tracks gating that super-set where the
+# claim can actually be checked in both directions.
 
 -- name --
 count_spans_per_trace
