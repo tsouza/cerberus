@@ -175,6 +175,16 @@ func TestLower(t *testing.T) {
 		// See test/spec/parity.go for why the fixture stores the parity
 		// CONTRACT and not the parity ANSWER.
 		parityStart, parityEnd, parityStep := instantEval, instantEval, time.Duration(0)
+		if strings.Contains(query, "@ start()") || strings.Contains(query, "@ end()") {
+			// These fixtures lower with the fixed [start, end] window
+			// above, not with instantEval, because that is the only way
+			// `start()` and `end()` resolve to distinguishable instants.
+			// Handing the reference engine instantEval instead would ask
+			// it a different question than the one cerberus was lowered
+			// for, and every such fixture would "disagree" for a reason
+			// that has nothing to do with its query.
+			parityStart, parityEnd = start, end
+		}
 		if rs, ok := c.Section("range_step"); ok {
 			d, perr := time.ParseDuration(strings.TrimSpace(rs))
 			if perr != nil {

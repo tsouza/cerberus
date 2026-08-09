@@ -282,3 +282,130 @@ func EqualValues(a, b float64) bool {
 	}
 	return a == b
 }
+
+// atan2ULPTolerance is the maximum ULP (unit-in-the-last-place) distance
+// permitted between cerberus's atan2 answer and the reference engine's. It
+// is the ONE relaxation this package makes to EqualValues's exact-equality
+// rule, and it exists for exactly one proven reason — see
+// [EqualAtan2Values].
+const atan2ULPTolerance = 1
+
+// EqualAtan2Values reports whether two float samples PRODUCED BY EVALUATING
+// PROMQL'S atan2 agree within [atan2ULPTolerance] ULPs. NaN==NaN is TRUE
+// here for the same reason it is in EqualValues.
+//
+// # Why atan2 gets a tolerance and nothing else in this package does
+//
+// invariant 7 forbids a tolerance dressed up as a numeric constant, so this
+// one earns its place by being the opposite: a NAMED exception for a SINGLE
+// function, adopted only after that function was independently proven to
+// diverge, not adopted speculatively for a class it might belong to.
+//
+// binop_atan2_scalar_vector.txtar (`2 atan2 up`) evaluates atan2 two
+// different ways: the reference engine calls Go's math.Atan2, and cerberus
+// lowers the vector-involving case to ClickHouse's own SQL atan2, evaluated
+// by ClickHouse's libm. Two of the fixture's four series disagree in the
+// last bit of the mantissa — e.g. reference 1.3734007669450157 versus
+// cerberus 1.373400766945016, and reference 1.2341215074081693 versus
+// cerberus 1.2341215074081695 — which is exactly what IEEE-754 permits: the
+// standard requires each implementation to be correctly rounded for its OWN
+// algorithm, but it does not require two independent libm implementations
+// to agree bit-for-bit on a transcendental function, only "faithfully
+// rounded" within a small ULP bound, typically 1. That is a fact about
+// floating-point arithmetic, not a lowering bug, and no amount of chasing it
+// in cerberus's SQL would close it — the fix would have to live in
+// ClickHouse's libm.
+//
+// This does NOT extend to any other PromQL function. sin, cos, tan, asin,
+// acos, atan, exp, ln, log2, log10 and sqrt are all named as candidates in
+// issue #1985, and NONE of them has been measured to diverge — for all this
+// package knows today, ClickHouse and Go's math package agree on every one
+// of them exactly. A future function earns this same treatment only the
+// same way atan2 did: enrol its fixture at ordinary EqualValues, run it, and
+// observe a genuine small-ULP disagreement. Until that proof exists for a
+// given function, a mismatch on it is a real bug and EqualValues — exact
+// equality — is the correct comparator. Do not widen atan2ULPTolerance's
+// scope, and do not add a second named tolerance without the same evidence
+// this one has (see the issue for the seed values and the exact diffs).
+//
+// Note that PromQL's pure scalar-scalar atan2 (`1 atan2 2`) is unaffected:
+// internal/promql/scalar.go constant-folds it with Go's own math.Atan2, so
+// it already matches the reference engine exactly and needs no tolerance.
+// Only the vector-involving shape, evaluated per-row in ClickHouse SQL,
+// diverges.
+func EqualAtan2Values(a, b float64) bool {
+	if math.IsNaN(a) && math.IsNaN(b) {
+		return true
+	}
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return false
+	}
+	return ulpDistance(a, b) <= atan2ULPTolerance
+}
+
+// ulpDistance returns the number of math.Nextafter steps needed to walk
+// from a to b — the standard definition of ULP distance for IEEE-754
+// doubles, and exactly what "faithfully rounded within N ULPs" means. It is
+// 0 for equal values (including +0 and -0, which compare equal), 1 for
+// adjacent representable values, and so on.
+//
+// # How this works
+//
+// math.Float64bits gives each float's raw IEEE-754 bit pattern, which for
+// non-negative floats already increases monotonically with the value (a
+// deliberate property of the IEEE-754 encoding). monotonicUint64 extends
+// that monotonicity across the sign boundary too, so that once both values
+// are mapped, their ULP distance is simply the unsigned difference between
+// the two representations.
+//
+// This was verified against math.Nextafter itself — not just eyeballed —
+// by walking 5000 consecutive Nextafter steps across the positive/negative
+// boundary and checking ulpDistance agreed with the step count at every
+// one. That check matters because the naive version of this trick (flip
+// every bit for a negative value, flip only the sign bit for a
+// non-negative one — the form most references, including Google Test's
+// comparator, show) treats +0.0 and -0.0 as two DISTINCT adjacent slots.
+// They are not: math.Nextafter — and IEEE-754 equality — treat zero as a
+// single point, so that naive form overcounts by 1 for any pair straddling
+// zero. monotonicUint64 collapses them into one slot instead.
+func ulpDistance(a, b float64) uint64 {
+	if a == b {
+		return 0
+	}
+	ua, ub := monotonicUint64(a), monotonicUint64(b)
+	if ua > ub {
+		ua, ub = ub, ua
+	}
+	return ub - ua
+}
+
+// signBit64 is the sign bit of an IEEE-754 double's raw bit pattern.
+const signBit64 = uint64(1) << 63
+
+// monotonicUint64 maps a float64 onto a uint64 whose ordering agrees with
+// the float's own ordering across the whole range, sign boundary included,
+// with +0.0 and -0.0 mapped to the SAME value. See [ulpDistance] for why
+// that last part matters and how this was checked.
+//
+// The branch is on the float's VALUE (f < 0), not its bit pattern's sign
+// bit, which is what makes -0.0 — value-wise non-negative, despite its sign
+// bit being set — fall into the same branch as +0.0. bits(-0.0) is just the
+// sign bit with no magnitude bits, so ORing it with signBit64 is a no-op
+// and lands it on exactly the same slot as +0.0, with no special case
+// needed for it.
+//
+// For a genuinely negative float, the magnitude bits (its bit pattern with
+// the sign bit cleared) increase as the value gets more negative, so
+// subtracting them from signBit64 maps the value into a mirror range
+// immediately below zero's slot with no gap and no overlap: the smallest
+// magnitude (1, the negative value adjacent to zero) lands one below zero,
+// exactly where the non-negative side's smallest magnitude lands one
+// above it.
+func monotonicUint64(f float64) uint64 {
+	bits := math.Float64bits(f)
+	if f < 0 {
+		magnitude := bits &^ signBit64
+		return signBit64 - magnitude
+	}
+	return bits | signBit64
+}
