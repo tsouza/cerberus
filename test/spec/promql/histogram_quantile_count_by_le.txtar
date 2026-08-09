@@ -1,5 +1,9 @@
 -- query.promql --
 histogram_quantile(0.5, count by(le) (rate(http_server_request_duration_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String,

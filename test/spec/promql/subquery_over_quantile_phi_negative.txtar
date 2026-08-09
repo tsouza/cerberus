@@ -7,6 +7,10 @@
 # subquery_over_quantile.txtar but with an out-of-range phi.
 -- query.promql --
 max_over_time(quantile by(job)(-0.5, rate(http_requests_total[1m]))[1h:30s])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

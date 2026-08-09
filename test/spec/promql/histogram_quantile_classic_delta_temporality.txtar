@@ -23,6 +23,10 @@
 # comparison point.
 -- query.promql --
 histogram_quantile(0.5, rate(http_latency_bucket[1m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     AggregationTemporality Int32,

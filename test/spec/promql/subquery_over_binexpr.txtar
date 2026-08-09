@@ -1,5 +1,9 @@
 -- query.promql --
 max_over_time((up - 0.5 > 0)[1m:30s])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

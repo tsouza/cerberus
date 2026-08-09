@@ -6,6 +6,10 @@
 # rather than assuming argument 0.
 -- query.promql --
 max_over_time(quantile_over_time(0.9, http_requests_total[5m])[30m:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

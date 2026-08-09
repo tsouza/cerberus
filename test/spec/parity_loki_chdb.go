@@ -53,12 +53,14 @@ const logsTable = "otel_logs"
 // purpose: an oracle that took its column names from the system under
 // test would agree with it about the layout by construction, and the
 // disjointness gate in test/regression rejects the import outright.
+// colResourceAttributes is shared with the metrics reader in
+// parity_chdb.go, which spells it out for the same reason and is compiled
+// into every lane this file is compiled into.
 const (
-	colTimestamp          = "Timestamp"
-	colBody               = "Body"
-	colResourceAttributes = "ResourceAttributes"
-	colLogAttributes      = "LogAttributes"
-	colSeverityText       = "SeverityText"
+	colTimestamp     = "Timestamp"
+	colBody          = "Body"
+	colLogAttributes = "LogAttributes"
+	colSeverityText  = "SeverityText"
 )
 
 // evaluateLokiParity answers q with the real upstream Loki engine over

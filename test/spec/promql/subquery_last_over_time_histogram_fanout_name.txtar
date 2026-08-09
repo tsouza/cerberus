@@ -20,6 +20,10 @@
 # wrong, and the expected rows pin BOTH the series count and the values.
 -- query.promql --
 last_over_time({__name__=~"http_req_duration.*"}[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

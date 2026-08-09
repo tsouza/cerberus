@@ -5,6 +5,10 @@
 # SQL, so an out-of-domain factor answers NaN rather than a row.
 -- query.promql --
 double_exponential_smoothing(rate(http_requests_total[5m])[1h:5m], scalar(sf_k), scalar(tf_k))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

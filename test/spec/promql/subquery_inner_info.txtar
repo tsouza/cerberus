@@ -10,6 +10,10 @@
 # not just the outer reduction.
 -- query.promql --
 max_over_time(info(up)[10m:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

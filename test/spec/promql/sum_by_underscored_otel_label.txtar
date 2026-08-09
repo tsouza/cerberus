@@ -14,6 +14,10 @@
 
 -- query.promql --
 sum by (cerberus_ql) (cerberus_queries_total)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

@@ -29,6 +29,10 @@
 
 -- query.promql --
 rate(cerberus_queries_total[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- experimental_ts_grid_range --

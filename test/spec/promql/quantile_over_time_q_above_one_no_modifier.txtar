@@ -7,6 +7,10 @@
 # division `(1.0/0)` so the parser never sees a non-finite identifier.
 -- query.promql --
 quantile_over_time(1.5, latency_ms[1s])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
