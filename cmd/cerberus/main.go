@@ -1377,6 +1377,33 @@ const (
 //
 // When the check is disabled, both gates are bypassed (one log line) and a
 // nil SchemaPresentFunc is returned — readiness does not gate on the schema.
+// preflightRequirementsFromConfig translates the resolved config into
+// preflight.Requirements, including the enabled-head -> Signal mapping
+// (#1949): a Head maps 1:1 onto a Signal (prom -> Metrics, loki -> Logs,
+// tempo -> Traces), so a deployment that narrows CERBERUS_ENABLED_HEADS
+// (e.g. a Loki-only split-mode pod) never gates readiness — or spends
+// boot-time introspection — on a signal's tables it will never ingest. It
+// also carries the storage-tiering config (CERBERUS_SCHEMA_STORAGE_POLICY /
+// CERBERUS_SCHEMA_TIER_VOLUME) gate 3 checks for an accepted-but-inert
+// multi-volume policy. Pure function of cfg so it is unit-testable without a
+// real ClickHouse client; runRequirementsCheck is the only caller.
+func preflightRequirementsFromConfig(cfg config.Config) preflight.Requirements {
+	return preflight.Requirements{
+		Database:          cfg.ClickHouse.Database,
+		NativeRateEnabled: cfg.ExperimentalTSGridRange,
+		Metrics:           cfg.Schema,
+		Logs:              cfg.Logs,
+		Traces:            cfg.Traces,
+		StoragePolicy:     cfg.SchemaProvisioning.StoragePolicy,
+		TierVolume:        cfg.SchemaProvisioning.TierVolume,
+		Signals: preflight.Signals{
+			Metrics: cfg.HeadEnabled(config.HeadProm),
+			Logs:    cfg.HeadEnabled(config.HeadLoki),
+			Traces:  cfg.HeadEnabled(config.HeadTempo),
+		},
+	}
+}
+
 func runRequirementsCheck(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -1387,15 +1414,7 @@ func runRequirementsCheck(
 		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
 		return nil, nil
 	}
-	req := preflight.Requirements{
-		Database:          cfg.ClickHouse.Database,
-		NativeRateEnabled: cfg.ExperimentalTSGridRange,
-		Metrics:           cfg.Schema,
-		Logs:              cfg.Logs,
-		Traces:            cfg.Traces,
-		StoragePolicy:     cfg.SchemaProvisioning.StoragePolicy,
-		TierVolume:        cfg.SchemaProvisioning.TierVolume,
-	}
+	req := preflightRequirementsFromConfig(cfg)
 	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
 	// Logged BEFORE the fatal check: a warning describes the server cerberus is
 	// pointed at, and an operator debugging a failed boot needs it just as much

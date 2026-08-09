@@ -766,9 +766,10 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // grammar forbids in identifier position; without the rewrite, panels
 // doing `sum by (service_name)` silently produce empty matrices.
 func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
-	sql := h.unionLabelNamesSQL(start, end, nowAnchored)
 	names, err := timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql)
+		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any) {
+			return h.unionLabelNamesSQL(tables, start, end, nowAnchored), nil
+		})
 	})
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -794,7 +795,9 @@ func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, now
 // the /labels listing alongside the Attributes keys + __name__.
 func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.Time) ([]string, error) {
 	resNames, err := timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, h.unionResourceLabelNamesSQL(start, end))
+		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any) {
+			return h.unionResourceLabelNamesSQL(tables, start, end), nil
+		})
 	})
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -823,9 +826,10 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end 
 	if name == model.MetricNameLabel {
 		return h.fetchMetricNameValues(ctx, start, end, nowAnchored)
 	}
-	sql, args := h.unionLabelValuesSQL(name, start, end, nowAnchored)
 	values, err := timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql, args...)
+		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any) {
+			return h.unionLabelValuesSQL(tables, name, start, end, nowAnchored)
+		})
 	})
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -871,9 +875,10 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 	bareTables, histogramTable := h.catalogNameTables()
 	var values []string
 	if len(bareTables) > 0 {
-		sql := h.metricNamesSQL(bareTables, start, end, nowAnchored)
 		bare, err := timeCH(ctx, func() ([]string, error) {
-			return h.Client.QueryStrings(ctx, sql)
+			return h.queryStringsDegradingUnknownTable(ctx, bareTables, func(tables []string) (string, []any) {
+				return h.metricNamesSQL(tables, start, end, nowAnchored), nil
+			})
 		})
 		if err != nil {
 			return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -928,9 +933,10 @@ func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, 
 	if histogramTable == "" {
 		return nil, nil
 	}
-	sql := h.metricNamesSQL([]string{histogramTable}, start, end, nowAnchored)
 	names, err := timeCH(ctx, func() ([]string, error) {
-		return h.Client.QueryStrings(ctx, sql)
+		return h.queryStringsDegradingUnknownTable(ctx, []string{histogramTable}, func(tables []string) (string, []any) {
+			return h.metricNamesSQL(tables, start, end, nowAnchored), nil
+		})
 	})
 	if err != nil {
 		return nil, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
@@ -1510,15 +1516,17 @@ func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
 	return false
 }
 
-// unionLabelNamesSQL builds a UNION of all metric tables' label keys. In the
+// unionLabelNamesSQL builds a UNION of tables' label keys — one arm per
+// entry in tables, the candidate set the caller passes in (normally
+// h.metricTables(), narrowed to the tables confirmed to exist when a prior
+// attempt hit UNKNOWN_TABLE; see queryStringsDegradingUnknownTable). In the
 // now-anchored case each arm emits the grouped form
 // `arrayJoin(mapKeys(Attributes)) ... GROUP BY MetricName, Attributes HAVING
 // max(TimeUnix) >= start`, so the key fan-out routes onto the proj_series
 // aggregating projection (Attributes is a grouping key, the time bound an
 // aggregate predicate). A user-supplied finite window keeps the exact
 // WHERE-bounded scan.
-func (h *Handler) unionLabelNamesSQL(start, end time.Time, nowAnchored bool) string {
-	tables := h.metricTables()
+func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowAnchored bool) string {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
 	tsCol := h.Schema.TimestampColumn
@@ -1552,8 +1560,7 @@ func (h *Handler) unionLabelNamesSQL(start, end time.Time, nowAnchored bool) str
 // sanitizes + allowlist-filters in Go (cheaper than an N-key SQL IN over
 // every row's map, and it keeps the Attributes union byte-identical so the
 // promote-all default adds no churn to existing fixtures).
-func (h *Handler) unionResourceLabelNamesSQL(start, end time.Time) string {
-	tables := h.metricTables()
+func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Time) string {
 	resCol := h.Schema.ResourceAttributesColumn
 	pred := h.metadataWindowPred(start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
@@ -1691,8 +1698,7 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 // Mirrors the matcher-side `attributeLookup` chain in
 // `internal/promql/lower.go`: both query and listing surfaces now
 // resolve the same Prom-grammar → OTel-key candidates the same way.
-func (h *Handler) unionLabelValuesSQL(name string, start, end time.Time, nowAnchored bool) (string, []any) {
-	tables := h.metricTables()
+func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end time.Time, nowAnchored bool) (string, []any) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
 	tsCol := h.Schema.TimestampColumn
@@ -1792,6 +1798,95 @@ func labelValueCandidates(name string) []string {
 // reads.
 func (h *Handler) metricTables() []string {
 	return h.Schema.ConfiguredMetricTables()
+}
+
+// queryStringsDegradingUnknownTable executes buildSQL(tables) via
+// h.Client.QueryStrings, where tables is the FULL candidate set a metadata
+// UNION would normally read from (e.g. h.metricTables()) — every physical
+// table this surface unions across, whether or not this deployment
+// actually populates all of them. On success it returns the result
+// unchanged: the common case (every candidate exists) pays exactly the one
+// round trip the surface always has.
+//
+// On ClickHouse's UNKNOWN_TABLE rejection (code 60 — a table this
+// deployment never provisioned, most often because it does not ingest
+// that signal, or one dropped externally after boot; see #1949) it
+// re-derives which candidates currently exist via [Handler.existingTables]
+// (one extra system.tables lookup, paid ONLY on this failure path) and
+// retries buildSQL against the narrowed set, so the surviving tables still
+// answer the request instead of the whole UNION failing.
+//
+// An UNKNOWN_TABLE outcome NEVER escapes this function as an error, by
+// design (belt-and-suspenders, #1949): narrowing to zero tables, the
+// existence probe itself failing, narrowing finding nothing to drop (a
+// race between the original rejection and the recheck), or the retried
+// query hitting UNKNOWN_TABLE again (a second table vanishing between the
+// probe and the retry) all degrade to an EMPTY result rather than a 502 —
+// the same answer reference Prometheus gives for a label surface with no
+// data. Only a non-UNKNOWN_TABLE failure (a real ClickHouse error) is
+// returned to the caller.
+//
+// tables is never queried directly if empty (no configured tables at all —
+// an edge no live deployment hits, since the schema resolvers always
+// default every table name, but degrading to "no rows" rather than a
+// zero-arm UNION keeps the surface correct if it ever is).
+func (h *Handler) queryStringsDegradingUnknownTable(
+	ctx context.Context,
+	tables []string,
+	buildSQL func([]string) (string, []any),
+) ([]string, error) {
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	sql, args := buildSQL(tables)
+	out, err := h.Client.QueryStrings(ctx, sql, args...)
+	if err == nil {
+		return out, nil
+	}
+	if !chclient.IsUnknownTable(err) {
+		return nil, err
+	}
+	existing, probeErr := h.existingTables(ctx, tables)
+	if probeErr != nil || len(existing) == 0 || len(existing) == len(tables) {
+		// A probe failure, nothing left to narrow to, or nothing narrowed
+		// away (a race with the recheck) — in every case the surface has
+		// no reliable data to answer from, so degrade to empty rather than
+		// surface the rejection as a 502.
+		return nil, nil
+	}
+	sql, args = buildSQL(existing)
+	out, err = h.Client.QueryStrings(ctx, sql, args...)
+	if err == nil {
+		return out, nil
+	}
+	if chclient.IsUnknownTable(err) {
+		return nil, nil
+	}
+	return nil, err
+}
+
+// existingTables narrows candidates to the ones currently present in
+// ClickHouse, via one system.tables lookup keyed by name and the
+// connection's own default database (currentDatabase() — the same
+// database context every metadata query already reads bare table names
+// against). It is called only as the recovery step after an UNKNOWN_TABLE
+// rejection (see queryStringsDegradingUnknownTable), never on the metadata
+// happy path, so a fully-provisioned deployment never pays this extra
+// round trip.
+func (h *Handler) existingTables(ctx context.Context, candidates []string) ([]string, error) {
+	lits := make([]chsql.Frag, 0, len(candidates))
+	for _, t := range candidates {
+		lits = append(lits, chsql.Lit(t))
+	}
+	sql, args := chsql.NewQuery().
+		Select(chsql.Col("name")).
+		From(chsql.Qual("system", "tables")).
+		Where(chsql.And(
+			chsql.Eq(chsql.Col("database"), chsql.Call("currentDatabase")),
+			chsql.In(chsql.Col("name"), lits...),
+		)).
+		Build()
+	return h.Client.QueryStrings(ctx, sql, args...)
 }
 
 // arrayJoinMapKeysFrag emits `arrayJoin(mapKeys(<col>))` — the CH idiom

@@ -505,6 +505,88 @@ func TestRunAllTablesAbsentTransient(t *testing.T) {
 	}
 }
 
+// TestRunSignalsScopeRequiredTables (#1949): a Loki-only deployment
+// (Signals{Logs: true}, metrics + traces disabled) reaches
+// SchemaProvisioned() == true with NOTHING but the logs table present —
+// the metric and trace tables are never probed, so their absence (they
+// are not even in Columns here) never blocks readiness. This is the
+// single-signal deployment the issue names: before the fix, a Loki-only
+// process gated /readyz on otel_metrics_*/otel_traces existing, which a
+// logs-only ingestion pipeline never provisions.
+func TestRunSignalsScopeRequiredTables(t *testing.T) {
+	t.Parallel()
+	l := schema.DefaultOTelLogs()
+	cols := map[string][]chclient.NameTypePair{
+		l.LogsTable: healthyColumns()[l.LogsTable],
+	}
+	req := defaultReq()
+	req.Signals = Signals{Logs: true}
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, req)
+	if res.Fatal != nil {
+		t.Fatalf("loki-only preflight must not fail, got fatal: %v", res.Fatal)
+	}
+	if len(res.AbsentTables) != 0 {
+		t.Errorf("AbsentTables = %v, want empty (metrics/traces tables must never be probed when their signal is disabled)", res.AbsentTables)
+	}
+	if !res.SchemaProvisioned() {
+		t.Error("SchemaProvisioned() = false, want true (only the enabled signal's table need exist)")
+	}
+}
+
+// TestRunSignalsZeroValueRequiresAllThree: the zero value of
+// Requirements.Signals (every pre-#1949 caller, including every other test
+// in this file via defaultReq()) must keep validating all three signals —
+// see Requirements.Signals's own doc for why an unset Signals defaults to
+// "everything required" rather than "nothing required".
+func TestRunSignalsZeroValueRequiresAllThree(t *testing.T) {
+	t.Parallel()
+	l := schema.DefaultOTelLogs()
+	cols := map[string][]chclient.NameTypePair{
+		l.LogsTable: healthyColumns()[l.LogsTable],
+	}
+	req := defaultReq() // Signals left at the zero value.
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, req)
+	if res.SchemaProvisioned() {
+		t.Fatal("SchemaProvisioned() = true with only the logs table present; want false (metrics + traces still required by default)")
+	}
+	if len(res.AbsentTables) == 0 {
+		t.Error("AbsentTables is empty; want the metric + trace tables reported absent")
+	}
+}
+
+// TestRunSignalsDisabledMetricsNeverFatalOnExplicitName: even an EXPLICITLY
+// configured (TableOverrides-set) metric table name is never fatal when the
+// metrics signal is disabled — a disabled head is never probed at all, so
+// fatalAbsentMetricTablesErr's caller (cmd/cerberus) never sees it in
+// AbsentTables in the first place. This pins requiredTables' filtering as
+// the single gate cmd/cerberus's stricter explicit-name check sits behind.
+func TestRunSignalsDisabledMetricsNeverFatalOnExplicitName(t *testing.T) {
+	t.Parallel()
+	tr := schema.DefaultOTelTraces()
+	cols := map[string][]chclient.NameTypePair{
+		tr.SpansTable: healthyColumns()[tr.SpansTable],
+	}
+	m := schema.DefaultOTelMetrics()
+	m.TableOverrides.Gauge = true // an operator-typed name, but metrics is disabled
+	req := Requirements{
+		Database: "otel",
+		Metrics:  m,
+		Logs:     schema.DefaultOTelLogs(),
+		Traces:   schema.DefaultOTelTraces(),
+		Signals:  Signals{Traces: true},
+	}
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, req)
+	if res.Fatal != nil {
+		t.Fatalf("disabled-metrics preflight must not fail on an explicit-but-unprobed metric table, got: %v", res.Fatal)
+	}
+	if !res.SchemaProvisioned() {
+		t.Errorf("SchemaProvisioned() = false, want true; AbsentTables=%v", res.AbsentTables)
+	}
+}
+
 // TestRunWrongShapeFatalEvenIfOtherTableAbsent: an EXISTING table with a
 // wrong shape is fatal (never self-heals) even when a different table is
 // merely absent — the fatal bucket wins, the caller exits.

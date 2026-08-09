@@ -1062,6 +1062,19 @@ precise boot-time finding:
   storage-bill problem into an outage. A deployment that configures neither
   knob is not probed at all.
 
+**Scoped to the enabled heads.** Every requirement above is scoped by
+`CERBERUS_ENABLED_HEADS`: a Head maps 1:1 onto a telemetry signal (`prom` →
+metrics, `loki` → logs, `tempo` → traces), and a table's checks — the
+wrong-shape gate, the absent-table wait-and-reprobe, and the explicit-name
+fail-fast — run **only** for the signals this process actually serves. A
+`CERBERUS_ENABLED_HEADS=loki` split-mode pod (see
+[`health.md`](health.md#per-head-readiness)) never validates or waits on
+`otel_metrics_*` / `otel_traces` existing, so `/readyz` goes ready as soon as
+`otel_logs` is provisioned — a logs-only pipeline no longer keeps a
+fully-functional pod out of its Service forever waiting on tables it will
+never ingest. The unset default (`prom,loki,tempo`) preserves the
+all-three-signals behaviour every deployment had before this scoping existed.
+
 The ordering is deliberate: running the preflight **after** auto-create
 means a fresh database where cerberus just created the tables passes the
 schema gate (it would fail against tables that don't exist yet if the order
