@@ -117,12 +117,29 @@ type lateMatTabler interface {
 	LateMatShape() (table string, wide, rowKey []string)
 }
 
+// rangeSeriesOrderer is implemented by a Lang whose route-A SQL wants its
+// rows sorted before a streaming, per-series pivot downstream reads them
+// (the Prom head's matrixFromCursor — see prom.lang.RangeSeriesOrder's doc
+// comment for the full argument, including why this has to be an emit-time,
+// route-A-only hook rather than part of the shared plan Lang.ProjectSamples
+// builds: the solver's slice-invariance registry and chplan.ReanchorRange
+// both have to keep seeing the plan's ORIGINAL shape). Applied only inside
+// emitForHead — route A's own emit call — so a solver-routed shard's SQL
+// (emitted straight from ChsqlEmitter, which never calls emitForHead) never
+// sees it.
+type rangeSeriesOrderer interface {
+	RangeSeriesOrder(plan chplan.Node) chplan.Node
+}
+
 // emitForHead lowers plan to SQL, threading the spans-table scope and the
 // late-materialisation shape onto the emit context for a head that exposes
-// them. Heads without a spans table (PromQL) emit unchanged —
-// RequireSpansScansBounded is a table-scoped no-op for them, and a Lang that
-// doesn't implement lateMatTabler leaves chsql to fall back to its
-// default-OTel-name-keyed static registry (pre-#1703 behaviour, unchanged).
+// them, and applying a route-A-only row-ordering rewrite for a head that
+// wants one (see rangeSeriesOrderer). Heads without a spans table (PromQL)
+// emit unchanged — RequireSpansScansBounded is a table-scoped no-op for
+// them, a Lang that doesn't implement lateMatTabler leaves chsql to fall
+// back to its default-OTel-name-keyed static registry (pre-#1703 behaviour,
+// unchanged), and a Lang that doesn't implement rangeSeriesOrderer emits plan
+// exactly as it was optimized (pre-#1442 behaviour, unchanged).
 func emitForHead(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
@@ -130,6 +147,9 @@ func emitForHead(ctx context.Context, lang Lang, plan chplan.Node) (string, []an
 	if lt, ok := lang.(lateMatTabler); ok {
 		table, wide, rowKey := lt.LateMatShape()
 		ctx = chsql.WithLateMatShape(ctx, table, wide, rowKey)
+	}
+	if ro, ok := lang.(rangeSeriesOrderer); ok {
+		plan = ro.RangeSeriesOrder(plan)
 	}
 	return chsql.Emit(ctx, plan)
 }
