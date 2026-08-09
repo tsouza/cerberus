@@ -20,6 +20,10 @@
 #     merged them into one row carrying whichever value sorted last.
 -- query.promql --
 last_over_time({__name__=~"cpu_temp|gpu_temp"}[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
