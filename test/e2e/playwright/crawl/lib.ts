@@ -859,6 +859,49 @@ export function byCodepoint(a: string, b: string): number {
 }
 
 /**
+ * Fold a batch of {canonical, concrete} candidates down to ONE
+ * concrete representative per canonical — a PURE function of the
+ * candidate SET, never of the order the caller happened to encounter
+ * them in.
+ *
+ * This is the general form of #1873's fix. A PATH-SEGMENT
+ * parameterization (`{field}`, `{service}`, `{label}`, …) folds
+ * several genuinely DISTINCT pages onto one canonical, and the BFS
+ * (crawl.spec.ts) only ever visits ONE of them — `visited.has` skips
+ * every later arrival at dequeue time. Before this function, "the
+ * one" was whichever candidate happened to be first in DOM/harvest
+ * order (a[href] order on the listing page, or control-discovery
+ * order for a sweep-discovered surface) — so a Grafana render-order
+ * change, or simply reversing the visit order, could silently swap
+ * WHICH page's states end up pinned under the shared canonical, with
+ * nothing about the canonical KEY itself moving to explain why.
+ *
+ * The fix is the same doctrine `representativeOption` already applies
+ * to a high-cardinality CONTROL's option set (interactions.ts):
+ * derive the pick from the candidate SET (codepoint order on the
+ * concrete URL) instead of from arrival order. It is safe to apply
+ * uniformly to every collapse, including a QUERY-PARAMETER collapse
+ * (#1855's var-groupBy, var-groupby, metric): there every candidate
+ * canonicalizes identically REGARDLESS of which one folding picks
+ * (the query value that made them distinct is exactly what the
+ * canonical key drops), so a deterministic pick changes nothing about
+ * correctness — it only makes it as reproducible as the path-segment
+ * case, where the choice does matter.
+ */
+export function foldCanonicalCandidates<
+  T extends { canonical: string; concrete: string },
+>(candidates: ReadonlyArray<T>): Map<string, T> {
+  const out = new Map<string, T>();
+  for (const candidate of candidates) {
+    const existing = out.get(candidate.canonical);
+    if (existing === undefined || byCodepoint(candidate.concrete, existing.concrete) < 0) {
+      out.set(candidate.canonical, candidate);
+    }
+  }
+  return out;
+}
+
+/**
  * Render the canonical serialized form of an inventory — sorted by
  * URL, two-space indent, trailing newline — so regeneration is
  * byte-for-byte reproducible (mirrors test/inventory/'s
