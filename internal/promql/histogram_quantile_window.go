@@ -76,6 +76,57 @@ const (
 	paramLadderPos = "j"
 )
 
+// Lambda parameter names hqLet binds the rate/increase fold's shared
+// subexpressions to. Each is read several times by the terms below it, and
+// a bound name is what keeps those reads from re-rendering the whole
+// subexpression — see hqLet. Distinct from every other lambda parameter in
+// this package because these bindings NEST inside those lambdas and a
+// repeated name would shadow the outer one.
+const (
+	paramWindowValues   = "wv"
+	paramWindowOrder    = "wo"
+	paramWindowCounts   = "wcv"
+	paramWindowSorted   = "wso"
+	paramSampledSpan    = "wsi"
+	paramAvgGap         = "wag"
+	paramClampedStart   = "wtc"
+	paramResultCount    = "wrc"
+	paramIncreaseSorted = "wsr"
+)
+
+// hqLet binds `val` to a lambda parameter for the duration of `body`,
+// rendering `arrayMap(<param> -> <body>, array(<val>))[1]` — ClickHouse's
+// spelling of a let-binding, since a one-element array evaluates the body
+// exactly once.
+//
+// It exists because a chplan.Expr tree is a DAG in Go but the emitter
+// renders it as a TREE: every additional READ of a shared node is another
+// full copy of that node's SQL text, and the copies MULTIPLY along the
+// DAG's depth. The rate/increase fold is where that bites — one rung's
+// `order` array feeds the sort, the sample count, the counter-increase
+// numerator and the durationToZero clamp, and the sampled interval it
+// derives feeds five further terms — so `order` rendered 24 times per rung
+// before these bindings and once after. That is not a cosmetic saving:
+// chDB's analysis cost is superlinear in expression size, so the corpus
+// profiler (test/perf's TestCardinalityRatchet) spent minutes per
+// histogram fixture on text that denotes one evaluation.
+//
+// The body may still read enclosing lambda parameters — CH lambdas capture
+// their outer scope, which classicBucketWindowLadderExpr's own nested
+// arrayFilter already relies on.
+func hqLet(param string, val chplan.Expr, body func(ref chplan.Expr) chplan.Expr) chplan.Expr {
+	return &chplan.Subscript{
+		Container: &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{param},
+				Body:   body(&chplan.BareIdent{Name: param}),
+			},
+			&chplan.FuncCall{Name: "array", Args: []chplan.Expr{val}},
+		}},
+		Key: &chplan.LitInt{V: 1},
+	}
+}
+
 // histogramWindowTimeFold reduces ONE bucket's per-row counts down to
 // that series' single value for the bucket. `values` holds the
 // contributing rows' counts at that bucket; `order` holds the same
@@ -180,15 +231,23 @@ func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues, temporali
 	switch fn {
 	case "rate", "increase":
 		return func(values, order chplan.Expr) chplan.Expr {
-			cv := values
-			if countValues != nil {
-				cv = countValues
-			}
-			return &chplan.Binary{
-				Op:    chplan.OpMul,
-				Left:  counterIncreaseFold(values, order, temporality),
-				Right: histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, cv, temporality),
-			}
+			// values and order are this rung's own filtered arrays, and
+			// both the numerator and the extrapolation factor read them
+			// repeatedly. Bind them first so the two terms below share ONE
+			// rendering of each rather than a copy apiece — see hqLet.
+			return hqLet(paramWindowValues, values, func(vals chplan.Expr) chplan.Expr {
+				return hqLet(paramWindowOrder, order, func(ord chplan.Expr) chplan.Expr {
+					cv := vals
+					if countValues != nil {
+						cv = countValues
+					}
+					return &chplan.Binary{
+						Op:    chplan.OpMul,
+						Left:  counterIncreaseFold(vals, ord, temporality),
+						Right: histogramExtrapolationFactorExpr(ord, rangeStart, rangeEnd, cv, temporality),
+					}
+				})
+			})
 		}
 	case "":
 		return latestSampleFold
@@ -270,84 +329,100 @@ const histogramExtrapolationThresholdFactor = 1.1
 // caller's own counter-increase numerator uses, or the clamp would judge
 // the zero-crossing distance against a total the main computation never
 // produces.
+// Every term below is read more than once by the terms after it — the
+// sorted timestamps feed both window edges, the sampled interval feeds
+// five separate places, the threshold-clamped start feeds four — so each
+// is bound with hqLet before use. The nesting order is the dependency
+// order, and the bindings are the ONLY reason this function's rendered
+// size stays proportional to the arithmetic it denotes; unbinding any one
+// of them re-multiplies every read below it (see hqLet).
 func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, countValues, temporality chplan.Expr) chplan.Expr {
-	sortedOrder := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{order}}
-	firstTs := &chplan.Subscript{Container: sortedOrder, Key: &chplan.LitInt{V: 1}}
-	lastTs := &chplan.Subscript{
-		Container: sortedOrder,
-		Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sortedOrder}},
-	}
-	nMinusOne := &chplan.Binary{
-		Op:    chplan.OpSub,
-		Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{order}},
-		Right: &chplan.LitInt{V: 1},
-	}
+	return hqLet(paramWindowCounts, countValues, func(counts chplan.Expr) chplan.Expr {
+		sorted := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{order}}
+		return hqLet(paramWindowSorted, sorted, func(sortedOrder chplan.Expr) chplan.Expr {
+			firstTs := &chplan.Subscript{Container: sortedOrder, Key: &chplan.LitInt{V: 1}}
+			lastTs := &chplan.Subscript{
+				Container: sortedOrder,
+				Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sortedOrder}},
+			}
+			nMinusOne := &chplan.Binary{
+				Op:    chplan.OpSub,
+				Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{order}},
+				Right: &chplan.LitInt{V: 1},
+			}
 
-	sampledInterval := secondsBetweenTsExpr(firstTs, lastTs)
-	avgGap := &chplan.Binary{Op: chplan.OpDiv, Left: sampledInterval, Right: nMinusOne}
-	threshold := &chplan.Binary{
-		Op: chplan.OpMul, Left: &chplan.LitFloat{V: histogramExtrapolationThresholdFactor}, Right: avgGap,
-	}
-	halfAvgGap := &chplan.Binary{Op: chplan.OpDiv, Left: avgGap, Right: &chplan.LitFloat{V: 2}}
+			return hqLet(paramSampledSpan, secondsBetweenTsExpr(firstTs, lastTs), func(sampledInterval chplan.Expr) chplan.Expr {
+				gap := &chplan.Binary{Op: chplan.OpDiv, Left: sampledInterval, Right: nMinusOne}
+				return hqLet(paramAvgGap, gap, func(avgGap chplan.Expr) chplan.Expr {
+					threshold := &chplan.Binary{
+						Op: chplan.OpMul, Left: &chplan.LitFloat{V: histogramExtrapolationThresholdFactor}, Right: avgGap,
+					}
+					halfAvgGap := &chplan.Binary{Op: chplan.OpDiv, Left: avgGap, Right: &chplan.LitFloat{V: 2}}
 
-	clamp := func(raw chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
-			&chplan.Binary{Op: chplan.OpGe, Left: raw, Right: threshold},
-			halfAvgGap, raw,
-		}}
-	}
-	thresholdClampedStart := clamp(secondsBetweenTsExpr(rangeStart, firstTs))
-	durationToEnd := clamp(secondsBetweenTsExpr(lastTs, rangeEnd))
+					clamp := func(raw chplan.Expr) chplan.Expr {
+						return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+							&chplan.Binary{Op: chplan.OpGe, Left: raw, Right: threshold},
+							halfAvgGap, raw,
+						}}
+					}
+					return hqLet(paramClampedStart, clamp(secondsBetweenTsExpr(rangeStart, firstTs)), func(thresholdClampedStart chplan.Expr) chplan.Expr {
+						durationToEnd := clamp(secondsBetweenTsExpr(lastTs, rangeEnd))
 
-	// durationToZero: a counter that rose across the window
-	// (resultCount > 0) could not have been negative firstCount seconds
-	// ago at its own average rate, so the zero-crossing distance caps
-	// durationToStart on top of the threshold clamp. `resultCount <= 0`
-	// (flat or reset-dominated window) leaves durationToStart at its
-	// threshold-clamped value — reference's own fallback
-	// (`durationToZero := durationToStart`) — via the `if` below never
-	// finding a SMALLER value than thresholdClampedStart itself.
-	// firstCount is never negative here (a stored UInt64 total-observation
-	// count), so reference's extra `Floats[0].F >= 0` / `H.Count >= 0`
-	// guard is always true and is not encoded separately.
-	resultCount := counterIncreaseFold(countValues, order, temporality)
-	firstCount := firstInTimeExpr(countValues, order)
-	durationToZero := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
-		&chplan.Binary{Op: chplan.OpGt, Left: resultCount, Right: &chplan.LitInt{V: 0}},
-		&chplan.Binary{
-			Op:    chplan.OpMul,
-			Left:  sampledInterval,
-			Right: &chplan.Binary{Op: chplan.OpDiv, Left: firstCount, Right: resultCount},
-		},
-		thresholdClampedStart,
-	}}
-	durationToStart := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
-		&chplan.Binary{Op: chplan.OpLt, Left: durationToZero, Right: thresholdClampedStart},
-		durationToZero,
-		thresholdClampedStart,
-	}}
+						// durationToZero: a counter that rose across the window
+						// (resultCount > 0) could not have been negative firstCount seconds
+						// ago at its own average rate, so the zero-crossing distance caps
+						// durationToStart on top of the threshold clamp. `resultCount <= 0`
+						// (flat or reset-dominated window) leaves durationToStart at its
+						// threshold-clamped value — reference's own fallback
+						// (`durationToZero := durationToStart`) — via the `if` below never
+						// finding a SMALLER value than thresholdClampedStart itself.
+						// firstCount is never negative here (a stored UInt64 total-observation
+						// count), so reference's extra `Floats[0].F >= 0` / `H.Count >= 0`
+						// guard is always true and is not encoded separately.
+						return hqLet(paramResultCount, counterIncreaseFold(counts, order, temporality), func(resultCount chplan.Expr) chplan.Expr {
+							firstCount := firstInTimeExpr(counts, order)
+							durationToZero := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+								&chplan.Binary{Op: chplan.OpGt, Left: resultCount, Right: &chplan.LitInt{V: 0}},
+								&chplan.Binary{
+									Op:    chplan.OpMul,
+									Left:  sampledInterval,
+									Right: &chplan.Binary{Op: chplan.OpDiv, Left: firstCount, Right: resultCount},
+								},
+								thresholdClampedStart,
+							}}
+							durationToStart := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+								&chplan.Binary{Op: chplan.OpLt, Left: durationToZero, Right: thresholdClampedStart},
+								durationToZero,
+								thresholdClampedStart,
+							}}
 
-	factor := &chplan.Binary{
-		Op: chplan.OpDiv,
-		Left: &chplan.Binary{
-			Op:    chplan.OpAdd,
-			Left:  &chplan.Binary{Op: chplan.OpAdd, Left: sampledInterval, Right: durationToStart},
-			Right: durationToEnd,
-		},
-		Right: sampledInterval,
-	}
-	// A degenerate `order` (fewer than two DISTINCT timestamps — e.g. a
-	// classic-histogram rung a mid-window layout change left under-
-	// reported) collapses sampledInterval to 0, which the division above
-	// leaves undefined. counterIncreaseFold already answers 0 for that
-	// shape (arraySum of an empty consecutive-diff array), so multiplying
-	// by 1 rather than by the undefined factor preserves that fallback
-	// instead of turning it into a NaN that poisons every downstream sum.
-	return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
-		&chplan.Binary{Op: chplan.OpGt, Left: sampledInterval, Right: &chplan.LitInt{V: 0}},
-		factor,
-		&chplan.LitFloat{V: 1},
-	}}
+							factor := &chplan.Binary{
+								Op: chplan.OpDiv,
+								Left: &chplan.Binary{
+									Op:    chplan.OpAdd,
+									Left:  &chplan.Binary{Op: chplan.OpAdd, Left: sampledInterval, Right: durationToStart},
+									Right: durationToEnd,
+								},
+								Right: sampledInterval,
+							}
+							// A degenerate `order` (fewer than two DISTINCT timestamps — e.g. a
+							// classic-histogram rung a mid-window layout change left under-
+							// reported) collapses sampledInterval to 0, which the division above
+							// leaves undefined. counterIncreaseFold already answers 0 for that
+							// shape (arraySum of an empty consecutive-diff array), so multiplying
+							// by 1 rather than by the undefined factor preserves that fallback
+							// instead of turning it into a NaN that poisons every downstream sum.
+							return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+								&chplan.Binary{Op: chplan.OpGt, Left: sampledInterval, Right: &chplan.LitInt{V: 0}},
+								factor,
+								&chplan.LitFloat{V: 1},
+							}}
+						})
+					})
+				})
+			})
+		})
+	})
 }
 
 // secondsBetweenTsExpr renders the signed gap `to - from` between two
@@ -445,55 +520,60 @@ func firstInTimeExpr(values, order chplan.Expr) chplan.Expr {
 // chsql.Frag and so cannot call it directly. Any other temporality
 // reading (CUMULATIVE, or the legacy zero/UNSPECIFIED default, or a nil
 // temporality) keeps the reset-rule sum. See issue #1628.
+// The time-ordered values are read three times below — the two ends of
+// the consecutive-pair map and, on the DELTA branch, the leading sample —
+// so they are bound once with hqLet rather than re-rendered per read.
 func counterIncreaseFold(values, order, temporality chplan.Expr) chplan.Expr {
-	sorted := chplan.Expr(&chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+	inTimeOrder := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramCurrCum, paramRowTime},
 			Body:   &chplan.BareIdent{Name: paramRowTime},
 		},
 		values,
 		order,
-	}})
-	cumulative := chplan.Expr(&chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramPrevCum, paramCurrCum},
-				Body: &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
-					&chplan.Binary{
-						Op:    chplan.OpLt,
-						Left:  &chplan.BareIdent{Name: paramCurrCum},
-						Right: &chplan.BareIdent{Name: paramPrevCum},
-					},
-					&chplan.BareIdent{Name: paramCurrCum},
-					&chplan.Binary{
-						Op:    chplan.OpSub,
-						Left:  &chplan.BareIdent{Name: paramCurrCum},
-						Right: &chplan.BareIdent{Name: paramPrevCum},
-					},
-				}},
-			},
-			&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{sorted}},
-			&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{sorted}},
-		}},
-	}})
-	if temporality == nil {
-		return cumulative
-	}
-	earliest := &chplan.Subscript{Container: sorted, Key: &chplan.LitInt{V: 1}}
-	delta := &chplan.Binary{
-		Op:    chplan.OpSub,
-		Left:  &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}},
-		Right: earliest,
-	}
-	return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
-		&chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  temporality,
-			Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
-		},
-		delta,
-		cumulative,
 	}}
+	return hqLet(paramIncreaseSorted, inTimeOrder, func(sorted chplan.Expr) chplan.Expr {
+		cumulative := chplan.Expr(&chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
+			&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramPrevCum, paramCurrCum},
+					Body: &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+						&chplan.Binary{
+							Op:    chplan.OpLt,
+							Left:  &chplan.BareIdent{Name: paramCurrCum},
+							Right: &chplan.BareIdent{Name: paramPrevCum},
+						},
+						&chplan.BareIdent{Name: paramCurrCum},
+						&chplan.Binary{
+							Op:    chplan.OpSub,
+							Left:  &chplan.BareIdent{Name: paramCurrCum},
+							Right: &chplan.BareIdent{Name: paramPrevCum},
+						},
+					}},
+				},
+				&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{sorted}},
+				&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{sorted}},
+			}},
+		}})
+		if temporality == nil {
+			return cumulative
+		}
+		earliest := &chplan.Subscript{Container: sorted, Key: &chplan.LitInt{V: 1}}
+		delta := &chplan.Binary{
+			Op:    chplan.OpSub,
+			Left:  &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}},
+			Right: earliest,
+		}
+		return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+			&chplan.Binary{
+				Op:    chplan.OpEq,
+				Left:  temporality,
+				Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
+			},
+			delta,
+			cumulative,
+		}}
+	})
 }
 
 // needsTemporalityAgg reports whether windowFn's histogramWindowFold
