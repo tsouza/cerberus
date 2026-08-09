@@ -132,6 +132,7 @@ import {
   collectVisibleAlertBanners,
   diffInventory,
   expandSiblingTabs,
+  foldCanonicalCandidates,
   harvestLinks,
   inventoryPath,
   isSupersededDsQueryFailure,
@@ -147,6 +148,7 @@ import {
   type SurfaceInventory,
 } from './lib.js';
 import {
+  comboboxCardinalityRule,
   discoverControls,
   driveInteraction,
   interactionStateKey,
@@ -1027,6 +1029,137 @@ test.describe('crawl: canonicalization pins', () => {
     expect(grew[0]).toContain('coverage grew');
   });
 
+  test('#1873: the canonical-collapse representative is a function of the candidate SET, not of arrival order', () => {
+    // Four Logs Drilldown field pages all canonicalize to the SAME
+    // {field} surface (see the test above); which one is "the" visit
+    // must not depend on the order the crawler harvested their links
+    // in, or a Grafana render-order change (or simply reversing the
+    // visit order, per the epic's own gate) silently swaps which
+    // page's states end up pinned.
+    const candidates = [
+      { canonical: 'A', concrete: '/field/thread' },
+      { canonical: 'A', concrete: '/field/order_id' },
+      { canonical: 'A', concrete: '/field/customer' },
+      { canonical: 'A', concrete: '/field/response_latency_ms' },
+      { canonical: 'B', concrete: '/field/level' },
+    ];
+    const forward = foldCanonicalCandidates(candidates);
+    const reversed = foldCanonicalCandidates([...candidates].reverse());
+    expect(forward).toEqual(reversed);
+    // The winner is the codepoint-smallest concrete URL — a pure
+    // function of the SET, same doctrine as representativeOption.
+    expect(forward.get('A')?.concrete).toBe('/field/customer');
+    expect(forward.get('B')?.concrete).toBe('/field/level');
+
+    // The gate requirement, made concrete: swap the winning field for
+    // a DIFFERENT one entirely (a "different seed") — the CANONICAL
+    // set folding produces is unaffected; only the chosen concrete
+    // representative moves, which is exactly what "the pin is a
+    // function of the app, not of the data" requires.
+    const differentSeed = [
+      { canonical: 'A', concrete: '/field/zzz_new_column' },
+      { canonical: 'A', concrete: '/field/aaa_new_column' },
+      { canonical: 'B', concrete: '/field/level' },
+    ];
+    expect([...foldCanonicalCandidates(differentSeed).keys()].sort()).toEqual(
+      [...forward.keys()].sort(),
+    );
+
+    // A single-candidate canonical is untouched (no collapse to fold).
+    expect(forward.size).toBe(2);
+  });
+
+  test('#1873: query-parameter collapses fold identically regardless of visit order too', () => {
+    // #1855's var-groupBy collapse is the OTHER member of the
+    // asymmetry the epic names: every candidate already canonicalizes
+    // to the identical string once the query value drops, so folding
+    // is a no-op beyond picking a deterministic concrete URL to
+    // navigate — safe precisely because the thing that made the
+    // candidates distinct is exactly what the canonical key discards.
+    const a = canonicalizeURL(
+      '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version',
+      base,
+      scope,
+    )!;
+    const b = canonicalizeURL(
+      '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.namespace',
+      base,
+      scope,
+    )!;
+    expect(a).toBe(b);
+    const candidates = [
+      { canonical: a, concrete: '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.version' },
+      { canonical: b, concrete: '/a/grafana-exploretraces-app/explore?var-groupBy=resource.service.namespace' },
+    ];
+    expect(foldCanonicalCandidates(candidates)).toEqual(
+      foldCanonicalCandidates([...candidates].reverse()),
+    );
+  });
+
+  test('#1872: a combobox with no declared cardinality rule parameterizes regardless of option count', () => {
+    // The old defect: an UNDECLARED combobox's mode followed the
+    // CURRENT option count against STRUCTURAL_MAX_OPTIONS, so a
+    // data-derived list (dashboard tags, detected field names) pinned
+    // literal seeded values whenever the seed happened to produce
+    // ≤12 of them — real, live rows in the committed compose
+    // inventory (`Tag filter=cerberus (7)`, `group-by-selector-
+    // combobox=cerberus_ql`) despite being unambiguously DATA, not
+    // app structure. An undeclared key must now parameterize no
+    // matter how small the option set is.
+    const combobox = (key: string, options: string[]) => ({
+      kind: 'combobox' as const,
+      key,
+      options,
+      selectedIndex: -1,
+      forcedHighCardinality: false,
+      optionHints: options,
+      controlHint: '',
+      clickHops: 0,
+    });
+    const smallUndeclared = planInteractions(
+      [combobox('select[Tag filter]', ['cerberus (7)', 'dogfood (1)'])],
+      0,
+    );
+    expect(smallUndeclared.map((p) => p.stateValue)).toEqual(['{rep}']);
+    expect(comboboxCardinalityRule('select[Tag filter]')).toBeUndefined();
+
+    // A DECLARED enumerate key still drives every option, however few.
+    const declared = planInteractions(
+      [combobox('select[SortBy direction]', ['Asc', 'Desc'])],
+      0,
+    );
+    expect(declared.map((p) => p.stateValue)).toEqual(['Asc', 'Desc']);
+    expect(comboboxCardinalityRule('select[SortBy direction]')?.mode).toBe(
+      'enumerate',
+    );
+
+    // The disambiguation suffix a duplicate control on one page gets
+    // (assignUniqueKeys) does not escape the declared rule.
+    expect(comboboxCardinalityRule('select[Sort]#1')?.mode).toBe('enumerate');
+  });
+
+  test('#1872: a closed-set rule rejects an option outside its declared values', () => {
+    const combobox = (key: string, options: string[]) => ({
+      kind: 'combobox' as const,
+      key,
+      options,
+      selectedIndex: -1,
+      forcedHighCardinality: false,
+      optionHints: options,
+      controlHint: '',
+      clickHops: 0,
+    });
+    // 'Select match operator' declares the closed 4-symbol matcher set
+    // — a value outside it means either the app gained a real new
+    // operator (pin it deliberately) or the rule is miscategorised.
+    expect(() =>
+      planInteractions(
+        [combobox('select[Select match operator]', ['=', '!=', 'contains'])],
+        0,
+      ),
+    ).toThrow(/outside its declared closed set/);
+  });
+
   test('committed inventory + exclusions files are internally consistent', () => {
     // Live-stack-free meta-checks (the live diff runs at the end of
     // the crawl): the active stack's inventory round-trips
@@ -1287,15 +1420,21 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       // root page only; full expands from every page. Same harvest
       // RULE, fewer expansion states (depth doctrine).
       if (depth === 'full' || entry.canonical === '/') {
-        const canonicals = new Map<string, string>();
-        for (const href of harvested) {
-          const target = canonicalTarget(href, baseURL, stack.scope);
-          if (target === null || visited.has(target.canonical)) continue;
-          if (!canonicals.has(target.canonical)) {
-            canonicals.set(target.canonical, target.concrete);
-          }
-        }
-        for (const [canonical, concrete] of [...canonicals.entries()].sort(
+        // A path-segment collapse (`{field}`, `{service}`, …) folds
+        // several DISTINCT hrefs harvested from THIS page onto one
+        // canonical — see foldCanonicalCandidates (#1873). The winner
+        // must be a function of the candidate SET, not of the DOM
+        // order the links happened to render in, or the pinned state
+        // (whichever field/service/label the winner turns out to be)
+        // silently changes with an unrelated render-order shuffle.
+        const candidates = harvested
+          .map((href) => canonicalTarget(href, baseURL, stack.scope))
+          .filter(
+            (t): t is { canonical: string; concrete: string } =>
+              t !== null && !visited.has(t.canonical),
+          );
+        const canonicals = foldCanonicalCandidates(candidates);
+        for (const [canonical, { concrete }] of [...canonicals.entries()].sort(
           ([a], [b]) => byCodepoint(a, b),
         )) {
           queue.push({ canonical, concrete, via: entry.canonical });
@@ -1333,7 +1472,14 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
           inPlaceVisited.set(stateKey, state.concrete);
           if (isLeanRoot && state.leanRepresentative) leanSet.add(stateKey);
         }
-        for (const d of sweep.discovered) {
+        // Same fold as the link-harvest loop above: several driven
+        // interaction values (e.g. every structurally-enumerated
+        // attribute a groupBy picker offers) can each URL-encode to a
+        // DIFFERENT concrete surface that still collapses to the SAME
+        // parameterized canonical. Which one gets enqueued — and so
+        // which one the BFS actually visits — must be a function of
+        // the candidate set, not of control-discovery/DOM order.
+        for (const d of foldCanonicalCandidates(sweep.discovered).values()) {
           if (isLeanRoot && d.leanRepresentative) leanSet.add(d.canonical);
           if (!visited.has(d.canonical)) {
             queue.push({

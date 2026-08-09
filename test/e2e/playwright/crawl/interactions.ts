@@ -72,8 +72,110 @@ import type { Locator, Page } from '@playwright/test';
  * (the largest, the Traces Drilldown favorites attribute list,
  * carries 10) while excluding the data-derived lists (the "All"
  * attributes scope renders 51).
+ *
+ * Applies to 'tab' / 'radio' / 'option-list' controls only — Grafana
+ * core's TabsBar and RadioButtonGroup iterate a literal array baked
+ * into the plugin bundle at build time, so their SIZE really is a
+ * fact about the app. 'combobox' controls get no such guarantee (see
+ * COMBOBOX_CARDINALITY_RULES below): a react-select/downshift input
+ * can be bound to either a bundle-fixed menu (sort direction) or a
+ * datasource query result (field names, tag values), and nothing
+ * about ITS SIZE tells the two apart — an 11-tag dashboard-browse
+ * "Tag filter" and a 13-field Logs Drilldown "Filter by fields" are
+ * on OPPOSITE sides of this threshold despite both being data.
  */
 export const STRUCTURAL_MAX_OPTIONS = 12;
+
+/**
+ * Which sweep mode a 'combobox' control's option set gets, decided by
+ * CONTROL IDENTITY (its discovery `key` — a testid/aria-label/
+ * placeholder-derived string, fixed by the pinned app version) rather
+ * than by how many options happen to render today. Same doctrine as
+ * lib.ts's StructuralParamRule, generalized from URL query params to
+ * in-place interaction fragments (`#control=value`):
+ *
+ *   - 'enumerate' — the option set is a fact about the APP: a fixed
+ *     menu (sort direction, sort function, result-count picker, log
+ *     severity levels, matcher operators, …) baked into the widget's
+ *     own contract. Every option keys its own state.
+ *   - 'parameterize' — the DEFAULT for every combobox key this table
+ *     does not name. A control whose options come from a datasource
+ *     query (detected field/label/tag names, metric names, dashboard
+ *     tags, …) collapses to one representative (`{rep}`) regardless
+ *     of how many options the CURRENT seed happens to produce — #1872
+ *     was `Filter by fields` and `Tag filter` pinning literal seeded
+ *     names purely because their count landed on the wrong side of
+ *     STRUCTURAL_MAX_OPTIONS that day.
+ *
+ * A key with no matching rule parameterizes — the safe default. A
+ * control genuinely misclassified 'parameterize' loses enumeration
+ * (a coverage gap the interaction-count ratchet can catch and a
+ * reviewer can promote to 'enumerate' deliberately); one
+ * misclassified 'enumerate' pins the seeded dataset into the key,
+ * which is the defect class this table exists to close. The two
+ * failure modes are not symmetric, so the default favors the safe
+ * one.
+ */
+export type ComboboxCardinalityRule = {
+  /** Matched against the control's discovery KEY — its identity,
+   * never an option VALUE. */
+  keyPattern: RegExp;
+  mode: 'enumerate' | 'parameterize';
+  /**
+   * Optional closed option set. When present, a discovered option
+   * outside it fails the crawl loudly instead of silently mining the
+   * value into the plan — the same self-check StructuralParamRule
+   * runs for 'enumerate' query params: either the app gained an
+   * option (add it here deliberately) or the list is not actually
+   * closed (the rule is miscategorised; make it 'parameterize').
+   */
+  values?: ReadonlyArray<string>;
+};
+
+// Every pattern tolerates assignUniqueKeys' `#<n>` disambiguation
+// suffix (two same-family controls on one page) so a duplicate sibling
+// doesn't silently fall through to the default.
+export const COMBOBOX_CARDINALITY_RULES: ReadonlyArray<ComboboxCardinalityRule> = [
+  // Logs/Traces Drilldown table controls: layout, sort and page-size
+  // menus are fixed UI vocabulary, not data — how a table SORTS or how
+  // many rows it FETCHES does not depend on what the seeded logs say.
+  { keyPattern: /^select\[SortBy direction\](#\d+)?$/, mode: 'enumerate' },
+  { keyPattern: /^select\[SortBy function\](#\d+)?$/, mode: 'enumerate' },
+  {
+    keyPattern: /^select\[\{n\} (logs|lines|rows)\](#\d+)?$/,
+    mode: 'enumerate',
+  },
+  // Loki's OWN normalized severity vocabulary (critical/error/warn/
+  // info/debug/trace/unknown), not a set of arbitrary detected values.
+  { keyPattern: /^select\[detected_level\](#\d+)?$/, mode: 'enumerate' },
+  // A downshift input with neither a testid nor an aria-label falls
+  // back to its bare React useId-derived element id (erased to the
+  // shared `{rid}` placeholder — see REACT_ID_PLACEHOLDER), so this ONE
+  // key pattern addresses two different, both fixed-vocabulary, widgets
+  // verified live: the Logs Drilldown per-value operator step
+  // (Include | Exclude) and the Traces Drilldown duration-metric
+  // percentile picker (p50 | p90 | p99).
+  {
+    keyPattern: /^select\[downshift-\{rid\}-input\](#\d+)?$/,
+    mode: 'enumerate',
+  },
+  // Prometheus/Loki adhoc-filter matcher operator: exactly the four
+  // matcher symbols the query languages define — a protocol constant,
+  // not app or data state.
+  {
+    keyPattern: /^select\[Select match operator\](#\d+)?$/,
+    mode: 'enumerate',
+    values: ['=', '!=', '=~', '!~'],
+  },
+  // Dashboard-browse "sort by": a fixed alphabetical/recency menu.
+  { keyPattern: /^select\[Sort\](#\d+)?$/, mode: 'enumerate' },
+];
+
+export function comboboxCardinalityRule(
+  key: string,
+): ComboboxCardinalityRule | undefined {
+  return COMBOBOX_CARDINALITY_RULES.find((r) => r.keyPattern.test(key));
+}
 
 /**
  * Hard cap on a base surface's (0 pinned structural params)
@@ -212,9 +314,37 @@ export function planInteractions(
 
   const plan: PlannedInteraction[] = [];
   for (const control of controls) {
-    const structural =
-      !control.forcedHighCardinality &&
-      control.options.length <= STRUCTURAL_MAX_OPTIONS;
+    // 'combobox' controls decide structural-vs-data-derived by
+    // DECLARED identity (COMBOBOX_CARDINALITY_RULES), never by how
+    // many options the current seed happens to render — see #1872.
+    // Every other kind keeps the size-based check: Grafana core's
+    // TabsBar / RadioButtonGroup / option-list widgets iterate a
+    // bundle-fixed array, so their SIZE is a fact about the app (see
+    // STRUCTURAL_MAX_OPTIONS).
+    let structural: boolean;
+    if (control.kind === 'combobox') {
+      const rule = comboboxCardinalityRule(control.key);
+      if (rule?.mode === 'enumerate' && rule.values !== undefined) {
+        const unknown = control.options.filter(
+          (o) => !rule.values!.includes(o),
+        );
+        if (unknown.length > 0) {
+          throw new Error(
+            `interaction sweep: combobox ${control.key} offers option(s) ` +
+              `${unknown.map((o) => JSON.stringify(o)).join(', ')} outside its declared ` +
+              `closed set [${rule.values.map((v) => JSON.stringify(v)).join(', ')}] in ` +
+              `COMBOBOX_CARDINALITY_RULES — either the pinned app version gained an option ` +
+              `(add it to the rule's values deliberately) or the option list is not actually ` +
+              `closed, in which case the rule must become mode 'parameterize'.`,
+          );
+        }
+      }
+      structural = rule?.mode === 'enumerate';
+    } else {
+      structural =
+        !control.forcedHighCardinality &&
+        control.options.length <= STRUCTURAL_MAX_OPTIONS;
+    }
     const drivable = control.options.filter(
       (_, i) => i !== control.selectedIndex,
     );
