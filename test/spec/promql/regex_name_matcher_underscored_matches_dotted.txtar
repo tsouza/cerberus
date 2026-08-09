@@ -19,6 +19,22 @@ CREATE TABLE otel_metrics_gauge (
 INSERT INTO otel_metrics_gauge VALUES
     ('container.cpu.usage', map('core', '0'), toDateTime64('2026-01-01 00:00:00', 9), 0.42),
     ('container.memory.usage', map('core', '0'), toDateTime64('2026-01-01 00:00:00', 9), 1024.0);
+-- The regex `__name__` matcher cannot be resolved to one table, so the
+-- scan unions every metrics table (production always has all four,
+-- whether or not each has data). Both are left empty: this fixture is
+-- about the normalised-name match, not about histogram fan-out.
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 -- expected_rows --
 [
   ["container.cpu.usage", {"core": "0"}, "2026-01-01T00:00:00Z", 0.42]

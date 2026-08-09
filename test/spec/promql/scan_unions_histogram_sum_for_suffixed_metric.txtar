@@ -80,6 +80,16 @@ CREATE TABLE otel_metrics_sum (
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- The `_count` suffix is ambiguous (histogram companion, plain sum, or
+-- gauge), so the selector also fans out onto the gauge table. Left
+-- empty: this fixture is about the histogram-vs-sum union, not the
+-- gauge arm.
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_sum VALUES
     ('system_cpu_logical_count', map('host', 'h1'), toDateTime64('2026-01-01 00:00:00', 9), 8.0);
 -- expected_rows --

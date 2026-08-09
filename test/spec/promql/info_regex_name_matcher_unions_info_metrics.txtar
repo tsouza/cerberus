@@ -23,6 +23,22 @@ CREATE TABLE otel_metrics_gauge (
     TimeUnix DateTime64(9),
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- The regex `__name__` matcher `.+_info` cannot be resolved to one
+-- table, so the scan unions every metrics table. Both are left empty:
+-- this fixture is about which info-metric labels get merged onto the
+-- base sample, not about histogram fan-out.
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
     ('target_info', map('job', 'api', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
