@@ -8,6 +8,10 @@
 # in lowerCall only recognised a bare *parser.MatrixSelector.
 -- query.promql --
 rate((http_requests_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

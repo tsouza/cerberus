@@ -19,6 +19,10 @@
 
 -- query.promql --
 increase(http_requests_total[5m] @ 300)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = "service.name"
 [1] string = "service_name"

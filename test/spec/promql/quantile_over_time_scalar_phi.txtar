@@ -1,5 +1,9 @@
 -- query.promql --
 quantile_over_time(scalar(threshold), up{job="api", instance="a"}[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

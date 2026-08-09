@@ -5,6 +5,10 @@
 # label-hash ordering while still exercising the whole path.
 -- query.promql --
 max_over_time(limit_ratio(1.0, rate(http_requests_total[5m]))[30m:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

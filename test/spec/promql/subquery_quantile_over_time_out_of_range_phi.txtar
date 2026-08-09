@@ -6,6 +6,10 @@
 # post-Project fold.
 -- query.promql --
 quantile_over_time(1.5, rate(http_requests_total[5m])[1h:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

@@ -11,6 +11,10 @@
 # to ride the spine would also collapse them into a single series.
 -- query.promql --
 last_over_time({__name__=~"cpu_temp|gpu_temp"}[10m:1m] @ 1767225600)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 60s
 -- seed --

@@ -12,6 +12,10 @@
 # present series could not tell those apart.
 -- query.promql --
 present_over_time(temperature[10m:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

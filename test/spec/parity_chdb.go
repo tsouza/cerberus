@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
 
@@ -146,7 +147,29 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
 
-	compareAgainstReference(t, c, p, rt, got, comparesTimestamps(p.Oracle, step))
+	cols, err := parityProjectionColumns(db, rt)
+	if err != nil {
+		t.Fatalf("fixture %s: %v", c.Name, err)
+	}
+	sc, err := locateSampleColumns(cols)
+	if err != nil {
+		t.Fatalf("fixture %s: %v", c.Name, err)
+	}
+
+	// A projection with no TimeUnix column cannot answer a comparison that
+	// includes timestamps. Failing here rather than defaulting the missing
+	// side to zero is the difference between reporting that the check
+	// cannot be made and silently making a different, weaker one.
+	compareTimestamps := comparesTimestamps(p.Oracle, step)
+	if compareTimestamps && sc.ts < 0 {
+		t.Fatalf(
+			"fixture %s: its answer's timestamps participate in the comparison, but the "+
+				"projection (%s) carries no %s column to compare them against",
+			c.Name, strings.Join(cols, ", "), colTimeUnix,
+		)
+	}
+
+	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps)
 }
 
 // parityQuerySections maps an oracle to the TXTAR section holding the
@@ -287,13 +310,49 @@ func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series) error {
 
 // compareAgainstReference is the assertion itself. See
 // [comparesTimestamps] for which axes participate and why.
+// parityProjectionColumns returns the column names of the projection that
+// produced this fixture's `expected_rows:`.
+//
+// The names come from the DRIVER, by running the fixture's own pinned
+// `sql:` section against the already-seeded session and asking the result
+// for its columns. The alternative — parsing the outer SELECT's aliases
+// out of the SQL text — would be a second, hand-written answer to a
+// question the driver already answers exactly, and the two would
+// eventually disagree on some projection nobody thought to test.
+//
+// Nothing about the comparison becomes self-referential: only the column
+// LABELLING is learned here. Every value still comes from the pinned
+// `expected_rows:`, which is the artefact regeneration can corrupt and
+// therefore the artefact the reference engine must be checked against.
+func parityProjectionColumns(db *sql.DB, rt *RoundTripSections) ([]string, error) {
+	query, args := substituteNow64(rt.SQL, rt.Args)
+	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("re-run the fixture's own sql to read its projection: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	// rows.Columns() returns names without instantiating the driver's
+	// column-type table, so it sidesteps the Map rows.ColumnTypes()
+	// panic the round-trip runner documents.
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("read the projection's column names: %w", err)
+	}
+	return cols, nil
+}
+
 func compareAgainstReference(
-	t *testing.T, c *Case, p *Parity, rt *RoundTripSections,
+	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, sc sampleColumns,
 	got []referenceSample, compareTimestamps bool,
 ) {
 	t.Helper()
 
-	want, err := referenceShapeOfExpectedRows(rt)
+	want, err := referenceShapeOfExpectedRows(rt, sc)
 	if err != nil {
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
@@ -332,6 +391,18 @@ func compareAgainstReference(
 	if !p.ComparesInFull() {
 		t.Logf("fixture %s compared with scope %q", c.Name, p.Scope)
 	}
+}
+
+// arity is the number of columns a row must have for every located
+// Sample field to be in range.
+func (sc sampleColumns) arity() int {
+	n := 0
+	for _, idx := range []int{sc.name, sc.attrs, sc.ts, sc.value} {
+		if idx+1 > n {
+			n = idx + 1
+		}
+	}
+	return n
 }
 
 // labelKey renders a label set as a stable, comparable string. Both sides
@@ -382,17 +453,77 @@ func labelsFromAttributesJSON(metricName, attrsJSON string) (map[string]string, 
 // promNameLabel is Prometheus's metric-name label.
 const promNameLabel = "__name__"
 
-// expectedRowNameIdx / expectedRowAttrsIdx / expectedRowTimeIdx /
-// expectedRowValueIdx are the positions of the four canonical Sample
-// columns inside an `expected_rows:` row. The projection order is fixed by
-// the Sample contract (MetricName, Attributes, TimeUnix, Value).
+// The column names cerberus projects for each field of a Sample. They are
+// the emitter's own aliases, so locating a field by name rather than by
+// position is reading the projection's own labelling rather than assuming
+// one.
 const (
-	expectedRowNameIdx  = 0
-	expectedRowAttrsIdx = 1
-	expectedRowTimeIdx  = 2
-	expectedRowValueIdx = 3
-	expectedRowArity    = 4
+	colMetricName = "MetricName"
+	colAttributes = "Attributes"
+	colTimeUnix   = "TimeUnix"
+	colValue      = "Value"
 )
+
+// sampleColumns is where each field of a Sample sits inside one
+// `expected_rows:` row, or -1 when the projection does not carry it.
+//
+// # Why this is resolved by NAME and not by position
+//
+// The corpus projects five distinct column layouts, not one. The canonical
+// `(MetricName, Attributes, TimeUnix, Value)` covers most fixtures, but an
+// instant aggregation drops the two columns its result has no use for and
+// projects `(Attributes, Value)`, and a subquery interposes its own
+// `anchor_ts` between them. Pinning field positions therefore excluded
+// every aggregation and every subquery from the parity layer — over a
+// hundred fixtures — for a reason that had nothing to do with whether
+// their answer could be checked, since a label set and a value is all the
+// comparison needs.
+//
+// Resolving by name also fails LOUDLY on a projection this layer genuinely
+// cannot read: a metadata catalog query projects a single `value` column
+// that is a label value, not a sample, and no positional rule
+// distinguishes that from a one-column sample projection.
+type sampleColumns struct {
+	name  int
+	attrs int
+	ts    int
+	value int
+}
+
+// locateSampleColumns maps a projection's column names onto the Sample
+// fields the comparison needs.
+//
+// Attributes and Value are required: without a label set there is no
+// series identity to align the two answers on, and without a value there
+// is nothing to compare. MetricName and TimeUnix are optional — a function
+// that drops `__name__` projects no MetricName, and an instant query's
+// timestamps do not participate in the comparison at all (see
+// [comparesTimestamps]). Any other column, `anchor_ts` among them, is a
+// scaffolding column of the emitted query rather than a field of the
+// answer, and is ignored.
+func locateSampleColumns(cols []string) (sampleColumns, error) {
+	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1}
+	for i, col := range cols {
+		switch col {
+		case colMetricName:
+			sc.name = i
+		case colAttributes:
+			sc.attrs = i
+		case colTimeUnix:
+			sc.ts = i
+		case colValue:
+			sc.value = i
+		}
+	}
+	if sc.attrs < 0 || sc.value < 0 {
+		return sc, fmt.Errorf(
+			"projection (%s) carries no %s and/or no %s column, so it is not a Sample-shaped "+
+				"answer; this fixture's result cannot be parity-checked at the row layer",
+			strings.Join(cols, ", "), colAttributes, colValue,
+		)
+	}
+	return sc, nil
+}
 
 // referenceShapeOfExpectedRows converts cerberus's `expected_rows:` into
 // the same flat shape the oracle returns, so the two can be compared
@@ -402,29 +533,33 @@ const (
 // whose projection is not the canonical four-column Sample shape cannot be
 // parity-checked at this layer, and silently comparing nothing would be
 // the hollow green this mechanism exists to prevent.
-func referenceShapeOfExpectedRows(rt *RoundTripSections) ([]referenceSample, error) {
+func referenceShapeOfExpectedRows(rt *RoundTripSections, sc sampleColumns) ([]referenceSample, error) {
 	out := make([]referenceSample, 0, len(rt.ExpectedRows))
 	for i, row := range rt.ExpectedRows {
-		if len(row) != expectedRowArity {
+		if got, want := len(row), sc.arity(); got < want {
 			return nil, fmt.Errorf(
-				"expected_rows[%d] has %d column(s), not the canonical Sample shape "+
-					"(MetricName, Attributes, TimeUnix, Value); this fixture's projection cannot "+
-					"be parity-checked at the row layer", i, len(row),
+				"expected_rows[%d] has %d column(s), too few for the projection this fixture "+
+					"emits, whose Sample fields reach column %d", i, got, want,
 			)
 		}
-		name, err := rowString(row[expectedRowNameIdx], i, "MetricName")
+		var name string
+		var err error
+		if sc.name >= 0 {
+			if name, err = rowString(row[sc.name], i, colMetricName); err != nil {
+				return nil, err
+			}
+		}
+		attrs, err := rowAttrs(row[sc.attrs], i)
 		if err != nil {
 			return nil, err
 		}
-		attrs, err := rowAttrs(row[expectedRowAttrsIdx], i)
-		if err != nil {
-			return nil, err
+		var ts int64
+		if sc.ts >= 0 {
+			if ts, err = rowTimeMillis(row[sc.ts], i); err != nil {
+				return nil, err
+			}
 		}
-		ts, err := rowTimeMillis(row[expectedRowTimeIdx], i)
-		if err != nil {
-			return nil, err
-		}
-		value, err := rowFloat(row[expectedRowValueIdx], i)
+		value, err := rowFloat(row[sc.value], i)
 		if err != nil {
 			return nil, err
 		}
