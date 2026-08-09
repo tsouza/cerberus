@@ -1414,32 +1414,70 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 // drifted server-side `now64(9)` (legacy bare-selector instant
 // shapes) never lands a stray point past the request window.
 //
-// Memory complexity: O(rows) total in the per-series buffers. The
-// eventual fully-streaming variant (one series at a time, flushed on
-// canonicalKey boundary changes) requires the SQL emission to
-// ORDER BY (series_key, ts).
+// Memory complexity: each row is appended DIRECTLY into its series'
+// final MatrixSample (see the index map below) as it comes off the
+// cursor — there is no separate whole-result raw-row buffer held
+// alongside the matrix being built. Peak resident memory is therefore
+// whatever `out` itself costs: the matrix this call returns, which the
+// caller always needs in full (respondRangeMatrix marshals one JSON
+// document covering every series — see httperr.WriteJSON's doc comment
+// for why that marshal is deliberately not streamed). What this
+// replaces is the OLD shape, which held that same final matrix's data
+// TWICE at peak — once as raw chclient.Sample rows in a per-series
+// map keyed by every row seen, and again as the converted MatrixSample
+// slice — because nothing guaranteed a series' rows arrived together,
+// so every row of the whole result had to be buffered before any
+// series could be known complete.
+//
+// What removed that guarantee's absence: prom/lang.go's
+// RangeSeriesOrder wraps route A's emitted SQL — never the shared plan the
+// solver classifies; see that function's doc comment for why the split
+// matters — in a `SELECT * FROM (...) ORDER BY mapSort(Attributes),
+// TimeUnix`, so a route-A cursor hands this function one series' rows
+// together and ascending by timestamp. Appending straight into
+// `out[index[key]]` on each row relies on that ordering only for the
+// MEMORY property (a route-A drain then touches each series in one burst,
+// so resident state never exceeds the widest single series); it does not
+// rely on it for CORRECTNESS, on two independent levels:
+//
+//   - A route-B (solver-routed) drain concatenates K per-shard cursors
+//     that are each independently ordered (their own SQL never gets
+//     RangeSeriesOrder's rewrite — see that function's doc comment) but
+//     NOT merged against one another (solver.shardCursor drains shard 0
+//     to exhaustion, then shard 1, ...), so one series' rows can arrive
+//     in several separate later-arriving bursts instead of one —
+//     appending on lookup handles that identically: the series' entry is
+//     found again by its canonical key and the new points land after the
+//     ones already there. Because the K anchor slices are disjoint and
+//     oldest-first (docs/solver.md), a later burst's timestamps are all
+//     STRICTLY after the previous burst's, so appending in arrival order
+//     still yields an ascending Values/Histograms list for route B too.
+//   - Should any of that reasoning ever be wrong for some plan shape —
+//     or a row simply arrives out of order within what was supposed to be
+//     one ascending burst — maxSeen below catches the regression and
+//     re-sorts that ONE series' accumulated points, so the OUTPUT is
+//     always correctly ordered regardless of what order the cursor
+//     actually delivered rows in. The ordering is a peak-memory + CPU
+//     optimisation for the common route-A case, never a correctness
+//     precondition.
 func matrixFromCursor(
 	cursor chclient.Cursor,
 	start, end time.Time,
 	_ time.Duration,
 ) ([]MatrixSample, error) {
-	type seriesState struct {
-		labels map[string]string
-		rows   []chclient.Sample
-	}
+	// index maps a series' canonical label key to its position in
+	// out/keys/maxSeen, so a row for an already-known series appends
+	// directly rather than re-buffering. keys is kept parallel to out
+	// (keys[i] names out[i]) purely so the final sort below can reorder
+	// both in lockstep without re-deriving the canonical key from the
+	// label map — see bySeriesKey. maxSeen[i] is the greatest Timestamp
+	// appended to out[i] so far, the running check that lets a regression
+	// trigger the defensive re-sort described above.
+	index := make(map[string]int)
+	keys := make([]string, 0)
+	out := make([]MatrixSample, 0)
+	maxSeen := make([]time.Time, 0)
 
-	bySeries := map[string]*seriesState{}
-	// order records first-seen canonical keys so the output series order
-	// is deterministic; it is sorted below so the matrix is emitted in
-	// canonical label order. Reference Prometheus returns range-query
-	// series sorted by labels, and the prometheus/compliance differential
-	// tester compares the two `model.Matrix` slices ORDER-SENSITIVELY
-	// (cmp.Diff, no pre-sort) — so an unsorted matrix (Go map iteration
-	// order) diffs against reference even when every series + sample is
-	// identical. The instant sibling matrixFromSamples already sorts; this
-	// path must match. (Compat query `{job="demo", __name__!~"..."}`
-	// diverged purely on series order before this.)
-	order := make([]string, 0)
 	// Memoise the per-row label normalisation by interned-map identity so
 	// a series with K samples normalises once, not K times — see labelMemo.
 	memo := newLabelMemo(0)
@@ -1447,44 +1485,86 @@ func matrixFromCursor(
 		s := cursor.Sample()
 		labels := memo.normalize(s)
 		key := format.CanonicalKey(labels)
-		st, ok := bySeries[key]
+
+		i, ok := index[key]
 		if !ok {
-			st = &seriesState{labels: labels}
-			bySeries[key] = st
-			order = append(order, key)
+			i = len(out)
+			index[key] = i
+			keys = append(keys, key)
+			out = append(out, MatrixSample{Metric: labels})
+			maxSeen = append(maxSeen, time.Time{})
 		}
-		st.rows = append(st.rows, s)
+
+		if s.Timestamp.Before(start) || s.Timestamp.After(end) {
+			continue
+		}
+		outOfOrder := !maxSeen[i].IsZero() && s.Timestamp.Before(maxSeen[i])
+		appendMatrixPoint(&out[i], s)
+		if outOfOrder {
+			sortMatrixSamplePoints(&out[i])
+		} else {
+			maxSeen[i] = s.Timestamp
+		}
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, err
 	}
-	sort.Strings(order)
 
-	out := make([]MatrixSample, 0, len(bySeries))
-	for _, key := range order {
-		st := bySeries[key]
-		// Inline insertion sort by Timestamp ascending — rows are
-		// typically already nearly sorted from CH but the CrossJoin
-		// + Aggregate plan shapes the rework introduces do not
-		// guarantee row order across (series, anchor) pairs.
-		for i := 1; i < len(st.rows); i++ {
-			for j := i; j > 0 && st.rows[j-1].Timestamp.After(st.rows[j].Timestamp); j-- {
-				st.rows[j-1], st.rows[j] = st.rows[j], st.rows[j-1]
-			}
-		}
+	// Reference Prometheus returns range-query series sorted by labels, and
+	// the prometheus/compliance differential tester compares the two
+	// `model.Matrix` slices ORDER-SENSITIVELY (cmp.Diff, no pre-sort) — so an
+	// unsorted matrix (first-seen order here) diffs against reference even
+	// when every series + sample is identical. The instant sibling
+	// matrixFromSamples already sorts; this path must match. (Compat query
+	// `{job="demo", __name__!~"..."}` diverged purely on series order before
+	// this.) The sort is over one entry per SERIES, never per row.
+	sort.Sort(bySeriesKey{keys: keys, rows: out})
 
-		ms := MatrixSample{Metric: st.labels}
-		for _, r := range st.rows {
-			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
-				continue
-			}
-			appendMatrixPoint(&ms, r)
-		}
+	// Filter out any series left with zero in-window points, in place —
+	// same behaviour as before, just without allocating a second slice to
+	// filter into.
+	filtered := out[:0]
+	for _, ms := range out {
 		if len(ms.Values) > 0 || len(ms.Histograms) > 0 {
-			out = append(out, ms)
+			filtered = append(filtered, ms)
 		}
 	}
-	return out, nil
+	return filtered, nil
+}
+
+// bySeriesKey sorts two parallel slices — canonical label keys and the
+// MatrixSample each one names — in lockstep by key. Used only by
+// matrixFromCursor to apply Prometheus's canonical series order to the
+// small (one entry per series) result without recomputing
+// format.CanonicalKey per comparison.
+type bySeriesKey struct {
+	keys []string
+	rows []MatrixSample
+}
+
+func (b bySeriesKey) Len() int           { return len(b.keys) }
+func (b bySeriesKey) Less(i, j int) bool { return b.keys[i] < b.keys[j] }
+func (b bySeriesKey) Swap(i, j int) {
+	b.keys[i], b.keys[j] = b.keys[j], b.keys[i]
+	b.rows[i], b.rows[j] = b.rows[j], b.rows[i]
+}
+
+// sortMatrixSamplePoints restores ascending-timestamp order in ms.Values and
+// ms.Histograms independently. matrixFromCursor's happy path never needs
+// this — RangeSeriesOrder's SQL-side ordering (route A) or the disjoint,
+// oldest-first shard composition (route B) already deliver each series'
+// points ascending — so this only runs on the rare regression that
+// invalidates one of those two guarantees for a given row. Each Sample's
+// first element is the wire timestamp (seconds, float64 — see
+// appendMatrixPoint / histogramSample), the same convention for both a
+// float-valued and a histogram-valued point.
+func sortMatrixSamplePoints(ms *MatrixSample) {
+	sort.Slice(ms.Values, func(a, b int) bool {
+		return ms.Values[a][0].(float64) < ms.Values[b][0].(float64)
+	})
+	sort.Slice(ms.Histograms, func(a, b int) bool {
+		return ms.Histograms[a][0].(float64) < ms.Histograms[b][0].(float64)
+	})
 }
 
 // apiError is a package-local alias for the shared [httperr.Error]

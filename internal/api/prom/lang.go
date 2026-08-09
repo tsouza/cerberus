@@ -154,6 +154,68 @@ func engineGuards(guards []promql.ScalarGuard) []engine.Guard {
 // wrapWithSampleProjection — keeping the projection behind Lang keeps the
 // engine generic without forcing prom's per-shape switch into the
 // shared layer.
+//
+// This runs BEFORE the solver's Optimizer.Run / classify — every route
+// (A and B) sees the identical wrapped plan here. The series-key ordering
+// matrixFromCursor's streaming pivot wants is deliberately NOT added at
+// this seam; see RangeSeriesOrder's doc comment for why it has to land
+// later, at emit time, route-A only.
 func (l *lang) ProjectSamples(plan chplan.Node, _ engine.Meta) chplan.Node {
 	return wrapWithSampleProjection(plan, l.Schema)
+}
+
+// RangeSeriesOrder implements the engine's route-A-only, emit-time
+// ordering hook (mirrors spansTabler / lateMatTabler — see
+// internal/engine.emitForHead). On the /api/v1/query_range path (Step > 0)
+// it wraps plan in a chplan.OrderBy on (series, timestamp) so the cursor
+// matrixFromCursor drains hands it rows already grouped by series,
+// ascending by timestamp within each group — the precondition its
+// per-series streaming accumulation is BUILT for (see that function's doc
+// comment for the full memory argument). Instant queries (Step == 0) never
+// reach matrixFromCursor (they drain eagerly via engine.Query into
+// matrixFromSamples), so there is nothing for the ordering to buy; this
+// returns plan unchanged for those.
+//
+// Why emit-time and route-A-only, not part of ProjectSamples. Wrapping the
+// plan the SOLVER classifies would put a chplan.OrderBy node on the spine
+// every eligibility / slicing pass walks:
+//
+//   - internal/chplan.IsSliceInvariant is a closed, opt-in-only registry
+//     (see its doc comment) — an unregistered node kind anywhere fails
+//     classify()'s allSliceInvariant gate, so EVERY query_range plan would
+//     have silently stopped being route-B-eligible, not just ones this
+//     change was meant to touch.
+//   - internal/chplan.ReanchorRange's per-shard re-anchor has no case for
+//     OrderBy either; its default arm shares an unrecognised node
+//     VERBATIM WITHOUT RECURSING into its input, so even if the
+//     eligibility gate above were satisfied, every shard would silently
+//     emit the SAME un-re-anchored (zeroed-grid) plan instead of its own
+//     sub-window — a wrong-answer bug, not a refusal.
+//
+// Teaching both of those chokepoints to pass an OrderBy through is its own
+// unit of work (chplan/sliceinvariant.go's own docstring requires a
+// slice-invariance proof + the §Parity fixture family per node kind before
+// registering one) — out of scope here. Applying the wrap at
+// internal/engine.emitForHead instead sidesteps both: classify() and
+// ReanchorRange run on the plan BEFORE this hook fires (emitForHead is
+// route A's own emit call, downstream of the routing decision), and a
+// route-B shard's SQL is emitted straight from chplan.Emit by
+// engine.ChsqlEmitter, which never calls emitForHead at all — so a shard
+// never sees this node either. matrixFromCursor does not depend on that
+// for CORRECTNESS: it defensively re-sorts a series' accumulated points if
+// a later row's timestamp ever regresses, so an unordered route-B shard
+// (or any future route-A shape that skips this hook) still produces the
+// right answer, just without the peak-memory win this ordering buys route
+// A's common case.
+func (l *lang) RangeSeriesOrder(plan chplan.Node) chplan.Node {
+	if l.Step <= 0 {
+		return plan
+	}
+	return &chplan.OrderBy{
+		Input: plan,
+		Keys: []chplan.OrderKey{
+			{Expr: chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: l.Schema.AttributesColumn})},
+			{Expr: &chplan.ColumnRef{Name: l.Schema.TimestampColumn}},
+		},
+	}
 }
