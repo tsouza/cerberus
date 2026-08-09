@@ -169,23 +169,29 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 }
 
 // lowerRoot lowers the ROOT of a query expression. It is [lower] plus the
-// one dispatch that can only be decided at the root: a bare selector over
-// an exponential (native) histogram returns a HISTOGRAM-VALUED sample, and
-// that answer has a wire representation only when the selector IS the whole
-// query.
+// dispatches that can only be decided at the root: the shapes over an
+// exponential (native) histogram that return a HISTOGRAM-VALUED sample —
+// a bare selector and `sum [by/without] (<selector>)` — whose answer has
+// a wire representation only when the shape IS the whole query.
 //
 // The distinction cannot be made inside [lowerVectorSelector], because the
 // selector in `sum(m_exp_hist)` and the selector in `m_exp_hist` arrive
-// there identically — same node, same instant-mode context. Every consumer
-// PromQL can wrap around a selector (a reducer, arithmetic,
-// `label_replace`, a range-vector function) reads a `Value` column that a
-// histogram row does not publish, so answering the nested shape with a
-// histogram projection would either fail in ClickHouse with code 47 or,
-// worse, silently reduce the placeholder Value. Deciding here — where the
-// absence of a parent is a fact rather than an inference — keeps those
-// shapes on [expHistogramSelectorRouting]'s explicit rejection until each
-// grows its own correct lowering (issue #1967), and never widens the
-// exemption by accident: a nested selector never reaches this function.
+// there identically — same node, same instant-mode context. Most consumers
+// PromQL can wrap around a selector (arithmetic, `label_replace`, a
+// range-vector function, every reducer other than `sum`) read a `Value`
+// column that a histogram row does not publish, so answering the nested
+// shape with a histogram projection would either fail in ClickHouse with
+// code 47 or, worse, silently reduce the placeholder Value. Deciding
+// here — where the absence of a parent is a fact rather than an
+// inference — keeps those shapes on [expHistogramSelectorRouting]'s
+// explicit rejection until each grows its own histogram-AWARE lowering
+// (issue #1967), and never widens the exemption by accident: a nested
+// selector never reaches this function.
+//
+// The two dispatches are ordered but not mutually exclusive in principle,
+// and the order is arbitrary: [bareExpHistogramSelector] and
+// [sumOverExpHistogram] recognise disjoint root node types (a selector vs
+// an aggregation), so neither can shadow the other.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -194,6 +200,9 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		return lowerExpHistogramBare(vs, s, ctx)
+	}
+	if agg, vs, ok := sumOverExpHistogram(expr, s, ctx); ok {
+		return lowerExpHistogramSum(agg, vs, s, ctx)
 	}
 	return lower(expr, s, ctx)
 }
@@ -413,12 +422,15 @@ func lowerHistogramSelectorInput(
 // err rejects it explicitly rather than silently matching zero rows
 // against the Gauge/Sum tables.
 //
-// A BARE selector no longer reaches here at all: it returns a
-// histogram-valued sample, which [lowerRoot] answers with a
-// chplan.HistogramProjection before the recursive descent that leads to
-// lowerVectorSelector ever starts. That is the whole of the narrowing —
-// a nested selector still arrives here and is still rejected, because
-// nothing above it can consume a histogram row yet (issue #1967).
+// Two shapes no longer reach here at all: a BARE selector, and `sum
+// [by/without] (<selector>)`. Both return a histogram-valued sample,
+// which [lowerRoot] answers with a chplan.HistogramProjection before the
+// recursive descent that leads to lowerVectorSelector ever starts. That
+// is the whole of the narrowing — the selector nested under anything
+// ELSE still arrives here and is still rejected, because nothing above
+// it can consume a histogram row yet (issue #1967). `sum()` is the one
+// reducer exempt so far precisely because it does not read a Value: it
+// adds the bucket ladders themselves.
 //
 // Metadata enumeration (/series, /labels — ctx.metadataFullRange) is
 // exempted: it doesn't consume a Value column, only MetricName +
@@ -434,8 +446,8 @@ func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerC
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(
 			"promql: %q is an exponential histogram metric; only a bare %q selector, "+
-				"histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q "+
-				"companion selectors are supported",
+				"sum() over one, histogram_quantile(), histogram_count(), histogram_sum(), "+
+				"and the %q/%q companion selectors are supported",
 			metricName, metricName, metricName+"_count", metricName+"_sum",
 		)
 	}

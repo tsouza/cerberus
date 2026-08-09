@@ -16,12 +16,12 @@ import (
 // other cerberus lowering reduces a histogram row to a scalar before it
 // reaches the wire (histogram_quantile / histogram_count /
 // histogram_sum), which is why [expHistogramSelectorRouting] rejects the
-// bare shape wherever it is NOT the whole query: an inner reducer
-// (`sum(...)`, `rate(...[5m])`, `avg(...)`, arithmetic) would read a
-// `Value` column the histogram row shape does not carry, and answering
-// it with the placeholder value would be silently wrong. Those shapes
-// keep their explicit rejection until each grows its own correct
-// lowering (issue #1967).
+// bare shape wherever it is NOT the whole query: a consumer that reads a
+// `Value` column the histogram row shape does not carry would silently
+// reduce the placeholder value. Such shapes keep their explicit
+// rejection until each grows its own histogram-AWARE lowering — the one
+// that exists so far is `sum()`, in histogram_native_sum.go, which
+// consumes the bucket ladders rather than a Value (issue #1967).
 //
 // The plan shape mirrors the native-quantile siblings in
 // histogram_quantile.go / histogram_quantile_range.go rung for rung —
@@ -105,6 +105,7 @@ func lowerExpHistogramBare(vs *parser.VectorSelector, s schema.Metrics, ctx lowe
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return nativeHistogramProjection(
 			&chplan.CrossJoin{Left: grid, Right: latest},
+			bareExpHistogramNameExpr(s),
 			&chplan.ColumnRef{Name: stepGridAnchorColumn},
 			s,
 		), nil
@@ -113,7 +114,16 @@ func lowerExpHistogramBare(vs *parser.VectorSelector, s schema.Metrics, ctx lowe
 	if err != nil {
 		return nil, err
 	}
-	return nativeHistogramProjection(latest, chplan.NowNano(), s), nil
+	return nativeHistogramProjection(latest, bareExpHistogramNameExpr(s), chplan.NowNano(), s), nil
+}
+
+// bareExpHistogramNameExpr is the `__name__` a BARE selector reports: the
+// series' own metric name, carried up from [nativeExpHistBareAggs]'s
+// argMax. Only DERIVED samples drop the name — which is why the `sum()`
+// sibling in histogram_native_sum.go passes an empty literal here
+// instead.
+func bareExpHistogramNameExpr(s schema.Metrics) chplan.Expr {
+	return &chplan.ColumnRef{Name: s.MetricNameColumn}
 }
 
 // expHistogramBareLatest builds the instant-mode subtree beneath the
@@ -149,7 +159,7 @@ func lowerExpHistogramBareRange(vs *parser.VectorSelector, s schema.Metrics, ctx
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		nativeExpHistBareAggs(s), s, ctx,
 	)
-	return nativeHistogramProjection(fanout, &chplan.ColumnRef{Name: stepGridAnchorColumn}, s)
+	return nativeHistogramProjection(fanout, bareExpHistogramNameExpr(s), &chplan.ColumnRef{Name: stepGridAnchorColumn}, s)
 }
 
 // nativeExpHistBareAggs is [nativeExpHistLatestAggs] widened by the three
@@ -165,21 +175,45 @@ func lowerExpHistogramBareRange(vs *parser.VectorSelector, s schema.Metrics, ctx
 //     works off the bucket ladder, but which are part of the native
 //     histogram's wire shape.
 func nativeExpHistBareAggs(s schema.Metrics) []chplan.AggFunc {
-	aggs := []chplan.AggFunc{
-		latestArgMax(s.MetricNameColumn, s),
-		latestArgMax(s.CountColumn, s),
-		latestArgMax(s.SumColumn, s),
-	}
-	return append(aggs, nativeExpHistLatestAggs(s)...)
+	return append(
+		[]chplan.AggFunc{latestArgMax(s.MetricNameColumn, s)},
+		nativeExpHistValuedLatestAggs(s)...,
+	)
+}
+
+// nativeExpHistValuedLatestAggs is [nativeExpHistLatestAggs] widened by
+// Count and Sum — the two whole-histogram scalars the quantile kernel
+// never reads (it works off the bucket ladder) but which are part of the
+// native histogram's wire shape, so any histogram-VALUED answer owes
+// them.
+//
+// It stops short of MetricName because that field's correct value is not
+// a property of the row: a bare selector keeps `__name__` and an
+// aggregation drops it, so each caller supplies its own — see
+// [bareExpHistogramNameExpr].
+func nativeExpHistValuedLatestAggs(s schema.Metrics) []chplan.AggFunc {
+	return append(
+		[]chplan.AggFunc{
+			latestArgMax(s.CountColumn, s),
+			latestArgMax(s.SumColumn, s),
+		},
+		nativeExpHistLatestAggs(s)...,
+	)
 }
 
 // nativeHistogramProjection caps input with the
 // [chplan.HistogramProjection] that publishes the thirteen-column
-// histogram row: the canonical sample quartet first — with tsExpr
-// supplying the timestamp, which is `now64(9)` for an instant query and
-// the grid anchor column for a range one — then the nine raw structural
-// columns under their fixed chplan.Histogram*Column aliases.
-func nativeHistogramProjection(input chplan.Node, tsExpr chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
+// histogram row: the canonical sample quartet first — with nameExpr
+// supplying `__name__` (the series' own name for a bare selector, an
+// empty literal for a derived sample) and tsExpr the timestamp, which is
+// `now64(9)` for an instant query and the grid anchor column for a range
+// one — then the nine raw structural columns under their fixed
+// chplan.Histogram*Column aliases.
+//
+// Shared with the `sum()` lowering in histogram_native_sum.go, which
+// differs from the bare path in exactly those two expressions and in the
+// subtree it caps.
+func nativeHistogramProjection(input chplan.Node, nameExpr, tsExpr chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
 	return &chplan.HistogramProjection{
 		Input:                      input,
 		CountColumn:                s.CountColumn,
@@ -192,7 +226,7 @@ func nativeHistogramProjection(input chplan.Node, tsExpr chplan.Expr, s schema.M
 		NegativeOffsetColumn:       s.NegativeOffsetColumn,
 		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
 		GroupBy: []chplan.Expr{
-			&chplan.ColumnRef{Name: s.MetricNameColumn},
+			nameExpr,
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 			tsExpr,
 			&chplan.LitFloat{V: histogramSampleValuePlaceholder},

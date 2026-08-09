@@ -1,0 +1,99 @@
+-- query.promql --
+sum(http_server_duration_exp_hist)
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- query_range shape: each step anchor resolves its own staleness
+-- lookback per SERIES first, and only then adds the two series'
+-- distributions within that anchor. The single sample per series sits at
+-- the window's start, so every anchor in the 5m grid reports the same
+-- merged histogram at its own timestamp — the same per-anchor
+-- broadcast the bare-selector range fixture shows, with the merge on
+-- top.
+--
+--   merged = [1,2,3] + [4,5]@offset 1 = [1, 6, 8] at offset 0
+--   Count 6+9 = 15, Sum 42.5+10.5 = 53, ZeroCount 1+2 = 3
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 1, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 9, 10.5, 0, 2, 1, [4, 5],    0, []);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:00Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:00:30Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:01:00Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:01:30Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:02:00Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:02:30Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:03:00Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:03:30Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:04:00Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []],
+  ["", {}, "2026-01-01T00:04:30Z", 0, 15, 53, 0, 0, 3, 0, [1,6,8], 0, []]
+]
+-- args --
+[0] string = ""
+[1] float64 = 0
+[2] string = "Map(String,String)"
+[3] int64 = 1
+[4] int64 = 0
+[5] int64 = 0
+[6] int64 = 1
+[7] int64 = 1
+[8] int64 = 1
+[9] int64 = 0
+[10] int64 = 0
+[11] int64 = 1
+[12] int64 = 1
+[13] string = "service.name"
+[14] string = "service_name"
+[15] string = "service.name"
+[16] string = "service_name"
+[17] string = ""
+[18] string = "service_name"
+[19] string = "http_server_duration_exp_hist"
+[20] string = "http.server.duration.exp.hist"
+[21] string = "http.server.duration.exp/hist"
+[22] string = "http.server.duration.exp_hist"
+[23] string = "http.server.duration/exp/hist"
+[24] string = "http.server.duration/exp_hist"
+[25] string = "http.server.duration_exp.hist"
+[26] string = "http.server.duration_exp_hist"
+[27] string = "http.server/duration/exp/hist"
+[28] string = "http.server/duration/exp_hist"
+[29] string = "http.server/duration_exp_hist"
+[30] string = "http.server_duration.exp.hist"
+[31] string = "http.server_duration.exp_hist"
+[32] string = "http.server_duration_exp.hist"
+[33] string = "http.server_duration_exp_hist"
+[34] string = "http/server/duration/exp/hist"
+[35] string = "http/server/duration/exp_hist"
+[36] string = "http/server/duration_exp_hist"
+[37] string = "http/server_duration_exp_hist"
+[38] string = "http_server.duration.exp.hist"
+[39] string = "http_server.duration.exp_hist"
+[40] string = "http_server.duration_exp.hist"
+[41] string = "http_server.duration_exp_hist"
+[42] string = "http_server_duration.exp.hist"
+[43] string = "http_server_duration.exp_hist"
+[44] string = "http_server_duration_exp.hist"
+-- chplan --
+HistogramProjection project=["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, 0 AS Value]
+  Project [anchor_ts AS anchor_ts, CAST(map(), "Map(String,String)") AS Attributes, Count AS Count, Sum AS Sum, _hq_merged_scale AS Scale, ZeroCount AS ZeroCount, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) AS PositiveOffset, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) + t)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)), range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets))) + 1))))) AS PositiveBucketCounts, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) AS NegativeOffset, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) + t)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)), range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets))) + 1))))) AS NegativeBucketCounts]
+    Aggregate groupBy=[anchor_ts AS anchor_ts] funcs=[sum(Count) AS Count, sum(Sum) AS Sum, min(Scale) AS _hq_merged_scale, sum(ZeroCount) AS ZeroCount, groupArray(Scale) AS _hq_scales, groupArray(PositiveOffset) AS _hq_pos_offsets, groupArray(PositiveBucketCounts) AS _hq_pos_buckets, groupArray(NegativeOffset) AS _hq_neg_offsets, groupArray(NegativeBucketCounts) AS _hq_neg_buckets]
+      RangeBucketFanout step=30s lookback=5m0s groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+        Filter predicate=(MetricName IN ("http_server_duration_exp_hist", "http.server.duration.exp.hist", "http.server.duration.exp/hist", "http.server.duration.exp_hist", "http.server.duration/exp/hist", "http.server.duration/exp_hist", "http.server.duration_exp.hist", "http.server.duration_exp_hist", "http.server/duration/exp/hist", "http.server/duration/exp_hist", "http.server/duration_exp_hist", "http.server_duration.exp.hist", "http.server_duration.exp_hist", "http.server_duration_exp.hist", "http.server_duration_exp_hist", "http/server/duration/exp/hist", "http/server/duration/exp_hist", "http/server/duration_exp_hist", "http/server_duration_exp_hist", "http_server.duration.exp.hist", "http_server.duration.exp_hist", "http_server.duration_exp.hist", "http_server.duration_exp_hist", "http_server_duration.exp.hist", "http_server_duration.exp_hist", "http_server_duration_exp.hist"))
+          Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value`, `Count` AS `HistogramCount`, `Sum` AS `HistogramSum`, `Scale` AS `HistogramScale`, 0. AS `HistogramZeroThreshold`, `ZeroCount` AS `HistogramZeroCount`, `PositiveOffset` AS `HistogramPositiveOffset`, `PositiveBucketCounts` AS `HistogramPositiveBucketCounts`, `NegativeOffset` AS `HistogramNegativeOffset`, `NegativeBucketCounts` AS `HistogramNegativeBucketCounts` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, `Count` AS `Count`, `Sum` AS `Sum`, `_hq_merged_scale` AS `Scale`, `ZeroCount` AS `ZeroCount`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) AS `PositiveOffset`, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) + t)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`))) + ?))))) AS `PositiveBucketCounts`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) AS `NegativeOffset`, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) + t)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`))) + ?))))) AS `NegativeBucketCounts` FROM (SELECT `anchor_ts` AS `anchor_ts`, sum(`Count`) AS `Count`, sum(`Sum`) AS `Sum`, min(`Scale`) AS `_hq_merged_scale`, sum(`ZeroCount`) AS `ZeroCount`, groupArray(`Scale`) AS `_hq_scales`, groupArray(`PositiveOffset`) AS `_hq_pos_offsets`, groupArray(`PositiveBucketCounts`) AS `_hq_pos_buckets`, groupArray(`NegativeOffset`) AS `_hq_neg_offsets`, groupArray(`NegativeBucketCounts`) AS `_hq_neg_buckets` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY anchor_ts, `Attributes`) GROUP BY `anchor_ts`))
