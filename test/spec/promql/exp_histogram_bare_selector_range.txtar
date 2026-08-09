@@ -1,0 +1,80 @@
+-- query.promql --
+http_server_duration_exp_hist{service="api"}
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:00:00Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:00:30Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:01:00Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:01:30Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:02:00Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:02:30Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:03:00Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:03:30Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:04:00Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []],
+  ["http_server_duration_exp_hist", {"service": "api"}, "2026-01-01T00:04:30Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []]
+]
+-- args --
+[0] float64 = 0
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "http_server_duration_exp_hist"
+[8] string = "http.server.duration.exp.hist"
+[9] string = "http.server.duration.exp/hist"
+[10] string = "http.server.duration.exp_hist"
+[11] string = "http.server.duration/exp/hist"
+[12] string = "http.server.duration/exp_hist"
+[13] string = "http.server.duration_exp.hist"
+[14] string = "http.server.duration_exp_hist"
+[15] string = "http.server/duration/exp/hist"
+[16] string = "http.server/duration/exp_hist"
+[17] string = "http.server/duration_exp_hist"
+[18] string = "http.server_duration.exp.hist"
+[19] string = "http.server_duration.exp_hist"
+[20] string = "http.server_duration_exp.hist"
+[21] string = "http.server_duration_exp_hist"
+[22] string = "http/server/duration/exp/hist"
+[23] string = "http/server/duration/exp_hist"
+[24] string = "http/server/duration_exp_hist"
+[25] string = "http/server_duration_exp_hist"
+[26] string = "http_server.duration.exp.hist"
+[27] string = "http_server.duration.exp_hist"
+[28] string = "http_server.duration_exp.hist"
+[29] string = "http_server.duration_exp_hist"
+[30] string = "http_server_duration.exp.hist"
+[31] string = "http_server_duration.exp_hist"
+[32] string = "http_server_duration_exp.hist"
+[33] string = "service"
+[34] string = ""
+[35] string = "service"
+[36] string = ""
+[37] string = ""
+[38] string = "api"
+-- chplan --
+HistogramProjection project=[MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, 0 AS Value]
+  RangeBucketFanout step=30s lookback=5m0s groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[argMax(MetricName, TimeUnix) AS MetricName, argMax(Count, TimeUnix) AS Count, argMax(Sum, TimeUnix) AS Sum, argMax(Scale, TimeUnix) AS Scale, argMax(ZeroCount, TimeUnix) AS ZeroCount, argMax(PositiveOffset, TimeUnix) AS PositiveOffset, argMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, argMax(NegativeOffset, TimeUnix) AS NegativeOffset, argMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Filter predicate=((coalesce(nullIf(Attributes["service"], ""), nullIf(ResourceAttributes["service"], ""), "") = "api") AND (MetricName IN ("http_server_duration_exp_hist", "http.server.duration.exp.hist", "http.server.duration.exp/hist", "http.server.duration.exp_hist", "http.server.duration/exp/hist", "http.server.duration/exp_hist", "http.server.duration_exp.hist", "http.server.duration_exp_hist", "http.server/duration/exp/hist", "http.server/duration/exp_hist", "http.server/duration_exp_hist", "http.server_duration.exp.hist", "http.server_duration.exp_hist", "http.server_duration_exp.hist", "http.server_duration_exp_hist", "http/server/duration/exp/hist", "http/server/duration/exp_hist", "http/server/duration_exp_hist", "http/server_duration_exp_hist", "http_server.duration.exp.hist", "http_server.duration.exp_hist", "http_server.duration_exp.hist", "http_server.duration_exp_hist", "http_server_duration.exp.hist", "http_server_duration.exp_hist", "http_server_duration_exp.hist")))
+      Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value`, `Count` AS `HistogramCount`, `Sum` AS `HistogramSum`, `Scale` AS `HistogramScale`, 0. AS `HistogramZeroThreshold`, `ZeroCount` AS `HistogramZeroCount`, `PositiveOffset` AS `HistogramPositiveOffset`, `PositiveBucketCounts` AS `HistogramPositiveBucketCounts`, `NegativeOffset` AS `HistogramNegativeOffset`, `NegativeBucketCounts` AS `HistogramNegativeBucketCounts` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY anchor_ts, `Attributes`)

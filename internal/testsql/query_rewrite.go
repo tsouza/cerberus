@@ -73,6 +73,44 @@ func IsMapColumn(name string) bool {
 	return slices.Contains(mapColumnNames, name)
 }
 
+// arrayColumnNames are the ARRAY-typed output aliases that reach the
+// driver as a final projection column. chdb-go's parquet driver decodes
+// an `Array(UInt64)` cell to nil — not an error, just a silently empty
+// value — so a golden written over the raw projection would pin `null`
+// where the bucket layout belongs and assert nothing about the one field
+// the fixture exists to cover. They get the same toJSONString wrap the
+// Map columns get, and [DecodeCell]'s bracket-prefixed JSON path decodes
+// the string back into a slice.
+//
+// The list is deliberately the OUTPUT aliases of
+// chplan.HistogramProjection rather than the physical column names: an
+// array column that stays inside a subquery is consumed server-side by
+// ClickHouse and never crosses the driver boundary, so wrapping it would
+// change nothing and risk shadowing a raw reference the way the Map
+// comment above describes. Only these two are published as final output.
+var arrayColumnNames = []string{
+	"HistogramNegativeBucketCounts",
+	"HistogramPositiveBucketCounts",
+}
+
+// IsArrayColumn reports whether name — a projection alias, already
+// stripped of its backticks — is one of the known Array-typed output
+// columns.
+func IsArrayColumn(name string) bool {
+	return slices.Contains(arrayColumnNames, name)
+}
+
+// IsDriverOpaqueColumn reports whether a projection under this alias
+// must be wrapped in `toJSONString(...)` before the chdb-go driver sees
+// it. It is the union of the two families the driver cannot decode —
+// Map cells (which surface as NULL or panic outright) and Array cells
+// (which surface as nil) — and is what [RewriteMapProjections] tests, so
+// a new opaque type is added in one place rather than at every rewrite
+// site.
+func IsDriverOpaqueColumn(name string) bool {
+	return IsMapColumn(name) || IsArrayColumn(name)
+}
+
 // NestMapOrderBy guards the Map-wrap output against an outer ORDER BY
 // clause that still references a raw Map column — either subscripted
 // (the `sort_by_label` / `sort_by_label_desc` lowering's `SELECT * FROM
@@ -559,7 +597,9 @@ func isGeneratedColumnDef(def string) bool {
 }
 
 // RewriteMapProjections wraps every top-level SELECT projection whose
-// alias names a known Map column (see [IsMapColumn]) in
+// alias names a column the driver cannot decode (see
+// [IsDriverOpaqueColumn] — the Map columns below and the Array-typed
+// histogram bucket outputs) in
 // `toJSONString(...)`. Only the OUTERMOST SELECT is touched — subqueries
 // and CTE bodies keep their Map columns raw, because ClickHouse consumes
 // those server-side and never hands them to the driver.
@@ -630,7 +670,7 @@ func RewriteMapProjections(query string) string {
 		if alias == "" {
 			alias = mapColAlias(strings.TrimSpace(expr))
 		}
-		if !IsMapColumn(alias) {
+		if !IsDriverOpaqueColumn(alias) {
 			continue
 		}
 		projs[i] = "toJSONString(" + expr + ") AS `" + alias + "`"
