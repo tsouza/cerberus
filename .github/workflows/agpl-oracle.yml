@@ -25,6 +25,7 @@ name: agpl-oracle
 #   test/surface-parity/traceql_reference_agpl_test.go
 #   test/property/oracle/logql/evaluator.go
 #   test/property/oracle/logql/line_filters.go
+#   test/spec/parityoracle/logql/oracle.go
 #
 # The tests do NOT require CGO, Docker, or libchdb — they are pure Go and
 # compile with a stock Go toolchain against the root-module deps. (The last
@@ -50,7 +51,11 @@ name: agpl-oracle
 # libchdb.so. This lane still compiles the sibling
 # test/property/oracle/logql package (evaluator.go / line_filters.go),
 # proving the agpl_oracle-tagged code itself builds, without taking on a
-# chdb dependency this lane doesn't otherwise need.
+# chdb dependency this lane doesn't otherwise need. The same applies to
+# test/spec/parity_loki_chdb.go, the runner half of the LogQL parity
+# oracle: it compiles OUT here and is exercised by chdb.yml's
+# `roundtrip (logql)` leg, which passes all three tags. This lane still
+# compiles test/spec/parityoracle/logql (the oracle itself).
 #
 # test/surface-parity/logql.go and traceql.go read pinned reference-verdict
 # artifacts (logql-reference-verdicts.json / traceql-reference-verdicts.json)
@@ -149,7 +154,7 @@ jobs:
 
       - name: Run agpl_oracle differential oracle tests
         if: needs.changes.outputs.docs_only != 'true'
-        run: go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/... ./test/surface-parity/... ./test/property/...
+        run: go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/... ./test/spec/... ./test/surface-parity/... ./test/property/...
 
       - name: Verify agpl_oracle tag set coverage (regression)
         if: needs.changes.outputs.docs_only != 'true'

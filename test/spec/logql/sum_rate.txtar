@@ -1,5 +1,9 @@
 -- query.logql --
 sum(rate({job="api"}[1m]))
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),

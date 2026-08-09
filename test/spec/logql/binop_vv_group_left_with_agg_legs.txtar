@@ -1,5 +1,9 @@
 -- query.logql --
 sum by (svc) (count_over_time({app="x"}[5m])) / on(svc) group_left(env) sum by (svc) (count_over_time({app="y"}[5m]))
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String),

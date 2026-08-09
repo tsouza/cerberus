@@ -10,11 +10,29 @@ import (
 	"github.com/tsouza/cerberus/test/spec"
 )
 
-// parityOraclePkgs are the reference-engine packages whose independence
-// from cerberus is the load-bearing property of the whole parity layer.
-var parityOraclePkgs = []string{
-	"./test/spec/parityoracle/...",
+// parityOraclePkgs is the pattern covering every reference-engine
+// package whose independence from cerberus is the load-bearing property
+// of the whole parity layer.
+const parityOraclePkgs = "./test/spec/parityoracle/..."
+
+// parityOraclePackages is the import path of every oracle that must be
+// REACHED by the scan below.
+//
+// Naming them is not redundant with the `...` pattern: an oracle behind a
+// build tag the scan does not set is silently absent from `go list`'s
+// output — the command still exits 0 — so the gate would report clean
+// over a package it never read. That is the same hollow green the parity
+// layer itself exists to eliminate, so a missing oracle is a failure.
+var parityOraclePackages = []string{
+	"github.com/tsouza/cerberus/test/spec/parityoracle/promql",
+	"github.com/tsouza/cerberus/test/spec/parityoracle/logql",
 }
+
+// parityOracleBuildConfigs are the build configurations the scan runs
+// under. Together they must cover every oracle in
+// [parityOraclePackages]; the LogQL oracle links the AGPLv3 Loki engine
+// and so exists only under `agpl_oracle` (invariant 14).
+var parityOracleBuildConfigs = []string{"", "agpl_oracle"}
 
 // forbiddenOracleDeps are the cerberus packages an oracle may never
 // import, directly or transitively.
@@ -53,33 +71,56 @@ func TestParityOracleImportsNoCerberusLowering(t *testing.T) {
 	t.Parallel()
 
 	root := repoRootForParity(t)
+	reached := map[string]bool{}
 
-	for _, pkg := range parityOraclePkgs {
+	for _, tags := range parityOracleBuildConfigs {
 		// -test includes the test files' own imports, so an oracle cannot
 		// smuggle a forbidden dependency in through its _test.go either.
-		cmd := exec.Command("go", "list", "-deps", "-test", pkg)
+		args := []string{"list", "-deps", "-test"}
+		if tags != "" {
+			args = append(args, "-tags", tags)
+		}
+		args = append(args, parityOraclePkgs)
+
+		cmd := exec.Command("go", args...)
 		cmd.Dir = root
 		out, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("go list -deps -test %s: %v", pkg, err)
+			t.Fatalf("go %s: %v", strings.Join(args, " "), err)
 		}
 
-		deps := strings.Split(strings.TrimSpace(string(out)), "\n")
-		for _, dep := range deps {
+		config := tags
+		if config == "" {
+			config = "(default build)"
+		}
+		for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			dep = strings.TrimSpace(dep)
+			reached[dep] = true
 			for _, forbidden := range forbiddenOracleDeps {
 				if dep == forbidden || strings.HasPrefix(dep, forbidden+"/") {
 					t.Errorf(
-						"parity oracle %s transitively imports %s.\n"+
+						"parity oracle %s transitively imports %s under build config %s.\n"+
 							"An oracle that shares code with the system under test cannot disagree "+
 							"with it about the thing they share, so this import silently converts "+
 							"the oracle into a mirror — and the parity check would then pass while "+
 							"proving nothing. Reimplement whatever was needed inside the oracle "+
 							"package instead of importing it.",
-						pkg, dep,
+						parityOraclePkgs, dep, config,
 					)
 				}
 			}
+		}
+	}
+
+	for _, pkg := range parityOraclePackages {
+		if !reached[pkg] {
+			t.Errorf(
+				"the disjointness scan never reached %s under any of the build configurations %q.\n"+
+					"`go list` exits 0 for a package whose build constraints exclude every file, so "+
+					"the scan above reported clean over a package it never read. Add the tag that "+
+					"compiles it to parityOracleBuildConfigs.",
+				pkg, parityOracleBuildConfigs,
+			)
 		}
 	}
 }
@@ -129,7 +170,7 @@ func TestParityEnrolmentFloor(t *testing.T) {
 
 	// parityEnrolmentFloor is the number of fixtures currently carrying a
 	// `parity:` section. It ratchets UP only.
-	const parityEnrolmentFloor = 215
+	const parityEnrolmentFloor = 233
 
 	enrolled := 0
 	for _, dir := range parityFixtureDirs(t) {
