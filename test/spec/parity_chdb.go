@@ -121,7 +121,7 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	ApplySeed(t, db, rt.Seed)
 
 	q := parityQuery{
-		Expr:  strings.TrimSpace(query),
+		Expr:  resolveAtModifiers(strings.TrimSpace(query), evalStart, evalEnd, step),
 		Start: evalStart,
 		End:   evalEnd,
 		Step:  step,
@@ -171,6 +171,54 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	}
 
 	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps)
+}
+
+// atStartModifier / atEndModifier are the two `@` modifiers whose
+// resolved instant depends on the query's own window rather than on a
+// literal in the expression.
+const (
+	atStartModifier = "@ start()"
+	atEndModifier   = "@ end()"
+)
+
+// resolveAtModifiers rewrites `@ start()` / `@ end()` into the instants
+// they resolve to over [start, end].
+//
+// # Why the reference engine cannot just be handed the query
+//
+// A fixture exercising `start()` and `end()` has to be lowered over a
+// window whose two ends DIFFER, or the two modifiers resolve to the same
+// instant and the fixture tests nothing. The lowering harness does that
+// with a fixed [start, end] pair, and cerberus answers with a single
+// sample taken at the resolved anchor.
+//
+// Prometheus has no query shape with that combination. An instant query
+// has start == end, so both modifiers collapse; a range query over
+// [start, end] resolves them correctly but answers with a sample at every
+// step, which is not the single sample cerberus was asked for. Handing
+// the reference either one compares two different questions.
+//
+// Substituting the resolved literal is the definition of the modifier at
+// that window, not a reimplementation of cerberus's lowering: `start()`
+// over a query starting at 100 IS `@ 100`, per the PromQL specification.
+// The reference then evaluates the substituted query as an instant query
+// at End, and everything about the expression other than the anchor is
+// still evaluated independently. A cerberus lowering that resolved the
+// anchor to the WRONG instant reads a different sample than the reference
+// does and fails here, which is precisely the bug class the modifier has.
+//
+// A range query needs no substitution: its window reaches the reference
+// engine intact, so Prometheus resolves both modifiers itself.
+func resolveAtModifiers(expr string, start, end time.Time, step time.Duration) string {
+	if step > 0 || start.Equal(end) {
+		return expr
+	}
+	expr = strings.ReplaceAll(expr, atStartModifier, atInstant(start))
+	return strings.ReplaceAll(expr, atEndModifier, atInstant(end))
+}
+
+func atInstant(t time.Time) string {
+	return "@ " + strconv.FormatInt(t.Unix(), 10)
 }
 
 // parityQuerySections maps an oracle to the TXTAR section holding the
