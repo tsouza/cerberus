@@ -38,8 +38,9 @@ const metadataColumn = "Metadata"
 // NewChDBWithError instead — that variant returns the stored error
 // from every Querier method without opening a chDB session.
 type Client struct {
-	db  *sql.DB
-	err error // when non-nil every Querier method returns this and bypasses db
+	db      *sql.DB
+	err     error  // when non-nil every Querier method returns this and bypasses db
+	seedDDL string // raw DDL accumulated across Seed calls; feeds prepareQuery's star expansion
 }
 
 // NewChDB opens an ephemeral chDB session bound to t's lifetime and
@@ -182,6 +183,7 @@ func (c *Client) Seed(t testing.TB, ddl string) {
 	if c.db == nil {
 		t.Fatalf("chclienttest: Seed called on error-only client")
 	}
+	c.seedDDL += ddl + "\n"
 	for _, stmt := range testsql.BackfillMetricsColumns(testsql.SplitStatements(ddl)) {
 		if strings.TrimSpace(stmt) == "" {
 			continue
@@ -191,6 +193,38 @@ func (c *Client) Seed(t testing.TB, ddl string) {
 			t.Fatalf("chclienttest: seed exec failed:\n--- stmt ---\n%s\n--- err ---\n%v", stmt, err)
 		}
 	}
+}
+
+// prepareQuery runs the SAME three-pass rewrite pipeline test/spec's
+// round-trip runner and perf profiler use (see internal/testsql's doc
+// comment: "there is exactly one rewrite pipeline, consumed twice
+// there and a third time by the handler-level chDB fake in
+// internal/chclienttest") — [testsql.ExpandStarProjection] so a
+// hoisted `SELECT * FROM (<named-projection subquery>)` exposes its
+// Map columns by name, [testsql.RewriteMapProjections] to wrap them in
+// `toJSONString(...)`, then [testsql.NestMapOrderBy] to push an outer
+// ORDER BY that still references the now-wrapped Map column (bare,
+// subscripted, or passed to a function like `mapSort(...)`) one level
+// below the wrap, back onto the still-raw Map.
+//
+// Every Querier method routes its SQL through this single choke point
+// rather than calling testsql.RewriteMapProjections alone: skipping the
+// other two passes left a real gap — the route-A streaming-matrix
+// ordering hook (engine.rangeSeriesOrderer / prom.lang.RangeSeriesOrder)
+// emits `SELECT * FROM (<sub>) ORDER BY mapSort(Attributes), TimeUnix`,
+// which RewriteMapProjections alone cannot rewrite (its own
+// `SELECT * FROM (<subquery>)` fast path requires an exact match with
+// nothing trailing the closing paren, so a trailing ORDER BY falls
+// through to the generic path, which sees a literal `*` projection and
+// never learns the Map column's name to wrap) — so the Map column
+// reached chdb-go's parquet driver raw, surfacing as "could not cast to
+// type: MAP" or "converting NULL to string is unsupported" depending on
+// row shape, not as a genuine handler regression.
+func (c *Client) prepareQuery(query string) string {
+	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(c.seedDDL))
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
+	return query
 }
 
 // Query satisfies the *chclient.Client.Query surface — it runs sql
@@ -203,7 +237,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := withQuerySettings(ctx, testsql.RewriteMapProjections(query))
+	rewritten := withQuerySettings(ctx, c.prepareQuery(query))
 	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -316,7 +350,7 @@ func (c *Client) QueryDetectedFieldRows(ctx context.Context, query string, args 
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := testsql.RewriteMapProjections(query)
+	rewritten := c.prepareQuery(query)
 	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -406,7 +440,7 @@ func (c *Client) QueryExemplars(ctx context.Context, query string, args ...any) 
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := testsql.RewriteMapProjections(query)
+	rewritten := c.prepareQuery(query)
 	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -457,7 +491,7 @@ func (c *Client) QueryLabelSets(ctx context.Context, query string, args ...any) 
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := testsql.RewriteMapProjections(query)
+	rewritten := c.prepareQuery(query)
 	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -544,7 +578,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := testsql.RewriteMapProjections(query)
+	rewritten := c.prepareQuery(query)
 	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)

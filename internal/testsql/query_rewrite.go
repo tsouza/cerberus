@@ -73,18 +73,24 @@ func IsMapColumn(name string) bool {
 	return slices.Contains(mapColumnNames, name)
 }
 
-// NestMapOrderBy guards the Map-wrap output against an outer
-// `ORDER BY <MapColumn>[<key>]` clause — the shape the `sort_by_label`
-// / `sort_by_label_desc` lowering emits (`SELECT * FROM (<sub>) ORDER
-// BY ` + "`Attributes`" + `['<label>']`). After [ExpandStarProjection]
-// + [RewriteMapProjections] rewrite the OUTER projection so the Map
-// column is emitted as `toJSONString(Attributes) AS Attributes`, the
-// ORDER BY's `Attributes[...]` subscript binds to that String-typed
-// SELECT alias (ClickHouse resolves ORDER BY identifiers to SELECT
-// aliases ahead of the source column), so the map subscript fails with
-// `arrayElement … got 'String'`. Production never hits this — the live
-// query path has no toJSONString wrap, so `SELECT * … ORDER BY
-// Attributes[k]` keeps `Attributes` a Map. The collision is purely an
+// NestMapOrderBy guards the Map-wrap output against an outer ORDER BY
+// clause that still references a raw Map column — either subscripted
+// (the `sort_by_label` / `sort_by_label_desc` lowering's `SELECT * FROM
+// (<sub>) ORDER BY ` + "`Attributes`" + `['<label>']`) or passed whole
+// to a function (the route-A streaming-matrix ordering
+// engine.rangeSeriesOrderer wires up — see prom.lang.RangeSeriesOrder —
+// which emits `SELECT * FROM (<sub>) ORDER BY mapSort(` +
+// "`Attributes`" + `), TimeUnix`). After
+// [ExpandStarProjection] + [RewriteMapProjections] rewrite the OUTER
+// projection so the Map column is emitted as `toJSONString(Attributes)
+// AS Attributes`, ANY reference to `Attributes` in the ORDER BY —
+// subscripted or not — binds to that String-typed SELECT alias
+// (ClickHouse resolves ORDER BY identifiers to SELECT aliases ahead of
+// the source column), so a map subscript fails with `arrayElement …
+// got 'String'` and mapSort(...) fails the same way on a String
+// argument. Production never hits this — the live query path has no
+// toJSONString wrap, so `SELECT * … ORDER BY mapSort(Attributes)` (or
+// `Attributes[k]`) keeps `Attributes` a Map. The collision is purely an
 // artefact of the test harness's parquet-Map workaround.
 //
 // This runs AFTER the wrap passes and pushes the ORDER BY one level
@@ -106,41 +112,86 @@ func IsMapColumn(name string) bool {
 //
 // The transform is conservative: it fires only when the query is a
 // `SELECT <projs> FROM (<single subquery>) ORDER BY …` (no WITH head)
-// whose ORDER BY references a known Map column via `[`-subscript, and
-// the FROM clause is exactly one parenthesised subquery. Every other
-// shape passes through untouched.
+// whose ORDER BY references a known Map column (subscripted or bare),
+// and the FROM clause is exactly one parenthesised subquery. Every
+// other shape passes through untouched.
 func NestMapOrderBy(query string) string {
 	q := strings.TrimSpace(query)
 	head, tail := splitOuterSelect(q)
 	if head == "" {
 		return query
 	}
-	upperTail := strings.ToUpper(tail)
-	obIdx := strings.Index(upperTail, " ORDER BY ")
-	if obIdx < 0 {
+	// Depth-track the FROM clause's own parenthesised subquery so an
+	// ORDER BY NESTED inside it (the bottomk/topk-over-subquery shape's
+	// own `ORDER BY Value LIMIT 1 BY anchor_ts`, or any other inner
+	// sort) can never be mistaken for the OUTER query's trailing ORDER
+	// BY — a naive `strings.Index(tail, " ORDER BY ")` finds whichever
+	// occurs FIRST in the text, which is the inner one whenever the
+	// subquery itself sorts, and — now that [orderByReferencesMapColumn]
+	// matches a bare column name rather than only a `[`-subscript — the
+	// (wrong) inner match's unbounded "rest of the query" tail routinely
+	// contains an unrelated `` `Attributes` `` reference (a GROUP BY, a
+	// SELECT list, …) further out, corrupting an otherwise-fine query.
+	// Matching parens first, then requiring "ORDER BY" to immediately
+	// follow the close paren, pins the search to the query's own
+	// top-level clause.
+	fromBody, trailer, ok := splitParenthesisedFrom(tail)
+	if !ok {
 		return query
 	}
-	orderBy := tail[obIdx+len(" ORDER BY "):]
-	if !orderByReferencesMapSubscript(orderBy) {
+	upperTrailer := strings.ToUpper(trailer)
+	if !strings.HasPrefix(upperTrailer, "ORDER BY ") {
 		return query
 	}
-	// `tail` is ` FROM (<sub>) ORDER BY <orderBy>`. Carve the
-	// parenthesised subquery out of the FROM so we can re-wrap it with
-	// the ORDER BY pushed inside.
-	fromBody := strings.TrimSpace(strings.TrimPrefix(tail[:obIdx], " FROM "))
-	if !strings.HasPrefix(fromBody, "(") || !strings.HasSuffix(fromBody, ")") {
+	orderBy := trailer[len("ORDER BY "):]
+	if !orderByReferencesMapColumn(orderBy) {
 		return query
 	}
 	return "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " ORDER BY " + orderBy + ")"
 }
 
-// orderByReferencesMapSubscript reports whether an ORDER BY clause body
-// sorts on a known Map column via `[`-subscript (e.g.
-// "`Attributes`['handler'] DESC"). Used by [NestMapOrderBy] to detect
-// the sort_by_label collision shape.
-func orderByReferencesMapSubscript(orderBy string) bool {
+// splitParenthesisedFrom expects tail in the shape ` FROM (<subquery>)<rest>`
+// — the tail [splitOuterSelect] returns — and depth-tracks the parens to
+// find the subquery's OWN matching close paren, however many ORDER BY /
+// nested-subquery clauses live inside it. Returns the parenthesised
+// subquery verbatim (INCLUDING its own parens) as fromBody, and whatever
+// follows the matching close paren, TrimSpace'd, as trailer. ok is false
+// when tail does not start with ` FROM (` or the parens never balance —
+// the FROM clause is not a single bare subquery, the shape [NestMapOrderBy]
+// requires.
+func splitParenthesisedFrom(tail string) (fromBody, trailer string, ok bool) {
+	const fromKeyword = " FROM "
+	if !strings.HasPrefix(tail, fromKeyword+"(") {
+		return "", "", false
+	}
+	body := tail[len(fromKeyword):] // starts at the opening '('
+	depth := 0
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return body[:i+1], strings.TrimSpace(body[i+1:]), true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// orderByReferencesMapColumn reports whether an ORDER BY clause body
+// references a known Map column by its backtick-quoted name — whether
+// subscripted (e.g. "`Attributes`['handler'] DESC", the sort_by_label
+// shape) or passed to a function (e.g. "mapSort(`Attributes`),
+// `TimeUnix`", the route-A streaming-matrix ordering shape). Used by
+// [NestMapOrderBy] to detect either collision shape: both bind the Map
+// column's backtick-quoted identifier verbatim into the ORDER BY text,
+// so a plain substring match on the quoted name catches every syntactic
+// position it can appear in without needing a real SQL parser.
+func orderByReferencesMapColumn(orderBy string) bool {
 	for _, name := range mapColumnNames {
-		if strings.Contains(orderBy, "`"+name+"`[") {
+		if strings.Contains(orderBy, "`"+name+"`") {
 			return true
 		}
 	}
