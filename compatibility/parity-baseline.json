@@ -1196,8 +1196,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 73,
-      "total": 73,
+      "passed": 74,
+      "total": 74,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -1213,6 +1213,7 @@
         "search | avg_duration_per_trace_status_ok",
         "search | const_boolean_true_matches_all",
         "search | count_spans_per_trace",
+        "search | count_spans_per_trace_status_error_root_identity",
         "search | cross_scope_attribute_never_equal",
         "search | descendant_op_payments_to_consumer",
         "search | direct_child_op_client_under_checkout",
