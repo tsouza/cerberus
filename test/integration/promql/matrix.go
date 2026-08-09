@@ -43,8 +43,12 @@ func (c exoticCase) ts() int64 {
 // edge_increase_at_start.txtar, edge_at_then_offset_neg.txtar for @;
 // quantile_scalar_phi_nan.txtar, lwr_bare_selector_staleness_window.txtar,
 // scalar_many_series_nan.txtar, vector_scalar_multi_series_nan.txtar,
-// clamp_min_scalar_nan_bound.txtar for stale/NaN) rather than by any
-// "promqltest" package — no such package exists in this repo.
+// clamp_min_scalar_nan_bound.txtar for stale/NaN) rather than by the
+// upstream "promqltest" package. That package is not vendored INTO this
+// repo, but it does resolve from the pinned prometheus fork, and
+// test/spec/parityoracle/promql uses it to evaluate fixtures on the real
+// Prometheus engine — so "no such package exists" (as this comment used
+// to say) is the wrong reason to reach for a txtar golden here.
 //
 // CAT 1 is the priority class: vector-vector binary ops over
 // rate/irate/increase/delta. It is the explicit regression net for the

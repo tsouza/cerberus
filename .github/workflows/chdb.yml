@@ -264,9 +264,26 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
         run: just chdb-install
 
+      # Two packages, not one, because they run DIFFERENT checks over the
+      # same fixtures.
+      #
+      #   ./test/spec/<ql>/   — RunRoundTrip, the PRE-optimizer execution
+      #                         that produces `expected_rows` and, under
+      #                         GOLDEN_UPDATE=1, rewrites it.
+      #   ./internal/<ql>/    — RunRoundTripSQL, the POST-optimizer twin.
+      #                         It passes allowGoldenUpdate=false, so a
+      #                         mismatch FAILS instead of being re-pinned
+      #                         (see test/spec/runner_chdb.go:222-256).
+      #
+      # That makes the second one the only comparison in this lane
+      # GOLDEN_UPDATE cannot launder — and until now no CI job ran it.
+      # `just test-chdb` (Justfile:199) lists neither internal/promql,
+      # internal/logql nor internal/traceql, and this step ran only the
+      # test/spec side, so an optimizer bug that rewrote a fixture's
+      # answer had nothing standing in its way.
       - name: Run TXTAR round-trip (${{ matrix.ql }})
         if: needs.changes.outputs.docs_only != 'true'
-        run: go test -tags chdb -count=1 ./test/spec/${{ matrix.ql }}/...
+        run: go test -tags chdb -count=1 ./test/spec/${{ matrix.ql }}/... ./internal/${{ matrix.ql }}/...
 
   # `perf-guards` runs the chDB-tagged deterministic perf-regression
   # ASSERTIONS under test/perf/ — the load-bearing fix for task #73.

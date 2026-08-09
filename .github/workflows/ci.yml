@@ -960,9 +960,16 @@ jobs:
   # internal/drain, internal/traceql/ast), and PromQL uses the upstream Apache
   # prometheus parser — so no AGPLv3 grafana/loki or grafana/tempo code reaches
   # the binary. The only grafana/tempo subtree the binary may link is the
-  # Apache-licensed pkg/tempopb wire types. Test-only AGPL oracles + the
-  # compatibility harnesses are quarantined in the test/oracle nested module
-  # and never enter the binary graph.
+  # Apache-licensed pkg/tempopb wire types.
+  #
+  # Where the AGPL actually lives, precisely: the root go.mod DOES require
+  # grafana/loki/v3, and compatibility/ has no go.mod of its own, so the
+  # compatibility harnesses are ROOT-MODULE packages — not, as this comment
+  # previously claimed, quarantined in test/oracle. What keeps the binary
+  # clean is REACHABILITY, not module membership: nothing under
+  # compatibility/ or behind the agpl_oracle build tag is imported from
+  # ./cmd/cerberus. The test/oracle nested module is a second, stronger
+  # boundary used where a hard module break is wanted, not the only one.
   #
   # ENFORCING: the gate runs `go list -deps ./cmd/cerberus` and FAILS (exit 1)
   # if any AGPL package is reachable from the binary (grafana/loki/* or
