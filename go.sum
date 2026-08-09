@@ -376,8 +376,6 @@ github.com/grafana/pyroscope-go/godeltaprof v0.1.9 h1:c1Us8i6eSmkW+Ez05d3co8kasn
 github.com/grafana/pyroscope-go/godeltaprof v0.1.9/go.mod h1:2+l7K7twW49Ct4wFluZD3tZ6e0SjanjcUUBPVD/UuGU=
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 h1:cLN4IBkmkYZNnk7EAJ0BHIethd+J6LqxFNw5mSiI2bM=
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853/go.mod h1:+JKpmjMGhpgPL+rXZ5nsZieVzvarn86asRlBg4uNGnk=
-github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1 h1:FXjxV1CDCrpRaSEwuCC8XyybzzpbXj+RAwNsSFf6nQk=
-github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3 h1:B+8ClL/kCQkRiU82d9xajRPKYMrB7E0MbtzWVi1K4ns=
 github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3/go.mod h1:NbCUVmiS4foBGBHOYlCT25+YmGpJ32dZPi75pGEUpj4=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF28c5ZQfqCBQ5g2xfk=
@@ -740,6 +738,8 @@ github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-c
 github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl/go.mod h1:UetIxoLmE+X0io7ookhE9J/6KoJSdmFzLFmcUiW/XzM=
 github.com/tsouza/prometheus v0.0.1-cerberus-parser h1:RjX9HKGVHPxLbtGKSbzWJ3bGFsmOEORWG2DX2Spg6oY=
 github.com/tsouza/prometheus v0.0.1-cerberus-parser/go.mod h1:orN7+39ySpDpDwh+EbN7UYpMHYNXrl0rabkpVMfMN4g=
+github.com/tsouza/tempo v0.0.5-cerberus-accessors h1:d+9KHXJxgE0u1kBSLikEnip1WIRN5L8KUrSVQX94Yto=
+github.com/tsouza/tempo v0.0.5-cerberus-accessors/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/ttacon/chalk v0.0.0-20160626202418-22c06c80ed31/go.mod h1:onvgF043R+lC5RZ8IT9rBXDaEDnpnw/Cl+HFiw+v/7Q=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/twmb/franz-go v1.21.0 h1:J3uB/poWgHD6VIilER2uCPFAZHDRXVFT+11pBgRKod4=

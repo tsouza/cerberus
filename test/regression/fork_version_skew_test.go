@@ -45,6 +45,13 @@ import (
 // fork's upstream base, OR bump the go.mod fork require to match the image —
 // whichever direction is correct for the change you're making. Do not relax
 // the assertion to make the skew disappear.
+// tempoForkReplace matches the go.mod directive that routes grafana/tempo
+// through the accessor fork. Whitespace is flexible; the module path and
+// the tag family are not.
+var tempoForkReplace = regexp.MustCompile(
+	`(?m)^replace\s+github\.com/grafana/tempo\s+=>\s+github\.com/tsouza/tempo\s+v\d+\.\d+\.\d+-cerberus-accessors\s*$`,
+)
+
 func TestForkVersionSkew(t *testing.T) {
 	t.Parallel()
 
@@ -130,6 +137,24 @@ func TestForkVersionSkew(t *testing.T) {
 				"engine at %s — parity claims are unsound. Align the two "+
 				"(see docs/upstream-forks.md § version-skew gate).",
 				libCommit, lib, imgCommit, libCommit, imgCommit)
+		}
+
+		// Tempo's `require` line is superseded by a `replace` onto the
+		// tsouza/tempo fork, so on its own it no longer describes what
+		// compiles — it describes the upstream base the fork is rebased
+		// onto, which is exactly what the skew comparison above needs it to
+		// mean. Pin the replace target so that stays true: repointing tempo
+		// at some other module or tag family would leave the comparison
+		// above measuring a version nothing builds against, and it would do
+		// so silently.
+		if !tempoForkReplace.Match(goMod) {
+			t.Fatalf("tempo fork replace missing or repointed: go.mod must carry a "+
+				"`replace github.com/grafana/tempo => github.com/tsouza/tempo "+
+				"vX.Y.Z-cerberus-accessors` directive matching %s. Without it the "+
+				"require line above is not the version that compiles, and the "+
+				"skew assertions in this subtest certify nothing "+
+				"(see docs/upstream-forks.md § version-skew gate).",
+				tempoForkReplace)
 		}
 
 		// Cross-check the committed VERSION file too: it records the same

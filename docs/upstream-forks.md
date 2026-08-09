@@ -13,14 +13,17 @@ The shipped `cmd/cerberus` binary additionally links the **Apache-2.0** `github.
 
 ## Forks
 
-Two upstream deps route through `github.com/tsouza/*` forks. The forks exist primarily as a *Dependabot watch boundary*: cerberus's `go.mod` `replace` directives point at semver tags on the forks, not pseudo-versions on upstream. A dedicated cron repo, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor), decides daily whether anything cerberus cares about landed upstream and only then mints a new fork tag. Dependabot in cerberus sees a clean stream of patch bumps it can grouped-PR on.
+Three upstream deps route through `github.com/tsouza/*` forks. The forks exist primarily as a *Dependabot watch boundary*: cerberus's `go.mod` `replace` directives point at semver tags on the forks, not pseudo-versions on upstream. A dedicated cron repo, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor), decides daily whether anything cerberus cares about landed upstream and only then mints a new fork tag. Dependabot in cerberus sees a clean stream of patch bumps it can grouped-PR on.
 
 - **[`tsouza/prometheus`](https://github.com/tsouza/prometheus)** — branch `cerberus-parser`, **zero patches**. Pure Dependabot watch boundary. Cerberus consumes a narrow subtree (`promql/parser`, `model/labels`, `model/histogram`, a couple of adjacent files); the fork lets us mint tags only when those paths change.
+- **[`tsouza/tempo`](https://github.com/tsouza/tempo)** — branch `cerberus-accessors`, **accessor-only patches**, consumed by test-only code. Most are `pkg/traceql` accessors that retired an `unsafe.Pointer` shim. The newest is `vparquet4.NewSpan`, and it is what makes a TraceQL reference oracle possible at all: `DescendantOf` / `ChildOf` / `SiblingOf` are declared on the `traceql.Span` *interface* but implemented in `tempodb/encoding/vparquet4` on an unexported concrete type, which each of them type-asserts its arguments back to. A caller supplying its own `traceql.Span` cannot reach those methods, so it would have to reimplement `>>` / `>` / `~` — turning the oracle into a mirror of the code under test. The three methods read nothing but the nested-set integers (no parquet page, no row number), so a span built from plain data drives them exactly as a decoded one does; upstream's own `TestDescendantOf` already builds spans as bare struct literals on that basis. `NewSpan` is an exported spelling of that literal.
 - **[`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib)** — branch `cerberus-ddl`, **one patch (sqltemplates hoist)**. Surfaces the OTel-CH exporter's DDL templates (`sqltemplates`) as a Go API: `internal/schema/ddl/` renders `CREATE TABLE` from upstream's own templates — no hand-maintained DDL. Matches stock exporter DDL except the five metrics tables carry a **MetricName-first sort key**; the one deliberate divergence (see below).
 
 Each fork is wired via a `go.mod` `replace` directive pinning a **semver tag** at the head of the long-lived `cerberus-*` branch. The forks' default branch IS the `cerberus-*` branch (so Dependabot resolves tags against it). The collector-contrib fork also carries per-submodule tags (`exporter/clickhouseexporter/v…`, `internal/coreinternal/v…`, `pkg/core/xidutils/v…`, `pkg/translator/jaeger/v…`) at the same SHA, because Go's module proxy resolves submodule versions independently in a monorepo.
 
-The `grafana/loki/v3` and `grafana/tempo` libraries are consumed on **plain upstream requires** (no fork): `tempo` for the Apache `pkg/tempopb` wire types in the binary, and both for the AGPL test-only oracles described above.
+The `grafana/loki/v3` library is consumed on a **plain upstream require** (no fork), for the AGPL test-only oracles described above. `grafana/tempo` is required at an upstream pseudo-version and then `replace`d by the fork tag, so the `require` line records the upstream base the fork is rebased onto — which is what the version-skew gate below reads — while the fork tag is what actually compiles.
+
+Routing tempo through a fork does not move it into the binary. The replace applies to the whole module, but reachability is what the `agpl-clean` gate measures: `cmd/cerberus` still imports only the Apache-2.0 `pkg/tempopb` tree, and `pkg/traceql` / `tempodb/**` remain reachable exclusively from `agpl_oracle`-tagged test code.
 
 ## Why fork prometheus even though it is unpatched?
 
@@ -116,9 +119,16 @@ files, so the check needs no network call:
 
 For loki and tempo the pinned version is the one the `agpl_oracle` differential
 tests + the compat harness parse against (the binary itself links neither
-parser). For tempo the gate additionally cross-checks the committed
-`compatibility/tempo/upstream/VERSION` `upstream_commit` field against the same
-go.mod pseudo-version commit, so the vendored snapshot can't drift either.
+parser). For tempo the gate additionally cross-checks two more committed facts
+against that same go.mod pseudo-version commit: the
+`compatibility/tempo/upstream/VERSION` `upstream_commit` field, so the vendored
+snapshot can't drift; and the `replace` directive, which must point at
+`github.com/tsouza/tempo` on a `-cerberus-accessors` tag. That last assertion is
+what keeps the `require` line meaningful now that a `replace` supersedes it —
+without it, tempo could be silently repointed at an arbitrary module while the
+skew table above went on comparing a version nothing compiles against. Keeping
+the fork branch rebased onto that commit is the forks-monitor's job, the same
+contract the prometheus fork runs under.
 
 The Prometheus library reports `v0.(300+MINOR).PATCH` for release
 `v3.MINOR.PATCH` since the v3.0.0 release; the gate lowers the library version

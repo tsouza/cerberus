@@ -347,19 +347,33 @@ replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-
 // matters, instead of one PR per upstream release. See docs/upstream-
 // forks.md for the full flow.
 //
-// LogQL and TraceQL no longer route through a fork: cerberus parses both
+// Neither LogQL nor TraceQL is PARSED through a fork: cerberus parses both
 // with its own clean-room Apache reimplementations (internal/logql/lsyntax,
-// internal/logql/logpattern, internal/drain, internal/traceql/ast), so the
-// AGPL grafana/loki + grafana/tempo parser forks were dropped. The shipped
-// binary keeps a direct upstream require only for the Apache-licensed
-// grafana/tempo/pkg/tempopb wire types; the AGPL upstream parsers are
-// referenced solely by test-only oracles (agpl_oracle-tagged tests, the
-// test/oracle nested module, and the compatibility harnesses).
+// internal/logql/logpattern, internal/drain, internal/traceql/ast). The
+// shipped binary reaches into grafana/tempo only for the Apache-licensed
+// grafana/tempo/pkg/tempopb wire types; every AGPL package of either
+// upstream is referenced solely by test-only oracles (agpl_oracle-tagged
+// tests, the test/oracle nested module, and the compatibility harnesses),
+// and the agpl-clean gate fails the build if one becomes reachable from
+// ./cmd/cerberus.
 
 // prometheus: zero patches; the fork is a pure Dependabot watch boundary
 // scoped to promql/parser, model/labels, model/histogram, and a couple of
 // adjacent files cerberus reaches into.
 replace github.com/prometheus/prometheus => github.com/tsouza/prometheus v0.0.1-cerberus-parser
+
+// tempo: accessor-only patches, consumed by test-only oracles. TraceQL's
+// structural operators (`>>`, `>`, `~`) are declared on the traceql.Span
+// INTERFACE but implemented in tempodb/encoding/vparquet4 on an unexported
+// concrete type, which every one of them type-asserts its arguments back
+// to. A caller supplying its own traceql.Span therefore cannot reach them
+// at all. The fork exports vparquet4.NewSpan — a data-only constructor for
+// that same concrete type — so test/spec/parityoracle/traceql can drive
+// upstream's REAL structural semantics over spans read out of chDB instead
+// of reimplementing them, which would make the oracle a mirror. The tag
+// tracks the same pseudo-version base the `require` above pins; see
+// docs/upstream-forks.md and TestForkVersionSkew.
+replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.5-cerberus-accessors
 
 // otelc: hoists the ClickHouse exporter's sqltemplates out of `internal/`
 // so cerberus can import them as the schema source-of-truth. collector-
