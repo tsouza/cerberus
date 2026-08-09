@@ -455,8 +455,9 @@ func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerC
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(
 			"promql: %q is an exponential histogram metric; only a bare %q selector, "+
-				"sum() over one, histogram_quantile(), histogram_count(), histogram_sum(), "+
-				"and the %q/%q companion selectors are supported",
+				"sum() over one, rate()/increase() over one, histogram_quantile(), "+
+				"histogram_count(), histogram_sum(), and the %q/%q companion selectors "+
+				"are supported",
 			metricName, metricName, metricName+"_count", metricName+"_sum",
 		)
 	}

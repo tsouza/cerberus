@@ -13,6 +13,7 @@
         ],
         "callers": [
           "andInstantWindow",
+          "expHistogramRateWindowed",
           "lowerAbsentOverTime",
           "lowerHistogramQuantileAgg",
           "lowerHistogramQuantileNativeAgg",
@@ -42,6 +43,7 @@
         ],
         "callers": [
           "andInstantWindow",
+          "expHistogramRateWindowed",
           "lowerAbsentOverTime",
           "lowerHistogramQuantileAgg",
           "lowerHistogramQuantileNativeAgg",
@@ -70,6 +72,7 @@
         ],
         "callers": [
           "andInstantWindow",
+          "expHistogramRateWindowed",
           "lowerAbsentOverTime",
           "lowerHistogramQuantileAgg",
           "lowerHistogramQuantileNativeAgg",

@@ -73,10 +73,10 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:expHistogramSelectorRouting#554bf4d3",
-      "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
+      "site": "internal/promql/lower.go:expHistogramSelectorRouting#609f45fd",
+      "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum() over one, rate()/increase() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
-      "trigger_query": "rate(demo_latency_exp_hist[5m])",
+      "trigger_query": "avg(demo_latency_exp_hist)",
       "tracking_issue": 1772,
       "evidence": {
         "guard": [
