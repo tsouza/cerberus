@@ -34,6 +34,7 @@ func TestAGPLOracleTagSetCoverage(t *testing.T) {
 	agplOracleLaneScopes := []string{
 		"internal/",
 		"test/agpl_oracle/",
+		"test/spec/",
 		"test/surface-parity/",
 		"test/property/",
 	}

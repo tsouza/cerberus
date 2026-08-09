@@ -4,6 +4,10 @@
 
 -- query.logql --
 rate({service_name="api"}[5m]) > rate({service_name="api"}[5m])
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),

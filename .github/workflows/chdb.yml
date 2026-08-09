@@ -244,7 +244,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ql: [promql, logql, traceql]
+        # `tags` is per-leg because the LogQL leg additionally runs the
+        # parity check against the REAL upstream Loki engine, which is
+        # AGPLv3 and therefore lives behind `agpl_oracle` (invariant 14).
+        # Every `//go:build` line in this tree is a single term, so the
+        # composition `chdb && agpl_oracle` is carried by the synthetic
+        # `chdb_agpl_oracle` tag — the same three-tag set property.yml
+        # already passes. Without them the Loki oracle compiles out and
+        # RunParity FAILS rather than silently checking nothing; see
+        # test/spec/parity_chdb.go's lokiParityEvaluator.
+        include:
+          - ql: promql
+            tags: chdb
+          - ql: logql
+            tags: chdb,agpl_oracle,chdb_agpl_oracle
+          - ql: traceql
+            tags: chdb
     steps:
       - uses: actions/checkout@v7
         if: needs.changes.outputs.docs_only != 'true'
@@ -281,9 +296,13 @@ jobs:
       # internal/logql nor internal/traceql, and this step ran only the
       # test/spec side, so an optimizer bug that rewrote a fixture's
       # answer had nothing standing in its way.
+      #
+      # ./internal/<ql>/ additionally runs RunParity for every fixture
+      # carrying a `parity:` section — the reference-engine comparison
+      # that has no GOLDEN_UPDATE branch at all (test/spec/parity.go).
       - name: Run TXTAR round-trip (${{ matrix.ql }})
         if: needs.changes.outputs.docs_only != 'true'
-        run: go test -tags chdb -count=1 ./test/spec/${{ matrix.ql }}/... ./internal/${{ matrix.ql }}/...
+        run: go test -tags ${{ matrix.tags }} -count=1 ./test/spec/${{ matrix.ql }}/... ./internal/${{ matrix.ql }}/...
 
   # `perf-guards` runs the chDB-tagged deterministic perf-regression
   # ASSERTIONS under test/perf/ — the load-bearing fix for task #73.

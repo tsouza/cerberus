@@ -1,5 +1,9 @@
 -- query.logql --
 max by (tier) (avg_over_time({job="api"} | logfmt | unwrap latency [5m]) without (pod))
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String),

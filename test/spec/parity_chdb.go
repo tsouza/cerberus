@@ -15,13 +15,57 @@ import (
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
 
+// parityQuery is one evaluation to run against a reference engine,
+// independent of which engine answers it.
+type parityQuery struct {
+	// Expr is the query text, verbatim from the fixture.
+	Expr string
+
+	// Start is the instant for an instant query, or the range start.
+	Start time.Time
+
+	// End equals Start for an instant query.
+	End time.Time
+
+	// Step is zero for an instant query, and the range step otherwise.
+	Step time.Duration
+}
+
+// referenceSample is one output sample, in the single shape both oracles
+// are flattened into so one comparator can serve every head.
+type referenceSample struct {
+	Labels  map[string]string
+	TMillis int64
+	Value   float64
+}
+
+// lokiParityEvaluator is the seam onto the AGPL-licensed Loki oracle.
+//
+// It is nil unless the `chdb_agpl_oracle` build tag is set, which is what
+// compiles parity_loki_chdb.go and its init(). The indirection is not
+// decoration: `github.com/grafana/loki/v3/pkg/logql` is AGPLv3 and this
+// file is in the plain `chdb` build configuration, so a direct import
+// here would drag AGPL code into every chdb-tagged lane. Every
+// `//go:build` line in this tree is a single term (see
+// test/regression/lint_build_tags_test.go), so `chdb && agpl_oracle`
+// cannot be spelled directly and `chdb_agpl_oracle` — the synthetic tag
+// CI already sets alongside both — carries the composition.
+//
+// A nil evaluator with a Loki-enrolled fixture is a hard failure, never a
+// skip: it means the fixture's oracle was compiled out of the lane that
+// was supposed to run it, which is exactly the silent non-check this
+// whole mechanism exists to prevent.
+var lokiParityEvaluator func(
+	t *testing.T, db *sql.DB, c *Case, q parityQuery,
+) ([]referenceSample, error)
+
 // RunParity checks a fixture's answer against a REAL reference engine.
 //
 // It is the half of the parity layer that must live in package spec,
 // because it touches the chDB session and therefore chdbEngineMu. The
-// evaluation itself lives in test/spec/parityoracle/promql, which imports
-// nothing from cerberus — see that package's doc comment, and the
-// disjointness gate in test/regression that enforces it.
+// evaluation itself lives in test/spec/parityoracle/{promql,logql}, which
+// import nothing from cerberus — see those packages' doc comments, and
+// the disjointness gate in test/regression that enforces it.
 //
 // # There is no update path here, on purpose
 //
@@ -45,9 +89,6 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	if !enrolled {
 		return
 	}
-	if p.Oracle != OraclePrometheus {
-		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
-	}
 
 	rt, err := LoadRoundTrip(c)
 	if err != nil {
@@ -61,9 +102,13 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 		)
 	}
 
-	query, ok := c.Section("query.promql")
+	querySection := parityQuerySections[p.Oracle]
+	if querySection == "" {
+		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
+	}
+	query, ok := c.Section(querySection)
 	if !ok {
-		t.Fatalf("fixture %s: `parity:` requires a query.promql section", c.Name)
+		t.Fatalf("fixture %s: oracle %q requires a %s section", c.Name, p.Oracle, querySection)
 	}
 
 	// Serialize the whole engine span, same contract RunRoundTrip honours.
@@ -73,28 +118,101 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 	db := OpenChDB(t)
 	ApplySeed(t, db, rt.Seed)
 
+	q := parityQuery{
+		Expr:  strings.TrimSpace(query),
+		Start: evalStart,
+		End:   evalEnd,
+		Step:  step,
+	}
+
+	var got []referenceSample
+	switch p.Oracle {
+	case OraclePrometheus:
+		got, err = evaluatePrometheusParity(t, db, c, q)
+	case OracleLoki:
+		if lokiParityEvaluator == nil {
+			t.Fatalf(
+				"fixture %s is enrolled against the %q oracle, but this lane was built without "+
+					"the `chdb_agpl_oracle` build tag, so the Loki oracle is compiled out and the "+
+					"fixture would be checked against nothing. Run this package with "+
+					"`-tags chdb,agpl_oracle,chdb_agpl_oracle`.", c.Name, p.Oracle,
+			)
+		}
+		got, err = lokiParityEvaluator(t, db, c, q)
+	default:
+		t.Fatalf("fixture %s: oracle %q has no runner in this lane", c.Name, p.Oracle)
+	}
+	if err != nil {
+		t.Fatalf("fixture %s: %v", c.Name, err)
+	}
+
+	compareAgainstReference(t, c, p, rt, got, comparesTimestamps(p.Oracle, step))
+}
+
+// parityQuerySections maps an oracle to the TXTAR section holding the
+// query it answers. A missing entry is what makes an oracle with no
+// runner in this lane fail loudly rather than evaluate nothing.
+var parityQuerySections = map[string]string{
+	OraclePrometheus: "query.promql",
+	OracleLoki:       "query.logql",
+}
+
+// comparesTimestamps decides whether the output timestamps participate in
+// the comparison, and the answer differs by head because the two heads
+// stamp an INSTANT result differently.
+//
+// Prometheus stamps an instant result at the EVALUATION INSTANT, while
+// cerberus's PromQL row carries the source sample time (`max(TimeUnix) AS
+// lwr_ts`) and the HTTP layer is what re-presents it at eval time.
+// Comparing those two numbers would compare two different quantities and
+// fail every sparse fixture for a reason unrelated to the query. Nothing
+// is lost from the bug classes this exists to catch: `timestamp()`
+// reports the sample's time as a VALUE.
+//
+// The LogQL instant lowering has no such asymmetry — cerberus projects
+// `now64(?) AS TimeUnix`, the eval instant itself, which is exactly what
+// Loki stamps — so its timestamps ARE compared, and a fixture that
+// anchored its answer to the wrong instant fails here.
+//
+// A RANGE query on either head stamps at step anchors on both sides, so
+// timestamps are always compared there.
+func comparesTimestamps(oracleName string, step time.Duration) bool {
+	return step > 0 || oracleName == OracleLoki
+}
+
+// evaluatePrometheusParity answers q with the real upstream Prometheus
+// engine over the rows the seed actually landed in chDB.
+func evaluatePrometheusParity(
+	t *testing.T, db *sql.DB, c *Case, q parityQuery,
+) ([]referenceSample, error) {
+	t.Helper()
+
 	series, err := readSeededSeries(db)
 	if err != nil {
-		t.Fatalf("read seeded series back: %v", err)
+		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
 	if len(series) == 0 {
-		t.Fatalf(
+		return nil, fmt.Errorf(
 			"fixture %s: seed produced no readable series, so the reference engine would "+
 				"trivially agree with any answer", c.Name,
 		)
 	}
 
 	got, err := oracle.Evaluate(t, series, oracle.Query{
-		Expr:  trimQuery(query),
-		Start: evalStart,
-		End:   evalEnd,
-		Step:  step,
+		Expr:  q.Expr,
+		Start: q.Start,
+		End:   q.End,
+		Step:  q.Step,
 	})
 	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+		return nil, err
 	}
 
-	compareAgainstReference(t, c, p, rt, got, step > 0)
+	out := make([]referenceSample, 0, len(got))
+	for _, r := range got {
+		out = append(out, referenceSample{Labels: r.Labels, TMillis: r.TMillis, Value: r.Value})
+	}
+	return out, nil
 }
 
 // seededMetricsTables are the metric tables a PromQL fixture's seed may
@@ -167,27 +285,11 @@ func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series) error {
 	return rows.Err()
 }
 
-// compareAgainstReference is the assertion itself.
-//
-// # Why an instant query does not compare timestamps
-//
-// Prometheus stamps an INSTANT query's output at the EVALUATION INSTANT,
-// not at the source sample's own time. Cerberus's SQL row carries the
-// source sample time (`max(TimeUnix) AS lwr_ts`), and the HTTP layer is
-// what presents it at eval time. Comparing those two numbers at this layer
-// would compare two different quantities and fail every sparse fixture for
-// a reason unrelated to the query — so for an instant query the comparison
-// is over label sets and VALUES, and the reference's own timestamps are
-// asserted to be the eval instant instead.
-//
-// Nothing is lost from the bug classes this exists to catch: `timestamp()`
-// reports the sample's time as a VALUE, so a wrong sample-time selection
-// still shows up in the value comparison.
-//
-// A RANGE query is different — both sides stamp at step anchors — so
-// timestamps ARE compared there.
+// compareAgainstReference is the assertion itself. See
+// [comparesTimestamps] for which axes participate and why.
 func compareAgainstReference(
-	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, got []oracle.Result, isRange bool,
+	t *testing.T, c *Case, p *Parity, rt *RoundTripSections,
+	got []referenceSample, compareTimestamps bool,
 ) {
 	t.Helper()
 
@@ -213,11 +315,15 @@ func compareAgainstReference(
 				c.Name, i, g.Labels, w.Labels)
 			continue
 		}
+		// oracle.EqualValues is the promql oracle's NaN-aware float
+		// predicate. It is used for BOTH heads on purpose: sample equality
+		// is one rule, not one per head, and duplicating it would let the
+		// two drift into disagreeing about what "equal" means.
 		if !oracle.EqualValues(g.Value, w.Value) {
 			t.Errorf("fixture %s sample %d (%v): value differs\n  reference: %v\n  cerberus:  %v",
 				c.Name, i, g.Labels, g.Value, w.Value)
 		}
-		if isRange && g.TMillis != w.TMillis {
+		if compareTimestamps && g.TMillis != w.TMillis {
 			t.Errorf("fixture %s sample %d (%v): timestamp differs\n  reference: %d\n  cerberus:  %d",
 				c.Name, i, g.Labels, g.TMillis, w.TMillis)
 		}
@@ -227,8 +333,6 @@ func compareAgainstReference(
 		t.Logf("fixture %s compared with scope %q", c.Name, p.Scope)
 	}
 }
-
-func trimQuery(q string) string { return strings.TrimSpace(q) }
 
 // labelKey renders a label set as a stable, comparable string. Both sides
 // are keyed through this one function so series identity can never differ
@@ -298,8 +402,8 @@ const (
 // whose projection is not the canonical four-column Sample shape cannot be
 // parity-checked at this layer, and silently comparing nothing would be
 // the hollow green this mechanism exists to prevent.
-func referenceShapeOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error) {
-	out := make([]oracle.Result, 0, len(rt.ExpectedRows))
+func referenceShapeOfExpectedRows(rt *RoundTripSections) ([]referenceSample, error) {
+	out := make([]referenceSample, 0, len(rt.ExpectedRows))
 	for i, row := range rt.ExpectedRows {
 		if len(row) != expectedRowArity {
 			return nil, fmt.Errorf(
@@ -332,7 +436,7 @@ func referenceShapeOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 		if name != "" {
 			lbls[promNameLabel] = name
 		}
-		out = append(out, oracle.Result{Labels: lbls, TMillis: ts, Value: value})
+		out = append(out, referenceSample{Labels: lbls, TMillis: ts, Value: value})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {

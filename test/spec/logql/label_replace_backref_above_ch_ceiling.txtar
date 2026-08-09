@@ -1,5 +1,9 @@
 -- query.logql --
 label_replace(sum by (host) (count_over_time({job="api"}[5m])), "tenth", "g-$10-tail", "host", "(.)(.)(.)(.)(.)(.)(.)(.)(.)(.)")
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),

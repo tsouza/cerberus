@@ -1,5 +1,9 @@
 -- query.logql --
 vector(5) * on() count_over_time({service_name="api"}[5m])
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
