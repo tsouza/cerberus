@@ -1,5 +1,9 @@
 -- query.promql --
 up @ 1767225600
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --

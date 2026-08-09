@@ -13,6 +13,10 @@
 # RangeLWR fan-out it replaces.
 -- query.promql --
 up
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- experimental_ts_grid_resample --

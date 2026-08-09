@@ -14,6 +14,10 @@
 # The intersection is the single anchor 00:02.
 -- query.promql --
 demo_dense_bytes and max_over_time(demo_sparse_bytes[3m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

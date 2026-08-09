@@ -1,5 +1,9 @@
 -- query.promql --
 topk without(instance) (5, demo_memory_usage_bytes)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --
