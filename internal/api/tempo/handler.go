@@ -1051,10 +1051,14 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// row per matching trace). lowerAggregate piggybacks the
 		// envelope columns onto the AggFuncs list (`any(SpanName) AS
 		// MetricName`, `any(ResourceAttributes) AS ResourceAttrs`,
-		// `min(Timestamp) AS TimeUnix`) so the wrap projection just
-		// reads them out + merges the TraceId into Attributes via
-		// mapConcat (same `__cerberus_traceID` reserved-key pattern as
-		// canonicalSampleProjections). boundNewestTraces caps the result to
+		// `any(ParentSpanId) AS ParentSpanId`, `min(Timestamp) AS
+		// TimeUnix`) so the wrap projection just reads them out +
+		// merges TraceId and ParentSpanId into Attributes via mapConcat
+		// (same `__cerberus_traceID` / `__cerberus_parentSpanID`
+		// reserved-key pattern as canonicalSampleProjections — the
+		// latter is what lets the /api/search root-resolution machinery
+		// correct an arbitrarily-picked non-root row, see issue #1481).
+		// boundNewestTraces caps the result to
 		// the newest `limit` qualifying traces server-side, below the
 		// projection so the TraceStartNs sort key is still in scope.
 		return &chplan.Project{
@@ -1503,9 +1507,10 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 // when the plan root is the per-trace spanset Aggregate shape
 // produced by internal/traceql/aggregate.go. The inner Aggregate
 // already emits the per-trace envelope columns (MetricName,
-// ResourceAttrs, TimeUnix) alongside (TraceId, Value, TraceStartNs,
-// TraceEndNs); this outer Project merges TraceId into Attributes via
-// the `__cerberus_traceID` reserved-key pattern, threads the derived
+// ResourceAttrs, ParentSpanId, TimeUnix) alongside (TraceId, Value,
+// TraceStartNs, TraceEndNs); this outer Project merges TraceId (and
+// ParentSpanId) into Attributes via the `__cerberus_traceID` /
+// `__cerberus_parentSpanID` reserved-key pattern, threads the derived
 // whole-trace duration `(TraceEndNs - TraceStartNs)` via
 // `__cerberus_traceDurationNs`, and casts Value to float64 — same
 // wire shape as canonicalSampleProjections but reading from the
@@ -1530,6 +1535,20 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 // trace-wide duration while keeping the non-aggregate path's
 // per-row-Duration semantics intact (the slot is absent there, so
 // the shaper falls back to Sample.Value).
+//
+// __cerberus_parentSpanID (searchKeyParentSpanID) carries the
+// Aggregate's `any(ParentSpanId) AS ParentSpanId` column (see
+// aggregate.go's aggParentSpanIDAlias) verbatim — same treatment
+// canonicalSampleProjections gives the scan-level ParentSpanId column.
+// Populating this slot is what lets toTraceSummaries' observeRoot
+// classify each spanset-aggregate row as root / non-root instead of
+// silently defaulting to "no root seen" (the reserved-slot-absent
+// path), and — when the row isn't the true root — fall through to the
+// same resolveTraceRoots follow-up lookup every other /api/search
+// shape uses to recover the real rootServiceName / rootTraceName
+// (issue #1481: the `any()` pick used for MetricName / ResourceAttrs
+// is order-dependent and was previously surfaced to the wire
+// unverified).
 func spansetAggregateSampleProjections() []chplan.Projection {
 	traceDurationNs := &chplan.Binary{
 		Op:    chplan.OpSub,
@@ -1539,6 +1558,8 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros("TraceId"),
+		&chplan.LitString{V: searchKeyParentSpanID},
+		stripLeadingHexZeros("ParentSpanId"),
 		&chplan.LitString{V: searchKeyTraceDurationNs},
 		// toString keeps the merged Map(String,String) homogeneous;
 		// the shaper parses the int back out on the Go side.

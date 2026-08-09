@@ -22,14 +22,14 @@ INSERT INTO otel_traces VALUES
 [3] int64 = 0
 -- chplan --
 Filter predicate=(Value > 0)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] =~ ".+")
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 [
-  ["GET /a", {"__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3],
-  ["GET /b", {"__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "t2", "service.name": "checkout"}, "2024-01-01T00:00:03Z", 2],
-  ["POST /c", {"__cerberus_traceDurationNs": "10000000", "__cerberus_traceID": "t3", "service.name": "orders"}, "2024-01-01T00:00:05Z", 1]
+  ["GET /a", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3],
+  ["GET /b", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "t2", "service.name": "checkout"}, "2024-01-01T00:00:03Z", 2],
+  ["POST /c", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "10000000", "__cerberus_traceID": "t3", "service.name": "orders"}, "2024-01-01T00:00:05Z", 1]
 ]
