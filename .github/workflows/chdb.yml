@@ -353,7 +353,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30m, not 20m: TestCardinalityRatchet profiles the WHOLE corpus and its
+    # runtime scales with it (issue #2002). A CI run on 2026-08-09 hit the
+    # timeout at exactly 1020s (17m) under a genuinely isolated runner — a
+    # real measurement, not local contention — after that day's
+    # promql-parity-enrolment wave grew the corpus considerably. See the
+    # Justfile's perf-chdb recipe for the paired -timeout bump.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 

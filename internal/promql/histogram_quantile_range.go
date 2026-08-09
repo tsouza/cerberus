@@ -115,6 +115,37 @@ func aggWindowFor(shape histogramAggShape) histogramWindow {
 	}
 }
 
+// fanoutWindowBoundsExpr renders the [rangeStart, rangeEnd] SQL
+// expressions for one anchor's fan-out window `(anchor - offset -
+// lookback, anchor - offset]` — the range-mode counterpart of
+// windowRightBoundExpr / windowLeftBoundExpr, needed for the identical
+// reason: the `rate` / `increase` window fold's boundary-extrapolation
+// correction (histogramExtrapolationFactorExpr) has to read the SAME
+// window edges [chplan.RangeBucketFanout] itself filters each anchor's
+// rows against, or the two would silently drift apart.
+func fanoutWindowBoundsExpr(anchorRef chplan.Expr, win histogramWindow) (start, end chplan.Expr) {
+	end = anchorRef
+	if win.offset != 0 {
+		end = &chplan.Binary{
+			Op:   chplan.OpSub,
+			Left: anchorRef,
+			Right: &chplan.FuncCall{
+				Name: "toIntervalNanosecond",
+				Args: []chplan.Expr{&chplan.LitInt{V: win.offset.Nanoseconds()}},
+			},
+		}
+	}
+	start = &chplan.Binary{
+		Op:   chplan.OpSub,
+		Left: end,
+		Right: &chplan.FuncCall{
+			Name: "toIntervalNanosecond",
+			Args: []chplan.Expr{&chplan.LitInt{V: win.lookback.Nanoseconds()}},
+		},
+	}
+	return start, end
+}
+
 // latestSampleAgg collapses a filtered histogram scan to the newest
 // sample per series. Reference PromQL resolves a bare selector to at most
 // ONE sample per series, so without this collapse the quantile is
@@ -283,9 +314,13 @@ func lowerHistogramQuantileClassicAggRange(
 		classicBucketWindowAggs(s, shape.windowFn), s, ctx,
 	)
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
+	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, aggWindowFor(shape))
 	perSeries := classicBucketWindowReshape(
 		fanout,
-		histogramWindowFold(shape.windowFn, classicBucketWindowTemporalityExpr(s, shape.windowFn)),
+		// countValues=nil — see classicBucketWindowStage's identical call
+		// for why the classic caller reads durationToZero off each rung's
+		// own values rather than a separate count series.
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil, classicBucketWindowTemporalityExpr(s, shape.windowFn)),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -620,6 +655,7 @@ func buildHistogramNativeRangeTreeMerge(
 	ctx lowerCtx,
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
+	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
 
 	// Stage 1: per-(anchor, series) window reduction. The fan-out owns
 	// the sample floor natively through RangeBucketFanout.MinSamples,
@@ -632,11 +668,14 @@ func buildHistogramNativeRangeTreeMerge(
 			[]string{s.AttributesColumn},
 			expHistogramWindowAggs(s), s, ctx,
 		),
+		// countValues: the range-mode fanout collects the SAME
+		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
+		// for the instant path — see expHistogramWindowCountValuesExpr.
 		// nil temporality: the exponential/native-histogram path stays out
 		// of #1628's scope (expHistogramWindowAggs has no
 		// hqWindowTemporalityAlias aggregate), so this keeps applying the
 		// CUMULATIVE branch unconditionally, byte-identical to before.
-		histogramWindowFold(shape.windowFn, nil),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
