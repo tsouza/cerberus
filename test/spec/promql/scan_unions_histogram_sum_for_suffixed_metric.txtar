@@ -1,5 +1,9 @@
 -- query.promql --
 system_cpu_logical_count
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = "system_cpu_logical_count"
 [1] string = "service.name"
