@@ -1,8 +1,10 @@
 package chsql
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
@@ -140,38 +142,14 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 
 	qb := NewQuery()
 	if m.RootLookup != nil {
-		if m.TraceIDColumn == "" {
-			return nil, fmt.Errorf("%w: MetricsCompare.RootLookup set but TraceIDColumn empty", ErrUnsupported)
-		}
-		root, rerr := e.subqueryFrag(m.RootLookup)
+		root, rerr := e.compareRootLeg(m, bound, inner)
 		if rerr != nil {
 			return nil, rerr
-		}
-		if bound != nil {
-			root = bindRootLookupTraceIDTsEnvelope(root, bound.rootEnvelope)
-		}
-		// Right ('r') leg: bound the per-trace root lookup to the same
-		// windowed cohort the 's' leg scans, restricting root rows to
-		// `TraceId IN (<bounded s trace-ids>)`. When emitRangeWindowCompare
-		// has already pushed that same predicate into RootLookup's own
-		// scan-level Filter (bound.rootSeeded — see
-		// windowRootLookupTraceIDSeed), boundedRootLeg's wrap here would
-		// only re-filter an already-seeded result by the identical
-		// trace-id set, so it's skipped. It stays as the correctness
-		// fallback for the rare RootLookup shape the scan-level pushdown
-		// can't reach (rootLookupSpansTable finds no matching Scan): a
-		// plain Timestamp bound on the root leg would drop enrichment for
-		// traces whose root span straddles the window edge, so seeding by
-		// the cohort's trace-id set is what keeps every root the LEFT
-		// JOIN can match (the join output is determined by s.TraceId,
-		// already windowed) while still scoping the leg to the cohort.
-		if bound != nil && !bound.rootSeeded {
-			root = e.boundedRootLeg(root, m.TraceIDColumn, inner, bound)
 		}
 		qb.From(aliasedFrag(sLeg, compareJoinLeftAlias)).
 			Join(
 				LeftJoin,
-				aliasedFrag(root, compareJoinRightAlias),
+				aliasedFrag(Subquery(root), compareJoinRightAlias),
 				Eq(
 					qualColFrag(compareJoinLeftAlias, m.TraceIDColumn),
 					qualColFrag(compareJoinRightAlias, m.TraceIDColumn),
@@ -192,6 +170,56 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 	return qb, nil
 }
 
+// compareRootLeg composes the join's right ('r') leg — the per-trace root
+// lookup — as a relation in its own right: RootLookup rendered, carrying the
+// trace_id_ts envelope binding its own scan filter reads
+// (bindRootLookupTraceIDTsEnvelope), and wrapped in boundedRootLeg's
+// post-aggregate cohort filter when the scan-level seed did not land.
+//
+// It returns a Subqueryable rather than a Frag because the leg has exactly one
+// composition point and two renderings. Subquery(leg) parenthesises it for the
+// join's right side, which is what compareBaseQuery above does; leg's own
+// subquerySQL() yields the SAME text as a standalone statement together with
+// precisely the args that text binds, which is what EmitCompareRootLeg hands
+// back. One constructor feeding both means a caller that needs the leg alone —
+// to run it, or to EXPLAIN its part pruning without the matrix query around it
+// — asks the emitter for it instead of recovering it from the emitted
+// statement by scanning for a marker and counting parens and `?`s.
+//
+// Why the leg is bounded the way it is: it must see the same windowed cohort
+// the 's' leg scans, restricted to `TraceId IN (<bounded s trace-ids>)`. When
+// emitRangeWindowCompare has already pushed that predicate into RootLookup's
+// own scan-level Filter (bound.rootSeeded — see windowRootLookupTraceIDSeed),
+// boundedRootLeg's wrap here would only re-filter an already-seeded result by
+// the identical trace-id set, so it is skipped. It stays as the correctness
+// fallback for the rare RootLookup shape the scan-level pushdown cannot reach
+// (rootLookupSpansTable finds no matching Scan): a plain Timestamp bound on the
+// root leg would drop enrichment for traces whose root span straddles the
+// window edge, so seeding by the cohort's trace-id set is what keeps every root
+// the LEFT JOIN can match (the join output is determined by s.TraceId, already
+// windowed) while still scoping the leg to the cohort.
+func (e *emitter) compareRootLeg(m *chplan.MetricsCompare, bound *compareScanBound, inner Frag) (Subqueryable, error) {
+	if m.RootLookup == nil {
+		return nil, fmt.Errorf("%w: MetricsCompare.RootLookup is nil (no root leg to render)", ErrUnsupported)
+	}
+	if m.TraceIDColumn == "" {
+		return nil, fmt.Errorf("%w: MetricsCompare.RootLookup set but TraceIDColumn empty", ErrUnsupported)
+	}
+	sql, args, err := e.renderNode(m.RootLookup)
+	if err != nil {
+		return nil, err
+	}
+	var leg Subqueryable = PreRenderedSQL{SQL: sql, Args: args}
+	if bound == nil {
+		return leg, nil
+	}
+	leg = bindRootLookupTraceIDTsEnvelope(leg, bound.rootEnvelope)
+	if !bound.rootSeeded {
+		leg = e.boundedRootLeg(leg, m.TraceIDColumn, inner, bound)
+	}
+	return leg, nil
+}
+
 // boundedRootLeg wraps the RENDERED (post-aggregate) root-lookup subquery,
 // restricting its output rows to
 // `<traceID> IN (SELECT <traceID> FROM (<bounded inner>) AS _cmp_seed)`,
@@ -205,16 +233,15 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 // scan-level OOM windowRootLookupTraceIDSeed exists to fix. _cmp_seed
 // aliases the seed subquery so CH's analyzer resolves the projected
 // trace-id column. See compareScanBound for the why.
-func (e *emitter) boundedRootLeg(root Frag, traceIDCol string, inner Frag, bound *compareScanBound) Frag {
+func (e *emitter) boundedRootLeg(root Subqueryable, traceIDCol string, inner Frag, bound *compareScanBound) Subqueryable {
 	boundedInner := NewQuery().Select(Star()).From(inner).Where(bound.lo, bound.hi)
 	seedIDs := NewQuery().
 		Select(Col(traceIDCol)).
 		From(aliasedFrag(boundedInner.Frag(), "_cmp_seed"))
 	return NewQuery().
 		Select(Star()).
-		From(root).
-		Where(In(Col(traceIDCol), Spliced(seedIDs))).
-		Frag()
+		From(Subquery(root)).
+		Where(In(Col(traceIDCol), Spliced(seedIDs)))
 }
 
 // compareSeedNode builds `SELECT <traceIDCol> FROM (<inner>)` [with
@@ -445,22 +472,22 @@ func rootLookupTraceIDTsBounds(
 // puts them there); declaring the binding at the top left the root leg a
 // fragment that could not be read, reasoned about, or executed without the rest
 // of the statement around it. Declared here, the leg is a complete statement:
-// whatever renders it — the compare join, or a perf guard extracting the leg to
-// EXPLAIN its part pruning in isolation — gets the binding with it.
+// whatever renders it — the compare join, or a perf guard that asks
+// EmitCompareRootLeg for the leg to EXPLAIN its part pruning in isolation —
+// gets the binding with it.
 //
 // The wrapper is a `SELECT * FROM (<root>)`, the same typed shape emitBound
 // uses to attach chplan.BoundedTraceScopeAlias to a rendered plan: `SELECT *`
 // forwards the root lookup's own column names and row shape unchanged, so the
 // join's `ON s.TraceId = r.TraceId` resolves exactly as it did.
-func bindRootLookupTraceIDTsEnvelope(root Frag, envelope *QueryBuilder) Frag {
+func bindRootLookupTraceIDTsEnvelope(root Subqueryable, envelope *QueryBuilder) Subqueryable {
 	if envelope == nil {
 		return root
 	}
 	return NewQuery().
 		WithScalar(chplan.TraceIDTsEnvelopeAlias, envelope).
 		Select(Star()).
-		From(root).
-		Frag()
+		From(Subquery(root))
 }
 
 // pushPredicateToSpansScanFilter walks n in place looking for the Filter
@@ -573,20 +600,13 @@ func (e *emitter) emitMetricsCompare(m *chplan.MetricsCompare) error {
 // scan-bound pushdown); see the package comment at the top of this
 // file for the SQL skeleton.
 func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.MetricsCompare) error {
-	if r.TimestampColumn == "" {
-		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsCompare input)", ErrUnsupported)
-	}
-	if r.Step <= 0 {
-		return fmt.Errorf("%w: RangeWindow wrapping MetricsCompare requires Step > 0", ErrUnsupported)
+	rangeNS, err := compareMatrixRangeNS(r)
+	if err != nil {
+		return err
 	}
 
 	end := endExprFrag(r)
 	stepNS := r.Step.Nanoseconds()
-	rangeDur := r.Range
-	if rangeDur == 0 {
-		rangeDur = r.Step
-	}
-	rangeNS := rangeDur.Nanoseconds()
 
 	var numAnchors int64
 	switch {
@@ -603,6 +623,66 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	}
 
 	tsCol := r.TimestampColumn
+	m, bound, err := e.compareWindowedScanBound(r, m, rangeNS)
+	if err != nil {
+		return err
+	}
+	base, err := e.compareBaseQuery(m, bound, tsCol)
+	if err != nil {
+		return err
+	}
+
+	selA, attrA, valA := compareSelOut(m), compareAttrOut(m), compareValOut(m)
+
+	fanout := NewQuery().From(base.Frag())
+	fanout.Select(Col(selA))
+	fanout.SelectAs(compareTupleElementFrag(1), attrA)
+	fanout.SelectAs(compareTupleElementFrag(2), valA)
+	fanout.SelectAs(
+		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
+		RangeWindowAnchorAlias,
+	)
+
+	outer := NewQuery().From(fanout.Frag())
+	outer.Select(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
+	outer.SelectAs(compareCountValueFrag(), compareValueOut(m))
+	outer.GroupBy(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
+
+	return e.emitSelect(outer)
+}
+
+// compareMatrixRangeNS validates the matrix wrapper's required fields and
+// returns the anchor lookback in nanoseconds: RangeWindow.Range, defaulting to
+// Step when unset. emitRangeWindowCompare and EmitCompareRootLeg both go
+// through it so the scan window they derive comes from one reading of the same
+// fields.
+func compareMatrixRangeNS(r *chplan.RangeWindow) (int64, error) {
+	if r.TimestampColumn == "" {
+		return 0, fmt.Errorf("%w: RangeWindow.TimestampColumn unset (required for MetricsCompare input)", ErrUnsupported)
+	}
+	if r.Step <= 0 {
+		return 0, fmt.Errorf("%w: RangeWindow wrapping MetricsCompare requires Step > 0", ErrUnsupported)
+	}
+	rangeDur := r.Range
+	if rangeDur == 0 {
+		rangeDur = r.Step
+	}
+	return rangeDur.Nanoseconds(), nil
+}
+
+// compareWindowedScanBound derives the matrix path's scan-bound pushdown: the
+// (Start-range, End] Timestamp window each MergeTree leg of the compare join
+// carries in its own scan, plus — when there is a root lookup — the clone of m
+// whose RootLookup has the windowed cohort seed pushed onto its physical scan.
+// Returns m and a nil bound unchanged when the request carries no window.
+//
+// Split out of emitRangeWindowCompare so EmitCompareRootLeg reaches the exact
+// same bound the matrix statement embeds; a second derivation would be a second
+// source of truth for which window the root leg is read under.
+func (e *emitter) compareWindowedScanBound(
+	r *chplan.RangeWindow, m *chplan.MetricsCompare, rangeNS int64,
+) (*chplan.MetricsCompare, *compareScanBound, error) {
+	tsCol := r.TimestampColumn
 	// Push the (Start-range, End] Timestamp window INTO each scan of the
 	// compare join (the 's' span scan + the seeded root leg) rather than
 	// above the join where CH 24.12 cannot prune it. Gated on both Start
@@ -613,7 +693,7 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 	// Tempo head), so it enforces in prod but is a no-op for an isolated emit
 	// that did not set a spans table.
 	if err := requireInnerSpansScanBound(r, m.Inner, e.spansTable); err != nil {
-		return err
+		return nil, nil, err
 	}
 	var bound *compareScanBound
 	if !r.Start.IsZero() && !r.End.IsZero() {
@@ -691,26 +771,112 @@ func (e *emitter) emitRangeWindowCompare(r *chplan.RangeWindow, m *chplan.Metric
 		bound = &boundCopy
 		m = &windowed
 	}
-	base, err := e.compareBaseQuery(m, bound, tsCol)
+	return m, bound, nil
+}
+
+// EmitCompareRootLeg renders the root-lookup ('r') leg of a compare matrix
+// query on its own: the SQL the compare join splices as its right-hand side,
+// returned as a standalone statement paired with exactly the args that text
+// binds, in the order it binds them.
+//
+// It is the emitter's answer to "give me that sub-relation", and it exists
+// because the leg is worth inspecting and running by itself — the trace_id_ts
+// envelope's whole claim is that this leg partition-prunes (#1443), which is a
+// property of the leg, not of the matrix query wrapped around it. Without a
+// boundary a caller has to recover the leg from the emitted statement by
+// finding a `LEFT JOIN (` marker, counting parens to its match, and counting
+// `?` placeholders to guess which slice of the args belongs to it — three
+// assumptions about emitter internals (that the join side is parenthesised,
+// that this alias opens it, that args are appended in text order) that nothing
+// pins and any clause reordering silently breaks.
+//
+// The leg comes from compareRootLeg, the same constructor compareBaseQuery
+// composes the join from, after the same window derivation
+// (compareWindowedScanBound) and the same emit-chokepoint preparation
+// chsql.Emit applies to the plan. So the returned text is the leg Emit's own
+// statement contains, byte for byte, and running it is running what production
+// runs — not a hand-typed approximation of it.
+//
+// The leg is self-contained: bindRootLookupTraceIDTsEnvelope declares the
+// trace_id_ts scalar binding on the leg itself precisely so it carries its
+// readers' declaration with it.
+//
+// Returns ErrUnsupported when r is not a compare matrix wrapper with a root
+// lookup — a nil RangeWindow, a non-MetricsCompare input, a missing
+// TimestampColumn or Step, a nil Inner, or a MetricsCompare with no RootLookup
+// (there is no root leg to render).
+func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []any, error) {
+	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
+	defer span.End()
+
+	fail := func(err error) (string, []any, error) {
+		span.RecordError(err)
+		return "", nil, err
+	}
+	if r == nil {
+		return fail(fmt.Errorf("%w: RangeWindow is nil", ErrUnsupported))
+	}
+	rangeNS, err := compareMatrixRangeNS(r)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 
-	selA, attrA, valA := compareSelOut(m), compareAttrOut(m), compareValOut(m)
+	// The same chokepoint preparation Emit runs on a plan before rendering it,
+	// so this leg is the one Emit's statement embeds rather than a near-miss
+	// rendered from an unprepared tree.
+	spansTable := spansTableFromCtx(ctx)
+	prepared := chplan.AttachInstantScanTimeBounds(r)
+	if berr := chplan.RequireSpansScansBounded(spansTable, prepared); berr != nil {
+		return fail(berr)
+	}
+	prepared = chplan.CanonicalizeSeriesIdentityKeys(prepared, attributeMapColumns)
+	rw, ok := prepared.(*chplan.RangeWindow)
+	if !ok {
+		return fail(fmt.Errorf("%w: prepared plan root is %T, want *chplan.RangeWindow", ErrUnsupported, prepared))
+	}
+	m, ok := rw.Input.(*chplan.MetricsCompare)
+	if !ok {
+		return fail(fmt.Errorf("%w: RangeWindow.Input is %T, want *chplan.MetricsCompare", ErrUnsupported, rw.Input))
+	}
+	if m.Inner == nil {
+		return fail(fmt.Errorf("%w: MetricsCompare.Inner is nil", ErrUnsupported))
+	}
+	if m.RootLookup == nil {
+		return fail(fmt.Errorf("%w: MetricsCompare.RootLookup is nil (no root leg to render)", ErrUnsupported))
+	}
 
-	fanout := NewQuery().From(base.Frag())
-	fanout.Select(Col(selA))
-	fanout.SelectAs(compareTupleElementFrag(1), attrA)
-	fanout.SelectAs(compareTupleElementFrag(2), valA)
-	fanout.SelectAs(
-		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
-		RangeWindowAnchorAlias,
-	)
-
-	outer := NewQuery().From(fanout.Frag())
-	outer.Select(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
-	outer.SelectAs(compareCountValueFrag(), compareValueOut(m))
-	outer.GroupBy(Col(selA), Col(attrA), Col(valA), Col(RangeWindowAnchorAlias))
-
-	return e.emitSelect(outer)
+	ctxLMTable, ctxLMShape, _ := lateMatShapeFromCtx(ctx)
+	e := &emitter{
+		spansTable:      spansTable,
+		ctxSpansTable:   spansTable,
+		ctxLateMatTable: ctxLMTable,
+		ctxLateMatShape: ctxLMShape,
+	}
+	windowed, bound, err := e.compareWindowedScanBound(rw, m, rangeNS)
+	if err != nil {
+		return fail(err)
+	}
+	// inner is the cohort relation boundedRootLeg seeds its fallback wrap from;
+	// it is the same Frag compareBaseQuery builds the 's' leg out of.
+	inner, err := e.subqueryFrag(windowed.Inner)
+	if err != nil {
+		return fail(err)
+	}
+	leg, err := e.compareRootLeg(windowed, bound, inner)
+	if err != nil {
+		return fail(err)
+	}
+	sql, args, err := leg.subquerySQL()
+	if err != nil {
+		return fail(err)
+	}
+	// The leg is a statement a caller can send to ClickHouse, so it passes the
+	// same universal spans-scan backstop Emit runs on its own output — the rule
+	// GuardEmittedSQL's doc states for every path that builds otel_traces SQL
+	// outside Emit.
+	if gerr := GuardEmittedSQL(ctx, sql); gerr != nil {
+		return fail(gerr)
+	}
+	span.SetAttributes(cerbtrace.AttrSQLLength.Int(len(sql)))
+	return sql, args, nil
 }

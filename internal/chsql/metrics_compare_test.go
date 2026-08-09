@@ -23,34 +23,28 @@ func containsInt64Arg(args []any, want int64) bool {
 	return false
 }
 
-// compareRootLegSpan returns the byte span of the root ('r') leg's own derived
-// table inside sql: the balanced-paren region opened by the `LEFT JOIN (`
-// marker. chsql always parenthesises a join side (subqueryFrag), so that region
-// is a complete SELECT — which is exactly the property under test, and the same
-// extraction test/perf's compare guards use to EXPLAIN the root scan's part
-// pruning in isolation.
-func compareRootLegSpan(t *testing.T, sql string) (start, end int) {
+// compareRootLeg asks the emitter for the root ('r') leg of rw's compare join
+// as a statement of its own, and pins that what it returns really is the leg
+// the join embeds — the emitted matrix statement must contain that exact text.
+//
+// The seam (chsql.EmitCompareRootLeg) replaces what used to be a balanced-paren
+// scan from a `LEFT JOIN (` marker, in this file and again in test/perf: two
+// copies of one algorithm keyed on emitter internals nothing pinned — that a
+// join side is parenthesised, that this marker opens the leg, and (in the perf
+// copy, which has to run the leg) that args are appended in text order so a `?`
+// count yields the leg's arg slice. The emitter now answers all three itself,
+// and the containment check below is the assertion those assumptions never got.
+func compareRootLeg(t *testing.T, rw *chplan.RangeWindow, matrixSQL string) (string, []any) {
 	t.Helper()
-	const joinMarker = "LEFT JOIN ("
-	idx := strings.Index(sql, joinMarker)
-	if idx < 0 {
-		t.Fatalf("expected %q (the s/r join) in emitted SQL:\n%s", joinMarker, sql)
+	legSQL, legArgs, err := chsql.EmitCompareRootLeg(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("EmitCompareRootLeg: %v", err)
 	}
-	start = idx + len(joinMarker)
-	depth := 1
-	for i := start; i < len(sql); i++ {
-		switch sql[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return start, i
-			}
-		}
+	if !strings.Contains(matrixSQL, legSQL) {
+		t.Fatalf("the standalone root leg must be the leg the compare join embeds, verbatim.\nleg:\n%s\nmatrix:\n%s",
+			legSQL, matrixSQL)
 	}
-	t.Fatalf("unbalanced parens extracting the root ('r') leg from:\n%s", sql)
-	return 0, 0
+	return legSQL, legArgs
 }
 
 // compareNode builds a minimal valid MetricsCompare (no root lookup —
@@ -314,7 +308,7 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
 		TimestampColumn: "Timestamp",
 	}
-	sql, args, err := chsql.Emit(context.Background(), rw)
+	sql, _, err := chsql.Emit(context.Background(), rw)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -327,10 +321,9 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 	// unresolvable one: a declaration hoisted onto some enclosing SELECT
 	// satisfies the count while leaving the leg a fragment that names an
 	// identifier it does not declare. So assert the placement instead — the
-	// declaration opens the extracted leg, and no reference to the alias
-	// escapes it.
-	legStart, legEnd := compareRootLegSpan(t, sql)
-	rootLeg := sql[legStart:legEnd]
+	// declaration opens the leg the emitter hands back, and no reference to the
+	// alias escapes it.
+	rootLeg, legArgs := compareRootLeg(t, rw, sql)
 	const wantBinding = "WITH (SELECT tuple(min(`Start`), max(`End`)) FROM `otel_traces_trace_id_ts` WHERE "
 	if !strings.HasPrefix(rootLeg, wantBinding) {
 		t.Fatalf("expected the envelope binding to open the root ('r') leg, got:\n%s", rootLeg)
@@ -394,9 +387,12 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 	// second for the envelope to stay a superset of the trace's last span.
 	// Nor does tupleElement() alone prove each bound reads the element it
 	// means: reading Start for both would bound the scan to the cohort's
-	// earliest instant. The exact TraceId-IN seed renders last and contributes
-	// exactly the two request-window params, so counting back from the end the
-	// pad is third, the End element fourth and the Start element fifth.
+	// earliest instant. These are read off the leg's OWN args — the pairing the
+	// emitter returns with the leg's SQL, not a slice of the whole statement's
+	// args recovered by counting placeholders. The exact TraceId-IN seed renders
+	// last within the leg and contributes exactly the two request-window params,
+	// so counting back from the end the pad is third, the End element fourth and
+	// the Start element fifth.
 	const wantEndPadSeconds = int64(chplan.TraceIDTsEndPadSeconds)
 	const (
 		padArgsFromEnd        = 3
@@ -404,8 +400,8 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		startElemArgsFromEnd  = 5
 		minTrailingBoundsArgs = startElemArgsFromEnd
 	)
-	if len(args) < minTrailingBoundsArgs {
-		t.Fatalf("expected at least %d args, got %#v", minTrailingBoundsArgs, args)
+	if len(legArgs) < minTrailingBoundsArgs {
+		t.Fatalf("expected at least %d root-leg args, got %#v", minTrailingBoundsArgs, legArgs)
 	}
 	for _, tc := range []struct {
 		name    string
@@ -416,10 +412,123 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		{"End tuple element", endElemArgsFromEnd, chplan.TraceIDTsEnvelopeEndElement},
 		{"Start tuple element", startElemArgsFromEnd, chplan.TraceIDTsEnvelopeStartElement},
 	} {
-		if got := args[len(args)-tc.fromEnd]; got != any(tc.want) {
+		if got := legArgs[len(legArgs)-tc.fromEnd]; got != any(tc.want) {
 			t.Errorf("%s = %#v, want %d", tc.name, got, tc.want)
 		}
 	}
+}
+
+// TestEmitCompareRootLeg pins the seam itself — the boundary that lets a
+// caller ask for the compare join's root ('r') leg instead of parsing the
+// emitted statement for it.
+//
+// Two properties make it a boundary rather than a convenience. The leg is the
+// one the matrix statement embeds, verbatim; and the args it comes with are
+// exactly the args its own text binds, which is the guarantee the previous
+// `?`-counting extraction assumed (args appended in text order) and could
+// never check.
+func TestEmitCompareRootLeg(t *testing.T) {
+	t.Parallel()
+
+	window := func(m *chplan.MetricsCompare) *chplan.RangeWindow {
+		return &chplan.RangeWindow{
+			Input:           m,
+			Range:           time.Minute,
+			Step:            time.Minute,
+			Start:           time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			End:             time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+			TimestampColumn: "Timestamp",
+		}
+	}
+	withEnvelope := func() *chplan.MetricsCompare {
+		m := compareNodeWithRoot()
+		m.RootLookupTraceIDTsTable = "otel_traces_trace_id_ts"
+		m.RootLookupTraceIDTsStartColumn = "Start"
+		m.RootLookupTraceIDTsEndColumn = "End"
+		return m
+	}
+	rootScoped := func() *chplan.MetricsCompare {
+		m := compareNodeWithRoot()
+		m.InnerRootScoped = true
+		return m
+	}
+
+	t.Run("isTheLegTheJoinEmbeds", func(t *testing.T) {
+		t.Parallel()
+
+		// All three root-leg shapes the matrix path can produce: #1214's
+		// unbounded-but-lossless leg, the root-scoped leg with its direct
+		// request-window bound, and the non-root leg under the trace_id_ts
+		// envelope. Each must round-trip through the seam identically.
+		for _, tc := range []struct {
+			name string
+			node *chplan.MetricsCompare
+		}{
+			{"unboundedLossless", compareNodeWithRoot()},
+			{"rootScoped", rootScoped()},
+			{"traceIDTsEnvelope", withEnvelope()},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				rw := window(tc.node)
+				matrixSQL, _, err := chsql.Emit(context.Background(), rw)
+				if err != nil {
+					t.Fatalf("Emit: %v", err)
+				}
+				legSQL, legArgs := compareRootLeg(t, rw, matrixSQL)
+
+				// A statement of its own, not a parenthesised fragment: the
+				// caller runs this text directly.
+				if !strings.HasPrefix(legSQL, "SELECT ") && !strings.HasPrefix(legSQL, "WITH ") {
+					t.Errorf("root leg must be a standalone statement, got:\n%s", legSQL)
+				}
+				// The pairing the seam exists to own: one arg per placeholder
+				// in the leg's own text. This counts placeholders to CHECK
+				// that pairing; the extraction this seam replaced counted them
+				// to RECONSTRUCT it — to guess which slice of the whole
+				// statement's args belonged to the leg — which is the
+				// assumption no test makes any more.
+				if placeholders := strings.Count(legSQL, "?"); placeholders != len(legArgs) {
+					t.Errorf("root leg binds %d placeholders but came with %d args (%#v):\n%s",
+						placeholders, len(legArgs), legArgs, legSQL)
+				}
+			})
+		}
+	})
+
+	t.Run("rejectsWhatHasNoRootLeg", func(t *testing.T) {
+		t.Parallel()
+
+		noRoot := compareNode() // RootLookup nil
+		for _, tc := range []struct {
+			name string
+			rw   *chplan.RangeWindow
+			want string
+		}{
+			{"nilRangeWindow", nil, "RangeWindow is nil"},
+			{"noTimestampColumn", &chplan.RangeWindow{Input: compareNodeWithRoot(), Step: time.Minute}, "TimestampColumn unset"},
+			{"zeroStep", &chplan.RangeWindow{Input: compareNodeWithRoot(), TimestampColumn: "Timestamp"}, "requires Step > 0"},
+			{"notACompare", &chplan.RangeWindow{
+				Input:           &chplan.Scan{Table: "otel_traces"},
+				Step:            time.Minute,
+				TimestampColumn: "Timestamp",
+			}, "want *chplan.MetricsCompare"},
+			{"noRootLookup", window(noRoot), "RootLookup is nil"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				_, _, err := chsql.EmitCompareRootLeg(context.Background(), tc.rw)
+				if err == nil {
+					t.Fatalf("EmitCompareRootLeg should fail for %s", tc.name)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("error %q missing %q", err, tc.want)
+				}
+			})
+		}
+	})
 }
 
 // TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig pins that the
