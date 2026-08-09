@@ -5,6 +5,8 @@ package spec
 import (
 	"strings"
 	"testing"
+
+	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
 
 // TestLocateSampleColumns pins the projection layouts the promql corpus
@@ -226,5 +228,91 @@ func TestResourceAttributesProjectionFallsBackWhenUnseeded(t *testing.T) {
 	}
 	if got := serviceNameProjection(minimal); got != "''" {
 		t.Errorf("unseeded ServiceName projected as %q, want the empty-string literal", got)
+	}
+}
+
+// TestReadSeededClassicHistograms drives the classic-histogram reader
+// against a real seeded session, because the translation it performs is
+// the whole reason those fixtures can be parity-checked: OTel stores
+// per-bucket counts, Prometheus's `le` series are cumulative, and the
+// overflow bucket becomes `le="+Inf"`. Getting any of that wrong produces
+// a reference answer that disagrees with cerberus for a reason that is
+// the translator's fault rather than the lowering's.
+func TestReadSeededClassicHistograms(t *testing.T) {
+	chdbEngineMu.Lock()
+	defer chdbEngineMu.Unlock()
+
+	const seed = `CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('lat', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 21, 10.0, [1, 2, 3, 4, 5, 6], [1.0, 2.0, 3.0, 4.0, 5.0]);`
+
+	db := OpenChDB(t)
+	ApplySeed(t, db, seed)
+
+	byKey := map[string]*oracle.Series{}
+	if err := readSeededClassicHistograms(db, &RoundTripSections{Seed: seed}, nil, byKey); err != nil {
+		t.Fatalf("readSeededClassicHistograms: %v", err)
+	}
+
+	// Per-bucket counts [1 2 3 4 5 6] accumulate to [1 3 6 10 15], and the
+	// overflow bucket is the total Count.
+	want := map[string]float64{
+		`__name__=lat_bucket,le=1,service=api`:    1,
+		`__name__=lat_bucket,le=2,service=api`:    3,
+		`__name__=lat_bucket,le=3,service=api`:    6,
+		`__name__=lat_bucket,le=4,service=api`:    10,
+		`__name__=lat_bucket,le=5,service=api`:    15,
+		`__name__=lat_bucket,le=+Inf,service=api`: 21,
+		`__name__=lat_count,service=api`:          21,
+		`__name__=lat_sum,service=api`:            10,
+	}
+	if len(byKey) != len(want) {
+		t.Fatalf("read %d series, want %d: %v", len(byKey), len(want), byKey)
+	}
+	for key, wantValue := range want {
+		s, ok := byKey[key]
+		if !ok {
+			t.Errorf("series %s was not reconstructed", key)
+			continue
+		}
+		if len(s.Points) != 1 {
+			t.Errorf("series %s has %d points, want 1", key, len(s.Points))
+			continue
+		}
+		if !oracle.EqualValues(s.Points[0].Value, wantValue) {
+			t.Errorf("series %s = %v, want %v", key, s.Points[0].Value, wantValue)
+		}
+	}
+}
+
+// TestFormatBucketBound pins the `le` spelling against ClickHouse's
+// toString(Float64), the expression cerberus's own emitter uses. A
+// disagreement here does not produce a wrong value — it produces two
+// bucket series with different label sets that never align at all.
+func TestFormatBucketBound(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		bound float64
+		want  string
+	}{
+		{bound: 1, want: "1"},
+		{bound: 2.5, want: "2.5"},
+		{bound: 0.05, want: "0.05"},
+		{bound: 0, want: "0"},
+		{bound: -10, want: "-10"},
+		{bound: 300, want: "300"},
+	} {
+		if got := formatBucketBound(tc.bound); got != tc.want {
+			t.Errorf("formatBucketBound(%v) = %q, want %q", tc.bound, got, tc.want)
+		}
 	}
 }

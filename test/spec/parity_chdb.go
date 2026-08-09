@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,10 @@ func readSeededSeries(
 		}
 	}
 
+	if err := readSeededClassicHistograms(db, rt, allow, byKey); err != nil {
+		return nil, err
+	}
+
 	out := make([]oracle.Series, 0, len(byKey))
 	for _, s := range byKey {
 		out = append(out, *s)
@@ -434,6 +439,154 @@ func labelKey(lbls map[string]string) string {
 		b.WriteString(lbls[k])
 	}
 	return b.String()
+}
+
+// classicHistogramTable is the OTel-CH table holding explicit-bounds
+// histograms. It is read separately from [seededMetricsTables] because its
+// rows are not samples: one row is a whole histogram.
+const classicHistogramTable = "otel_metrics_histogram"
+
+// The Prometheus series a classic histogram is exposed as, and the label
+// carrying a bucket's upper bound.
+const (
+	bucketSuffix   = "_bucket"
+	countSuffix    = "_count"
+	sumSuffix      = "_sum"
+	leLabel        = "le"
+	positiveInfSTR = "+Inf"
+)
+
+// readSeededClassicHistograms explodes each seeded explicit-bounds
+// histogram row into the float series Prometheus represents it as.
+//
+// # Why this needs no new oracle shape
+//
+// A classic histogram IS a set of plain float series in Prometheus's data
+// model: `<name>_bucket` carrying an `le` label per boundary, plus
+// `<name>_count` and `<name>_sum`. The reference engine has always been
+// able to express that, and cerberus emits exactly those series from this
+// table — so the only thing that was missing was a reader. Nothing about
+// [oracle.Series] or the comparator changes, and native histograms (whose
+// reference answer is a FloatHistogram rather than a float) remain out of
+// reach for a genuinely different reason.
+//
+// # The two translations that are not identity
+//
+// OTel stores BucketCounts PER BUCKET; Prometheus's `le` series are
+// CUMULATIVE, so the counts are accumulated as the bounds are walked. And
+// BucketCounts carries one more entry than ExplicitBounds — the overflow
+// bucket above the last boundary — which is Prometheus's `le="+Inf"`.
+//
+// A fixture that never created the table is not an error: most of the
+// corpus seeds only the tables its own query needs.
+func readSeededClassicHistograms(
+	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
+) error {
+	seedCols := testsql.SeedTableColumns(rt.Seed)[classicHistogramTable]
+	if len(seedCols) == 0 {
+		return nil
+	}
+
+	//nolint:gosec // every fragment is chosen from this file's own
+	// constants, keyed off the seed's declared columns.
+	q := "SELECT MetricName, toJSONString(Attributes), " +
+		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
+		"toUnixTimestamp64Milli(TimeUnix), Count, Sum, " +
+		"toJSONString(BucketCounts), toJSONString(ExplicitBounds) " +
+		"FROM " + classicHistogramTable + " ORDER BY MetricName, TimeUnix"
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var name, attrsJSON, resAttrsJSON, serviceName, countsJSON, boundsJSON string
+		var tsMillis int64
+		var count, sum float64
+		if err := rows.Scan(
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis,
+			&count, &sum, &countsJSON, &boundsJSON,
+		); err != nil {
+			return err
+		}
+		base, err := labelsFromSeededRow("", attrsJSON, resAttrsJSON, serviceName, allow)
+		if err != nil {
+			return err
+		}
+		var counts, bounds []float64
+		if err := json.Unmarshal([]byte(countsJSON), &counts); err != nil {
+			return fmt.Errorf("decode BucketCounts %q: %w", countsJSON, err)
+		}
+		if err := json.Unmarshal([]byte(boundsJSON), &bounds); err != nil {
+			return fmt.Errorf("decode ExplicitBounds %q: %w", boundsJSON, err)
+		}
+		// OTel's canonical shape carries one more count than bound — the
+		// overflow bucket above the last boundary. The corpus also seeds
+		// the equal-length shape, which simply states no overflow bucket.
+		// Both are well defined here because Prometheus's `+Inf` bucket is
+		// the total Count either way; anything else is a seed whose
+		// buckets cannot be read at all.
+		if len(counts) != len(bounds) && len(counts) != len(bounds)+1 {
+			return fmt.Errorf(
+				"histogram %s has %d BucketCounts and %d ExplicitBounds; a bucket series can only "+
+					"be reconstructed when the counts match the bounds, with or without a trailing "+
+					"overflow bucket", name, len(counts), len(bounds),
+			)
+		}
+
+		cumulative := 0.0
+		for i, bound := range bounds {
+			cumulative += counts[i]
+			appendPoint(byKey, base, name+bucketSuffix,
+				map[string]string{leLabel: formatBucketBound(bound)}, tsMillis, cumulative)
+		}
+		appendPoint(byKey, base, name+bucketSuffix,
+			map[string]string{leLabel: positiveInfSTR}, tsMillis, count)
+		appendPoint(byKey, base, name+countSuffix, nil, tsMillis, count)
+		appendPoint(byKey, base, name+sumSuffix, nil, tsMillis, sum)
+	}
+	return rows.Err()
+}
+
+// formatBucketBound renders a bucket boundary the way the `le` label
+// spells it, which must agree with ClickHouse's `toString(Float64)` — the
+// expression cerberus's own emitter uses — or the two sides' bucket series
+// carry different label sets and never align.
+//
+// Go's shortest round-trip formatting agrees with ClickHouse's across the
+// range the corpus uses. The two part company only at the exponent
+// thresholds ('g' switches to exponent form at >=1e21 and <1e-4), so a
+// fixture seeding a boundary out there would fail on the label rather than
+// silently compare the wrong bucket.
+func formatBucketBound(bound float64) string {
+	return strconv.FormatFloat(bound, 'g', -1, 64)
+}
+
+// appendPoint adds one sample to the series identified by the base label
+// set plus __name__ and any extra labels, creating the series on first
+// sight. The base map is never mutated: several synthesised series share
+// one row's labels.
+func appendPoint(
+	byKey map[string]*oracle.Series, base map[string]string,
+	name string, extra map[string]string, tsMillis int64, value float64,
+) {
+	lbls := make(map[string]string, len(base)+len(extra)+1)
+	for k, v := range base {
+		lbls[k] = v
+	}
+	for k, v := range extra {
+		lbls[k] = v
+	}
+	lbls[promNameLabel] = name
+
+	key := labelKey(lbls)
+	s, ok := byKey[key]
+	if !ok {
+		s = &oracle.Series{Labels: lbls}
+		byKey[key] = s
+	}
+	s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
 }
 
 // The OTel-CH columns beyond Attributes that carry Prometheus labels, and
