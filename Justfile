@@ -219,7 +219,7 @@ property:
 # `-timeout` is bumped to keep real slack under `perf-guards`' 20-minute job
 # budget rather than letting the two converge silently.
 perf-chdb:
-    go test -timeout 18m -tags chdb -count=1 ./test/perf/...
+    go test -timeout 17m -tags chdb -count=1 ./test/perf/...
 
 # Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
 # Component B). Walks every executable fixture under test/spec/** (those
