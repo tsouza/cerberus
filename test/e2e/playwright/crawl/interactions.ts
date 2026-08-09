@@ -169,6 +169,38 @@ export const COMBOBOX_CARDINALITY_RULES: ReadonlyArray<ComboboxCardinalityRule> 
   },
   // Dashboard-browse "sort by": a fixed alphabetical/recency menu.
   { keyPattern: /^select\[Sort\](#\d+)?$/, mode: 'enumerate' },
+  // Traces Drilldown "primary signal" picker (the Select half — the
+  // RadioButtonGroup half carrying "Root spans" / "All spans" is a
+  // separate 'radio' control, already structural by size). The widget
+  // carries NEITHER a testid NOR an aria-label NOR a placeholder — a
+  // plugin-side accessibility gap verified live against
+  // grafana-exploretraces-app, so discovery's identity chain falls all
+  // the way through to the react-select mount-order id, normalized to
+  // the generic `react-select-{rid}-input` every unlabeled react-select
+  // on ANY page shares. That generic pattern is deliberately NOT enough
+  // on its own to earn 'enumerate' — a coincidentally-anonymous,
+  // genuinely data-derived select elsewhere must not inherit it. The
+  // `values` set closes that gap: it is the SAME three primarySignal
+  // labels lib.ts's `var-primarySignal` StructuralParamRule already
+  // declares (`kind=server` / `kind=consumer` /
+  // `span.db.system.name!=""`, minus the two the RadioButtonGroup
+  // holds), read off the plugin bundle rather than a seed. A control
+  // that matches the key but NOT this option set throws in
+  // planInteractions's self-check below instead of silently borrowing
+  // the classification — the crawl was reaching this exact set,
+  // uncatalogued, before: `representativeOption`'s codepoint-order pick
+  // landed on "Consumer spans…" ('C' < 'D' < 'S'), so the sweep drove
+  // Consumer every run and never Server, no matter how much backing
+  // data Server carried (#1992).
+  {
+    keyPattern: /^select\[react-select-\{rid\}-input\](#\d+)?$/,
+    mode: 'enumerate',
+    values: [
+      'Server spansExplore server-specific segments traces',
+      'Consumer spansAnalyze interactions initiated by consumer services',
+      'Database callsEvaluate performance issues in database interactions',
+    ],
+  },
 ];
 
 export function comboboxCardinalityRule(

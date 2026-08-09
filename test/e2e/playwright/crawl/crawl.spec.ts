@@ -858,6 +858,82 @@ test.describe('crawl: canonicalization pins', () => {
     ).toThrow(/exceeding the pairwise cap/);
   });
 
+  test('the anonymous primarySignal Select enumerates every option, never one representative', () => {
+    // The Traces Drilldown primary-signal picker's Select half carries
+    // no testid, no aria-label and no placeholder (verified live
+    // against a compose stack — a plugin-side accessibility gap), so
+    // discovery's key derivation falls through to the react-select
+    // mount-order id, normalized to the generic
+    // `select[react-select-{rid}-input]` shape. Left unrecognised, that
+    // key matches no COMBOBOX_CARDINALITY_RULES entry, so planInteractions
+    // treats it as high-cardinality and representativeOption's
+    // codepoint-order pick lands on "Consumer spans…" every run
+    // ('C' < 'D' < 'S') — the app never shows the crawl "Server spans…",
+    // no matter how much backing data Server carries in ClickHouse
+    // (#1992). The rule this pins fixes the classification, not the
+    // pick: once correctly 'enumerate', the control drives all three
+    // signals, and the FIRST one in the app's own bundle order —
+    // "Server spans…" — is the lean representative, matching the
+    // committed `kind=server` baseline row.
+    const serverLabel =
+      'Server spansExplore server-specific segments traces';
+    const consumerLabel =
+      'Consumer spansAnalyze interactions initiated by consumer services';
+    const databaseLabel =
+      'Database callsEvaluate performance issues in database interactions';
+    const control = {
+      kind: 'combobox' as const,
+      key: 'select[react-select-{rid}-input]',
+      options: [serverLabel, consumerLabel, databaseLabel],
+      selectedIndex: -1,
+      forcedHighCardinality: false,
+      optionHints: [serverLabel, consumerLabel, databaseLabel],
+      controlHint: 'id=react-select-3-input',
+      clickHops: 3,
+    };
+
+    expect(comboboxCardinalityRule(control.key)?.mode).toBe('enumerate');
+
+    const plan = planInteractions([control], 0);
+    expect(plan.map((p) => p.option)).toEqual([
+      serverLabel,
+      consumerLabel,
+      databaseLabel,
+    ]);
+    expect(plan.map((p) => p.stateValue)).toEqual([
+      serverLabel,
+      consumerLabel,
+      databaseLabel,
+    ]);
+    expect(plan.map((p) => p.leanRepresentative)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    // A pinned-param (representative-only) surface still drives exactly
+    // the lean pick, never the codepoint-smallest label.
+    expect(planInteractions([control], 1).map((p) => p.option)).toEqual([
+      serverLabel,
+    ]);
+
+    // The declared option set is a safety net, not a rubber stamp for
+    // every anonymous react-select: a DIFFERENT unlabeled control that
+    // happens to collide on the same generic key but carries options
+    // outside this bundle-read set must fail loudly, not silently
+    // borrow the classification and enumerate a data-derived list.
+    const impostor = {
+      ...control,
+      options: [serverLabel, 'A seeded label the picker never declared'],
+      optionHints: [serverLabel, 'A seeded label the picker never declared'],
+    };
+    expect(() => planInteractions([impostor], 0)).toThrow(
+      /select\[react-select-\{rid\}-input\]/,
+    );
+    expect(() => planInteractions([impostor], 0)).toThrow(
+      /outside its declared closed set/,
+    );
+  });
+
   test('the high-cardinality representative is a function of the option SET, not its order', () => {
     // The pick must not move when the app renders the same options in a
     // different order — a data-backed list (label names, tag values,
