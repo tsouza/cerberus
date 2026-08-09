@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
@@ -204,6 +206,35 @@ func comparesTimestamps(oracleName string, step time.Duration) bool {
 	return step > 0 || oracleName == OracleLoki
 }
 
+// exprReadsSeries reports whether a parsed PromQL expression can read ANY
+// vector or matrix selector — i.e. whether an empty seeded series set is a
+// meaningful signal that the seed is missing data the query needs, or the
+// query's own CORRECT, data-independent answer (a pure scalar/time
+// function like `pi()`, `time()`, `vector(5)`, `year()`). A parse error is
+// reported as err rather than silently treated as "no selector" — the
+// caller keeps its normal failure path in that case, exactly as it did
+// before this function existed.
+func exprReadsSeries(expr string) (bool, error) {
+	// EnableExperimentalFunctions matches internal/promql/lower_test.go's
+	// own parser construction, so a fixture exercising an experimental
+	// PromQL function parses the same way here as it does through the
+	// real lowering pipeline.
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	e, err := p.ParseExpr(expr)
+	if err != nil {
+		return false, err
+	}
+	reads := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		switch node.(type) {
+		case *parser.VectorSelector, *parser.MatrixSelector:
+			reads = true
+		}
+		return nil
+	})
+	return reads, nil
+}
+
 // evaluatePrometheusParity answers q with the real upstream Prometheus
 // engine over the rows the seed actually landed in chDB.
 func evaluatePrometheusParity(
@@ -216,10 +247,24 @@ func evaluatePrometheusParity(
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
 	if len(series) == 0 {
-		return nil, fmt.Errorf(
-			"fixture %s: seed produced no readable series, so the reference engine would "+
-				"trivially agree with any answer", c.Name,
-		)
+		// A genuinely empty series set is only a vacuous check — and
+		// therefore an error — when the query reads one. `pi()`, `time()`,
+		// `vector(5)`, `year()` and friends are pure scalar/time functions
+		// that read no selector at all, so zero series is their CORRECT,
+		// intended seeded state (see e.g. pi_constant.txtar, whose `seed:`
+		// deliberately creates otel_metrics_gauge with no INSERT). Before
+		// #1987's per-fixture session isolation, this branch was reachable
+		// only by accident: a selector-free fixture's `readSeededSeries`
+		// call actually saw a PRIOR fixture's leftover rows in the shared
+		// chDB session, so len(series) was spuriously nonzero and this
+		// guard never fired — it was never exercised against its own
+		// intended case until sessions became genuinely isolated.
+		if needsSeries, serr := exprReadsSeries(q.Expr); serr != nil || needsSeries {
+			return nil, fmt.Errorf(
+				"fixture %s: seed produced no readable series, so the reference engine would "+
+					"trivially agree with any answer", c.Name,
+			)
+		}
 	}
 
 	got, err := oracle.Evaluate(t, series, oracle.Query{

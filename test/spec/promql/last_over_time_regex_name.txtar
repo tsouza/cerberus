@@ -45,6 +45,11 @@ CREATE TABLE otel_metrics_histogram (
     BucketCounts Array(UInt64),
     ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 -- expected_rows --
 [
   ["cpu_temp", {"host": "a"}, "2025-12-31T23:59:56Z", 41],

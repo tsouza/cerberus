@@ -30,6 +30,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/testsql"
 
+	"github.com/chdb-io/chdb-go/chdb"
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 )
 
@@ -37,23 +38,23 @@ import (
 // test process.
 //
 // chDB / libchdb is an EMBEDDED ClickHouse: a single native engine is
-// shared by every `sql.Open("chdb", "")` in the process (the empty-DSN
-// sessions are NOT isolated — see ApplySeed's "chdb-go shares one engine
-// across a process" note). That engine is NOT thread-safe for concurrent
-// in-process execution. The round-trip suite runs fixtures under
-// t.Parallel() (see roundtrip_chdb_test.go) and spec.Walk fans each
-// fixture into a t.Run subtest, so without serialization two goroutines
-// can drive queries — and, worse, free native result state — at the same
-// time. The observed failure is an intermittent
+// shared by every `sql.Open("chdb", "")` in the process — `chdb.NewSession`
+// (the chdb-go package the driver delegates to) caches ONE process-wide
+// `*chdb.Session` in a package-level variable and hands it back to every
+// caller, ignoring the DSN, until something explicitly tears it down (see
+// [resetChDBSession]). That engine is also NOT thread-safe for concurrent
+// in-process execution. The observed failure mode of racing it is an
+// intermittent
 //
 //	SIGABRT: abort / signal arrived during cgo execution
 //
 // inside chdb-purego.(*result).Free, which fires when a *sql.Rows is
 // closed and when a *sql.DB is closed (driver teardown). To make this
 // safe, every chDB engine call — Open/Ping/Exec(SET), seed Exec, Query,
-// row iteration, rows.Close, AND the per-case db.Close — runs under this
-// mutex. Only the parse / lower / SQL-build work of OTHER cases stays
-// parallel; the engine span itself is single-threaded.
+// row iteration, rows.Close, the per-case db.Close, AND the session
+// teardown — runs under this mutex. Only the parse / lower / SQL-build
+// work of OTHER cases stays parallel; the engine span itself is
+// single-threaded.
 var chdbEngineMu sync.Mutex
 
 // nowAnchorLiteral, substituteNow64, the seed-statement splitter, the
@@ -91,25 +92,44 @@ func CHNow64Literal(at time.Time) string {
 	)
 }
 
-// OpenChDB returns a fresh ephemeral chDB session. The empty DSN
-// triggers a temp-dir-backed session that's torn down with the
-// connection — there is no `:memory:` literal in chdb-go.
+// OpenChDB returns a fresh ephemeral chDB session, genuinely isolated
+// from every other fixture that has run in this process (issue #1987).
+//
+// The empty DSN routes through chdb-go's `chdb.NewSession()`, which
+// caches its result in a package-level variable and hands the SAME
+// session back to every subsequent caller regardless of DSN — see
+// [chdbEngineMu]'s doc comment. Left alone, that makes a fixture's
+// executability depend on which sibling fixtures happened to run before
+// it in the same test binary: a table one fixture creates (and rows it
+// inserts) silently survive for the next fixture to read, so a fixture
+// whose own `seed:` is NOT self-sufficient for its `sql:` can still pass
+// as part of a whole-package run while failing the narrowed
+// `go test -run '^TestName$/^subtest$'` reproduction invariant 5 calls
+// for. To make a fixture's result independent of what ran before it,
+// [resetChDBSession] tears the previous fixture's session down (native
+// engine teardown + temp-dir removal) in t.Cleanup, so the very next
+// OpenChDB call is forced through chdb-go's own "no session yet" branch
+// and gets a brand-new, empty-catalog session. Cost is real but small —
+// a synthetic benchmark measured ~48ms for a from-scratch session against
+// ~16ms reusing a warm one — and is paid once per fixture, not per query.
 func OpenChDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("chdb", "")
 	if err != nil {
 		t.Fatalf("open chdb: %v", err)
 	}
-	// db.Close tears down native engine state (chdb-purego result Free),
-	// so it must not race another case's engine call. The cleanup runs
-	// AFTER RunRoundTrip returns and has released chdbEngineMu, so it
-	// takes the lock itself here. (OpenChDB itself is always called with
-	// chdbEngineMu already held by RunRoundTrip, hence no lock around the
-	// Open/Ping/Exec below.)
+	// db.Close tears down the Go-level *sql.DB pool; resetChDBSession
+	// tears down the native chDB engine itself (chdb-purego result Free +
+	// temp-dir removal), so together they must not race another case's
+	// engine call. The cleanup runs AFTER the caller returns and has
+	// released chdbEngineMu, so it takes the lock itself here. (OpenChDB
+	// itself is always called with chdbEngineMu already held by the
+	// caller, hence no lock around the Open/Ping/Exec below.)
 	t.Cleanup(func() {
 		chdbEngineMu.Lock()
 		defer chdbEngineMu.Unlock()
 		_ = db.Close()
+		resetChDBSession(t)
 	})
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping chdb: %v", err)
@@ -135,17 +155,43 @@ func OpenChDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// resetChDBSession tears down the process-wide chDB engine so the NEXT
+// [OpenChDB] call is forced to build a brand-new one from scratch (see
+// [OpenChDB]'s doc comment for why). `chdb.NewSession()` with no
+// arguments hands back the currently-cached session — a cheap no-op
+// read when one is already open, which it always is here since this
+// runs from OpenChDB's own t.Cleanup — and `(*chdb.Session).Cleanup`
+// unconditionally closes the native connection and removes its temp
+// directory, regardless of whether the session considers itself
+// temporary, and nils the package-level cache so the next
+// `chdb.NewSession()` call (triggered by the next fixture's
+// `sql.Open("chdb", "")`) takes the "no session yet" branch and
+// allocates a fresh one. Must run under chdbEngineMu, same as every
+// other engine call.
+func resetChDBSession(t *testing.T) {
+	t.Helper()
+	sess, err := chdb.NewSession()
+	if err != nil {
+		t.Fatalf("chdb session teardown: %v", err)
+	}
+	sess.Cleanup()
+}
+
 // ApplySeed splits a multi-statement script on top-level semicolons
 // and exec's each piece. Statements wrapped in single-quoted strings
 // keep their semicolons literal (handled by a tiny state machine).
 //
-// Cross-fixture isolation: chdb-go shares one engine across a process,
-// so bare `CREATE TABLE foo` from a prior fixture survives to clash
-// with the next. The applier promotes bare `CREATE TABLE` to
-// `CREATE OR REPLACE TABLE` so re-running a fixture in the same
-// process is idempotent. Fixture authors who want strict CH semantics
-// can opt out by writing `CREATE OR REPLACE TABLE` /
-// `CREATE TABLE IF NOT EXISTS` themselves.
+// Idempotency within one fixture: a single fixture's seed can run
+// through this more than once in the same session — RunRoundTrip
+// (pre-optimizer) and RunRoundTripSQL/RunParity (post-optimizer /
+// reference-engine) all reseed the same `seed:` text against whatever
+// session OpenChDB most recently produced, and [resetChDBSession] only
+// tears that session down at the END of the fixture's subtest, not
+// between these calls. The applier promotes bare `CREATE TABLE` to
+// `CREATE OR REPLACE TABLE` so a second pass over the same seed within
+// one fixture doesn't trip TABLE_ALREADY_EXISTS. Fixture authors who
+// want strict CH semantics can opt out by writing
+// `CREATE OR REPLACE TABLE` / `CREATE TABLE IF NOT EXISTS` themselves.
 func ApplySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
 	stmts := testsql.BackfillMetricsColumns(testsql.SplitStatements(seed))
