@@ -341,25 +341,89 @@ jobs:
   # release-set membership, because none of those are visible in a PR diff
   # once branch protection is the thing holding them together.
   #
-  # The docs-only guard is job-level (not per-step like `roundtrip`) because
-  # this is a plain non-matrix job: a skipped one still publishes its named
-  # context and resolves, which `probe` — required, same shape — proves.
-  #
   # Wall-clock perf stays in the informational `perf-benchmark.yml`
   # (benchstat, never gates) to avoid runner-variance flake; only the
   # deterministic structural assertions gate here.
-  perf-guards:
-    name: perf-guards
+  #
+  # ---------------------------------------------------------------------------
+  # SHARDED across a matrix of separate runner processes (#2002).
+  #
+  # TestCardinalityRatchet profiles every executable TXTAR fixture, one at a
+  # time, in one process — so its runtime is a straight line in corpus size, and
+  # the corpus is deliberately growing (the promql-parity-enrolment epic #1986
+  # added ~150 fixtures in a single day). The lane went from the ~8 minutes its
+  # recipe comment recorded to 867s, then past 1020s, against a 900s `-timeout`,
+  # inside that one day. Raising the ceiling only moves the collision, and a
+  # 20-30 minute "guard" is a bad outcome even when it technically passes.
+  #
+  # It cannot be parallelised INSIDE the process: profile.NewProfiler calls
+  # chdb-go's package-level chdb.NewSession, which caches ONE session for the
+  # whole process regardless of DSN and is not safe for concurrent in-process
+  # use (#1987 / PR #2003). So the only available parallelism is N separate OS
+  # processes over disjoint corpus slices, which is what this matrix is.
+  #
+  # Topology (mirroring compose-smoke-shard / compose-smoke in e2e.yml):
+  #   perf-guards-shard  — the matrix; each leg profiles ONLY the corpus slice
+  #                        its PERF_SHARD_INDEX names.
+  #   perf-guards        — the AGGREGATOR, named EXACTLY `perf-guards` so the
+  #                        required status check still appears and gates (matrix
+  #                        children report as `perf-guards-shard (n)`, never
+  #                        `perf-guards`). Fails unless every leg passed.
+  #
+  # The aggregator is what keeps branch protection and release.yml's
+  # RELEASE_REQUIRED_CHECKS untouched. Making the per-shard contexts required
+  # instead would mean adding each one BEFORE it can ever report (a window with
+  # the gate unenforced), and any stale `perf-guards (shard-n)` left in the set
+  # after a shard-count change blocks every PR in the repo on a check that never
+  # arrives.
+  #
+  # There is no `-setup` job and no matrix-generator script: unlike compose-smoke
+  # — where the partition is a hand-balanced assignment of named spec files that
+  # a new spec can silently fall out of — this partition is computed at run time
+  # from the fixture id (test/perf/profile/shard.go), so the matrix carries no
+  # membership information at all. All the YAML has to say is how many legs
+  # there are, and inline literals are the right home for that (repo rule:
+  # non-trivial step logic goes to .github/scripts/*.mjs, trivial stays inline).
+  #
+  # COST: N legs = N chDB installs and N compiles — billable minutes rise, while
+  # wall-clock drops from the serial sum toward the longest leg plus fixed setup.
+  perf-guards-shard:
+    name: perf-guards-shard
     needs: changes
+    # Job-level (not per-step like `roundtrip`) because the required context is
+    # posted by the `perf-guards` aggregator below, which always runs and reads
+    # this matrix's skip as one of its two docs-only facts.
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    # 30m, not 20m: TestCardinalityRatchet profiles the WHOLE corpus and its
-    # runtime scales with it (issue #2002). A CI run on 2026-08-09 hit the
-    # timeout at exactly 1020s (17m) under a genuinely isolated runner — a
-    # real measurement, not local contention — after that day's
-    # promql-parity-enrolment wave grew the corpus considerably. See the
-    # Justfile's perf-chdb recipe for the paired -timeout bump.
+    # Three minutes above `perf-chdb`'s own `-timeout 27m`, so Go's abort — the
+    # one that dumps goroutine stacks and names WHERE a leg hung — always fires
+    # before the runner takes the container away (pinned by
+    # test/regression/go_test_timeout_budget_test.go).
+    #
+    # Both numbers are inherited unchanged from the stopgap bump, and sharding
+    # is not a reason to lower them. They size the recipe's WORST case, which is
+    # its other caller: the unsharded whole-corpus sweep, which a CI run on an
+    # isolated runner measured at 1020s (17m) on 2026-08-09 and which sharding
+    # does not speed up at all. A LEG finishes ~6-8x under this ceiling, so for
+    # the matrix it is a hang detector rather than an estimate.
     timeout-minutes: 30
+    strategy:
+      # MANDATORY: one shard's failure must NOT cancel its siblings. The default
+      # (true) cancels in-flight legs into the ambiguous `cancelled` rollup and
+      # hides whether the others would also have failed — and for a RATCHET that
+      # matters more than usual, because a corpus-wide fan-out regression
+      # typically trips several slices at once and the full list is the diagnosis.
+      fail-fast: false
+      matrix:
+        # The shard count. Sized so each leg stays near two minutes at today's
+        # ~950 fixtures and still has room as the corpus grows: at 8 legs the
+        # corpus can roughly triple before a leg reaches the runtime the whole
+        # lane had when it was healthy. Changing this list is the whole knob —
+        # PERF_SHARD_COUNT is derived from it below, the partition rebalances
+        # itself, and no baseline, branch-protection entry or check name moves.
+        # test/regression/perf_guards_gate_test.go pins it against the count the
+        # partition's own balance test asserts at.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v7
 
@@ -372,11 +436,61 @@ jobs:
         with:
           tool: just
 
+      # Cache the pinned libchdb.so, same key as `chdb-build`'s step. This
+      # matters more here than anywhere else in the file: fanning out to 8 legs
+      # would otherwise mean 8 downloads of a ~500 MB shared library per run,
+      # and that fixed setup cost would eat much of the wall-clock the split is
+      # buying. The recipe is idempotent — it skips the download when the file
+      # is already at CHDB_INSTALL_PATH — so a cache hit makes the next step a
+      # no-op. Key pinned to the recipe's CHDB_VERSION so a bump busts it.
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
       - name: Install libchdb.so
         run: just chdb-install
 
-      - name: Run perf regression guards (chDB)
+      # PERF_SHARD_COUNT comes from `strategy.job-total`, NOT a second literal:
+      # it is the number of legs this matrix actually fans out to, so the count
+      # the partition divides by cannot drift from the count that runs. A
+      # hand-written 8 left behind after the list changed would silently leave a
+      # slice of the corpus profiled by nobody, with every leg still green.
+      - name: Run perf regression guards (chDB) — shard ${{ matrix.shard }}/${{ strategy.job-total }}
         run: just perf-chdb
+        env:
+          PERF_SHARD_INDEX: ${{ matrix.shard }}
+          PERF_SHARD_COUNT: ${{ strategy.job-total }}
+
+  # The AGGREGATOR — named EXACTLY `perf-guards` because that is the name branch
+  # protection's required-contexts set and release.yml's RELEASE_REQUIRED_CHECKS
+  # both resolve by text. The matrix children report as `perf-guards-shard (n)`,
+  # so without this job the required context is never posted and every PR sits
+  # on an "Expected" check forever.
+  perf-guards:
+    name: perf-guards
+    needs: [changes, perf-guards-shard]
+    # always() so it still runs — and still reports — when the matrix skipped on
+    # a docs-only change. A required context that goes missing is indistinguish-
+    # able from one that is still running.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: gate on every perf-guards shard
+        run: node .github/scripts/perf-guards-aggregate.mjs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          SHARDS_RESULT: ${{ needs.perf-guards-shard.result }}
+          # Deliberately NOT passed. `strategy.job-total` here would be this
+          # job's own (1), and a literal repeating the matrix length is exactly
+          # the kind of second copy that drifts. The aggregate's verdict does
+          # not depend on the number, so it says "the shard matrix" instead of
+          # a figure it cannot verify.
 
   # `integration-promql` runs the chDB-backed EXOTIC PromQL integration
   # suite (test/integration/promql). It seeds ONE rich, fixed OTel fixture

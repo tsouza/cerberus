@@ -705,6 +705,16 @@ jobs:
           node --test .github/scripts/crawl-budget.test.mjs
           node --test .github/scripts/assert-crawl-terminal.test.mjs
 
+      # `perf-guards` is a REQUIRED context posted by an aggregator job that
+      # runs no tests of its own — it exists only to roll the sharded
+      # `perf-guards-shard` matrix up under the name branch protection and
+      # release.yml resolve (#2002). An aggregator that drifted toward "always
+      # ok" would report green over a corpus nothing profiled, and every visible
+      # signal would look identical to a real pass. Pure in-process test over
+      # the module, ~100ms.
+      - name: Assert the perf-guards shard roll-up cannot report a hollow green
+        run: node --test .github/scripts/perf-guards-aggregate.test.mjs
+
       # The subprocess helper every script above runs its commands through.
       # capture() names the spawnSync options it forwards rather than spreading
       # `opts`, so an unsupported key used to vanish without a word — and a

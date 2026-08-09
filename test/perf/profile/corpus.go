@@ -84,10 +84,30 @@ func FixtureID(specDir, path string) string {
 // including the declared-but-inert case FindExecutableFixtures keeps in
 // the set precisely so it is reported instead of skipped.
 func ProfileCorpus(specDir string) ([]Record, error) {
-	paths, err := FindExecutableFixtures(specDir)
+	return ProfileCorpusShard(specDir, WholeCorpus)
+}
+
+// ProfileCorpusShard is [ProfileCorpus] restricted to the fixtures one
+// [Shard] holds. The filter is applied to the DISCOVERED PATH SET before
+// anything is loaded, seeded or executed, so a shard pays only for its own
+// slice — which is the entire point: the profiler cannot be parallelised
+// inside one process (chdb-go's package-level NewSession caches a single
+// process-wide session regardless of DSN and is not safe for concurrent
+// in-process use — issue #1987), so the only available parallelism is N
+// separate OS processes each walking a disjoint slice.
+//
+// Discovery itself is NOT sharded: every leg walks the whole tree and loads
+// every fixture's TXTAR to decide which are executable. That walk is
+// milliseconds against a corpus whose profiling is minutes, and keeping it
+// whole means each leg validates the SAME corpus roster — a malformed
+// fixture still aborts every leg loudly rather than only the one that
+// happens to own it.
+func ProfileCorpusShard(specDir string, shard Shard) ([]Record, error) {
+	all, err := FindExecutableFixtures(specDir)
 	if err != nil {
 		return nil, err
 	}
+	paths := FilterShard(shard, all, func(p string) string { return FixtureID(specDir, p) })
 
 	p, err := NewProfiler()
 	if err != nil {
