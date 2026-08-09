@@ -64,15 +64,20 @@ name: e2e
 #     Runs on push-to-main + nightly + manual dispatch, and on a
 #     `release/*` PR; the aggregator is named in release.yml's
 #     RELEASE_REQUIRED_CHECKS, so a k3d regression blocks the release
-#     that would ship it. Release PRs get a smoke-only matrix — the
-#     ~50min crawl shard is dispatched on schedule + dispatch only.
-#     On schedule + dispatch the DEDICATED crawl shard runs the Grafana
+#     that would ship it. Push-to-main and an ordinary PR get a
+#     smoke-only matrix; schedule, manual dispatch, AND a `release/*`
+#     PR get the FULL matrix (dashboard-setup's INCLUDE_CRAWL) — a
+#     release must never ship a mode the gate did not exercise, so the
+#     ~50min crawl shard is part of what gates a release cut, not just
+#     the nightly/dispatch lanes. On schedule + dispatch + a release/*
+#     PR the DEDICATED crawl shard runs the Grafana
 #     surface crawler with CRAWL_STACK=k3d (same engine as compose-smoke's
 #     crawl lane, this stack's config + inventory — see
 #     test/e2e/playwright/crawl/stacks.ts) at SWEEP_DEPTH=full,
 #     CONCURRENTLY with the smoke shards. The ~50min crawl BFS is a single
-#     indivisible test(); splitting its frontier across shards is the
-#     follow-up that beats the 50min wall-clock floor.
+#     indivisible test(); splitting its frontier across shards (see
+#     tsouza/cerberus#2005) is the follow-up that beats the 50min
+#     wall-clock floor.
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #
@@ -127,8 +132,10 @@ on:
           (CERBERUS_UPDATE_INVENTORY=1) and upload it as an artifact to
           commit. This is the bootstrap/regen path for
           test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json —
-          the k3d crawl lane fails loudly until a non-empty inventory is
-          committed.
+          it was bootstrapped in tsouza/cerberus#1539; a future surface-set
+          change is regenerated deliberately the same way (an empty or
+          stale inventory otherwise fails the k3d crawl lane loudly, by
+          design).
         type: boolean
         required: false
         default: false
@@ -798,9 +805,10 @@ jobs:
   # Beating the 50min floor itself needs the crawl ENGINE to partition its
   # discovered BFS frontier across shards (a CRAWL_SHARD_INDEX/COUNT contract +
   # a final union-merge-and-assert against the pinned inventory). That is a deep
-  # change to the 1383-line BFS + the inventory ratchet, blocked today by the
-  # k3d inventory being unbootstrapped — tracked as the explicit follow-up in
-  # this lane's PR. This sharding is the safe coarse win that lands first.
+  # change to the 1383-line BFS + the inventory ratchet — tracked as
+  # tsouza/cerberus#2005, unblocked now that the k3d inventory is bootstrapped
+  # (tsouza/cerberus#1539) but not yet designed or built. This sharding is the
+  # safe coarse win that lands first.
   #
   # k3d cost: a cluster is heavy (~3-5min bring-up), and a matrix of N clusters
   # multiplies that cost, so the shard count is kept at 3 — two smoke shards +
@@ -1082,14 +1090,14 @@ jobs:
       # is false for the crawl shard on push), always at SWEEP_DEPTH=full (the
       # k3d inventory has no separate CI lean lane).
       #
-      # Bootstrap convention: the committed k3d inventory
-      # (test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json) starts
-      # EMPTY, and the crawl FAILS LOUDLY on it (see assertInventoryBootstrapped
-      # in crawl/lib.ts) until a real inventory is committed — the red lane is
-      # the pressure that keeps bootstrap from silently becoming permanent. To
-      # bootstrap (or deliberately regenerate after surface growth): dispatch
-      # this workflow with update_crawl_inventory=true, then commit the uploaded
-      # artifact.
+      # Bootstrap convention (see assertInventoryBootstrapped in crawl/lib.ts):
+      # a stack's committed inventory starts EMPTY and the crawl FAILS LOUDLY
+      # on it until a real inventory is committed — the red lane is the
+      # pressure that keeps bootstrap from silently becoming permanent. The
+      # k3d inventory (test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json)
+      # was bootstrapped this way in tsouza/cerberus#1539. To deliberately
+      # regenerate after surface growth: dispatch this workflow with
+      # update_crawl_inventory=true, then commit the uploaded artifact.
       - name: Run Playwright crawl (${{ matrix.name }}, CRAWL_STACK=k3d)
         id: playwright_crawl
         if: env.RUN_SHARD == 'true' && matrix.crawlStack == 'k3d'
