@@ -1,5 +1,9 @@
 -- query.promql --
 clamp_min(up, scalar(up))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

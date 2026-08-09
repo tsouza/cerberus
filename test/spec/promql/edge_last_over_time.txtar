@@ -1,5 +1,9 @@
 -- query.promql --
 last_over_time(up[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = "up"
 [1] int64 = 9

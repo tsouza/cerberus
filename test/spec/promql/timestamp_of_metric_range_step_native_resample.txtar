@@ -14,6 +14,10 @@
 # the assertion that both paths agree.
 -- query.promql --
 timestamp(up)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 60s
 -- experimental_ts_grid_resample --

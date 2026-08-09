@@ -15,6 +15,10 @@
 # docs/compat-residual-audit-25898791664.md (2 diffs).
 -- query.promql --
 demo_memory_usage_bytes offset -5m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

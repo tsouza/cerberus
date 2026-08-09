@@ -1,5 +1,9 @@
 -- query.promql --
 day_of_week(weekday_marker)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

@@ -1,5 +1,9 @@
 -- query.promql --
 demo_memory_usage_bytes == on(instance, job, type) demo_memory_usage_bytes
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

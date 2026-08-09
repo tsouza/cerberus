@@ -516,6 +516,20 @@ func decodeString(s string) any {
 	return s
 }
 
+// Non-finite sample sentinels.
+//
+// JSON has no token for ±Inf or NaN, so `expected_rows:` encodes them as
+// these strings and both the round-trip comparison (below) and the parity
+// comparison (parity_chdb.go) read the same vocabulary. Keeping the
+// spellings here, named, is what stops the two readers from drifting into
+// disagreeing about what a fixture's cell means.
+const (
+	sentinelNaN     = "NaN"
+	sentinelPosInf  = "+Inf"
+	sentinelNegInf  = "-Inf"
+	sentinelBareInf = "Inf" // accepted spelling of sentinelPosInf
+)
+
 // normalizeExpected walks a [][]any and coerces numeric cells to
 // float64 so JSON-decoded numbers compare equal to scanned values.
 func normalizeExpected(rows [][]any) [][]any {
@@ -561,11 +575,11 @@ func normalizeValue(v any) any {
 		// if both sides normalized to the float.
 		switch {
 		case math.IsNaN(x):
-			return "NaN"
+			return sentinelNaN
 		case math.IsInf(x, +1):
-			return "+Inf"
+			return sentinelPosInf
 		case math.IsInf(x, -1):
-			return "-Inf"
+			return sentinelNegInf
 		}
 		return x
 	case string:
@@ -575,12 +589,12 @@ func normalizeValue(v any) any {
 		// spelling so "Inf" and "+Inf" compare equal and the actual
 		// side's float64 specials (normalized above) line up.
 		switch x {
-		case "Inf", "+Inf":
-			return "+Inf"
-		case "-Inf":
-			return "-Inf"
-		case "NaN":
-			return "NaN"
+		case sentinelBareInf, sentinelPosInf:
+			return sentinelPosInf
+		case sentinelNegInf:
+			return sentinelNegInf
+		case sentinelNaN:
+			return sentinelNaN
 		}
 		return v
 	case map[string]any:
@@ -622,11 +636,11 @@ func infSafe(v any) any {
 	case float64:
 		switch {
 		case math.IsNaN(x):
-			return "NaN"
+			return sentinelNaN
 		case math.IsInf(x, +1):
-			return "+Inf"
+			return sentinelPosInf
 		case math.IsInf(x, -1):
-			return "-Inf"
+			return sentinelNegInf
 		}
 		return x
 	case map[string]any:

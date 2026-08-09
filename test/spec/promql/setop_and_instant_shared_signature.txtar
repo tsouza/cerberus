@@ -15,6 +15,10 @@
 
 -- query.promql --
 demo_dense_bytes and demo_sparse_bytes
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

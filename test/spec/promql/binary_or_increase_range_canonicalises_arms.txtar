@@ -29,6 +29,10 @@
 
 -- query.promql --
 sum(increase(otelcol_processor_refused_log_records[5m]) or increase(otelcol_processor_refused_metric_points[5m]) or increase(otelcol_processor_refused_spans[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

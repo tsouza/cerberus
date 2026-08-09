@@ -19,6 +19,10 @@
 # value selection.
 -- query.promql --
 up offset 1m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- experimental_ts_grid_resample --

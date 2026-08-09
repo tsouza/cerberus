@@ -7,6 +7,10 @@
 
 -- query.promql --
 day_of_month()
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

@@ -1,5 +1,9 @@
 -- query.promql --
 sqrt(latency_seconds)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = ""
 [1] string = "service.name"

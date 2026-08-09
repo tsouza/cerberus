@@ -38,6 +38,10 @@
 
 -- query.promql --
 sum(increase(otelcol_exporter_send_failed_log_records[5m]) or increase(otelcol_exporter_send_failed_metric_points[5m]) or increase(otelcol_exporter_send_failed_spans[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

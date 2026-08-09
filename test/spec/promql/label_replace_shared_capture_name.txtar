@@ -29,6 +29,10 @@
 
 -- query.promql --
 label_replace(temperature, "service", "svc-$dup", "host", "web-(?P<dup>[a-z]+)|api-(?P<dup>[0-9]+)")
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

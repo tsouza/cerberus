@@ -6,6 +6,10 @@
 # Value with +Inf.
 -- query.promql --
 quantile(1.5, up) by (job)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

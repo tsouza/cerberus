@@ -16,6 +16,10 @@
 # the anchor, every row would read 1767225600, 1767225660, … instead.
 -- query.promql --
 timestamp(up)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 60s
 -- seed --
