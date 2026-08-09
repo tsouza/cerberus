@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -170,7 +171,46 @@ func RunParity(t *testing.T, c *Case, evalStart, evalEnd time.Time, step time.Du
 		)
 	}
 
-	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps)
+	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps, q.Expr)
+}
+
+// atan2QueryPattern matches PromQL's atan2 binary operator (`a atan2 b`) as
+// a whole word in a fixture's query text.
+//
+// # Why detection is automatic, and why it lives here rather than in a new
+// parity.go section key or scope value
+//
+// [oracle.EqualAtan2Values] documents the ONE proven case this tolerance
+// covers: real Prometheus (Go's math.Atan2) and cerberus (ClickHouse's own
+// atan2 libm) can legitimately disagree by 1 ULP. That is a fact about the
+// FUNCTION, not about any one fixture, so any fixture whose query invokes
+// atan2 needs the same tolerance — hand-flagging each one individually
+// would just be a slower, more error-prone way to spell the same rule.
+//
+// A new required `parity:` key was considered and rejected: LoadParity
+// treats every vocabulary key as required on every enrolled fixture (see
+// parity.go), so adding one would force an edit to all ~438 already-enrolled
+// fixtures for a property only one of them has. Reusing `scope:` was
+// rejected too — its own doc comment is explicit that scope excludes a named
+// AXIS of the answer and "is NOT a tolerance knob", which a per-value ULP
+// tolerance plainly is; bending it to fit here would be the exact
+// allow-list-in-disguise shape invariant 7 forbids.
+//
+// Detecting straight off the query text keeps the exception narrow in the
+// way that matters: nothing in a fixture's `-- parity --` section can turn
+// it on, the only trigger is the literal operator name in the query being
+// evaluated, and the regexp below matches nothing but that one operator.
+var atan2QueryPattern = regexp.MustCompile(`\batan2\b`)
+
+// atan2CompareValues resolves to [oracle.EqualAtan2Values] when query is
+// PROVEN — by containing the atan2 operator — to need it, and to the
+// ordinary exact [oracle.EqualValues] otherwise. See [atan2QueryPattern] for
+// why detection happens here instead of via fixture-level configuration.
+func atan2CompareValues(query string) func(a, b float64) bool {
+	if atan2QueryPattern.MatchString(query) {
+		return oracle.EqualAtan2Values
+	}
+	return oracle.EqualValues
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose
@@ -411,7 +451,7 @@ func parityProjectionColumns(db *sql.DB, rt *RoundTripSections) ([]string, error
 
 func compareAgainstReference(
 	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, sc sampleColumns,
-	got []referenceSample, compareTimestamps bool,
+	got []referenceSample, compareTimestamps bool, query string,
 ) {
 	t.Helper()
 
@@ -430,6 +470,15 @@ func compareAgainstReference(
 		)
 	}
 
+	// equalValues is oracle.EqualValues for every fixture except one whose
+	// query is proven to invoke atan2, where it is oracle.EqualAtan2Values.
+	// See atan2CompareValues for why that ULP-bounded relaxation is sound
+	// and narrow. It is resolved once for both heads on purpose: sample
+	// equality is one rule (plus this one named exception), not one per
+	// head, and duplicating it would let the two drift into disagreeing
+	// about what "equal" means.
+	equalValues := atan2CompareValues(query)
+
 	for i := range got {
 		g, w := got[i], want[i]
 		if labelKey(g.Labels) != labelKey(w.Labels) {
@@ -437,11 +486,7 @@ func compareAgainstReference(
 				c.Name, i, g.Labels, w.Labels)
 			continue
 		}
-		// oracle.EqualValues is the promql oracle's NaN-aware float
-		// predicate. It is used for BOTH heads on purpose: sample equality
-		// is one rule, not one per head, and duplicating it would let the
-		// two drift into disagreeing about what "equal" means.
-		if !oracle.EqualValues(g.Value, w.Value) {
+		if !equalValues(g.Value, w.Value) {
 			t.Errorf("fixture %s sample %d (%v): value differs\n  reference: %v\n  cerberus:  %v",
 				c.Name, i, g.Labels, g.Value, w.Value)
 		}
