@@ -21,6 +21,10 @@
 
 -- query.promql --
 info({__name__=~"up|target_info"})
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
