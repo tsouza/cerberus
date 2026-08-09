@@ -24,3 +24,7 @@ Project [TraceId, SpanId, Timestamp, SpanName AS name, StatusCode AS status, Spa
     Scan(otel_traces)
 -- sql --
 SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanName` AS `name`, `StatusCode` AS `status`, `SpanKind` AS `kind`, `SpanId` AS `span:id` FROM (SELECT * FROM `otel_traces` WHERE (`StatusCode` = ?))
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

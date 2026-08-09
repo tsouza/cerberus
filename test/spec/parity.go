@@ -52,6 +52,13 @@
 //	endpoint: /api/v1/query
 //	scope: full
 //
+// or, for a TraceQL fixture:
+//
+//	-- parity --
+//	oracle: tempo
+//	endpoint: /api/search
+//	scope: full
+//
 // Every key is required and every value comes from a CLOSED vocabulary.
 // An unknown key or value is an error, never a silent skip: a typo must
 // fail loudly rather than quietly un-enrol a fixture from its oracle.
@@ -67,6 +74,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SectionParity is the TXTAR section name a fixture carries to opt into
@@ -82,6 +90,12 @@ const (
 	// OracleLoki evaluates the fixture with the upstream Loki engine.
 	// AGPLv3, so it runs only under the agpl_oracle build tag.
 	OracleLoki = "loki"
+
+	// OracleTempo evaluates the fixture with the upstream Tempo TraceQL
+	// engine, including its own nested-set implementation of the
+	// structural operators. AGPLv3, so it runs only under the
+	// agpl_oracle build tag.
+	OracleTempo = "tempo"
 )
 
 const (
@@ -92,6 +106,12 @@ const (
 	// EndpointRange is Prometheus's range-query endpoint. The fixture must
 	// also carry a `range_step:` section.
 	EndpointRange = "/api/v1/query_range"
+
+	// EndpointSearch is Tempo's trace-search endpoint. The fixture's
+	// query is a spanset pipeline and the compared answer is the set of
+	// matched spans, not a time series, so no evaluation instant or step
+	// participates.
+	EndpointSearch = "/api/search"
 )
 
 const (
@@ -117,6 +137,29 @@ const (
 	ScopeExceptZeroBucket = "except-zero-bucket"
 )
 
+// ParityEval is the evaluation window a TIME-SERIES oracle needs: the
+// instant (or range) at which the reference engine is asked for an answer.
+//
+// It is the zero value for the trace-search oracles. A TraceQL spanset
+// query has no evaluation instant — it selects spans, and the fixture's
+// own `search_window:` section is what bounds the scan — so passing three
+// zero positional arguments there would be a lie the signature told. The
+// struct lets a caller say "no window applies" by saying nothing.
+type ParityEval struct {
+	// Start is the instant for an instant query, or the range start.
+	Start time.Time
+
+	// End equals Start for an instant query.
+	End time.Time
+
+	// Step is zero for an instant query, and the range step otherwise.
+	Step time.Duration
+}
+
+// IsRange reports whether the evaluation is a range query, which is what
+// decides whether output timestamps participate in the comparison.
+func (e ParityEval) IsRange() bool { return e.Step > 0 }
+
 // Parity is the parsed `parity:` section.
 type Parity struct {
 	// Oracle names the reference engine that answers for this fixture.
@@ -137,8 +180,8 @@ func (p *Parity) ComparesInFull() bool { return p.Scope == ScopeFull }
 // and its accepted values. [LoadParity] and the contract test both read
 // it, so a new key cannot be added to one without the other.
 var parityVocabularies = map[string][]string{
-	"oracle":   {OraclePrometheus, OracleLoki},
-	"endpoint": {EndpointInstant, EndpointRange},
+	"oracle":   {OraclePrometheus, OracleLoki, OracleTempo},
+	"endpoint": {EndpointInstant, EndpointRange, EndpointSearch},
 	"scope":    {ScopeFull, ScopeExceptZeroBucket},
 }
 

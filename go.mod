@@ -91,10 +91,14 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
+	github.com/bytedance/gopkg v0.1.3 // indirect
+	github.com/bytedance/sonic v1.15.1 // indirect
+	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
@@ -145,6 +149,7 @@ require (
 	github.com/go-openapi/swag/typeutils v0.26.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.26.0 // indirect
 	github.com/go-openapi/validate v0.25.2 // indirect
+	github.com/go-redis/redis/v8 v8.11.5 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/gogo/googleapis v1.4.1 // indirect
@@ -193,6 +198,7 @@ require (
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
 	github.com/kamstrup/intmap v0.5.2 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/knadh/koanf/providers/confmap v1.0.0 // indirect
 	github.com/knadh/koanf/v2 v2.3.4 // indirect
@@ -260,10 +266,12 @@ require (
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
+	github.com/segmentio/fasthash v1.0.3 // indirect
 	github.com/sercand/kuberesolver/v6 v6.0.1 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.5 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
+	github.com/sony/gobreaker v1.0.0 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
@@ -274,6 +282,7 @@ require (
 	github.com/tjhop/slog-gokit v0.2.0 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/uber/jaeger-client-go v2.30.0+incompatible // indirect
 	github.com/uber/jaeger-lib v2.4.1+incompatible // indirect
@@ -311,6 +320,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.4 // indirect
+	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/mod v0.38.0 // indirect
@@ -347,19 +357,33 @@ replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-
 // matters, instead of one PR per upstream release. See docs/upstream-
 // forks.md for the full flow.
 //
-// LogQL and TraceQL no longer route through a fork: cerberus parses both
+// Neither LogQL nor TraceQL is PARSED through a fork: cerberus parses both
 // with its own clean-room Apache reimplementations (internal/logql/lsyntax,
-// internal/logql/logpattern, internal/drain, internal/traceql/ast), so the
-// AGPL grafana/loki + grafana/tempo parser forks were dropped. The shipped
-// binary keeps a direct upstream require only for the Apache-licensed
-// grafana/tempo/pkg/tempopb wire types; the AGPL upstream parsers are
-// referenced solely by test-only oracles (agpl_oracle-tagged tests, the
-// test/oracle nested module, and the compatibility harnesses).
+// internal/logql/logpattern, internal/drain, internal/traceql/ast). The
+// shipped binary reaches into grafana/tempo only for the Apache-licensed
+// grafana/tempo/pkg/tempopb wire types; every AGPL package of either
+// upstream is referenced solely by test-only oracles (agpl_oracle-tagged
+// tests, the test/oracle nested module, and the compatibility harnesses),
+// and the agpl-clean gate fails the build if one becomes reachable from
+// ./cmd/cerberus.
 
 // prometheus: zero patches; the fork is a pure Dependabot watch boundary
 // scoped to promql/parser, model/labels, model/histogram, and a couple of
 // adjacent files cerberus reaches into.
 replace github.com/prometheus/prometheus => github.com/tsouza/prometheus v0.0.1-cerberus-parser
+
+// tempo: accessor-only patches, consumed by test-only oracles. TraceQL's
+// structural operators (`>>`, `>`, `~`) are declared on the traceql.Span
+// INTERFACE but implemented in tempodb/encoding/vparquet4 on an unexported
+// concrete type, which every one of them type-asserts its arguments back
+// to. A caller supplying its own traceql.Span therefore cannot reach them
+// at all. The fork exports vparquet4.NewSpan — a data-only constructor for
+// that same concrete type — so test/spec/parityoracle/traceql can drive
+// upstream's REAL structural semantics over spans read out of chDB instead
+// of reimplementing them, which would make the oracle a mirror. The tag
+// tracks the same pseudo-version base the `require` above pins; see
+// docs/upstream-forks.md and TestForkVersionSkew.
+replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.5-cerberus-accessors
 
 // otelc: hoists the ClickHouse exporter's sqltemplates out of `internal/`
 // so cerberus can import them as the schema source-of-truth. collector-

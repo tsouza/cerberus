@@ -25,3 +25,7 @@ INSERT INTO otel_traces VALUES
 Project [TraceId, SpanId, Timestamp, SpanAttributes["http.method"] AS http.method]
   Filter predicate=(ResourceAttributes["service.name"] = "frontend")
     Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

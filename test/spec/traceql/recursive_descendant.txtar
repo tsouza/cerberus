@@ -43,3 +43,7 @@ StructuralJoin op=>> maxDepth=128
     Scan(otel_traces)
   Filter predicate=(ResourceAttributes["service.name"] = "leaf")
     Scan(otel_traces)
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
