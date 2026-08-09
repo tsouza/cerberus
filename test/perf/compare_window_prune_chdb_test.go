@@ -352,25 +352,21 @@ const (
 // chplan.RangeWindow tree for the non-root-selection root-lookup shape
 // (matching TraceIDColumn "TraceId", ParentSpanId-rooted RootLookup over
 // spansTable, optionally gated by the RootLookupTraceIDTsTable envelope) and
-// runs it through the ACTUAL chsql.Emit — the same emitter production
-// requests go through — rather than hand-typing the resulting SQL text (the
-// gap #1439 closes). windowRootLookupTraceIDSeed / rootLookupTraceIDTsBounds
+// runs it through the ACTUAL emitter — the same one production requests go
+// through — rather than hand-typing the resulting SQL text (the gap #1439
+// closes). windowRootLookupTraceIDSeed / rootLookupTraceIDTsBounds
 // (internal/chsql/metrics_compare.go) are unexported, so this only reaches
-// them indirectly via chsql.Emit; nothing here reimplements their predicate
-// shape by hand.
+// them indirectly; nothing here reimplements their predicate shape by hand.
 //
 // The full emitted statement is compare()'s three-layer matrix query (anchor
-// fanout + outer count wrapper) around the `s LEFT JOIN r` join this test
-// doesn't need — only the root ('r') leg's own derived-table subquery is
-// under test. That subquery is a complete, self-contained SELECT (chsql
-// always parenthesises a join side via subqueryFrag), so it is extracted by
-// balanced-paren scanning from the `LEFT JOIN (` marker and returned as a
-// standalone, directly-executable query, together with the exact slice of
-// `?`-bound args it consumes — found by counting placeholders: clickhouse-go
-// binds `?` positionally in left-to-right TEXT order, and chsql.Emit appends
-// each arg to its args slice at the moment its placeholder is written, so
-// counting `?` occurrences up to the extraction point yields the arg offset
-// and counting them inside the extracted text yields the arg count.
+// fanout + outer count wrapper) around the `s LEFT JOIN r` join this test does
+// not need — only the root ('r') leg is under test, since partition-pruning
+// that leg's own scan is what the trace_id_ts envelope claims (#1443).
+// chsql.EmitCompareRootLeg renders exactly that leg as a standalone,
+// directly-executable statement paired with its own args, so this harness asks
+// the emitter for the leg instead of recovering it from the emitted text by
+// scanning for a `LEFT JOIN (` marker, counting parens to its match, and
+// counting `?` placeholders to guess which slice of the args it consumes.
 func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, winLo, winHi time.Time, envelope bool) (string, []any) {
 	t.Helper()
 
@@ -416,43 +412,22 @@ func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, w
 		End:             winHi,
 		TimestampColumn: "Timestamp",
 	}
-	sql, args, err := chsql.Emit(context.Background(), rw)
+	rootSQL, rootArgs, err := chsql.EmitCompareRootLeg(context.Background(), rw)
+	if err != nil {
+		t.Fatalf("chsql.EmitCompareRootLeg: %v", err)
+	}
+	// The leg the emitter hands back must be the leg the matrix statement
+	// embeds — otherwise this harness would be pruning-checking a query no
+	// request ever runs. chsql pins that containment in its own unit test; here
+	// it is re-asserted against the full statement this exact plan emits.
+	matrixSQL, _, err := chsql.Emit(context.Background(), rw)
 	if err != nil {
 		t.Fatalf("chsql.Emit: %v", err)
 	}
-
-	const joinMarker = "LEFT JOIN ("
-	idx := strings.Index(sql, joinMarker)
-	if idx < 0 {
-		t.Fatalf("expected %q (the s/r join) in emitted SQL:\n%s", joinMarker, sql)
+	if !strings.Contains(matrixSQL, rootSQL) {
+		t.Fatalf("root leg is not the one the compare join embeds.\nleg:\n%s\nmatrix:\n%s", rootSQL, matrixSQL)
 	}
-	start := idx + len(joinMarker)
-	depth := 1
-	end := -1
-	for i := start; i < len(sql); i++ {
-		switch sql[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				end = i
-			}
-		}
-		if end >= 0 {
-			break
-		}
-	}
-	if end < 0 {
-		t.Fatalf("unbalanced parens extracting the root ('r') leg from:\n%s", sql)
-	}
-	rootSQL := sql[start:end]
-	argOffset := strings.Count(sql[:start], "?")
-	argCount := strings.Count(rootSQL, "?")
-	if argOffset+argCount > len(args) {
-		t.Fatalf("extracted root leg wants args[%d:%d] but Emit returned only %d args:\n%s", argOffset, argOffset+argCount, len(args), rootSQL)
-	}
-	return rootSQL, args[argOffset : argOffset+argCount]
+	return rootSQL, rootArgs
 }
 
 // TestCompareNonRootRootLookupTraceIDTsEnvelope exercises the case a request

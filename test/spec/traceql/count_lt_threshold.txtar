@@ -22,13 +22,13 @@ INSERT INTO otel_traces VALUES
 [3] int64 = 10
 -- chplan --
 Filter predicate=(Value < 10)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` < ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` < ?)
 -- expected_rows --
 [
-  ["span", {"__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "t2", "service.name": "frontend"}, "2024-01-01T00:00:03Z", 2],
-  ["span", {"__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3]
+  ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "t2", "service.name": "frontend"}, "2024-01-01T00:00:03Z", 2],
+  ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3]
 ]

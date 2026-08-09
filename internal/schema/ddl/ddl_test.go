@@ -353,7 +353,7 @@ func TestTTLExpr_RoundingBuckets(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ttlExpr("t", tc.ttl)
+			got := Config{}.ttlExpr("t", tc.ttl, 0)
 			if got != tc.want {
 				t.Errorf("ttlExpr: got %q, want %q", got, tc.want)
 			}
@@ -393,6 +393,183 @@ func TestRenderSignal_PerSignalTTL(t *testing.T) {
 		if strings.Contains(stmt, "TTL toDateTime") {
 			t.Errorf("traces[%d]: TTL=0 must emit no TTL clause:\n%s", i, stmt)
 		}
+	}
+}
+
+// TestRenderSignal_Tiering pins the hot/cold clause on every auto-created
+// table: a configured Tiering volume + per-signal age emits
+// `TTL <move> TO VOLUME '<v>', <retention> DELETE` in the ONE clause ClickHouse
+// allows, on the right time column for each table. Without this rule a
+// multi-volume storage_policy is inert — parts never leave the hot volume —
+// which is the bug this fixture exists to keep fixed.
+func TestRenderSignal_Tiering(t *testing.T) {
+	const day = 24 * time.Hour
+	cfg := Config{
+		TTL: TTL{
+			Metrics: 90 * day,
+			Logs:    30 * day,
+			Traces:  30 * day,
+		},
+		Tiering: Tiering{
+			Volume:  "cold",
+			Metrics: 14 * day, // 2 weeks → coarsest bucket is weeks
+			Logs:    3 * day,
+			Traces:  3 * day,
+		},
+	}.withDefaults()
+
+	metrics, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	const wantMetrics = "TTL toDateTime(TimeUnix) + toIntervalWeek(2) TO VOLUME 'cold', " +
+		"toDateTime(TimeUnix) + toIntervalDay(90) DELETE"
+	for i, stmt := range metrics {
+		// ADD PROJECTION ALTERs carry no TTL — those live on the table.
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
+		if !strings.Contains(stmt, wantMetrics) {
+			t.Errorf("metrics[%d]: want tiered TTL %q:\n%s", i, wantMetrics, stmt)
+		}
+	}
+
+	logs, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	const wantLogs = "TTL toDateTime(Timestamp) + toIntervalDay(3) TO VOLUME 'cold', " +
+		"toDateTime(Timestamp) + toIntervalDay(30) DELETE"
+	if !strings.Contains(logs[0], wantLogs) {
+		t.Errorf("logs: want tiered TTL %q:\n%s", wantLogs, logs[0])
+	}
+
+	traces, err := renderSignal(cfg, Traces)
+	if err != nil {
+		t.Fatalf("renderSignal(Traces): %v", err)
+	}
+	// The spans table keys on Timestamp, the trace_id_ts lookup on Start —
+	// both carry the same signal's move + delete ages.
+	const wantSpans = "TTL toDateTime(Timestamp) + toIntervalDay(3) TO VOLUME 'cold', " +
+		"toDateTime(Timestamp) + toIntervalDay(30) DELETE"
+	if !strings.Contains(traces[0], wantSpans) {
+		t.Errorf("traces[0]: want tiered TTL %q:\n%s", wantSpans, traces[0])
+	}
+	const wantLookup = "TTL toDateTime(Start) + toIntervalDay(3) TO VOLUME 'cold', " +
+		"toDateTime(Start) + toIntervalDay(30) DELETE"
+	if !strings.Contains(traces[1], wantLookup) {
+		t.Errorf("traces[1]: want tiered TTL %q:\n%s", wantLookup, traces[1])
+	}
+}
+
+// TestRenderSignal_TieringPerSignalOptional pins that tiering is per-signal:
+// a signal with no move age keeps the retention-only clause it rendered before
+// tiering existed, byte-for-byte, even while a sibling signal tiers.
+func TestRenderSignal_TieringPerSignalOptional(t *testing.T) {
+	const day = 24 * time.Hour
+	cfg := Config{
+		TTL:     TTL{Metrics: 90 * day, Logs: 30 * day},
+		Tiering: Tiering{Volume: "cold", Metrics: 14 * day},
+	}.withDefaults()
+
+	logs, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	if strings.Contains(logs[0], "TO VOLUME") {
+		t.Errorf("logs: no tiering age configured, must emit no TO VOLUME action:\n%s", logs[0])
+	}
+	if !strings.Contains(logs[0], "TTL toDateTime(Timestamp) + toIntervalDay(30)\n") {
+		t.Errorf("logs: want the untouched retention-only clause:\n%s", logs[0])
+	}
+}
+
+// TestRenderSignal_NoTieringUnchanged is the no-regression pin: with no
+// Tiering configured the rendered DDL is IDENTICAL to what the same config
+// produced before tiering existed — no stray DELETE keyword, no clause churn.
+func TestRenderSignal_NoTieringUnchanged(t *testing.T) {
+	cfg := Config{TTL: TTL{Metrics: 48 * time.Hour, Logs: 48 * time.Hour, Traces: 48 * time.Hour}}.withDefaults()
+	for _, s := range []Signal{Metrics, Logs, Traces} {
+		stmts, err := renderSignal(cfg, s)
+		if err != nil {
+			t.Fatalf("renderSignal(%s): %v", s, err)
+		}
+		for i, stmt := range stmts {
+			if strings.Contains(stmt, "TO VOLUME") {
+				t.Errorf("%s[%d]: no tiering configured, must emit no TO VOLUME action:\n%s", s, i, stmt)
+			}
+			if strings.Contains(stmt, "DELETE") {
+				t.Errorf("%s[%d]: single-rule TTL must stay implicit-DELETE:\n%s", s, i, stmt)
+			}
+		}
+	}
+}
+
+// TestValidate_TieringInertCombinations pins the fail-fast half of the fix:
+// a tiering configuration that would be ACCEPTED while emitting nothing (or
+// emitting a move the delete-TTL always beats) is rejected with a message
+// naming what would not happen, rather than booting and silently not tiering.
+func TestValidate_TieringInertCombinations(t *testing.T) {
+	const day = 24 * time.Hour
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name:    "age_without_volume",
+			cfg:     Config{TTL: TTL{Logs: 30 * day}, Tiering: Tiering{Logs: 3 * day}},
+			wantErr: true,
+		},
+		{
+			name:    "volume_without_any_age",
+			cfg:     Config{TTL: TTL{Logs: 30 * day}, Tiering: Tiering{Volume: "cold"}},
+			wantErr: true,
+		},
+		{
+			name:    "move_equals_retention",
+			cfg:     Config{TTL: TTL{Logs: 30 * day}, Tiering: Tiering{Volume: "cold", Logs: 30 * day}},
+			wantErr: true,
+		},
+		{
+			name:    "move_after_retention",
+			cfg:     Config{TTL: TTL{Metrics: 30 * day}, Tiering: Tiering{Volume: "cold", Metrics: 60 * day}},
+			wantErr: true,
+		},
+		{
+			name:    "move_before_retention",
+			cfg:     Config{TTL: TTL{Metrics: 30 * day}, Tiering: Tiering{Volume: "cold", Metrics: 7 * day}},
+			wantErr: false,
+		},
+		{
+			// Tiering with no retention at all is legitimate: parts move to the
+			// cold volume and are kept there indefinitely.
+			name:    "move_without_retention",
+			cfg:     Config{Tiering: Tiering{Volume: "cold", Metrics: 7 * day}},
+			wantErr: false,
+		},
+		{
+			name:    "no_tiering_at_all",
+			cfg:     Config{TTL: TTL{Metrics: 30 * day}},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("want a rejection for the inert tiering config, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("want no error, got %v", err)
+			}
+			// The same verdict must reach both the applying and the offline
+			// rendering path, so neither can create tables the other refuses.
+			_, renderErr := RenderAll(tc.cfg, []Signal{Logs})
+			if (renderErr != nil) != tc.wantErr {
+				t.Errorf("RenderAll error = %v; want error: %v", renderErr, tc.wantErr)
+			}
+		})
 	}
 }
 

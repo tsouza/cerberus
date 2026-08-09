@@ -302,7 +302,7 @@ search
 -- expected_max_traces --
 500
 
-# --- Inner aggregates (2) ---
+# --- Inner aggregates (3) ---
 # Inner aggregations run through /api/search today (no metrics
 # endpoint required); they're listed as a separate category because
 # the wire shape is the same SearchResponse envelope but the row
@@ -329,6 +329,40 @@ search
 0
 -- expected_max_traces --
 500
+
+# count_spans_per_trace_status_error_root_identity (issue #1481) pins
+# ROOT IDENTITY for a spanset aggregate, not just Value — the two cases
+# above never discriminate the bug because their predicates always let
+# the root span itself into the matched set (resource.service.name
+# matches everything; status=ok is the root's own status in this
+# fixture), so an arbitrary any()-picked representative row is usually
+# the root anyway and the assertion happens to pass either way.
+#
+# `{ status = error }` is different: seeder.go's root span is ALWAYS
+# Status=OK (only a rotating subset of children report Error), so this
+# predicate's matched-span set for any qualifying trace NEVER contains
+# the root — root_lookup.go's rootCond can never be satisfied by a
+# matched row. A backend that surfaces `any(SpanName)` unverified would
+# report one of the matched *children*'s name
+# (`<service>.child.<index>`, never matching `^GET /api/`); a backend
+# that resolves the true root (via the follow-up lookup or an
+# equivalent mechanism) reports the seeded root span's name
+# (`GET /api/<service>/<index>`) regardless of which child the
+# aggregate happened to pick. expected_root_name_re pins the latter
+# shape on cerberus's own response, independent of whatever reference
+# Tempo returns for the same query.
+-- name --
+count_spans_per_trace_status_error_root_identity
+-- query --
+{ status = error } | count() > 0
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+-- expected_root_name_re --
+^GET /api/
 
 # --- SpanSets (4) ---
 # Cases with an explicit -- spss -- switch on the differ's per-trace

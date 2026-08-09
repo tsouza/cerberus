@@ -15,6 +15,9 @@ func TestFromEnv_SchemaProvisioning_Defaults(t *testing.T) {
 		"CERBERUS_SCHEMA_TTL_METRICS", "CERBERUS_SCHEMA_TTL_LOGS", "CERBERUS_SCHEMA_TTL_TRACES",
 		"CERBERUS_SCHEMA_DATABASE_REPLICATED", "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH",
 		"CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD", "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA",
+		"CERBERUS_SCHEMA_TIER_VOLUME", "CERBERUS_SCHEMA_TIER_AFTER",
+		"CERBERUS_SCHEMA_TIER_AFTER_METRICS", "CERBERUS_SCHEMA_TIER_AFTER_LOGS",
+		"CERBERUS_SCHEMA_TIER_AFTER_TRACES",
 	} {
 		t.Setenv(k, "")
 	}
@@ -25,7 +28,8 @@ func TestFromEnv_SchemaProvisioning_Defaults(t *testing.T) {
 	p := cfg.SchemaProvisioning
 	if p.Cluster != "" || p.TableEngine != "" || p.DatabaseReplicated ||
 		p.TTL != 0 || p.TTLMetrics != 0 || p.TTLLogs != 0 || p.TTLTraces != 0 ||
-		p.DatabaseReplicatedPath != "" {
+		p.DatabaseReplicatedPath != "" || p.TierVolume != "" || p.TierAfter != 0 ||
+		p.TierAfterMetrics != 0 || p.TierAfterLogs != 0 || p.TierAfterTraces != 0 {
 		t.Errorf("schema provisioning defaults not zero: %+v", p)
 	}
 }
@@ -42,6 +46,9 @@ func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
 	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH", "/clickhouse/databases/otel")
 	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD", "shard0")
 	t.Setenv("CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA", "replica0")
+	t.Setenv("CERBERUS_SCHEMA_TIER_VOLUME", "cold")
+	t.Setenv("CERBERUS_SCHEMA_TIER_AFTER", "7d")
+	t.Setenv("CERBERUS_SCHEMA_TIER_AFTER_LOGS", "72h")
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -63,6 +70,15 @@ func TestFromEnv_SchemaProvisioning_Overrides(t *testing.T) {
 	if !p.DatabaseReplicated || p.DatabaseReplicatedPath != "/clickhouse/databases/otel" ||
 		p.DatabaseReplicatedShard != "shard0" || p.DatabaseReplicatedReplica != "replica0" {
 		t.Errorf("replicated knobs not parsed: %+v", p)
+	}
+	if p.TierVolume != "cold" {
+		t.Errorf("TierVolume = %q; want cold", p.TierVolume)
+	}
+	if p.TierAfter != 7*24*time.Hour {
+		t.Errorf("TierAfter = %v; want 168h", p.TierAfter)
+	}
+	if p.TierAfterLogs != 72*time.Hour {
+		t.Errorf("TierAfterLogs = %v; want 72h", p.TierAfterLogs)
 	}
 }
 
@@ -120,6 +136,8 @@ func TestFromEnv_SchemaTTL_RejectsNegative(t *testing.T) {
 	for _, key := range []string{
 		"CERBERUS_SCHEMA_TTL", "CERBERUS_SCHEMA_TTL_METRICS",
 		"CERBERUS_SCHEMA_TTL_LOGS", "CERBERUS_SCHEMA_TTL_TRACES",
+		"CERBERUS_SCHEMA_TIER_AFTER", "CERBERUS_SCHEMA_TIER_AFTER_METRICS",
+		"CERBERUS_SCHEMA_TIER_AFTER_LOGS", "CERBERUS_SCHEMA_TIER_AFTER_TRACES",
 	} {
 		t.Run(key, func(t *testing.T) {
 			const negative = "-1h"

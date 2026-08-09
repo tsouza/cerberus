@@ -114,6 +114,72 @@ func TestRewriteMapProjections(t *testing.T) {
 	}
 }
 
+// TestNestMapOrderBy pins both collision shapes NestMapOrderBy has to
+// nest — the `sort_by_label` subscript and the route-A streaming-matrix
+// `mapSort(...)` ordering — and, just as load-bearing, the shapes it must
+// leave ALONE. The non-firing rows are the ones with teeth: broadening the
+// detector from a `[`-subscript match to a bare-column-name match made a
+// nested ORDER BY inside the FROM subquery (the topk/bottomk-over-subquery
+// shape) look like the outer clause, and the "rest of the query" that
+// followed it reliably mentioned `Attributes` somewhere further out, so the
+// pass rewrote a query that never needed it into invalid SQL (ClickHouse
+// NOT_AN_AGGREGATE). The depth-tracking split is what stops that.
+func TestNestMapOrderBy(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			// sort_by_label: the original shape this pass was built for.
+			name: "outer order by map subscript is nested",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes`, `Value` FROM (SELECT `Attributes`, `Value` FROM `t`) ORDER BY `Attributes`['h']",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes`, `Value` FROM (SELECT * FROM (SELECT `Attributes`, `Value` FROM `t`) ORDER BY `Attributes`['h'])",
+		},
+		{
+			// engine.rangeSeriesOrderer / prom.lang.RangeSeriesOrder: the Map
+			// column is passed WHOLE to mapSort rather than subscripted, so a
+			// `[`-only detector missed it and the raw Map reached the driver.
+			name: "outer order by mapSort of map column is nested",
+			in:   "SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM `t`) ORDER BY mapSort(`Attributes`), `TimeUnix`",
+			want: "SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM `t`) ORDER BY mapSort(`Attributes`), `TimeUnix`)",
+		},
+		{
+			// The regression the depth-tracking split exists for: the ORDER BY
+			// belongs to the INNER subquery, and the outer query has none at
+			// all. Nothing may move, even though `Attributes` appears both
+			// inside the subquery and in the outer GROUP BY.
+			name: "nested order by inside from subquery is left alone",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `Value` FROM `t` ORDER BY `Value` LIMIT 1 BY `anchor_ts`) GROUP BY `Attributes`",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `Value` FROM `t` ORDER BY `Value` LIMIT 1 BY `anchor_ts`) GROUP BY `Attributes`",
+		},
+		{
+			name: "outer order by without a map column is left alone",
+			in:   "SELECT `MetricName`, `Value` FROM (SELECT `MetricName`, `Value` FROM `t`) ORDER BY `Value` DESC",
+			want: "SELECT `MetricName`, `Value` FROM (SELECT `MetricName`, `Value` FROM `t`) ORDER BY `Value` DESC",
+		},
+		{
+			name: "no order by at all is left alone",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes` FROM (SELECT `Attributes` FROM `t`)",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes` FROM (SELECT `Attributes` FROM `t`)",
+		},
+		{
+			// A bare table scan is not the single-parenthesised-subquery FROM
+			// this pass requires, so it declines rather than guessing.
+			name: "bare table from is left alone",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes` FROM `t` ORDER BY mapSort(`Attributes`)",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes` FROM `t` ORDER BY mapSort(`Attributes`)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NestMapOrderBy(tc.in); got != tc.want {
+				t.Errorf("NestMapOrderBy:\n got: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTolerantRowsErr(t *testing.T) {
 	if err := TolerantRowsErr(nil); err != nil {
 		t.Errorf("nil -> %v, want nil", err)

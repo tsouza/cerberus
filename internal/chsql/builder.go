@@ -1912,11 +1912,13 @@ func Spliced(s Subqueryable) Frag {
 // PreRenderedSQL adapts an already-rendered (sql, args) pair into a
 // Subqueryable so it can flow through Subquery without raw-string
 // composition. Holds an opaque CH SQL string plus its positional args;
-// the adapter exists for legacy chsql.Emit output that pre-dates the
-// QueryBuilder migration.
+// it carries legacy chsql.Emit output that pre-dates the QueryBuilder
+// migration, and the emitter's own recursive render (emitter.renderNode →
+// subqueryFrag), whose child statement is text by the time the parent
+// composes it.
 //
-// Don't reach for this for newly written code — compose with
-// QueryBuilder + typed Frags instead.
+// Don't reach for this to BUILD SQL — compose with QueryBuilder + typed
+// Frags instead. Its only legitimate input is emitter-rendered text.
 type PreRenderedSQL struct {
 	SQL  string
 	Args []any

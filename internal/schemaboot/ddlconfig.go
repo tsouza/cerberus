@@ -14,15 +14,17 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// resolveSignalTTL resolves the effective retention for one signal: a non-zero
-// per-signal override (CERBERUS_SCHEMA_TTL_{METRICS,LOGS,TRACES}) wins,
-// otherwise the signal inherits the global CERBERUS_SCHEMA_TTL default (which
-// is itself 0 = no retention unless the operator sets it).
-func resolveSignalTTL(p config.SchemaProvisioning, override time.Duration) time.Duration {
+// resolveSignalDuration resolves a per-signal duration knob: a non-zero
+// per-signal override wins, otherwise the signal inherits the global default
+// (which is itself 0 = the feature is off unless the operator sets it). It
+// serves both retention (CERBERUS_SCHEMA_TTL{,_METRICS,_LOGS,_TRACES}) and
+// storage tiering (CERBERUS_SCHEMA_TIER_AFTER{,_METRICS,_LOGS,_TRACES}), which
+// carry the same global-plus-override shape.
+func resolveSignalDuration(global, override time.Duration) time.Duration {
 	if override > 0 {
 		return override
 	}
-	return p.TTL
+	return global
 }
 
 // storagePolicySetting is the MergeTree setting key the StoragePolicy shorthand
@@ -41,13 +43,16 @@ const storagePolicySetting = "storage_policy"
 func DDLConfig(cfg config.Config) (ddl.Config, error) {
 	p := cfg.SchemaProvisioning
 	signalTTL := func(override time.Duration) time.Duration {
-		return resolveSignalTTL(p, override)
+		return resolveSignalDuration(p.TTL, override)
+	}
+	tierAfter := func(override time.Duration) time.Duration {
+		return resolveSignalDuration(p.TierAfter, override)
 	}
 	settings, err := schemaSettings(p)
 	if err != nil {
 		return ddl.Config{}, err
 	}
-	return ddl.Config{
+	out := ddl.Config{
 		Database: cfg.ClickHouse.Database,
 		Cluster:  p.Cluster,
 		Engine:   p.TableEngine,
@@ -55,6 +60,12 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			Metrics: signalTTL(p.TTLMetrics),
 			Logs:    signalTTL(p.TTLLogs),
 			Traces:  signalTTL(p.TTLTraces),
+		},
+		Tiering: ddl.Tiering{
+			Volume:  p.TierVolume,
+			Metrics: tierAfter(p.TierAfterMetrics),
+			Logs:    tierAfter(p.TierAfterLogs),
+			Traces:  tierAfter(p.TierAfterTraces),
 		},
 		DatabaseEngine: ddl.DatabaseEngine{
 			Replicated:        p.DatabaseReplicated,
@@ -72,7 +83,16 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			MetricsSummary:      cfg.Schema.SummaryTable,
 		},
 		Settings: settings,
-	}, nil
+	}
+	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
+	// on EVERY boot (the auto-create hook is a separate flag), so an inert
+	// tiering combination — an age with no volume, a volume with no age, a move
+	// that never beats the delete-TTL — fails fast with a precise message
+	// instead of being accepted and silently doing nothing.
+	if err := out.Validate(); err != nil {
+		return ddl.Config{}, err
+	}
+	return out, nil
 }
 
 // schemaSettings resolves the auto-create-table SETTINGS tail from the

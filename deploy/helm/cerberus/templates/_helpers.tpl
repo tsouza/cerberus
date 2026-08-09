@@ -335,6 +335,15 @@ CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: {{ . | quote }}
 {{- with .Values.schema.storagePolicy }}
 CERBERUS_SCHEMA_STORAGE_POLICY: {{ . | quote }}
 {{- end }}
+{{- /* Hot/cold tiering: the TTL ... TO VOLUME rule WITHOUT which a multi-volume
+       storagePolicy above moves nothing. Per-signal ages reach the long-tail
+       passthrough as schema.TIER_AFTER_{METRICS,LOGS,TRACES}. */}}
+{{- with .Values.schema.tierVolume }}
+CERBERUS_SCHEMA_TIER_VOLUME: {{ . | quote }}
+{{- end }}
+{{- with .Values.schema.tierAfter }}
+CERBERUS_SCHEMA_TIER_AFTER: {{ . | quote }}
+{{- end }}
 {{- /* Generic MergeTree SETTINGS map -> CERBERUS_SCHEMA_SETTINGS as a sorted
        k=v,k2=v2 list (sorted so the rendered env is deterministic; cerberus
        preserves the order it receives). */}}
@@ -349,10 +358,11 @@ CERBERUS_SCHEMA_SETTINGS: {{ join "," $pairs | quote }}
 {{- end }}
 {{- end }}
 {{- /* Generic schema.<KEY> long-tail passthrough; skip the typed sub-keys
-       (ttl / replicated / storagePolicy / settings) handled above so a
-       duplicate env key is never emitted into the ConfigMap. */}}
+       (ttl / replicated / storagePolicy / tierVolume / tierAfter / settings)
+       handled above so a duplicate env key is never emitted into the
+       ConfigMap. */}}
 {{- range $k, $v := .Values.schema }}
-{{- if not (has $k (list "ttl" "replicated" "storagePolicy" "settings")) }}
+{{- if not (has $k (list "ttl" "replicated" "storagePolicy" "tierVolume" "tierAfter" "settings")) }}
 CERBERUS_SCHEMA_{{ $k }}: {{ include "cerberus.numOrStr" $v | quote }}
 {{- end }}
 {{- end }}

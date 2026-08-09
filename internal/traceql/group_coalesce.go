@@ -228,14 +228,20 @@ func lowerCoalesce(prev chplan.Node, s schema.Traces) (chplan.Node, error) {
 }
 
 // spansetEnvelopeAggFuncs returns the per-group envelope AggFunc list
-// shared by group() / coalesce(): the count-shaped Value plus the four
+// shared by group() / coalesce(): the count-shaped Value plus the
 // envelope columns lowerAggregate (aggregate.go) established — the
-// alias set isSpansetAggregateShape keys on.
+// alias set isSpansetAggregateShape keys on. Includes
+// `any(ParentSpanId) AS ParentSpanId` alongside SpanName /
+// ResourceAttributes for the same reason aggregate.go does (issue
+// #1481 — see anyAggFunc's doc comment): it lets the /api/search
+// root-resolution machinery detect and correct an arbitrarily-picked
+// non-root representative row instead of surfacing it unverified.
 func spansetEnvelopeAggFuncs(s schema.Traces) []chplan.AggFunc {
 	return []chplan.AggFunc{
 		{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: aggValueAlias},
 		anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
 		anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
+		anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),
 		minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
 		traceStartNsAggFunc(s.TimestampColumn),
 		traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),

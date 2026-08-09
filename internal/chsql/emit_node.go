@@ -7,38 +7,48 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// renderNode renders n as a statement of its own — the same SQL emitNode
+// writes, paired with exactly the args that text binds, in the order it
+// binds them. The render happens against an isolated buffer + arg slice so
+// the pair is self-contained and any chplan error surfaces synchronously,
+// before the result is spliced anywhere.
+//
+// It is the single place that isolated-render dance lives. subqueryFrag
+// below wraps the pair in parens for splicing into an enclosing statement,
+// and compareRootLeg (metrics_compare.go) hands the same pair to
+// EmitCompareRootLeg, which returns it to a caller that runs the relation
+// standalone. Both renderings come from this one function, so a sub-relation
+// rendered on its own is byte-identical to the one the enclosing statement
+// embeds.
+func (e *emitter) renderNode(n chplan.Node) (string, []any, error) {
+	saveB, saveArgs := e.b, e.args
+	e.b = strings.Builder{}
+	e.args = nil
+	err := e.emitNode(n)
+	sql, args := e.b.String(), e.args
+	e.b = saveB
+	e.args = saveArgs
+	if err != nil {
+		return "", nil, err
+	}
+	return sql, args, nil
+}
+
 // subqueryFrag returns a Frag that renders n as a parenthesised
 // subquery into the receiving Builder. Used to plug a child plan into
 // QueryBuilder.From without flattening to a string: the args bound
 // by the recursive emit walk land in the receiving Builder's args
 // slice at the position the Frag is written.
 //
-// Internally it swaps e.b / e.args with a fresh strings.Builder + nil
-// args slice, runs the recursive emit, then splices the rendered SQL
-// + args into the destination Builder. The error path is captured via
-// the closure variable below; emitSubqueryFrag is the wrapper that
-// surfaces it.
+// The child is pre-rendered (renderNode) so a chplan error surfaces here
+// rather than at splice time, and the captured (sql, args) pair replays
+// cheaply on each Frag invocation via the PreRenderedSQL adapter.
 func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
-	// Pre-render the subquery into an isolated emitter so any chplan
-	// error surfaces synchronously (before the Frag is ever spliced
-	// into the outer QueryBuilder). The rendered string + args are
-	// then captured for cheap replay on each Frag invocation.
-	saveB, saveArgs := e.b, e.args
-	e.b = strings.Builder{}
-	e.args = nil
-	if err := e.emitSubquery(n); err != nil {
-		e.b = saveB
-		e.args = saveArgs
+	sql, args, err := e.renderNode(n)
+	if err != nil {
 		return nil, err
 	}
-	sql := e.b.String()
-	args := e.args
-	e.b = saveB
-	e.args = saveArgs
-	return func(b *Builder) {
-		b.sb.WriteString(sql)
-		b.args = append(b.args, args...)
-	}, nil
+	return Subquery(PreRenderedSQL{SQL: sql, Args: args}), nil
 }
 
 // emitSelect runs the assembled QueryBuilder and splices its rendered

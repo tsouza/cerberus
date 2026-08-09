@@ -294,6 +294,11 @@ var envDocs = []EnvDoc{
 	{envSchemaDBReplShard, "string", "Schema provisioning", "Shard name for the Replicated engine - defaults to the ClickHouse server `{shard}` macro."},
 	{envSchemaDBReplReplica, "string", "Schema provisioning", "Replica name for the Replicated engine - defaults to the ClickHouse server `{replica}` macro."},
 	{envSchemaStoragePolicy, "string", "Schema provisioning", "Typed shorthand for the MergeTree `storage_policy` setting on every auto-created table (the S3 / tiered-storage knob). Appended FIRST to the SETTINGS tail. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `CERBERUS_SCHEMA_SETTINGS` (set it in exactly one)."},
+	{envSchemaTierVolume, "string", "Schema provisioning", "Storage-policy VOLUME aged parts move to — emits `TTL <age> TO VOLUME '<name>'` on every auto-created table. A multi-volume (hot/cold) `CERBERUS_SCHEMA_STORAGE_POLICY` does nothing without this: parts stay on the first (hot) volume until retention deletes them. Requires a non-zero `CERBERUS_SCHEMA_TIER_AFTER*`; the volume must belong to the table's storage policy."},
+	{envSchemaTierAfter, "duration", "Schema provisioning", "Global default age at which a part moves to `CERBERUS_SCHEMA_TIER_VOLUME` (no move rule when `0`). Must be shorter than the matching retention TTL. Per-signal overrides below take precedence."},
+	{envSchemaTierAfterMetrics, "duration", "Schema provisioning", "Tiering age for the five metrics tables; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
+	{envSchemaTierAfterLogs, "duration", "Schema provisioning", "Tiering age for the logs table; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
+	{envSchemaTierAfterTraces, "duration", "Schema provisioning", "Tiering age for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
 	{envSchemaSettings, "string", "Schema provisioning", "Generic MergeTree-SETTINGS escape hatch: an ordered `k=v,k2=v2` list appended to every auto-created table's SETTINGS tail (e.g. `min_bytes_for_wide_part=0`). Numeric / boolean values render bare, others single-quoted. Empty appends nothing (byte-identical default DDL)."},
 	{envRequirementsCheck, "bool", "Schema provisioning", "Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes."},
 
@@ -403,6 +408,8 @@ func renderDefault(key string, raw any) string {
 		return "= `CERBERUS_AUTO_CREATE_SCHEMA`"
 	case envSchemaTTLMetrics, envSchemaTTLLogs, envSchemaTTLTraces:
 		return "(inherits `CERBERUS_SCHEMA_TTL`)"
+	case envSchemaTierAfterMetrics, envSchemaTierAfterLogs, envSchemaTierAfterTraces:
+		return "(inherits `CERBERUS_SCHEMA_TIER_AFTER`)"
 	}
 
 	switch t := raw.(type) {

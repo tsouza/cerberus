@@ -39,17 +39,20 @@ func TestLowerGroupCoalesce(t *testing.T) {
 			t.Errorf("len(GroupBy) = %d, want 1", len(agg.GroupBy))
 		}
 		// Representative identity columns (any(TraceId), any(SpanId))
-		// plus the six spanset-envelope funcs (count Value, MetricName,
-		// ResourceAttrs, TimeUnix, TraceStartNs, TraceEndNs) the search
-		// wrap projection keys on.
-		if len(agg.AggFuncs) != 8 {
-			t.Errorf("len(AggFuncs) = %d, want 8", len(agg.AggFuncs))
+		// plus the seven spanset-envelope funcs (count Value, MetricName,
+		// ResourceAttrs, ParentSpanId, TimeUnix, TraceStartNs, TraceEndNs)
+		// the search wrap projection keys on. ParentSpanId lets the
+		// /api/search root-resolution machinery detect and correct an
+		// arbitrarily-`any()`-picked non-root representative row (issue
+		// #1481).
+		if len(agg.AggFuncs) != 9 {
+			t.Errorf("len(AggFuncs) = %d, want 9", len(agg.AggFuncs))
 		}
 		aliases := map[string]bool{}
 		for _, af := range agg.AggFuncs {
 			aliases[af.Alias] = true
 		}
-		for _, want := range []string{"TraceId", "Value", "MetricName", "ResourceAttrs", "TimeUnix", "TraceStartNs", "TraceEndNs"} {
+		for _, want := range []string{"TraceId", "Value", "MetricName", "ResourceAttrs", "ParentSpanId", "TimeUnix", "TraceStartNs", "TraceEndNs"} {
 			if !aliases[want] {
 				t.Errorf("AggFuncs missing %q alias (got %v)", want, aliases)
 			}
