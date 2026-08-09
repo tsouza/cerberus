@@ -66,6 +66,7 @@ import (
 	"github.com/tsouza/cerberus/test/property"
 	"github.com/tsouza/cerberus/test/property/gen"
 	oraclepromql "github.com/tsouza/cerberus/test/property/oracle/promql"
+	"github.com/tsouza/cerberus/test/spec/wire"
 )
 
 // nativeRateAggregate is the ClickHouse-native aggregate the ts_grid_range
@@ -325,7 +326,7 @@ func runCerberusRange(
 ) property.Outcome {
 	u := fmt.Sprintf(
 		"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
-		baseURL, urlEscape(query), startSec, endSec, stepSec,
+		baseURL, wire.EscapeQuery(query, ""), startSec, endSec, stepSec,
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -379,7 +380,7 @@ func runCerberusRange(
 			stripped[k] = v
 		}
 		for _, sample := range s.Values {
-			ts, val, perr := parseSample(sample)
+			ts, val, perr := wire.ParseSample(sample)
 			if perr != nil {
 				return property.Outcome{Err: fmt.Errorf("property: parse range sample: %w", perr)}
 			}

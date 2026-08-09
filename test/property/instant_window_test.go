@@ -24,7 +24,7 @@
 // # How it catches the bug
 //
 // Cerberus is driven through its REAL Prom HTTP handler with `time=T`
-// (the same runCerberusInstant the existing lane uses). WITH the fix the
+// (the same wire.RunInstant the existing lane uses). WITH the fix the
 // emitted window bound is a literal toDateTime64(T...) so the window
 // tracks T; WITHOUT the fix it is now64(9) — chDB wall-clock at execution
 // (~weeks after the 2026-05-13 seed anchor), so the (serverNow-range,
@@ -56,6 +56,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/property"
 	"github.com/tsouza/cerberus/test/property/gen"
+	"github.com/tsouza/cerberus/test/spec/wire"
 )
 
 // minWindowSamplesFor is the minimum sample count the (T-range, T]
@@ -171,7 +172,7 @@ func TestPromQL_InstantWindowSweep_FromScratch(t *testing.T) {
 
 		wantVal, wantOK, valueExact := oracleInstantWindow(c)
 
-		got := runCerberusInstant(context.Background(), srv.URL, c.Query)
+		got := wire.RunInstant(context.Background(), srv.URL, c.Query, wire.InstantOptions{})
 		if got.Err != nil {
 			rt.Fatalf("instant-window sweep: cerberus error\nquery=%s evalTs=%d offset=%ds range=%ds scrape=%ds\nerr=%v",
 				c.Query.String, c.Query.EvalTs, c.EvalOffset, c.RangeSec, c.ScrapeSec, got.Err)

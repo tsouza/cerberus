@@ -87,6 +87,7 @@ import (
 	"github.com/tsouza/cerberus/test/property"
 	"github.com/tsouza/cerberus/test/property/gen"
 	oracletraceql "github.com/tsouza/cerberus/test/property/oracle/traceql"
+	"github.com/tsouza/cerberus/test/spec/wire"
 )
 
 // TestTraceQL_Property wires every layer together for the TraceQL
@@ -171,7 +172,7 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 	// safe). Tests what Grafana's Traces Drilldown actually sends — a window.
 	anchorSec := gen.TraceQLAnchorTime().Unix()
 	startSec, endSec := anchorSec-propertyWindowMarginSec, anchorSec+propertyWindowMarginSec
-	u := fmt.Sprintf("%s/api/search?q=%s&start=%d&end=%d", baseURL, urlEscape(q.String), startSec, endSec)
+	u := fmt.Sprintf("%s/api/search?q=%s&start=%d&end=%d", baseURL, wire.EscapeQuery(q.String, ""), startSec, endSec)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return property.Outcome{Err: fmt.Errorf("property: build request: %w", err)}
