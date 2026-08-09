@@ -3,13 +3,9 @@
 package promql
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
@@ -17,7 +13,22 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/property"
 	oraclepromql "github.com/tsouza/cerberus/test/property/oracle/promql"
+	"github.com/tsouza/cerberus/test/spec/wire"
 )
+
+// exoticExtraEscapeChars are the punctuation bytes the exotic matrix's
+// richer expressions carry beyond wire's base escape set — arithmetic and
+// comparison operators, the `@` timestamp modifier, `:` in duration
+// literals, etc.
+const exoticExtraEscapeChars = "@:/*%^><!'"
+
+// exoticInstantOpts is the wire.InstantOptions this suite runs every
+// request with: the matrix deliberately includes top-level scalar
+// expressions (e.g. `-2^2`, `scalar(...)`), so AllowScalar is true.
+var exoticInstantOpts = wire.InstantOptions{
+	AllowScalar:      true,
+	ExtraEscapeChars: exoticExtraEscapeChars,
+}
 
 // TestExoticPromQL is the chDB-backed exotic-PromQL integration suite.
 //
@@ -63,7 +74,7 @@ func TestExoticPromQL(t *testing.T) {
 			EvalTs: EvalTs,
 		}
 		oracleOut := oraclepromql.Evaluate(ds, q, oraclepromql.Options{})
-		cerberusOut := runCerberusInstant(t.Context(), srv.URL, q)
+		cerberusOut := wire.RunInstant(t.Context(), srv.URL, q, exoticInstantOpts)
 		if oracleOut.Err != nil {
 			t.Fatalf("seed self-check: oracle errored: %v", oracleOut.Err)
 		}
@@ -83,7 +94,7 @@ func TestExoticPromQL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			q := property.Query{String: tc.promql, EvalTs: tc.ts()}
 			oracleOut := oraclepromql.Evaluate(ds, q, oraclepromql.Options{})
-			cerberusOut := runCerberusInstant(t.Context(), srv.URL, q)
+			cerberusOut := wire.RunInstant(t.Context(), srv.URL, q, exoticInstantOpts)
 			// Instant queries stamp every row at the single eval instant,
 			// so the timestamp carries no information to assert on. The
 			// oracle stamps a top-level SCALAR at ts=0 while cerberus
@@ -98,158 +109,6 @@ func TestExoticPromQL(t *testing.T) {
 			}
 		})
 	}
-}
-
-// runCerberusInstant POSTs to /api/v1/query and decodes the Prom-shaped
-// response into a property.Outcome. It handles both the "vector"
-// resultType (the common case) and "scalar" (top-level scalar expressions
-// like scalar(...) and -2^2), reshaping the latter into the same
-// label-less single-row form the oracle's outcomeFromValue emits.
-//
-// Replicated from test/property/promql_test.go::runCerberusInstant (that
-// helper lives in package property_test and isn't importable) with the
-// scalar branch added for the exotic matrix.
-func runCerberusInstant(ctx context.Context, baseURL string, q property.Query) property.Outcome {
-	u := fmt.Sprintf("%s/api/v1/query?query=%s&time=%d", baseURL, urlEscape(q.String), q.EvalTs)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: build request: %w", err)}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: query roundtrip: %w", err)}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: read body: %w", err)}
-	}
-
-	var parsed struct {
-		Status    string `json:"status"`
-		ErrorType string `json:"errorType"`
-		Error     string `json:"error"`
-		Data      struct {
-			ResultType string          `json:"resultType"`
-			Result     json.RawMessage `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: decode body: %w; status=%d body=%s", err, resp.StatusCode, body)}
-	}
-	if parsed.Status != "success" {
-		// A failed status is a legitimate outcome — the oracle may fail on
-		// the same query too; CompareOutcomes treats both-erroring as
-		// agreement.
-		return property.Outcome{Err: fmt.Errorf("cerberus status=%q errorType=%q err=%q",
-			parsed.Status, parsed.ErrorType, parsed.Error)}
-	}
-
-	switch parsed.Data.ResultType {
-	case "vector":
-		return decodeVector(parsed.Data.Result)
-	case "scalar":
-		return decodeScalar(parsed.Data.Result)
-	default:
-		return property.Outcome{Err: fmt.Errorf("cerberus resultType=%q, want vector or scalar", parsed.Data.ResultType)}
-	}
-}
-
-func decodeVector(raw json.RawMessage) property.Outcome {
-	var result []prom.VectorSample
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: decode vector: %w", err)}
-	}
-	out := property.Outcome{Rows: make([]property.OutcomeRow, 0, len(result))}
-	for _, s := range result {
-		stripped := make(map[string]string, len(s.Metric))
-		for k, v := range s.Metric {
-			if k == "__name__" {
-				continue
-			}
-			stripped[k] = v
-		}
-		if s.Value == nil {
-			// A histogram-valued sample (s.Histogram set instead) has no
-			// float Value; this harness only exercises float-valued PromQL
-			// shapes today, so treat it as a decode error rather than a
-			// nil-pointer panic.
-			return property.Outcome{Err: fmt.Errorf("exotic: vector sample %v has no float value (histogram-valued?)", s.Metric)}
-		}
-		ts, val, perr := parseSample(*s.Value)
-		if perr != nil {
-			return property.Outcome{Err: fmt.Errorf("exotic: parse sample: %w", perr)}
-		}
-		out.Rows = append(out.Rows, property.OutcomeRow{Labels: stripped, TimestampMs: ts, Value: val})
-	}
-	return out
-}
-
-// decodeScalar reshapes a "scalar" resultType ([ts, "value"]) into the same
-// single label-less row at TimestampMs=0 the oracle emits for a top-level
-// scalar (see oracle/promql.outcomeFromValue).
-func decodeScalar(raw json.RawMessage) property.Outcome {
-	var s prom.Sample
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: decode scalar: %w", err)}
-	}
-	_, val, perr := parseSample(s)
-	if perr != nil {
-		return property.Outcome{Err: fmt.Errorf("exotic: parse scalar: %w", perr)}
-	}
-	return property.Outcome{Rows: []property.OutcomeRow{
-		{Labels: map[string]string{}, TimestampMs: 0, Value: val},
-	}}
-}
-
-// parseSample turns Prom's [seconds_float, value_string] shape into
-// (unix_milliseconds, float64). The value string may be "NaN" / "+Inf" /
-// "-Inf" — strconv.ParseFloat handles all three.
-func parseSample(s prom.Sample) (int64, float64, error) {
-	if len(s) < 2 {
-		return 0, 0, fmt.Errorf("expected 2-element sample, got %d", len(s))
-	}
-	tsSec, ok := s[0].(float64)
-	if !ok {
-		return 0, 0, fmt.Errorf("sample[0]: want float64, got %T (%v)", s[0], s[0])
-	}
-	valStr, ok := s[1].(string)
-	if !ok {
-		return 0, 0, fmt.Errorf("sample[1]: want string, got %T (%v)", s[1], s[1])
-	}
-	v, err := strconv.ParseFloat(valStr, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("sample[1]: parse float %q: %w", valStr, err)
-	}
-	return int64(tsSec * 1000), v, nil
-}
-
-// urlEscape escapes the punctuation PromQL queries carry. Replicated from
-// the property test's helper (same character set, plus `@`, `:`, `/`, `*`,
-// `%`, `^`, `-`, `>`, `<`, `!`, `'` for the exotic matrix's richer
-// expressions).
-func urlEscape(s string) string {
-	const hex = "0123456789ABCDEF"
-	var out []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if shouldEscape(c) {
-			out = append(out, '%', hex[c>>4], hex[c&0xF])
-		} else {
-			out = append(out, c)
-		}
-	}
-	return string(out)
-}
-
-func shouldEscape(c byte) bool {
-	switch c {
-	case '{', '}', '"', '=', ',', '(', ')', '[', ']', ' ', '\n',
-		'+', '&', '@', ':', '/', '*', '%', '^', '>', '<', '!', '\'':
-		return true
-	}
-	return false
 }
 
 // zeroTimestamps sets every row's TimestampMs to 0 in place. Used to make

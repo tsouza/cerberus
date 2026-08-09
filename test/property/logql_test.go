@@ -78,6 +78,7 @@ import (
 	"github.com/tsouza/cerberus/test/property"
 	"github.com/tsouza/cerberus/test/property/gen"
 	oraclelogql "github.com/tsouza/cerberus/test/property/oracle/logql"
+	"github.com/tsouza/cerberus/test/spec/wire"
 )
 
 // TestLogQL_Property wires every layer together for the log-stream
@@ -154,7 +155,7 @@ func runCerberusLogQLInstant(ctx context.Context, baseURL string, q property.Que
 	u := fmt.Sprintf(
 		"%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&step=60",
 		baseURL,
-		urlEscape(q.String),
+		wire.EscapeQuery(q.String, ""),
 		startTs,
 		endTs,
 	)
