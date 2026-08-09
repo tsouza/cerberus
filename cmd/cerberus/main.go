@@ -1393,6 +1393,8 @@ func runRequirementsCheck(
 		Metrics:           cfg.Schema,
 		Logs:              cfg.Logs,
 		Traces:            cfg.Traces,
+		StoragePolicy:     cfg.SchemaProvisioning.StoragePolicy,
+		TierVolume:        cfg.SchemaProvisioning.TierVolume,
 	}
 	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
 	// Logged BEFORE the fatal check: a warning describes the server cerberus is

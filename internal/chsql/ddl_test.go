@@ -90,6 +90,84 @@ func TestTableTTL(t *testing.T) {
 	}
 }
 
+// TestTableTTLTiered pins the hot/cold clause: ClickHouse takes ONE TTL clause
+// per table whose actions are comma-separated, so the move rule and the delete
+// rule land in the same clause, move first. The degenerate inputs are the
+// backward-compatibility contract — with no volume or no move age the output
+// must be byte-identical to TableTTL, because that is what every deployment
+// that never configures tiering renders.
+func TestTableTTLTiered(t *testing.T) {
+	const (
+		day      = 24 * time.Hour
+		coldVol  = "cold"
+		moveWeek = 7 * day
+		keep30d  = 30 * day
+	)
+	cases := []struct {
+		name      string
+		col       string
+		retention time.Duration
+		moveAfter time.Duration
+		volume    string
+		want      string
+	}{
+		{
+			name: "move_and_delete", col: "Timestamp",
+			retention: keep30d, moveAfter: moveWeek, volume: coldVol,
+			want: "TTL toDateTime(Timestamp) + toIntervalWeek(1) TO VOLUME 'cold', " +
+				"toDateTime(Timestamp) + toIntervalDay(30) DELETE",
+		},
+		{
+			name: "move_only_no_retention", col: "TimeUnix",
+			retention: 0, moveAfter: moveWeek, volume: coldVol,
+			want: "TTL toDateTime(TimeUnix) + toIntervalWeek(1) TO VOLUME 'cold'",
+		},
+		{
+			// No volume: the move age alone cannot name a destination, so the
+			// clause degrades to the retention-only form (implicit DELETE).
+			name: "no_volume_degrades_to_delete_only", col: "Timestamp",
+			retention: keep30d, moveAfter: moveWeek, volume: "",
+			want: "TTL toDateTime(Timestamp) + toIntervalDay(30)",
+		},
+		{
+			// No move age: same degradation, from the other side.
+			name: "no_move_age_degrades_to_delete_only", col: "Start",
+			retention: keep30d, moveAfter: 0, volume: coldVol,
+			want: "TTL toDateTime(Start) + toIntervalDay(30)",
+		},
+		{
+			// A volume name is a CH string literal, so an embedded quote is
+			// escaped rather than closing the literal early.
+			name: "volume_name_is_quoted_literal", col: "Timestamp",
+			retention: 0, moveAfter: day, volume: "co'ld",
+			want: `TTL toDateTime(Timestamp) + toIntervalDay(1) TO VOLUME 'co\'ld'`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderFrag(TableTTLTiered(tc.col, tc.retention, tc.moveAfter, tc.volume))
+			if got != tc.want {
+				t.Errorf("TableTTLTiered = %q; want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Neither rule → no clause at all (nil), the same contract TableTTL has.
+	if f := TableTTLTiered("Timestamp", 0, 0, coldVol); f != nil {
+		t.Errorf("TableTTLTiered with no retention and no move age must be nil, got %q", renderFrag(f))
+	}
+
+	// The non-tiered path is byte-identical to TableTTL for every bucket, which
+	// is what keeps existing deployments' DDL unchanged.
+	for _, d := range []time.Duration{45 * time.Second, 90 * time.Minute, 3 * time.Hour, 90 * day, 14 * day} {
+		plain := renderFrag(TableTTL("Timestamp", d))
+		tiered := renderFrag(TableTTLTiered("Timestamp", d, 0, ""))
+		if plain != tiered {
+			t.Errorf("untiered TableTTLTiered(%v) = %q; want TableTTL's %q", d, tiered, plain)
+		}
+	}
+}
+
 // TestCreateDatabase pins the CREATE DATABASE statement builder across its
 // fluent options: IF NOT EXISTS, ON CLUSTER, and a Replicated ENGINE. The
 // database name is emitted bare (matching the established cerberus +

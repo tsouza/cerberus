@@ -401,6 +401,34 @@ type SchemaProvisioning struct {
 	// startup (one way to set it).
 	StoragePolicy string
 
+	// TierVolume (CERBERUS_SCHEMA_TIER_VOLUME) names the storage-policy
+	// VOLUME aged parts move to — the destination half of the
+	// `TTL <age> TO VOLUME '<name>'` rule that makes a multi-volume
+	// (hot/cold) StoragePolicy actually tier. A storage policy on its own
+	// only declares which volumes a table MAY use: without this rule every
+	// part stays on the first (hot, fast, expensive) volume until retention
+	// deletes it. Empty (the default) emits no move rule. Requires at least
+	// one non-zero TierAfter* age, and the volume must belong to the
+	// configured StoragePolicy (or the server's `default` policy when none is
+	// set) — the boot preflight verifies that against the live server.
+	TierVolume string
+
+	// TierAfter (CERBERUS_SCHEMA_TIER_AFTER) is the DEFAULT age at which a
+	// part moves to TierVolume, for every signal (e.g. `168h` = 7 days).
+	// Zero (the default) means no signal tiers unless a per-signal override
+	// below sets one. Must be shorter than the matching retention TTL, or the
+	// part is deleted before it ever moves.
+	TierAfter time.Duration
+
+	// TierAfterMetrics / TierAfterLogs / TierAfterTraces
+	// (CERBERUS_SCHEMA_TIER_AFTER_METRICS / _LOGS / _TRACES) override
+	// TierAfter for a single signal, mirroring the per-signal retention
+	// overrides: logs age off the hot volume in days where metrics stay for
+	// weeks. A zero value inherits TierAfter; a non-zero value overrides it.
+	TierAfterMetrics time.Duration
+	TierAfterLogs    time.Duration
+	TierAfterTraces  time.Duration
+
 	// Settings (CERBERUS_SCHEMA_SETTINGS, `k=v,k2=v2`) is the generic
 	// MergeTree-SETTINGS escape hatch: an ORDERED list of extra settings
 	// appended to every auto-created table's SETTINGS tail (e.g.
@@ -601,6 +629,11 @@ const (
 	envSchemaDBReplShard       = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
 	envSchemaDBReplReplica     = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
 	envSchemaStoragePolicy     = "CERBERUS_SCHEMA_STORAGE_POLICY"
+	envSchemaTierVolume        = "CERBERUS_SCHEMA_TIER_VOLUME"
+	envSchemaTierAfter         = "CERBERUS_SCHEMA_TIER_AFTER"
+	envSchemaTierAfterMetrics  = "CERBERUS_SCHEMA_TIER_AFTER_METRICS"
+	envSchemaTierAfterLogs     = "CERBERUS_SCHEMA_TIER_AFTER_LOGS"
+	envSchemaTierAfterTraces   = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
 	envSchemaSettings          = "CERBERUS_SCHEMA_SETTINGS"
 	envRequirementsCheck       = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid      = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
@@ -979,6 +1012,11 @@ var allEnvKeys = []string{
 	envSchemaDBReplShard,
 	envSchemaDBReplReplica,
 	envSchemaStoragePolicy,
+	envSchemaTierVolume,
+	envSchemaTierAfter,
+	envSchemaTierAfterMetrics,
+	envSchemaTierAfterLogs,
+	envSchemaTierAfterTraces,
 	envSchemaSettings,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
@@ -1132,6 +1170,10 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
 	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
 	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
+	v.SetDefault(envSchemaTierAfter, defaultSchemaTierAfter)
+	v.SetDefault(envSchemaTierAfterMetrics, defaultSchemaTierAfter)
+	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
+	v.SetDefault(envSchemaTierAfterTraces, defaultSchemaTierAfter)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
@@ -1178,6 +1220,7 @@ const (
 	defaultAutoCreateSchema   = false
 	defaultSchemaDBReplicated = false
 	defaultSchemaTTL          = "0s"
+	defaultSchemaTierAfter    = "0s"
 	defaultRequirementsCheck  = true
 	defaultExperimentalTSGrid = false
 	defaultLogCommentShape    = false
@@ -2088,6 +2131,22 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
+	tierAfter, err := getNonNegativeDuration(v, envSchemaTierAfter)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	tierAfterMetrics, err := getNonNegativeDuration(v, envSchemaTierAfterMetrics)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	tierAfterLogs, err := getNonNegativeDuration(v, envSchemaTierAfterLogs)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	tierAfterTraces, err := getNonNegativeDuration(v, envSchemaTierAfterTraces)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
 	settings, err := getKVList(v, envSchemaSettings)
 	if err != nil {
 		return SchemaProvisioning{}, err
@@ -2104,6 +2163,11 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 		DatabaseReplicatedShard:   getString(v, envSchemaDBReplShard),
 		DatabaseReplicatedReplica: getString(v, envSchemaDBReplReplica),
 		StoragePolicy:             getString(v, envSchemaStoragePolicy),
+		TierVolume:                getString(v, envSchemaTierVolume),
+		TierAfter:                 tierAfter,
+		TierAfterMetrics:          tierAfterMetrics,
+		TierAfterLogs:             tierAfterLogs,
+		TierAfterTraces:           tierAfterTraces,
 		Settings:                  settings,
 	}, nil
 }

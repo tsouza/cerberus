@@ -830,6 +830,35 @@ Auto-create also reuses the **same** table names the query heads read
 (`CERBERUS_SCHEMA_*_TABLE`), so a renamed table is created and queried
 consistently rather than silently diverging onto the upstream defaults.
 
+### Hot/cold storage tiering
+
+`CERBERUS_SCHEMA_STORAGE_POLICY` puts a MergeTree `storage_policy` on every
+auto-created table, and a policy only declares which volumes a table **may**
+use. Parts are written to its first (hot) volume and stay there until
+retention deletes them, so a multi-volume hot/cold policy tiers nothing on its
+own — the expensive volume keeps data that should have aged onto the cheap one,
+and the storage bill is the only symptom.
+
+`CERBERUS_SCHEMA_TIER_VOLUME` plus `CERBERUS_SCHEMA_TIER_AFTER` emit the rule
+that moves it. The move age is per signal exactly as retention is
+(`CERBERUS_SCHEMA_TIER_AFTER_{METRICS,LOGS,TRACES}`, a zero inheriting the
+global), and both actions land in the one `TTL` clause ClickHouse allows:
+
+```sql
+TTL toDateTime(Timestamp) + toIntervalDay(7)  TO VOLUME 'cold',
+    toDateTime(Timestamp) + toIntervalDay(30) DELETE
+```
+
+A configuration that would be accepted while doing nothing is rejected at
+startup: a move age with no `CERBERUS_SCHEMA_TIER_VOLUME`, a volume with no
+move age, or a move age at or past the same signal's retention (the part would
+be deleted before it ever moved). What can only be judged against the live
+server — a policy the server does not define, a tiering volume the policy does
+not have, or a multi-volume policy with no tiering rule at all — is reported by
+the boot **requirements check** as a warning naming the exact fix. Those are
+warnings rather than boot failures because storage layout is a cost property of
+the tables, not a correctness property of the gateway.
+
 ### Metadata-enumeration projections (curated registry)
 
 Auto-create installs a small **curated registry** of aggregating projections
@@ -968,8 +997,9 @@ a maintenance window isn't saturated by both at once.
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time
 requirements check immediately **after** the schema-create step. It
-converts two classes of misconfiguration that would otherwise surface as
-opaque query-time errors into a precise, fail-fast boot error:
+converts the classes of misconfiguration that would otherwise surface as
+opaque query-time errors — or, for storage layout, as no error at all — into a
+precise boot-time finding:
 
 - **ClickHouse too old.** The connected server's `version()` is compared
   against `max(base, applicable-feature-floors)` — base **24.8**, raised to
@@ -1021,6 +1051,16 @@ opaque query-time errors into a precise, fail-fast boot error:
   (`database "otel" not yet provisioned: …`), and re-probes until the database
   (and its tables) appear, with no restart. Treating it as fatal would
   crash-loop a gateway pointed at a database its collector hasn't created yet.
+- **Inert storage tiering.** When a storage policy or a tiering volume is
+  configured, the policy's volumes are read from `system.storage_policies` and
+  the combination is checked for being accepted-but-inert: a **multi-volume
+  (hot/cold) policy with no tiering rule** to move parts into it, a
+  `CERBERUS_SCHEMA_TIER_VOLUME` the policy does not have, or a policy the
+  server does not define at all. Each is reported as a **warning** naming the
+  fix, never a boot failure — storage layout is a cost property of the tables,
+  not a correctness property of the gateway, so refusing to boot would turn a
+  storage-bill problem into an outage. A deployment that configures neither
+  knob is not probed at all.
 
 The ordering is deliberate: running the preflight **after** auto-create
 means a fresh database where cerberus just created the tables passes the
@@ -1032,7 +1072,7 @@ single pass rather than one error per restart. The **transient** findings —
 an absent schema, an absent database, and an **unreachable** server — are the
 ones that are *not* fatal: each takes the wait-and-reprobe path above, booting
 **NOT READY** and flipping ready once the dependency appears. Set
-`CERBERUS_REQUIREMENTS_CHECK=false` to skip both gates (logged as one line) —
+`CERBERUS_REQUIREMENTS_CHECK=false` to skip every gate (logged as one line) —
 useful when pointing cerberus at a deliberately non-default ClickHouse layout
 that the shape gate doesn't model. The preflight needs ClickHouse reachable to
 read the version and column metadata, but a server that is unreachable at the

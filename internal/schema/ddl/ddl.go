@@ -77,6 +77,13 @@ type Config struct {
 	// TTL.Metrics and the spans + lookup tables share TTL.Traces. See TTL.
 	TTL TTL
 
+	// Tiering moves aged parts onto a colder VOLUME of the table's storage
+	// policy before TTL deletes them — the `TTL … TO VOLUME '<name>'` action
+	// that makes a multi-volume storage_policy do anything at all. The zero
+	// value emits no move action, leaving the TTL clause byte-identical to a
+	// retention-only deployment. See Tiering.
+	Tiering Tiering
+
 	// DatabaseEngine selects the ClickHouse engine for the CREATE DATABASE
 	// statement. The zero value emits no ENGINE clause (server default
 	// Atomic — the single-node shape); set Replicated to create the
@@ -161,6 +168,44 @@ type TTL struct {
 	// Traces applies to the spans table (keyed on Timestamp) and the
 	// trace_id_ts lookup table (keyed on Start).
 	Traces time.Duration
+}
+
+// Tiering carries the hot/cold storage-tiering rule applied to the
+// auto-created tables: the destination VOLUME and the per-signal age at which
+// a part moves there.
+//
+// A ClickHouse `storage_policy` only declares which volumes a table MAY use;
+// on its own it never moves anything. Parts are written to the policy's first
+// volume and stay there until retention deletes them, so a multi-volume
+// (hot/cold) policy with no move rule is inert — the expensive volume holds
+// data that should have aged onto the cheap one. Tiering emits the missing
+// half: a `TTL <age> TO VOLUME '<Volume>'` action alongside the delete-TTL.
+//
+// The age is per-signal for the same reason retention is (see TTL): logs age
+// out of the hot volume in days where metrics stay for weeks. A zero age for a
+// signal emits no move action for that signal's tables; an empty Volume
+// disables tiering entirely. Volume must name a volume of the storage policy
+// the tables carry (Settings' `storage_policy`, or the server's `default`
+// policy when none is set) — Config.Validate cannot check that without a
+// server, so internal/preflight verifies it against system.storage_policies at
+// boot.
+type Tiering struct {
+	// Volume is the storage-policy volume aged parts move TO, e.g. "cold".
+	// Empty (the default) emits no move action anywhere.
+	Volume string
+
+	// Metrics / Logs / Traces are the per-signal ages at which a part moves
+	// to Volume, mirroring TTL's per-signal split table-for-table. Each must
+	// be shorter than the same signal's retention, or the part is deleted
+	// before it ever moves (Config.Validate rejects that).
+	Metrics time.Duration
+	Logs    time.Duration
+	Traces  time.Duration
+}
+
+// configured reports whether any signal carries a move age.
+func (t Tiering) configured() bool {
+	return t.Metrics > 0 || t.Logs > 0 || t.Traces > 0
 }
 
 // Tables overrides the per-signal table name used when rendering each
@@ -270,15 +315,19 @@ func (c Config) clusterClause() string {
 	return chsql.RenderDDL(chsql.OnCluster(c.Cluster))
 }
 
-// ttlExpr renders the optional `TTL toDateTime(<column>) + toIntervalXxx(N)`
-// fragment that upstream templates expect as one slot per signal, or ""
-// when ttl <= 0. column is the bare time column retention keys on — Metrics
-// use TimeUnix, Logs and Traces spans use Timestamp, the traces lookup uses
-// Start. Built via the typed chsql.TableTTL constructor (Add(Call(toDateTime,
-// …), Call(toIntervalXxx, …))), which reproduces upstream's
-// `internal.GenerateTTLExpr` shape byte-for-byte.
-func ttlExpr(column string, ttl time.Duration) string {
-	frag := chsql.TableTTL(column, ttl)
+// ttlExpr renders the TTL clause upstream templates expect as one slot per
+// signal, or "" when the signal has neither retention nor a move rule. column
+// is the bare time column the lifecycle keys on — Metrics use TimeUnix, Logs
+// and Traces spans use Timestamp, the traces lookup uses Start.
+//
+// With no tiering configured this is the retention-only
+// `TTL toDateTime(<column>) + toIntervalXxx(N)` that reproduces upstream's
+// `internal.GenerateTTLExpr` shape byte-for-byte. With a move age and a
+// destination volume it renders both actions in the one clause ClickHouse
+// allows: `TTL <move-age> TO VOLUME '<volume>', <retention-age> DELETE`.
+// Built via the typed chsql.TableTTLTiered constructor — no hand-assembled SQL.
+func (c Config) ttlExpr(column string, retention, moveAfter time.Duration) string {
+	frag := chsql.TableTTLTiered(column, retention, moveAfter, c.Tiering.Volume)
 	if frag == nil {
 		return ""
 	}
@@ -334,6 +383,56 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 	return ApplyWithConfig(ctx, conn, Config{}, signals)
 }
 
+// Validate rejects the config combinations that would render DDL doing
+// something other than what the operator asked for. It is pure — it never
+// touches a connection — so both the applying path (ApplyWithConfig), the
+// offline rendering path (RenderAll) and the config mapping that feeds them
+// (internal/schemaboot) run it, and a misconfiguration fails at boot rather
+// than at the first CREATE.
+//
+// The tiering rules all guard the same failure shape: a setting that is
+// ACCEPTED but INERT. A move age with no destination volume, or a volume with
+// no age, emits no `TO VOLUME` action at all; a move age at or past the
+// signal's retention emits one the delete-TTL always beats. Each is silent —
+// the tables are created, queries work, and the only symptom is the storage
+// bill — so each is rejected here where it is free and certain to detect.
+func (c Config) Validate() error {
+	if !c.SkipDatabaseCreate && c.DatabaseEngine.Replicated && c.DatabaseEngine.ReplicatedZooPath == "" {
+		return fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	}
+	if c.Tiering.Volume == "" && c.Tiering.configured() {
+		return fmt.Errorf(
+			"ddl: storage-tiering age configured with no destination volume (Tiering.Volume) — " +
+				"no TTL ... TO VOLUME clause would be emitted and nothing would move",
+		)
+	}
+	if c.Tiering.Volume != "" && !c.Tiering.configured() {
+		return fmt.Errorf(
+			"ddl: storage-tiering volume %q configured with no move age (Tiering.Metrics / .Logs / .Traces) — "+
+				"no TTL ... TO VOLUME clause would be emitted and nothing would move",
+			c.Tiering.Volume,
+		)
+	}
+	for _, s := range []struct {
+		signal    string
+		moveAfter time.Duration
+		retention time.Duration
+	}{
+		{"metrics", c.Tiering.Metrics, c.TTL.Metrics},
+		{"logs", c.Tiering.Logs, c.TTL.Logs},
+		{"traces", c.Tiering.Traces, c.TTL.Traces},
+	} {
+		if s.moveAfter > 0 && s.retention > 0 && s.moveAfter >= s.retention {
+			return fmt.Errorf(
+				"ddl: %s storage-tiering age %s is not shorter than its retention TTL %s — "+
+					"parts would be deleted before they ever move to volume %q",
+				s.signal, s.moveAfter, s.retention, c.Tiering.Volume,
+			)
+		}
+	}
+	return nil
+}
+
 // ApplyWithConfig is the explicit-config form of Apply: it threads a Config
 // through the upstream templates so callers can override database, engine,
 // cluster, TTL, or table names. See Config for field semantics.
@@ -344,13 +443,12 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals []Signal) error {
 	cfg = cfg.withDefaults()
 	// Validate the config eagerly — BEFORE the empty-signals short-circuit —
-	// so a Replicated database engine with no ZooKeeper/Keeper path is rejected
-	// regardless of which signals are requested. Validation is pure (it never
-	// touches conn), so it's safe ahead of the nil-conn no-op path below; doing
-	// it here means a misconfiguration can't hide behind a zero-signal call.
-	// Only meaningful when cerberus actually creates the database.
-	if !cfg.SkipDatabaseCreate && cfg.DatabaseEngine.Replicated && cfg.DatabaseEngine.ReplicatedZooPath == "" {
-		return fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	// so a misconfiguration is rejected regardless of which signals are
+	// requested. Validation is pure (it never touches conn), so it's safe ahead
+	// of the nil-conn no-op path below; doing it here means a misconfiguration
+	// can't hide behind a zero-signal call.
+	if err := cfg.Validate(); err != nil {
+		return err
 	}
 	// No signals requested → no tables to create → no database needed. Return
 	// before touching conn so an empty-selector caller (and the nil-conn no-op
@@ -388,10 +486,10 @@ func ApplyWithConfig(ctx context.Context, conn driver.Conn, cfg Config, signals 
 func RenderAll(cfg Config, signals []Signal) ([]string, error) {
 	cfg = cfg.withDefaults()
 	// Validate eagerly — before the empty-signals short-circuit — so a
-	// Replicated database engine with no ZooKeeper/Keeper path is rejected the
-	// same way whether the caller renders or applies (mirrors ApplyWithConfig).
-	if !cfg.SkipDatabaseCreate && cfg.DatabaseEngine.Replicated && cfg.DatabaseEngine.ReplicatedZooPath == "" {
-		return nil, fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	// misconfiguration is rejected the same way whether the caller renders or
+	// applies (mirrors ApplyWithConfig).
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 	// No signals → no tables → no database. Return before emitting a stray
 	// CREATE DATABASE, matching ApplyWithConfig's nil-conn no-op contract.
@@ -459,7 +557,7 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 func renderSignal(cfg Config, s Signal) ([]string, error) {
 	switch s {
 	case Metrics:
-		ttl := ttlExpr("TimeUnix", cfg.TTL.Metrics)
+		ttl := cfg.ttlExpr("TimeUnix", cfg.TTL.Metrics, cfg.Tiering.Metrics)
 		stmts := []string{
 			renderMetricsTable(sqltemplates.MetricsGaugeCreateTable, cfg, cfg.Tables.MetricsGauge, ttl),
 			renderMetricsTable(sqltemplates.MetricsSumCreateTable, cfg, cfg.Tables.MetricsSum, ttl),
@@ -632,7 +730,7 @@ func renderLogsTable(cfg Config) (string, error) {
 		TableName:         cfg.Tables.Logs,
 		ClusterString:     cfg.clusterClause(),
 		Engine:            cfg.Engine,
-		TTL:               ttlExpr("Timestamp", cfg.TTL.Logs),
+		TTL:               cfg.ttlExpr("Timestamp", cfg.TTL.Logs, cfg.Tiering.Logs),
 		HasFullTextSearch: false,
 	}
 	var buf strings.Builder
@@ -650,7 +748,7 @@ func renderTracesTable(cfg Config) string {
 		sqltemplates.TracesCreateTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
-		ttlExpr("Timestamp", cfg.TTL.Traces),
+		cfg.ttlExpr("Timestamp", cfg.TTL.Traces, cfg.Tiering.Traces),
 	))
 }
 
@@ -664,7 +762,7 @@ func renderTracesCreateTsTable(cfg Config) string {
 		sqltemplates.TracesCreateTsTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
-		ttlExpr("Start", cfg.TTL.Traces),
+		cfg.ttlExpr("Start", cfg.TTL.Traces, cfg.Tiering.Traces),
 	))
 }
 

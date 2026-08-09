@@ -96,26 +96,115 @@ func ttlInterval(d time.Duration) (fn string, n int64) {
 	}
 }
 
-// TableTTL returns a Frag rendering the ClickHouse table TTL clause
-// `TTL toDateTime(<column>) + toIntervalXxx(N)` for retention d, or nil
-// when d <= 0 (no retention). column is the bare time column the signal
-// keys retention on (TimeUnix for metrics, Timestamp for logs / traces
-// spans, Start for the traces lookup table); it is emitted as a bare CH
+// ttlAge renders the age expression every TTL rule is keyed on —
+// `toDateTime(<column>) + toIntervalXxx(N)`. column is the bare time column
+// the signal keys its lifecycle on (TimeUnix for metrics, Timestamp for logs /
+// traces spans, Start for the traces lookup table); it is emitted as a bare CH
 // identifier (BareIdent), matching the upstream template's unquoted
 // toDateTime(<col>) form. N is the coarsest exact interval bucket for d.
+// Only called with d > 0 — the exported constructors guard the zero case.
+func ttlAge(column string, d time.Duration) Frag {
+	fn, n := ttlInterval(d)
+	return Add(
+		Call("toDateTime", BareIdent(column)),
+		Call(fn, InlineLit(n)),
+	)
+}
+
+// ttlClause renders `TTL <rule>[, <rule>…]` from the given non-nil rules, or
+// nil when none are supplied. A ClickHouse table carries ONE TTL clause whose
+// actions are comma-separated (`TTL d + INTERVAL 7 DAY TO VOLUME 'cold',
+// d + INTERVAL 30 DAY DELETE`), not one clause per action — so every rule this
+// package emits for a table flows through here.
+func ttlClause(rules ...Frag) Frag {
+	kept := make([]Frag, 0, len(rules))
+	for _, r := range rules {
+		if r != nil {
+			kept = append(kept, r)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return func(b *Builder) {
+		ddlToken("TTL ")(b)
+		for i, r := range kept {
+			if i > 0 {
+				ddlToken(", ")(b)
+			}
+			r(b)
+		}
+	}
+}
+
+// ttlMoveRule renders one TIERING rule — `<age> TO VOLUME '<volume>'` — the
+// ClickHouse action that moves a part onto another volume of the table's
+// storage policy once it reaches the given age (the hot/cold tiering
+// mechanism). Returns nil when either half is unset, since a move with no age
+// or no destination is not a rule. The volume name is a single-quoted CH
+// string literal (InlineLit), the form `TO VOLUME` requires.
+func ttlMoveRule(column string, d time.Duration, volume string) Frag {
+	if d <= 0 || volume == "" {
+		return nil
+	}
+	age := ttlAge(column, d)
+	return func(b *Builder) {
+		age(b)
+		ddlToken(" TO VOLUME ")(b)
+		InlineLit(volume)(b)
+	}
+}
+
+// ttlDeleteRule renders one RETENTION rule with an EXPLICIT `DELETE` action —
+// `<age> DELETE`. ClickHouse infers DELETE for a bare action, which is what
+// the single-rule TableTTL form emits; the explicit keyword is used only in
+// the multi-rule (tiered) clause, where spelling each action out is how the
+// documented `TO VOLUME …, … DELETE` shape reads. Returns nil when d <= 0.
+func ttlDeleteRule(column string, d time.Duration) Frag {
+	if d <= 0 {
+		return nil
+	}
+	age := ttlAge(column, d)
+	return func(b *Builder) {
+		age(b)
+		ddlToken(" DELETE")(b)
+	}
+}
+
+// TableTTL returns a Frag rendering the ClickHouse table TTL clause
+// `TTL toDateTime(<column>) + toIntervalXxx(N)` for retention d, or nil
+// when d <= 0 (no retention). The single action carries no keyword, so
+// ClickHouse infers DELETE — the shape the upstream OTel-CH exporter
+// templates expect. See TableTTLTiered for the hot/cold variant.
 func TableTTL(column string, d time.Duration) Frag {
 	if d <= 0 {
 		return nil
 	}
-	fn, n := ttlInterval(d)
-	expr := Add(
-		Call("toDateTime", BareIdent(column)),
-		Call(fn, InlineLit(n)),
-	)
-	return func(b *Builder) {
-		ddlToken("TTL ")(b)
-		expr(b)
+	return ttlClause(ttlAge(column, d))
+}
+
+// TableTTLTiered returns the full table TTL clause for a signal that combines
+// STORAGE TIERING with retention:
+//
+//	TTL toDateTime(Timestamp) + toIntervalDay(7) TO VOLUME 'cold', toDateTime(Timestamp) + toIntervalDay(30) DELETE
+//
+// The move rule is what makes a multi-volume `storage_policy` do anything: the
+// policy alone only tells ClickHouse which volumes a table MAY use, and without
+// a `TO VOLUME` action every part stays on the first (hot) volume until
+// retention deletes it. moveAfter is the age at which a part moves to volume;
+// retention is the age at which it is deleted.
+//
+// The degenerate cases collapse to exactly what shipped before tiering existed,
+// so a deployment that configures none of it renders byte-identical DDL:
+// with no move rule (moveAfter <= 0 or volume == "") this IS TableTTL, and with
+// neither rule it is nil (no TTL clause at all). With a move rule and no
+// retention it emits the move alone — a valid tiering-only table.
+func TableTTLTiered(column string, retention, moveAfter time.Duration, volume string) Frag {
+	move := ttlMoveRule(column, moveAfter, volume)
+	if move == nil {
+		return TableTTL(column, retention)
 	}
+	return ttlClause(move, ttlDeleteRule(column, retention))
 }
 
 // TableSettings returns a Frag rendering a leading-comma-continued SETTINGS

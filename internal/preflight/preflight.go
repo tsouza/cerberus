@@ -4,7 +4,7 @@
 // emits and (b) a target schema with the OTel-CH default shape. Neither
 // was historically validated at boot, so a too-old server or a divergent
 // schema only surfaced later as an opaque query-time error. The preflight
-// closes that gap with two gates run after the schema-create step:
+// closes that gap with three gates run after the schema-create step:
 //
 //   - Gate 1 (version): the connected server's version() is compared
 //     against a config-derived minimum — the base supported floor, raised
@@ -15,8 +15,15 @@
 //     system.columns and validated to carry the essential columns the
 //     emitters require, with the attribute-map columns typed
 //     Map(String, String).
+//   - Gate 3 (storage tiering): when a storage policy or a tiering volume is
+//     configured, the policy's volumes are read from system.storage_policies
+//     and the configuration is checked for being ACCEPTED BUT INERT — a
+//     multi-volume hot/cold policy with no `TTL … TO VOLUME` rule to tier into
+//     it, a tiering volume the policy does not have, or a policy the server
+//     does not define. Storage layout is a cost property, not a correctness
+//     one, so every finding here is a WARNING (see checkStoragePolicy).
 //
-// Both gates are validated against the active, override-resolved config —
+// All three gates are validated against the active, override-resolved config —
 // never hardcoded names.
 //
 // # Fatal vs transient: the absent-schema race
@@ -58,6 +65,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -154,6 +162,18 @@ type Requirements struct {
 	Metrics schema.Metrics
 	Logs    schema.Logs
 	Traces  schema.Traces
+
+	// StoragePolicy mirrors CERBERUS_SCHEMA_STORAGE_POLICY — the MergeTree
+	// storage_policy cerberus puts on the tables it auto-creates. Empty means
+	// none is configured, so those tables carry the server's `default` policy.
+	StoragePolicy string
+
+	// TierVolume mirrors CERBERUS_SCHEMA_TIER_VOLUME — the volume the emitted
+	// `TTL … TO VOLUME` rule moves aged parts to. Empty means no tiering rule
+	// is configured. Gate 3 reads both fields together (see
+	// checkStoragePolicy): a policy with volumes to tier into and no rule to
+	// do it is the inert configuration the gate exists to surface.
+	TierVolume string
 }
 
 // minVersion computes the effective version floor: the base minimum,
@@ -199,8 +219,9 @@ type Querier interface {
 //     re-probes rather than exiting. UnreachableErr carries the underlying
 //     transport error for the /readyz reason + logs.
 //   - Warnings carries non-fatal findings the operator should act on but that
-//     must not stop the gateway — today, a connected server sitting on a
-//     known-defective ClickHouse line (see defectiveCHLines). A warning never
+//     must not stop the gateway — a connected server sitting on a
+//     known-defective ClickHouse line (see defectiveCHLines), or an inert
+//     storage-tiering configuration (see checkStoragePolicy). A warning never
 //     gates readiness and never coexists exclusively: a Result can carry both
 //     Warnings and a Fatal, and the caller logs the warnings either way.
 //   - DatabaseAbsent is set when ClickHouse is reachable but the configured
@@ -281,8 +302,8 @@ func (r Result) AbsentReason() string {
 	return fmt.Sprintf("schema not yet provisioned: %s %s absent", noun, strings.Join(r.AbsentTables, ", "))
 }
 
-// RunIfEnabled is the ON/OFF gate around Run. When enabled is false both
-// gates are bypassed entirely and q is never touched (the caller logs the
+// RunIfEnabled is the ON/OFF gate around Run. When enabled is false every
+// gate is bypassed entirely and q is never touched (the caller logs the
 // disabled line) and an all-clear Result is returned; when true it
 // delegates to Run. Keeping the knob check here makes the disabled path
 // unit-testable without standing up cmd wiring.
@@ -321,6 +342,15 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
+
+	// Gate 3 (storage tiering) reads system.storage_policies. It only runs when
+	// the operator configured a storage policy or a tiering rule, so the default
+	// deployment pays nothing, and it only ever WARNS — see checkStoragePolicy.
+	policyWarnings, unreachable := checkStoragePolicy(ctx, q, req)
+	if unreachable != nil {
+		return Result{Unreachable: true, UnreachableErr: unreachable}
+	}
+	warnings = append(warnings, policyWarnings...)
 
 	problems := append(versionProblems, schemaProblems...)
 
@@ -473,6 +503,110 @@ func checkVersion(ctx context.Context, q Querier, req Requirements) (problems, w
 		return nil, []string{note}, nil, nil
 	}
 	return nil, nil, nil, nil
+}
+
+// defaultStoragePolicy is the policy ClickHouse applies to a MergeTree table
+// that names none — the effective policy for cerberus's auto-created tables
+// when CERBERUS_SCHEMA_STORAGE_POLICY is unset. A server can define volumes on
+// it (the `<default>` policy in storage_configuration), so a tiering rule
+// against it is legitimate and worth verifying.
+const defaultStoragePolicy = "default"
+
+// checkStoragePolicy runs gate 3: it reads the volumes of the effective
+// storage policy from system.storage_policies and reports the STORAGE-TIERING
+// configurations that are accepted but do nothing.
+//
+// A ClickHouse storage policy only declares which volumes a table MAY use.
+// Parts land on the first (hot) volume and stay there until a `TTL … TO VOLUME`
+// rule moves them — so naming a multi-volume hot/cold policy with no such rule
+// is silently inert: everything works, nothing tiers, and the only symptom is
+// that the expensive volume keeps data that should have aged onto the cheap
+// one. That is precisely the shape this gate exists to make loud.
+//
+// Everything here is a WARNING, never a fatal. None of it affects whether
+// cerberus can answer a query — a storage layout is a cost property of the
+// tables, not a correctness property of the gateway — so refusing to boot would
+// convert a storage-bill problem into an outage. This matches the
+// known-defective-server-line precedent above: report precisely, keep serving.
+//
+// The gate is skipped entirely (no probe at all) unless the operator configured
+// a storage policy or a tiering volume: with neither, cerberus expresses no
+// intent about storage layout and has nothing to check the server against.
+func checkStoragePolicy(ctx context.Context, q Querier, req Requirements) (warnings []string, unreachable error) {
+	if req.StoragePolicy == "" && req.TierVolume == "" {
+		return nil, nil
+	}
+	policy := req.StoragePolicy
+	if policy == "" {
+		policy = defaultStoragePolicy
+	}
+
+	// Ordered by volume_priority so the rows arrive in the order ClickHouse
+	// fills them: the first row IS the hot volume new parts are written to,
+	// which is what the "nothing ever moves off it" warning names.
+	sql, args := chsql.NewQuery().
+		Select(chsql.Col("volume_name")).
+		From(chsql.Qual("system", "storage_policies")).
+		Where(chsql.Eq(chsql.Col("policy_name"), chsql.Lit(policy))).
+		OrderBy(chsql.Col("volume_priority"), false).
+		Build()
+	rows, err := q.QueryStrings(ctx, sql, args...)
+	if err != nil {
+		if isUnreachable(err) {
+			return nil, err
+		}
+		return []string{fmt.Sprintf(
+			"could not verify storage policy %q against system.storage_policies: %v", policy, err,
+		)}, nil
+	}
+
+	volumes := distinctInOrder(rows)
+	if len(volumes) == 0 {
+		return []string{fmt.Sprintf(
+			"storage policy %q is not defined on the connected clickhouse server; "+
+				"every table cerberus auto-creates with it would be rejected", policy,
+		)}, nil
+	}
+
+	if req.TierVolume == "" {
+		if len(volumes) > 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"storage policy %q has %d volumes (%s) but no tiering rule is configured, so nothing ever "+
+					"moves off the first volume (%s): parts stay there until retention deletes them. "+
+					"Set CERBERUS_SCHEMA_TIER_VOLUME + CERBERUS_SCHEMA_TIER_AFTER to emit the "+
+					"TTL ... TO VOLUME clause that tiers them",
+				policy, len(volumes), strings.Join(volumes, ", "), volumes[0],
+			))
+		}
+		return warnings, nil
+	}
+
+	if !slices.Contains(volumes, req.TierVolume) {
+		warnings = append(warnings, fmt.Sprintf(
+			"tiering volume %q (CERBERUS_SCHEMA_TIER_VOLUME) is not a volume of storage policy %q "+
+				"(volumes: %s), so the TTL ... TO VOLUME clause cerberus emits would be rejected on a "+
+				"table create and moves nothing on tables that already exist",
+			req.TierVolume, policy, strings.Join(volumes, ", "),
+		))
+	}
+	return warnings, nil
+}
+
+// distinctInOrder returns the distinct, non-empty members of vals in their
+// original order — the volume list of a storage policy, which
+// system.storage_policies reports one row per volume, read in volume_priority
+// order so the first element is the volume new parts are written to.
+func distinctInOrder(vals []string) []string {
+	seen := make(map[string]bool, len(vals))
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 // tableReq describes the shape required of one configured table: its

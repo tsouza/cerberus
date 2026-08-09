@@ -415,8 +415,19 @@ schema:
   # -- MergeTree `storage_policy` for every auto-created table
   # (CERBERUS_SCHEMA_STORAGE_POLICY) — the S3 / tiered-storage shorthand.
   # Empty appends nothing. Mutually exclusive with a `storage_policy` key in
-  # `settings` below.
+  # `settings` below. A policy only declares which volumes a table MAY use:
+  # to actually tier between them, set `tierVolume` + `tierAfter` below.
   storagePolicy: ""
+  # -- Storage-policy VOLUME aged parts move to (CERBERUS_SCHEMA_TIER_VOLUME),
+  # e.g. "cold". Emits the `TTL <age> TO VOLUME '<name>'` rule WITHOUT which a
+  # multi-volume (hot/cold) `storagePolicy` never moves anything — parts stay
+  # on the first (hot, expensive) volume until retention deletes them. Requires
+  # a non-zero `tierAfter`; the volume must belong to the storage policy.
+  tierVolume: ""
+  # -- Age at which a part moves to `tierVolume` (CERBERUS_SCHEMA_TIER_AFTER),
+  # e.g. "7d". Must be shorter than `ttl`. Per-signal overrides ride the
+  # long-tail passthrough: `schema: { TIER_AFTER_LOGS: "3d" }`.
+  tierAfter: ""
   # -- Extra MergeTree SETTINGS appended to every auto-created table's SETTINGS
   # tail (CERBERUS_SCHEMA_SETTINGS), as a map of setting name -> value, e.g.
   # `{ min_bytes_for_wide_part: 0 }`. Joined sorted into `k=v,k2=v2`. Empty
