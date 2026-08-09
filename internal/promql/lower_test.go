@@ -165,6 +165,24 @@ func TestLower(t *testing.T) {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
 		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+
+		// A fixture carrying a `parity:` section is additionally answered
+		// by the REAL upstream Prometheus engine over the same seeded
+		// data, and the two answers are compared. Unlike every other
+		// assertion in this function, that one has no GOLDEN_UPDATE
+		// branch: the reference answer is computed on each run rather
+		// than stored, so there is nothing for regeneration to overwrite.
+		// See test/spec/parity.go for why the fixture stores the parity
+		// CONTRACT and not the parity ANSWER.
+		parityStart, parityEnd, parityStep := instantEval, instantEval, time.Duration(0)
+		if rs, ok := c.Section("range_step"); ok {
+			d, perr := time.ParseDuration(strings.TrimSpace(rs))
+			if perr != nil {
+				t.Fatalf("fixture %s: parse range_step %q: %v", c.Name, rs, perr)
+			}
+			parityStart, parityEnd, parityStep = rangeStart, rangeEnd, d
+		}
+		spec.RunParity(t, c, parityStart, parityEnd, parityStep)
 	})
 }
 
