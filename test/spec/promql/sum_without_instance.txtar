@@ -1,5 +1,9 @@
 -- query.promql --
 sum without (instance) (up)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = ""
 [1] int64 = 9
