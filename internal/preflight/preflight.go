@@ -154,6 +154,48 @@ type Requirements struct {
 	Metrics schema.Metrics
 	Logs    schema.Logs
 	Traces  schema.Traces
+
+	// Signals reports which of the three telemetry signals this cerberus
+	// process actually SERVES, so requiredTables only contributes a
+	// signal's tables when its bit is set (#1949). Without it, a
+	// Loki-only deployment (CERBERUS_ENABLED_HEADS=loki) was validated
+	// and gated on otel_metrics_*/otel_traces existing, which they never
+	// will — /readyz never went ready even though the served head was
+	// fully functional, and every boot paid the introspection cost of
+	// two signals it never reads.
+	//
+	// The zero value (Signals{}) is treated as "every signal required" —
+	// see effectiveSignals — so every existing caller that predates this
+	// field (including the many tests in this package that build a bare
+	// Requirements{}) keeps validating all three signals exactly as
+	// before. cmd/cerberus's runRequirementsCheck is the only caller that
+	// derives a real, narrowed value, from cfg.EnabledHeads; because that
+	// set defaults to all three heads (config.defaultEnabledHeads), an
+	// unconfigured deployment resolves to the same all-three Signals the
+	// zero value already produces — this field only ever narrows what an
+	// operator explicitly narrowed via CERBERUS_ENABLED_HEADS.
+	Signals Signals
+}
+
+// Signals is the per-telemetry-type on/off switch requiredTables consults.
+// A Head maps 1:1 onto a Signal (prom -> Metrics, loki -> Logs,
+// tempo -> Traces); cmd/cerberus is the only place that performs that
+// mapping, from the resolved cfg.EnabledHeads.
+type Signals struct {
+	Metrics bool
+	Logs    bool
+	Traces  bool
+}
+
+// effectiveSignals resolves the zero value of Requirements.Signals to
+// "every signal required" — see the field's own doc for why that keeps
+// every pre-#1949 caller (a bare Requirements{} with Signals unset)
+// behaviourally unchanged.
+func (r Requirements) effectiveSignals() Signals {
+	if r.Signals == (Signals{}) {
+		return Signals{Metrics: true, Logs: true, Traces: true}
+	}
+	return r.Signals
 }
 
 // minVersion computes the effective version floor: the base minimum,
@@ -489,57 +531,70 @@ type tableReq struct {
 // requirements. Only the columns the emitters actually read are listed —
 // the essential keys (timestamp / value / identity columns) plus the
 // attribute maps, validated against the override-resolved names.
+//
+// A signal contributes its tables only when req.effectiveSignals() reports
+// it enabled (#1949): a process that does not serve a head never gates
+// boot-time introspection, the fatal shape gate, or /readyz on that head's
+// tables existing, since a deployment that never ingests that signal will
+// never provision them.
 func requiredTables(req Requirements) []tableReq {
-	m := req.Metrics
+	signals := req.effectiveSignals()
 	var tables []tableReq
 
-	// Gauge + Sum share the plain-sample shape: name, timestamp, value,
-	// service, and the two attribute maps. These are the columns the
-	// PromQL emitter projects for a Sample.
-	for _, t := range []string{m.GaugeTable, m.SumTable} {
-		tables = append(tables, tableReq{
-			name: t,
-			columns: nonEmpty(
-				m.MetricNameColumn, m.TimestampColumn, m.ValueColumn,
-				m.ServiceNameColumn, m.AttributesColumn, m.ResourceAttributesColumn,
-			),
-			attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
-		})
+	if signals.Metrics {
+		m := req.Metrics
+		// Gauge + Sum share the plain-sample shape: name, timestamp, value,
+		// service, and the two attribute maps. These are the columns the
+		// PromQL emitter projects for a Sample.
+		for _, t := range []string{m.GaugeTable, m.SumTable} {
+			tables = append(tables, tableReq{
+				name: t,
+				columns: nonEmpty(
+					m.MetricNameColumn, m.TimestampColumn, m.ValueColumn,
+					m.ServiceNameColumn, m.AttributesColumn, m.ResourceAttributesColumn,
+				),
+				attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+			})
+		}
+		// Histogram + exp-histogram carry the decomposed observation columns
+		// instead of a Value: Count / Sum live on the row keyed by the bare
+		// metric name. The attribute maps still apply.
+		for _, t := range []string{m.HistogramTable, m.ExpHistogramTable} {
+			tables = append(tables, tableReq{
+				name: t,
+				columns: nonEmpty(
+					m.MetricNameColumn, m.TimestampColumn, m.CountColumn, m.SumColumn,
+					m.AttributesColumn, m.ResourceAttributesColumn,
+				),
+				attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+			})
+		}
 	}
-	// Histogram + exp-histogram carry the decomposed observation columns
-	// instead of a Value: Count / Sum live on the row keyed by the bare
-	// metric name. The attribute maps still apply.
-	for _, t := range []string{m.HistogramTable, m.ExpHistogramTable} {
+
+	if signals.Logs {
+		l := req.Logs
 		tables = append(tables, tableReq{
-			name: t,
+			name: l.LogsTable,
 			columns: nonEmpty(
-				m.MetricNameColumn, m.TimestampColumn, m.CountColumn, m.SumColumn,
-				m.AttributesColumn, m.ResourceAttributesColumn,
+				l.TimestampColumn, l.BodyColumn, l.ServiceNameColumn,
+				l.AttributesColumn, l.ResourceAttributesColumn,
 			),
-			attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+			attrMap: nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
 		})
 	}
 
-	l := req.Logs
-	tables = append(tables, tableReq{
-		name: l.LogsTable,
-		columns: nonEmpty(
-			l.TimestampColumn, l.BodyColumn, l.ServiceNameColumn,
-			l.AttributesColumn, l.ResourceAttributesColumn,
-		),
-		attrMap: nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
-	})
-
-	tr := req.Traces
-	tables = append(tables, tableReq{
-		name: tr.SpansTable,
-		columns: nonEmpty(
-			tr.TraceIDColumn, tr.SpanIDColumn, tr.SpanNameColumn, tr.ServiceNameColumn,
-			tr.DurationColumn, tr.StartTimeColumn,
-			tr.AttributesColumn, tr.ResourceAttributesColumn,
-		),
-		attrMap: nonEmpty(tr.AttributesColumn, tr.ResourceAttributesColumn, tr.ScopeAttributesColumn),
-	})
+	if signals.Traces {
+		tr := req.Traces
+		tables = append(tables, tableReq{
+			name: tr.SpansTable,
+			columns: nonEmpty(
+				tr.TraceIDColumn, tr.SpanIDColumn, tr.SpanNameColumn, tr.ServiceNameColumn,
+				tr.DurationColumn, tr.StartTimeColumn,
+				tr.AttributesColumn, tr.ResourceAttributesColumn,
+			),
+			attrMap: nonEmpty(tr.AttributesColumn, tr.ResourceAttributesColumn, tr.ScopeAttributesColumn),
+		})
+	}
 
 	return tables
 }
