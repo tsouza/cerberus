@@ -1,5 +1,9 @@
 -- query.promql --
 up * on(job, env, svc) machine_role
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = ""
 [1] string = "job"

@@ -23,6 +23,10 @@
 # conditional collapses harmlessly outside the 24.8 lane.
 -- query.promql --
 label_replace(temperature, "job", "value-$1", "nonexistent-src", "(.*)")
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

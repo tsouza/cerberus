@@ -7,6 +7,10 @@
 # for the fold's rationale.
 -- query.promql --
 time() == bool time()
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,
