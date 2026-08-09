@@ -236,12 +236,15 @@ export const COMPOSE_STACK: CrawlStackConfig = {
  * Lane shape: the dashboard job's crawl step runs on the nightly
  * schedule + manual dispatch at SWEEP_DEPTH=full (the per-PR / per-
  * merge fast lane is the compose stack's job). The committed
- * inventory starts EMPTY — the bootstrap convention: the first
- * dispatch with update_crawl_inventory=true regenerates it against
- * the live cluster and uploads it as an artifact to commit; until
- * that lands, every k3d crawl run fails loudly via
- * assertInventoryBootstrapped, so the bootstrap state cannot
- * silently become permanent.
+ * inventory was bootstrapped in tsouza/cerberus#1539 against a real
+ * k3d cluster — before that it started EMPTY (the bootstrap
+ * convention: every k3d crawl run failed loudly via
+ * assertInventoryBootstrapped until a real inventory was committed,
+ * so the bootstrap state could not silently become permanent).
+ * Deliberately regenerating after surface growth follows the same
+ * path: dispatch the `e2e` workflow with update_crawl_inventory=true
+ * and commit the uploaded artifact, or regenerate locally per the
+ * command in `inventoryDoc` below.
  */
 export const K3D_STACK: CrawlStackConfig = {
   name: 'k3d',

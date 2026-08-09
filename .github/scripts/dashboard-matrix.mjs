@@ -30,10 +30,10 @@
 // surface to a shard, with each shard emitting its visited slice and a final
 // job merging + asserting the union against the pinned inventory). That is a
 // deep change to the 1383-line BFS + the inventory ratchet (lib.ts diffInventory
-// asserts the WHOLE visited set) and is blocked today by the k3d inventory being
-// unbootstrapped (grafana-surface-inventory.k3d.json carries surfaces: []), so
-// the union couldn't be validated. It is tracked as the explicit next step in
-// the PR body. This manifest is the safe, coarse win that lands first.
+// asserts the WHOLE visited set) — tracked as tsouza/cerberus#2005, unblocked
+// now that the k3d inventory is bootstrapped (grafana-surface-inventory.k3d.json,
+// tsouza/cerberus#1539) but not yet designed or built. This manifest is the
+// safe, coarse win that lands first.
 //
 // k3d cost/flake trade-off: a k3d cluster is heavy (~3-5min bring-up) and flaky
 // (telemetrygen / otel-collector-gateway readiness BackOff). A matrix of N

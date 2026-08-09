@@ -912,13 +912,14 @@ exclude list — never a silent no-run. `crawl/crawl` rides its own
 shard with only light companions because its single BFS `test()` is
 the ~50min `SWEEP_DEPTH=full` long pole and cannot be split — the
 nightly lane's wall-clock is therefore ≈ max(crawl shard) rather than
-the serial sum behind it. *Documented follow-up:* the k3d `dashboard`
-job also runs the crawl (`CRAWL_STACK=k3d`) unfiltered + its own crawl
-trio, but it is nightly-only + non-gating, so the latency win doesn't
-yet justify sharding it; splitting the `crawl/crawl` BFS `test()`
-itself (partition the frontier by root/app) is the only path below the
-~50min full-depth floor and is a crawl-engine change, not a workflow
-one.
+the serial sum behind it. *Documented follow-up (tsouza/cerberus#2005):*
+the k3d `dashboard` job also runs the crawl (`CRAWL_STACK=k3d`)
+unfiltered + its own crawl trio, on its own dedicated shard mirroring
+this one — neither substrate splits the BFS frontier itself; splitting
+the `crawl/crawl` BFS `test()` (a `CRAWL_SHARD_INDEX`/`COUNT` contract
+partitioning the frontier, plus a merge-and-assert step against the
+pinned inventory) is the only path below the ~50min full-depth floor
+and is a crawl-engine change, not a workflow one.
 
 **The surface-inventory ratchet.**
 `crawl/grafana-surface-inventory.<stack>.json` pins each stack's
@@ -947,11 +948,16 @@ stack's CI lane. The empty inventory is a **bootstrap convention,
 never a steady state**: `assertInventoryBootstrapped` fails every run
 loudly — with the regen instructions — until the first exhaustive
 crawl's inventory is committed; only the regen run itself
-(`CERBERUS_UPDATE_INVENTORY=1`) is exempt. The k3d stack bootstraps
-this way because booting k3d locally is heavy: dispatch the `e2e`
-workflow with `update_crawl_inventory=true`, then commit the uploaded
-inventory artifact. The red crawl lane in the interim is deliberate
-pressure — bootstrap cannot silently become permanent.
+(`CERBERUS_UPDATE_INVENTORY=1`) is exempt. Both registered stacks are
+past this now — compose bootstrapped first, and the k3d stack
+bootstrapped in tsouza/cerberus#1539 (booting k3d locally is heavy, so
+that ran against a local `just e2e-up && just e2e-seed-rolling`
+cluster; the same regen also runs by dispatching the `e2e` workflow
+with `update_crawl_inventory=true` and committing the uploaded
+artifact). Deliberately regenerating either stack's inventory after
+surface growth follows the same path — the red crawl lane in the
+interim is deliberate pressure that keeps bootstrap (or a stale
+regen) from silently becoming permanent.
 
 **Doctrine: the AI sweep generates oracle classes; CI runs them.**
 The crawler exists because an off-CI AI screenshot sweep (2026-06-09)

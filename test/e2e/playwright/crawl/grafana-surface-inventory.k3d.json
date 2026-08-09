@@ -1,5 +1,658 @@
 {
   "doc": "Pinned canonical Grafana surface set for the k3d stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. The k3d crawl lane (dashboard job, .github/workflows/e2e.yml) runs nightly + on manual dispatch at SWEEP_DEPTH=full, so every row is crawled each run; lean=true rows mark the local fast-lane subset only. Regenerate deliberately against a healthy k3d stack (just e2e-up && just e2e-seed-rolling) with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=k3d npx playwright test crawl/crawl.spec.ts — or dispatch the e2e workflow with update_crawl_inventory=true and commit the uploaded artifact.",
   "stack": "k3d",
-  "surfaces": []
+  "surfaces": [
+    {
+      "url": "/",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore#adhoc[Filter by labels]={rep}",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy direction]=Asc",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=10th %10th percentile value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=25th %25th percentile value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=75th %75th percentile value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=CountSort graphs by total number of logs",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=Highest spikeSort graphs by the highest values (max)",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=Lowest dipSort graphs by the smallest values (min)",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=NameAlphabetical order",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=Outlying valuesOrder by the amount of outlying values in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[SortBy function]=Widest spreadSort graphs by deviation from the average value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[SortBy direction]=Asc",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy direction]=Asc",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=10th %10th percentile value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=25th %25th percentile value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=75th %75th percentile value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=CountSort graphs by total number of logs",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=Highest spikeSort graphs by the highest values (max)",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=Lowest dipSort graphs by the smallest values (min)",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=NameAlphabetical order",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=Outlying valuesOrder by the amount of outlying values in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[SortBy function]=Widest spreadSort graphs by deviation from the average value",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[SortBy direction]=Asc",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[SortBy direction]=Asc",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]=error",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]=warn",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[{n} logs]=100",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[{n} logs]=2000",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[{n} logs]=500",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[{n} logs]=5000",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[detected_level]=warn",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[{n} logs]=100",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[detected_level]=warn",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[{n} logs]=100",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#adhoc[Filter by labels]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown?actionView=related&metric={metric}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown?metric={metric}",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown?metric={metric}#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown?metric={metric}#radio[Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/drilldown?metric={metric}#select[group-by-selector-combobox]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-metricsdrilldown-app/trail",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-pyroscope-app/explore",
+      "lean": false
+    },
+    {
+      "url": "/d/cerberus-self",
+      "lean": false
+    },
+    {
+      "url": "/dashboards",
+      "lean": true
+    },
+    {
+      "url": "/dashboards#radio[folders|list]=list",
+      "lean": false
+    },
+    {
+      "url": "/dashboards#select[Sort]=Alphabetically (A–Z)",
+      "lean": false
+    },
+    {
+      "url": "/dashboards#select[Sort]=Alphabetically (Z–A)",
+      "lean": false
+    },
+    {
+      "url": "/dashboards#select[Tag filter]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}#radio[folders|list]=list",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}#select[Sort]=Alphabetically (A–Z)",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}#select[Sort]=Alphabetically (Z–A)",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}#select[Tag filter]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/alerting",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/alerting#select[Sort]=Alphabetically [A-Z]",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/alerting#select[Sort]=Alphabetically [Z-A]",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/library-panels",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/library-panels#select[Panel type filter]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/library-panels#select[Sort]=Alphabetically (A–Z)",
+      "lean": false
+    },
+    {
+      "url": "/dashboards/f/{folder}/library-panels#select[Sort]=Alphabetically (Z–A)",
+      "lean": false
+    },
+    {
+      "url": "/drilldown",
+      "lean": true
+    },
+    {
+      "url": "/explore",
+      "lean": true
+    },
+    {
+      "url": "/explore#radio[Builder|Code]=Code",
+      "lean": false
+    },
+    {
+      "url": "/explore#select[Select label]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/explore#select[Select match operator]=!=",
+      "lean": false
+    },
+    {
+      "url": "/explore#select[Select match operator]=!~",
+      "lean": false
+    },
+    {
+      "url": "/explore#select[Select match operator]==~",
+      "lean": false
+    },
+    {
+      "url": "/explore#select[metric select]={rep}",
+      "lean": false
+    }
+  ]
 }
