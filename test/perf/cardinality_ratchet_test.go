@@ -129,6 +129,38 @@
 // cost of the construct being introduced. A REMOVED fixture likewise fails
 // until the stale row is dropped. This mirrors the `update-golden` discipline:
 // any drift in either direction is a deliberate, reviewed baseline update.
+//
+// # Sharding (#2002)
+//
+// This test's runtime is a straight line in corpus size — it profiles every
+// executable fixture, one at a time, in one process. At ~950 fixtures that was
+// 867s and climbing within a single day of parity-enrolment work, against a
+// 900s budget. Raising the budget only moves the collision.
+//
+// It cannot be parallelised INSIDE the process: profile.NewProfiler calls
+// chdb-go's package-level chdb.NewSession, which caches one session for the
+// whole process regardless of DSN and is not safe for concurrent use (#1987).
+// So the parallelism is N separate OS processes — the `perf-guards-shard`
+// matrix in chdb.yml — each owning a disjoint slice of the corpus chosen by
+// [profile.Shard], with PERF_SHARD_INDEX / PERF_SHARD_COUNT naming the slice.
+//
+// Sharding a RATCHET is not just sharding a loop, because the added/removed
+// check is a statement about a SET. A leg that profiled 1/8 of the corpus and
+// compared it against the whole baseline would report the other 7/8 as
+// "removed". The fix is that the shard filter applies to BOTH sides: the leg
+// compares its slice of the corpus against its slice of the baseline, keyed by
+// the same pure function of the fixture id. Union over all legs is exactly the
+// unsharded assertion, and the per-leg assertion is not weakened — a fixture
+// added to the corpus without a baseline row still fails, on whichever leg owns
+// it.
+//
+// With no partition declared (a local `just perf-chdb`, the nightly profile
+// lane, `just update-cardinality-baseline`) the shard is
+// [profile.WholeCorpus] and every path below behaves exactly as it did before
+// sharding existed. The baseline WRITER additionally refuses to run on a
+// partial shard, because writing prunes the tree of every row it was not handed
+// — a sharded regeneration would delete seven eighths of the baseline and
+// commit it.
 
 package perf
 
@@ -222,9 +254,15 @@ func toEntry(r profile.Record) baselineEntry {
 }
 
 func TestCardinalityRatchet(t *testing.T) {
-	recs, err := profile.ProfileCorpus(specDir)
+	shard, err := profile.ShardFromEnv()
 	if err != nil {
-		t.Fatalf("profile corpus: %v", err)
+		t.Fatalf("read the corpus shard from the environment: %v", err)
+	}
+	t.Logf("cardinality ratchet over the %v", shard)
+
+	recs, err := profile.ProfileCorpusShard(specDir, shard)
+	if err != nil {
+		t.Fatalf("profile corpus (%v): %v", shard, err)
 	}
 
 	// The three windowless Prometheus metadata-discovery endpoints (#1530:
@@ -237,11 +275,17 @@ func TestCardinalityRatchet(t *testing.T) {
 	// with no special-casing: a new fixture id fails until recorded, a
 	// removed one fails until dropped, and fan_factor/scan_rows drift is
 	// caught the same way.
+	//
+	// Sharded runs profile all three on every leg and keep the ones this
+	// shard owns. Capturing them costs one stub-backed HTTP round trip each
+	// against an already-open session — negligible beside the fixture walk —
+	// and deriving the three ids from the shard instead would duplicate,
+	// here, knowledge that only profile.ProfileMetadataEndpoints has.
 	metaRecs, err := profile.ProfileMetadataEndpoints()
 	if err != nil {
 		t.Fatalf("profile metadata endpoints: %v", err)
 	}
-	recs = append(recs, metaRecs...)
+	recs = append(recs, profile.FilterShard(shard, metaRecs, func(r profile.Record) string { return r.Fixture })...)
 
 	// A fixture the profiler could not execute has no meaningful fan-out
 	// signal — treat it as a hard regression (it used to be profilable) and
@@ -257,6 +301,18 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 
 	if os.Getenv(updateEnv) == "1" {
+		// Writing the baseline PRUNES every shard file it was not handed
+		// (see baselineShards.write), so regenerating from a partial
+		// profile would delete the rows of every fixture this leg does not
+		// own — and the result still parses, still passes its own leg, and
+		// lands in a diff as "removed 830 rows" that reads like corpus
+		// cleanup. Refuse rather than trust the operator to notice.
+		if !shard.IsWhole() {
+			t.Fatalf("refusing to regenerate the baseline from a partial corpus (%v). Writing prunes the "+
+				"tree of every fixture not in this profile, so a sharded regeneration silently deletes the "+
+				"other shards' rows. Unset %s/%s and re-run `%s`.",
+				shard, profile.ShardIndexEnv, profile.ShardCountEnv, cardinalityRegen)
+		}
 		if len(profErrs) > 0 {
 			sort.Strings(profErrs)
 			t.Fatalf("refusing to write a baseline with %d unprofilable fixture(s):\n  %v",
@@ -271,7 +327,12 @@ func TestCardinalityRatchet(t *testing.T) {
 		t.Errorf("fixture failed to profile (was it profilable at baseline time?): %s", e)
 	}
 
-	baseline := loadBaseline(t)
+	// The baseline is loaded WHOLE and then narrowed to this shard, so both
+	// sides of the added/removed comparison below are the same slice of the
+	// same partition. Loading it whole first is deliberate: every leg parses
+	// every committed shard file, so a corrupt or unreadable row fails every
+	// leg immediately rather than waiting for the one leg that owns it.
+	baseline := profile.FilterShardMap(shard, loadBaseline(t))
 
 	// New fixtures (in corpus, not in baseline) — add the row so the absolute
 	// fan_factor surfaces in the diff for cost review.
@@ -299,8 +360,9 @@ func TestCardinalityRatchet(t *testing.T) {
 			id, fmtFanFactor(c.FanFactor), c.HasCrossJoin, c.HasRecursiveCTE, c.MaxRecursionDepth)
 	}
 	for _, id := range removed {
-		t.Errorf("baseline fixture %q no longer in the corpus — run `just update-cardinality-baseline` "+
-			"to drop the stale row", id)
+		t.Errorf("baseline fixture %q no longer in the corpus (%v) — run `just update-cardinality-baseline` "+
+			"to drop the stale row. Regeneration is always whole-corpus, so run it without "+
+			"%s/%s set.", id, shard, profile.ShardIndexEnv, profile.ShardCountEnv)
 	}
 
 	// Per-fixture upward-regression ratchet over the matched set.

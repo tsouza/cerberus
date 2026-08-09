@@ -188,6 +188,25 @@ The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet run on every PR through the required
 `perf-guards` chDB lane; the profiler is the nightly wide net for the unknown
 shapes.
+
+**The ratchet is sharded across runner processes.** It profiles every executable
+fixture one at a time, so its runtime is a straight line in corpus size — and
+the corpus is meant to grow. It cannot be parallelised inside the process:
+`profile.NewProfiler` calls chdb-go's package-level `chdb.NewSession`, which
+caches one session for the whole process regardless of DSN and is not safe for
+concurrent in-process use. So `perf-guards-shard` in `chdb.yml` fans out to 8
+legs, each owning a disjoint slice of the corpus chosen by
+`test/perf/profile/shard.go` from `PERF_SHARD_INDEX` / `PERF_SHARD_COUNT`. The
+partition hashes the fixture id rather than slicing the sorted corpus, so
+enrolling new fixtures leaves every existing one on the shard it was already on
+and a leg's wall-clock stays comparable run to run. Sharding a ratchet is not
+just sharding a loop: the added/removed check is a statement about a SET, so
+each leg narrows BOTH the corpus and the committed baseline through the same
+partition — union over the legs is exactly the unsharded assertion. With the
+variables unset (a local `just perf-chdb`, `just update-cardinality-baseline`,
+the nightly profiler) the shard is the whole corpus, and the baseline writer
+refuses to run on anything else, because writing prunes every row it was not
+handed.
 Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.
