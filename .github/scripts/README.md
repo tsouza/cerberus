@@ -171,7 +171,22 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     `CHECKS` registry in the script is the one list — `all` iterates it, and
     `doc-counts.mjs` asserts every workflow `CHECK:` value names a live entry,
     so a removed scan cannot leave a caller behind.
+  - Every scan derives its file set from `lib/gh.mjs`'s `lsFiles()`, which
+    scans the tracked git INDEX plus every untracked-but-not-`.gitignore`d
+    working-tree path — not the tracked set alone. A bare `git ls-files`
+    made a generated-but-unstaged file locally invisible to every scan here,
+    sound on CI (the runner checks out a committed tree) and sound at push
+    time (lefthook's `pre-push` scans a committed tree too), but a real gap
+    for `node .github/scripts/forbid-skip.mjs` run directly against a local
+    working tree mid-edit — exactly the narrowed local reproduction CLAUDE.md
+    asks for after a red CI check (issue #1938).
   - Exit: `0` clean, `1` on any banned pattern or bad `CHECK`.
+  - `forbid-skip.test.mjs` is the `node --test` guard (run as the first step
+    of the `forbid-skip` job, before any scan): it builds a throwaway git
+    repository and proves `CHECK=t-skip` fails on a `t.Skip` file that is
+    present in the working tree but never `git add`-ed, not only on a
+    committed one, and that the `compatibility/*/upstream/**` exclude
+    pathspec still applies to an untracked path.
 - **`forbid-deferral.mjs`** — `forbid-deferral.yml`, its own workflow. The prose
   sibling of `forbid-skip`: where that one rejects a test that declines to
   assert, this rejects a change that names work it is not doing and walks away.
@@ -308,8 +323,12 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   list cannot rot into a pre-approval for a future file of the same name. The
   gate fails CLOSED: a tracked blob that cannot be read from the working tree
   is retried out of the object store and, failing that, exits non-zero rather
-  than being assumed to be text. Since `git ls-files` is the input, the
-  companion fix for anything this catches is a `git rm` PLUS a `.gitignore`
+  than being assumed to be text. All three scans' file set is the tracked git
+  INDEX plus every untracked-but-not-`.gitignore`d working-tree path — not
+  the tracked set alone (`pathsInScope()` / `blobsInScope()`; issue #1938),
+  so an untracked entry is scanned straight off disk (it has no object-store
+  blob to fall back on). The companion fix for anything this catches is a
+  `git rm` (or simply deleting an untracked offender) PLUS a `.gitignore`
   rule — the ignore rule is what stops it coming back. `registry-login`
   rejects any workflow step that `uses: docker/login-action`: that Action has
   no retry input, so a login losing one handshake fails the job before it has
@@ -325,7 +344,9 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   synthetic ELF blob, a stray root file, and a workflow step using
   `docker/login-action`, and asserts a non-zero exit naming each, plus a clean
   exit on a conforming fixture — a gate never shown to fail is
-  indistinguishable from one that does nothing.
+  indistinguishable from one that does nothing. It also plants each of those
+  three fixtures WITHOUT `git add`-ing them, asserting the gate still fires on
+  an untracked violation and not only a committed one (issue #1938).
   - Env: `CHECK` is one of `binary`, `root-allowlist`, `registry-login`;
     `REPO_ROOT` (optional) points the scan at another checkout (the
     self-test's fixture repo).

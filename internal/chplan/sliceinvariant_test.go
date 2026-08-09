@@ -65,7 +65,7 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 		}
 	}
 
-	// 31 total node kinds, 10 registered → 21 must be default-denied. If this
+	// 32 total node kinds, 10 registered → 22 must be default-denied. If this
 	// drifts, a node kind was added: decide explicitly whether it is
 	// slice-invariant (extend sliceInvariantKinds + the registered set here)
 	// or not (it falls into the default-deny count).
@@ -84,8 +84,11 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	// point-in-time label lookup, not a sliced row stream, so it stays
 	// default-denied. RangeWindowResample (a re-gridding range node) and
 	// SearchTraceLimit (a per-trace cap) are likewise default-denied — neither
-	// is a simple sliced row stream.
-	const wantUnregistered = 31 - 10
+	// is a simple sliced row stream. HistogramProjection is default-denied
+	// too: like HistogramQuantileNative, it aggregates bucket columns per
+	// group from its input rather than passing a sliced row stream through
+	// unchanged, and no lowering builds it yet regardless.
+	const wantUnregistered = 32 - 10
 	if unregisteredSeen != wantUnregistered {
 		t.Fatalf("expected %d default-denied node kinds, saw %d — a node kind was added; "+
 			"make an explicit slice-invariance decision", wantUnregistered, unregisteredSeen)

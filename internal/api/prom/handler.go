@@ -455,12 +455,27 @@ func matrixFromSamples(samples []chclient.Sample) []MatrixSample {
 		sort.Slice(st.rows, func(i, j int) bool { return st.rows[i].Timestamp.Before(st.rows[j].Timestamp) })
 		ms := MatrixSample{Metric: st.labels}
 		for _, r := range st.rows {
-			stamp := float64(r.Timestamp.UnixMilli()) / 1e3
-			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
+			appendMatrixPoint(&ms, r)
 		}
 		out = append(out, ms)
 	}
 	return out
+}
+
+// appendMatrixPoint appends r's point to ms's Values or Histograms list,
+// matching upstream Prometheus's per-point mutual exclusivity: a row
+// carrying a decoded chclient.Sample.Histogram (issue #1926 — no
+// lowering produces one yet) becomes a `histograms` wire entry instead
+// of a `values` one. Shared by matrixFromSamples and matrixFromCursor so
+// the two matrix pivots cannot drift on which list a histogram-valued
+// row lands in.
+func appendMatrixPoint(ms *MatrixSample, r chclient.Sample) {
+	if r.Histogram != nil {
+		ms.Histograms = append(ms.Histograms, histogramSample(r.Timestamp, r.Histogram))
+		return
+	}
+	stamp := float64(r.Timestamp.UnixMilli()) / 1e3
+	ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
 }
 
 // maxResolutionPoints caps the returned points per timeseries on a range
@@ -1343,9 +1358,10 @@ func sampleColumns(s schema.Metrics) chplan.SampleColumns {
 // caller asked for; we stamp every sample with it (Prometheus convention).
 func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 	type latest struct {
-		labels map[string]string
-		ts     time.Time
-		value  float64
+		labels    map[string]string
+		ts        time.Time
+		value     float64
+		histogram *chclient.HistogramValue
 	}
 
 	bySeries := map[string]latest{}
@@ -1355,17 +1371,21 @@ func toVector(samples []chclient.Sample, ts time.Time) []VectorSample {
 		key := format.CanonicalKey(labels)
 		cur, ok := bySeries[key]
 		if !ok || s.Timestamp.After(cur.ts) {
-			bySeries[key] = latest{labels: labels, ts: s.Timestamp, value: s.Value}
+			bySeries[key] = latest{labels: labels, ts: s.Timestamp, value: s.Value, histogram: s.Histogram}
 		}
 	}
 
 	out := make([]VectorSample, 0, len(bySeries))
 	stamp := float64(ts.UnixMilli()) / 1e3
 	for _, l := range bySeries {
-		out = append(out, VectorSample{
-			Metric: l.labels,
-			Value:  Sample{stamp, strconv.FormatFloat(l.value, 'f', -1, 64)},
-		})
+		vs := VectorSample{Metric: l.labels}
+		if l.histogram != nil {
+			hs := histogramSample(ts, l.histogram)
+			vs.Histogram = &hs
+		} else {
+			vs.Value = &Sample{stamp, strconv.FormatFloat(l.value, 'f', -1, 64)}
+		}
+		out = append(out, vs)
 	}
 	return out
 }
@@ -1458,10 +1478,9 @@ func matrixFromCursor(
 			if r.Timestamp.Before(start) || r.Timestamp.After(end) {
 				continue
 			}
-			stamp := float64(r.Timestamp.UnixMilli()) / 1e3
-			ms.Values = append(ms.Values, Sample{stamp, strconv.FormatFloat(r.Value, 'f', -1, 64)})
+			appendMatrixPoint(&ms, r)
 		}
-		if len(ms.Values) > 0 {
+		if len(ms.Values) > 0 || len(ms.Histograms) > 0 {
 			out = append(out, ms)
 		}
 	}

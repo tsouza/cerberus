@@ -57,6 +57,13 @@ const (
 	// it is differenced back into per-bucket counts. It gets its own
 	// Project layer because the differencing reads it twice.
 	hqWindowLadderAlias = "_hq_window_ladder"
+	// hqWindowTemporalityAlias holds the group's `any(AggregationTemporality)`
+	// read — a single OTel time series has ONE temporality for its
+	// lifetime, so any() over the window's rows is exact, not a lossy
+	// pick. counterIncreaseFold branches on it the same way
+	// chsql.CounterOrDeltaSum branches for the ordinary counter path.
+	// See issue #1628.
+	hqWindowTemporalityAlias = "_hq_temporality"
 )
 
 // Lambda parameter names for the per-series window fold. `p` / `c` are a
@@ -125,11 +132,19 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // extrapolation counterpart in Prometheus (only rate/increase/delta
 // extrapolate), so rangeStart / rangeEnd go unused on that branch.
 //
-// The engine reads `rate` / `increase` as cumulative everywhere, not just
-// here: the ordinary counter lowering applies the identical reset rule
-// without consulting the schema's AggregationTemporality column either.
-// Making delta-temporality counters a first-class case is a cross-cutting
-// change across every range-vector lowering, tracked in #1628.
+// `rate` / `increase` apply the counter-reset rule ONLY when the series'
+// own AggregationTemporality reading says CUMULATIVE (or carries no
+// reading at all — the historical, pre-#1628 default); a DELTA-temporality
+// series instead sums its window's raw values directly, exactly like
+// `sum_over_time` — see counterIncreaseFold and issue #1628.
+//
+// temporality is the per-series `any(AggregationTemporality)` column
+// expression (hqWindowTemporalityAlias) the caller's aggs list projects,
+// or nil when the caller's underlying table carries no such column (or
+// the caller chooses to keep its emitted SQL byte-identical to the
+// pre-#1628 shape, e.g. the exponential/native-histogram callers, which
+// stay out of #1628's scope). A nil temporality makes counterIncreaseFold
+// apply the CUMULATIVE branch unconditionally.
 //
 // The empty string is the #1692 sentinel: `histogram_quantile(phi,
 // sum by(le)(<bucket-selector>))` with no range-vector wrapper at all.
@@ -149,7 +164,19 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // folded, exactly as reference's histogram-typed extrapolatedRate reads
 // resultHistogram.Count / samples.Histograms[0].H.Count rather than any
 // one bucket's own values.
-func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues chplan.Expr) histogramWindowTimeFold {
+//
+// temporality composes with that same extrapolation correction rather
+// than replacing it: it decides HOW the window's raw values sum into an
+// increase (counterIncreaseFold's reset-rule sum for a CUMULATIVE or nil
+// reading, a plain sum of non-leading values for DELTA — see
+// counterIncreaseFold), and histogramExtrapolationFactorExpr decides HOW
+// MUCH to scale that sum for partial window coverage at the edges. Both
+// the counter-increase numerator and the durationToZero clamp's own
+// internal resultCount read the SAME temporality signal, so a
+// DELTA-temporality series' extrapolation factor is computed from its
+// own delta-sum reading rather than a reset-rule sum that reading
+// doesn't apply to.
+func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues, temporality chplan.Expr) histogramWindowTimeFold {
 	switch fn {
 	case "rate", "increase":
 		return func(values, order chplan.Expr) chplan.Expr {
@@ -159,8 +186,8 @@ func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues chplan.Exp
 			}
 			return &chplan.Binary{
 				Op:    chplan.OpMul,
-				Left:  counterIncreaseFold(values, order),
-				Right: histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, cv),
+				Left:  counterIncreaseFold(values, order, temporality),
+				Right: histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, cv, temporality),
 			}
 		}
 	case "":
@@ -235,7 +262,15 @@ const histogramExtrapolationThresholdFactor = 1.1
 // mid-window reset; the corpus proved that judgment wrong at a bucket-
 // ratio-visible margin (a prior version of this comment cited a #1628
 // follow-up for this — that citation was itself part of the mistake).
-func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, countValues chplan.Expr) chplan.Expr {
+//
+// temporality is forwarded to the resultCount / firstCount reads below
+// unchanged from the caller's own histogramWindowFold — the durationToZero
+// clamp's "how far back would this counter have crossed zero" question
+// needs the SAME cumulative-vs-delta reading of countValues that the
+// caller's own counter-increase numerator uses, or the clamp would judge
+// the zero-crossing distance against a total the main computation never
+// produces.
+func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, countValues, temporality chplan.Expr) chplan.Expr {
 	sortedOrder := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{order}}
 	firstTs := &chplan.Subscript{Container: sortedOrder, Key: &chplan.LitInt{V: 1}}
 	lastTs := &chplan.Subscript{
@@ -275,7 +310,7 @@ func histogramExtrapolationFactorExpr(order, rangeStart, rangeEnd, countValues c
 	// firstCount is never negative here (a stored UInt64 total-observation
 	// count), so reference's extra `Floats[0].F >= 0` / `H.Count >= 0`
 	// guard is always true and is not encoded separately.
-	resultCount := counterIncreaseFold(countValues, order)
+	resultCount := counterIncreaseFold(countValues, order, temporality)
 	firstCount := firstInTimeExpr(countValues, order)
 	durationToZero := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
 		&chplan.Binary{Op: chplan.OpGt, Left: resultCount, Right: &chplan.LitInt{V: 0}},
@@ -389,7 +424,28 @@ func firstInTimeExpr(values, order chplan.Expr) chplan.Expr {
 //
 // With no reset this telescopes to `last - first`, which is exactly the
 // numerator reference PromQL computes for `rate` / `increase`.
-func counterIncreaseFold(values, order chplan.Expr) chplan.Expr {
+//
+// That reset rule is the CUMULATIVE reading of a counter. temporality
+// (when non-nil) is the caller's per-series `any(AggregationTemporality)`
+// read: when it equals schema.AggregationTemporalityDelta, each stored
+// value is already the increase since the PREVIOUS sample only, so the
+// window's total increase is the sum of `values` EXCLUDING the
+// earliest-in-time one (`sorted[1]`) — that leading value already covers
+// the interval ENDING at (and so starting before) the window's first
+// timestamp, the same coverage the caller's own extrapolation
+// independently reconstructs from the window edge to that first
+// timestamp. Summing it too would double-count that leading interval.
+// Dropping it makes this the exact analogue of the reset-rule sum's
+// `last - first` telescoping (a running total built by prefix-summing
+// these same DELTA values satisfies `running(last) - running(first) ==
+// sum(values) - sorted[1]`, an identity independent of how uniform the
+// deltas are) — this is the SAME branch chsql.CounterOrDeltaSum applies
+// for the ordinary counter path, transcribed into the bucket-array domain
+// because this function builds a chplan.Expr tree rather than a
+// chsql.Frag and so cannot call it directly. Any other temporality
+// reading (CUMULATIVE, or the legacy zero/UNSPECIFIED default, or a nil
+// temporality) keeps the reset-rule sum. See issue #1628.
+func counterIncreaseFold(values, order, temporality chplan.Expr) chplan.Expr {
 	sorted := chplan.Expr(&chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramCurrCum, paramRowTime},
@@ -398,7 +454,7 @@ func counterIncreaseFold(values, order chplan.Expr) chplan.Expr {
 		values,
 		order,
 	}})
-	return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
+	cumulative := chplan.Expr(&chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
 		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramPrevCum, paramCurrCum},
@@ -419,13 +475,53 @@ func counterIncreaseFold(values, order chplan.Expr) chplan.Expr {
 			&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{sorted}},
 			&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{sorted}},
 		}},
+	}})
+	if temporality == nil {
+		return cumulative
+	}
+	earliest := &chplan.Subscript{Container: sorted, Key: &chplan.LitInt{V: 1}}
+	delta := &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}},
+		Right: earliest,
+	}
+	return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+		&chplan.Binary{
+			Op:    chplan.OpEq,
+			Left:  temporality,
+			Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
+		},
+		delta,
+		cumulative,
 	}}
 }
 
+// needsTemporalityAgg reports whether windowFn's histogramWindowFold
+// reads the per-series temporality signal — only "rate" / "increase" do,
+// through counterIncreaseFold. Every other windowFn ("sum_over_time" and
+// the #1692 bare-selector "" sentinel) computes its result without ever
+// consulting temporality, so gating the any(AggregationTemporality) agg
+// on this keeps it out of the SELECT list — and out of the emitted SQL —
+// for every histogram_quantile shape that doesn't need it, rather than
+// adding a dead column to every classic-histogram query.
+func needsTemporalityAgg(windowFn string) bool {
+	return windowFn == "rate" || windowFn == "increase"
+}
+
 // classicBucketWindowAggs are the per-series stage's aggregates: every
-// in-window row's layout, counts and timestamp.
-func classicBucketWindowAggs(s schema.Metrics) []chplan.AggFunc {
-	return []chplan.AggFunc{
+// in-window row's layout, counts and timestamp — plus, for a rate /
+// increase window over a schema that declares an AggregationTemporality
+// column, the series' single temporality reading (see
+// hqWindowTemporalityAlias and needsTemporalityAgg). The classic
+// histogram table always carries the column when the schema names one
+// (schema.Metrics.AggregationTemporalityColumn's doc: "Int32; sum,
+// histogram, exp_histogram"), so unlike the ordinary counter path's
+// chplan.RangeWindow.TemporalityColumn — which is additionally gated on
+// the scan resolving to an unambiguous Sum/Histogram table — this needs
+// no such gate: every caller of classicBucketWindowAggs scans the
+// histogram table directly.
+func classicBucketWindowAggs(s schema.Metrics, windowFn string) []chplan.AggFunc {
+	aggs := []chplan.AggFunc{
 		{
 			Name:  "groupArray",
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
@@ -442,6 +538,30 @@ func classicBucketWindowAggs(s schema.Metrics) []chplan.AggFunc {
 			Alias: hqWindowTsListAlias,
 		},
 	}
+	if needsTemporalityAgg(windowFn) && s.AggregationTemporalityColumn != "" {
+		aggs = append(aggs, chplan.AggFunc{
+			Name:  "any",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.AggregationTemporalityColumn}},
+			Alias: hqWindowTemporalityAlias,
+		})
+	}
+	return aggs
+}
+
+// classicBucketWindowTemporalityExpr returns the chplan.Expr
+// counterIncreaseFold should branch on for a classic-histogram window
+// whose aggs came from classicBucketWindowAggs(s, windowFn) — the
+// hqWindowTemporalityAlias column when windowFn needed (and got) the agg,
+// nil otherwise (nil makes counterIncreaseFold apply the CUMULATIVE
+// branch unconditionally, byte-identical to every query emitted before
+// #1628). windowFn MUST be the same value passed to the paired
+// classicBucketWindowAggs call, or this can reference a column that was
+// never aggregated.
+func classicBucketWindowTemporalityExpr(s schema.Metrics, windowFn string) chplan.Expr {
+	if !needsTemporalityAgg(windowFn) || s.AggregationTemporalityColumn == "" {
+		return nil
+	}
+	return &chplan.ColumnRef{Name: hqWindowTemporalityAlias}
 }
 
 // windowSampleCountAgg counts the DISTINCT sample timestamps a series has
@@ -478,7 +598,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(classicBucketWindowAggs(s), windowSampleCountAgg(s)),
+		AggFuncs:           append(classicBucketWindowAggs(s, shape.windowFn), windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
 	return classicBucketWindowReshape(
@@ -488,7 +608,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 		// durationToZero clamp reads THAT rung's own (values, order) —
 		// matching reference Prometheus's per-rung float-series
 		// extrapolatedRate exactly (see histogramWindowFold's doc).
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil, classicBucketWindowTemporalityExpr(s, shape.windowFn)),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,

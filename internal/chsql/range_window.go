@@ -1878,14 +1878,18 @@ func dedupWindowPairsByTsFrag(arr Frag) Frag {
 // dedupWindowPairsLayer interposes a projection that replaces the
 // upstream `window_pairs` column with its timestamp-deduplicated form
 // (see dedupWindowPairsByTsFrag), re-projecting the group columns (and
-// the per-anchor `anchor_ts` column in the matrix shape) unchanged so
-// the downstream mid / extrap / outer layers consume a window array
+// the per-anchor `anchor_ts` column in the matrix shape, and the
+// per-series `temporality` column when withTemporality is set) unchanged
+// so the downstream mid / extrap / outer layers consume a window array
 // that holds one sample per distinct timestamp.
-func dedupWindowPairsLayer(upstream Frag, groupFrags []Frag, withAnchor bool) Frag {
+func dedupWindowPairsLayer(upstream Frag, groupFrags []Frag, withAnchor, withTemporality bool) Frag {
 	q := NewQuery().From(upstream)
 	q.Select(groupFrags...)
 	if withAnchor {
 		q.Select(Col("anchor_ts"))
+	}
+	if withTemporality {
+		q.Select(Col("temporality"))
 	}
 	q.Select(As(dedupWindowPairsByTsFrag(BareIdent("window_pairs")), "window_pairs"))
 	return q.Frag()
@@ -2999,10 +3003,19 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 		return err
 	}
 
-	// Innermost SELECT — groupArray of (ts, value), sorted.
+	hasTemporality := r.TemporalityColumn != ""
+
+	// Innermost SELECT — groupArray of (ts, value), sorted. When the
+	// Input carries a TemporalityColumn, also read the series' single
+	// AggregationTemporality reading via any() — a series has ONE
+	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// so any() over the window's rows is exact, not a lossy pick.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
 	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	if hasTemporality {
+		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), "temporality"))
+	}
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -3025,6 +3038,9 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
 	innerMid := NewQuery().From(innermost.Frag())
 	innerMid.Select(groupFrags...)
+	if hasTemporality {
+		innerMid.Select(Col("temporality"))
+	}
 	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Mid SELECT — derives the per-window scalars the extrap layer
@@ -3033,11 +3049,19 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// extrapolatedRate needs to compute the boundary correction. The
 	// window_pairs feeding it is timestamp-deduplicated first so a
 	// duplicate (series, ts) sample does not inflate the sample count and
-	// corrupt the extrapolation (see dedupWindowPairsByTsFrag).
-	mid := NewQuery().From(dedupWindowPairsLayer(innerMid.Frag(), groupFrags, false))
+	// corrupt the extrapolation (see dedupWindowPairsByTsFrag). counter_delta
+	// routes through CounterOrDeltaSum so a DELTA-temporality counter (or
+	// classic histogram, via its bucket-domain transcription) sums the
+	// window's raw samples instead of applying the counter-reset rule —
+	// see chplan.RangeWindow.TemporalityColumn and issue #1628.
+	var temporalityRef Frag
+	if hasTemporality {
+		temporalityRef = BareIdent("temporality")
+	}
+	mid := NewQuery().From(dedupWindowPairsLayer(innerMid.Frag(), groupFrags, false, hasTemporality))
 	mid.Select(groupFrags...)
 	mid.Select(As(windowValsFrag(), "window_vals"))
-	mid.Select(As(counterDeltaFrag(), "counter_delta"))
+	mid.Select(As(CounterOrDeltaSum(BareIdent("window_pairs"), temporalityRef), "counter_delta"))
 	mid.Select(As(firstTsFrag(), "first_ts"))
 	mid.Select(As(lastTsFrag(), "last_ts"))
 	mid.Select(As(firstValFrag(), "first_val"))
@@ -3100,12 +3124,16 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		return err
 	}
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+	hasTemporality := r.TemporalityColumn != ""
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
+	if hasTemporality {
+		fanout.Select(Col(r.TemporalityColumn))
+	}
 	fanout.Select(As(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
@@ -3117,10 +3145,17 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// maybePushInnerScanTimeBounds.
 	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
-	// Regroup SELECT — rebuild the per-(series, anchor) window array.
+	// Regroup SELECT — rebuild the per-(series, anchor) window array. When
+	// the Input carries a TemporalityColumn, also read the series' single
+	// AggregationTemporality reading via any() — a series has ONE
+	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// so any() over the (series, anchor) group's rows is exact.
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
+	if hasTemporality {
+		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), "temporality"))
+	}
 	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
@@ -3130,12 +3165,18 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// Mid SELECT — window_vals + counter_delta + first/last_ts + first_val.
 	// window_pairs is timestamp-deduplicated first so a duplicate
 	// (series, ts) sample does not inflate the per-anchor sample count and
-	// corrupt the extrapolation (see dedupWindowPairsByTsFrag).
-	mid := NewQuery().From(dedupWindowPairsLayer(regroup.Frag(), groupFrags, true))
+	// corrupt the extrapolation (see dedupWindowPairsByTsFrag). counter_delta
+	// routes through CounterOrDeltaSum — see the instant-path emitter
+	// (emitWindowedArrayExtrapolated) and issue #1628.
+	var temporalityRef Frag
+	if hasTemporality {
+		temporalityRef = BareIdent("temporality")
+	}
+	mid := NewQuery().From(dedupWindowPairsLayer(regroup.Frag(), groupFrags, true, hasTemporality))
 	mid.Select(groupFrags...)
 	mid.Select(Col("anchor_ts"))
 	mid.Select(As(windowValsFrag(), "window_vals"))
-	mid.Select(As(counterDeltaFrag(), "counter_delta"))
+	mid.Select(As(CounterOrDeltaSum(BareIdent("window_pairs"), temporalityRef), "counter_delta"))
 	mid.Select(As(firstTsFrag(), "first_ts"))
 	mid.Select(As(lastTsFrag(), "last_ts"))
 	mid.Select(As(firstValFrag(), "first_val"))

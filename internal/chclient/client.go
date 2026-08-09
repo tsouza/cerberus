@@ -1215,6 +1215,59 @@ type Sample struct {
 	// for the prom / tempo heads, whose four-column projections leave the
 	// shared cursor's 4-column scan path untouched.
 	Metadata map[string]string
+	// Histogram carries a decoded OTel exponential (native) histogram
+	// value — the shape a histogram-VALUED PromQL result (`rate()`,
+	// `increase()`, `sum()`, or a bare selector over a native histogram;
+	// see issue #1926) must carry end to end instead of collapsing to
+	// Value. Populated only when the projection emits the nine trailing
+	// Histogram*Column columns chplan.HistogramProjection's emitter
+	// produces (see [rowsCursor.Next]); nil for every query today,
+	// since no lowering builds that plan shape yet. Value stays bound
+	// alongside it to a meaningless placeholder on a histogram row,
+	// mirroring reference Prometheus's own `Sample{F: resultFloat, H:
+	// resultHistogram}` contract (promql/functions.go's
+	// extrapolatedRate: F is meaningless once H is set).
+	Histogram *HistogramValue
+}
+
+// HistogramValue is a decoded OTel exponential (native) histogram
+// sample: the (Scale, ZeroThreshold, ZeroCount, PositiveOffset,
+// PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) bucket
+// structure plus the top-level Count/Sum fields, read off the nine
+// Histogram*Column columns a chplan.HistogramProjection subquery
+// publishes (see internal/chplan/histogram_projection.go). Mirrors the
+// field set chplan.HistogramQuantileNative already consumes from the
+// same physical schema columns, minus the quantile-only Phi.
+type HistogramValue struct {
+	// Count is the OTel exponential histogram's stored observation
+	// count. Not necessarily equal to ZeroCount plus the sum of the
+	// bucket-count arrays: OTLP persists it as an independent field
+	// rather than deriving it, and so does cerberus's decode.
+	Count uint64
+	// Sum is the OTel exponential histogram's stored sum of observed
+	// values.
+	Sum float64
+	// Scale controls bucket resolution: base = 2^(2^-Scale). Higher
+	// scale = finer buckets.
+	Scale int32
+	// ZeroThreshold is the upper edge of the zero bucket. Zero when the
+	// physical schema does not persist the OTLP zero_threshold field
+	// (the default OTel-CH exp-histogram DDL doesn't) — see
+	// chplan.HistogramProjection's doc comment.
+	ZeroThreshold float64
+	// ZeroCount is the count of observations at or below ZeroThreshold.
+	ZeroCount uint64
+	// PositiveOffset is the index of the first positive bucket.
+	PositiveOffset int32
+	// PositiveBucketCounts holds the per-bucket counts for positive
+	// observations, starting at PositiveOffset.
+	PositiveBucketCounts []uint64
+	// NegativeOffset is the index of the first negative bucket.
+	NegativeOffset int32
+	// NegativeBucketCounts holds the per-bucket counts for negative
+	// observations, starting at NegativeOffset, mirroring
+	// PositiveBucketCounts.
+	NegativeBucketCounts []uint64
 }
 
 // PeekBreakerState reports the circuit-breaker lifecycle phase as a stable

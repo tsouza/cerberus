@@ -189,8 +189,9 @@ func TestNodeExprs_FindsEveryNodeTypeWithExprSlots(t *testing.T) {
 	}
 	// Filter, Project, Aggregate, RangeWindow, RangeWindowNative, OrderBy,
 	// TopK, RangeBucketFanout, HistogramQuantile, HistogramQuantileNative,
-	// MetricsAggregate, MetricsHistogramOverTime, MetricsCompare.
-	const wantNodeTypesWithExprSlots = 13
+	// HistogramProjection, MetricsAggregate, MetricsHistogramOverTime,
+	// MetricsCompare.
+	const wantNodeTypesWithExprSlots = 14
 	if withSlots != wantNodeTypesWithExprSlots {
 		t.Fatalf("reflection found Expr slots on %d Node types, expected %d — the IR gained or lost an "+
 			"Expr-bearing Node type: update nodeExprs in walk_deep.go and this count",

@@ -561,6 +561,15 @@ jobs:
       # `.github/scripts/README.md` for the convention. The regexes are
       # kept byte-identical to scripts/test-forbid-skip.sh (the self-test
       # step at the end of this job pins them).
+      #
+      # This CLI-level self-test runs FIRST: it builds a throwaway git repo
+      # and proves each scan fires on an UNTRACKED violating file (present in
+      # the working tree, never `git add`-ed), not only a committed one —
+      # every scan derives its file set from lib/gh.mjs's lsFiles(), which
+      # used to read the git INDEX only and so reported clean on exactly this
+      # shape locally (issue #1938).
+      - name: Self-test the forbid-skip CLI
+        run: node --test .github/scripts/forbid-skip.test.mjs
       - name: Reject t.Skip in test files
         run: node .github/scripts/forbid-skip.mjs
         env:

@@ -121,9 +121,12 @@ const (
 	// raise this.
 	ReasonIncommensurate = "incommensurate"
 
-	// ReasonScalarHeavy: a ScalarSubquery whose interior scan-span x fan-out
-	// exceeds the configured fraction of the outer plan — the slice benefit
-	// cannot pay for replicating it.
+	// ReasonScalarHeavy: a ScalarSubquery / InSubquery whose interior carries
+	// a windowed node the Planner cannot prove anchor-compatible with the
+	// grid predicted at the point it is embedded — see
+	// Planner.scalarInteriorAnchorCompatible — so replicating it K× is not
+	// provably bounded by what the outer spine's own per-shard share already
+	// costs.
 	ReasonScalarHeavy = "scalar-heavy"
 
 	// ReasonRoutingDisabled: Cfg.Mode is "single" — the operator switched

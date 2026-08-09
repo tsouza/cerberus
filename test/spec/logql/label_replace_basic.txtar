@@ -3,12 +3,12 @@ label_replace(count_over_time({service_name="api"}[5m]), "newlabel", "$1", "serv
 -- args --
 [0] string = ""
 [1] string = "service_name"
-[2] string = "^(.+)$"
+[2] string = "^(?s:(.+))$"
 [3] string = "newlabel"
 [4] string = "service_name"
 [5] string = ""
 [6] string = "service_name"
-[7] string = "^(.+)$"
+[7] string = "^(?s:(.+))$"
 [8] string = "\\1"
 [9] int64 = 9
 [10] string = ""

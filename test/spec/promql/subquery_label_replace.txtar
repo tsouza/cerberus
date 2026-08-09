@@ -17,12 +17,12 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- args --
 [0] string = "job"
-[1] string = "^.*$"
+[1] string = "^(?s:.*)$"
 [2] string = "env"
 [3] string = "job"
 [4] string = "prod"
 [5] string = "job"
-[6] string = "^.*$"
+[6] string = "^(?s:.*)$"
 [7] string = "prod"
 [8] string = "service.name"
 [9] string = "service_name"

@@ -30,12 +30,12 @@
 label_replace(cpu_temp, "core", "all", "core", ".*")
 -- args --
 [0] string = "core"
-[1] string = "^.*$"
+[1] string = "^(?s:.*)$"
 [2] string = "core"
 [3] string = "core"
 [4] string = "all"
 [5] string = "core"
-[6] string = "^.*$"
+[6] string = "^(?s:.*)$"
 [7] string = "all"
 [8] string = "service.name"
 [9] string = "service_name"

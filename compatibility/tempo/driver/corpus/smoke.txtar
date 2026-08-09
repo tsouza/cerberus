@@ -736,6 +736,51 @@ http.target
 child.index
 kind
 
+# `q` that fails to PARSE, not just one that would narrow (#1944). PR
+# #1929 established from upstream's own source
+# (grafana/tempo@v1.5.1-0.20260508211128-2f74ea818de1
+# modules/frontend/tag_handlers.go) that the V1 tag-name route — both
+# the HTTP handler and the streaming gRPC handler — neither parses nor
+# validates `q` at all: LiveStore.SearchTags forwards only the scope
+# into SearchTagsV2, so a malformed `q` never reaches a TraceQL parser
+# on either transport and both answer 200 with the whole window's keys,
+# where the V2 route 400s on the same string (see
+# tags_v2_scope_all_rejected above for that axis). Unit tests
+# (internal/api/tempo/search_tags_filter_test.go's
+# TestSearchTagsV1Query_Ignored and
+# internal/api/tempo/grpc/tags_test.go's TestSearchTagsV1_QueryIgnored)
+# already pin that cerberus behaves this way; this case is what puts
+# reference Tempo on the other side of the same request, which is the
+# one thing a unit test structurally cannot do. "{{{" is the same
+# malformed shape those unit tests use, kept consistent rather than
+# inventing a new invalid-query string. It runs over both transports
+# from the same corpus entry: HTTP via diffCase (diff.go) and gRPC via
+# diffCaseGRPC (grpc_diff.go, grpcSupportsEndpoint already lists
+# tags_v1) — neither declares -- expect_status -- / -- expect_grpc_code
+# --, so this is an ordinary body-diff case, and the assertion IS the
+# parity proof: if either backend rejected the malformed `q` with a
+# non-2xx/non-OK response instead of answering 200, the fetch on that
+# transport would hard-error and the case would fail.
+-- name --
+tags_v1_malformed_query
+-- endpoint --
+tags_v1
+-- query --
+{{{
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+# Same unfiltered-key proof as tags_v1_scoped_by_query: these are
+# carried only by spans a HONOURED query — malformed or not — could
+# never select, so their presence is what shows `q` was dropped on the
+# floor rather than rejected.
+-- expected_values --
+http.method
+http.target
+child.index
+kind
+
 -- name --
 tags_v2_span_scoped_by_query
 -- endpoint --

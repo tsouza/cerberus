@@ -327,6 +327,49 @@ var fixtureInserts = []namedStmt{
             ) AS m
         )`,
 	},
+	// demo_delta_requests_total: a DELTA-temporality (AggregationTemporality
+	// = 1) counter, the direct sibling of demo_cpu_usage_seconds_total for
+	// issue #1628 — same 3-instance shape, but here EVERY row is the raw
+	// increase since the PREVIOUS row only (a constant `1 + instance_idx`
+	// per step), not a running total. rate() / increase() over this must
+	// sum those raw per-step values, not diff them Prometheus-counter-style.
+	//
+	// prom_remote.go's fixtureSources entry for this metric sets
+	// accumulateToCumulative so the reference Prometheus mirror instead
+	// receives the running SUM of these same per-step values — the
+	// "equivalent cumulative-converted series" the compatibility corpus
+	// query below diffs cerberus's DELTA answer against.
+	{
+		name: "demo_delta_requests_total",
+		sql: `INSERT INTO otel_metrics_sum
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value,
+             Flags, AggregationTemporality, IsMonotonic)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_delta_requests_total',
+            'HTTP requests received, per collection interval',
+            'requests',
+            map('instance', instance, 'job', 'demo'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            toFloat64(1 + instance_idx),
+            0,
+            1,
+            true
+        FROM (
+            SELECT step, instance, instance_idx
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+        )`,
+	},
 	// demo_memory_usage_bytes: 3 instances × 4 types = 12 series, gauge.
 	{
 		name: "demo_memory_usage_bytes",

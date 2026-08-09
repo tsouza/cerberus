@@ -366,6 +366,19 @@ export function scansDescription(author) {
   return login !== GENERATED_DESCRIPTION_AUTHOR;
 }
 
+// readEventPayload — the event payload JSON the runner wrote for this run, or
+// null on any failure to read it (no path, no file, unparseable JSON). Shared
+// by eventPayloadAuthor and eventPayloadNumber so both read the same file the
+// same way.
+function readEventPayload(eventPath) {
+  if (!eventPath) return null;
+  try {
+    return JSON.parse(readFileSync(eventPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 // eventPayloadAuthor — the login that opened this pull request, read out of the
 // payload JSON the runner wrote for the event.
 //
@@ -375,32 +388,17 @@ export function scansDescription(author) {
 // total: there is no error state in which this function's answer widens what
 // the gate accepts.
 export function eventPayloadAuthor(eventPath) {
-  if (!eventPath) return null;
-  let payload;
-  try {
-    payload = JSON.parse(readFileSync(eventPath, 'utf8'));
-  } catch {
-    return null;
-  }
-  const login = payload?.pull_request?.user?.login;
+  const login = readEventPayload(eventPath)?.pull_request?.user?.login;
   return typeof login === 'string' && login.trim() !== '' ? login.trim() : null;
 }
 
-// sharedAuthor — the single login behind a set of pull requests, or null when
-// they do not agree on one.
-//
-// The push and merge-queue paths resolve the description surface from the head
-// commit's associated pull requests, which is a LIST. Concatenating two bodies
-// and attributing them to one author would be a guess; disagreement therefore
-// yields null, and null scans. An empty list likewise: there is no author to
-// read, so there is nothing to narrow.
-export function sharedAuthor(pulls) {
-  const logins = new Set(
-    (Array.isArray(pulls) ? pulls : [])
-      .map((p) => (typeof p?.user?.login === 'string' ? p.user.login.trim() : ''))
-      .filter((l) => l !== ''),
-  );
-  return logins.size === 1 ? [...logins][0] : null;
+// eventPayloadNumber — the number of the pull request this event is about, or
+// null on the same failure modes as eventPayloadAuthor. Used only to label a
+// single-PR pull_request-event surface the same way a multi-PR batch's parts
+// are labelled; never load-bearing for a verdict.
+export function eventPayloadNumber(eventPath) {
+  const number = readEventPayload(eventPath)?.pull_request?.number;
+  return typeof number === 'number' && Number.isInteger(number) ? number : null;
 }
 
 // paragraphs — split prose into blank-line-separated blocks, each carrying the
@@ -579,16 +577,31 @@ export function scanDiff(diffText, repoSlug) {
 // that only exercised the description could not tell scoping apart from an
 // exemption. The tests that matter are the ones asserting a marker in a bot
 // pull request's COMMIT MESSAGE and in its DIFF is still reported.
-export function candidatesFor({ description, author, commits, diffText, repoSlug }) {
+//
+// descriptionParts is a LIST, not one merged blob: a merge-queue batch or a
+// push resolves to every pull request associated with the head commit, each
+// with its OWN author, and scanning them as one concatenated string would
+// scan a bot's generated changelog under whatever author the OTHER pulls in
+// the batch happen to carry (or under no author at all, once they disagree —
+// see #1943). Each part is scanned under its own author, independently of
+// every other part in the batch, so a Dependabot pull request riding in the
+// same merge group as a human one is exempted on its own merits and cannot
+// suppress or inherit the human pull request's scan.
+export function candidatesFor({ descriptionParts, commits, diffText, repoSlug }) {
   return [
-    ...(scansDescription(author)
-      ? scanProse({
-          text: description,
-          surface: 'pr-body',
-          locate: (line) => `PR description line ${line}`,
-          repoSlug,
-        })
-      : []),
+    ...(Array.isArray(descriptionParts) ? descriptionParts : []).flatMap((part) =>
+      scansDescription(part.author)
+        ? scanProse({
+            text: part.text,
+            surface: 'pr-body',
+            locate: (line) =>
+              part.number == null
+                ? `PR description line ${line}`
+                : `PR #${part.number} description line ${line}`,
+            repoSlug,
+          })
+        : [],
+    ),
     ...(Array.isArray(commits) ? commits : []).flatMap((c) =>
       scanProse({
         text: c.message,
@@ -803,11 +816,24 @@ async function apiJson(url, token, what) {
   return res.json();
 }
 
-// descriptionSurface — the PR description, however this event can reach it.
-// On a pull_request run it is the event payload. On a push there is no payload
-// body, so the associated pull request is resolved from the head commit; a
-// commit with none (a maintenance cherry-pick) yields an EXPLICITLY empty
-// surface, recorded as such rather than silently skipped.
+// descriptionSurface — the PR description(s), however this event can reach
+// them. On a pull_request run it is the event payload, one pull request. On a
+// push or a merge-queue run there is no payload body, so every pull request
+// associated with the head commit is resolved from the API — a merge-queue
+// batch groups several, so this is a LIST; a commit with none (a maintenance
+// cherry-pick) yields an EXPLICITLY empty surface, recorded as such rather
+// than silently skipped.
+//
+// Returns `{ text, origin, parts }`. `parts` is the shape this gate's own
+// scan reads: one entry per pull request, each carrying its OWN `text`,
+// `author` and `number`, so a Dependabot pull request's generated changelog
+// is scanned under Dependabot's own identity and a human pull request's body
+// under that human's, regardless of what else rode along in the same batch —
+// see candidatesFor's own comment for why concatenating them was the bug
+// (#1943). `text` and `origin` are the pre-existing single-blob view, kept
+// for pr-body-check.mjs: that gate asks only "is there SOME substantive
+// description across this batch", not "who wrote which part", so it has no
+// need of per-part attribution and stays on the shape it already pins.
 export async function descriptionSurface({ eventName, repo, head, token, apiBase }) {
   if (eventName === 'pull_request' || eventName === 'pull_request_target') {
     if (process.env.PR_BODY === undefined) {
@@ -816,11 +842,15 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
           'Wire `PR_BODY: ${{ github.event.pull_request.body }}` into the step env.',
       );
     }
-    return {
-      text: process.env.PR_BODY,
-      origin: 'the pull_request event payload',
+    const text = process.env.PR_BODY;
+    const origin = 'the pull_request event payload';
+    const part = {
+      text,
+      origin,
       author: eventPayloadAuthor(process.env.GITHUB_EVENT_PATH),
+      number: eventPayloadNumber(process.env.GITHUB_EVENT_PATH),
     };
+    return { text, origin, parts: [part] };
   }
   const pulls = await apiJson(
     `${apiBase}/repos/${repo}/commits/${head}/pulls`,
@@ -844,13 +874,19 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
     return {
       text: '',
       origin: `explicitly empty: no pull request is associated with ${head.slice(0, 12)}`,
-      author: null,
+      parts: [],
     };
   }
+  const parts = pulls.map((p) => ({
+    text: p.body ?? '',
+    origin: `the description of #${p.number}`,
+    author: typeof p?.user?.login === 'string' && p.user.login.trim() !== '' ? p.user.login.trim() : null,
+    number: p.number,
+  }));
   return {
-    text: pulls.map((p) => p.body ?? '').join('\n\n'),
+    text: parts.map((p) => p.text).join('\n\n'),
     origin: `the description of ${pulls.map((p) => `#${p.number}`).join(', ')}`,
-    author: sharedAuthor(pulls),
+    parts,
   };
 }
 
@@ -934,8 +970,7 @@ async function main() {
   const description = await descriptionSurface({ eventName, repo, head, token, apiBase });
 
   const candidates = candidatesFor({
-    description: description.text,
-    author: description.author,
+    descriptionParts: description.parts,
     commits,
     diffText,
     repoSlug: repo,
@@ -947,15 +982,27 @@ async function main() {
 
   // The anti-vacuity contract in the header says every run states what it
   // inspected. A surface that was resolved but deliberately not read has to say
-  // so in the same breath, or the summary claims a scan that did not happen.
-  const descriptionRead = scansDescription(description.author);
+  // so in the same breath, or the summary claims a scan that did not happen. One
+  // bullet per pull request in the batch, not one for the whole surface: each
+  // part was scanned (or exempted) under its own author, independently of every
+  // other part, and the summary has to be legible about which is which.
+  const descriptionLines =
+    description.parts.length === 0
+      ? [`- description: ${description.origin} (0 chars)`]
+      : description.parts.map((part) => {
+          const read = scansDescription(part.author);
+          const label = part.number == null ? part.origin : `#${part.number}`;
+          return (
+            `- description (${label}): ${part.text.length} chars` +
+            (read
+              ? ''
+              : ` — NOT scanned: written by ${GENERATED_DESCRIPTION_AUTHOR}, whose body quotes ` +
+                'upstream release notes rather than stating this change\'s own commitment. Its ' +
+                'commit messages and its diff were scanned as normal.')
+          );
+        });
   const inspected = [
-    `- description: ${description.origin} (${description.text.length} chars)` +
-      (descriptionRead
-        ? ''
-        : ` — NOT scanned: written by ${GENERATED_DESCRIPTION_AUTHOR}, whose body quotes ` +
-          'upstream release notes rather than stating this change\'s own commitment. Its ' +
-          'commit messages and its diff were scanned as normal.'),
+    ...descriptionLines,
     `- commits: **${commits.length}** in \`${base.slice(0, 12)}..${head.slice(0, 12)}\``,
     `- diff: **${files.length}** file(s) at \`--unified=${CITATION_WINDOW_LINES}\``,
     `- marker table: **${DEFERRAL_MARKERS.length}** rows`,

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // Builder accumulates a parameterised ClickHouse SQL fragment plus the
@@ -962,10 +963,12 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 //	             replaceRegexpOne(<map>[?src], ?anchoredRegex, ?replacement)))),
 //	       <map>))
 //
-// `anchoredRegex` is `^<regex>$` so the match is full-string, matching
-// Prometheus's `RE2 ^…$` anchoring rule. The outer mapFilter drops the
-// dst label when the substituted replacement is the empty string —
-// Prom's "labels set to empty values are dropped" rule.
+// `anchoredRegex` is `^(?s:<regex>)$` — see [anchorLabelReplaceRegex] —
+// so the match is full-string, matching Prometheus's `label_replace`
+// anchoring rule (`promql/functions.go`:
+// `"^(?s:" + regexStr + ")$"`). The outer mapFilter drops the dst label
+// when the substituted replacement is the empty string — Prom's "labels
+// set to empty values are dropped" rule.
 //
 // The inner `if(empty(src), emptyReplacement, replaceRegexpOne(…))`
 // short-circuit patches CH ≤ 24.8's divergent behaviour where
@@ -982,7 +985,7 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 // lock-step — the short-circuit stays because it is forward-safe and
 // keeps emission byte-identical across the version move.
 func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
-	anchored := "^" + l.Regex + "$"
+	anchored := anchorLabelReplaceRegex(l.Regex)
 	b.sb.WriteString("mapFilter((k, v) -> v != '', if(match(")
 	if err := b.Expr(l.Map); err != nil {
 		return err
@@ -1015,6 +1018,26 @@ func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	}
 	b.sb.WriteString("))")
 	return nil
+}
+
+// anchorLabelReplaceRegex anchors a `label_replace` regex to a
+// full-string match, the same way reference Prometheus does
+// (`promql/functions.go`: `"^(?s:" + regexStr + ")$"`). ClickHouse's RE2
+// engine accepts the `(?s:...)` non-capturing flag group natively, so no
+// other change is needed to the emitted pattern.
+//
+// The `internal/qlcommon` capture-group resolver (`newCaptureGroups`,
+// which decides which capture-group index a `$N` / `$name` replacement
+// reference in this same LabelReplace resolves to) anchors identically —
+// the two must never drift, or the group indices this emitter reads off
+// `l.Segments` stop lining up with the regex ClickHouse actually
+// evaluates. `internal/chsql` may not import `internal/qlcommon`
+// (`.go-arch-lint.yml`), so the anchoring form is duplicated rather than
+// shared — see [qlcommon.anchorRegex]'s doc comment for the two
+// independent behaviour differences a bare `^...$` gets wrong
+// (alternation escaping the anchors, `.` not matching newline).
+func anchorLabelReplaceRegex(regex string) string {
+	return "^(?s:" + regex + ")$"
 }
 
 // labelReplaceSubstitution renders the substituted value itself — the
@@ -1730,6 +1753,75 @@ func CounterDelta(seriesArr Frag) Frag {
 		Lambda2("p", "c", lambdaBody),
 		Call("arrayPopBack", valsArr()),
 		Call("arrayPopFront", valsArr()),
+	)
+}
+
+// CounterOrDeltaSum renders the window's total increase over `pairs`
+// (an Array(Tuple(ts, value)), typically `window_pairs`, ascending by
+// timestamp), branching at RUNTIME on a per-series-window
+// AggregationTemporality read (`temporality`) between:
+//
+//   - DELTA (schema.AggregationTemporalityDelta): each stored sample is
+//     already the increase since the PREVIOUS sample only, so the
+//     window's total increase is the sum of its raw values EXCLUDING the
+//     earliest (first-in-time) sample —
+//     `arraySum(arrayMap(x -> tupleElement(x, 2), pairs)) - tupleElement(pairs[1], 2)`.
+//     The earliest sample's own value already covers the interval ENDING
+//     at (and therefore starting BEFORE) `pairs[1]`'s timestamp — the same
+//     coverage the shared extrapolation layer's `duration_to_start`
+//     independently reconstructs from the window's edge to `first_ts`.
+//     Summing every raw value including that first one would double-count
+//     that leading interval: it both feeds the raw sum AND gets
+//     re-extrapolated via `first_ts`. Dropping it makes this the exact
+//     analogue of the CUMULATIVE branch's `last - first` telescoping sum
+//     (a running total built by prefix-summing these same DELTA values
+//     satisfies `running(last_ts) - running(first_ts) ==
+//     sum(pairs[2:]) `, an identity independent of how uniform the deltas
+//     are), which is what makes a DELTA counter and its equivalent
+//     CUMULATIVE running-total counter agree exactly, not just
+//     approximately, once the shared extrapolation factor is layered on
+//     top of either.
+//   - anything else (CUMULATIVE, or the legacy zero/UNSPECIFIED
+//     reading): Prometheus's counter-reset-aware delta,
+//     `arraySum(CounterDelta(pairs))` — the historical, pre-#1628
+//     behaviour every rate / increase lowering applied unconditionally.
+//
+// temporality is nil for callers whose RangeWindow carries no
+// TemporalityColumn (Gauge-table input, or the Scan.UnionTables
+// cross-table routing, which drops the Sum-only column from its
+// projection so the union's column list still matches) — with a nil
+// temporality, CounterOrDeltaSum renders the CUMULATIVE branch
+// unconditionally, byte-identical to every query emitted before #1628.
+//
+// This is the ONE branch every counter-reading range function shares:
+// rate / increase call it here; the classic-histogram bucket fold
+// (internal/promql's counterIncreaseFold) transcribes the identical
+// branch into the bucket-array domain, since that path builds a
+// chplan.Expr tree rather than a chsql.Frag and so cannot call this
+// function directly — see counterIncreaseFold's doc comment for the
+// cross-reference. See issue #1628.
+func CounterOrDeltaSum(pairs, temporality Frag) Frag {
+	cumulative := Call("arraySum", CounterDelta(pairs))
+	if temporality == nil {
+		return cumulative
+	}
+	firstVal := tupleElemFrag(Subscript(pairs, InlineLit(int64(1))), 2)
+	delta := Sub(Call("arraySum", pairsValuesFrag(pairs)), firstVal)
+	return If(Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)), delta, cumulative)
+}
+
+// pairsValuesFrag renders `arrayMap(x -> tupleElement(x, 2), <pairs>)`
+// — the values-only projection out of an arbitrary Array(Tuple(ts,
+// value)) Frag. Distinct from range_window.go's windowValsFrag, which
+// hard-wires the `window_pairs` alias; this variant takes the pairs
+// Frag as an argument so CounterOrDeltaSum works for both the
+// `window_pairs`-aliased row-shape path and any future caller with a
+// differently-named or inline pairs expression.
+func pairsValuesFrag(pairs Frag) Frag {
+	return Call(
+		"arrayMap",
+		Lambda1("x", Call("tupleElement", BareIdent("x"), InlineLit(int64(2)))),
+		pairs,
 	)
 }
 

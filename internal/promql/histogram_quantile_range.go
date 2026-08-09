@@ -311,7 +311,7 @@ func lowerHistogramQuantileClassicAggRange(
 	fanout := buildHistogramBucketFanout(
 		scan, pred, leMatchers, aggWindowFor(shape),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
-		classicBucketWindowAggs(s), s, ctx,
+		classicBucketWindowAggs(s, shape.windowFn), s, ctx,
 	)
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, aggWindowFor(shape))
@@ -320,7 +320,7 @@ func lowerHistogramQuantileClassicAggRange(
 		// countValues=nil — see classicBucketWindowStage's identical call
 		// for why the classic caller reads durationToZero off each rung's
 		// own values rather than a separate count series.
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil, classicBucketWindowTemporalityExpr(s, shape.windowFn)),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -671,7 +671,11 @@ func buildHistogramNativeRangeTreeMerge(
 		// countValues: the range-mode fanout collects the SAME
 		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
 		// for the instant path — see expHistogramWindowCountValuesExpr.
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr()),
+		// nil temporality: the exponential/native-histogram path stays out
+		// of #1628's scope (expHistogramWindowAggs has no
+		// hqWindowTemporalityAlias aggregate), so this keeps applying the
+		// CUMULATIVE branch unconditionally, byte-identical to before.
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},

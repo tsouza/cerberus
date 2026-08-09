@@ -209,7 +209,17 @@ func runDualEmit(t *testing.T, db *sql.DB, native, optimize bool) map[gridCell]f
 	if native {
 		lowerers.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
 	}
-	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
+	// AggregationTemporalityColumn cleared: this test proves the native and
+	// fan-out emitters agree numerically — a concern orthogonal to issue
+	// #1628's DELTA-vs-CUMULATIVE runtime branch, and the inline seed table
+	// below never gained the column either. A `rate()` window whose schema
+	// DOES declare that column is, correctly, no longer eligible for native
+	// routing (chplan.RangeWindow.TemporalityColumn forces the fan-out
+	// fallback — see nativeTSGridMatrixNode), which would make the native=true
+	// run fall back too and prove nothing about the two emitters agreeing.
+	s := schema.DefaultOTelMetrics()
+	s.AggregationTemporalityColumn = ""
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s,
 		rangeStart, rangeEnd, 30*time.Second,
 		promql.LowerOpts{Lowerers: lowerers})
 	if err != nil {
