@@ -899,6 +899,20 @@ jobs:
           node .github/scripts/generated-baseline-structural-guard.mjs --self-test
           node .github/scripts/generated-baseline-structural-guard.mjs
 
+      # #1674: the crawl surface inventories were the one `-merge` family with
+      # no PR-time content ratchet — full depth only on the release-gated
+      # `dashboard` (k3d) lane, which runs on the merge commit, and on an
+      # ordinary PR only the `lean` subset of the compose file, and only when
+      # compose-smoke's scope triggers. Their committed FORM is a pure function
+      # of their content (marshalInventory in crawl/lib.ts), so the canonical
+      # bytes can be rebuilt offline and compared exactly — no stack, no
+      # browser, milliseconds. The self-test runs first because a gate over a
+      # generated baseline is worthless unless it demonstrably goes red.
+      - name: Crawl surface inventory canonical-form ratchet (#1674)
+        run: |
+          node --test .github/scripts/crawl-surface-inventory-guard.test.mjs
+          node .github/scripts/crawl-surface-inventory-guard.mjs
+
       # #1877: post-merge-drift.yml is the ONLY lane that ever looks at the
       # bytes a squash-merge actually produced, and it reports on `main` where
       # no PR check can gate it. That makes a silent break in it invisible — a

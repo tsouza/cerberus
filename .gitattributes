@@ -202,6 +202,9 @@ test/surface-parity/traceql-reference-verdicts.json  -merge
 #   (compose: the local compose stack; k3d: `just e2e-up && just e2e-seed-rolling`,
 #   or dispatch the e2e workflow with update_crawl_inventory=true and commit the
 #   uploaded artefact). `surfaces` is a flat array sorted by URL.
+#   Ratcheted per PR by .github/scripts/crawl-surface-inventory-guard.mjs
+#   (`forbid-skip`), which rebuilds each file's canonical bytes offline and
+#   demands equality — see #1674.
 test/e2e/playwright/crawl/grafana-surface-inventory.compose.json  -merge
 test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 
