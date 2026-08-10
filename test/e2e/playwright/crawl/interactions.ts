@@ -271,6 +271,13 @@ export function declaredVocabulary(
  * declared vocabulary always does, and a listed data-derived control
  * does while its option set stays inside the cost bound it declares.
  *
+ * A key-embedded vocabulary carries no cost bound, deliberately: its
+ * size is fixed by the plugin bundle, so it cannot grow with a seed the
+ * way a query-backed list can. If a future Grafana ships a tab strip or
+ * radio group wider than the sweep caps, the caps themselves fail the
+ * crawl with the whole plan listed — the documented deliberate-redesign
+ * escape — rather than silently truncating it.
+ *
  * The vocabulary is passed IN rather than resolved again here.
  * Resolving it twice is how the round-trip guard got bypassed once
  * already: this function saw a declaration where the caller had
