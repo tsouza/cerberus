@@ -395,28 +395,28 @@ export function planInteractions(
       (_, i) => i !== control.selectedIndex,
     );
     if (drivable.length === 0) continue;
-    // Option ORDER is an app fact exactly where the option SET is.
-    // A declared vocabulary keeps the app's own order, because that is
-    // the plugin bundle's order and its first entry is the meaningful
-    // lean representative — imposing codepoint order there drove the
-    // Traces Drilldown primary-signal picker to "Consumer spans…" on
-    // every run and never showed the crawl "Server spans…" (#1992). An
-    // undeclared control has no trustworthy order: its list is a query
-    // result that reorders as the stack ingests, so a DOM-order pick
-    // would drive a different option — and mint a different surface —
-    // run to run. Codepoint order replaces it, making the pick a
-    // function of the option SET (representativeOption's doctrine).
-    const ordered = keysVerbatim
-      ? drivable
-      : [...drivable].sort(byCodepoint);
-    // Exactly one option unless the control sweeps exhaustively AND
-    // this surface is not already pinning a structural param (a
-    // combo-forming surface takes the representative plan so each
-    // interaction there forms a PAIR, never a full cross-product).
-    const options =
-      sweepsEveryOption(control.key, drivable.length) && !representativeOnly
-        ? ordered
-        : [ordered[0]!];
+    // Every option, unless the control does not sweep exhaustively or
+    // this surface already pins a structural param — a combo-forming
+    // surface takes the representative plan so each interaction there
+    // forms a PAIR, never a full cross-product.
+    const sweepAll =
+      sweepsEveryOption(control.key, drivable.length) && !representativeOnly;
+    // Option ORDER is an app fact exactly where the option SET is. A
+    // declared vocabulary keeps the app's OWN order: it is the plugin
+    // bundle's order, and its first entry is the meaningful lean
+    // representative — imposing codepoint order there drove the Traces
+    // Drilldown primary-signal picker to "Consumer spans…" on every run
+    // and never showed the crawl "Server spans…" (#1992). An undeclared
+    // control has no trustworthy order: its list is a query result that
+    // reorders as the stack ingests, so a DOM-order pick would drive a
+    // different option — and mint a different surface — run to run.
+    // There the pick has to come from the option SET instead, which is
+    // exactly representativeOption's doctrine.
+    const options = sweepAll
+      ? keysVerbatim
+        ? drivable
+        : [...drivable].sort(byCodepoint)
+      : [keysVerbatim ? drivable[0]! : representativeOption(drivable)];
     for (const option of options) {
       plan.push({
         control,
