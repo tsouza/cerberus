@@ -84,11 +84,20 @@ const (
 	// the existing PromQL forwarders (projectValueOverInner,
 	// projectAttributesOverInner) make, which is correct: neither
 	// forwarder builds a column list a histogram-shaped row satisfies
-	// (both unconditionally reference `Value` by name), so a future
+	// (both unconditionally reference `Value` by name), so a
 	// histogram-valued lowering that needs those forwarders to work
 	// over a HistogramProjection must teach them this shape first — see
-	// the doc comment on HistogramProjection. No lowering builds this
-	// node yet, so no forwarder is called with it today.
+	// the doc comment on HistogramProjection.
+	//
+	// Three lowerings build this node today (internal/promql's
+	// histogram_native_bare.go, histogram_native_sum.go and
+	// histogram_native_rate.go), but no forwarder is reached with it:
+	// each is dispatched only at the ROOT of a query, and every shape
+	// that would wrap one — `label_replace(...)`, `abs(...)`, scalar
+	// arithmetic — is still refused by expHistogramSelectorRouting. The
+	// forwarders are unreachable by that guard rather than adapted, so
+	// teaching them this shape remains a prerequisite for lifting it
+	// (issue #1967).
 	HistogramRowShape
 )
 
