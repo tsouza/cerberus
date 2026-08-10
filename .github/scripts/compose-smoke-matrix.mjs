@@ -211,22 +211,53 @@ function verify() {
   process.exit(0);
 }
 
-// shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling. Both the
-// crawl and the non-crawl ceilings follow the sweep depth this event runs at:
-// the nightly schedule sweeps full, PR/push sweep lean (the SWEEP_DEPTH
-// expression in e2e.yml). The crawl cap is derived from the spec's own budget
-// at that depth so the spec always times out first (lib/crawl-budget.mjs).
-export function shardTimeoutMinutes(shardName, { isSchedule } = {}) {
-  const depth = isSchedule ? 'full' : 'lean';
+// shardSweepDepth() — the depth ONE shard sweeps on this event, and the single
+// source of truth for it: e2e.yml reads it back as `matrix.sweepDepth` for the
+// spec's own SWEEP_DEPTH, and shardTimeoutMinutes() below derives the job
+// ceiling from the same answer.
+//
+// The single source is a fix, not a tidy-up. The depth and the ceiling used to
+// be computed independently — the shard's SWEEP_DEPTH from a workflow
+// expression that knew about the inventory-regen dispatch, the ceiling from
+// `isSchedule` alone, which did not. A dispatch asking for a compose inventory
+// regen therefore ran the crawl at FULL depth (crawl.spec.ts refuses to write
+// the inventory at lean) under the LEAN 29-minute ceiling, and GitHub cancelled
+// the job at 29m27s, before the spec's own 75-minute budget could report. The
+// regen path was unusable, and it failed as a cancellation rather than an
+// error, which reads like infrastructure noise instead of a bug.
+export function shardSweepDepth(
+  shardName,
+  { isSchedule, regeneratesComposeInventory } = {},
+) {
+  if (isSchedule) return 'full';
+  // Only the CRAWL shard goes full for a regen: it is the shard that writes
+  // the inventory, and making the required shards pay a full sweep for it
+  // would buy nothing.
+  if (regeneratesComposeInventory && GATE_EXCLUDED_SHARDS.includes(shardName)) {
+    return 'full';
+  }
+  return 'lean';
+}
+
+// shardTimeoutMinutes() — the per-shard `timeout-minutes` ceiling, derived from
+// that shard's own sweep depth. The crawl cap comes from the spec's budget at
+// that depth so the spec always times out first and reports a verdict
+// (lib/crawl-budget.mjs); a job that outlives its spec turns a real crawl
+// failure into an uninformative cancellation.
+export function shardTimeoutMinutes(shardName, opts = {}) {
+  const depth = shardSweepDepth(shardName, opts);
   if (GATE_EXCLUDED_SHARDS.includes(shardName)) return crawlShardTimeoutMinutes(depth);
-  return isSchedule ? NONCRAWL_SHARD_TIMEOUT_FULL_MIN : NONCRAWL_SHARD_TIMEOUT_LEAN_MIN;
+  return depth === 'full'
+    ? NONCRAWL_SHARD_TIMEOUT_FULL_MIN
+    : NONCRAWL_SHARD_TIMEOUT_LEAN_MIN;
 }
 
 // shardEntry() — the strategy.matrix `include` row for a shard.
-const shardEntry = (s, isSchedule) => ({
+const shardEntry = (s, opts) => ({
   name: s.name,
   specs: s.specs.join(' '),
-  timeoutMinutes: shardTimeoutMinutes(s.name, { isSchedule }),
+  sweepDepth: shardSweepDepth(s.name, opts),
+  timeoutMinutes: shardTimeoutMinutes(s.name, opts),
 });
 
 const isGateExcluded = (name) => GATE_EXCLUDED_SHARDS.includes(name);
@@ -235,6 +266,15 @@ function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
   const isSchedule = process.env.IS_SCHEDULE === 'true';
+  // Which inventory a workflow_dispatch asked to regenerate, forwarded raw
+  // from the dispatch input (empty on every other event). The decision it
+  // feeds lives here rather than in a workflow expression so that the depth
+  // and the timeout cannot disagree again.
+  const update = process.env.UPDATE_CRAWL_INVENTORY ?? '';
+  const depthOpts = {
+    isSchedule,
+    regeneratesComposeInventory: update === 'compose' || update === 'both',
+  };
 
   // The partition is split into TWO matrices so the de-gate is structural, not
   // a fragile after-the-fact result filter. A GitHub matrix exposes only ONE
@@ -248,8 +288,8 @@ function emit() {
   const required = SHARDS.filter((s) => !isGateExcluded(s.name));
   const informational = SHARDS.filter((s) => isGateExcluded(s.name));
 
-  setOutput('matrix', JSON.stringify({ include: required.map((s) => shardEntry(s, isSchedule)) }));
-  setOutput('matrix_informational', JSON.stringify({ include: informational.map((s) => shardEntry(s, isSchedule)) }));
+  setOutput('matrix', JSON.stringify({ include: required.map((s) => shardEntry(s, depthOpts)) }));
+  setOutput('matrix_informational', JSON.stringify({ include: informational.map((s) => shardEntry(s, depthOpts)) }));
   setOutput('has_informational', informational.length > 0 ? 'true' : 'false');
   setOutput('shard_names', JSON.stringify(SHARDS.map((s) => s.name)));
   setOutput('gate_excluded', JSON.stringify(GATE_EXCLUDED_SHARDS));

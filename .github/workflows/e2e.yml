@@ -277,6 +277,11 @@ jobs:
         env:
           MODE: emit
           IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
+          # Forwarded RAW: the emitter decides what it means for depth. A
+          # dispatch that regenerates the compose inventory has to sweep the
+          # crawl shard full, and the shard's timeout has to follow it — see
+          # shardSweepDepth in compose-smoke-matrix.mjs (tsouza/cerberus#1872).
+          UPDATE_CRAWL_INVENTORY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_crawl_inventory || '' }}
 
   compose-smoke-shard:
     name: compose-smoke-shard
@@ -446,7 +451,12 @@ jobs:
           # flag only changes how many STATES the sweeps visit,
           # never which rules run — see
           # test/e2e/playwright/helpers/depth.ts.
-          SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
+          #
+          # Emitted per shard by compose-smoke-matrix.mjs, which derives this
+          # shard's `timeout-minutes` from the SAME answer. Computing the two
+          # separately is what left the inventory-regen dispatch running a
+          # full-depth crawl under a lean ceiling (tsouza/cerberus#1872).
+          SWEEP_DEPTH: ${{ matrix.sweepDepth }}
           # Select the crawl suite's stack config (crawl/stacks.ts).
           # CRAWL_STACK=compose pins this stack's surface inventory
           # (test/e2e/playwright/crawl/grafana-surface-inventory.compose.json);
@@ -647,16 +657,22 @@ jobs:
       - name: install Playwright + browsers (cached)
         uses: ./.github/actions/setup-playwright-browsers
 
-      # SWEEP_DEPTH: the nightly `schedule` event always sweeps full, exactly as
-      # before. A `workflow_dispatch` requesting the compose (or both)
-      # inventory regen ALSO forces full — crawl.spec.ts hard-asserts
-      # `depth === 'full'` before it will write
-      # grafana-surface-inventory.compose.json (see the "inventory
-      # regeneration requires the exhaustive crawl" expect() in that file), so
-      # a dispatch that set CERBERUS_UPDATE_INVENTORY without this would fail
-      # by construction. Every other event/selection keeps the lean PR/push
-      # default. See CERBERUS_UPDATE_INVENTORY just below and the k3d
-      # equivalent in dashboard-shard (tsouza/cerberus#1826).
+      # SWEEP_DEPTH: emitted per shard by compose-smoke-matrix.mjs. The nightly
+      # `schedule` event sweeps full; a `workflow_dispatch` requesting the
+      # compose (or both) inventory regen ALSO forces this shard full, because
+      # crawl.spec.ts hard-asserts `depth === 'full'` before it will write
+      # grafana-surface-inventory.compose.json (the "inventory regeneration
+      # requires the exhaustive crawl" expect() in that file). Every other
+      # event/selection keeps the lean PR/push default.
+      #
+      # It is read from the matrix rather than recomputed here so that the
+      # depth and this job's `timeout-minutes` come from ONE decision. They
+      # used to be two: the expression here knew about the regen dispatch and
+      # the timeout did not, so a regen ran a full-depth crawl under the lean
+      # 29-minute ceiling and GitHub cancelled it at 29m27s — the regen path
+      # could not complete, and said so only as a cancellation
+      # (tsouza/cerberus#1872). See the k3d equivalent in dashboard-shard
+      # (tsouza/cerberus#1826).
       - name: playwright compose-grafana-smoke (${{ matrix.name }})
         id: playwright_smoke
         working-directory: test/e2e/playwright
@@ -664,13 +680,7 @@ jobs:
           GRAFANA_BASE_URL: http://localhost:3000
           GRAFANA_URL: http://localhost:3000
           CERBERUS_URL: http://localhost:8080
-          SWEEP_DEPTH: >-
-            ${{
-              (github.event_name == 'schedule' ||
-               (github.event_name == 'workflow_dispatch' &&
-                (inputs.update_crawl_inventory == 'compose' || inputs.update_crawl_inventory == 'both')))
-              && 'full' || 'lean'
-            }}
+          SWEEP_DEPTH: ${{ matrix.sweepDepth }}
           CRAWL_STACK: compose
           # Regen path for grafana-surface-inventory.compose.json — the
           # compose-stack equivalent of the k3d dashboard-shard's
