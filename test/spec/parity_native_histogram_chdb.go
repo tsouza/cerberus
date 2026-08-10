@@ -98,19 +98,28 @@ func readSeededNativeHistograms(
 			return err
 		}
 
+		narrowed, err := int32Columns(map[string]int64{
+			colScale:          scale,
+			colPositiveOffset: positiveOffset,
+			colNegativeOffset: negativeOffset,
+		})
+		if err != nil {
+			return err
+		}
+
 		h := &oracle.Histogram{
 			Count: count,
 			Sum:   sum,
-			Scale: int32(scale),
+			Scale: narrowed[colScale],
 			// The zero threshold is not stored by OTel-CH and therefore
 			// cannot be read; see [oracle.Histogram]'s ZeroThreshold
 			// documentation for why 0 is the only honest value and what
 			// that costs.
 			ZeroThreshold:   0,
 			ZeroCount:       zeroCount,
-			PositiveOffset:  int32(positiveOffset),
+			PositiveOffset:  narrowed[colPositiveOffset],
 			PositiveBuckets: positive,
-			NegativeOffset:  int32(negativeOffset),
+			NegativeOffset:  narrowed[colNegativeOffset],
 			NegativeBuckets: negative,
 		}
 		if !countDeclared {
@@ -212,6 +221,28 @@ func bucketCountsProjection(seedCols []string, col string) string {
 		return "'[]'"
 	}
 	return "toJSONString(" + col + ")"
+}
+
+// int32Columns narrows the scale and bucket offsets, which ClickHouse
+// hands back as 64-bit integers, to the 32-bit width their OTel-CH
+// declarations give them.
+//
+// A value outside that range is an error rather than a truncation. Every
+// one of these three numbers is an EXPONENT: a wrapped scale or offset
+// does not shift a histogram slightly, it relocates every bucket to a
+// different power of the base, and it would do so while still producing a
+// perfectly well-formed histogram for the comparison to pass or fail on.
+func int32Columns(wide map[string]int64) (map[string]int32, error) {
+	out := make(map[string]int32, len(wide))
+	for col, v := range wide {
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return nil, fmt.Errorf(
+				"%s is %d, outside the Int32 range its column is declared with", col, v,
+			)
+		}
+		out[col] = int32(v)
+	}
+	return out, nil
 }
 
 func decodeBucketCounts(col, encoded string) ([]float64, error) {

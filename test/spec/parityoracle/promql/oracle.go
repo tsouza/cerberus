@@ -47,6 +47,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
@@ -276,7 +277,10 @@ func appendSeries(storage *teststorage.TestStorage, series []Series) error {
 	for _, s := range samples {
 		var err error
 		if h := s.point.Histogram; h != nil {
-			_, err = app.AppendHistogram(0, s.labels, s.point.TMillis, nil, h.toFloatHistogram())
+			var fh *histogram.FloatHistogram
+			if fh, err = h.toFloatHistogram(); err == nil {
+				_, err = app.AppendHistogram(0, s.labels, s.point.TMillis, nil, fh)
+			}
 		} else {
 			_, err = app.Append(0, s.labels, s.point.TMillis, s.point.Value)
 		}

@@ -1,6 +1,9 @@
 package promql
 
 import (
+	"fmt"
+	"math"
+
 	"github.com/prometheus/prometheus/model/histogram"
 )
 
@@ -33,34 +36,65 @@ const otelToPromBucketIndex int32 = 1
 // of its leading and trailing empty buckets first so that the span this
 // produces is the same one Prometheus itself would have chosen for the
 // same data, and an interior empty bucket simply stays inside the span.
-func (h *Histogram) toFloatHistogram() *histogram.FloatHistogram {
+// It returns an error rather than truncating a bucket array too long for
+// Prometheus's span encoding to describe — see [maxSpanLength].
+func (h *Histogram) toFloatHistogram() (*histogram.FloatHistogram, error) {
 	positiveOffset, positive := trimEmptyBuckets(h.PositiveOffset, h.PositiveBuckets)
 	negativeOffset, negative := trimEmptyBuckets(h.NegativeOffset, h.NegativeBuckets)
+	positiveSpans, err := singleSpan(positiveOffset, len(positive))
+	if err != nil {
+		return nil, fmt.Errorf("positive buckets: %w", err)
+	}
+	negativeSpans, err := singleSpan(negativeOffset, len(negative))
+	if err != nil {
+		return nil, fmt.Errorf("negative buckets: %w", err)
+	}
 	return &histogram.FloatHistogram{
 		Schema:          h.Scale,
 		ZeroThreshold:   h.ZeroThreshold,
 		ZeroCount:       h.ZeroCount,
 		Count:           h.Count,
 		Sum:             h.Sum,
-		PositiveSpans:   singleSpan(positiveOffset, len(positive)),
+		PositiveSpans:   positiveSpans,
 		PositiveBuckets: positive,
-		NegativeSpans:   singleSpan(negativeOffset, len(negative)),
+		NegativeSpans:   negativeSpans,
 		NegativeBuckets: negative,
-	}
+	}, nil
 }
+
+// maxSpanLength is the longest run of buckets one Prometheus span can
+// describe, because histogram.Span's Length field is a uint32.
+//
+// A bucket array longer than this is not representable, and the only
+// alternatives to refusing it are to truncate — dropping observations —
+// or to let the conversion wrap, which would produce a well-formed
+// histogram carrying the wrong buckets and a comparison that passed or
+// failed on nonsense. No fixture comes near the bound; it exists so that
+// the narrowing below is provably lossless rather than assumed to be.
+const maxSpanLength = math.MaxUint32
 
 // singleSpan describes n contiguous buckets starting at the Prometheus
 // index naming the bucket OTel calls otelOffset. An empty array is spanned
 // by nothing at all rather than by a zero-length span, which is the shape
 // Prometheus's own validation expects.
-func singleSpan(otelOffset int32, n int) []histogram.Span {
+func singleSpan(otelOffset int32, n int) ([]histogram.Span, error) {
 	if n == 0 {
-		return nil
+		return nil, nil
+	}
+	// The lower bound is not reachable — n is a slice length — but it is
+	// stated rather than assumed, because what makes the narrowing below
+	// provably lossless is the pair of bounds, not the reader's knowledge
+	// of where n came from.
+	if n < 0 || n > maxSpanLength {
+		return nil, fmt.Errorf(
+			"%d buckets cannot be described by one span, which carries a length in [0, %d]",
+			n, maxSpanLength,
+		)
 	}
 	return []histogram.Span{{
 		Offset: otelOffset + otelToPromBucketIndex,
 		Length: uint32(n),
-	}}
+	}}, nil
 }
 
 // histogramFromFloat converts a reference-engine answer back into the
@@ -103,6 +137,12 @@ func denseBuckets(spans []histogram.Span, buckets []float64) (int32, []float64) 
 		haveFirst bool
 		next      int32
 		bucketIdx int
+		// emitted counts what has been appended to out, tracked as the
+		// index type rather than derived from len(out): the gap-filling
+		// comparison below is against a bucket INDEX, and narrowing a
+		// slice length to reach it would be a conversion this function
+		// has no way to prove lossless.
+		emitted int32
 	)
 	for i, span := range spans {
 		if i == 0 {
@@ -121,10 +161,12 @@ func denseBuckets(spans []histogram.Span, buckets []float64) (int32, []float64) 
 			if !haveFirst {
 				firstIdx, haveFirst = next, true
 			}
-			for int32(len(out))+firstIdx < next {
+			for emitted+firstIdx < next {
 				out = append(out, 0)
+				emitted++
 			}
 			out = append(out, buckets[bucketIdx])
+			emitted++
 			bucketIdx++
 			next++
 		}

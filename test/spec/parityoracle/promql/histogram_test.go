@@ -42,7 +42,7 @@ func TestBucketBoundsMatchTheOTelSpecification(t *testing.T) {
 				PositiveOffset:  tc.otelOffset,
 				PositiveBuckets: []float64{1},
 			}
-			it := h.toFloatHistogram().PositiveBucketIterator()
+			it := mustFloatHistogram(t, h).PositiveBucketIterator()
 			if !it.Next() {
 				t.Fatal("converted histogram yielded no positive bucket")
 			}
@@ -68,7 +68,7 @@ func TestScaleIsPrometheusSchema(t *testing.T) {
 
 	const scale = 3
 	h := &Histogram{Count: 1, Scale: scale, PositiveOffset: 0, PositiveBuckets: []float64{1}}
-	fh := h.toFloatHistogram()
+	fh := mustFloatHistogram(t, h)
 	if fh.Schema != scale {
 		t.Fatalf("Schema = %d, want %d", fh.Schema, scale)
 	}
@@ -145,7 +145,7 @@ func TestSpanRoundTripPreservesEveryBucket(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := histogramFromFloat(tc.in.toFloatHistogram())
+			got := histogramFromFloat(mustFloatHistogram(t, tc.in))
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("round trip\n  got:  %+v\n  want: %+v", got, tc.want)
 			}
@@ -313,4 +313,16 @@ func TestEqualHistogramsHandlesAbsence(t *testing.T) {
 	if EqualHistograms(h, nil) || EqualHistograms(nil, h) {
 		t.Error("a histogram compared equal to no histogram at all")
 	}
+}
+
+// mustFloatHistogram converts and fails the test on the one error the
+// conversion can report — a bucket array too long for a Prometheus span,
+// which no fixture and no case in this file comes near.
+func mustFloatHistogram(tb testing.TB, h *Histogram) *histogram.FloatHistogram {
+	tb.Helper()
+	fh, err := h.toFloatHistogram()
+	if err != nil {
+		tb.Fatalf("toFloatHistogram: %v", err)
+	}
+	return fh
 }
