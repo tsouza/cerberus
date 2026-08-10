@@ -75,11 +75,19 @@
 // exercised at full depth only by the release-gated `dashboard` (k3d) lane,
 // which runs on the merge commit rather than blocking the PR; `compose-smoke`
 // only walks the `lean: true` subset of the `.compose.json` file's rows when
-// its own scope triggers. That gap is tracked separately (see the PR body /
-// the follow-up issue it filed) rather than guessed at here — the file's
-// row order was checked by hand and is NOT a simple lexical sort (it groups
-// by base path in crawl-discovery order), so folding it into this guard's
-// generic sorted/unique check would have been a false invariant.
+// its own scope triggers. That gap was tracked as #1674 rather than guessed at
+// here, because at the time the files' row order had been checked by hand
+// against a plain lexical sort and did not match — folding them into this
+// guard's generic check would have encoded a false invariant.
+//
+// It no longer would, and they are no longer this guard's business either way.
+// #1863 made the crawl deterministic (localeCompare → byCodepoint, plus
+// order-independent canonical folding), so both files are now exactly
+// marshalInventory's output. #1674 closed the gap with a dedicated,
+// content-EXACT ratchet — crawl-surface-inventory-guard.mjs, which rebuilds
+// each file's canonical bytes offline and demands equality. That is a stronger
+// claim than this guard's structural pre-filter makes about anything, so the
+// two files stay out of TARGETS below and live there instead.
 //
 // # What THIS script adds
 //

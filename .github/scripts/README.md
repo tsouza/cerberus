@@ -129,6 +129,26 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   files (`emit_node.go`, `emit.go`). See CLAUDE.md § "No raw SQL strings" and
   #1441. No env inputs; always runs the full scan.
   - Exit: `0` clean, `1` on any raw-write violation.
+- **`crawl-surface-inventory-guard.mjs`** — `ci.yml`, the `forbid-skip` job
+  step "Crawl surface inventory canonical-form ratchet (#1674)". The PR-time
+  content ratchet over
+  `test/e2e/playwright/crawl/grafana-surface-inventory.<stack>.json`, the one
+  `-merge` family that had none: full depth reaches them only on the
+  release-gated `dashboard` lane (which runs on the merge commit), and an
+  ordinary PR sees only the compose file's `lean` subset, only when
+  compose-smoke's scope triggers. Their committed FORM is a pure function of
+  their content (`marshalInventory` in `crawl/lib.ts`), so the canonical bytes
+  are rebuilt offline and compared exactly — no stack, no browser. Stacks are
+  discovered by filename pattern, so a third one is covered the day it
+  registers, and discovering none is itself a failure. It cannot see a `lean`
+  bit paired with the wrong `url`; that residue is on-stack `diffInventory`
+  work and the script's header says so.
+  - Env: `CRAWL_DIR` (default `test/e2e/playwright/crawl`).
+  - Exit: `0` every discovered inventory is canonical, `1` on a violation, an
+    unreadable/unparseable file, or an empty discovery.
+  - Pins: `crawl-surface-inventory-guard.test.mjs` (`node --test`), which
+    drives the real script over temp fixtures with a negative control per
+    check, plus a positive control over the real committed files.
 - **`generated-baseline-structural-guard.mjs`** — `ci.yml`, the `forbid-skip`
   job step "Structural sanity check over generated baseline shapes (#1568)".
   A fast, dependency-free structural pre-filter (unique key, sorted order,
