@@ -1,5 +1,9 @@
 -- query.promql --
 sum(http_server_duration_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --

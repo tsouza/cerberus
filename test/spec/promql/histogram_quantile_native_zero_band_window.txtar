@@ -25,6 +25,10 @@
 # quantile collapses to 0. A bucket change, not a rounding wobble.
 -- query.promql --
 histogram_quantile(0.5, sum by(le)(rate(http_server_duration_exp_hist[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,

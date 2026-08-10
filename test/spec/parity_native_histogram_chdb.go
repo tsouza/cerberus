@@ -1,0 +1,403 @@
+//go:build chdb
+
+package spec
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"math"
+	"strings"
+
+	"github.com/tsouza/cerberus/internal/testsql"
+	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
+)
+
+// nativeHistogramTable is the OTel-CH table holding exponential
+// (native) histograms.
+//
+// # Why this one needs a new oracle SHAPE and the classic table did not
+//
+// A classic, explicit-bounds histogram IS a set of plain float series in
+// Prometheus's data model — `<name>_bucket{le=…}` plus `_count` and
+// `_sum` — so teaching the reader to explode those rows was enough (see
+// [readSeededClassicHistograms]). An exponential histogram is not: both
+// engines carry it as ONE sample whose value is a whole histogram, and
+// there is no float series it decomposes into. Nothing could be compared
+// until [oracle.Result] and [oracle.Point] could carry that value, which
+// is what this file's reader fills in on the input side and
+// [locateHistogramColumns] reads back on cerberus's side.
+const nativeHistogramTable = "otel_metrics_exponential_histogram"
+
+// The OTel-CH exponential-histogram columns. A fixture's seed declares
+// only the ones its own query needs, so every one of them is read through
+// a projection that tolerates its absence — see
+// [nativeHistogramProjection].
+const (
+	colCount                = "Count"
+	colSum                  = "Sum"
+	colScale                = "Scale"
+	colZeroCount            = "ZeroCount"
+	colPositiveOffset       = "PositiveOffset"
+	colPositiveBucketCounts = "PositiveBucketCounts"
+	colNegativeOffset       = "NegativeOffset"
+	colNegativeBucketCounts = "NegativeBucketCounts"
+)
+
+// readSeededNativeHistograms reads each seeded exponential-histogram row
+// back out as one histogram-valued sample on its series.
+//
+// A fixture that never created the table is not an error: most of the
+// corpus seeds only the tables its own query needs.
+func readSeededNativeHistograms(
+	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
+) error {
+	seedCols := testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]
+	if len(seedCols) == 0 {
+		return nil
+	}
+
+	//nolint:gosec // every fragment is chosen from this file's own
+	// constants, keyed off the seed's declared columns; no fixture text
+	// reaches the query.
+	q := "SELECT MetricName, toJSONString(Attributes), " +
+		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
+		"toUnixTimestamp64Milli(TimeUnix), " +
+		strings.Join(nativeHistogramProjections(seedCols), ", ") +
+		" FROM " + nativeHistogramTable + " ORDER BY MetricName, TimeUnix"
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	countDeclared := hasColumn(seedCols, colCount)
+	for rows.Next() {
+		var name, attrsJSON, resAttrsJSON, serviceName string
+		var tsMillis int64
+		var count, sum, zeroCount float64
+		var scale, positiveOffset, negativeOffset int64
+		var positiveJSON, negativeJSON string
+		if err := rows.Scan(
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis,
+			&count, &sum, &scale, &zeroCount,
+			&positiveOffset, &positiveJSON, &negativeOffset, &negativeJSON,
+		); err != nil {
+			return err
+		}
+		lbls, err := labelsFromSeededRow(name, attrsJSON, resAttrsJSON, serviceName, allow)
+		if err != nil {
+			return err
+		}
+		positive, err := decodeBucketCounts(colPositiveBucketCounts, positiveJSON)
+		if err != nil {
+			return err
+		}
+		negative, err := decodeBucketCounts(colNegativeBucketCounts, negativeJSON)
+		if err != nil {
+			return err
+		}
+
+		h := &oracle.Histogram{
+			Count: count,
+			Sum:   sum,
+			Scale: int32(scale),
+			// The zero threshold is not stored by OTel-CH and therefore
+			// cannot be read; see [oracle.Histogram]'s ZeroThreshold
+			// documentation for why 0 is the only honest value and what
+			// that costs.
+			ZeroThreshold:   0,
+			ZeroCount:       zeroCount,
+			PositiveOffset:  int32(positiveOffset),
+			PositiveBuckets: positive,
+			NegativeOffset:  int32(negativeOffset),
+			NegativeBuckets: negative,
+		}
+		if !countDeclared {
+			h.Count = totalObservations(h)
+		}
+
+		key := labelKey(lbls)
+		s, ok := byKey[key]
+		if !ok {
+			s = &oracle.Series{Labels: lbls}
+			byKey[key] = s
+		}
+		s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Histogram: h})
+	}
+	return rows.Err()
+}
+
+// totalObservations is a histogram's own count of what it observed, read
+// off its buckets.
+//
+// # Why this is a derivation and not an invention
+//
+// Half the exponential-histogram corpus declares no `Count` column at all,
+// because the queries those fixtures ask — `histogram_quantile` above all
+// — are answered from the bucket populations and cerberus's own lowering
+// projects no Count for them either. The reference engine is not built
+// that way: its histogram_quantile reads `Count` directly, so handing it a
+// zero would make it answer a question about an empty histogram and every
+// such fixture would "disagree" for a reason invented here.
+//
+// The OpenTelemetry data model requires `count` to equal the zero-bucket
+// population plus every bucket count, so a histogram's buckets ALREADY
+// state its total; recomputing it is reading the same fact a different
+// way, not choosing a value. When the column IS declared it is used
+// verbatim and this function is not consulted — so a seed whose stated
+// Count contradicts its own buckets still reaches the reference engine as
+// stated, and still disagrees if that contradiction changes the answer.
+func totalObservations(h *oracle.Histogram) float64 {
+	total := h.ZeroCount
+	for _, c := range h.PositiveBuckets {
+		total += c
+	}
+	for _, c := range h.NegativeBuckets {
+		total += c
+	}
+	return total
+}
+
+// nativeHistogramProjections lists the SELECT expressions that read one
+// exponential-histogram row, in the order [readSeededNativeHistograms]
+// scans them.
+//
+// # Why an absent column reads as its zero rather than failing
+//
+// The corpus's seeds are minimal: a `histogram_quantile` fixture declares
+// the bucket columns and nothing else, because that is all cerberus's own
+// emitted SQL reads. An undeclared column therefore means the metric
+// carries no such component — no negative buckets, no zero-bucket
+// observations, scale 0 — which is exactly what OTel's own protobuf
+// defaults say a field's absence means. Substituting that default reads
+// the data model rather than papering over a gap.
+//
+// Nothing can be silently defaulted OUT of a comparison this way, because
+// an undeclared column is one cerberus cannot read either: its lowering
+// projects the column by name, so a query that needs it against a table
+// that lacks it fails to execute long before this reader is reached. The
+// one component that could not be defaulted honestly is `Count`, which the
+// reference engine reads even when cerberus does not — see
+// [totalObservations].
+func nativeHistogramProjections(seedCols []string) []string {
+	return []string{
+		floatColumnProjection(seedCols, colCount),
+		floatColumnProjection(seedCols, colSum),
+		intColumnProjection(seedCols, colScale),
+		floatColumnProjection(seedCols, colZeroCount),
+		intColumnProjection(seedCols, colPositiveOffset),
+		bucketCountsProjection(seedCols, colPositiveBucketCounts),
+		intColumnProjection(seedCols, colNegativeOffset),
+		bucketCountsProjection(seedCols, colNegativeBucketCounts),
+	}
+}
+
+func floatColumnProjection(seedCols []string, col string) string {
+	if !hasColumn(seedCols, col) {
+		return "toFloat64(0)"
+	}
+	return "toFloat64(" + col + ")"
+}
+
+func intColumnProjection(seedCols []string, col string) string {
+	if !hasColumn(seedCols, col) {
+		return "toInt64(0)"
+	}
+	return "toInt64(" + col + ")"
+}
+
+func bucketCountsProjection(seedCols []string, col string) string {
+	if !hasColumn(seedCols, col) {
+		return "'[]'"
+	}
+	return "toJSONString(" + col + ")"
+}
+
+func decodeBucketCounts(col, encoded string) ([]float64, error) {
+	var counts []float64
+	if err := json.Unmarshal([]byte(encoded), &counts); err != nil {
+		return nil, fmt.Errorf("decode %s %q: %w", col, encoded, err)
+	}
+	return counts, nil
+}
+
+// histogramColumns is where each field of a native-histogram sample sits
+// inside one `expected_rows:` row.
+//
+// These are cerberus's own projection aliases, located by NAME for the
+// reason [sampleColumns] gives — the emitter chooses the order, and a
+// positional rule would silently read the wrong field the first time it
+// changed.
+type histogramColumns struct {
+	count           int
+	sum             int
+	scale           int
+	zeroThreshold   int
+	zeroCount       int
+	positiveOffset  int
+	positiveBuckets int
+	negativeOffset  int
+	negativeBuckets int
+}
+
+// The column names cerberus's histogram-shaped projection emits. They are
+// declared here rather than imported from internal/chplan for the same
+// reason the label mapping is written out in this package: the comparison
+// must be able to notice a projection that stopped emitting one of them,
+// and a shared constant cannot.
+const (
+	colHistogramCount           = "HistogramCount"
+	colHistogramSum             = "HistogramSum"
+	colHistogramScale           = "HistogramScale"
+	colHistogramZeroThreshold   = "HistogramZeroThreshold"
+	colHistogramZeroCount       = "HistogramZeroCount"
+	colHistogramPositiveOffset  = "HistogramPositiveOffset"
+	colHistogramPositiveBuckets = "HistogramPositiveBucketCounts"
+	colHistogramNegativeOffset  = "HistogramNegativeOffset"
+	colHistogramNegativeBuckets = "HistogramNegativeBucketCounts"
+)
+
+// locateHistogramColumns maps a projection's column names onto the fields
+// of a native-histogram sample, or reports nil when the projection carries
+// no histogram at all — the ordinary case, since most of the corpus
+// answers with floats.
+//
+// A projection carrying SOME but not all of them is an error rather than a
+// partial read. Every one of these columns is emitted together by one
+// emitter, so a subset means that emitter changed shape, and guessing
+// which fields the survivors correspond to is exactly the positional
+// assumption locating by name exists to avoid.
+func locateHistogramColumns(cols []string) (*histogramColumns, error) {
+	hc := histogramColumns{
+		count: -1, sum: -1, scale: -1, zeroThreshold: -1, zeroCount: -1,
+		positiveOffset: -1, positiveBuckets: -1, negativeOffset: -1, negativeBuckets: -1,
+	}
+	fields := map[string]*int{
+		colHistogramCount:           &hc.count,
+		colHistogramSum:             &hc.sum,
+		colHistogramScale:           &hc.scale,
+		colHistogramZeroThreshold:   &hc.zeroThreshold,
+		colHistogramZeroCount:       &hc.zeroCount,
+		colHistogramPositiveOffset:  &hc.positiveOffset,
+		colHistogramPositiveBuckets: &hc.positiveBuckets,
+		colHistogramNegativeOffset:  &hc.negativeOffset,
+		colHistogramNegativeBuckets: &hc.negativeBuckets,
+	}
+	found := 0
+	for i, col := range cols {
+		if slot, ok := fields[col]; ok {
+			*slot = i
+			found++
+		}
+	}
+	switch found {
+	case 0:
+		return nil, nil
+	case len(fields):
+		return &hc, nil
+	default:
+		return nil, fmt.Errorf(
+			"projection (%s) carries %d of the %d columns a native-histogram answer is made of, "+
+				"so its histogram fields cannot be located by name",
+			strings.Join(cols, ", "), found, len(fields),
+		)
+	}
+}
+
+// indices returns every located column index, for the arity check that
+// proves each one is in range on a row.
+func (hc *histogramColumns) indices() []int {
+	if hc == nil {
+		return nil
+	}
+	return []int{
+		hc.count, hc.sum, hc.scale, hc.zeroThreshold, hc.zeroCount,
+		hc.positiveOffset, hc.positiveBuckets, hc.negativeOffset, hc.negativeBuckets,
+	}
+}
+
+// histogramFromExpectedRow reads cerberus's own answer for one
+// histogram-valued sample out of its pinned `expected_rows:` row.
+func histogramFromExpectedRow(row []any, hc *histogramColumns, i int) (*oracle.Histogram, error) {
+	count, err := rowFloat(row[hc.count], i)
+	if err != nil {
+		return nil, err
+	}
+	sum, err := rowFloat(row[hc.sum], i)
+	if err != nil {
+		return nil, err
+	}
+	scale, err := rowInt32(row[hc.scale], i, colHistogramScale)
+	if err != nil {
+		return nil, err
+	}
+	zeroThreshold, err := rowFloat(row[hc.zeroThreshold], i)
+	if err != nil {
+		return nil, err
+	}
+	zeroCount, err := rowFloat(row[hc.zeroCount], i)
+	if err != nil {
+		return nil, err
+	}
+	positiveOffset, err := rowInt32(row[hc.positiveOffset], i, colHistogramPositiveOffset)
+	if err != nil {
+		return nil, err
+	}
+	positive, err := rowFloats(row[hc.positiveBuckets], i, colHistogramPositiveBuckets)
+	if err != nil {
+		return nil, err
+	}
+	negativeOffset, err := rowInt32(row[hc.negativeOffset], i, colHistogramNegativeOffset)
+	if err != nil {
+		return nil, err
+	}
+	negative, err := rowFloats(row[hc.negativeBuckets], i, colHistogramNegativeBuckets)
+	if err != nil {
+		return nil, err
+	}
+	return &oracle.Histogram{
+		Count:           count,
+		Sum:             sum,
+		Scale:           scale,
+		ZeroThreshold:   zeroThreshold,
+		ZeroCount:       zeroCount,
+		PositiveOffset:  positiveOffset,
+		PositiveBuckets: positive,
+		NegativeOffset:  negativeOffset,
+		NegativeBuckets: negative,
+	}, nil
+}
+
+// rowInt32 reads a bucket index or scale, which are whole numbers in both
+// data models. A non-integral cell is an error rather than a truncation:
+// a fractional scale would mean the projection is not carrying what its
+// name says it is.
+func rowInt32(cell any, row int, col string) (int32, error) {
+	f, err := rowFloat(cell, row)
+	if err != nil {
+		return 0, err
+	}
+	if f != math.Trunc(f) || f < math.MinInt32 || f > math.MaxInt32 {
+		return 0, fmt.Errorf(
+			"expected_rows[%d].%s is %v, want a 32-bit whole number", row, col, f,
+		)
+	}
+	return int32(f), nil
+}
+
+func rowFloats(cell any, row int, col string) ([]float64, error) {
+	items, ok := cell.([]any)
+	if !ok {
+		return nil, fmt.Errorf("expected_rows[%d].%s is %T, want an array", row, col, cell)
+	}
+	out := make([]float64, 0, len(items))
+	for _, item := range items {
+		f, err := rowFloat(item, row)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", col, err)
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}

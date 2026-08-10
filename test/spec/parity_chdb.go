@@ -42,6 +42,12 @@ type referenceSample struct {
 	Labels  map[string]string
 	TMillis int64
 	Value   float64
+
+	// Histogram is the sample's native-histogram value, or nil when the
+	// sample is an ordinary float. The two are never both meaningful:
+	// see [oracle.Point] for why the distinction survives all the way to
+	// the assertion instead of collapsing into Value.
+	Histogram *oracle.Histogram
 }
 
 // lokiParityEvaluator is the seam onto the AGPL-licensed Loki oracle.
@@ -384,7 +390,12 @@ func evaluatePrometheusParity(
 
 	out := make([]referenceSample, 0, len(got))
 	for _, r := range got {
-		out = append(out, referenceSample{Labels: r.Labels, TMillis: r.TMillis, Value: r.Value})
+		out = append(out, referenceSample{
+			Labels:    r.Labels,
+			TMillis:   r.TMillis,
+			Value:     r.Value,
+			Histogram: r.Histogram,
+		})
 	}
 	return out, nil
 }
@@ -435,6 +446,9 @@ func readSeededSeries(
 	}
 
 	if err := readSeededClassicHistograms(db, rt, allow, byKey); err != nil {
+		return nil, err
+	}
+	if err := readSeededNativeHistograms(db, rt, allow, byKey); err != nil {
 		return nil, err
 	}
 
@@ -548,9 +562,8 @@ func compareAgainstReference(
 				c.Name, i, g.Labels, w.Labels)
 			continue
 		}
-		if !equalValues(g.Value, w.Value) {
-			t.Errorf("fixture %s sample %d (%v): value differs\n  reference: %v\n  cerberus:  %v",
-				c.Name, i, g.Labels, g.Value, w.Value)
+		if err := compareSampleValue(g, w, equalValues); err != nil {
+			t.Errorf("fixture %s sample %d (%v): %v", c.Name, i, g.Labels, err)
 		}
 		if compareTimestamps && g.TMillis != w.TMillis {
 			t.Errorf("fixture %s sample %d (%v): timestamp differs\n  reference: %d\n  cerberus:  %d",
@@ -563,11 +576,72 @@ func compareAgainstReference(
 	}
 }
 
+// histogramRowValuePlaceholder is what cerberus's histogram-shaped
+// projection puts in its `Value` column. A histogram sample HAS no float
+// value in either data model, so the column is filled with a constant to
+// keep every projection the same width; the emitter spells that constant
+// `0 AS Value`.
+const histogramRowValuePlaceholder = 0.0
+
+// compareSampleValue checks the two answers' values agree, dispatching on
+// which KIND of value each side reported.
+//
+// A histogram-valued reference answer and a float-valued one are not
+// comparable, and this is where that stops being silent. Before native
+// histograms could be carried at all, the reference side simply refused
+// to produce one; now that it can, the mismatch has to be caught here
+// instead — a reference histogram compared against cerberus's Value
+// column would be compared against the placeholder below, which agrees
+// with nothing and means nothing.
+//
+// When both sides ARE histograms the placeholder is asserted rather than
+// ignored, so a projection that started reporting something real in that
+// column turns this red instead of having it quietly dropped.
+func compareSampleValue(
+	reference, cerberus referenceSample, equalValues func(a, b float64) bool,
+) error {
+	switch {
+	case reference.Histogram != nil && cerberus.Histogram != nil:
+		if !oracle.EqualHistograms(reference.Histogram, cerberus.Histogram) {
+			return fmt.Errorf(
+				"histogram differs\n  reference: %+v\n  cerberus:  %+v",
+				reference.Histogram, cerberus.Histogram,
+			)
+		}
+		if cerberus.Value != histogramRowValuePlaceholder {
+			return fmt.Errorf(
+				"answer is histogram-valued, so its %s column should carry the placeholder %v, "+
+					"but cerberus reported %v", colValue, histogramRowValuePlaceholder, cerberus.Value,
+			)
+		}
+		return nil
+	case reference.Histogram != nil:
+		return fmt.Errorf(
+			"the reference engine answered with a native histogram (%+v) and cerberus with the "+
+				"float %v; the two are different kinds of answer, not two values to compare",
+			reference.Histogram, cerberus.Value,
+		)
+	case cerberus.Histogram != nil:
+		return fmt.Errorf(
+			"cerberus answered with a native histogram (%+v) and the reference engine with the "+
+				"float %v; the two are different kinds of answer, not two values to compare",
+			cerberus.Histogram, reference.Value,
+		)
+	default:
+		if !equalValues(reference.Value, cerberus.Value) {
+			return fmt.Errorf(
+				"value differs\n  reference: %v\n  cerberus:  %v", reference.Value, cerberus.Value,
+			)
+		}
+		return nil
+	}
+}
+
 // arity is the number of columns a row must have for every located
 // Sample field to be in range.
 func (sc sampleColumns) arity() int {
 	n := 0
-	for _, idx := range []int{sc.name, sc.attrs, sc.ts, sc.value} {
+	for _, idx := range append([]int{sc.name, sc.attrs, sc.ts, sc.value}, sc.hist.indices()...) {
 		if idx+1 > n {
 			n = idx + 1
 		}
@@ -946,6 +1020,10 @@ type sampleColumns struct {
 	attrs int
 	ts    int
 	value int
+
+	// hist locates the native-histogram fields, or is nil when the
+	// projection answers with plain floats. See [locateHistogramColumns].
+	hist *histogramColumns
 }
 
 // locateSampleColumns maps a projection's column names onto the Sample
@@ -980,6 +1058,11 @@ func locateSampleColumns(cols []string) (sampleColumns, error) {
 			strings.Join(cols, ", "), colAttributes, colValue,
 		)
 	}
+	hist, err := locateHistogramColumns(cols)
+	if err != nil {
+		return sc, err
+	}
+	sc.hist = hist
 	return sc, nil
 }
 
@@ -1022,6 +1105,13 @@ func referenceShapeOfExpectedRows(rt *RoundTripSections, sc sampleColumns) ([]re
 			return nil, err
 		}
 
+		var hist *oracle.Histogram
+		if sc.hist != nil {
+			if hist, err = histogramFromExpectedRow(row, sc.hist, i); err != nil {
+				return nil, err
+			}
+		}
+
 		lbls := make(map[string]string, len(attrs)+1)
 		for k, v := range attrs {
 			lbls[k] = v
@@ -1029,7 +1119,9 @@ func referenceShapeOfExpectedRows(rt *RoundTripSections, sc sampleColumns) ([]re
 		if name != "" {
 			lbls[promNameLabel] = name
 		}
-		out = append(out, referenceSample{Labels: lbls, TMillis: ts, Value: value})
+		out = append(out, referenceSample{
+			Labels: lbls, TMillis: ts, Value: value, Histogram: hist,
+		})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {

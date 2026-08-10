@@ -77,13 +77,23 @@ type Series struct {
 }
 
 // Point is one sample at an exact millisecond timestamp.
+//
+// A sample is EITHER float-valued or histogram-valued, never both, which
+// is Prometheus's own data model: its Matrix carries Floats and Histograms
+// in two separate slices, and its Vector's H field is nil exactly when the
+// sample is a float.
 type Point struct {
 	// TMillis is the sample time in Unix milliseconds — Prometheus's
 	// native resolution.
 	TMillis int64
 
-	// Value is the sample value.
+	// Value is the sample value, and is meaningful only when Histogram
+	// is nil.
 	Value float64
+
+	// Histogram is the sample's native-histogram value, or nil for an
+	// ordinary float sample.
+	Histogram *Histogram
 }
 
 // Result is one output sample from the reference engine, flattened so the
@@ -95,8 +105,77 @@ type Result struct {
 	// TMillis is the output timestamp in Unix milliseconds.
 	TMillis int64
 
-	// Value is the output value.
+	// Value is the output value, and is meaningful only when Histogram
+	// is nil.
 	Value float64
+
+	// Histogram is the output sample's native-histogram value, or nil
+	// when the reference engine answered with a float.
+	Histogram *Histogram
+}
+
+// Histogram is one native (exponential) histogram sample, in a DENSE,
+// span-free shape: a bucket array plus the index its first entry sits at.
+//
+// # Why this shape rather than Prometheus's own
+//
+// Prometheus encodes a native histogram's buckets as SPANS — (gap, length)
+// pairs that skip runs of empty buckets — while OTel-CH stores one
+// contiguous array per sign with a single starting offset. Those are two
+// encodings of the same function from bucket index to count, and this type
+// is the second one because it is what BOTH sides of the comparison
+// already speak: the seeded rows arrive in it, and cerberus's own
+// histogram-shaped projection emits exactly these columns
+// (`HistogramScale`, `HistogramPositiveOffset`,
+// `HistogramPositiveBucketCounts`, …). Keeping the comparison in the dense
+// shape means only ONE translation exists — Prometheus's spans in and out
+// of this type — instead of one per side.
+//
+// It also keeps this package's exported surface transport-free, the same
+// reason [Result] carries a label MAP rather than labels.Labels.
+//
+// # Bucket indices are OTel's, not Prometheus's
+//
+// Offset and the array index address a bucket the way the OpenTelemetry
+// exponential-histogram specification does: entry j of PositiveBuckets
+// counts observations in (base**(Offset+j), base**(Offset+j+1)], where
+// base is 2**(2**-Scale). Prometheus numbers the same bucket ONE HIGHER,
+// because its index i denotes (base**(i-1), base**i]. That off-by-one is
+// the whole of the index translation, and it is applied in exactly one
+// place each way — see [Histogram.toFloatHistogram] and
+// [histogramFromFloat].
+type Histogram struct {
+	// Count is the total observation count and Sum their sum.
+	Count, Sum float64
+
+	// Scale is OTel's scale, which is numerically Prometheus's schema:
+	// both mean a bucket base of 2**(2**-Scale).
+	Scale int32
+
+	// ZeroThreshold is the half-width of the zero bucket and ZeroCount
+	// the observations that fell into it.
+	//
+	// ZeroThreshold is NOT an oracled axis for any fixture, and cannot be:
+	// upstream OTel-CH persists no zero-threshold column, so a histogram
+	// reconstructed from ClickHouse rows must INVENT one, and the only
+	// honest value to invent is the 0 cerberus's own emitter assumes.
+	// Both sides therefore carry 0 here by construction. It is compared
+	// anyway rather than excluded, because comparing it costs nothing and
+	// a future emitter that started projecting a different constant
+	// should turn this check red rather than pass unnoticed — but a green
+	// on this field is evidence of nothing. Where that invented threshold
+	// reaches the ANSWER — quantile interpolation inside the zero band —
+	// the fixture declares `scope: except-zero-bucket` instead, so the
+	// vacuity is recorded in the fixture rather than hidden here.
+	ZeroThreshold, ZeroCount float64
+
+	// PositiveOffset is the OTel bucket index of PositiveBuckets[0], and
+	// NegativeOffset the same for NegativeBuckets, whose buckets cover
+	// the mirrored negative range.
+	PositiveOffset  int32
+	PositiveBuckets []float64
+	NegativeOffset  int32
+	NegativeBuckets []float64
 }
 
 // Query describes one evaluation to run.
@@ -195,7 +274,13 @@ func appendSeries(storage *teststorage.TestStorage, series []Series) error {
 
 	app := storage.Appender(context.Background())
 	for _, s := range samples {
-		if _, err := app.Append(0, s.labels, s.point.TMillis, s.point.Value); err != nil {
+		var err error
+		if h := s.point.Histogram; h != nil {
+			_, err = app.AppendHistogram(0, s.labels, s.point.TMillis, nil, h.toFloatHistogram())
+		} else {
+			_, err = app.Append(0, s.labels, s.point.TMillis, s.point.Value)
+		}
+		if err != nil {
 			return fmt.Errorf("append %s at %d: %w", s.labels.String(), s.point.TMillis, err)
 		}
 	}
@@ -209,29 +294,39 @@ func appendSeries(storage *teststorage.TestStorage, series []Series) error {
 // Result shape, sorted by (labels, timestamp) so comparison never depends
 // on the engine's internal ordering.
 //
-// Histogram-valued samples are rejected rather than silently coerced to
-// their float field: a fixture whose reference answer is a native
-// histogram cannot be compared against cerberus's float-only result path,
-// and quietly comparing the wrong field would manufacture a green.
+// A histogram-valued sample is carried in Result.Histogram rather than
+// coerced into the float field. That distinction is load-bearing on the
+// comparator's side: cerberus's own histogram-shaped projection reports a
+// PLACEHOLDER in its Value column, so a reference histogram silently
+// flattened to a float would be compared against a number that means
+// nothing, which is the manufactured green this layer exists to prevent.
+// The two shapes stay distinguishable all the way to the assertion.
 func flatten(v parser.Value) ([]Result, error) {
 	var out []Result
 
 	switch val := v.(type) {
 	case promql.Matrix:
 		for _, s := range val {
-			if len(s.Histograms) > 0 {
-				return nil, histogramValuedErr(s.Metric)
-			}
 			for _, p := range s.Floats {
 				out = append(out, Result{Labels: s.Metric.Map(), TMillis: p.T, Value: p.F})
+			}
+			for _, p := range s.Histograms {
+				out = append(out, Result{
+					Labels:    s.Metric.Map(),
+					TMillis:   p.T,
+					Histogram: histogramFromFloat(p.H),
+				})
 			}
 		}
 	case promql.Vector:
 		for _, s := range val {
+			r := Result{Labels: s.Metric.Map(), TMillis: s.T}
 			if s.H != nil {
-				return nil, histogramValuedErr(s.Metric)
+				r.Histogram = histogramFromFloat(s.H)
+			} else {
+				r.Value = s.F
 			}
-			out = append(out, Result{Labels: s.Metric.Map(), TMillis: s.T, Value: s.F})
+			out = append(out, r)
 		}
 	case promql.Scalar:
 		out = append(out, Result{Labels: map[string]string{}, TMillis: val.T, Value: val.V})
@@ -241,14 +336,6 @@ func flatten(v parser.Value) ([]Result, error) {
 
 	sortResults(out)
 	return out, nil
-}
-
-func histogramValuedErr(m labels.Labels) error {
-	return fmt.Errorf(
-		"reference answer for %s is histogram-valued; cerberus's result path is float-only, "+
-			"so this fixture cannot be parity-checked until native-histogram encoding lands",
-		m.String(),
-	)
 }
 
 // sortResults orders by label set then timestamp. Deterministic ordering
