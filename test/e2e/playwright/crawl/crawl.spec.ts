@@ -884,7 +884,7 @@ test.describe('crawl: canonicalization pins', () => {
     // mount-order id, normalized to the generic
     // `select[react-select-{rid}-input]` shape. Left unrecognised, that
     // key declares no closed vocabulary, so planInteractions treats it
-    // as data-derived and the codepoint-order
+    // as data-derived and
     // codepoint-order pick lands on "Consumer spans…" every run
     // ('C' < 'D' < 'S') — the app never shows the crawl "Server spans…",
     // no matter how much backing data Server carries in ClickHouse
@@ -1343,6 +1343,41 @@ test.describe('crawl: canonicalization pins', () => {
     }
   });
 
+  test('#1872: a duplicate option label does not multiply the lean representative', () => {
+    // The lean lane drives ONE state per control. tabName strips a
+    // trailing live-count run off a tab's text ("Logs1K" and "Logs"
+    // both reduce to "Logs"), so two options can carry the same label,
+    // and flagging the representative by VALUE rather than by index
+    // would mark every duplicate lean and quietly widen the lean lane.
+    const plan = planInteractions(
+      [control('radio', 'radio[Logs|Logs|Traces]', ['Logs', 'Logs', 'Traces'])],
+      0,
+    );
+    expect(plan.map((p) => p.leanRepresentative)).toEqual([true, false, false]);
+  });
+
+  test('#1872: a key-embedded vocabulary only counts when the key round-trips', () => {
+    // Discovery builds these keys by joining the option labels on '|',
+    // so a label that itself contains '|' splits back into tokens the
+    // control never offered. Reading that as a closed set would fail
+    // the whole surface's sweep over a cosmetic label, so the control
+    // falls back to the placeholder instead.
+    const options = ['Grid|List', 'Rows'];
+    const key = 'radio[Grid|List|Rows]';
+    // On the key alone the embedding looks like three options…
+    expect(declaredVocabulary(key)).toEqual(['Grid', 'List', 'Rows']);
+    // …but against what the control actually offers it does not
+    // round-trip, so nothing is declared and nothing throws.
+    expect(declaredVocabulary(key, options)).toBeUndefined();
+    const plan = planInteractions([control('radio', key, options)], 0);
+    expect(plan.map((p) => p.stateValue)).toEqual(['{rep}']);
+    // A key that DOES round-trip still declares its set.
+    expect(declaredVocabulary('radio[Grid|Rows]', ['Grid', 'Rows'])).toEqual([
+      'Grid',
+      'Rows',
+    ]);
+  });
+
   test('#1872: a tab strip and a radio group declare their own vocabulary', () => {
     // These two kinds need no manifest entry: discovery builds their
     // key OUT of the option labels, so the value half of the fragment
@@ -1393,7 +1428,14 @@ test.describe('crawl: canonicalization pins', () => {
     expect(composeSeed.map((p) => p.stateValue)).toEqual(
       k3dSeed.map((p) => p.stateValue),
     );
-    expect(composeSeed.map((p) => p.stateValue)).toEqual(['{rep}']);
+    expect(composeSeed.map((p) => p.stateValue)).toEqual(['{rep}', '{rep}']);
+
+    // Keying `{rep}` is the purity half. The coverage half is that the
+    // sweep still drives every level it is offered — each one filters a
+    // distinct LogQL query — so closing the seed axis did not quietly
+    // trade itself for a gesture loss.
+    expect(composeSeed.map((p) => p.option)).toEqual(['error', 'info']);
+    expect(k3dSeed.map((p) => p.option)).toEqual(['error', 'warn']);
   });
 
   test('#1872: a closed vocabulary rejects an option outside its declared set', () => {

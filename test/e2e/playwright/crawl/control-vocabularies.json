@@ -1,6 +1,8 @@
 {
   "doc": "Closed option vocabularies for the Grafana crawl's interaction sweep — the ONLY place a control's option labels may be declared a fact about the pinned APPLICATION rather than about the seeded dataset. Read by the crawler (test/e2e/playwright/crawl/interactions.ts), which checks every declaration against the live app on each run, and by the PR-time purity gate (.github/scripts/crawl-surface-inventory-purity.mjs), which proves no literal outside these sets ever reached a committed surface inventory. A control this file does not name PARAMETERIZES: its interaction fragment keys as `{rep}` and its option labels never enter the pin. That default is the whole design — the canonical key is a function of the app by construction, and pinning a literal costs a declaration that a live run re-verifies, instead of a growing list of known-bad field names (tsouza/cerberus#1872).",
   "representativePlaceholder": "{rep}",
+  "keyEmbeddedVocabularyPattern": "^(?:tabs|radio)\\[([\\s\\S]+)\\](?:#\\d+)?$",
+  "keyEmbeddedVocabularyRationale": "The second route to a verbatim key, and the reason it needs no entry below: a tab strip and a radio group build their discovery key OUT of their option labels (`tabs[a|b|c]`, `radio[a|b]`), so the value half of an interaction fragment says nothing the key half has not already said. The pattern is data here rather than a literal in either consumer because it decides what may be pinned verbatim — exactly what the closed vocabularies decide — and two copies of that decision would let the gate certify a pin the crawler never produced. The crawler additionally requires the key to ROUND-TRIP (the option labels rejoined on '|' must reproduce the bracket content) before it treats the embedding as a declaration, so a label that itself contains '|' falls back to the placeholder instead of failing the crawl.",
   "closedVocabularies": [
     {
       "control": "^select\\[Select match operator\\](#\\d+)?$",
@@ -59,6 +61,12 @@
     }
   ],
   "exhaustiveDataControls": [
+    {
+      "control": "^select\\[detected_level\\](#\\d+)?$",
+      "rationale": "Loki's severity picker. Its RENDERED options are data — the picker offers only the levels the ingested logs actually carry, which is why compose pinned `=info` where k3d pinned `=warn` — so it keys `{rep}` and no level reaches the pin. It sweeps exhaustively for the same reason attribute-list does: each level drives a distinct LogQL filter, and dropping to one representative would have silently traded the seed axis for a coverage loss rather than fixing it.",
+      "maxOptions": 7,
+      "maxOptionsRationale": "Loki normalizes severity into a closed seven-name vocabulary (critical, error, warn, info, debug, trace, unknown). WHICH of the seven render is data and cannot key the pin, but HOW MANY can ever render is a property of Loki, so seven bounds the gesture cost exactly and a picker offering more has stopped being the control this entry describes."
+    },
     {
       "control": "^attribute-list(#\\d+)?$",
       "rationale": "The Traces Drilldown groupBy attribute picker. Its options are span-attribute NAMES read out of live query results, so they are data and can never key the pin — this control parameterizes to `{rep}` like any other undeclared one. It is listed here for the ORTHOGONAL axis: the sweep still drives every offered attribute rather than one representative, because driving a groupBy attribute is what fires a distinct `rate() by(<attr>)` TraceQL query, and that is the gesture class the crawler was built for (the 2026-06-10 `var-groupBy=kind` 422 that no enumerated spec reached). Coverage of the gestures and purity of the key are separate decisions, and this list is the only place they are decoupled.",

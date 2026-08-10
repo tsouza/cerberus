@@ -1101,6 +1101,7 @@ have emitted. `lean` has no offline source of truth, so that residue belongs to
 `crawl-surface-inventory-guard.test.mjs` carries a negative control per check
 plus a pin on the documented blind spot, so the gate cannot rot into a rubber
 stamp in either direction.
+
 The form ratchet says nothing about whether the inventory's *content* is a
 function of the Grafana application, and it was not. Whether a control keyed its
 options verbatim was decided by counting how many options happened to render
@@ -1130,5 +1131,7 @@ picked from the candidate set rather than from arrival order, and lean membershi
 is unioned across candidates rather than read off the fold winner — and it is
 pinned by the browser-free `crawl: canonicalization pins` specs. Those ran only in
 the de-gated compose crawl shard and the nightly k3d lane, so nothing gated them at
-PR time; the `forbid-skip` job now runs them directly (`npm ci` plus a grep-scoped
-Playwright invocation, no stack and no browser, about a second).
+PR time; the `forbid-skip` job now runs them directly. No test in that grep takes
+a `page` fixture, so the step installs `@playwright/test` with the browser download
+suppressed and runs in about a second — no stack, no browser, and nothing off the
+network beyond the seven packages `npm ci` fetches.

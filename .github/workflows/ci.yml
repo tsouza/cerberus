@@ -947,6 +947,13 @@ jobs:
           # in this grep is pure, so no stack is started and no browser is
           # launched.
           CRAWL_STACK: compose
+          # No test in this grep takes a `page` fixture, so the ~500 MB of
+          # browser binaries @playwright/test would otherwise fetch on
+          # install buys nothing — and this is a required check on a job
+          # whose other steps touch no network at all. Verified locally by
+          # running the same grep with PLAYWRIGHT_BROWSERS_PATH pointed at
+          # an empty directory: 28 passed.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: |
           npm ci
           npx playwright test crawl/crawl.spec.ts \

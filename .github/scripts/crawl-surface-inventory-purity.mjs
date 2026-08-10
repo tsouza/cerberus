@@ -76,9 +76,17 @@ const DEFAULT_CRAWL_DIR = join(
  */
 const FRAGMENT = /^([a-z-]+(?:\[[\s\S]*\])?(?:#\d+)?)=([\s\S]*)$/;
 
-/** The `a|b|c` a `tabs[…]` / `radio[…]` key carries in itself. */
-export function keyEmbeddedVocabulary(key) {
-  const m = /^(?:tabs|radio)\[([\s\S]+)\](?:#\d+)?$/.exec(key);
+/**
+ * The `a|b|c` a `tabs[…]` / `radio[…]` key carries in itself.
+ *
+ * The pattern comes from the manifest rather than from a literal here:
+ * it decides what may be pinned verbatim, exactly as the closed
+ * vocabularies do, and a second copy on this side would be free to
+ * drift LOOSER than the crawler's and certify a pin the crawler never
+ * produced — the failure this whole mechanism is built to prevent.
+ */
+export function keyEmbeddedVocabulary(key, pattern) {
+  const m = new RegExp(pattern).exec(key);
   return m === null ? undefined : m[1].split('|');
 }
 
@@ -93,13 +101,24 @@ export function loadManifest(dir) {
   const raw = readFileSync(join(dir, MANIFEST_FILENAME), 'utf8');
   const parsed = JSON.parse(raw);
   const problems = [];
-  if (
-    typeof parsed.representativePlaceholder !== 'string' ||
-    parsed.representativePlaceholder === ''
-  ) {
-    problems.push(
-      `${MANIFEST_FILENAME}: representativePlaceholder must be a non-empty string`,
-    );
+  for (const field of [
+    'representativePlaceholder',
+    'keyEmbeddedVocabularyPattern',
+  ]) {
+    if (typeof parsed[field] !== 'string' || parsed[field] === '') {
+      problems.push(
+        `${MANIFEST_FILENAME}: ${field} must be a non-empty string`,
+      );
+    }
+  }
+  if (typeof parsed.keyEmbeddedVocabularyPattern === 'string') {
+    try {
+      new RegExp(parsed.keyEmbeddedVocabularyPattern);
+    } catch (err) {
+      problems.push(
+        `${MANIFEST_FILENAME}: keyEmbeddedVocabularyPattern is not a valid regex — ${err.message}`,
+      );
+    }
   }
   for (const field of ['closedVocabularies', 'exhaustiveDataControls']) {
     if (!Array.isArray(parsed[field])) {
@@ -168,15 +187,16 @@ export function loadManifest(dir) {
   return {
     problems,
     placeholder: parsed.representativePlaceholder,
+    keyEmbeddedVocabularyPattern: parsed.keyEmbeddedVocabularyPattern,
     vocabularies,
   };
 }
 
 /** The closed set a control may key verbatim, or undefined. */
-export function declaredVocabulary(key, vocabularies) {
-  const declared = vocabularies.find((v) => v.control.test(key));
+export function declaredVocabulary(key, manifest) {
+  const declared = manifest.vocabularies.find((v) => v.control.test(key));
   if (declared !== undefined) return declared.values;
-  return keyEmbeddedVocabulary(key);
+  return keyEmbeddedVocabulary(key, manifest.keyEmbeddedVocabularyPattern);
 }
 
 /** Codepoint order — the crawl's own tie-breaker (lib.ts byCodepoint). */
@@ -209,7 +229,7 @@ export function checkInventory(file, inv, manifest) {
     }
     const [, key, value] = m;
     if (value === manifest.placeholder) continue;
-    const vocabulary = declaredVocabulary(key, manifest.vocabularies);
+    const vocabulary = declaredVocabulary(key, manifest);
     if (vocabulary === undefined) {
       problems.push(
         `${file}: ${JSON.stringify(url)} pins the literal option ${JSON.stringify(value)} for control ${JSON.stringify(key)}, which declares no closed vocabulary. ` +

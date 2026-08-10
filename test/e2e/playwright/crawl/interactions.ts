@@ -26,10 +26,12 @@
  *        - a control whose option set is DECLARED closed (its key
  *          embeds the vocabulary, or control-vocabularies.json names
  *          it) enumerates FULLY and keys its options verbatim;
- *        - every other control is data-derived by default: it takes
- *          ONE representative option and keys it as
+ *        - every other control is data-derived by default: it keys
  *          REPRESENTATIVE_PLACEHOLDER, so no seeded label reaches the
- *          canonical key (#1872);
+ *          canonical key (#1872), and takes ONE representative option
+ *          — unless the manifest also lists it as an exhaustive data
+ *          control, which spends gestures on every option (bounded by
+ *          a declared cost) while still keying the placeholder;
  *        - cross-control combos are PAIRWISE via surface chaining: a
  *          deviation that encodes to the URL becomes a first-class
  *          surface (see StructuralParamRule in lib.ts); sweeping a
@@ -109,10 +111,14 @@ import { byCodepoint } from './lib.js';
  *
  * The two misclassification directions are not symmetric, and the
  * default favours the safe one. A control wrongly left undeclared
- * loses enumeration — a coverage gap the interaction-count ratchet
- * catches and a reviewer promotes deliberately. A control wrongly
- * declared pins the dataset into the key, which is the entire defect
- * class this mechanism exists to close.
+ * loses gestures; a control wrongly declared pins the dataset into the
+ * key, which is the entire defect class this mechanism exists to close.
+ * Note what the inventory can and cannot witness about the first: every
+ * gesture of a parameterized control collapses onto ONE row, so a drop
+ * from twelve gestures to one leaves the committed bytes untouched and
+ * no ratchet over them can see it. That axis is held by the planning
+ * pins in crawl.spec.ts, which is where a change to it has to be
+ * argued.
  */
 export type ControlVocabulary = {
   /** Matched against the control's discovery KEY — its identity, never
@@ -148,6 +154,7 @@ export type ExhaustiveDataControl = {
 
 type VocabularyManifest = {
   representativePlaceholder: string;
+  keyEmbeddedVocabularyPattern: string;
   closedVocabularies: Array<{
     control: string;
     rationale: string;
@@ -172,6 +179,22 @@ const manifest = JSON.parse(
   readFileSync(join(__dirname, CONTROL_VOCABULARIES_FILENAME), 'utf8'),
 ) as VocabularyManifest;
 
+// The manifest decides what may be pinned verbatim, so a malformed one
+// must stop the crawl rather than quietly produce fragments reading
+// `#key=undefined`. The PR-time gate validates it far more thoroughly,
+// but it runs in a different job and only over already-committed
+// inventories — by then the bad bytes exist.
+for (const [field, value] of [
+  ['representativePlaceholder', manifest.representativePlaceholder],
+  ['keyEmbeddedVocabularyPattern', manifest.keyEmbeddedVocabularyPattern],
+] as const) {
+  if (typeof value !== 'string' || value === '') {
+    throw new Error(
+      `${CONTROL_VOCABULARIES_FILENAME}: ${field} must be a non-empty string`,
+    );
+  }
+}
+
 /**
  * The token an undeclared (data-derived) control keys instead of its
  * option label. It lives in the manifest so the crawler and the
@@ -195,6 +218,11 @@ export const EXHAUSTIVE_DATA_CONTROLS: ReadonlyArray<ExhaustiveDataControl> =
     maxOptions: v.maxOptions,
   }));
 
+/** Compiled from the manifest so the PR-time gate matches key-for-key. */
+export const KEY_EMBEDDED_VOCABULARY = new RegExp(
+  manifest.keyEmbeddedVocabularyPattern,
+);
+
 /**
  * The vocabulary a key carries in ITSELF — the `a|b|c` of a
  * `tabs[a|b|c]` / `radio[a|b]` discovery key (see reason 1 above).
@@ -203,29 +231,58 @@ export const EXHAUSTIVE_DATA_CONTROLS: ReadonlyArray<ExhaustiveDataControl> =
 export function keyEmbeddedVocabulary(
   key: string,
 ): ReadonlyArray<string> | undefined {
-  const m = /^(?:tabs|radio)\[(.+)\](?:#\d+)?$/.exec(key);
-  return m === undefined || m === null ? undefined : m[1]!.split('|');
+  const m = KEY_EMBEDDED_VOCABULARY.exec(key);
+  return m === null ? undefined : m[1]!.split('|');
 }
 
 /**
  * The closed option set a control is allowed to key verbatim, or
  * undefined when it must parameterize to `{rep}`.
+ *
+ * Passing the control's live `options` enables the ROUND-TRIP check on
+ * a key-embedded vocabulary: discovery builds those keys by joining the
+ * labels on '|', so a label that itself contains '|' splits back into
+ * tokens the control never offered. Treating that as a closed set would
+ * fail the whole surface's sweep over a cosmetic label, so the control
+ * falls back to the placeholder instead. Callers with no options in
+ * hand (the pins, and the gate reading committed bytes) get the
+ * embedding unchecked — it is all the key can tell them.
  */
 export function declaredVocabulary(
   key: string,
+  options?: ReadonlyArray<string>,
 ): ReadonlyArray<string> | undefined {
   const declared = CLOSED_VOCABULARIES.find((v) => v.control.test(key));
   if (declared !== undefined) return declared.values;
-  return keyEmbeddedVocabulary(key);
+  const embedded = keyEmbeddedVocabulary(key);
+  if (embedded === undefined || options === undefined) return embedded;
+  // Element-wise, never on the rejoined string: joining is exactly the
+  // lossy step being checked, so `['Grid|List', 'Rows']` and
+  // `['Grid', 'List', 'Rows']` rejoin identically and a string compare
+  // would wave the ambiguous case straight through.
+  const roundTrips =
+    embedded.length === options.length &&
+    embedded.every((label, i) => label === options[i]);
+  return roundTrips ? embedded : undefined;
 }
 
 /**
  * Whether the sweep drives every drivable option of this control: a
  * declared vocabulary always does, and a listed data-derived control
  * does while its option set stays inside the cost bound it declares.
+ *
+ * The vocabulary is passed IN rather than resolved again here.
+ * Resolving it twice is how the round-trip guard got bypassed once
+ * already: this function saw a declaration where the caller had
+ * correctly seen none, and swept a control the caller was keying
+ * `{rep}`.
  */
-export function sweepsEveryOption(key: string, optionCount: number): boolean {
-  if (declaredVocabulary(key) !== undefined) return true;
+export function sweepsEveryOption(
+  key: string,
+  vocabulary: ReadonlyArray<string> | undefined,
+  optionCount: number,
+): boolean {
+  if (vocabulary !== undefined) return true;
   const exhaustive = EXHAUSTIVE_DATA_CONTROLS.find((v) => v.control.test(key));
   return exhaustive !== undefined && optionCount <= exhaustive.maxOptions;
 }
@@ -368,7 +425,7 @@ export function planInteractions(
     // entry in control-vocabularies.json — never by how many options
     // the current seed happens to render (#1872). An undeclared
     // control parameterizes to `{rep}` however few options it has.
-    const vocabulary = declaredVocabulary(control.key);
+    const vocabulary = declaredVocabulary(control.key, control.options);
     if (vocabulary !== undefined) {
       // The declaration is re-checked against the LIVE app on every
       // crawl. A value outside it means exactly one of two things and
@@ -400,7 +457,8 @@ export function planInteractions(
     // surface takes the representative plan so each interaction there
     // forms a PAIR, never a full cross-product.
     const sweepAll =
-      sweepsEveryOption(control.key, drivable.length) && !representativeOnly;
+      sweepsEveryOption(control.key, vocabulary, drivable.length) &&
+      !representativeOnly;
     // Option ORDER is an app fact exactly where the option SET is. A
     // declared vocabulary keeps the app's OWN order: it is the plugin
     // bundle's order, and its first entry is the meaningful lean
@@ -417,12 +475,17 @@ export function planInteractions(
         ? drivable
         : [...drivable].sort(byCodepoint)
       : [keysVerbatim ? drivable[0]! : representativeOption(drivable)];
-    for (const option of options) {
+    for (let i = 0; i < options.length; i++) {
       plan.push({
         control,
-        option,
-        stateValue: keysVerbatim ? option : REPRESENTATIVE_PLACEHOLDER,
-        leanRepresentative: option === options[0]!,
+        option: options[i]!,
+        stateValue: keysVerbatim ? options[i]! : REPRESENTATIVE_PLACEHOLDER,
+        // By INDEX, never by value: two tabs whose labels collapse to
+        // the same string (tabName strips a trailing live-count run, so
+        // "Logs1K" and "Logs" both reduce to "Logs") would otherwise
+        // both be flagged lean, and the lean lane would drive more than
+        // one state for the control.
+        leanRepresentative: i === 0,
       });
     }
   }
