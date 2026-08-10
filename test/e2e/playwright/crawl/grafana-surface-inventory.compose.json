@@ -59,6 +59,10 @@
       "lean": false
     },
     {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-metric=duration",
+      "lean": false
+    },
+    {
       "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-metric=errors",
       "lean": false
     },
@@ -131,6 +135,10 @@
       "lean": false
     },
     {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=duration",
+      "lean": false
+    },
+    {
       "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=errors",
       "lean": false
     },
@@ -153,6 +161,22 @@
     {
       "url": "/a/grafana-exploretraces-app/explore?var-metric=duration",
       "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#select[downshift-{rid}-input]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
     },
     {
       "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=kind=consumer",
@@ -271,6 +295,10 @@
       "lean": true
     },
     {
+      "url": "/a/grafana-lokiexplore-app/explore#adhoc[Filter by labels]={rep}",
+      "lean": true
+    },
+    {
       "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}",
       "lean": false
     },
@@ -331,7 +359,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -359,7 +387,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -387,7 +415,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -407,7 +435,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -427,7 +455,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -447,7 +475,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -511,7 +539,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -539,7 +567,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -567,7 +595,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -587,7 +615,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -607,7 +635,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -627,7 +655,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -647,7 +675,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -683,7 +711,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -707,7 +735,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -727,7 +755,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -743,7 +771,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -759,7 +787,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
