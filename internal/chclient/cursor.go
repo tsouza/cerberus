@@ -197,10 +197,16 @@ type rowsCursor struct {
 	// projection carries the nine trailing Histogram*Column columns a
 	// chplan.HistogramProjection subquery publishes (see issue #1926),
 	// so the scan binds thirteen destinations (the base four plus the
-	// nine histogram fields) instead of four. No lowering builds that
-	// plan shape yet, so hasHistogram is false — and the scan
-	// byte-identical to before — on every query today; it exists so the
-	// decode side has a stable contract ready the moment one does.
+	// nine histogram fields) instead of four.
+	//
+	// hasHistogram latches true for the histogram-VALUED PromQL shapes —
+	// a bare exp-histogram selector, `sum()` over one, and
+	// `rate()`/`increase()` over one — and stays false, leaving the scan
+	// byte-identical to before, on every other query. Only this
+	// ROW-based cursor reads those nine columns; the columnar sibling in
+	// columnar.go still binds four and rejects a thirteen-column result
+	// as a matrix mismatch, which makes queryCursorColumnar fall back to
+	// this path rather than mis-decode one (issue #1967).
 	histogramProbed bool
 	hasHistogram    bool
 }
@@ -263,9 +269,9 @@ func (c *rowsCursor) Next() bool {
 	var metadataJSON string
 	// Probe the result-set shape once: the Loki log-stream projection
 	// appends a fifth `Metadata` column, a chplan.HistogramProjection
-	// subquery appends nine Histogram*Column columns (issue #1926 — no
-	// lowering builds that shape yet, so this branch is untaken by
-	// every query today), every other path projects four.
+	// subquery appends nine Histogram*Column columns (issue #1926 —
+	// taken by the histogram-valued PromQL shapes, see hasHistogram),
+	// every other path projects four.
 	// driver.Rows.Columns() is stable across the stream, so latch the
 	// decision on the first row and bind the scan accordingly.
 	if !c.metadataProbed {

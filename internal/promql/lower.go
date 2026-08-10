@@ -171,8 +171,9 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // lowerRoot lowers the ROOT of a query expression. It is [lower] plus the
 // dispatches that can only be decided at the root: the shapes over an
 // exponential (native) histogram that return a HISTOGRAM-VALUED sample —
-// a bare selector and `sum [by/without] (<selector>)` — whose answer has
-// a wire representation only when the shape IS the whole query.
+// a bare selector, `sum [by/without] (<selector>)`, and
+// `rate`/`increase` over a range-vector selector — whose answer has a
+// wire representation only when the shape IS the whole query.
 //
 // The distinction cannot be made inside [lowerVectorSelector], because the
 // selector in `sum(m_exp_hist)` and the selector in `m_exp_hist` arrive
@@ -188,10 +189,13 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // (issue #1967), and never widens the exemption by accident: a nested
 // selector never reaches this function.
 //
-// The two dispatches are ordered but not mutually exclusive in principle,
-// and the order is arbitrary: [bareExpHistogramSelector] and
-// [sumOverExpHistogram] recognise disjoint root node types (a selector vs
-// an aggregation), so neither can shadow the other.
+// The three dispatches are ordered but not mutually exclusive in
+// principle, and the order is arbitrary: [bareExpHistogramSelector],
+// [sumOverExpHistogram] and [rateOverExpHistogram] recognise disjoint
+// root node types (a selector, an aggregation, a range-vector call), so
+// none can shadow another. [rateOverExpHistogram] additionally refuses an
+// aggregation WRAPPER, so `sum(rate(...))` — which needs both reductions
+// — matches neither it nor [sumOverExpHistogram] and stays rejected.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -203,6 +207,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if agg, vs, ok := sumOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramSum(agg, vs, s, ctx)
+	}
+	if shape, ok := rateOverExpHistogram(expr, s, ctx); ok {
+		return lowerExpHistogramRate(shape, s, ctx)
 	}
 	return lower(expr, s, ctx)
 }
@@ -411,7 +418,7 @@ func lowerHistogramSelectorInput(
 //
 // When ok is true and err is non-nil, every other shape over a pinned
 // exp-histogram selector — one wrapped in
-// rate()/resets()/changes()/sum()/avg()/arithmetic/etc. — has no scalar
+// resets()/changes()/avg()/arithmetic/etc. — has no scalar
 // Value column to read: the exp-histogram row shape (Sum/Count/Scale/
 // PositiveCounts/NegativeCounts) is disjoint from the Sample contract
 // these functions reduce over. histogram_quantile()/histogram_count()/
@@ -422,15 +429,17 @@ func lowerHistogramSelectorInput(
 // err rejects it explicitly rather than silently matching zero rows
 // against the Gauge/Sum tables.
 //
-// Two shapes no longer reach here at all: a BARE selector, and `sum
-// [by/without] (<selector>)`. Both return a histogram-valued sample,
-// which [lowerRoot] answers with a chplan.HistogramProjection before the
-// recursive descent that leads to lowerVectorSelector ever starts. That
-// is the whole of the narrowing — the selector nested under anything
-// ELSE still arrives here and is still rejected, because nothing above
-// it can consume a histogram row yet (issue #1967). `sum()` is the one
-// reducer exempt so far precisely because it does not read a Value: it
-// adds the bucket ladders themselves.
+// Three shapes no longer reach here at all: a BARE selector, `sum
+// [by/without] (<selector>)`, and `rate`/`increase` over a range-vector
+// selector. All three return a histogram-valued sample, which [lowerRoot]
+// answers with a chplan.HistogramProjection before the recursive descent
+// that leads to lowerVectorSelector ever starts. That is the whole of the
+// narrowing — the selector nested under anything ELSE still arrives here
+// and is still rejected, because nothing above it can consume a histogram
+// row. Each exempt shape earns its exemption by not reading a Value:
+// `sum()` adds the bucket ladders themselves, and `rate`/`increase`
+// difference them across time. `sum(rate(...))`, which stacks the two
+// reductions, is answered by neither and still arrives here.
 //
 // Metadata enumeration (/series, /labels — ctx.metadataFullRange) is
 // exempted: it doesn't consume a Value column, only MetricName +
@@ -446,8 +455,9 @@ func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerC
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(
 			"promql: %q is an exponential histogram metric; only a bare %q selector, "+
-				"sum() over one, histogram_quantile(), histogram_count(), histogram_sum(), "+
-				"and the %q/%q companion selectors are supported",
+				"sum() over one, rate()/increase() over one, histogram_quantile(), "+
+				"histogram_count(), histogram_sum(), and the %q/%q companion selectors "+
+				"are supported",
 			metricName, metricName, metricName+"_count", metricName+"_sum",
 		)
 	}

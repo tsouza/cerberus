@@ -18,10 +18,12 @@ import (
 // TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly pins issue #1704:
 // every PromQL shape over a pinned exponential-histogram selector OTHER
 // than histogram_quantile() / histogram_count() / histogram_sum(), the
-// `_count` / `_sum` companion selectors, and the two top-level
+// `_count` / `_sum` companion selectors, and the three top-level
 // histogram-VALUED shapes issue #1967 answers — a BARE selector
-// (TestLower_ExpHistogram_BareSelectorIsHistogramValued) and `sum()` over
-// one (TestLower_ExpHistogram_SumIsHistogramValued) — must fail lowering
+// (TestLower_ExpHistogram_BareSelectorIsHistogramValued), `sum()` over
+// one (TestLower_ExpHistogram_SumIsHistogramValued) and `rate()` /
+// `increase()` over one
+// (TestLower_ExpHistogram_RateIsHistogramValued) — must fail lowering
 // with a clear error, never silently resolve against the Gauge/Sum tables
 // and return an empty-but-200 result. Before the fix, TablesFor never
 // yielded ExpHistogramTable for these shapes, so cerberus quietly scanned
@@ -44,10 +46,11 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		name  string
 		query string
 	}{
-		{name: "rate", query: `rate(latency_exp_hist[5m])`},
 		{name: "resets", query: `resets(latency_exp_hist[5m])`},
 		{name: "changes", query: `changes(latency_exp_hist[5m])`},
-		{name: "increase", query: `increase(latency_exp_hist[5m])`},
+		{name: "delta", query: `delta(latency_exp_hist[5m])`},
+		{name: "irate", query: `irate(latency_exp_hist[5m])`},
+		{name: "sum_over_time", query: `sum_over_time(latency_exp_hist[5m])`},
 		{name: "absent_over_time", query: `absent_over_time(latency_exp_hist[5m])`},
 		{name: "avg aggregation", query: `avg(latency_exp_hist)`},
 		{name: "min aggregation", query: `min(latency_exp_hist)`},
@@ -72,6 +75,21 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "sum under label_replace", query: `label_replace(sum(latency_exp_hist), "a", "b", "service", "(.*)")`},
 		{name: "sum under topk", query: `topk(3, sum by (service) (latency_exp_hist))`},
 		{name: "sum under abs", query: `abs(sum(latency_exp_hist))`},
+
+		// `rate()` / `increase()` over a range-vector selector ARE answered
+		// (see TestLower_ExpHistogram_RateIsHistogramValued). These are the
+		// shapes that narrowing must NOT reach: a rate under a consumer that
+		// reads a Value, and a rate under an aggregation — which needs the
+		// across-series merge stacked on top of the window reduction, so
+		// answering it with the window reduction alone would silently drop
+		// the sum.
+		{name: "rate under arithmetic", query: `rate(latency_exp_hist[5m]) * 2`},
+		{name: "rate under label_replace", query: `label_replace(rate(latency_exp_hist[5m]), "a", "b", "service", "(.*)")`},
+		{name: "rate under abs", query: `abs(rate(latency_exp_hist[5m]))`},
+		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
+		{name: "rate under avg", query: `avg(rate(latency_exp_hist[5m]))`},
+		{name: "increase under arithmetic", query: `increase(latency_exp_hist[5m]) + 1`},
+		{name: "rate over subquery", query: `rate(latency_exp_hist[5m:1m])`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -413,5 +431,254 @@ func TestLower_ExpHistogram_SumMergesBucketLadders(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("emitted SQL does not reach the shared native-histogram merge: missing %q\n%s", want, sql)
 		}
+	}
+}
+
+// TestLower_ExpHistogram_RateIsHistogramValued pins issue #1967's third
+// and last cut: `rate(<exp-histogram selector>[range])` and its
+// `increase` twin are answerable, and the answer is a
+// chplan.HistogramProjection publishing the same thirteen-column
+// contract as the bare and `sum()` siblings.
+//
+// Like `sum()`, and unlike the bare selector, the quartet's first slot
+// must be an EMPTY literal: reference PromQL drops `__name__` from every
+// range-vector function result too.
+func TestLower_ExpHistogram_RateIsHistogramValued(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	cases := []struct {
+		name  string
+		query string
+		lower func(parser.Expr) (chplan.Node, error)
+	}{
+		{
+			name:  "instant rate",
+			query: `rate(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "instant increase",
+			query: `increase(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "instant with matchers",
+			query: `rate(latency_exp_hist{service="api"}[10m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "parenthesised",
+			query: `(rate(latency_exp_hist[5m]))`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "offset",
+			query: `rate(latency_exp_hist[5m] offset 10m)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "range",
+			query: `rate(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range increase",
+			query: `increase(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range with absolute @ pin",
+			query: `rate(latency_exp_hist[5m] @ 1767225600)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+	}
+
+	wantAliases := []string{
+		s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.ValueColumn,
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := tc.lower(expr)
+			if err != nil {
+				t.Fatalf("lower(%q): unexpected error: %v", tc.query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want histogram", tc.query, shape)
+			}
+			hp, ok := plan.(*chplan.HistogramProjection)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", tc.query, plan)
+			}
+			if !slices.Equal(hp.GroupByAliases, wantAliases) {
+				t.Fatalf("lower(%q): leading output aliases = %v, want %v", tc.query, hp.GroupByAliases, wantAliases)
+			}
+			name, ok := hp.GroupBy[0].(*chplan.LitString)
+			if !ok || name.V != "" {
+				t.Fatalf("lower(%q): __name__ projection is %#v, want an empty literal — "+
+					"a range-vector function result carries no metric name", tc.query, hp.GroupBy[0])
+			}
+		})
+	}
+}
+
+// TestLower_ExpHistogram_RateReachesTheWindowFold pins that `rate()`
+// reaches the SHARED exponential-histogram WINDOW fold — the
+// counter-reset differencing plus Prometheus's boundary extrapolation —
+// rather than reducing the histogram columns some other way.
+//
+// This is the assertion that would catch the worst plausible bug in this
+// lowering: a plan that took each series' NEWEST in-window sample (the
+// bare selector's own `argMax(<col>, TimeUnix)` collapse, the easiest
+// thing to copy from the sibling file) would still produce a
+// HistogramProjection, still emit thirteen columns in contract order, and
+// still pass every structural check above — while answering `rate()` with
+// a raw cumulative counter reading.
+//
+// Each marker below is load-bearing:
+//
+//   - `arrayPopBack` / `arrayPopFront` are counterIncreaseFold's
+//     consecutive-pair map, i.e. the counter-reset differencing itself.
+//   - `dateDiff` is secondsBetweenTsExpr, which only the
+//     boundary-extrapolation factor calls — its absence would mean the
+//     window increase ships unextrapolated (the defect #1958 fixed on the
+//     classic path).
+//   - `groupArray(<Sum>)` is the whole-histogram Sum series this lowering
+//     adds; without it the published Sum could only be a single sample's.
+//   - `uniqExact` is the two-sample floor, which reference applies per
+//     series before emitting anything at all.
+//   - the absence of `argMax(<Count>` is the negative half: the bare
+//     path's latest-sample collapse must NOT appear on this one.
+func TestLower_ExpHistogram_RateReachesTheWindowFold(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	expr, err := p.ParseExpr(`rate(latency_exp_hist[5m])`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("LowerAt: %v", err)
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, want := range []string{
+		"arrayPopBack(",
+		"arrayPopFront(",
+		"dateDiff(",
+		"groupArray(`" + s.SumColumn + "`)",
+		"groupArray(`" + s.CountColumn + "`)",
+		"uniqExact(",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("emitted SQL does not reach the shared native-histogram window fold: missing %q\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "argMax(`"+s.CountColumn+"`") {
+		t.Fatalf("emitted SQL collapses to the newest sample per series — that is the BARE selector's "+
+			"reduction, not a window rate:\n%s", sql)
+	}
+}
+
+// TestLower_ExpHistogram_RateDividesByRangeAndIncreaseDoesNot pins the
+// one arithmetic difference between the two functions this file answers.
+//
+// Reference PromQL folds the per-second division into the very scalar the
+// boundary extrapolation produces — `factor /= ms.Range.Seconds()` before
+// a single `Mul(factor)` over the whole histogram — so `rate` is
+// `increase` divided by the range, field for field. The quantile path
+// leaves that division out on purpose (a per-series constant cancels out
+// of every bucket RATIO), which makes "forgot to divide" the single most
+// likely way to ship a plausible-looking wrong answer here: it is
+// invisible to every structural assertion and to `histogram_quantile`
+// itself, and shows up only as a result 300x too large.
+//
+// The assertion reads the plan rather than the SQL because the divisor is
+// a numeric literal, and the emitter parameterises those — `/ ?` in the
+// SQL text tells a reader nothing about which number.
+func TestLower_ExpHistogram_RateDividesByRangeAndIncreaseDoesNot(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// countProjection returns the window-reduced Count expression, i.e. the
+	// projection the histogram row publishes as its total observation count.
+	countProjection := func(t *testing.T, query string) chplan.Expr {
+		t.Helper()
+		expr, err := p.ParseExpr(query)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", query, err)
+		}
+		plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+		if err != nil {
+			t.Fatalf("LowerAt(%q): %v", query, err)
+		}
+		hp, ok := plan.(*chplan.HistogramProjection)
+		if !ok {
+			t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", query, plan)
+		}
+		reshape, ok := hp.Input.(*chplan.Project)
+		if !ok {
+			t.Fatalf("lower(%q): projection input is %T, want *chplan.Project", query, hp.Input)
+		}
+		for _, proj := range reshape.Projections {
+			if proj.Alias == s.CountColumn {
+				return proj.Expr
+			}
+		}
+		t.Fatalf("lower(%q): reshape publishes no %q projection", query, s.CountColumn)
+		return nil
+	}
+
+	const fiveMinutesInSeconds = 300.0
+
+	rateCount := countProjection(t, `rate(latency_exp_hist[5m])`)
+	div, ok := rateCount.(*chplan.Binary)
+	if !ok || div.Op != chplan.OpDiv {
+		t.Fatalf("rate's Count projection is %#v, want a division by the range — "+
+			"reference folds `factor /= ms.Range.Seconds()` into the same scalar it scales the histogram by", rateCount)
+	}
+	secs, ok := div.Right.(*chplan.LitFloat)
+	if !ok || secs.V != fiveMinutesInSeconds {
+		t.Fatalf("rate over [5m] divides Count by %#v, want the literal %v", div.Right, fiveMinutesInSeconds)
+	}
+
+	increaseCount := countProjection(t, `increase(latency_exp_hist[5m])`)
+	if b, ok := increaseCount.(*chplan.Binary); ok && b.Op == chplan.OpDiv {
+		t.Fatalf("increase's Count projection divides by %#v — increase is the window total, "+
+			"NOT a per-second figure", b.Right)
 	}
 }
