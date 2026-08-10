@@ -913,6 +913,45 @@ jobs:
           node --test .github/scripts/crawl-surface-inventory-guard.test.mjs
           node .github/scripts/crawl-surface-inventory-guard.mjs
 
+      # #1872: the #1674 ratchet above proves the committed bytes are the
+      # canonical FORM of themselves; it says nothing about whether their
+      # CONTENT is a function of the Grafana application. It was not — the
+      # pin carried log field names, dashboard tags, span attribute names
+      # and detected severity levels, so a full-depth run against a
+      # different dataset legitimately produced a different pin and the
+      # ratchet could not tell that from a regression. These two steps
+      # close both halves offline, in milliseconds, with no stack and no
+      # browser:
+      #   - the purity gate reads every committed inventory and fails on
+      #     any interaction fragment pinning a literal outside a declared
+      #     closed vocabulary, which is the seed axis;
+      #   - the "canonicalization pins" specs are the crawl's browser-free
+      #     unit layer, and they carry the visit-order axis (a fold picks
+      #     its representative from the candidate SET, lean membership is
+      #     unioned across candidates) plus the derivation itself. They
+      #     otherwise run only in the de-gated compose crawl shard and the
+      #     nightly k3d lane, so nothing gated them at PR time.
+      # Both self-tests run first: a gate is worthless unless it
+      # demonstrably goes red.
+      - name: Crawl surface inventory purity gate (#1872)
+        run: |
+          node --test .github/scripts/crawl-surface-inventory-purity.test.mjs
+          node .github/scripts/crawl-surface-inventory-purity.mjs
+
+      - name: Crawl canonicalization pins (#1872)
+        working-directory: test/e2e/playwright
+        env:
+          # The crawl specs are opt-in behind CRAWL_STACK (playwright.config
+          # ignores crawl/** without it). The value only selects which
+          # committed inventory the file-consistency pins read; every test
+          # in this grep is pure, so no stack is started and no browser is
+          # launched.
+          CRAWL_STACK: compose
+        run: |
+          npm ci
+          npx playwright test crawl/crawl.spec.ts \
+            --grep "canonicalization pins" --reporter=line
+
       # #1877: post-merge-drift.yml is the ONLY lane that ever looks at the
       # bytes a squash-merge actually produced, and it reports on `main` where
       # no PR check can gate it. That makes a silent break in it invisible — a

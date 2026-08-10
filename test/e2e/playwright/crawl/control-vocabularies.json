@@ -1,0 +1,67 @@
+{
+  "doc": "Closed option vocabularies for the Grafana crawl's interaction sweep — the ONLY place a control's option labels may be declared a fact about the pinned APPLICATION rather than about the seeded dataset. Read by the crawler (test/e2e/playwright/crawl/interactions.ts), which checks every declaration against the live app on each run, and by the PR-time purity gate (.github/scripts/crawl-surface-inventory-purity.mjs), which proves no literal outside these sets ever reached a committed surface inventory. A control this file does not name PARAMETERIZES: its interaction fragment keys as `{rep}` and its option labels never enter the pin. That default is the whole design — the canonical key is a function of the app by construction, and pinning a literal costs a declaration that a live run re-verifies, instead of a growing list of known-bad field names (tsouza/cerberus#1872).",
+  "representativePlaceholder": "{rep}",
+  "closedVocabularies": [
+    {
+      "control": "^select\\[Select match operator\\](#\\d+)?$",
+      "rationale": "Prometheus/Loki adhoc-filter matcher operator: exactly the four matcher symbols the query languages define — a protocol constant, not app or data state.",
+      "values": ["=", "!=", "=~", "!~"]
+    },
+    {
+      "control": "^select\\[react-select-\\{rid\\}-input\\](#\\d+)?$",
+      "rationale": "Traces Drilldown 'primary signal' picker (the Select half; the RadioButtonGroup half is a separate control). The widget carries neither a testid nor an aria-label nor a placeholder — a plugin-side accessibility gap verified live against grafana-exploretraces-app — so discovery's identity chain falls through to the react-select mount-order id, normalized to the generic `react-select-{rid}-input` that every unlabeled react-select on any page shares. That generic key is deliberately NOT enough on its own: the closed set below is what earns the verbatim key, and it is the same primarySignal option set lib.ts's `var-primarySignal` structural-param rule declares, read off the plugin bundle rather than off a seed. A coincidentally-anonymous but genuinely data-derived select elsewhere matches the key, fails this set, and fails the crawl loudly instead of inheriting the classification (tsouza/cerberus#1992, #2000, #2012).",
+      "values": [
+        "Server spansExplore server-specific segments of traces",
+        "Consumer spansAnalyze interactions initiated by consumer services",
+        "Database callsEvaluate the performance issues in database interactions"
+      ]
+    },
+    {
+      "control": "^select\\[SortBy direction\\](#\\d+)?$",
+      "rationale": "Logs/Traces Drilldown table sort direction — a two-way widget constant. How a table SORTS does not depend on what the seeded logs say, and both seeded stacks observe the identical set.",
+      "values": ["Asc", "Desc"]
+    },
+    {
+      "control": "^select\\[SortBy function\\](#\\d+)?$",
+      "rationale": "Logs Drilldown breakdown ordering menu. Option labels concatenate the entry's name and its description because the widget renders both inside one option row, so the label text is the bundle's own copy. Both seeded stacks (compose and k3d, different datasets) observe exactly this set, which is the evidence that it is bundle-fixed rather than data-derived.",
+      "values": [
+        "10th %10th percentile value",
+        "25th %25th percentile value",
+        "75th %75th percentile value",
+        "CountSort graphs by total number of logs",
+        "Highest spikeSort graphs by the highest values (max)",
+        "Lowest dipSort graphs by the smallest values (min)",
+        "Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+        "NameAlphabetical order",
+        "Outlying valuesOrder by the amount of outlying values in the data",
+        "Widest spreadSort graphs by deviation from the average value"
+      ]
+    },
+    {
+      "control": "^select\\[Sort\\](#\\d+)?$",
+      "rationale": "Alphabetical sort pickers. Two widgets share this key — the dashboard-browse picker, whose copy uses parentheses and an en dash, and the Drilldown picker, whose copy uses square brackets and a hyphen — so the closed set is the union of both vocabularies. Both seeded stacks observe the identical set.",
+      "values": [
+        "Alphabetically (A–Z)",
+        "Alphabetically (Z–A)",
+        "Alphabetically [A-Z]",
+        "Alphabetically [Z-A]"
+      ]
+    },
+    {
+      "control": "^select\\[\\{n\\} (logs|lines|rows)\\](#\\d+)?$",
+      "rationale": "Logs Drilldown result-count picker. How many rows a table FETCHES is a widget constant, not a property of the seeded logs. The placeholder mirrors the current selection, so discovery erases the count from the KEY (`{n} logs`) — which also means the currently-selected value is the one option the sweep never drives, and 1000 is that default.",
+      "values": ["100", "500", "1000", "2000", "5000"]
+    },
+    {
+      "control": "^select\\[downshift-\\{rid\\}-input\\](#\\d+)?$",
+      "rationale": "A downshift input with neither a testid nor an aria-label falls back to its bare React useId-derived element id, erased to the shared `{rid}` placeholder — so this one key addresses two different, both fixed-vocabulary, widgets verified live: the Logs Drilldown per-value operator step (Include | Exclude) and the Traces Drilldown duration-metric percentile picker (p50 | p90 | p99). The closed set is the union; a data-derived downshift input reaching this key fails it loudly.",
+      "values": ["Include", "Exclude", "p50", "p90", "p99"]
+    }
+  ],
+  "exhaustiveDataControls": [
+    {
+      "control": "^attribute-list(#\\d+)?$",
+      "rationale": "The Traces Drilldown groupBy attribute picker. Its options are span-attribute NAMES read out of live query results, so they are data and can never key the pin — this control parameterizes to `{rep}` like any other undeclared one. It is listed here for the ORTHOGONAL axis: the sweep still drives every offered attribute rather than one representative, because driving a groupBy attribute is what fires a distinct `rate() by(<attr>)` TraceQL query, and that is the gesture class the crawler was built for (the 2026-06-10 `var-groupBy=kind` 422 that no enumerated spec reached). Coverage of the gestures and purity of the key are separate decisions; this list is the only place they are decoupled, and the sweep caps still bound it — an option set that outgrows them fails the crawl loudly rather than truncating."
+    }
+  ]
+}

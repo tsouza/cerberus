@@ -149,6 +149,35 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   - Pins: `crawl-surface-inventory-guard.test.mjs` (`node --test`), which
     drives the real script over temp fixtures with a negative control per
     check, plus a positive control over the real committed files.
+- **`crawl-surface-inventory-purity.mjs`** — `ci.yml`, the `forbid-skip` job
+  step "Crawl surface inventory purity gate (#1872)". The sibling
+  canonical-form ratchet above proves the committed bytes are the canonical
+  FORM of themselves; this one asks whether their CONTENT is a function of
+  the Grafana application. It was not: the pin carried log field names,
+  dashboard tags, span attribute names and detected severity levels, so a
+  full-depth run against a different dataset legitimately produced a
+  different pin and the ratchet could not tell that from a regression. The
+  gate fails on any interaction fragment (`<canonical>#<control>=<value>`)
+  whose value is neither the representative placeholder nor a member of a
+  CLOSED option set the control declares. A control declares one two ways:
+  its discovery key already embeds the vocabulary (`radio[Grid|Rows]`,
+  `tabs[a|b|c]` — the value half says nothing the key half has not), or
+  `test/e2e/playwright/crawl/control-vocabularies.json` names it with a
+  rationale. That manifest is the same file the crawler reads when it plans
+  gestures, so this gate cannot certify a pin the crawler would not produce,
+  and the crawler re-checks each declared set against the live app on every
+  run. Offline, no stack, no browser. It deliberately does NOT assert that
+  the pin survives a row permutation: the marshaller sorts, so that
+  assertion cannot fail and would be coverage in name only — the visit-order
+  axis is pinned by the "crawl: canonicalization pins" specs, which the next
+  step in the same job runs.
+  - Env: `CRAWL_DIR` (default `test/e2e/playwright/crawl`).
+  - Exit: `0` when every discovered inventory pins no literal outside a
+    declared vocabulary, `1` on any violation, a malformed manifest, an
+    unparseable inventory, or an empty discovery.
+  - Pins: `crawl-surface-inventory-purity.test.mjs` (`node --test`), which
+    drives the real script and pairs every clean case with the dirty one it
+    must catch, using the real defect rows the committed inventories carried.
 - **`generated-baseline-structural-guard.mjs`** — `ci.yml`, the `forbid-skip`
   job step "Structural sanity check over generated baseline shapes (#1568)".
   A fast, dependency-free structural pre-filter (unique key, sorted order,

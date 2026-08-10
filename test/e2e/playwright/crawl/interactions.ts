@@ -23,11 +23,13 @@
  *      pickers → iterate-time-ranges.spec.ts; panel kiosk menus →
  *      iterate-panel-kiosk.spec.ts).
  *   2. BOUNDED PLANNING — the locked pairwise design:
- *        - structural low-cardinality controls (≤ STRUCTURAL_MAX_OPTIONS
- *          options: groupBy attributes, actionView tabs, metric type,
- *          layout) enumerate FULLY;
- *        - high-cardinality controls (filter values, metric-name
- *          tiles, tag filters) take ONE representative option;
+ *        - a control whose option set is DECLARED closed (its key
+ *          embeds the vocabulary, or control-vocabularies.json names
+ *          it) enumerates FULLY and keys its options verbatim;
+ *        - every other control is data-derived by default: it takes
+ *          ONE representative option and keys it as
+ *          REPRESENTATIVE_PLACEHOLDER, so no seeded label reaches the
+ *          canonical key (#1872);
  *        - cross-control combos are PAIRWISE via surface chaining: a
  *          deviation that encodes to the URL becomes a first-class
  *          surface (see StructuralParamRule in lib.ts); sweeping a
@@ -59,154 +61,155 @@
  */
 
 import type { Locator, Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+// Codepoint ordering — the crawl's one tie-breaker, shared with the
+// surface fold (lib.ts) so "deterministic" means the same thing on the
+// gesture axis and the surface axis.
+import { byCodepoint } from './lib.js';
 
 // ---------------------------------------------------------------------------
-// Bounds (the locked design)
+// Declared control vocabularies — the canonical-key purity rule
 // ---------------------------------------------------------------------------
 
 /**
- * A control with more options than this is HIGH-cardinality: its
- * value set is data-derived (attribute values, metric names, tags),
- * so it contributes one representative option instead of a full
- * enumeration. 12 covers every structural control verified live
- * (the largest, the Traces Drilldown favorites attribute list,
- * carries 10) while excluding the data-derived lists (the "All"
- * attributes scope renders 51).
+ * A control's option labels may be pinned VERBATIM into the canonical
+ * surface key only when the option set is a fact about the pinned
+ * APPLICATION. Everything else parameterizes to `{rep}`.
  *
- * Applies to 'tab' / 'radio' / 'option-list' controls only — Grafana
- * core's TabsBar and RadioButtonGroup iterate a literal array baked
- * into the plugin bundle at build time, so their SIZE really is a
- * fact about the app. 'combobox' controls get no such guarantee (see
- * COMBOBOX_CARDINALITY_RULES below): a react-select/downshift input
- * can be bound to either a bundle-fixed menu (sort direction) or a
- * datasource query result (field names, tag values), and nothing
- * about ITS SIZE tells the two apart — an 11-tag dashboard-browse
- * "Tag filter" and a 13-field Logs Drilldown "Filter by fields" are
- * on OPPOSITE sides of this threshold despite both being data.
+ * There are exactly two ways a control earns a verbatim key, and both
+ * are checked rather than assumed:
+ *
+ *   1. Its identity ALREADY carries the vocabulary. Tab strips and
+ *      radio groups key as `tabs[a|b|c]` / `radio[a|b]` — discovery
+ *      builds the key out of the option labels themselves — so the
+ *      VALUE half of the fragment adds nothing the KEY half has not
+ *      already said. Nothing about the pin moves that the identity
+ *      does not move with it, and control identity is the axis
+ *      #1977 closed.
+ *   2. control-vocabularies.json names it and declares the closed set.
+ *      The declaration is not a promise: planInteractions re-checks it
+ *      against what the LIVE app renders on every crawl, so a value
+ *      outside the set fails the run loudly instead of silently mining
+ *      a seeded label into the key.
+ *
+ * Everything else parameterizes. That default is the fix for #1872,
+ * and its shape is the point: the canonical key is a function of the
+ * application BY CONSTRUCTION, and pinning a literal costs a
+ * declaration a live run re-verifies — not a growing list of known
+ * field names to exclude. The predecessor decided the same question by
+ * counting how many options happened to render (a `STRUCTURAL_MAX_OPTIONS`
+ * threshold), which is a measurement of the SEED: an 11-tag
+ * dashboard-browse "Tag filter" and a 13-field Logs Drilldown "Filter
+ * by fields" landed on opposite sides of it despite both being data,
+ * and a `service.name` span attribute, a `cerberus_ql` group-by value
+ * and a `detected_level` of `info` were all pinned into the committed
+ * inventory purely because that day's dataset was small enough.
+ *
+ * The two misclassification directions are not symmetric, and the
+ * default favours the safe one. A control wrongly left undeclared
+ * loses enumeration — a coverage gap the interaction-count ratchet
+ * catches and a reviewer promotes deliberately. A control wrongly
+ * declared pins the dataset into the key, which is the entire defect
+ * class this mechanism exists to close.
  */
-export const STRUCTURAL_MAX_OPTIONS = 12;
-
-/**
- * Which sweep mode a 'combobox' control's option set gets, decided by
- * CONTROL IDENTITY (its discovery `key` — a testid/aria-label/
- * placeholder-derived string, fixed by the pinned app version) rather
- * than by how many options happen to render today. Same doctrine as
- * lib.ts's StructuralParamRule, generalized from URL query params to
- * in-place interaction fragments (`#control=value`):
- *
- *   - 'enumerate' — the option set is a fact about the APP: a fixed
- *     menu (sort direction, sort function, result-count picker, log
- *     severity levels, matcher operators, …) baked into the widget's
- *     own contract. Every option keys its own state.
- *   - 'parameterize' — the DEFAULT for every combobox key this table
- *     does not name. A control whose options come from a datasource
- *     query (detected field/label/tag names, metric names, dashboard
- *     tags, …) collapses to one representative (`{rep}`) regardless
- *     of how many options the CURRENT seed happens to produce — #1872
- *     was `Filter by fields` and `Tag filter` pinning literal seeded
- *     names purely because their count landed on the wrong side of
- *     STRUCTURAL_MAX_OPTIONS that day.
- *
- * A key with no matching rule parameterizes — the safe default. A
- * control genuinely misclassified 'parameterize' loses enumeration
- * (a coverage gap the interaction-count ratchet can catch and a
- * reviewer can promote to 'enumerate' deliberately); one
- * misclassified 'enumerate' pins the seeded dataset into the key,
- * which is the defect class this table exists to close. The two
- * failure modes are not symmetric, so the default favors the safe
- * one.
- */
-export type ComboboxCardinalityRule = {
-  /** Matched against the control's discovery KEY — its identity,
-   * never an option VALUE. */
-  keyPattern: RegExp;
-  mode: 'enumerate' | 'parameterize';
-  /**
-   * Optional closed option set. When present, a discovered option
-   * outside it fails the crawl loudly instead of silently mining the
-   * value into the plan — the same self-check StructuralParamRule
-   * runs for 'enumerate' query params: either the app gained an
-   * option (add it here deliberately) or the list is not actually
-   * closed (the rule is miscategorised; make it 'parameterize').
-   */
-  values?: ReadonlyArray<string>;
+export type ControlVocabulary = {
+  /** Matched against the control's discovery KEY — its identity, never
+   * an option VALUE. Tolerates assignUniqueKeys' `#<n>` suffix. */
+  control: RegExp;
+  /** Why this option set is app structure and not seeded data. */
+  rationale: string;
+  /** The closed option set, re-checked against the live app per crawl. */
+  values: ReadonlyArray<string>;
 };
 
-// Every pattern tolerates assignUniqueKeys' `#<n>` disambiguation
-// suffix (two same-family controls on one page) so a duplicate sibling
-// doesn't silently fall through to the default.
-export const COMBOBOX_CARDINALITY_RULES: ReadonlyArray<ComboboxCardinalityRule> = [
-  // Logs/Traces Drilldown table controls: layout, sort and page-size
-  // menus are fixed UI vocabulary, not data — how a table SORTS or how
-  // many rows it FETCHES does not depend on what the seeded logs say.
-  { keyPattern: /^select\[SortBy direction\](#\d+)?$/, mode: 'enumerate' },
-  { keyPattern: /^select\[SortBy function\](#\d+)?$/, mode: 'enumerate' },
-  {
-    keyPattern: /^select\[\{n\} (logs|lines|rows)\](#\d+)?$/,
-    mode: 'enumerate',
-  },
-  // Loki's OWN normalized severity vocabulary (critical/error/warn/
-  // info/debug/trace/unknown), not a set of arbitrary detected values.
-  { keyPattern: /^select\[detected_level\](#\d+)?$/, mode: 'enumerate' },
-  // A downshift input with neither a testid nor an aria-label falls
-  // back to its bare React useId-derived element id (erased to the
-  // shared `{rid}` placeholder — see REACT_ID_PLACEHOLDER), so this ONE
-  // key pattern addresses two different, both fixed-vocabulary, widgets
-  // verified live: the Logs Drilldown per-value operator step
-  // (Include | Exclude) and the Traces Drilldown duration-metric
-  // percentile picker (p50 | p90 | p99).
-  {
-    keyPattern: /^select\[downshift-\{rid\}-input\](#\d+)?$/,
-    mode: 'enumerate',
-  },
-  // Prometheus/Loki adhoc-filter matcher operator: exactly the four
-  // matcher symbols the query languages define — a protocol constant,
-  // not app or data state.
-  {
-    keyPattern: /^select\[Select match operator\](#\d+)?$/,
-    mode: 'enumerate',
-    values: ['=', '!=', '=~', '!~'],
-  },
-  // Dashboard-browse "sort by": a fixed alphabetical/recency menu.
-  { keyPattern: /^select\[Sort\](#\d+)?$/, mode: 'enumerate' },
-  // Traces Drilldown "primary signal" picker (the Select half — the
-  // RadioButtonGroup half carrying "Root spans" / "All spans" is a
-  // separate 'radio' control, already structural by size). The widget
-  // carries NEITHER a testid NOR an aria-label NOR a placeholder — a
-  // plugin-side accessibility gap verified live against
-  // grafana-exploretraces-app, so discovery's identity chain falls all
-  // the way through to the react-select mount-order id, normalized to
-  // the generic `react-select-{rid}-input` every unlabeled react-select
-  // on ANY page shares. That generic pattern is deliberately NOT enough
-  // on its own to earn 'enumerate' — a coincidentally-anonymous,
-  // genuinely data-derived select elsewhere must not inherit it. The
-  // `values` set closes that gap: it is the SAME three primarySignal
-  // labels lib.ts's `var-primarySignal` StructuralParamRule already
-  // declares (`kind=server` / `kind=consumer` /
-  // `span.db.system.name!=""`, minus the two the RadioButtonGroup
-  // holds), read off the plugin bundle rather than a seed. A control
-  // that matches the key but NOT this option set throws in
-  // planInteractions's self-check below instead of silently borrowing
-  // the classification — the crawl was reaching this exact set,
-  // uncatalogued, before: `representativeOption`'s codepoint-order pick
-  // landed on "Consumer spans…" ('C' < 'D' < 'S'), so the sweep drove
-  // Consumer every run and never Server, no matter how much backing
-  // data Server carried (#1992).
-  {
-    keyPattern: /^select\[react-select-\{rid\}-input\](#\d+)?$/,
-    mode: 'enumerate',
-    values: [
-      'Server spansExplore server-specific segments of traces',
-      'Consumer spansAnalyze interactions initiated by consumer services',
-      'Database callsEvaluate the performance issues in database interactions',
-    ],
-  },
-];
+/**
+ * A control whose options are DATA (so it keys `{rep}` like any other
+ * undeclared control) but which the sweep nevertheless drives
+ * exhaustively, because each option fires a materially different
+ * query. Purity of the key and coverage of the gestures are separate
+ * decisions; this is the only place they are decoupled, and the sweep
+ * caps still bound the result.
+ */
+export type ExhaustiveDataControl = {
+  control: RegExp;
+  rationale: string;
+};
 
-export function comboboxCardinalityRule(
+type VocabularyManifest = {
+  representativePlaceholder: string;
+  closedVocabularies: Array<{
+    control: string;
+    rationale: string;
+    values: string[];
+  }>;
+  exhaustiveDataControls: Array<{ control: string; rationale: string }>;
+};
+
+/**
+ * The manifest is a JSON file rather than a TypeScript literal so the
+ * PR-time purity gate (.github/scripts/crawl-surface-inventory-purity.mjs)
+ * reads the SAME declarations the crawler enforces. Two copies of this
+ * table would let the gate certify a pin the crawler never produced.
+ */
+export const CONTROL_VOCABULARIES_FILENAME = 'control-vocabularies.json';
+
+const manifest = JSON.parse(
+  readFileSync(join(__dirname, CONTROL_VOCABULARIES_FILENAME), 'utf8'),
+) as VocabularyManifest;
+
+/**
+ * The token an undeclared (data-derived) control keys instead of its
+ * option label. It lives in the manifest so the crawler and the
+ * PR-time purity gate agree on it by construction rather than by two
+ * string literals that can drift apart.
+ */
+export const REPRESENTATIVE_PLACEHOLDER: string =
+  manifest.representativePlaceholder;
+
+export const CLOSED_VOCABULARIES: ReadonlyArray<ControlVocabulary> =
+  manifest.closedVocabularies.map((v) => ({
+    control: new RegExp(v.control),
+    rationale: v.rationale,
+    values: v.values,
+  }));
+
+export const EXHAUSTIVE_DATA_CONTROLS: ReadonlyArray<ExhaustiveDataControl> =
+  manifest.exhaustiveDataControls.map((v) => ({
+    control: new RegExp(v.control),
+    rationale: v.rationale,
+  }));
+
+/**
+ * The vocabulary a key carries in ITSELF — the `a|b|c` of a
+ * `tabs[a|b|c]` / `radio[a|b]` discovery key (see reason 1 above).
+ * Returns undefined for every other key shape.
+ */
+export function keyEmbeddedVocabulary(
   key: string,
-): ComboboxCardinalityRule | undefined {
-  return COMBOBOX_CARDINALITY_RULES.find((r) => r.keyPattern.test(key));
+): ReadonlyArray<string> | undefined {
+  const m = /^(?:tabs|radio)\[(.+)\](?:#\d+)?$/.exec(key);
+  return m === undefined || m === null ? undefined : m[1]!.split('|');
+}
+
+/**
+ * The closed option set a control is allowed to key verbatim, or
+ * undefined when it must parameterize to `{rep}`.
+ */
+export function declaredVocabulary(
+  key: string,
+): ReadonlyArray<string> | undefined {
+  const declared = CLOSED_VOCABULARIES.find((v) => v.control.test(key));
+  if (declared !== undefined) return declared.values;
+  return keyEmbeddedVocabulary(key);
+}
+
+/** Whether the sweep drives every option of this control (see the two
+ * reasons above, plus the exhaustive-data list). */
+export function sweepsEveryOption(key: string): boolean {
+  if (declaredVocabulary(key) !== undefined) return true;
+  return EXHAUSTIVE_DATA_CONTROLS.some((v) => v.control.test(key));
 }
 
 /**
@@ -246,12 +249,6 @@ export type DiscoveredControl = {
   options: string[];
   /** Index of the currently-selected option, -1 when undeterminable. */
   selectedIndex: number;
-  /**
-   * True for controls whose option set is data-derived by
-   * construction (metric tiles, adhoc-filter keys) — they take one
-   * representative regardless of how many options happen to render.
-   */
-  forcedHighCardinality: boolean;
   /** Per-option locator hints (tab testids, radio input ids, li titles). */
   optionHints: string[];
   /** Locator hint addressing the control itself (combobox inputs). */
@@ -269,9 +266,11 @@ export type PlannedInteraction = {
   /** Option label to drive. */
   option: string;
   /**
-   * Value used in the in-place state notation. High-cardinality
-   * representatives parameterize to `{rep}` so data-derived values
-   * (first tag, first metric name) can't flicker the inventory.
+   * Value used in the in-place state notation: the option label
+   * itself for a control with a DECLARED closed vocabulary, and
+   * REPRESENTATIVE_PLACEHOLDER for every other control, so no
+   * data-derived label (a detected field, a dashboard tag, a span
+   * attribute name) can reach the canonical key.
    */
   stateValue: string;
   /**
@@ -346,58 +345,67 @@ export function planInteractions(
 
   const plan: PlannedInteraction[] = [];
   for (const control of controls) {
-    // 'combobox' controls decide structural-vs-data-derived by
-    // DECLARED identity (COMBOBOX_CARDINALITY_RULES), never by how
-    // many options the current seed happens to render — see #1872.
-    // Every other kind keeps the size-based check: Grafana core's
-    // TabsBar / RadioButtonGroup / option-list widgets iterate a
-    // bundle-fixed array, so their SIZE is a fact about the app (see
-    // STRUCTURAL_MAX_OPTIONS).
-    let structural: boolean;
-    if (control.kind === 'combobox') {
-      const rule = comboboxCardinalityRule(control.key);
-      if (rule?.mode === 'enumerate' && rule.values !== undefined) {
-        const unknown = control.options.filter(
-          (o) => !rule.values!.includes(o),
+    // Whether this control may key its options VERBATIM is decided by
+    // DECLARED identity — the key's own embedded vocabulary, or an
+    // entry in control-vocabularies.json — never by how many options
+    // the current seed happens to render (#1872). An undeclared
+    // control parameterizes to `{rep}` however few options it has.
+    const vocabulary = declaredVocabulary(control.key);
+    if (vocabulary !== undefined) {
+      // The declaration is re-checked against the LIVE app on every
+      // crawl. A value outside it means exactly one of two things and
+      // both need a human: the pinned app version gained an option
+      // (pin it deliberately) or the set is not actually closed and
+      // the declaration must go, which reverts the control to `{rep}`.
+      // Failing here names the control and the value; letting it
+      // through instead mines a seeded label into the canonical key.
+      const unknown = control.options.filter((o) => !vocabulary.includes(o));
+      if (unknown.length > 0) {
+        throw new Error(
+          `interaction sweep: control ${control.key} offers option(s) ` +
+            `${unknown.map((o) => JSON.stringify(o)).join(', ')} outside its declared ` +
+            `closed set [${vocabulary.map((v) => JSON.stringify(v)).join(', ')}] — either ` +
+            `the pinned app version gained an option (add it to ` +
+            `${CONTROL_VOCABULARIES_FILENAME} deliberately) or the option list is not ` +
+            `actually closed, in which case the declaration must be removed so the ` +
+            `control parameterizes to ${JSON.stringify(REPRESENTATIVE_PLACEHOLDER)}.`,
         );
-        if (unknown.length > 0) {
-          throw new Error(
-            `interaction sweep: combobox ${control.key} offers option(s) ` +
-              `${unknown.map((o) => JSON.stringify(o)).join(', ')} outside its declared ` +
-              `closed set [${rule.values.map((v) => JSON.stringify(v)).join(', ')}] in ` +
-              `COMBOBOX_CARDINALITY_RULES — either the pinned app version gained an option ` +
-              `(add it to the rule's values deliberately) or the option list is not actually ` +
-              `closed, in which case the rule must become mode 'parameterize'.`,
-          );
-        }
       }
-      structural = rule?.mode === 'enumerate';
-    } else {
-      structural =
-        !control.forcedHighCardinality &&
-        control.options.length <= STRUCTURAL_MAX_OPTIONS;
     }
+    const keysVerbatim = vocabulary !== undefined;
     const drivable = control.options.filter(
       (_, i) => i !== control.selectedIndex,
     );
     if (drivable.length === 0) continue;
-    // High-cardinality → exactly ONE representative. The pick is the
-    // lexicographically smallest option so it is a function of the
-    // option SET, never of the order the app rendered it in:
-    // data-backed lists (adhoc label keys, metric-name tiles, tag
-    // values) reorder as the stack ingests, and a DOM-order pick then
-    // drives a different option — and mints a different surface — on
-    // every run.
-    const options = structural ? drivable : [representativeOption(drivable)];
-    for (let i = 0; i < options.length; i++) {
+    // Option ORDER is an app fact exactly where the option SET is.
+    // A declared vocabulary keeps the app's own order, because that is
+    // the plugin bundle's order and its first entry is the meaningful
+    // lean representative — imposing codepoint order there drove the
+    // Traces Drilldown primary-signal picker to "Consumer spans…" on
+    // every run and never showed the crawl "Server spans…" (#1992). An
+    // undeclared control has no trustworthy order: its list is a query
+    // result that reorders as the stack ingests, so a DOM-order pick
+    // would drive a different option — and mint a different surface —
+    // run to run. Codepoint order replaces it, making the pick a
+    // function of the option SET (representativeOption's doctrine).
+    const ordered = keysVerbatim
+      ? drivable
+      : [...drivable].sort(byCodepoint);
+    // Exactly one option unless the control sweeps exhaustively AND
+    // this surface is not already pinning a structural param (a
+    // combo-forming surface takes the representative plan so each
+    // interaction there forms a PAIR, never a full cross-product).
+    const options =
+      sweepsEveryOption(control.key) && !representativeOnly
+        ? ordered
+        : [ordered[0]!];
+    for (const option of options) {
       plan.push({
         control,
-        option: options[i]!,
-        stateValue: structural ? options[i]! : '{rep}',
-        leanRepresentative: i === 0,
+        option,
+        stateValue: keysVerbatim ? option : REPRESENTATIVE_PLACEHOLDER,
+        leanRepresentative: option === options[0]!,
       });
-      // Representative plan → one option per control.
-      if (representativeOnly) break;
     }
   }
 
@@ -1375,9 +1383,6 @@ export async function discoverControls(
         key: c.key,
         options,
         selectedIndex: options.findIndex((o) => o === currentValue),
-        // Adhoc-filter key lists are data-derived (label names)
-        // whatever their size — force the one-representative path.
-        forcedHighCardinality: c.kind === 'adhoc-filter',
         optionHints: options,
         controlHint: c.controlHint,
         clickHops: c.clickHops,
@@ -1389,7 +1394,6 @@ export async function discoverControls(
       key: c.key,
       options: c.options,
       selectedIndex: c.selectedIndex,
-      forcedHighCardinality: c.kind === 'select-tile',
       optionHints: c.optionHints,
       controlHint: c.controlHint,
       clickHops: c.clickHops,
