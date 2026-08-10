@@ -1,5 +1,5 @@
 {
-  "doc": "Pinned canonical Grafana surface set for the k3d stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. The k3d crawl lane (dashboard job, .github/workflows/e2e.yml) runs nightly + on manual dispatch at SWEEP_DEPTH=full, so every row is crawled each run; lean=true rows mark the local fast-lane subset only. Regenerate deliberately against a healthy k3d stack (just e2e-up && just e2e-seed-rolling) with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=k3d npx playwright test crawl/crawl.spec.ts — or dispatch the e2e workflow with update_crawl_inventory=true and commit the uploaded artifact.",
+  "doc": "Pinned canonical Grafana surface set for the k3d stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. The k3d crawl lane (dashboard job, .github/workflows/e2e.yml) runs nightly + on manual dispatch at SWEEP_DEPTH=full, so every row is crawled each run; lean=true rows mark the local fast-lane subset only. Regenerate deliberately against a healthy k3d stack (just e2e-up && just e2e-seed-rolling) with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=k3d npx playwright test crawl/crawl.spec.ts — or dispatch the e2e workflow with update_crawl_inventory=k3d (or =both) and commit the uploaded grafana-surface-inventory-k3d artifact.",
   "stack": "k3d",
   "surfaces": [
     {
@@ -11,11 +11,263 @@
       "lean": true
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore",
+      "url": "/a/grafana-exploretraces-app/explore#adhoc[+ label = value]={rep}",
       "lean": true
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore#adhoc[Filter by labels]={rep}",
+      "url": "/a/grafana-exploretraces-app/explore#radio[Single|Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#radio[Single|Grid|Rows]=Single",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#tabs[Favorites|All|Resource|Span]=All",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#tabs[Favorites|All|Resource|Span]=Resource",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#tabs[Favorites|All|Resource|Span]=Span",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}&var-metric=duration",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList#attribute-list={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy={var-groupBy}&var-metric=duration",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy={var-groupBy}&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#attribute-list={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore",
       "lean": true
     },
     {
@@ -124,6 +376,10 @@
     },
     {
       "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[Filter by fields]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy direction]=Asc",
       "lean": false
     },
     {
@@ -387,11 +643,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]=error",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]=warn",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]={rep}",
       "lean": false
     },
     {
@@ -427,7 +679,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[detected_level]=warn",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[detected_level]={rep}",
       "lean": false
     },
     {
@@ -451,7 +703,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[detected_level]=warn",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[detected_level]={rep}",
       "lean": false
     },
     {
