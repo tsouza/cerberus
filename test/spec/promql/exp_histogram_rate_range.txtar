@@ -21,40 +21,58 @@ CREATE TABLE otel_metrics_exponential_histogram (
 -- the grid.
 --
 -- One series scraped every 60s on the minute from 23:56:00 to 00:04:00,
--- with a perfectly linear counter. The grid runs 00:00:00 -> 00:04:30 at
--- 30s, and every anchor's half-open window (anchor - 5m, anchor] holds
--- exactly five of those scrapes:
+-- with a perfectly linear counter: every minute adds Count 60, Sum 30,
+-- and 30 to each of the two buckets. The grid runs 00:00:00 -> 00:05:00
+-- at 30s, so there are eleven anchors and each resolves its own
+-- half-open window (anchor - 5m, anchor].
+--
+-- The first ten anchors hold five scrapes apiece and differ only in
+-- phase:
 --   anchor 00:00:00 -> (23:55:00, 00:00:00] = 23:56:00 .. 00:00:00
 --   anchor 00:00:30 -> (23:55:30, 00:00:30] = 23:56:00 .. 00:00:00
 --   anchor 00:01:00 -> (23:56:00, 00:01:00] = 23:57:00 .. 00:01:00
---   ... and so on, sliding one scrape per two anchors.
---
--- Per-anchor arithmetic, identical at every step because the counter is
--- linear and the geometry repeats:
+--   ... sliding one scrape per two anchors, down to
+--   anchor 00:04:30 -> (23:59:30, 00:04:30] = 00:00:00 .. 00:04:00
+-- for which:
 --   window increase   Count 4*60 = 240, Sum 4*30 = 120,
 --                     ZeroCount 0, buckets [4*30, 4*30] = [120, 120]
 --   sampledInterval = 240s, average gap = 60s, threshold = 66s
---   durationToStart = 60s or 30s depending on the anchor's phase, both
---                     below the 66s threshold, so neither is clamped
---   durationToEnd   = 0s or 30s, the complement of the same phase
---   durationToZero  = 240 * (first/240); first is 600 at the earliest
---                     anchor and rises, so it never falls below 60s and
---                     never binds
---   durationToStart + durationToEnd = 60s at EVERY anchor, so
---   factor = (240 + 60) / 240 = 1.25 uniformly
+--   durationToStart = 60s on an on-the-minute anchor, 30s on a
+--                     half-minute one — both under the 66s threshold,
+--                     so neither is clamped
+--   durationToEnd   = 0s or 30s, the complement of that same phase
+--   durationToZero  = 240 * (first/240); `first` is 600 at the earliest
+--                     anchor and only rises, so it never falls below
+--                     durationToStart and never binds
+--   durationToStart + durationToEnd = 60s at every one of the ten, so
+--   factor = (240 + 60) / 240 = 1.25
+--
+-- The ELEVENTH anchor is the interesting one, and it is why the grid is
+-- worth eleven rows rather than one. Its window (00:00:00, 00:05:00] is
+-- half-open at the left, so it EXCLUDES the 00:00:00 scrape and holds
+-- only four:
+--   window increase   Count 3*60 = 180, Sum 3*30 = 90,
+--                     buckets [3*30, 3*30] = [90, 90]
+--   sampledInterval = 00:04:00 - 00:01:00                = 180s
+--   averageDurationBetweenSamples = 180 / (4-1)          = 60s
+--   durationToStart = 00:01:00 - 00:00:00 = 60s < 66     -> 60s
+--   durationToEnd   = 00:05:00 - 00:04:00 = 60s < 66     -> 60s
+--   factor = (180 + 60 + 60) / 180                       = 5/3
 --
 -- `rate` divides by the range as well, so every field is scaled by
--- 1.25 / 300 = 1/240:
---   Count     240 / 240 = 1
---   Sum       120 / 240 = 0.5
---   ZeroCount   0
---   buckets  [120/240, 120/240] = [0.5, 0.5]
+-- factor / 300 — and the two different factors land on the same answer,
+-- because recovering a linear counter's true slope from a partially
+-- covered window is exactly what the extrapolation is FOR:
+--   ten anchors  Count 240 * 1.25  / 300 = 1, Sum 120 * 1.25  / 300 = 0.5
+--   eleventh     Count 180 * (5/3) / 300 = 1, Sum  90 * (5/3) / 300 = 0.5
+--   buckets      [0.5, 0.5] on both, ZeroCount 0 throughout
 --
--- Every anchor therefore reports the identical rate at its own
--- timestamp — which is what a linear counter should produce, and what a
--- lowering that leaked one window across the whole grid would ALSO
--- produce, so the fixture's job here is the ten distinct timestamps and
--- the retained `service` label, not the value alone.
+-- So every anchor reports the identical rate at its own timestamp. A
+-- lowering that leaked ONE window across the whole grid would produce
+-- that too — which is why the load-bearing part of this fixture is the
+-- eleven distinct timestamps and the retained `service` label, plus the
+-- eleventh anchor's four-sample window agreeing with the other ten
+-- rather than reading 3/4 of their value.
 INSERT INTO otel_metrics_exponential_histogram VALUES
     ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:00', 9),  600, 300.0, 0, 0, 0, [200, 400], 0, []),
     ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:00', 9),  660, 330.0, 0, 0, 0, [230, 430], 0, []),

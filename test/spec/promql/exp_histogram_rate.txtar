@@ -33,7 +33,7 @@ CREATE TABLE otel_metrics_exponential_histogram (
 --   sampledInterval = 00:00:01 - 23:59:01           = 60s
 --   averageDurationBetweenSamples = 60 / (2-1)      = 60s
 --   extrapolationThreshold = 60 * 1.1               = 66s
---   durationToStart raw = 23:59:01 - 23:55:01 = 239s+1s = 240s
+--   durationToStart raw = 23:59:01 - 23:55:01           = 240s
 --                       240 >= 66, so clamp to 60/2 = 30s
 --   durationToZero = sampledInterval * first/result
 --                  = 60 * (6 / 24)                  = 15s
