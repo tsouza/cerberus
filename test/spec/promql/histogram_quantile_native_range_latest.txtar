@@ -12,6 +12,10 @@
 # single-pass fan-out is byte-equivalent to the old CROSS-JOIN shape.
 -- query.promql --
 histogram_quantile(0.95, http_server_duration_exp_hist{service="api"})
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --
