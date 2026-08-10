@@ -1,5 +1,5 @@
 {
-  "doc": "Pinned canonical Grafana surface set for the compose stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. lean=true rows are the per-PR crawl (root + nav + one representative per drilldown app); every row is crawled nightly. Regenerate deliberately against a healthy compose stack with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose npx playwright test crawl/crawl.spec.ts",
+  "doc": "Pinned canonical Grafana surface set for the compose stack, emitted by test/e2e/playwright/crawl/crawl.spec.ts. lean=true rows are the per-PR crawl (root + nav + one representative per drilldown app); every row is crawled nightly. Regenerate deliberately against a healthy compose stack with: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose npx playwright test crawl/crawl.spec.ts — or dispatch the e2e workflow with update_crawl_inventory=compose (or =both) and commit the uploaded grafana-surface-inventory-compose artifact (tsouza/cerberus#1826).",
   "stack": "compose",
   "surfaces": [
     {
