@@ -129,12 +129,21 @@ export type ControlVocabulary = {
  * undeclared control) but which the sweep nevertheless drives
  * exhaustively, because each option fires a materially different
  * query. Purity of the key and coverage of the gestures are separate
- * decisions; this is the only place they are decoupled, and the sweep
- * caps still bound the result.
+ * decisions and this is the only place they are decoupled.
+ *
+ * `maxOptions` bounds the gesture COST — and only the cost. The old
+ * STRUCTURAL_MAX_OPTIONS threshold collapsed those two questions into
+ * one number, which is how a seed-sized option list ended up deciding
+ * what the canonical key said. Here the answer to "what may the key
+ * say" is already settled (`{rep}`, because nothing declares this
+ * control), so the bound can only change how many gestures the sweep
+ * spends. Above it the control falls back to the single deterministic
+ * representative.
  */
 export type ExhaustiveDataControl = {
   control: RegExp;
   rationale: string;
+  maxOptions: number;
 };
 
 type VocabularyManifest = {
@@ -144,7 +153,11 @@ type VocabularyManifest = {
     rationale: string;
     values: string[];
   }>;
-  exhaustiveDataControls: Array<{ control: string; rationale: string }>;
+  exhaustiveDataControls: Array<{
+    control: string;
+    rationale: string;
+    maxOptions: number;
+  }>;
 };
 
 /**
@@ -179,6 +192,7 @@ export const EXHAUSTIVE_DATA_CONTROLS: ReadonlyArray<ExhaustiveDataControl> =
   manifest.exhaustiveDataControls.map((v) => ({
     control: new RegExp(v.control),
     rationale: v.rationale,
+    maxOptions: v.maxOptions,
   }));
 
 /**
@@ -205,11 +219,15 @@ export function declaredVocabulary(
   return keyEmbeddedVocabulary(key);
 }
 
-/** Whether the sweep drives every option of this control (see the two
- * reasons above, plus the exhaustive-data list). */
-export function sweepsEveryOption(key: string): boolean {
+/**
+ * Whether the sweep drives every drivable option of this control: a
+ * declared vocabulary always does, and a listed data-derived control
+ * does while its option set stays inside the cost bound it declares.
+ */
+export function sweepsEveryOption(key: string, optionCount: number): boolean {
   if (declaredVocabulary(key) !== undefined) return true;
-  return EXHAUSTIVE_DATA_CONTROLS.some((v) => v.control.test(key));
+  const exhaustive = EXHAUSTIVE_DATA_CONTROLS.find((v) => v.control.test(key));
+  return exhaustive !== undefined && optionCount <= exhaustive.maxOptions;
 }
 
 /**
@@ -396,7 +414,7 @@ export function planInteractions(
     // combo-forming surface takes the representative plan so each
     // interaction there forms a PAIR, never a full cross-product).
     const options =
-      sweepsEveryOption(control.key) && !representativeOnly
+      sweepsEveryOption(control.key, drivable.length) && !representativeOnly
         ? ordered
         : [ordered[0]!];
     for (const option of options) {

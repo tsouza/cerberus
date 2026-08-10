@@ -1309,6 +1309,26 @@ test.describe('crawl: canonicalization pins', () => {
     // the gestures are decoupled, and only here.
     expect(plan.map((p) => p.option).sort()).toEqual([...attributes].sort());
 
+    // The decoupling is what lets a COST bound exist without touching
+    // the key. The picker's scope tabs change how many attributes it
+    // offers — Favorites renders ~10, All renders ~51 — and sweeping
+    // all 51 would blow SINGLE_SWEEP_CAP and fail the crawl. Past the
+    // declared bound the control falls back to the one deterministic
+    // representative, and the state value is `{rep}` on both sides of
+    // it, so no seed size can move the pin either way.
+    const wideScope = planInteractions(
+      [
+        control(
+          'option-list',
+          'attribute-list',
+          Array.from({ length: 51 }, (_, i) => `attr${String(i).padStart(2, '0')}`),
+        ),
+      ],
+      0,
+    );
+    expect(wideScope.map((p) => p.option)).toEqual(['attr00']);
+    expect(wideScope.map((p) => p.stateValue)).toEqual(['{rep}']);
+
     // A select-tile / adhoc-filter needs no 'forced' flag any more: it
     // parameterizes because nothing declares it, which is the same
     // reason everything else does.

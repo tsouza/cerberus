@@ -150,6 +150,20 @@ export function loadManifest(dir) {
     if (typeof entry.rationale !== 'string' || entry.rationale.trim() === '') {
       problems.push(`${at}: every entry needs a rationale`);
     }
+    // The cost bound is required: an unbounded exhaustive sweep over a
+    // data-derived list grows with the seed until it trips the sweep
+    // cap and fails the crawl.
+    if (!Number.isInteger(entry.maxOptions) || entry.maxOptions < 1) {
+      problems.push(
+        `${at}: maxOptions must be a positive integer bounding how many gestures the sweep spends on this data-derived control`,
+      );
+    }
+    if (
+      typeof entry.maxOptionsRationale !== 'string' ||
+      entry.maxOptionsRationale.trim() === ''
+    ) {
+      problems.push(`${at}: maxOptions needs its own rationale`);
+    }
   }
   return {
     problems,
