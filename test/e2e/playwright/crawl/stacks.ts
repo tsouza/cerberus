@@ -210,7 +210,9 @@ export const COMPOSE_STACK: CrawlStackConfig = {
     'test/e2e/playwright/crawl/crawl.spec.ts. lean=true rows are the per-PR crawl ' +
     '(root + nav + one representative per drilldown app); every row is crawled nightly. ' +
     'Regenerate deliberately against a healthy compose stack with: ' +
-    'CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose npx playwright test crawl/crawl.spec.ts',
+    'CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=compose npx playwright test crawl/crawl.spec.ts ' +
+    '— or dispatch the e2e workflow with update_crawl_inventory=compose (or =both) and commit the ' +
+    'uploaded grafana-surface-inventory-compose artifact (tsouza/cerberus#1826).',
   expectedDatasources: CERBERUS_DATASOURCES,
   lints: {
     // cerberus.json + showcase-promql carry quantile panels; otelcol.json
@@ -242,9 +244,9 @@ export const COMPOSE_STACK: CrawlStackConfig = {
  * assertInventoryBootstrapped until a real inventory was committed,
  * so the bootstrap state could not silently become permanent).
  * Deliberately regenerating after surface growth follows the same
- * path: dispatch the `e2e` workflow with update_crawl_inventory=true
- * and commit the uploaded artifact, or regenerate locally per the
- * command in `inventoryDoc` below.
+ * path: dispatch the `e2e` workflow with update_crawl_inventory=k3d
+ * (or =both) and commit the uploaded artifact, or regenerate locally
+ * per the command in `inventoryDoc` below.
  */
 export const K3D_STACK: CrawlStackConfig = {
   name: 'k3d',
@@ -260,7 +262,8 @@ export const K3D_STACK: CrawlStackConfig = {
     'row is crawled each run; lean=true rows mark the local fast-lane subset only. ' +
     'Regenerate deliberately against a healthy k3d stack (just e2e-up && just e2e-seed-rolling) with: ' +
     'CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=k3d npx playwright test crawl/crawl.spec.ts ' +
-    '— or dispatch the e2e workflow with update_crawl_inventory=true and commit the uploaded artifact.',
+    '— or dispatch the e2e workflow with update_crawl_inventory=k3d (or =both) and commit the uploaded ' +
+    'grafana-surface-inventory-k3d artifact.',
   expectedDatasources: CERBERUS_DATASOURCES,
   lints: {
     // test/e2e/grafana/dashboards/cerberus.json carries one

@@ -23,8 +23,12 @@
 // So the gate is neither "always" nor "never": a PR that touches the surface
 // this stack can see boots it, and every other PR short-circuits exactly as
 // before. Push, schedule and `release/*` PRs are untouched — they always ran
-// the full lane and still do. `workflow_dispatch` never did, and still does
-// not: see NON_BOOTING_EVENTS.
+// the full lane and still do. `workflow_dispatch` never did and still does
+// not by default — see NON_BOOTING_EVENTS — with one deliberate carve-out: a
+// dispatch that asks to regenerate the compose crawl inventory
+// (UPDATE_CRAWL_INVENTORY resolving to "compose" or "both", tsouza/cerberus
+// #1826) has to boot the stack to produce that artifact, so it boots exactly
+// like push/schedule despite the event otherwise being excluded.
 //
 // Two modes (env MODE, or argv[2]; default `verify`):
 //   - verify : assert every declared path still exists in the tree. A scope
@@ -36,11 +40,16 @@
 //              $GITHUB_OUTPUT.
 //
 // Env:
-//   MODE          `emit` | `verify` (also argv[2]); default `verify`.
-//   EVENT_NAME    github.event_name.
-//   HEAD_REF      github.head_ref (empty off pull_request).
-//   BASE_SHA      (emit, PR) github.event.pull_request.base.sha.
-//   HEAD_SHA      (emit, PR) github.event.pull_request.head.sha.
+//   MODE                    `emit` | `verify` (also argv[2]); default `verify`.
+//   EVENT_NAME               github.event_name.
+//   HEAD_REF                 github.head_ref (empty off pull_request).
+//   BASE_SHA                 (emit, PR) github.event.pull_request.base.sha.
+//   HEAD_SHA                 (emit, PR) github.event.pull_request.head.sha.
+//   UPDATE_CRAWL_INVENTORY   (emit, workflow_dispatch) the resolved
+//                            `inputs.update_crawl_inventory` choice —
+//                            "none" | "k3d" | "compose" | "both". Empty off
+//                            workflow_dispatch. Only "compose"/"both" change
+//                            the decision.
 //   GITHUB_OUTPUT (emit) runner file `in_scope` is appended to.
 //
 // Exit: 0 clean; 1 on a stale path or a bad MODE. A decision this module cannot
@@ -114,11 +123,13 @@ export function stalePaths(paths) {
 }
 
 // Events whose answer comes from the event alone, in the "don't boot"
-// direction. e2e.yml's only `workflow_dispatch` input regenerates the k3d
+// direction. e2e.yml's `workflow_dispatch` input can also regenerate the k3d
 // Grafana crawl inventory — a dashboard-lane artefact that no compose shard can
-// observe — so booting ClickHouse, a collector, a seeder and Grafana for it is
-// pure wall time. The guard this module replaced excluded dispatch for exactly
-// that reason; the exclusion is restated here rather than inherited.
+// observe — so booting ClickHouse, a collector, a seeder and Grafana for THAT
+// selection is pure wall time. The guard this module replaced excluded
+// dispatch for exactly that reason; the exclusion is restated here rather than
+// inherited. `decide()` below carves a single deliberate exception back out of
+// this list: a dispatch that asks to regenerate the COMPOSE inventory.
 //
 // It lives HERE, not in the shared runsFullLane(), for two reasons. The other
 // consumer of that helper is the mutation sweep, which genuinely does want a
@@ -129,8 +140,18 @@ export function stalePaths(paths) {
 // therefore always a named, per-lane decision.
 export const NON_BOOTING_EVENTS = ['workflow_dispatch'];
 
+// regeneratesCompose — does this dispatch selection ask to (re)write
+// grafana-surface-inventory.compose.json? Only "compose" and "both" do;
+// "none" (the default) and "k3d" leave the compose lane untouched.
+export function regeneratesCompose(updateCrawlInventory) {
+  return updateCrawlInventory === 'compose' || updateCrawlInventory === 'both';
+}
+
 // Whether the changed-path diff matters at all, or the event settles it. Used
-// by the driver to skip computing a diff it would only discard.
+// by the driver to skip computing a diff it would only discard. A compose
+// regen dispatch is still settled by the event — decide() below answers it
+// from NON_BOOTING_EVENTS + regeneratesCompose() alone, never from the diff —
+// so this stays a pure function of the event, not the dispatch selection.
 function settledByEvent({ eventName, headRef }) {
   return NON_BOOTING_EVENTS.includes(eventName) || runsFullLane({ eventName, headRef });
 }
@@ -141,8 +162,15 @@ function settledByEvent({ eventName, headRef }) {
 // to true. An uncomputable diff is not evidence that nothing changed, and the
 // cost of guessing wrong in that direction is a release-blocking bug that
 // reached main unexamined.
-export function decide({ eventName, headRef, changed }) {
+export function decide({ eventName, headRef, changed, updateCrawlInventory = 'none' }) {
   if (NON_BOOTING_EVENTS.includes(eventName)) {
+    if (regeneratesCompose(updateCrawlInventory)) {
+      return {
+        inScope: true,
+        reason: `dispatch requests the compose crawl-inventory regen (update_crawl_inventory=${updateCrawlInventory})`,
+      };
+    }
+
     return { inScope: false, reason: `event "${eventName}" exercises no compose-visible surface` };
   }
   if (runsFullLane({ eventName, headRef })) {
@@ -193,11 +221,12 @@ function main() {
 
   const eventName = (process.env.EVENT_NAME || '').trim();
   const headRef = (process.env.HEAD_REF || '').trim();
+  const updateCrawlInventory = (process.env.UPDATE_CRAWL_INVENTORY || 'none').trim() || 'none';
   const changed = settledByEvent({ eventName, headRef })
     ? null
     : changedPaths({ baseSha: process.env.BASE_SHA, headSha: process.env.HEAD_SHA });
 
-  const { inScope, reason } = decide({ eventName, headRef, changed });
+  const { inScope, reason } = decide({ eventName, headRef, changed, updateCrawlInventory });
   notice(`compose-smoke-scope: ${inScope ? 'booting the stack' : 'short-circuiting'} — ${reason}`);
   setOutput('in_scope', String(inScope));
 }

@@ -952,12 +952,25 @@ crawl's inventory is committed; only the regen run itself
 past this now — compose bootstrapped first, and the k3d stack
 bootstrapped in tsouza/cerberus#1539 (booting k3d locally is heavy, so
 that ran against a local `just e2e-up && just e2e-seed-rolling`
-cluster; the same regen also runs by dispatching the `e2e` workflow
-with `update_crawl_inventory=true` and committing the uploaded
-artifact). Deliberately regenerating either stack's inventory after
-surface growth follows the same path — the red crawl lane in the
-interim is deliberate pressure that keeps bootstrap (or a stale
-regen) from silently becoming permanent.
+cluster).
+
+**Regenerating from CI.** Both stacks' inventories can be regenerated
+without booting anything locally: dispatch the `e2e` workflow
+(`workflow_dispatch`) with `update_crawl_inventory` set to `k3d`,
+`compose`, or `both`, then download the matching
+`grafana-surface-inventory-<stack>` artifact and commit it through a
+PR like any other generated file (`grafana-surface-inventory.compose.json`
+is `-merge`-gated in `.gitattributes`, so it is never hand-edited).
+The selected stack(s) get `CERBERUS_UPDATE_INVENTORY=1` and forced
+`SWEEP_DEPTH=full` on their crawl shard — the compose lane otherwise
+runs `SWEEP_DEPTH=full` only on the nightly `schedule` event, and a
+regen dispatch below full depth would fail
+`crawl.spec.ts`'s own exhaustive-crawl assertion by construction. The
+default `none` selection leaves an ordinary dispatch behaving exactly
+as it always has (tsouza/cerberus#1826). Deliberately regenerating
+either stack's inventory after surface growth follows this path — the
+red crawl lane in the interim is deliberate pressure that keeps
+bootstrap (or a stale regen) from silently becoming permanent.
 
 **Doctrine: the AI sweep generates oracle classes; CI runs them.**
 The crawler exists because an off-CI AI screenshot sweep (2026-06-09)
@@ -1060,10 +1073,31 @@ shard's key field equals the path it is filed under — and, on both shapes
 where the records were verified uniform, one consistent field set. It is a cheap, always-on second
 signal, not a replacement for the content-exact ratchets above — a
 structural check cannot tell a value that is merely out of place from one
-that is subtly wrong. One family was found to have weaker per-PR coverage:
+that is subtly wrong.
+
 `test/e2e/playwright/crawl/grafana-surface-inventory.{compose,k3d}.json` are
-exercised at full depth only by the release-gated `dashboard` (k3d) lane
-(the merge commit, not the PR), with `compose-smoke` walking only the
-`lean: true` subset of the `.compose.json` rows when its own scope triggers;
-that gap is tracked as a follow-up issue rather than papered over with an
-unverified invariant.
+the one `-merge` family that lands outside that list. Full depth reaches them
+only through the release-gated `dashboard` (k3d) lane, which runs on the merge
+commit rather than the PR, and an ordinary PR sees only the `lean: true`
+subset of the `.compose.json` rows, only when `compose-smoke`'s own scope
+triggers. `.github/scripts/crawl-surface-inventory-guard.mjs` closes that in
+the required `forbid-skip` job. The inventory's content is a live crawl result
+that nothing offline can re-derive, but its committed FORM is not: every
+inventory is written through `marshalInventory`
+(`test/e2e/playwright/crawl/lib.ts`), whose output — keys `{doc, stack,
+surfaces}`, rows `{url, lean}`, rows sorted by `byCodepoint` on `url`,
+two-space indent, trailing newline — is a pure function of the content. The
+guard rebuilds those bytes and demands equality, so a row out of order, a
+duplicate row, a missing or extra field, a reordered key, a re-indent, a
+dropped newline or a JSON-duplicate key all fail it. Stacks are discovered by
+filename pattern, and discovering none is itself a failure, so the gate cannot
+quietly disarm itself when a file moves.
+
+What it does not prove is worth stating: a `lean` boolean paired with the
+wrong `url`, still sorted and unique, is bytes the generator could legitimately
+have emitted. `lean` has no offline source of truth, so that residue belongs to
+`diffInventory` on a live stack — the `compose-smoke` lean crawl and the k3d
+`dashboard` full crawl — and the guard's own header and failure text say so.
+`crawl-surface-inventory-guard.test.mjs` carries a negative control per check
+plus a pin on the documented blind spot, so the gate cannot rot into a rubber
+stamp in either direction.
