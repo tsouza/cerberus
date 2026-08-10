@@ -7,7 +7,12 @@
     {
       "control": "^select\\[Select match operator\\](#\\d+)?$",
       "rationale": "Prometheus/Loki adhoc-filter matcher operator: exactly the four matcher symbols the query languages define — a protocol constant, not app or data state.",
-      "values": ["=", "!=", "=~", "!~"]
+      "values": [
+        "=",
+        "!=",
+        "=~",
+        "!~"
+      ]
     },
     {
       "control": "^select\\[react-select-\\{rid\\}-input\\](#\\d+)?$",
@@ -21,7 +26,10 @@
     {
       "control": "^select\\[SortBy direction\\](#\\d+)?$",
       "rationale": "Logs/Traces Drilldown table sort direction — a two-way widget constant. How a table SORTS does not depend on what the seeded logs say, and both seeded stacks observe the identical set.",
-      "values": ["Asc", "Desc"]
+      "values": [
+        "Asc",
+        "Desc"
+      ]
     },
     {
       "control": "^select\\[SortBy function\\](#\\d+)?$",
@@ -52,15 +60,22 @@
     {
       "control": "^select\\[\\{n\\} (logs|lines|rows)\\](#\\d+)?$",
       "rationale": "Logs Drilldown result-count picker. How many rows a table FETCHES is a widget constant, not a property of the seeded logs. The placeholder mirrors the current selection, so discovery erases the count from the KEY (`{n} logs`) — which also means the currently-selected value is the one option the sweep never drives, and 1000 is that default.",
-      "values": ["100", "500", "1000", "2000", "5000"]
-    },
-    {
-      "control": "^select\\[downshift-\\{rid\\}-input\\](#\\d+)?$",
-      "rationale": "A downshift input with neither a testid nor an aria-label falls back to its bare React useId-derived element id, erased to the shared `{rid}` placeholder — so this one key addresses two different, both fixed-vocabulary, widgets verified live: the Logs Drilldown per-value operator step (Include | Exclude) and the Traces Drilldown duration-metric percentile picker (p50 | p90 | p99). The closed set is the union; a data-derived downshift input reaching this key fails it loudly.",
-      "values": ["Include", "Exclude", "p50", "p90", "p99"]
+      "values": [
+        "100",
+        "500",
+        "1000",
+        "2000",
+        "5000"
+      ]
     }
   ],
   "exhaustiveDataControls": [
+    {
+      "control": "^select\\[downshift-\\{rid\\}-input\\](#\\d+)?$",
+      "rationale": "Not one control — a COLLISION BUCKET. A downshift input carrying neither a testid nor an aria-label falls back to its bare React useId element id, which discovery erases to the shared `{rid}` placeholder, so every unlabeled downshift widget on every page keys here. It was declared a closed set (the Logs Drilldown Include|Exclude operator step unioned with the Traces Drilldown p50|p90|p99 percentile picker) and the live self-check falsified that claim: a lean-depth crawl of /a/grafana-lokiexplore-app/explore found the bucket offering `10`, a third widget the union never described. A key that identifies no single widget cannot carry a closed vocabulary, and the option set behind this one is not even stable — the full-depth regen of the same page never saw `10`. So it parameterizes, and nothing from an unidentifiable bucket reaches the pin. This is the mechanism working rather than failing: the declaration was a falsifiable claim about the app, a live crawl falsified it instead of mining `10` into a surface key, and the remedy is the one the failure message itself prescribes.",
+      "maxOptions": 12,
+      "maxOptionsRationale": "A COST bound only; every member of the bucket keys `{rep}` either way. It holds unlabeled PARAMETER pickers — an operator step, a percentile, a count — and each option drives a materially different query, so the sweep spends a gesture on all of them rather than one. A member offering more than a dozen options is not a parameter picker but a value list read out of the data, for which the single representative is the right answer; a dozen is also the point past which one control would crowd every other control on the surface out of SINGLE_SWEEP_CAP."
+    },
     {
       "control": "^select\\[detected_level\\](#\\d+)?$",
       "rationale": "Loki's severity picker. Its RENDERED options are data — the picker offers only the levels the ingested logs actually carry, which is why compose pinned `=info` where k3d pinned `=warn` — so it keys `{rep}` and no level reaches the pin. It sweeps exhaustively for the same reason attribute-list does: each level drives a distinct LogQL filter, and dropping to one representative would have silently traded the seed axis for a coverage loss rather than fixing it.",

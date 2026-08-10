@@ -1378,6 +1378,50 @@ test.describe('crawl: canonicalization pins', () => {
     ]);
   });
 
+  test('#1872: a collision-bucket key parameterizes but still sweeps every option', () => {
+    // `select[downshift-{rid}-input]` is not one control. An unlabeled
+    // downshift input falls back to its React useId element id, erased
+    // to the shared `{rid}` placeholder, so every such widget on every
+    // page lands on this one key. It carried a closed set — the Logs
+    // Drilldown Include|Exclude step unioned with the Traces Drilldown
+    // p50|p90|p99 picker — until a lean crawl of the Logs Drilldown
+    // entry page found the bucket offering `10`, a third widget the
+    // union never described, on a page whose full-depth crawl had never
+    // shown it. A key that identifies no single widget cannot carry a
+    // closed vocabulary, so it declares none.
+    const key = 'select[downshift-{rid}-input]';
+    expect(declaredVocabulary(key)).toBeUndefined();
+
+    // The value that falsified the old declaration is now keyed like
+    // any other data: it cannot reach a surface key…
+    const options = ['Include', 'Exclude', '10'];
+    const plan = planInteractions([control('combobox', key, options)], 0);
+    expect(new Set(plan.map((p) => p.stateValue))).toEqual(new Set(['{rep}']));
+    // …and crucially it no longer THROWS, because nothing claims the
+    // set is closed any more.
+    expect(() =>
+      planInteractions([control('combobox', key, options)], 0),
+    ).not.toThrow();
+    // Coverage is unchanged: every option still drives its own gesture,
+    // because each one fires a materially different query.
+    expect(plan.map((p) => p.option).sort()).toEqual(['10', 'Exclude', 'Include']);
+
+    // Past the declared cost bound it falls back to the single
+    // deterministic representative, like any data-derived control.
+    const wide = planInteractions(
+      [
+        control(
+          'combobox',
+          key,
+          Array.from({ length: 13 }, (_, i) => `opt${String(i).padStart(2, '0')}`),
+        ),
+      ],
+      0,
+    );
+    expect(wide.map((p) => p.option)).toEqual(['opt00']);
+    expect(wide.map((p) => p.stateValue)).toEqual(['{rep}']);
+  });
+
   test('#1872: a tab strip and a radio group declare their own vocabulary', () => {
     // These two kinds need no manifest entry: discovery builds their
     // key OUT of the option labels, so the value half of the fragment
