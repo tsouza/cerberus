@@ -4,13 +4,13 @@ go 1.26.2
 
 require (
 	github.com/ClickHouse/ch-go v0.74.0
-	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
+	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/axiomhq/hyperloglog v0.2.6
 	github.com/buger/jsonparser v1.6.1
 	github.com/chdb-io/chdb-go v1.12.0
 	github.com/cucumber/godog v0.16.0
-	github.com/cucumber/messages/go/v34 v34.2.0
+	github.com/cucumber/messages/go/v34 v34.2.1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/go-kit/log v0.2.1
 	github.com/gogo/protobuf v1.3.2
@@ -28,8 +28,8 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.43.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.20.0
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.21.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.45.0
@@ -69,7 +69,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/Workiva/go-datastructures v1.1.7 // indirect
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
-	github.com/andybalholm/brotli v1.2.1 // indirect
+	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apache/thrift v0.23.1-0.20260429145742-d2acd3c49e58 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
@@ -120,7 +120,7 @@ require (
 	github.com/efficientgo/core v1.0.0-rc.3 // indirect
 	github.com/facette/natsort v0.0.0-20181210072756-2cd4dd1e2dcb // indirect
 	github.com/fatih/color v1.19.0 // indirect
-	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
@@ -216,7 +216,7 @@ require (
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
 	github.com/moby/moby/api v1.55.0 // indirect
-	github.com/moby/moby/client v0.5.0 // indirect
+	github.com/moby/moby/client v0.5.1 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
