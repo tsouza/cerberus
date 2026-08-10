@@ -246,6 +246,26 @@ test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 #   a declared mandate the tier-1 lane reads and never writes; the step that
 #   consumes it rejects a mandate that "bounds nothing", so a blend fails the
 #   scenario rather than weakening it.
+# hand-authored: test/e2e/playwright/crawl/control-vocabularies.json —
+#   the crawl's declaration manifest: which controls may key their option
+#   labels verbatim into a canonical surface key, each with the rationale that
+#   earns it. Nothing writes it — the inventories beside it are the generated
+#   artefacts; this is the input that decides what they may contain. Every
+#   entry is hand-written prose plus a closed option set, so two edits to it
+#   conflict textually rather than blending the way a sorted machine-appended
+#   baseline does. Structural damage is caught twice over and immediately: the
+#   crawler validates the manifest at load and fails the run, and the purity
+#   gate (.github/scripts/crawl-surface-inventory-purity.mjs) rejects a missing
+#   pattern, an invalid regex, an empty or absent option set, a bound that is
+#   not a positive integer, or a declaration with no rationale. A blend that
+#   DROPPED a declared option is loud on the next crawl, which re-checks every
+#   declared set against the live app. A blend that WIDENED one is the quiet
+#   direction, and it is bounded rather than dangerous: the extra label still
+#   has to be one the live app rendered before it can reach a pin, so widening
+#   relaxes the crawl's own claim-check without letting seeded data into the
+#   key — and a control whose options really are data-derived shows up as the
+#   two committed inventories disagreeing, which is the property this file
+#   exists to hold.
 # hand-authored: test/e2e/migration/archetypes/three-signal/expected/tier1.json —
 #   the hand-declared tier-1 parity expectation, read and never written; the
 #   parity test compares live results against it, so a blended row fails the
