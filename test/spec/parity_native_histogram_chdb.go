@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
+	"testing"
 
 	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
@@ -221,6 +223,74 @@ func bucketCountsProjection(seedCols []string, col string) string {
 		return "'[]'"
 	}
 	return "toJSONString(" + col + ")"
+}
+
+// histogramQuantilePattern matches the two PromQL functions whose answer
+// is a position ON the histogram's value axis, and therefore the only ones
+// whose answer can be the zero threshold itself.
+var histogramQuantilePattern = regexp.MustCompile(`\bhistogram_quantiles?\b`)
+
+// checkZeroBucketScope requires [ScopeExceptZeroBucket] to be carried by
+// exactly the fixtures that earn it — declared where it is due, and absent
+// everywhere else.
+//
+// # What earns it
+//
+// A native histogram's quantile is a bucket boundary or an interpolation
+// between two of them, and those boundaries are powers of the schema base,
+// which is never zero. The single exception is the zero bucket, whose
+// bounds are ±ZeroThreshold. So a `histogram_quantile` over an
+// exponential-histogram seed answering EXACTLY 0 is, precisely, one whose
+// answer came out of the zero band — and the zero threshold is the one
+// quantity neither side can read, because upstream OTel-CH stores no such
+// column and both sides must invent the same 0. Those fixtures agree by
+// shared assumption rather than by independent computation, which is worth
+// recording rather than counting as coverage.
+//
+// # Why the check runs in BOTH directions
+//
+// Requiring the scope where it is earned is the half that keeps a vacuous
+// green from being silently counted. Forbidding it everywhere else is the
+// half that stops it becoming an escape hatch: a scope value that can be
+// added to any fixture whose comparison is inconvenient is an
+// expected-failure list wearing a different name, which invariant 7
+// forbids. Neither direction is optional, and a fixture cannot satisfy
+// this by being left out of the parity layer — it is only reached for
+// fixtures already enrolled.
+func checkZeroBucketScope(
+	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, query string, got []referenceSample,
+) {
+	t.Helper()
+
+	earned := false
+	if len(testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]) > 0 &&
+		histogramQuantilePattern.MatchString(query) {
+		for _, s := range got {
+			if s.Histogram == nil && s.Value == 0 {
+				earned = true
+				break
+			}
+		}
+	}
+
+	switch declared := p.Scope == ScopeExceptZeroBucket; {
+	case earned && !declared:
+		t.Errorf(
+			"fixture %s: its quantile answers exactly 0, which for a native histogram can only "+
+				"come from the zero band, so the answer IS the zero threshold — a value neither "+
+				"side can read and both must invent as 0. Declare `scope: %s` so this agreement "+
+				"is recorded rather than counted as coverage.",
+			c.Name, ScopeExceptZeroBucket,
+		)
+	case !earned && declared:
+		t.Errorf(
+			"fixture %s declares `scope: %s`, but its answer does not depend on the invented zero "+
+				"threshold: no sample of it is a zero-band quantile over an exponential-histogram "+
+				"seed. Compare it in full — this scope records one specific un-oracleable axis and "+
+				"is not a way to narrow a comparison.",
+			c.Name, ScopeExceptZeroBucket,
+		)
+	}
 }
 
 // int32Columns narrows the scale and bucket offsets, which ClickHouse

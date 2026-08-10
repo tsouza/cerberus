@@ -571,6 +571,8 @@ func compareAgainstReference(
 		}
 	}
 
+	checkZeroBucketScope(t, c, p, rt, query, got)
+
 	if !p.ComparesInFull() {
 		t.Logf("fixture %s compared with scope %q", c.Name, p.Scope)
 	}
