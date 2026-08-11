@@ -48,8 +48,8 @@ func newPromHandlerForTest(t *testing.T) *promHandlerUnderTest {
 	t.Cleanup(func() { _ = client.Close() })
 
 	logger := slog.New(slog.NewTextHandler(httptestDiscard{}, &slog.HandlerOptions{Level: slog.LevelError}))
-	promLimiter, _, _ := newAdmitLimiters(cfg, logger)
-	h := newPromHandler(client, cfg, chopt.EnabledSet{}, nil, promLimiter, logger)
+	limiters := newAdmitLimiters(cfg, logger)
+	h := newPromHandler(client, cfg, chopt.EnabledSet{}, nil, limiters.prom, logger)
 	return &promHandlerUnderTest{cfg: cfg, lookback: h.MetadataLookback}
 }
 

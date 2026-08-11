@@ -417,7 +417,7 @@ data:
             "type": "prometheus",
             "uid": "cerberus-prometheus"
           },
-          "description": "Admission-control rejections per second, per head. Backed by cerberus_admit_rejected_total — declarative until the admission middleware exports it.",
+          "description": "Admission-control rejections per second, split by head and by admission budget (request vs the Loki /tail budget). Backed by cerberus_admit_rejected_total — declarative until the admission middleware exports it.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -494,8 +494,8 @@ data:
                 "uid": "cerberus-prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (cerberus_ql, reason) (rate(cerberus_admit_rejected_total[5m]))",
-              "legendFormat": "{{cerberus_ql}} / {{reason}}",
+              "expr": "sum by (cerberus_ql, budget, reason) (rate(cerberus_admit_rejected_total[5m]))",
+              "legendFormat": "{{cerberus_ql}} / {{budget}} / {{reason}}",
               "range": true,
               "refId": "A"
             }

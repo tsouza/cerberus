@@ -176,12 +176,12 @@ func mountedConsumers(t *testing.T, enabledHeads string) chOptConsumers {
 	cfg.ClickHouse.Addr = unreachableAddr(t)
 
 	logger := quietLogger()
-	promLimiter, lokiLimiter, tempoLimiter := newAdmitLimiters(cfg, logger)
+	limiters := newAdmitLimiters(cfg, logger)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	heads, err := mountAPIHeads(ctx, http.NewServeMux(), lazyClient(t), cfg, chopt.EnabledSet{},
-		promLimiter, lokiLimiter, tempoLimiter, logger)
+		limiters, logger)
 	if err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}

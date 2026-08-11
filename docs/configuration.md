@@ -267,19 +267,28 @@ simultaneous in-flight requests. Requests above the cap are rejected with HTTP
 of overload. Tempo's cap is half of Prom / Loki because trace queries are
 typically the heaviest per-call.
 
-`CERBERUS_ADMIT_{PROM,LOKI,TEMPO}` each accept **either** a non-negative
-integer cap **or** a boolean alias: `true` enables the head at its conservative
-default cap, `false` (or `0`) leaves that head unlimited, and a positive
+The Loki head's `/tail` WebSocket draws on its OWN budget,
+`CERBERUS_ADMIT_TAIL`, because it bounds a different quantity: an ordinary
+request holds its slot for milliseconds, whereas a tail holds one from the
+WebSocket upgrade until the client disconnects. Sharing one semaphore would
+let idle Live-tail panels ratchet the Loki head to zero free slots and 503
+every query on the replica, so the two budgets are sized and exhausted
+independently.
+
+`CERBERUS_ADMIT_{PROM,LOKI,TEMPO,TAIL}` each accept **either** a non-negative
+integer cap **or** a boolean alias: `true` enables that budget at its
+conservative default cap, `false` (or `0`) leaves it unlimited, and a positive
 integer pins an exact cap. A negative or unparseable value is rejected at
 startup. `CERBERUS_ADMIT_DISABLED` is a separate master switch that turns every
-head off at once.
+budget off at once.
 
-| Variable                  | Config file      | Type        | Default | Description                                                                                       |
-| ------------------------- | ---------------- | ----------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `CERBERUS_ADMIT_DISABLED` | `admit.disabled` | bool        | `false` | Disable admission control entirely on every head (handy for local development).                   |
-| `CERBERUS_ADMIT_PROM`     | `admit.prom`     | int \| bool | `64`    | Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
-| `CERBERUS_ADMIT_LOKI`     | `admit.loki`     | int \| bool | `64`    | Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.  |
-| `CERBERUS_ADMIT_TEMPO`    | `admit.tempo`    | int \| bool | `32`    | Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited. |
+| Variable                  | Config file      | Type        | Default | Description                                                                                                                                                       |
+| ------------------------- | ---------------- | ----------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_ADMIT_DISABLED` | `admit.disabled` | bool        | `false` | Disable admission control entirely, on every budget at once (handy for local development).                                                                        |
+| `CERBERUS_ADMIT_PROM`     | `admit.prom`     | int \| bool | `64`    | Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited.                                                                  |
+| `CERBERUS_ADMIT_LOKI`     | `admit.loki`     | int \| bool | `64`    | Loki API in-flight cap, covering every route EXCEPT `/tail` (see `CERBERUS_ADMIT_TAIL`). Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited. |
+| `CERBERUS_ADMIT_TEMPO`    | `admit.tempo`    | int \| bool | `32`    | Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited.                                                                 |
+| `CERBERUS_ADMIT_TAIL`     | `admit.tail`     | int \| bool | `16`    | Concurrent Loki `/tail` WebSocket sessions, on a budget SEPARATE from `CERBERUS_ADMIT_LOKI`. Integer caps it; `true` = default cap 16; `false`/`0` = unlimited.   |
 
 ## Logging
 

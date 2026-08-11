@@ -26,7 +26,10 @@
  * per head — so the per-head admit semaphores in
  * internal/api/admit saturate and cerberus ticks
  * `cerberus_admit_rejected_total{reason="cap_exceeded"}` on every
- * (cerberus_ql, reason) bucket. Without the burst the cerberus-self
+ * (cerberus_ql, budget, reason) bucket the burst can reach — the
+ * three heads' budget="request" streams. The Loki budget="tail"
+ * stream is zero-initialised at construction, so the panel renders a
+ * flat 0 for it rather than dropping the series. Without the burst the cerberus-self
  * "Admission rejections" panel has nothing to graph and the sweep's
  * empty-result guard fires.
  *
@@ -50,7 +53,7 @@ const DEFAULT_CERBERUS_URL = 'http://localhost:8080';
 // it should grow its own burst phase below).
 //
 // Without this phase the cerberus-self "Admission rejections" panel
-// (sum by (cerberus_ql, reason) (rate(cerberus_admit_rejected_total[5m])))
+// (sum by (cerberus_ql, budget, reason) (rate(cerberus_admit_rejected_total[5m])))
 // stays empty over the warmup window — healthy compose traffic never
 // approaches the cap.
 const ADMIT_BURST_CONCURRENCY = 128;

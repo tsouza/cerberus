@@ -597,6 +597,12 @@ func TestFromEnv_AdmitFalsyDisablesHead(t *testing.T) {
 	if cfg.Admit.Prom != DefaultAdmitProm || cfg.Admit.Tempo != DefaultAdmitTempo {
 		t.Errorf("disabling loki must not touch prom/tempo: prom=%d tempo=%d", cfg.Admit.Prom, cfg.Admit.Tempo)
 	}
+	// Nor the tail budget: /tail is a separate semaphore, so unlimiting
+	// the Loki request budget says nothing about how many concurrent
+	// live-tail sessions the replica accepts.
+	if cfg.Admit.Tail != DefaultAdmitTail {
+		t.Errorf("disabling the loki request budget must not touch the tail budget: tail=%d, want %d", cfg.Admit.Tail, DefaultAdmitTail)
+	}
 }
 
 // TestFromEnv_AdmitIntegerCap pins the explicit-integer cap path the e2e

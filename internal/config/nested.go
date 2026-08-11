@@ -146,6 +146,7 @@ var bindings = []binding{
 	{"admit.prom", envAdmitProm, bindScalar},
 	{"admit.loki", envAdmitLoki, bindScalar},
 	{"admit.tempo", envAdmitTempo, bindScalar},
+	{"admit.tail", envAdmitTail, bindScalar},
 	{"admit.disabled", envAdmitDisabled, bindScalar},
 
 	// Generated DDL. The chart reaches its long tail through a generic

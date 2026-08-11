@@ -71,8 +71,27 @@ type Handler struct {
 	Lang *logql.Lang
 
 	// Limiter caps in-flight Loki API requests. nil disables the
-	// admission middleware. Wired from CERBERUS_ADMIT_LOKI.
+	// admission middleware. Wired from CERBERUS_ADMIT_LOKI. It fronts
+	// every route EXCEPT /tail — see TailLimiter.
 	Limiter *admit.Limiter
+
+	// TailLimiter caps concurrent /tail WebSocket sessions. nil leaves
+	// tailing unadmitted. Wired from CERBERUS_ADMIT_TAIL, and it is a
+	// DIFFERENT *admit.Limiter instance than Limiter — that separation is
+	// the whole point of the field.
+	//
+	// A semaphore counts requests, but the quantity worth bounding is
+	// occupancy-time, and the two only agree while every occupant is
+	// short-lived. /tail's occupants are not: the handler holds its slot
+	// from the WebSocket upgrade until the client disconnects (which is
+	// why CERBERUS_HTTP_WRITE_TIMEOUT defaults to unlimited — nothing
+	// else reclaims it). Fronted by the same semaphore as /query and the
+	// metadata routes, N idle Grafana Live-tail panels permanently
+	// occupy N of the Loki head's slots, occupancy ratchets one way, and
+	// every subsequent Loki request on the replica 503s until a tail
+	// client disconnects — issue #1482. Two budgets means a full tail
+	// budget costs ordinary queries nothing.
+	TailLimiter *admit.Limiter
 
 	// Version is the cerberus build identifier surfaced via
 	// `/loki/api/v1/status/buildinfo`. Wired from cmd/cerberus's
@@ -141,12 +160,19 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// long-lived tail counts as one query for the purposes of total
 	// volume bookkeeping; its duration will skew toward the long tail
 	// of the histogram, which is what dashboards want to see anyway.
+	// registerWith mounts one pattern behind a CHOSEN admission budget.
+	// admit.Middleware (outer) → telemetry.QueryMiddleware (inner) —
+	// rejections are accounted on cerberus.admit.rejected_total, not on
+	// cerberus.queries.*. See prom.Handler.Mount for the full layering
+	// note.
+	registerWith := func(limiter *admit.Limiter, pattern string, hf http.HandlerFunc) {
+		mux.Handle(pattern, limiter.Middleware(1, telemetry.QueryMiddleware("logql", panicEnvelope, hf)))
+	}
+	// register mounts an ordinary, short-lived Loki route on the shared
+	// request budget (CERBERUS_ADMIT_LOKI). /tail is the one route that
+	// does NOT go through here — it takes TailLimiter instead.
 	register := func(pattern string, hf http.HandlerFunc) {
-		// admit.Middleware (outer) → telemetry.QueryMiddleware (inner)
-		// — rejections are accounted on cerberus.admit.rejected_total,
-		// not on cerberus.queries.*. See prom.Handler.Mount for the
-		// full layering note.
-		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("logql", panicEnvelope, hf)))
+		registerWith(h.Limiter, pattern, hf)
 	}
 	register("GET /loki/api/v1/query", h.handleQuery)
 	register("POST /loki/api/v1/query", h.handleQuery)
@@ -171,7 +197,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /loki/api/v1/patterns", h.handlePatterns)
 	register("POST /loki/api/v1/patterns", h.handlePatterns)
 	// /tail is WebSocket-upgrade only; no POST counterpart in upstream Loki.
-	register("GET /loki/api/v1/tail", h.handleTail)
+	// It is the ONE route mounted on TailLimiter rather than Limiter: its
+	// slot is held for the session's whole lifetime, so it must not be
+	// drawn from the budget the millisecond-scale routes above share (see
+	// the TailLimiter field doc and issue #1482).
+	registerWith(h.TailLimiter, "GET /loki/api/v1/tail", h.handleTail)
 	// Format-query + build-info probes. Grafana's Loki datasource hits
 	// /status/buildinfo on every page load to gate feature flags
 	// (LogQL editor capabilities, label-browser presence) and uses

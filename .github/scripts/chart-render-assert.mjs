@@ -140,4 +140,24 @@ function count(haystack, needle) {
   check(negRejected, 'admit.tempo negative rejected (minimum:0 enforced)')
 }
 
+// --- 8. admit.tail is its own env knob, independent of admit.loki ------------
+// The Loki /tail WebSocket holds its admission slot until the client
+// disconnects, so it draws on CERBERUS_ADMIT_TAIL rather than the shared
+// CERBERUS_ADMIT_LOKI request budget. A chart that dropped the key, or aliased
+// it back onto admit.loki, would silently restore the starvation the split
+// exists to prevent.
+{
+  const out = tpl(['--set', 'admit.tail=4', '--set', 'admit.loki=128', '-s', 'templates/configmap-env.yaml'])
+  check(out.includes('CERBERUS_ADMIT_TAIL: "4"'), 'admit.tail integer cap renders as CERBERUS_ADMIT_TAIL="4"')
+  check(out.includes('CERBERUS_ADMIT_LOKI: "128"'), 'admit.tail does not disturb CERBERUS_ADMIT_LOKI')
+
+  let negRejected = false
+  try {
+    tpl(['--set', 'admit.tail=-1', '-s', 'templates/configmap-env.yaml'])
+  } catch {
+    negRejected = true
+  }
+  check(negRejected, 'admit.tail negative rejected (minimum:0 enforced)')
+}
+
 process.exit(ok ? 0 : 1)

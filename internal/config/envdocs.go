@@ -129,12 +129,19 @@ var envDocGroups = []envDocGroup{
 			"503 + `Retry-After: 1` so well-behaved clients back off and ClickHouse stays out\n" +
 			"of overload. Tempo's cap is half of Prom / Loki because trace queries are\n" +
 			"typically the heaviest per-call.\n\n" +
-			"`CERBERUS_ADMIT_{PROM,LOKI,TEMPO}` each accept **either** a non-negative\n" +
-			"integer cap **or** a boolean alias: `true` enables the head at its conservative\n" +
-			"default cap, `false` (or `0`) leaves that head unlimited, and a positive\n" +
+			"The Loki head's `/tail` WebSocket draws on its OWN budget,\n" +
+			"`CERBERUS_ADMIT_TAIL`, because it bounds a different quantity: an ordinary\n" +
+			"request holds its slot for milliseconds, whereas a tail holds one from the\n" +
+			"WebSocket upgrade until the client disconnects. Sharing one semaphore would\n" +
+			"let idle Live-tail panels ratchet the Loki head to zero free slots and 503\n" +
+			"every query on the replica, so the two budgets are sized and exhausted\n" +
+			"independently.\n\n" +
+			"`CERBERUS_ADMIT_{PROM,LOKI,TEMPO,TAIL}` each accept **either** a non-negative\n" +
+			"integer cap **or** a boolean alias: `true` enables that budget at its\n" +
+			"conservative default cap, `false` (or `0`) leaves it unlimited, and a positive\n" +
 			"integer pins an exact cap. A negative or unparseable value is rejected at\n" +
 			"startup. `CERBERUS_ADMIT_DISABLED` is a separate master switch that turns every\n" +
-			"head off at once.",
+			"budget off at once.",
 	},
 	{
 		Name:  "Logging",
@@ -264,10 +271,11 @@ var envDocs = []EnvDoc{
 	{envCHBreakerOpenIntrvl, "duration", "Circuit breaker", "OPEN-state backoff before the breaker admits a single HALF-OPEN probe, and the `Retry-After` a breaker-open 503 advertises. Must be > 0."},
 
 	// --- Admission control ---
-	{envAdmitDisabled, "bool", "Admission control", "Disable admission control entirely on every head (handy for local development)."},
+	{envAdmitDisabled, "bool", "Admission control", "Disable admission control entirely, on every budget at once (handy for local development)."},
 	{envAdmitProm, "int | bool", "Admission control", "Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
-	{envAdmitLoki, "int | bool", "Admission control", "Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
+	{envAdmitLoki, "int | bool", "Admission control", "Loki API in-flight cap, covering every route EXCEPT `/tail` (see `CERBERUS_ADMIT_TAIL`). Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
 	{envAdmitTempo, "int | bool", "Admission control", "Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited."},
+	{envAdmitTail, "int | bool", "Admission control", "Concurrent Loki `/tail` WebSocket sessions, on a budget SEPARATE from `CERBERUS_ADMIT_LOKI`. Integer caps it; `true` = default cap 16; `false`/`0` = unlimited."},
 
 	// --- Logging ---
 	{envLogFormat, "string", "Logging", "slog handler kind: `text` (human-readable) or `json` (aggregators)."},

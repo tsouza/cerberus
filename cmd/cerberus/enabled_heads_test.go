@@ -53,14 +53,14 @@ func buildHeadsTestServer(t *testing.T, enabledHeads string) *httptest.Server {
 
 	logger := slog.New(slog.NewTextHandler(httptestDiscard{}, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	prom, loki, tempo := newAdmitLimiters(cfg, logger)
+	limiters := newAdmitLimiters(cfg, logger)
 	traceMux := http.NewServeMux()
 	// mountAPIHeads owns lifecycle goroutines (the optcorpus reconciler when
 	// enabled), all bound to this ctx. Cancel it on cleanup so nothing leaks
 	// past the test.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	if _, err := mountAPIHeads(ctx, traceMux, client, cfg, chopt.EnabledSet{}, prom, loki, tempo, logger); err != nil {
+	if _, err := mountAPIHeads(ctx, traceMux, client, cfg, chopt.EnabledSet{}, limiters, logger); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 

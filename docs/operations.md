@@ -604,21 +604,76 @@ pool serves them from a shared connection set.
 
 ### Per-handler concurrency caps (admission control)
 
-Cerberus's `internal/api/admit` package fronts each of the three API
-heads with a counted semaphore that caps simultaneous in-flight
-requests. Caps are env-driven via `CERBERUS_ADMIT_PROM` /
-`CERBERUS_ADMIT_LOKI` / `CERBERUS_ADMIT_TEMPO` (defaults: 64 / 64 / 32
-— Tempo is half because trace queries are typically the heaviest
-per-call). Each accepts an explicit integer cap or a boolean alias
-(`true` = the default cap, `false`/`0` = that head unlimited), so a plain
-chart bool and a precise operator cap both work. Requests above the cap
-are rejected with HTTP 503 +
-`Retry-After: 1` so well-behaved clients back off and ClickHouse stays
-out of overload.
+Cerberus's `internal/api/admit` package fronts its routes with counted
+semaphores. Each accepts an explicit integer cap or a boolean alias
+(`true` = the default cap, `false`/`0` = unlimited), so a plain chart
+bool and a precise operator cap both work. An occupant above the cap is
+rejected with HTTP 503 + `Retry-After: 1` so well-behaved clients back
+off and ClickHouse stays out of overload.
 
-`CERBERUS_ADMIT_DISABLED=true` removes admission control entirely —
-useful for local development where artificial caps mask real
-concurrency bugs.
+There are **four** budgets, and they are not four heads — they are three
+request budgets plus one for long-lived streams:
+
+| Knob                   | Default | Bounds                              | A slot is held for                                   |
+| ---------------------- | ------- | ----------------------------------- | ---------------------------------------------------- |
+| `CERBERUS_ADMIT_PROM`  | 64      | every Prom route                    | the request (milliseconds)                           |
+| `CERBERUS_ADMIT_LOKI`  | 64      | every Loki route **except** `/tail` | the request (milliseconds)                           |
+| `CERBERUS_ADMIT_TEMPO` | 32      | every Tempo route (HTTP + gRPC)     | the request (milliseconds)                           |
+| `CERBERUS_ADMIT_TAIL`  | 16      | `GET /loki/api/v1/tail` only        | **the whole session — until the client disconnects** |
+
+Tempo's cap is half of Prom / Loki because trace queries (search +
+tag-value scans + per-trace span fetches) are the heaviest per-call.
+
+The tail budget is separate because it bounds a different quantity. The
+three request budgets cap *concurrency*: slots churn in milliseconds, so
+a cap of 64 sustains far more than 64 queries per second. The tail
+budget caps *concurrent live-tail sessions*: a `/tail` slot is taken at
+the WebSocket upgrade and returned only when the client disconnects,
+which is minutes or hours later — nothing reclaims it in between, and
+`CERBERUS_HTTP_WRITE_TIMEOUT` defaults to unlimited precisely so a tail
+can stream indefinitely. Read the tail cap as "how many Grafana Live-tail
+panels may point at one replica at once", and size it against the
+per-session steady load: each tail re-queries ClickHouse about once a
+second, so the cap is also tailing's background query rate per replica.
+
+Sizing them separately is what keeps the two from interfering. Were
+`/tail` drawn from the Loki request budget, `CERBERUS_ADMIT_LOKI`
+concurrent Live-tail sessions would occupy every Loki slot indefinitely
+and every subsequent `/query`, `/query_range`, `/labels`, `/series`,
+`/patterns` and Drilldown probe on that replica would 503 until a tail
+client disconnected. Occupancy would only ratchet one way, and the
+symptom — "the Loki datasource is down", on a healthy pod with no
+elevated CPU — points nowhere near the cause. Exhausting the tail budget
+now costs ordinary Loki queries nothing: the two semaphores are
+independent, and a saturated tail budget rejects only new `/tail`
+upgrades.
+
+To tell which budget rejected a request, group the rejection counter by
+the `budget` label: `sum by (cerberus_ql, budget, reason)
+(rate(cerberus_admit_rejected_total[5m]))` splits `budget="request"` from
+`budget="tail"`. Sustained `budget="tail"` rejections mean live-tail
+demand exceeds `CERBERUS_ADMIT_TAIL`; sustained `budget="request"`
+rejections on `cerberus_ql="logql"` are ordinary query saturation and are
+now unaffected by how many tails are open.
+
+The tail budget is independent of `CERBERUS_ADMIT_LOKI` in both
+directions, including when that knob is off: a replica running
+`CERBERUS_ADMIT_LOKI=0` (unlimited Loki requests) still admits at most
+`CERBERUS_ADMIT_TAIL` concurrent tail sessions, because "unlimited
+requests" says nothing about how many unbounded-duration streams the
+replica should carry. Set `CERBERUS_ADMIT_TAIL=0` to opt out of the tail
+cap as well, or `CERBERUS_ADMIT_DISABLED=true` to opt out of both.
+
+A tail refused by the tail cap is refused at the HTTP upgrade — `503` +
+`Retry-After: 1`, before the connection becomes a WebSocket — rather than
+upgraded and then closed with a close frame the way reference Loki
+answers its own `querier.max-concurrent-tail-requests`. Issue
+[#2048](https://github.com/tsouza/cerberus/issues/2048) tracks aligning
+the two, since a WebSocket client does not read the `Retry-After` header.
+
+`CERBERUS_ADMIT_DISABLED=true` removes admission control entirely, on
+every budget at once — useful for local development where artificial caps
+mask real concurrency bugs.
 
 ### Kubernetes HorizontalPodAutoscaler
 

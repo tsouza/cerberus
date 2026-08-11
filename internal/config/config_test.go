@@ -385,6 +385,7 @@ func TestFromEnv_Admit_Defaults(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_PROM", "")
 	t.Setenv("CERBERUS_ADMIT_LOKI", "")
 	t.Setenv("CERBERUS_ADMIT_TEMPO", "")
+	t.Setenv("CERBERUS_ADMIT_TAIL", "")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
@@ -401,6 +402,22 @@ func TestFromEnv_Admit_Defaults(t *testing.T) {
 	if cfg.Admit.Tempo != DefaultAdmitTempo {
 		t.Errorf("Admit.Tempo = %d; want %d (default cap)", cfg.Admit.Tempo, DefaultAdmitTempo)
 	}
+	// The tail budget defaults ON at its own, smaller cap. Two failure
+	// modes matter more than the exact number: 0 would read as
+	// "unlimited" and leave live-tail occupancy unbounded, and
+	// DefaultAdmitLoki would make the two budgets interchangeable in
+	// size and re-open the arithmetic of #1482 for anyone who reasons
+	// about totals.
+	if cfg.Admit.Tail != DefaultAdmitTail {
+		t.Errorf("Admit.Tail = %d; want %d (default cap)", cfg.Admit.Tail, DefaultAdmitTail)
+	}
+	if DefaultAdmitTail <= 0 {
+		t.Errorf("DefaultAdmitTail = %d; must be positive — 0 means unlimited tailing", DefaultAdmitTail)
+	}
+	if DefaultAdmitTail >= DefaultAdmitLoki {
+		t.Errorf("DefaultAdmitTail = %d; want a budget strictly smaller than DefaultAdmitLoki (%d)",
+			DefaultAdmitTail, DefaultAdmitLoki)
+	}
 }
 
 // TestFromEnv_Admit_Overrides confirms env-var overrides flow through.
@@ -412,6 +429,7 @@ func TestFromEnv_Admit_Overrides(t *testing.T) {
 	t.Setenv("CERBERUS_ADMIT_PROM", "false")
 	t.Setenv("CERBERUS_ADMIT_LOKI", "0")
 	t.Setenv("CERBERUS_ADMIT_TEMPO", "true")
+	t.Setenv("CERBERUS_ADMIT_TAIL", "3")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
@@ -427,6 +445,12 @@ func TestFromEnv_Admit_Overrides(t *testing.T) {
 	}
 	if cfg.Admit.Tempo != DefaultAdmitTempo {
 		t.Errorf("Admit.Tempo = %d; want %d (\"true\" = default cap)", cfg.Admit.Tempo, DefaultAdmitTempo)
+	}
+	// CERBERUS_ADMIT_TAIL resolves on its own, unaffected by the Loki
+	// knob sitting at 0 right beside it — the two are separate budgets,
+	// not a cap and a sub-cap.
+	if cfg.Admit.Tail != 3 {
+		t.Errorf("Admit.Tail = %d; want 3 (explicit integer cap)", cfg.Admit.Tail)
 	}
 }
 
@@ -477,6 +501,55 @@ func TestFromEnv_Admit_RejectsGarbage(t *testing.T) {
 			t.Setenv("CERBERUS_ADMIT_PROM", raw)
 			if _, err := FromEnv(); err == nil {
 				t.Fatalf("FromEnv with CERBERUS_ADMIT_PROM=%q: want error, got nil", raw)
+			}
+		})
+	}
+}
+
+// TestFromEnv_AdmitTail_AcceptsIntOrBool pins CERBERUS_ADMIT_TAIL to the
+// same int-or-bool contract as the per-head caps, and pins the two
+// properties an operator relies on: setting it never disturbs
+// CERBERUS_ADMIT_LOKI, and a garbage or negative value fails startup
+// rather than silently resolving to something permissive. A tail budget
+// that quietly parsed to 0 would be indistinguishable from "unlimited",
+// which is the state issue #1482 describes.
+func TestFromEnv_AdmitTail_AcceptsIntOrBool(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{"true", DefaultAdmitTail},
+		{"t", DefaultAdmitTail},
+		{"TRUE", DefaultAdmitTail},
+		{"false", 0},
+		{"f", 0},
+		{"0", 0},
+		{"1", 1},
+		{"8", 8},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("CERBERUS_ADMIT_TAIL", tc.raw)
+			t.Setenv("CERBERUS_ADMIT_LOKI", "50")
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatalf("FromEnv with CERBERUS_ADMIT_TAIL=%q: unexpected error %v", tc.raw, err)
+			}
+			if cfg.Admit.Tail != tc.want {
+				t.Errorf("Admit.Tail = %d; want %d for %q", cfg.Admit.Tail, tc.want, tc.raw)
+			}
+			if cfg.Admit.Loki != 50 {
+				t.Errorf("Admit.Loki = %d; want 50 — CERBERUS_ADMIT_TAIL must not disturb the Loki request budget", cfg.Admit.Loki)
+			}
+		})
+	}
+}
+
+func TestFromEnv_AdmitTail_RejectsGarbage(t *testing.T) {
+	for _, raw := range []string{"maybe", "-1", "1.5", "2x"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("CERBERUS_ADMIT_TAIL", raw)
+			if _, err := FromEnv(); err == nil {
+				t.Fatalf("FromEnv with CERBERUS_ADMIT_TAIL=%q: want error, got nil", raw)
 			}
 		})
 	}

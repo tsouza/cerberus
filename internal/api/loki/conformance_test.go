@@ -1123,6 +1123,220 @@ func TestConformance_LokiAdmitIndependentFromOthers(t *testing.T) {
 	}
 }
 
+// newSplitBudgetServer mounts a Loki handler whose two admission
+// budgets are wired to the caller's limiters — `limiter` for every
+// short-lived route, `tailLimiter` for /tail alone — over a querier
+// that serves both the ordinary query path and the tail poll loop.
+// Returns the live server; the caller closes nothing (t.Cleanup does).
+func newSplitBudgetServer(t *testing.T, limiter, tailLimiter *admit.Limiter) *httptest.Server {
+	t.Helper()
+	h := loki.New(&tailStubQuerier{
+		chunks: [][]chclient.Sample{{{
+			MetricName: "x",
+			Labels:     map[string]string{"job": "api"},
+		}}},
+	}, schema.DefaultOTelLogs(), nil)
+	h.Limiter = limiter
+	h.TailLimiter = tailLimiter
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// tailDialStatus dials /tail and reports the HTTP status of the
+// handshake response, closing whatever it got. Unlike dialTail it does
+// NOT fail the test on a refused upgrade — a refusal is the outcome
+// under test here.
+func tailDialStatus(t *testing.T, srv *httptest.Server, query string) int {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/loki/api/v1/tail"
+	u.RawQuery = "query=" + url.QueryEscape(query)
+
+	conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if resp == nil {
+		t.Fatalf("dial %s: no handshake response (err=%v)", u.String(), err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted is the
+// regression pin for issue #1482 — the reason /tail has a budget of its
+// own at all.
+//
+// /tail holds its admission slot from the WebSocket upgrade until the
+// client disconnects, which is unbounded (CERBERUS_HTTP_WRITE_TIMEOUT
+// defaults to 0 precisely so a tail can stream indefinitely). While the
+// tail budget and the request budget were one semaphore, N live-tail
+// sessions permanently occupied N of the Loki head's slots and every
+// subsequent /query, /query_range, /labels, /series and /patterns on that
+// replica 503'd until a tail client disconnected — a starvation that only
+// ever ratcheted one way.
+//
+// So: saturate the tail budget with a REAL, live /tail session — dialled
+// through the mux, holding its slot through the admission middleware
+// exactly as a Grafana Live-tail panel does — and then drive the ordinary
+// routes to their OWN full capacity. Every one must be admitted.
+//
+// Occupying the budget by dialling rather than by calling Acquire on the
+// limiter is what makes this test see the MOUNT as well as the budgets:
+// were /tail re-mounted on the request limiter, the live session would
+// consume a request slot and the query loop below would 503 — which is
+// precisely the pre-fix behaviour. Sizing the tail budget at 1 and the
+// request budget at 2 leaves no room for that to pass by luck.
+func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
+	t.Parallel()
+
+	const requestCap = 2
+	tailLimiter := admit.NewTail("loki", 1)
+	limiter := admit.New("loki", requestCap)
+
+	srv := newSplitBudgetServer(t, limiter, tailLimiter)
+
+	// A live tail session takes the one tail slot and keeps it for the
+	// rest of the test (the conn closes on cleanup).
+	_ = dialTail(t, srv, `{job="api"}`)
+
+	// Corroborate that the tail budget really is full — otherwise the
+	// assertions below would pass trivially on an unoccupied budget.
+	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusServiceUnavailable {
+		t.Fatalf("second /tail dial: status %d, want 503 — the live session did not occupy the tail budget, so this test proves nothing", got)
+	}
+
+	// Every short-lived route, twice over the request cap, all serial so
+	// each slot is released before the next acquire. A single 503 here is
+	// the bug.
+	paths := []string{
+		`/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`,
+		`/loki/api/v1/labels`,
+		`/loki/api/v1/series?match%5B%5D=%7Bjob%3D%22api%22%7D`,
+		`/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D`,
+	}
+	for round := 0; round < requestCap*2; round++ {
+		for _, p := range paths {
+			resp, err := http.Get(srv.URL + p)
+			if err != nil {
+				t.Fatalf("round %d GET %s: %v", round, p, err)
+			}
+			status := resp.StatusCode
+			resp.Body.Close()
+			if status == http.StatusServiceUnavailable {
+				t.Fatalf("round %d GET %s: 503 — a saturated tail budget must not reject ordinary Loki requests (#1482)", round, p)
+			}
+			if status != http.StatusOK {
+				t.Fatalf("round %d GET %s: status %d, want 200", round, p, status)
+			}
+		}
+	}
+
+	// And the two budgets are genuinely separate objects, not one
+	// semaphore reached through two fields.
+	if limiter == tailLimiter {
+		t.Fatalf("request and tail budgets must be distinct limiters")
+	}
+	if got := tailLimiter.Budget(); got != admit.BudgetTail {
+		t.Errorf("tail limiter budget = %q, want %q", got, admit.BudgetTail)
+	}
+	if got := limiter.Budget(); got != admit.BudgetRequest {
+		t.Errorf("request limiter budget = %q, want %q", got, admit.BudgetRequest)
+	}
+}
+
+// TestConformance_LokiTailRejectedAtTailCap is the other half of the
+// split: giving /tail its own budget must actually BOUND tailing, not
+// exempt it. A separate budget that never rejects would be an unbounded
+// resource wearing a cap's name.
+//
+// The rejection rides the same admit.Middleware contract as every other
+// route — HTTP 503 + Retry-After, written BEFORE the WebSocket upgrade,
+// so the client sees an ordinary refused handshake rather than an
+// upgraded-then-severed connection.
+func TestConformance_LokiTailRejectedAtTailCap(t *testing.T) {
+	t.Parallel()
+
+	tailLimiter := admit.NewTail("loki", 1)
+	rel, ok := tailLimiter.Acquire(context.Background())
+	if !ok {
+		t.Fatalf("setup: tail budget must start free")
+	}
+	defer rel()
+
+	srv := newSplitBudgetServer(t, admit.New("loki", 4), tailLimiter)
+
+	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusServiceUnavailable {
+		t.Fatalf("/tail at cap: status %d, want 503", got)
+	}
+}
+
+// TestConformance_LokiFullQueryBudgetLeavesTailAdmitted closes the
+// symmetry. Query saturation is a transient, self-clearing condition
+// (slots churn in milliseconds); a live-tail session that a burst of
+// queries can refuse would drop Grafana's Live panel for the duration of
+// an unrelated load spike. With the budgets split, a full REQUEST budget
+// leaves the tail upgrade untouched.
+func TestConformance_LokiFullQueryBudgetLeavesTailAdmitted(t *testing.T) {
+	t.Parallel()
+
+	limiter := admit.New("loki", 1)
+	rel, ok := limiter.Acquire(context.Background())
+	if !ok {
+		t.Fatalf("setup: request budget must start free")
+	}
+	defer rel()
+
+	srv := newSplitBudgetServer(t, limiter, admit.NewTail("loki", 1))
+
+	// The request budget really is exhausted...
+	resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
+	if err != nil {
+		t.Fatalf("GET /query: %v", err)
+	}
+	status := resp.StatusCode
+	resp.Body.Close()
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("GET /query with the request budget held: status %d, want 503", status)
+	}
+
+	// ...and /tail upgrades anyway, on its own budget.
+	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusSwitchingProtocols {
+		t.Fatalf("/tail with only the REQUEST budget exhausted: status %d, want 101", got)
+	}
+}
+
+// TestConformance_LokiTailUnadmittedWithoutTailLimiter pins the nil
+// sentinel for the new field: a Handler carrying a request limiter but
+// no TailLimiter leaves /tail unadmitted rather than silently falling
+// back to the request budget. Falling back would re-create #1482 in
+// any deployment that set only CERBERUS_ADMIT_LOKI, so the pass-through
+// is the deliberate behaviour — the same "cap 0 means unlimited"
+// convention Limiter itself follows.
+func TestConformance_LokiTailUnadmittedWithoutTailLimiter(t *testing.T) {
+	t.Parallel()
+
+	limiter := admit.New("loki", 1)
+	rel, ok := limiter.Acquire(context.Background())
+	if !ok {
+		t.Fatalf("setup: request budget must start free")
+	}
+	defer rel()
+
+	srv := newSplitBudgetServer(t, limiter, nil)
+
+	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusSwitchingProtocols {
+		t.Fatalf("/tail with a nil TailLimiter: status %d, want 101 (unadmitted)", got)
+	}
+}
+
 // TestConformance_LokiGrafanaMsTimestamps_ResourcesProxy is the
 // request-level pin for #194 on the Loki side. Grafana 11.x's Loki
 // datasource sends 13-digit ms `start` / `end` timestamps over
