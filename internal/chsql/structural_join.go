@@ -425,20 +425,14 @@ func aliasedSideCol(side, col, alias string) Frag {
 // starExceptKeys renders `<side>.* EXCEPT (<k1>, <k2>, <k3>)` with each
 // key backtick-quoted. Used in tandem with the leading aliased-key
 // projections to pass through every other column without re-emitting
-// the keys twice. The `<side>.* EXCEPT (` and `)` glue is an
-// emitter-chosen synthetic shape (bare side alias + CH's EXCEPT modifier
-// on a star projection — no Frag constructor covers a star-except), so
-// it rides verbatim; the keys flow through Col's quoting.
+// the keys twice.
+//
+// The EXCEPT modifier and its key quoting come from [StarExcept]. Only
+// the star itself is local: the join alias is a BARE identifier here
+// (`R.*`, not QualStar's backtick-quoted “ `R`.* “), an emitter-chosen
+// synthetic token, so it rides verbatim.
 func starExceptKeys(side, k1, k2, k3 string) Frag {
-	return func(b *Builder) {
-		verbatim(side + ".* EXCEPT (")(b)
-		Col(k1)(b)
-		verbatim(", ")(b)
-		Col(k2)(b)
-		verbatim(", ")(b)
-		Col(k3)(b)
-		verbatim(")")(b)
-	}
+	return StarExcept(verbatim(side+".*"), k1, k2, k3)
 }
 
 // structuralDirectRelFrag returns the relation predicate that pairs
