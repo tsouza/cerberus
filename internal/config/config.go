@@ -440,14 +440,15 @@ type SchemaProvisioning struct {
 // AdmitConfig holds the per-handler admission-control concurrency caps.
 //
 // CERBERUS_ADMIT_{PROM,LOKI,TEMPO} set the per-head in-flight concurrency
-// cap. Each accepts EITHER an explicit non-negative integer cap OR a
-// boolean spelling, so one knob serves both an operator pinning an exact
-// cap and the Helm chart rendering a plain YAML bool:
+// cap and CERBERUS_ADMIT_TAIL sets the Loki head's separate long-lived
+// `/tail` budget. Each accepts EITHER an explicit non-negative integer cap
+// OR a boolean spelling, so one knob serves both an operator pinning an
+// exact cap and the Helm chart rendering a plain YAML bool:
 //
-//   - a positive integer N -> cap the head at N concurrent requests
-//   - "true"  / "t"        -> enable at the head's conservative default
-//     cap (DefaultAdmitProm / Loki / Tempo)
-//   - "false" / "f" / "0"  -> no limiter for that head (unlimited)
+//   - a positive integer N -> cap at N concurrent occupants
+//   - "true"  / "t"        -> enable at the conservative default cap
+//     (DefaultAdmitProm / Loki / Tempo / Tail)
+//   - "false" / "f" / "0"  -> no limiter there (unlimited)
 //   - a negative or otherwise unparseable value -> rejected (fail fast)
 //
 // "1"/"0" are read as the integer caps 1 and 0 (and 0 == unlimited), so
@@ -479,6 +480,19 @@ type AdmitConfig struct {
 	// head unlimited. Default DefaultAdmitTempo (CERBERUS_ADMIT_TEMPO
 	// unset or "true").
 	Tempo int
+
+	// Tail caps simultaneous Loki `/tail` WebSocket sessions, on a
+	// semaphore SEPARATE from Loki. 0 leaves tailing unlimited. Default
+	// DefaultAdmitTail (CERBERUS_ADMIT_TAIL unset or "true").
+	//
+	// It is its own knob because it bounds a different quantity than the
+	// others do. Loki / Prom / Tempo bound requests that occupy a slot for
+	// milliseconds; a `/tail` session holds its slot from the WebSocket
+	// upgrade until the client disconnects, which is why
+	// CERBERUS_HTTP_WRITE_TIMEOUT defaults to unlimited. Drawn from one
+	// pool, tail occupancy ratchets one way and eventually starves every
+	// ordinary Loki route on the replica — issue #1482.
+	Tail int
 }
 
 // HTTPServerConfig holds the cerberus HTTP server's net/http timeout knobs
@@ -656,6 +670,7 @@ const (
 	envAdmitProm               = "CERBERUS_ADMIT_PROM"
 	envAdmitLoki               = "CERBERUS_ADMIT_LOKI"
 	envAdmitTempo              = "CERBERUS_ADMIT_TEMPO"
+	envAdmitTail               = "CERBERUS_ADMIT_TAIL"
 	envEnabledHeads            = "CERBERUS_ENABLED_HEADS"
 )
 
@@ -770,6 +785,8 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_ADMIT_PROM            default "64"  (Prom cap; int N, or true/false)
 //	CERBERUS_ADMIT_LOKI            default "64"  (Loki cap; int N, or true/false)
 //	CERBERUS_ADMIT_TEMPO           default "32"  (Tempo cap; int N, or true/false)
+//	CERBERUS_ADMIT_TAIL            default "16"  (Loki /tail cap, a budget
+//	    SEPARATE from CERBERUS_ADMIT_LOKI; int N, or true/false)
 //	CERBERUS_ENABLED_HEADS         default "prom,loki,tempo" — comma-separated
 //	    subset of query heads this process serves. Unset = all three (full
 //	    backward compatibility). A subset (e.g. "prom") skips building AND
@@ -1039,6 +1056,7 @@ var allEnvKeys = []string{
 	envAdmitProm,
 	envAdmitLoki,
 	envAdmitTempo,
+	envAdmitTail,
 	envEnabledHeads,
 }
 
@@ -1189,6 +1207,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envAdmitProm, DefaultAdmitProm)
 	v.SetDefault(envAdmitLoki, DefaultAdmitLoki)
 	v.SetDefault(envAdmitTempo, DefaultAdmitTempo)
+	v.SetDefault(envAdmitTail, DefaultAdmitTail)
 	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
 	return v
 }
@@ -1589,16 +1608,39 @@ const (
 	DefaultAdmitTempo = 32
 )
 
+// DefaultAdmitTail is the cap for the Loki head's SEPARATE `/tail`
+// budget (CERBERUS_ADMIT_TAIL unset or "true"). It is a quarter of
+// DefaultAdmitLoki for two reasons that both follow from what a tail
+// slot actually costs:
+//
+//   - Duration. A tail holds its slot from the WebSocket upgrade to the
+//     client disconnect, so the cap is a ceiling on CONCURRENT LIVE-TAIL
+//     SESSIONS per replica, not on request throughput. Sixteen open
+//     Grafana Live-tail panels against one replica is a generous ceiling
+//     for an interactive debugging workflow; a fleet that genuinely needs
+//     more raises the knob or adds replicas.
+//   - Steady load. Each session re-queries ClickHouse on the
+//     internal/api/loki tail poll cadence (one second), so the cap is
+//     also the steady background query rate tailing imposes — bounded
+//     here at 16 q/s per replica, where the Loki request budget's 64
+//     would be four times that and never idle.
+//
+// It is deliberately NOT DefaultAdmitLoki: sizing the two budgets equally
+// would restore the "tails can consume a query-sized budget" arithmetic
+// this knob exists to break, and it is deliberately not 0, which would
+// read as "unlimited" and leave tail occupancy unbounded.
+const DefaultAdmitTail = 16
+
 // admitFromEnv reads CERBERUS_ADMIT_* knobs from the viper loader.
 // CERBERUS_ADMIT_DISABLED is a plain bool (getBool). The per-head
-// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} are concurrency caps read through
-// getAdmitCap, which accepts an explicit non-negative integer OR a
-// boolean spelling: "true" -> the head's default cap, "false"/"0" ->
-// unlimited, a positive N -> cap N, negative/garbage -> rejected. This
-// keeps the 1/0/true/false ergonomics the Helm chart relies on while
-// still letting an operator pin an exact cap (e.g. 2). Unset values fall
-// back to the registered per-head defaults (DefaultAdmitProm / Loki /
-// Tempo).
+// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} plus the Loki-tail-specific
+// CERBERUS_ADMIT_TAIL are concurrency caps read through getAdmitCap,
+// which accepts an explicit non-negative integer OR a boolean spelling:
+// "true" -> that budget's default cap, "false"/"0" -> unlimited, a
+// positive N -> cap N, negative/garbage -> rejected. This keeps the
+// 1/0/true/false ergonomics the Helm chart relies on while still letting
+// an operator pin an exact cap (e.g. 2). Unset values fall back to the
+// registered defaults (DefaultAdmitProm / Loki / Tempo / Tail).
 func admitFromEnv(v *viper.Viper) (AdmitConfig, error) {
 	disabled, err := getBool(v, envAdmitDisabled)
 	if err != nil {
@@ -1616,11 +1658,16 @@ func admitFromEnv(v *viper.Viper) (AdmitConfig, error) {
 	if err != nil {
 		return AdmitConfig{}, err
 	}
+	tail, err := getAdmitCap(v, envAdmitTail, DefaultAdmitTail)
+	if err != nil {
+		return AdmitConfig{}, err
+	}
 	return AdmitConfig{
 		Disabled: disabled,
 		Prom:     prom,
 		Loki:     loki,
 		Tempo:    tempo,
+		Tail:     tail,
 	}, nil
 }
 

@@ -212,9 +212,10 @@ Kubernetes: `>=1.23.0-0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| admit.disabled | bool | `false` | Disable admission entirely on every head (CERBERUS_ADMIT_DISABLED). |
-| admit.loki | bool | `true` | Loki API in-flight cap (CERBERUS_ADMIT_LOKI): integer cap, or true (default cap 64) / false (unlimited). |
+| admit.disabled | bool | `false` | Disable admission entirely on every budget (CERBERUS_ADMIT_DISABLED). |
+| admit.loki | bool | `true` | Loki API in-flight cap, every route EXCEPT /tail (CERBERUS_ADMIT_LOKI): integer cap, or true (default cap 64) / false (unlimited). |
 | admit.prom | bool | `true` | Prom API in-flight cap (CERBERUS_ADMIT_PROM): integer cap, or true (default cap 64) / false (unlimited). |
+| admit.tail | bool | `true` | Concurrent Loki /tail WebSocket sessions, on its own budget (CERBERUS_ADMIT_TAIL): integer cap, or true (default cap 16) / false (unlimited). |
 | admit.tempo | bool | `true` | Tempo API in-flight cap (CERBERUS_ADMIT_TEMPO): integer cap, or true (default cap 32) / false (unlimited). |
 | affinity | object | `{}` | Affinity. Composed UNDER `affinityPresets` below — any field set here wins; the presets only inject podAffinity terms. |
 | affinityPresets | object | `{"colocateWithClickHouse":{"enabled":false,"mode":"preferred","podSelector":{"matchLabels":{"app.kubernetes.io/name":"clickhouse"}},"topologyKey":"kubernetes.io/hostname"}}` | Scheduling affinity presets (a convenience over hand-writing raw affinity). Composed over `affinity` above. |

@@ -286,6 +286,7 @@ CERBERUS_AUTO_CREATE_DATABASE: {{ if kindIs "invalid" .Values.autoCreate.databas
 CERBERUS_ADMIT_PROM: {{ .Values.admit.prom | quote }}
 CERBERUS_ADMIT_LOKI: {{ .Values.admit.loki | quote }}
 CERBERUS_ADMIT_TEMPO: {{ .Values.admit.tempo | quote }}
+CERBERUS_ADMIT_TAIL: {{ .Values.admit.tail | quote }}
 CERBERUS_ADMIT_DISABLED: {{ .Values.admit.disabled | quote }}
 {{- if .Values.requirementsCheck }}
 CERBERUS_REQUIREMENTS_CHECK: "true"

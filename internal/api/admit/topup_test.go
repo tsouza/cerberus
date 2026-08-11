@@ -8,7 +8,7 @@ import (
 )
 
 func newTestLimiter(cap int) *Limiter {
-	return newWithProvider("prom", cap, sdkmetric.NewMeterProvider())
+	return newWithProvider("prom", BudgetRequest, cap, sdkmetric.NewMeterProvider())
 }
 
 // TestTryAcquireTopUp_FullGrant — when the semaphore has headroom the top-up

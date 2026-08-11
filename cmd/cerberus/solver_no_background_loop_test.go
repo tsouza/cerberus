@@ -62,7 +62,7 @@ func TestMountAPIHeads_PromStartsNoBackgroundLoop(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	logger := slog.New(slog.NewTextHandler(httptestDiscard{}, &slog.HandlerOptions{Level: slog.LevelError}))
-	prom, loki, tempo := newAdmitLimiters(cfg, logger)
+	limiters := newAdmitLimiters(cfg, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -75,7 +75,7 @@ func TestMountAPIHeads_PromStartsNoBackgroundLoop(t *testing.T) {
 		goleak.IgnoreCurrent(),
 	}
 
-	if _, err := mountAPIHeads(ctx, http.NewServeMux(), client, cfg, chopt.EnabledSet{}, prom, loki, tempo, logger); err != nil {
+	if _, err := mountAPIHeads(ctx, http.NewServeMux(), client, cfg, chopt.EnabledSet{}, limiters, logger); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 

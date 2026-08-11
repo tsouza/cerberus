@@ -363,20 +363,26 @@ autoCreate:
   # database yet). An explicit `false` always WINS — even under bundled.
   database: null
 
-# Per-head admission control (in-flight concurrency caps). prom / loki / tempo
-# each accept EITHER an explicit integer cap OR a boolean: `true` enables the
-# head at its conservative default cap (64 / 64 / 32), `false` (or `0`) leaves
-# the head unlimited, and a positive integer (e.g. `2`) pins an exact cap.
-# `disabled: true` is the master switch that removes admission control on every
-# head at once.
+# Admission control (concurrency caps). prom / loki / tempo / tail each accept
+# EITHER an explicit integer cap OR a boolean: `true` enables that budget at its
+# conservative default cap (64 / 64 / 32 / 16), `false` (or `0`) leaves it
+# unlimited, and a positive integer (e.g. `2`) pins an exact cap. `disabled:
+# true` is the master switch that removes admission control everywhere at once.
+#
+# `tail` is a SEPARATE budget from `loki`, not a sub-cap of it: a /tail
+# WebSocket holds its slot until the client disconnects, so drawn from the same
+# pool as the millisecond-scale routes, live-tail sessions would ratchet the
+# Loki head to zero free slots and 503 every query on the replica.
 admit:
   # -- Prom API in-flight cap (CERBERUS_ADMIT_PROM): integer cap, or true (default cap 64) / false (unlimited).
   prom: true
-  # -- Loki API in-flight cap (CERBERUS_ADMIT_LOKI): integer cap, or true (default cap 64) / false (unlimited).
+  # -- Loki API in-flight cap, every route EXCEPT /tail (CERBERUS_ADMIT_LOKI): integer cap, or true (default cap 64) / false (unlimited).
   loki: true
   # -- Tempo API in-flight cap (CERBERUS_ADMIT_TEMPO): integer cap, or true (default cap 32) / false (unlimited).
   tempo: true
-  # -- Disable admission entirely on every head (CERBERUS_ADMIT_DISABLED).
+  # -- Concurrent Loki /tail WebSocket sessions, on its own budget (CERBERUS_ADMIT_TAIL): integer cap, or true (default cap 16) / false (unlimited).
+  tail: true
+  # -- Disable admission entirely on every budget (CERBERUS_ADMIT_DISABLED).
   disabled: false
 
 otlp:

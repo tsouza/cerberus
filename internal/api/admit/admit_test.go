@@ -304,12 +304,17 @@ func TestRejectedCounter(t *testing.T) {
 
 // rejectedStreams collects every cerberus_admit_rejected_total data
 // point from a manual-reader snapshot, keyed by its
-// "<cerberus.ql>/<reason>" attribute pair. Returning a map (rather
-// than a flat sum) lets callers assert both the per-stream value and
-// the *number* of distinct streams — the dashboard's
-// `sum by (cerberus_ql, reason)` panel renders one series per key,
-// so a stray second stream with mismatched attributes is itself a
+// "<cerberus.ql>/<budget>/<reason>" attribute triple. Returning a map
+// (rather than a flat sum) lets callers assert both the per-stream
+// value and the *number* of distinct streams — the dashboard's
+// `sum by (cerberus_ql, budget, reason)` panel renders one series per
+// key, so a stray extra stream with mismatched attributes is itself a
 // bug worth failing on.
+//
+// budget is part of the key, not merely asserted present: a head can
+// front more than one semaphore (request vs the Loki /tail budget) and
+// keying without it would silently collide their two streams into one
+// "duplicate" failure while a real duplicate went unnoticed.
 func rejectedStreams(t *testing.T, reader *metric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -334,11 +339,15 @@ func rejectedStreams(t *testing.T, reader *metric.ManualReader) map[string]int64
 				if !ok {
 					t.Fatalf("rejected_total data point missing cerberus.ql attribute: %v", dp.Attributes.ToSlice())
 				}
+				budget, ok := dp.Attributes.Value("budget")
+				if !ok {
+					t.Fatalf("rejected_total data point missing budget attribute: %v", dp.Attributes.ToSlice())
+				}
 				reason, ok := dp.Attributes.Value("reason")
 				if !ok {
 					t.Fatalf("rejected_total data point missing reason attribute: %v", dp.Attributes.ToSlice())
 				}
-				key := ql.AsString() + "/" + reason.AsString()
+				key := ql.AsString() + "/" + budget.AsString() + "/" + reason.AsString()
 				if _, dup := streams[key]; dup {
 					t.Fatalf("rejected_total: duplicate stream for %q in one collection", key)
 				}
@@ -362,27 +371,116 @@ func TestRejectedCounterZeroInitializedAtConstruction(t *testing.T) {
 	reader := metric.NewManualReader()
 	mp := metric.NewMeterProvider(metric.WithReader(reader))
 
-	// Construct all three heads; never call Acquire.
+	// Construct all three heads plus the Loki tail budget — every
+	// limiter a full cerberus process builds; never call Acquire.
 	for _, head := range []string{"prom", "loki", "tempo"} {
 		if l := admit.NewWithProvider(head, 4, mp); l == nil {
 			t.Fatalf("NewWithProvider(%q): want limiter, got nil", head)
 		}
 	}
+	if l := admit.NewTailWithProvider("loki", 4, mp); l == nil {
+		t.Fatalf("NewTailWithProvider(loki): want limiter, got nil")
+	}
 
 	streams := rejectedStreams(t, reader)
-	if len(streams) != 3 {
-		t.Fatalf("want exactly 3 zero-init streams, got %d: %v", len(streams), streams)
+	want := []string{
+		"promql/" + admit.BudgetRequest,
+		"logql/" + admit.BudgetRequest,
+		"traceql/" + admit.BudgetRequest,
+		// The tail budget keeps cerberus.ql=logql — it is the same head,
+		// so the existing per-head dashboards keep resolving — and is
+		// told apart by budget alone.
+		"logql/" + admit.BudgetTail,
 	}
-	for _, ql := range []string{"promql", "logql", "traceql"} {
-		key := ql + "/" + admit.ReasonCapExceeded
+	if len(streams) != len(want) {
+		t.Fatalf("want exactly %d zero-init streams, got %d: %v", len(want), len(streams), streams)
+	}
+	for _, prefix := range want {
+		key := prefix + "/" + admit.ReasonCapExceeded
 		got, ok := streams[key]
 		if !ok {
-			t.Errorf("missing zero-init stream %q (panel would show No data for this head)", key)
+			t.Errorf("missing zero-init stream %q (panel would show No data for this budget)", key)
 			continue
 		}
 		if got != 0 {
 			t.Errorf("stream %q: want 0 before any rejection, got %d", key, got)
 		}
+	}
+}
+
+// TestTailBudgetIsIndependentOfRequestBudget pins the semaphore-level
+// guarantee the Loki head's /tail split rests on: two limiters built for
+// the SAME head share no capacity. Saturating one must leave the other
+// at full capacity, in both directions — the request budget is what
+// ordinary Loki queries draw on, and issue #1482 is precisely what
+// happens when a long-lived tail can consume it.
+func TestTailBudgetIsIndependentOfRequestBudget(t *testing.T) {
+	t.Parallel()
+
+	const cap = 2
+	requests := admit.New("loki", cap)
+	tail := admit.NewTail("loki", cap)
+
+	// Drain the tail budget completely.
+	for i := 0; i < cap; i++ {
+		rel, ok := tail.Acquire(t.Context())
+		if !ok {
+			t.Fatalf("tail acquire %d: want ok", i)
+		}
+		defer rel()
+	}
+	if _, ok := tail.Acquire(t.Context()); ok {
+		t.Fatalf("tail acquire past cap: want reject")
+	}
+
+	// The request budget is untouched: still admits its full cap.
+	for i := 0; i < cap; i++ {
+		rel, ok := requests.Acquire(t.Context())
+		if !ok {
+			t.Fatalf("request acquire %d with the tail budget drained: want ok (#1482)", i)
+		}
+		defer rel()
+	}
+	// ...and enforces its own cap independently.
+	if _, ok := requests.Acquire(t.Context()); ok {
+		t.Fatalf("request acquire past cap: want reject")
+	}
+}
+
+// TestTailRejectionCarriesTailBudgetLabel pins the operator-facing half
+// of the split: a rejection from the tail budget must be attributable to
+// it. Without the budget label a starved tail budget and a saturated
+// request budget are the same 503 on the same cerberus.ql=logql stream,
+// with no way to tell which cap to raise.
+func TestTailRejectionCarriesTailBudgetLabel(t *testing.T) {
+	t.Parallel()
+
+	reader := metric.NewManualReader()
+	mp := metric.NewMeterProvider(metric.WithReader(reader))
+
+	tail := admit.NewTailWithProvider("loki", 1, mp)
+	rel, ok := tail.Acquire(t.Context())
+	if !ok {
+		t.Fatalf("acquire 1: want ok")
+	}
+	defer rel()
+	if _, ok := tail.Acquire(t.Context()); ok {
+		t.Fatalf("acquire 2: want reject")
+	}
+
+	streams := rejectedStreams(t, reader)
+	if len(streams) != 1 {
+		t.Fatalf("want exactly 1 stream (zero-init and hot path must share attributes), got %d: %v", len(streams), streams)
+	}
+	key := "logql/" + admit.BudgetTail + "/" + admit.ReasonCapExceeded
+	if got := streams[key]; got != 1 {
+		t.Fatalf("stream %q: want 1 after one tail rejection, got %d: %v", key, got, streams)
+	}
+	if got := tail.Budget(); got != admit.BudgetTail {
+		t.Errorf("Budget() = %q, want %q", got, admit.BudgetTail)
+	}
+	if got := tail.Head(); got != "loki" {
+		t.Errorf("Head() = %q, want %q — the tail budget belongs to the Loki head", got, "loki")
 	}
 }
 
@@ -411,7 +509,7 @@ func TestRejectedCounterZeroInitSharesStreamWithHotPath(t *testing.T) {
 	if len(streams) != 1 {
 		t.Fatalf("want exactly 1 stream (zero-init and hot path must share attributes), got %d: %v", len(streams), streams)
 	}
-	key := "promql/" + admit.ReasonCapExceeded
+	key := "promql/" + admit.BudgetRequest + "/" + admit.ReasonCapExceeded
 	if got := streams[key]; got != 1 {
 		t.Fatalf("stream %q: want 1 after one rejection, got %d", key, got)
 	}

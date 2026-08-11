@@ -14,6 +14,15 @@
 // failing fast on the slow few rather than degrading service for
 // everyone.
 //
+// A head can own MORE THAN ONE budget, because a semaphore counts
+// requests rather than occupancy-time and those two quantities only
+// coincide while every occupant is short-lived. The Loki head's
+// `/tail` WebSocket holds its slot from the upgrade until the client
+// disconnects — minutes or hours — so it gets its own [NewTail]
+// limiter (`CERBERUS_ADMIT_TAIL`) rather than drawing on the
+// millisecond-scale request budget every other Loki route shares. See
+// docs/operations.md § "Per-handler concurrency caps".
+//
 // The limiter is opt-out (`CERBERUS_ADMIT_DISABLED=true`) for local /
 // dev workflows where artificial caps get in the way; in production
 // it should always be on.
@@ -48,6 +57,26 @@ const meterName = "github.com/tsouza/cerberus/internal/api/admit"
 // panel resolves consistently across both metric sources.
 const attrQL = attribute.Key("cerberus.ql")
 
+// attrBudget labels the rejection counter with WHICH of a head's
+// admission budgets ran out. A head can front more than one semaphore
+// (see the package doc): without this dimension a saturated long-lived
+// budget and a saturated request budget are indistinguishable on the
+// wire, and the operator-visible symptom of both is the same 503 — the
+// exact ambiguity issue #1482 reports as "the Loki datasource is down"
+// with a healthy pod. Grouping by it is additive for existing
+// dashboards: `sum by (cerberus_ql, reason)` still resolves, it just
+// sums the budgets back together.
+const attrBudget = attribute.Key("budget")
+
+// BudgetRequest is the budget every short-lived HTTP request and gRPC
+// stream draws on — the one [New] builds. BudgetTail is the separate
+// long-lived-stream budget [NewTail] builds, held for the whole
+// lifetime of a Loki `/tail` WebSocket.
+const (
+	BudgetRequest = "request"
+	BudgetTail    = "tail"
+)
+
 // attrReason labels the rejection counter with the rejection cause.
 // The limiter currently has exactly one rejection path: the weighted
 // semaphore was at its cap when Acquire ran. Future paths (e.g.,
@@ -58,7 +87,7 @@ const attrReason = attribute.Key("reason")
 // ReasonCapExceeded is emitted on the reason attribute when Acquire
 // is called while the limiter's semaphore is saturated. It's the only
 // rejection path the limiter has today, and newWithProvider
-// pre-registers its (cerberus.ql, reason) stream at 0 when the
+// pre-registers its (cerberus.ql, budget, reason) stream at 0 when the
 // Limiter is constructed — see the zero-init note there. Future
 // reason values must be pre-registered the same way so dashboards
 // see a 0-valued series instead of "No data" on healthy replicas.
@@ -97,13 +126,14 @@ func headToQL(head string) string {
 type Limiter struct {
 	head     string
 	ql       string
+	budget   string
 	sem      *semaphore.Weighted
 	rejected metric.Int64Counter
 }
 
-// New constructs a Limiter for head with the given cap. head is the
-// API identifier ("prom" / "loki" / "tempo") used to label the
-// rejection counter; cap is the maximum number of concurrent
+// New constructs a [BudgetRequest] Limiter for head with the given cap.
+// head is the API identifier ("prom" / "loki" / "tempo") used to label
+// the rejection counter; cap is the maximum number of concurrent
 // in-flight requests. A cap of 0 or less returns nil — the caller
 // treats that as "admission control disabled for this head", which
 // makes config wiring symmetric across the enabled / disabled cases.
@@ -113,14 +143,34 @@ type Limiter struct {
 // (via cmd/cerberus/main.go) before building limiters so the counter
 // flows to the configured OTLP exporter.
 func New(head string, cap int) *Limiter {
-	return newWithProvider(head, cap, otel.GetMeterProvider())
+	return newWithProvider(head, BudgetRequest, cap, otel.GetMeterProvider())
 }
 
-// newWithProvider is the test seam New() funnels through. Lets unit
-// tests construct a Limiter whose rejected counter targets a manual
-// reader without racing with parallel tests that use the global
+// NewTail constructs the [BudgetTail] Limiter for head — the separate
+// budget that bounds long-lived streaming routes, today only the Loki
+// head's `/tail` WebSocket. It is a DIFFERENT semaphore from the one
+// [New] returns for the same head, so a replica whose tail budget is
+// fully occupied still admits ordinary queries at full request cap.
+//
+// Sizing it separately is the point, not a convenience: a tail slot is
+// released at client disconnect (the handler streams until then, and
+// CERBERUS_HTTP_WRITE_TIMEOUT defaults to unlimited precisely so it
+// can), so tail occupancy ratchets one way over a session's lifetime
+// where request occupancy churns in milliseconds. Sharing one
+// semaphore between the two lets N idle browser tabs permanently
+// consume a budget sized for query concurrency.
+//
+// Cap semantics, the nil-for-non-positive sentinel, and the
+// MeterProvider note are identical to [New].
+func NewTail(head string, cap int) *Limiter {
+	return newWithProvider(head, BudgetTail, cap, otel.GetMeterProvider())
+}
+
+// newWithProvider is the test seam New() and NewTail() funnel through.
+// Lets unit tests construct a Limiter whose rejected counter targets a
+// manual reader without racing with parallel tests that use the global
 // provider.
-func newWithProvider(head string, cap int, mp metric.MeterProvider) *Limiter {
+func newWithProvider(head, budget string, cap int, mp metric.MeterProvider) *Limiter {
 	if cap <= 0 {
 		return nil
 	}
@@ -130,7 +180,7 @@ func newWithProvider(head string, cap int, mp metric.MeterProvider) *Limiter {
 		metric.WithDescription(
 			"Requests rejected by the per-handler concurrency cap. "+
 				"Labels: cerberus.ql (promql / logql / traceql), "+
-				"reason (cap_exceeded).",
+				"budget (request / tail), reason (cap_exceeded).",
 		),
 		metric.WithUnit("{request}"),
 	)
@@ -153,11 +203,13 @@ func newWithProvider(head string, cap int, mp metric.MeterProvider) *Limiter {
 	// from process start, so rate() resolves to 0 per head.
 	rejected.Add(context.Background(), 0, metric.WithAttributes(
 		attrQL.String(ql),
+		attrBudget.String(budget),
 		attrReason.String(ReasonCapExceeded),
 	))
 	return &Limiter{
 		head:     head,
 		ql:       ql,
+		budget:   budget,
 		sem:      semaphore.NewWeighted(int64(cap)),
 		rejected: rejected,
 	}
@@ -176,6 +228,7 @@ func (l *Limiter) Acquire(ctx context.Context) (release func(), ok bool) {
 	if !l.sem.TryAcquire(1) {
 		l.rejected.Add(ctx, 1, metric.WithAttributes(
 			attrQL.String(l.ql),
+			attrBudget.String(l.budget),
 			attrReason.String(ReasonCapExceeded),
 		))
 		return func() {}, false
@@ -267,6 +320,18 @@ func (l *Limiter) Head() string {
 		return ""
 	}
 	return l.head
+}
+
+// Budget returns which of its head's admission budgets this Limiter
+// bounds — [BudgetRequest] or [BudgetTail]. A nil receiver (admission
+// disabled) returns "". Callers use it to assert a route was wired to
+// the budget it was meant to draw on, and to attribute a rejection log
+// line to the right cap.
+func (l *Limiter) Budget() string {
+	if l == nil {
+		return ""
+	}
+	return l.budget
 }
 
 // StreamInterceptor returns a grpc.StreamServerInterceptor that

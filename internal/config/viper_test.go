@@ -111,6 +111,9 @@ func TestFromEnv_ViperDefaults_NoEnv(t *testing.T) {
 	if cfg.Admit.Tempo != DefaultAdmitTempo {
 		t.Errorf("Admit.Tempo = %d; want %d (default cap)", cfg.Admit.Tempo, DefaultAdmitTempo)
 	}
+	if cfg.Admit.Tail != DefaultAdmitTail {
+		t.Errorf("Admit.Tail = %d; want %d (default cap)", cfg.Admit.Tail, DefaultAdmitTail)
+	}
 }
 
 // TestFromEnv_ViperEnvBeatsDefault asserts a CERBERUS_<VAR> override

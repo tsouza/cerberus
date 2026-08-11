@@ -65,28 +65,61 @@ func isVersionFlag(args []string) bool {
 	return false
 }
 
-// newAdmitLimiters builds the per-head admission-control limiters. When
+// admitLimiters carries the admission budgets this process fronts its
+// routes with. Prom / loki / tempo are the per-head request budgets;
+// lokiTail is the Loki head's SECOND budget, a distinct semaphore that
+// bounds only the long-lived /tail WebSocket. A nil field means that
+// budget is unadmitted (cap 0, or the master switch off) and the
+// middleware degrades to a pass-through wrapper.
+//
+// Grouped in a struct rather than returned as a tuple because the set is
+// no longer one-per-head: heads and budgets are different axes, and a
+// positional 4-tuple of same-typed pointers is exactly the shape where a
+// mis-ordered argument compiles and silently mounts /tail on the query
+// budget — the bug this type exists to prevent.
+type admitLimiters struct {
+	prom     *admit.Limiter
+	loki     *admit.Limiter
+	tempo    *admit.Limiter
+	lokiTail *admit.Limiter
+}
+
+// newAdmitLimiters builds the admission-control limiters. When
 // CERBERUS_ADMIT_DISABLED=true every limiter is nil and the middleware
-// short-circuits to a pass-through wrapper. Otherwise each per-head cap
-// CERBERUS_ADMIT_{PROM,LOKI,TEMPO} sizes its limiter directly (resolved by
-// config.admitFromEnv from an explicit integer or a true/false alias).
-// admit.New returns nil for a non-positive cap, so a disabled head and a
-// zero cap collapse to the same pass-through path.
-func newAdmitLimiters(cfg config.Config, logger *slog.Logger) (*admit.Limiter, *admit.Limiter, *admit.Limiter) {
+// short-circuits to a pass-through wrapper. Otherwise each cap
+// CERBERUS_ADMIT_{PROM,LOKI,TEMPO,TAIL} sizes its limiter directly
+// (resolved by config.admitFromEnv from an explicit integer or a
+// true/false alias). admit.New / admit.NewTail return nil for a
+// non-positive cap, so a disabled head and a zero cap collapse to the
+// same pass-through path.
+//
+// CERBERUS_ADMIT_TAIL builds its own limiter through admit.NewTail — NOT
+// a second reference to the Loki one. A /tail session occupies its slot
+// until the client disconnects, so pointing both at one semaphore lets
+// live-tail occupancy starve every ordinary Loki route on the replica
+// (issue #1482).
+func newAdmitLimiters(cfg config.Config, logger *slog.Logger) admitLimiters {
 	if cfg.Admit.Disabled {
 		logger.Info("admission control disabled (CERBERUS_ADMIT_DISABLED=true)")
-		return nil, nil, nil
+		return admitLimiters{}
 	}
 	promCap := cfg.Admit.Prom
 	lokiCap := cfg.Admit.Loki
 	tempoCap := cfg.Admit.Tempo
+	tailCap := cfg.Admit.Tail
 	logger.Info(
 		"admission control enabled",
 		"prom", promCap,
 		"loki", lokiCap,
 		"tempo", tempoCap,
+		"loki_tail", tailCap,
 	)
-	return admit.New("prom", promCap), admit.New("loki", lokiCap), admit.New("tempo", tempoCap)
+	return admitLimiters{
+		prom:     admit.New("prom", promCap),
+		loki:     admit.New("loki", lokiCap),
+		tempo:    admit.New("tempo", tempoCap),
+		lokiTail: admit.NewTail("loki", tailCap),
+	}
 }
 
 // apiHeads carries what run() needs back from mountAPIHeads: the Tempo gRPC
@@ -118,7 +151,7 @@ func mountAPIHeads(
 	client *chclient.Client,
 	cfg config.Config,
 	optSet chopt.EnabledSet,
-	promLimiter, lokiLimiter, tempoLimiter *admit.Limiter,
+	limiters admitLimiters,
 	logger *slog.Logger,
 ) (apiHeads, error) {
 	// engines accumulates the engines actually built so the corpus reconciler
@@ -136,18 +169,18 @@ func mountAPIHeads(
 		// built from it, so when prom is disabled neither the view nor the
 		// solver exists.
 		promClient := client.ForHead(chclient.HeadProm)
-		evalSolver, err := buildSolver(logger, cfg.ClickHouse, promClient, promLimiter)
+		evalSolver, err := buildSolver(logger, cfg.ClickHouse, promClient, limiters.prom)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure solver: %w", err)
 		}
-		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, promLimiter, logger)
+		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
 		lokiClient := client.ForHead(chclient.HeadLoki)
-		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, lokiLimiter, logger)
+		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters.loki, limiters.lokiTail, logger)
 		lokiHandler.Mount(traceMux)
 		engines = append(engines, lokiHandler.Engine)
 	}
@@ -156,7 +189,7 @@ func mountAPIHeads(
 	if cfg.HeadEnabled(config.HeadTempo) {
 		tempoClient := client.ForHead(chclient.HeadTempo)
 		tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
-		tempoHandler.Limiter = tempoLimiter
+		tempoHandler.Limiter = limiters.tempo
 		tempoHandler.StructuralTwoPhase = cfg.TempoStructuralTwoPhase
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		tempoHandler.Mount(traceMux)
@@ -166,7 +199,7 @@ func mountAPIHeads(
 		// + schema + admit limiter so the streaming RPC bodies and the HTTP
 		// handlers run the same parse + lower + emit pipeline. Built only when
 		// tempo is enabled; nil otherwise.
-		tempoGRPCService := tempogrpc.NewService(tempoHandler, tempoLimiter, logger.With("api", "tempo-grpc"))
+		tempoGRPCService := tempogrpc.NewService(tempoHandler, limiters.tempo, logger.With("api", "tempo-grpc"))
 		grpcServer = tempogrpc.NewServer(tempoGRPCService)
 	}
 
@@ -447,8 +480,8 @@ func run() error {
 		return err
 	}
 
-	// Build per-head admission-control limiters (see newAdmitLimiters).
-	promLimiter, lokiLimiter, tempoLimiter := newAdmitLimiters(cfg, logger)
+	// Build the admission-control limiters (see newAdmitLimiters).
+	limiters := newAdmitLimiters(cfg, logger)
 
 	// The trace mux carries the three Prom/Loki/Tempo APIs and is
 	// wrapped with otelhttp so every request becomes a server span.
@@ -488,7 +521,7 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, promLimiter, lokiLimiter, tempoLimiter, logger)
+	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger)
 	if err != nil {
 		return err
 	}
@@ -789,13 +822,19 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	return l
 }
 
-// newLokiHandler builds the Loki head's handler with its limiter, version,
+// newLokiHandler builds the Loki head's handler with its limiters, version,
 // timeouts, and the resolved per-query optimization SettingsRules wired in.
 // Extracted (mirroring newPromHandler) so run's bootstrap stays within its
 // maintainability budget as the optimization suite adds wiring.
-func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiter *admit.Limiter, logger *slog.Logger) *loki.Handler {
+//
+// The head takes TWO limiters: `limiter` (CERBERUS_ADMIT_LOKI) fronts every
+// short-lived route, and `tailLimiter` (CERBERUS_ADMIT_TAIL) fronts only the
+// long-lived /tail WebSocket. They must be distinct instances — see
+// loki.Handler.TailLimiter and issue #1482.
+func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiter, tailLimiter *admit.Limiter, logger *slog.Logger) *loki.Handler {
 	h := loki.New(client, cfg.Logs, logger.With("api", "loki"))
 	h.Limiter = limiter
+	h.TailLimiter = tailLimiter
 	h.Version = Version
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
