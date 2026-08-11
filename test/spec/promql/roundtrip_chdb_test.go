@@ -20,11 +20,29 @@ import (
 	"github.com/tsouza/cerberus/test/spec"
 )
 
+// TestRoundTripChDB walks the slice of the PromQL corpus this process owns.
+//
+// With SPEC_SHARD_INDEX / SPEC_SHARD_COUNT unset — a hand-typed
+// `go test -tags chdb ./test/spec/promql/`, or CI's `roundtrip (promql)` job —
+// that slice is the whole corpus and this behaves exactly as it did before the
+// partition existed. `just update-golden promql` sets the pair and fans the
+// generator out across several processes instead
+// (.github/scripts/lib/golden-shards.mjs), because this walk is the single
+// longest step in that recipe and it cannot be parallelised in-process: the
+// subtests share chdb-go's package-level session singleton, which
+// spec.resetChDBSession deliberately tears down and rebuilds between fixtures
+// for cross-fixture isolation (#1987), so a t.Parallel() here would race two
+// goroutines against that teardown. A separate process has its own singleton.
 func TestRoundTripChDB(t *testing.T) {
 	t.Parallel()
 
+	shard, err := spec.ShardFromEnv()
+	if err != nil {
+		t.Fatalf("round-trip corpus shard: %v", err)
+	}
+
 	dir := filepath.Join(".")
-	spec.Walk(t, dir, func(t *testing.T, c *spec.Case) {
+	spec.WalkShard(t, dir, shard, func(t *testing.T, c *spec.Case) {
 		// LoadRoundTrip + IsRoundTrip is the opt-in gate; fixtures
 		// without seed/expected_rows are silent no-ops.
 		spec.RunRoundTrip(t, c)

@@ -75,6 +75,7 @@ import {
   SHARDS,
   commandsFor,
   corpusRootsFor,
+  flattenSteps,
   generatorPackageDirs,
   impliedShards,
   orderShards,
@@ -237,7 +238,12 @@ function shardsToCheck(changed) {
 
 function regenerate(name) {
   const justExecutable = process.env.JUST_EXECUTABLE || 'just';
-  for (const { argv, env } of commandsFor(name, { justExecutable })) {
+  // Fan-outs are flattened and run one after another here. Each leg covers a
+  // disjoint slice, so the union is identical either way and only the wall
+  // clock differs — and this lane is a drift CHECK on `main` whose output must
+  // stay a single readable stream (stdio is inherited, not line-tagged), which
+  // concurrent children would interleave.
+  for (const { argv, env } of flattenSteps(commandsFor(name, { justExecutable }))) {
     log(`==> ${name}: ${argv.join(' ')}`);
     const r = spawnSync(argv[0], argv.slice(1), {
       cwd: repoRoot,
