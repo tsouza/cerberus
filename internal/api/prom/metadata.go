@@ -712,12 +712,16 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	nowAnchored := endT.IsZero()
 	startT, endT = h.boundMetadataWindow(startT, endT)
 
-	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
-	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
-	// (classic-histogram companion variants). See the per-helper docstrings
-	// for the resolution semantics each layer covers.
+	// Matcher fan-out — `expandBareHistogramMatcher` (classic-histogram
+	// companion variants). The dotted-storage candidates a Prom-grammar
+	// name could be stored under are NOT expanded here: they are resolved
+	// one level down, inside the lowering, by the predicate-level
+	// `__name__` fan-out (internal/promql.metricNamePredicate), which
+	// renders the whole candidate set as a single flat `MetricName IN (?,…)`
+	// on each arm. See [expandSeriesMatchers] for why the matcher-string
+	// layer is the wrong place to spend it.
 	//
-	// Fan-in batching (task #71): the V×H (and matcher) variant set is
+	// Fan-in batching (task #71): the H (and matcher) variant set is
 	// collapsed into ONE combined CH round-trip instead of one round-trip
 	// per variant. Each variant lowers to a Sample-projecting SELECT; the
 	// arms are UNION-ALL'd into a single query whose row stream the Go
@@ -1229,24 +1233,50 @@ func (h *Handler) catalogMatcherSQL(
 	return sql, args, nil
 }
 
-// expandSeriesMatchers fans every input match[] selector out through the
-// two-layer variant expansion (`expandUnderscoredMetricNameMatcher` ⊃
-// `expandBareHistogramMatcher`) and flattens the result into one
+// expandSeriesMatchers fans every input match[] selector out through
+// [expandBareHistogramMatcher] and flattens the result into one
 // deduplicated list of matcher strings. The flattened list is the
 // candidate set the combined /api/v1/series query UNION-ALLs into a single
-// scan — collapsing the former V×H×matcher round-trip fan-out (task #71).
+// scan — collapsing the former H×matcher round-trip fan-out (task #71).
+//
+// Why there is no matcher-string fan-out over the dotted-storage
+// candidates here. A Prom-grammar name (`http_server_request_body_size`)
+// may be stored under any of its OTel-dotted re-expansions
+// (`http.server.request.body.size`), and the metadata surface must match
+// all of them — but that resolution belongs to the PREDICATE, not to the
+// matcher string. `internal/promql.metricNamePredicate` already renders
+// the full [format.PromLabelToOTelCandidates] set of one `__name__`
+// equality as a single flat `MetricName IN (?,…)` — one column reference
+// plus N placeholders, on every arm this function emits, including the
+// histogram companions (whose suffix the lowering strips before expanding
+// the base). Re-expanding the same candidate set into the matcher STRING
+// as well multiplied the arm count by the candidate count (a 4-underscore
+// histogram name: 104 arms instead of 4) while adding no reachable stored
+// name, and every one of those arms is a full Sample-projecting SELECT
+// UNION-ALL'd into the combined query. That is precisely the rendered-SQL
+// pressure that twice pushed the metadata query past ClickHouse's 256KB
+// `max_query_size` (code 62) — see the incident notes on
+// maxMetricCandidatesPerQuery and internal/promql.metricNamePredicateOn.
+//
+// The one shape the retired string-level layer did reach, and this one
+// does not, is a stored name mixing separators non-contiguously
+// (`http.server/request.body.size`) — reachable only by composing the two
+// layers, never by either alone. [format.PromLabelToOTelCandidates]
+// documents interleaved separators as out of scope, and the PromQL query
+// path has never matched them, so the string-level layer made /series
+// advertise series that no query could fetch. Retiring it makes the
+// metadata surface and the query path answer with exactly the same set
+// (pinned by TestSeriesMatchesQueryPathCandidates_ChDB).
 func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.Metrics) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, len(matchers))
 	for _, m := range matchers {
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(parser, m) {
-			for _, variant := range expandBareHistogramMatcher(parser, nameVariant, s) {
-				if _, dup := seen[variant]; dup {
-					continue
-				}
-				seen[variant] = struct{}{}
-				out = append(out, variant)
+		for _, variant := range expandBareHistogramMatcher(parser, m, s) {
+			if _, dup := seen[variant]; dup {
+				continue
 			}
+			seen[variant] = struct{}{}
+			out = append(out, variant)
 		}
 	}
 	return out

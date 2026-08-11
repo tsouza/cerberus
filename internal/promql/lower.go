@@ -1847,9 +1847,13 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 // metric returns an empty result the moment Grafana (or
 // Drilldown-Metrics) queries the name it was just shown. This is the
 // `__name__` analogue of the Attributes-map candidate chain in
-// [attributeLookup] (PR #658) and the matcher-string fan-out the
-// catalog endpoints already apply via
-// [internal/api/prom.expandUnderscoredMetricNameMatcher].
+// [attributeLookup] (PR #658), and it is the SOLE place the dotted
+// candidate set is resolved: the metadata endpoints in
+// internal/api/prom fan their match[] selectors out over the
+// classic-histogram companion suffixes only and rely on this predicate
+// for the storage-spelling resolution, so the candidate set is spent
+// once per arm as a flat IN tuple rather than multiplied into the arm
+// count.
 //
 // Shapes emitted:
 //

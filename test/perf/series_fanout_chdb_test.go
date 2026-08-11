@@ -6,7 +6,7 @@
 // variant:
 //
 //	for each match[] selector m:
-//	  for each nameVariant in expandUnderscoredMetricNameMatcher(m):   // V
+//	  for each nameVariant in the dotted-storage candidates of m:      // V
 //	    for each variant in expandBareHistogramMatcher(nameVariant):   // H
 //	      fetchSeries(variant)  ->  executeInstant  ->  Engine.Query   // 1 CH round-trip
 //
@@ -15,7 +15,13 @@
 // — the demo's +600ms was fan-in (many fast round-trips serialised), not
 // one slow query.
 //
-// Task #71 fixed it: the V×H×matcher variant set now collapses into ONE
+// The V layer itself is gone as of the #1528 retirement — the dotted-storage
+// candidates resolve inside the lowering as a flat `MetricName IN (?,…)` per
+// arm, so a match[] selector fans out over the H (classic-histogram
+// companion) layer alone. TestMetadataQueryArmBudget_ChDB pins the resulting
+// arm count and rendered-query size.
+//
+// Task #71 fixed the fan-in: the V×H×matcher variant set collapses into ONE
 // combined UNION-ALL query (chunked to ⌈N/K⌉ only past the K=128 arm cap,
 // with a rendered-size guard keeping every query under CH's max_query_size).
 // This harness drives the real in-process Prom handler against a chDB
