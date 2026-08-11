@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -284,5 +285,58 @@ func TestProjectSamplesForwardsVariantPlan(t *testing.T) {
 				t.Errorf("log table read %d times; want %d", got, tc.wantScan)
 			}
 		})
+	}
+}
+
+// TestLowerMultiVariantMatrixGrouped pins the intersection the fixtures miss:
+// a RANGE query (matrix window, one row per step anchor) whose arms ALSO
+// carry a vector-aggregation pipeline. That is the shape Grafana's Logs
+// Drilldown breakdown panels generate, and it exercises the matrix emitter
+// and the wrap threading together — variants_range_count_bytes covers matrix
+// with bare arms, variants_grouped covers grouped arms on an instant window,
+// and neither covers both at once.
+func TestLowerMultiVariantMatrixGrouped(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Minute)
+
+	const query = `variants(sum by (app) (count_over_time({app="foo"}[5m])), ` +
+		`sum by (app) (bytes_over_time({app="foo"}[5m]))) of ({app="foo"}[5m])`
+
+	expr, err := logql.ParseExprPermissive(query)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	plan, err := logql.LowerAtRange(context.Background(), expr, s, start, end, 30*time.Second)
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+
+	sqlText, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if got := strings.Count(sqlText, "`otel_logs`"); got != 1 {
+		t.Errorf("log table read %d times; the fused shape reads it once", got)
+	}
+	if !strings.Contains(sqlText, "ARRAY JOIN") {
+		t.Error("fused SQL carries no ARRAY JOIN unpivot")
+	}
+	// The matrix shape must survive fusion: without a per-anchor grid the
+	// range query collapses to a single point per series.
+	if !strings.Contains(sqlText, "anchor_ts") {
+		t.Error("fused matrix SQL carries no per-anchor grid")
+	}
+	// Both arms still reach the output, each under its own value column.
+	for _, col := range []string{"Value_0", "Value_1"} {
+		if !strings.Contains(sqlText, col) {
+			t.Errorf("arm value column %q missing from SQL", col)
+		}
+	}
+	for _, tag := range []string{"0", "1"} {
+		if !argsContain(args, tag) {
+			t.Errorf("args missing __variant__ tag %q", tag)
+		}
 	}
 }

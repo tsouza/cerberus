@@ -400,3 +400,116 @@ func TestFuseVariants_RefusesPreexistingVariantColumn(t *testing.T) {
 		t.Error("fused a pipeline that already carries the variant column, want refusal")
 	}
 }
+
+// ungroupedArm wraps a range-aggregation arm in the pipeline `sum(...)` with
+// NO `by` clause lowers to: an Aggregate with an EMPTY GroupBy (carrying
+// DropEmptyOnNoGroup) and therefore empty GroupByAliases.
+func ungroupedArm(rw *chplan.RangeWindow) chplan.Node {
+	return &chplan.Project{
+		Input: &chplan.Aggregate{
+			Input: rw,
+			AggFuncs: []chplan.AggFunc{{
+				Name:  "sum",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+				Alias: "Value",
+			}},
+			DropEmptyOnNoGroup: true,
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: emptyAttrsMap(), Alias: "Attributes"},
+			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+		},
+	}
+}
+
+// TestFuseVariants_EmptyGroupByAliasesStayEmpty pins the parallel-slice
+// contract on chplan.Aggregate: GroupByAliases is either empty or exactly as
+// long as GroupBy. An ungrouped `sum(...)` arm aggregates with no aliases, so
+// threading the variant column must extend GroupBy WITHOUT starting an alias
+// list — a one-alias-for-two-keys slice violates the node's own invariant.
+func TestFuseVariants_EmptyGroupByAliasesStayEmpty(t *testing.T) {
+	t.Parallel()
+	top, ok := fuseVariants([]chplan.Node{ungroupedArm(countArm()), ungroupedArm(bytesArm())})
+	if !ok {
+		t.Fatal("ungrouped arms were not fused")
+	}
+	agg, ok := top.(*chplan.Project).Input.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("fused pipeline holds %T where the Aggregate belongs", top.(*chplan.Project).Input)
+	}
+	if len(agg.GroupBy) != 1 {
+		t.Fatalf("Aggregate groups by %d keys, want 1 (the variant column alone)", len(agg.GroupBy))
+	}
+	if len(agg.GroupByAliases) != 0 {
+		t.Errorf("GroupByAliases = %v, want it left empty so it stays parallel to GroupBy",
+			agg.GroupByAliases)
+	}
+}
+
+// TestFuseVariantArms_ValueProjectionFirst pins that the differing projection
+// is located by its ALIAS, not by its position. A lowering that put the value
+// first would otherwise be silently refused.
+func TestFuseVariantArms_ValueProjectionFirst(t *testing.T) {
+	t.Parallel()
+	valueFirst := func(fn string, value chplan.Expr) *chplan.RangeWindow {
+		rw := variantArm(fn, value, "otel_logs")
+		p := rw.Input.(*chplan.Project)
+		p.Projections = []chplan.Projection{
+			{Expr: value, Alias: rangeAggSynthValueColumn},
+			{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
+		}
+		return rw
+	}
+	arms := []chplan.Node{
+		valueFirst("count_over_time", &chplan.LitInt{V: 1}),
+		valueFirst("sum_over_time", &chplan.ColumnRef{Name: "Len"}),
+	}
+	fused, ok := fuseVariantArms(arms)
+	if !ok {
+		t.Fatal("arms differing at projection 0 (the value alias) were not fused")
+	}
+	proj := fused.Input.(*chplan.Project)
+	// Both arms' values land first, then the shared projections follow.
+	for i, alias := range []string{"Value_0", "Value_1", "ResourceAttributes"} {
+		if got := proj.Projections[i].Alias; got != alias {
+			t.Errorf("projection %d alias = %q, want %q", i, got, alias)
+		}
+	}
+}
+
+// TestProjectionEqual_NilExpressions pins the nil-expression guard. A
+// Projection carrying no expression compares equal only to another one, and
+// the mixed case must report unequal rather than dereference the nil.
+func TestProjectionEqual_NilExpressions(t *testing.T) {
+	t.Parallel()
+	nilProj := chplan.Projection{Alias: "Value"}
+	setProj := chplan.Projection{Alias: "Value", Expr: &chplan.LitInt{V: 1}}
+	if !projectionEqual(nilProj, nilProj) {
+		t.Error("two nil-expression projections compared unequal")
+	}
+	if projectionEqual(nilProj, setProj) || projectionEqual(setProj, nilProj) {
+		t.Error("a nil-expression projection compared equal to one carrying an expression")
+	}
+}
+
+// TestRebuildVariantWrap_RefusesPassThroughProject pins the fail-closed guard
+// on the pass-through `SELECT *` Project shape (and its `* REPLACE (...)`
+// modifier). Appending the variant column to an empty projection list would
+// turn `SELECT *` into a one-column SELECT and drop every other column.
+func TestRebuildVariantWrap_RefusesPassThroughProject(t *testing.T) {
+	t.Parallel()
+	passThrough := []chplan.Node{&chplan.Project{}}
+	if _, ok := rebuildVariantWrap(passThrough, &chplan.OneRow{}, variantLabel); ok {
+		t.Error("threaded the variant column through a pass-through Project, want refusal")
+	}
+	withReplacements := []chplan.Node{&chplan.Project{
+		Projections:  []chplan.Projection{{Expr: &chplan.LitInt{V: 1}, Alias: "Value"}},
+		Replacements: []chplan.Projection{{Expr: &chplan.LitInt{V: 2}, Alias: "Body"}},
+	}}
+	if _, ok := rebuildVariantWrap(withReplacements, &chplan.OneRow{}, variantLabel); ok {
+		t.Error("threaded the variant column through a Project carrying Replacements, want refusal")
+	}
+}

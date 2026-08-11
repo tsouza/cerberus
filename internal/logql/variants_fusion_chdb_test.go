@@ -31,9 +31,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -261,4 +263,181 @@ func toFloat(t *testing.T, cell any) float64 {
 		t.Fatalf("unhandled value cell type %T (%v)", cell, cell)
 		return 0
 	}
+}
+
+// TestFusedArmsSortOnTheirOwnValue is the differential pin for the fused
+// emitter's per-arm re-sort — the mechanism its own doc comment names as the
+// reason each arm stays equivalent to its unfused self.
+//
+// The single-arm path builds arm i's values array as
+// `arraySort(groupArray((ts, v_i)))`, so its ordering key is (timestamp,
+// THAT ARM's value). The fused path groups ONE (ts, v_0, …, v_{n-1}) tuple
+// array, so it must re-sort per arm on (ts, v_i) rather than inherit the
+// tuple's own (ts, v_0, v_1, …) order.
+//
+// Ordinarily the two agree and nothing distinguishes them. They come apart
+// only when samples share a timestamp AND the arms' values order differently
+// within that tie — then an arm that inherited arm 0's order reads a
+// different element. This test constructs exactly that crossing (two samples
+// at one timestamp, v_0 ascending where v_1 descends) and drives the
+// order-SENSITIVE reducers over it, comparing the fused answer against the
+// per-arm plan's own answer over identical data rather than against a
+// hardcoded number.
+func TestFusedArmsSortOnTheirOwnValue(t *testing.T) {
+	// Both rows must land on ONE timestamp for the tie to exist at all.
+	// `now64(9)` is evaluated per row, so it yields two distinct nanosecond
+	// stamps and no tie — the values are inserted at a single literal
+	// timestamp instead, a few seconds inside the five-minute window the
+	// instant query anchors at now.
+	shared := time.Now().UTC().Add(-30 * time.Second).Format("2006-01-02 15:04:05.000000000")
+	seedCrossedTie := fmt.Sprintf(
+		`INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+		    (toDateTime64('%[1]s', 9), 'ab',   map('app', 'foo')),
+		    (toDateTime64('%[1]s', 9), 'cdef', map('app', 'foo'))`, shared,
+	)
+
+	for _, fn := range []string{"first_over_time", "last_over_time", "min_over_time", "max_over_time"} {
+		t.Run(fn, func(t *testing.T) {
+			fusedArm0, fusedArm1 := runCrossedTieFused(t, fn, seedCrossedTie)
+			wantArm0 := runCrossedTieSingleArm(t, fn, seedCrossedTie, crossedTieValueA)
+			wantArm1 := runCrossedTieSingleArm(t, fn, seedCrossedTie, crossedTieValueB)
+
+			if fusedArm0 != wantArm0 {
+				t.Errorf("%s arm 0 fused = %v; the single-arm plan answers %v", fn, fusedArm0, wantArm0)
+			}
+			if fusedArm1 != wantArm1 {
+				t.Errorf("%s arm 1 fused = %v; the single-arm plan answers %v — the arm inherited "+
+					"another arm's tie order instead of sorting on its own value", fn, fusedArm1, wantArm1)
+			}
+		})
+	}
+}
+
+// crossedTieValueA / crossedTieValueB are the two per-sample value
+// expressions whose orderings cross at the shared timestamp: the line length
+// ascends where its negation descends.
+func crossedTieValueA() chplan.Expr {
+	return &chplan.FuncCall{
+		Name: "toFloat64",
+		Args: []chplan.Expr{&chplan.FuncCall{
+			Name: "length", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
+		}},
+	}
+}
+
+func crossedTieValueB() chplan.Expr {
+	return &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.LitInt{V: 0},
+		Right: crossedTieValueA(),
+	}
+}
+
+// crossedTieInput builds the shared row-shape input carrying both arms'
+// per-sample values.
+func crossedTieInput() chplan.Node {
+	return &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
+			{Expr: crossedTieValueA(), Alias: "Value_0"},
+			{Expr: crossedTieValueB(), Alias: "Value_1"},
+		},
+	}
+}
+
+// runCrossedTieFused executes a two-arm fused window over the crossed-tie
+// seed and returns each arm's value.
+func runCrossedTieFused(t *testing.T, fn, seed string) (float64, float64) {
+	t.Helper()
+	rw := &chplan.RangeWindow{
+		Input:              crossedTieInput(),
+		Range:              5 * time.Minute,
+		TimestampColumn:    "Timestamp",
+		ValueColumn:        "Value",
+		VariantColumn:      "__variant__",
+		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: "ResourceAttributes"}},
+		InstantScanBounded: true,
+		Variants: []chplan.RangeWindowVariant{
+			{Func: fn, ValueColumn: "Value_0", Label: "0"},
+			{Func: fn, ValueColumn: "Value_1", Label: "1"},
+		},
+	}
+	rows := runVariantPlan(t, rw, seed, "`__variant__`, `Value`")
+	if len(rows) != 2 {
+		t.Fatalf("fused %s produced %d rows, want one per arm", fn, len(rows))
+	}
+	return rows["0"], rows["1"]
+}
+
+// runCrossedTieSingleArm executes the ORDINARY single-arm window the fused
+// arm must agree with, over the same seed and the same value expression.
+func runCrossedTieSingleArm(t *testing.T, fn, seed string, value func() chplan.Expr) float64 {
+	t.Helper()
+	rw := &chplan.RangeWindow{
+		Input: &chplan.Project{
+			Input: &chplan.Scan{Table: "otel_logs"},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
+				{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
+				{Expr: value(), Alias: "Value"},
+			},
+		},
+		Func:               fn,
+		Range:              5 * time.Minute,
+		TimestampColumn:    "Timestamp",
+		ValueColumn:        "Value",
+		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: "ResourceAttributes"}},
+		InstantScanBounded: true,
+	}
+	rows := runVariantPlan(t, rw, seed, "'0' AS `__variant__`, `Value`")
+	if len(rows) != 1 {
+		t.Fatalf("single-arm %s produced %d rows, want 1", fn, len(rows))
+	}
+	return rows["0"]
+}
+
+// runVariantPlan emits plan, runs it over a freshly seeded chDB session and
+// returns the Value per `__variant__` label. selectList names the two columns
+// to read back off the emitted query.
+func runVariantPlan(t *testing.T, plan chplan.Node, seed, selectList string) map[string]float64 {
+	t.Helper()
+	sqlText, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	db, err := sql.Open("chdb", "")
+	if err != nil {
+		t.Fatalf("open chdb: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("DROP TABLE IF EXISTS otel_logs"); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	if _, err := db.Exec(variantsFusionSeedTable); err != nil {
+		t.Fatalf("seed table: %v", err)
+	}
+	if _, err := db.Exec(seed); err != nil {
+		t.Fatalf("seed rows: %v", err)
+	}
+
+	rows, err := db.Query("SELECT "+selectList+" FROM ("+sqlText+")", args...)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var variant string
+		var value any
+		if err := rows.Scan(&variant, &value); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out[variant] = toFloat(t, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return out
 }

@@ -234,6 +234,15 @@ func rebuildVariantWrap(wrap []chplan.Node, input chplan.Node, variantCol string
 	for i := len(wrap) - 1; i >= 0; i-- {
 		switch v := wrap[i].(type) {
 		case *chplan.Project:
+			// An empty Projections slice is the pass-through `SELECT *`
+			// form, and Replacements is its `* REPLACE (...)` modifier.
+			// Appending a projection to either would turn the whole
+			// pass-through into a one-column SELECT and silently drop every
+			// other column, so refuse rather than rewrite a shape this was
+			// not designed for.
+			if len(v.Projections) == 0 || len(v.Replacements) > 0 {
+				return nil, false
+			}
 			c := *v
 			c.Input = n
 			c.Projections = slices.Clone(v.Projections)
@@ -333,7 +342,7 @@ func fuseVariantArms(arms []chplan.Node) (*chplan.RangeWindow, bool) {
 	// Shared input Project: every projection but the value one verbatim from
 	// arm 0, then each arm's own value expression under its own alias.
 	base := projects[0]
-	shared := make([]chplan.Projection, 0, len(base.Projections)+len(projects)-1)
+	var shared []chplan.Projection
 	shared = append(shared, base.Projections[:valueIdx]...)
 	for i, p := range projects {
 		shared = append(shared, chplan.Projection{
@@ -380,14 +389,7 @@ func sharedValueProjectionIndex(projects []*chplan.Project) (int, bool) {
 	}
 	valueIdx := -1
 	for i := range base.Projections {
-		same := true
-		for _, p := range projects[1:] {
-			if !projectionEqual(base.Projections[i], p.Projections[i]) {
-				same = false
-				break
-			}
-		}
-		if same {
+		if armsAgreeAtProjection(projects, i) {
 			continue
 		}
 		if valueIdx >= 0 {
@@ -398,9 +400,16 @@ func sharedValueProjectionIndex(projects []*chplan.Project) (int, bool) {
 		valueIdx = i
 	}
 	if valueIdx < 0 {
-		// Every projection agrees. The arms compute the identical value, so
-		// there is no per-arm column to fan out; leaving them alone keeps the
-		// plan honest (and this is a degenerate query nobody writes).
+		// Every projection agrees, so the arms read the identical per-sample
+		// value and differ only in the reducer applied to it — as in
+		// `variants(max_over_time({app="foo"} | unwrap latency [5m]),
+		// min_over_time({app="foo"} | unwrap latency [5m]))`. That is a real
+		// query, and it IS fusible: the arms would share one value column
+		// rather than getting one each. This lowering does not build that
+		// shape — every arm here names its own column, and the emitter
+		// rejects two arms pointing at one — so the query keeps the per-arm
+		// plan and its scan per arm. Widening the arm-to-column mapping to
+		// many-to-one is issue #2050.
 		return 0, false
 	}
 	for _, p := range projects {
@@ -409,6 +418,17 @@ func sharedValueProjectionIndex(projects []*chplan.Project) (int, bool) {
 		}
 	}
 	return valueIdx, true
+}
+
+// armsAgreeAtProjection reports whether every arm projects the same thing at
+// position i, so the caller can find the ONE position they differ at.
+func armsAgreeAtProjection(projects []*chplan.Project, i int) bool {
+	for _, p := range projects[1:] {
+		if !projectionEqual(projects[0].Projections[i], p.Projections[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // projectionEqual compares two projections by alias and expression.
@@ -539,20 +559,11 @@ func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan
 // plan is a variant pipeline built over one. It walks the Project / Aggregate
 // wrap [rebuildVariantWrap] re-applies.
 func fusedVariantWindow(plan chplan.Node) (*chplan.RangeWindow, bool) {
-	n := plan
-	for range maxVariantWrapDepth + 1 {
-		switch v := n.(type) {
-		case *chplan.RangeWindow:
-			return v, len(v.Variants) > 0
-		case *chplan.Project:
-			n = v.Input
-		case *chplan.Aggregate:
-			n = v.Input
-		default:
-			return nil, false
-		}
+	_, rw, ok := peelVariantWrap(plan)
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	return rw, len(rw.Variants) > 0
 }
 
 // isVariantPlan reports whether plan is what a multi-variant lowering

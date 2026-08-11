@@ -85,6 +85,16 @@ func checkFusedVariants(r *chplan.RangeWindow) error {
 	if r.Identity {
 		return fmt.Errorf("%w: fused RangeWindow with Identity", ErrUnsupported)
 	}
+	// The fused emitter drives only the *_over_time array reducers, which
+	// take no scalar parameters and consult no temporality column. A window
+	// carrying either describes a shape this emitter does not render, so
+	// refuse it rather than emit an answer that silently ignores it.
+	if len(r.Scalars) > 0 || len(r.ScalarExprs) > 0 {
+		return fmt.Errorf("%w: fused RangeWindow with scalar arguments", ErrUnsupported)
+	}
+	if r.TemporalityColumn != "" {
+		return fmt.Errorf("%w: fused RangeWindow with a temporality column", ErrUnsupported)
+	}
 	seen := make(map[string]struct{}, len(r.Variants))
 	for i, v := range r.Variants {
 		if v.ValueColumn == "" {
