@@ -1203,11 +1203,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envOTLPHeaders, defaultOTLPHeaders)
 	v.SetDefault(envOTLPTimeout, defaultOTLPTimeout.String())
 	v.SetDefault(envOTLPExportInterval, defaultOTLPExportInterval.String())
-	v.SetDefault(envAdmitDisabled, defaultAdmitDisabled)
-	v.SetDefault(envAdmitProm, DefaultAdmitProm)
-	v.SetDefault(envAdmitLoki, DefaultAdmitLoki)
-	v.SetDefault(envAdmitTempo, DefaultAdmitTempo)
-	v.SetDefault(envAdmitTail, DefaultAdmitTail)
+	setAdmitDefaults(v)
 	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
 	return v
 }
@@ -1224,6 +1220,21 @@ func setCHOptDefaults(v *viper.Viper) {
 	v.SetDefault(envCHOptCorpusSinkPath, defaultCHOptCorpusSinkPath)
 	v.SetDefault(envCHOptCorpusRing, defaultCHOptCorpusRing)
 	v.SetDefault(envCHOptCorpusSinkMode, defaultCHOptCorpusSinkMode)
+}
+
+// setAdmitDefaults seeds the CERBERUS_ADMIT_* defaults: the master
+// off-switch plus the four admission budgets. Extracted from newDefaults
+// for the same reason setCHOptDefaults was — the budgets are one
+// coherent family (three per-head request caps and the Loki /tail cap
+// that bounds occupancy rather than throughput), and grouping them keeps
+// newDefaults a flat list of unrelated knobs instead of growing a
+// sub-block every time the family does.
+func setAdmitDefaults(v *viper.Viper) {
+	v.SetDefault(envAdmitDisabled, defaultAdmitDisabled)
+	v.SetDefault(envAdmitProm, DefaultAdmitProm)
+	v.SetDefault(envAdmitLoki, DefaultAdmitLoki)
+	v.SetDefault(envAdmitTempo, DefaultAdmitTempo)
+	v.SetDefault(envAdmitTail, DefaultAdmitTail)
 }
 
 // Built-in defaults, kept as named constants so newLoader's SetDefault
