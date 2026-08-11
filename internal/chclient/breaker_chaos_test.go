@@ -3,6 +3,7 @@ package chclient
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,6 +50,14 @@ type flakyConn struct {
 	// HALF-OPEN".
 	callCount atomic.Int64
 }
+
+// Compile-time proof that the fake still covers the interface it stands
+// in for. driver.Conn is documented as "meant to be consumed, not
+// implemented" and gains methods in clickhouse-go minor releases, so
+// without this assertion the next addition is reported once at each of the
+// ten newBreakerTestClient callsites rather than here, at the type that
+// actually fell behind.
+var _ driver.Conn = (*flakyConn)(nil)
 
 func newFlakyConn(failErr error) *flakyConn {
 	if failErr == nil {
@@ -98,6 +107,27 @@ func (c *flakyConn) PrepareBatch(context.Context, string, ...driver.PrepareBatch
 }
 
 func (c *flakyConn) Exec(context.Context, string, ...any) error {
+	c.callCount.Add(1)
+	if c.fail.Load() {
+		return c.failErr
+	}
+	return nil
+}
+
+// QueryFormat and InsertFormat are the raw-format streaming pair. Both are
+// ordinary server round-trips, so they take part in the fault injection on
+// the same terms as Query and Exec: a failing conn surfaces failErr, and
+// the attempt is counted so the breaker's admission accounting stays honest
+// for a test that starts driving the breaker through either of them.
+func (c *flakyConn) QueryFormat(context.Context, string, string, ...any) (io.ReadCloser, error) {
+	c.callCount.Add(1)
+	if c.fail.Load() {
+		return nil, c.failErr
+	}
+	return emptyFormatStream(), nil
+}
+
+func (c *flakyConn) InsertFormat(context.Context, string, string, io.Reader) error {
 	c.callCount.Add(1)
 	if c.fail.Load() {
 		return c.failErr

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,6 +122,16 @@ type chaosConn struct {
 	queryErr error
 }
 
+var _ driver.Conn = (*chaosConn)(nil)
+
+// emptyFormatStream is the healthy-path answer the package's driver.Conn
+// fakes give QueryFormat: an empty raw-format byte stream, the encoded
+// counterpart of the empty chaosRows their Query returns. The fakes drive
+// their tests off the error, never the payload, so the stream carries no
+// rows — and because QueryFormat hands its caller a stream that must be
+// closed, a NopCloser keeps that contract without holding anything.
+func emptyFormatStream() io.ReadCloser { return io.NopCloser(strings.NewReader("")) }
+
 func (c *chaosConn) Contributors() []string { return nil }
 
 func (c *chaosConn) ServerVersion() (*driver.ServerVersion, error) {
@@ -145,6 +156,17 @@ func (c *chaosConn) PrepareBatch(context.Context, string, ...driver.PrepareBatch
 }
 
 func (c *chaosConn) Exec(context.Context, string, ...any) error { return c.queryErr }
+
+func (c *chaosConn) QueryFormat(context.Context, string, string, ...any) (io.ReadCloser, error) {
+	if c.queryErr != nil {
+		return nil, c.queryErr
+	}
+	return emptyFormatStream(), nil
+}
+
+func (c *chaosConn) InsertFormat(context.Context, string, string, io.Reader) error {
+	return c.queryErr
+}
 
 func (c *chaosConn) AsyncInsert(context.Context, string, bool, ...any) error { return c.queryErr }
 func (c *chaosConn) Ping(context.Context) error                              { return c.queryErr }

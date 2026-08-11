@@ -21,19 +21,23 @@ import (
 //   - internal/promql/synthetic.go::synthFloatValue (#642 / #189)
 //   - internal/logql/literal.go::synthFloatValue (#634)
 //
-// Each was added in response to the same wire failure mode: the
-// clickhouse-go/v2 driver renders Go `float64(N.0)` as the bare
-// SQL literal `N` (no decimal — its `bind.go::format()` has no
-// `case float64` and falls through to `fmt.Sprint(v)`, which uses
-// Go's `%v` for float64 and prints `1` for whole numbers). CH
-// narrows the bare literal to `UInt8`, and a downstream binop
-// promotes to `UInt16`. Once the column lands in
-// `chclient.Sample.Value` (declared `float64`), clickhouse-go's
-// Scan refuses the `UInt8 / UInt16 -> *float64` conversion with
-// `converting UInt8 to *float64 is unsupported. try using *uint8`
-// — surfaced as the 502 Grafana sees on
-// `vector(1)+vector(1)`, `absent(<empty>)`, `group(...)`, the
-// LogQL `1+1` reduce path, etc.
+// Each was added in response to the same wire failure mode: a
+// client-side binder renders Go `float64(N.0)` as the bare SQL
+// literal `N` (no decimal), CH narrows it to `UInt8`, and a
+// downstream binop promotes to `UInt16`. Once the column lands in
+// `chclient.Sample.Value` (declared `float64`), the Scan refuses
+// the `UInt8 / UInt16 -> *float64` conversion with `converting
+// UInt8 to *float64 is unsupported. try using *uint8` — surfaced
+// as the 502 Grafana sees on `vector(1)+vector(1)`,
+// `absent(<empty>)`, `group(...)`, the LogQL `1+1` reduce path,
+// etc.
+//
+// clickhouse-go/v2 renders a bound float as `cast(N, 'Float64')`
+// as of v2.48.0 and no longer trips this. The wrap is still the
+// emitter's contract because the same SQL text is bound by
+// chdb-go too, which interpolates through huandu/go-sqlbuilder's
+// `strconv.AppendFloat(…, 'g', …)` and still produces the bare
+// `N` — so this test pins the wrap on both substrates' behalf.
 //
 // The central wrap means every new LitFloat callsite is wire-safe
 // by construction. The per-callsite helpers were removed; the
@@ -90,11 +94,14 @@ func TestBuilder_LitFloat_WrapsInToFloat64(t *testing.T) {
 
 // TestBuilder_LitFloat_NonFiniteInline asserts the inline-division
 // path for ±Inf / NaN is NOT wrapped — those values render as
-// `(1.0/0)` / `(-1.0/0)` / `(0.0/0)` directly inside the SQL (the
-// driver can't bind them as `?` because real CH 24.x rejects the
-// mixed-case `Inf` / `NaN` identifier strings clickhouse-go
-// emits). The inline form is already a Float64 division, so no
-// outer toFloat64 wrap is needed.
+// `(1.0/0)` / `(-1.0/0)` / `(0.0/0)` directly inside the SQL. They
+// cannot be bound as `?` because CH rejects the mixed-case `Inf` /
+// `NaN` strings a binder produces from Go's strconv float
+// formatting, which is what chdb-go's go-sqlbuilder interpolation
+// still emits (clickhouse-go/v2 quotes them lowercase inside a
+// cast as of v2.48.0, but the emitter serves both). The inline
+// form is already a Float64 division, so no outer toFloat64 wrap
+// is needed.
 func TestBuilder_LitFloat_NonFiniteInline(t *testing.T) {
 	t.Parallel()
 
