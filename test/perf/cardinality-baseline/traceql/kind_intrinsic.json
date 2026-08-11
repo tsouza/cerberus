@@ -1,8 +1,8 @@
 {
   "fixture": "traceql/kind_intrinsic",
-  "fan_factor": 0,
-  "scan_rows": 0,
-  "peak_intermediate": 0,
+  "fan_factor": 1,
+  "scan_rows": 1,
+  "peak_intermediate": 1,
   "has_cross_join": false,
   "has_array_join": false,
   "has_recursive_cte": false,
