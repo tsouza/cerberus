@@ -184,44 +184,105 @@ type rowsCursor struct {
 	// path that also calls Close).
 	closeOnce sync.Once
 	closeErr  error
-	// metadataProbed latches the one-time column-shape probe (see
-	// [rowsCursor.scanRow]). hasMetadata records whether the projection
-	// carries a fifth `Metadata` column — the Loki log-stream path — so
-	// the scan binds five destinations (…, &metadata) instead of four.
-	// Every metric query and the prom / tempo heads project four columns,
-	// leaving hasMetadata false and the scan byte-identical to before.
-	metadataProbed bool
-	hasMetadata    bool
-	// histogramProbed / hasHistogram are the histogram-shaped sibling of
-	// metadataProbed / hasMetadata: hasHistogram records whether the
-	// projection carries the nine trailing Histogram*Column columns a
-	// chplan.HistogramProjection subquery publishes (see issue #1926),
-	// so the scan binds thirteen destinations (the base four plus the
-	// nine histogram fields) instead of four.
-	//
-	// hasHistogram latches true for the histogram-VALUED PromQL shapes —
-	// a bare exp-histogram selector, `sum()` over one, and
-	// `rate()`/`increase()` over one — and stays false, leaving the scan
-	// byte-identical to before, on every other query. Only this
-	// ROW-based cursor is no longer alone in reading those nine columns:
-	// the columnar sibling in columnar.go binds the SAME thirteen (see
-	// histogramMatrixColumns), so a histogram query keeps the columnar
-	// fast path instead of being re-dispatched to ClickHouse in full by
-	// columnarDecoder.decode's row fallback (issue #1967).
-	histogramProbed bool
-	hasHistogram    bool
+	// shapeProbed latches the one-time column-shape probe and shape holds
+	// its verdict — the positional layout every row of this result set
+	// carries. driver.Rows.Columns() is a result-set-wide property, so the
+	// decision is taken on the first row and reused for the whole stream.
+	// See [rowShape] for the layouts and [probeRowShape] for how each is
+	// recognised.
+	shapeProbed bool
+	shape       rowShape
 }
 
+// rowShape is the positional column layout a result set carries. The scan
+// [rowsCursor.Next] runs is positional, so the shape IS the decode
+// contract: it selects both how MANY destinations are bound and what each
+// one means.
+//
+// Every head emits one of these. The sample-shaped layouts lead with
+// `MetricName` and carry a numeric `Value`; the log-row layouts lead with
+// [logLineColumn] and carry no numeric column at all, because a log stream
+// has no value to report.
+type rowShape uint8
+
+const (
+	// shapeSample is the canonical four-column metric row —
+	// (MetricName, Attributes, TimeUnix, Value) — that every PromQL and
+	// TraceQL query, and every LogQL METRIC query, projects. It is the
+	// default: an unrecognised column layout decodes as this shape, which
+	// is what every path did before the probe existed.
+	shapeSample rowShape = iota
+	// shapeSampleHistogram is shapeSample plus the nine trailing
+	// Histogram*Column columns a chplan.HistogramProjection subquery
+	// publishes (issue #1926), so the scan binds thirteen destinations.
+	// It latches for the histogram-VALUED PromQL shapes — a bare
+	// exp-histogram selector, `sum()` over one, and `rate()`/`increase()`
+	// over one. This ROW-based cursor is not alone in reading those nine
+	// columns: the columnar sibling in columnar.go binds the SAME thirteen
+	// (see histogramMatrixColumns), so a histogram query keeps the
+	// columnar fast path instead of being re-dispatched to ClickHouse in
+	// full by columnarDecoder.decode's row fallback (issue #1967).
+	shapeSampleHistogram
+	// shapeLogRow is the Loki log-stream row — (Line, Attributes,
+	// TimeUnix) — which binds THREE destinations and no float at all.
+	// A log line has no numeric value, so the projection emits no Value
+	// column and [Sample.Value] stays zero on this path (issue #1430).
+	shapeLogRow
+	// shapeLogRowMetadata is shapeLogRow plus the trailing
+	// [metadataColumn]: (Line, Attributes, TimeUnix, Metadata). It is the
+	// shape a log-stream query against a schema WITH a structured-metadata
+	// column emits.
+	shapeLogRowMetadata
+)
+
 // metadataColumn is the projection alias the Loki log-stream path appends
-// as a fifth column to carry per-row structured metadata (the OTel-CH
+// as a TRAILING column to carry per-row structured metadata (the OTel-CH
 // LogAttributes map) into [Sample.Metadata]. The shared cursor probes the
 // result-set columns for this name once and adapts its positional scan.
+//
+// Structured metadata is a log-stream concept: it rides only on the
+// [shapeLogRowMetadata] layout, never on a sample row. No head projects a
+// metric result with metadata attached, so there is no such layout to
+// decode.
 const metadataColumn = "Metadata"
+
+// logLineColumn is the FIRST projection alias a Loki log-stream query
+// binds its log line to (the literal internal/logql.LogLineColumn emits).
+// It is the marker [probeRowShape] keys the log-row layouts off: a log
+// stream has no numeric value, so its projection is
+// (Line, Attributes, TimeUnix[, Metadata]) with NO Value column, versus
+// the (MetricName, Attributes, TimeUnix, Value[, …]) every metric query on
+// all three heads emits.
+//
+// chclient may not import logql (see .go-arch-lint.yml: chclient declares
+// no internal dependencies), so this string is duplicated by convention
+// rather than imported — the same pairing metadataColumn and
+// histogramLastColumn already have with their emitter-side aliases.
+// Changing logql.LogLineColumn requires changing this literal too;
+// TestLogLineColumn_MatchesCursorProbeLiteral in internal/logql pins
+// the pair.
+const logLineColumn = "Line"
+
+// logRowColumns is the width of the bare [shapeLogRow] projection —
+// (Line, Attributes, TimeUnix) — and logRowMetadataColumns the width of
+// its [shapeLogRowMetadata] sibling, which appends [metadataColumn].
+// The probe matches on the exact width as well as the alias names so a
+// wider projection that merely happens to lead with `Line` is never
+// mistaken for a log row.
+const (
+	logRowColumns         = 3
+	logRowMetadataColumns = 4
+)
+
+// sampleColumns is the width of the canonical [shapeSample] projection:
+// (MetricName, Attributes, TimeUnix, Value).
+const sampleColumns = 4
 
 // histogramColumnCount is the number of trailing columns a
 // chplan.HistogramProjection subquery appends after the base four —
 // the nine Histogram*Column output aliases. The scan binds
-// 4+histogramColumnCount destinations when hasHistogram latches true.
+// sampleColumns+histogramColumnCount destinations when the probe
+// resolves [shapeSampleHistogram].
 const histogramColumnCount = 9
 
 // histogramLastColumn is the LAST of the nine Histogram*Column aliases
@@ -237,6 +298,39 @@ const histogramColumnCount = 9
 // internal/logql/lang.go emits. Changing chplan.HistogramNegativeBucketCountsColumn
 // requires changing this literal too.
 const histogramLastColumn = "HistogramNegativeBucketCounts"
+
+// probeRowShape resolves a result set's positional layout from its column
+// names. cols is driver.Rows.Columns() — the emitter's output aliases, in
+// projection order.
+//
+// The log-row layouts are recognised by their FIRST alias
+// ([logLineColumn]) together with an exact width, because they are the two
+// layouts with no numeric column: matching on width alone would confuse
+// (Line, Attributes, TimeUnix, Metadata) with the four-column sample
+// shape, and matching on the leading alias alone would misread any wider
+// projection that happened to lead with `Line`. The sample-shaped
+// extensions are recognised by their trailing alias, as they always have
+// been, plus the width the scan they select actually binds — the two are
+// the same statement, and pairing them keeps a merely-similar projection
+// from selecting a scan wider than its result set.
+//
+// An unrecognised layout resolves to [shapeSample], the four-destination
+// scan every path ran before any probe existed.
+func probeRowShape(cols []string) rowShape {
+	if len(cols) == 0 {
+		return shapeSample
+	}
+	last := cols[len(cols)-1]
+	switch {
+	case len(cols) == logRowColumns && cols[0] == logLineColumn:
+		return shapeLogRow
+	case len(cols) == logRowMetadataColumns && cols[0] == logLineColumn && last == metadataColumn:
+		return shapeLogRowMetadata
+	case len(cols) == sampleColumns+histogramColumnCount && last == histogramLastColumn:
+		return shapeSampleHistogram
+	}
+	return shapeSample
+}
 
 // Next advances the cursor to the next row. Returns false when the
 // stream is exhausted or when a decode error occurred; in the error case
@@ -260,34 +354,24 @@ func (c *rowsCursor) Next() bool {
 	}
 	var s Sample
 	var labels map[string]string
-	// metadataJSON receives the fifth `Metadata` column when present: the
-	// log-stream projection renders the filtered LogAttributes map via
+	// metadataJSON receives the trailing `Metadata` column when present:
+	// the log-stream projection renders the filtered LogAttributes map via
 	// `toJSONString(...)`, so it scans as a plain `String` (a JSON object)
 	// rather than a raw `Map(String, String)`. A native Map column scans
 	// on prod ClickHouse but NOT under the chDB probe lane (chdb-go's
 	// Parquet driver can't cast a Map — see chdb_probe_test.go); the JSON
 	// string scans cleanly on both, and is json.Unmarshal'd back below.
 	var metadataJSON string
-	// Probe the result-set shape once: the Loki log-stream projection
-	// appends a fifth `Metadata` column, a chplan.HistogramProjection
-	// subquery appends nine Histogram*Column columns (issue #1926 —
-	// taken by the histogram-valued PromQL shapes, see hasHistogram),
-	// every other path projects four.
-	// driver.Rows.Columns() is stable across the stream, so latch the
-	// decision on the first row and bind the scan accordingly.
-	if !c.metadataProbed {
-		cols := c.rows.Columns()
-		c.hasMetadata = len(cols) > 0 && cols[len(cols)-1] == metadataColumn
-		c.metadataProbed = true
-	}
-	if !c.histogramProbed {
-		cols := c.rows.Columns()
-		c.hasHistogram = len(cols) > 0 && cols[len(cols)-1] == histogramLastColumn
-		c.histogramProbed = true
+	// Probe the result-set shape once. driver.Rows.Columns() is stable
+	// across the stream, so latch the decision on the first row and bind
+	// the scan accordingly for every row after it.
+	if !c.shapeProbed {
+		c.shape = probeRowShape(c.rows.Columns())
+		c.shapeProbed = true
 	}
 	var hv HistogramValue
-	switch {
-	case c.hasHistogram:
+	switch c.shape {
+	case shapeSampleHistogram:
 		if err := c.rows.Scan(
 			&s.MetricName, &labels, &s.Timestamp, &s.Value,
 			&hv.Count, &hv.Sum, &hv.Scale, &hv.ZeroThreshold, &hv.ZeroCount,
@@ -298,8 +382,19 @@ func (c *rowsCursor) Next() bool {
 			return false
 		}
 		s.Histogram = &hv
-	case c.hasMetadata:
-		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value, &metadataJSON); err != nil {
+	// The two log-row layouts bind NO numeric destination: a log stream has
+	// no value, so the projection carries no Value column and s.Value stays
+	// zero. The line lands in s.MetricName — the positional row's first,
+	// String-typed slot, which a metric query fills with the metric name —
+	// and [DecodeLogRows] is the single place that positional knowledge
+	// becomes the named [LogRow] fields consumers read.
+	case shapeLogRow:
+		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp); err != nil {
+			c.err = fmt.Errorf("chclient: scan: %w", err)
+			return false
+		}
+	case shapeLogRowMetadata:
+		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &metadataJSON); err != nil {
 			c.err = fmt.Errorf("chclient: scan: %w", err)
 			return false
 		}
@@ -344,11 +439,12 @@ func (c *rowsCursor) Next() bool {
 	}
 	// Per-row structured metadata is genuinely distinct per log line
 	// (durations, byte counts, query ids), so it is NOT interned — unlike
-	// the series-identity Labels map. The fifth column arrives as a JSON
+	// the series-identity Labels map. The trailing column arrives as a JSON
 	// object string (`toJSONString` of the filtered LogAttributes map);
 	// decode it back to a map. An empty / `{}` payload leaves Metadata
 	// nil, so [StreamValue.MarshalJSON] falls back to the two-element
-	// `[ts, line]` tuple. Left nil entirely on the four-column path.
+	// `[ts, line]` tuple. Left nil entirely on the layouts that carry no
+	// [metadataColumn].
 	if metadata := decodeMetadataJSON(metadataJSON); len(metadata) > 0 {
 		s.Metadata = metadata
 	}
@@ -471,9 +567,12 @@ func (c *rowsCursor) Close() error {
 }
 
 // QueryCursor runs sql with positional args and returns a forward-only
-// Cursor over the result set. The SQL must project (MetricName,
-// Attributes, TimeUnix, Value) in that order — Scan binds positionally,
-// matching Client.Query.
+// Cursor over the result set. The SQL must project one of the layouts
+// [rowShape] enumerates — (MetricName, Attributes, TimeUnix, Value) and
+// its metadata / histogram extensions, or the log-stream
+// (Line, Attributes, TimeUnix[, Metadata]) — because Scan binds
+// positionally, matching Client.Query. [probeRowShape] resolves which
+// from the result-set column names.
 //
 // Compared to Query, QueryCursor keeps only one Sample resident in
 // process memory at a time, which is the only way to keep RAM bounded

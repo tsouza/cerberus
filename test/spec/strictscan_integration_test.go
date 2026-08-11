@@ -39,8 +39,7 @@
 //     columns — NOT the chDB `toJSONString` Map-wrap that masks the divergence)
 //     through `chclient.Client.QueryCursor`, which scans positionally into the
 //     EXACT destination types the production matrix decoder uses
-//     (`MetricName string`, `map[string]string`, `time.Time`, `float64`; plus a
-//     5th `Metadata` String for the Loki log-stream path);
+//     (`MetricName string`, `map[string]string`, `time.Time`, `float64`);
 //  4. drains the cursor and asserts NO scan-type error.
 //
 // Step 3 is the load-bearing one: QueryCursor's rowsCursor.Next() runs the very
@@ -49,9 +48,13 @@
 // here exactly as it would in prod — the failure the chDB lane swallows.
 //
 // SCOPE: the three query heads' round-trip fixtures (the metric/range/vector-
-// join emitters where Value-typed columns live are all under promql; logql and
-// traceql exercise the Map + log-stream + trace projections). The optimizer
-// lane has no round-trip fixtures. Args are taken verbatim from each fixture's
+// join emitters where Value-typed columns live are all under promql; logql
+// and traceql exercise the Map and trace projections). The optimizer lane has
+// no round-trip fixtures. LogQL's LOG-STREAM wire projection is not in scope
+// here — Layer 2a records its SQL before ProjectSamples, so a log fixture's
+// `-- sql --` is a bare `SELECT *` that classifies as non-matrix; the real-CH
+// coverage for that shape is the compat-logql differential. See issue #2044
+// for closing the gap the way #1635 closed TraceQL's. Args are taken verbatim from each fixture's
 // `-- args --` block, so no synthetic placeholder binding is needed — EXCEPT
 // for TraceQL search-shaped fixtures, where traceqlWrapForStrictScan discards
 // the fixture's own `-- sql --` / `-- args --` and re-derives both (see its
@@ -159,22 +162,24 @@ const (
 	// strict-scanned through the production cursor.
 	caseRan caseOutcome = iota
 	// caseNonMatrix: the fixture's SQL is not the (MetricName, Attributes,
-	// TimeUnix, Value [, Metadata]) matrix shape the production cursor
-	// decodes — it belongs to a different decoder (label values, Tempo
-	// search rows, index stats, …) and is out of this lane's scope.
+	// TimeUnix, Value) matrix shape the production cursor decodes — it
+	// belongs to a different decoder (label values, Tempo search rows,
+	// index stats, …) and is out of this lane's scope.
 	caseNonMatrix
 )
 
 // matrixColumns is the exact column projection the production matrix cursor
 // (chclient.rowsCursor) binds positionally. A fixture whose emitted SQL
-// produces these columns (optionally + a trailing "Metadata" String for the
-// Loki log-stream path) is in scope; anything else belongs to a different
+// produces these columns is in scope; anything else belongs to a different
 // production decoder and is skipped.
+//
+// There is no metadata-suffixed variant of this shape: structured metadata
+// rides only on the Loki log-stream row (Line, Attributes, TimeUnix
+// [, Metadata]), which carries no Value column and which no fixture's
+// recorded SQL produces — Layer 2a captures logql SQL BEFORE
+// ProjectSamples, so a log fixture's `-- sql --` is a bare `SELECT *` and
+// is skipped as non-matrix here. See issue #2044.
 var matrixColumns = []string{"MetricName", "Attributes", "TimeUnix", "Value"}
-
-// metadataColumn is the optional 5th column the Loki log-stream projection
-// appends (mirrors chclient's metadataColumn const).
-const metadataColumn = "Metadata"
 
 // runStrictScanCase seeds the fixture's tables, probes the emitted SQL's
 // result column shape, and — only when that shape is the production matrix
@@ -276,7 +281,7 @@ func traceqlWrapForStrictScan(t *testing.T, c *spec.Case, rt *spec.RoundTripSect
 
 // isMatrixShape runs the query, reads the result column names, and reports
 // whether they are the production matrix projection (MetricName, Attributes,
-// TimeUnix, Value) optionally followed by a Metadata column. The probe drains
+// TimeUnix, Value). The probe drains
 // no rows — Columns() is populated as soon as the query is open — so it is
 // cheap. A non-nil error means the server rejected the query at open time.
 func isMatrixShape(ctx context.Context, client *chclient.Client, query string, args []any) (bool, error) {
@@ -287,16 +292,13 @@ func isMatrixShape(ctx context.Context, client *chclient.Client, query string, a
 	defer func() { _ = rows.Close() }()
 
 	cols := rows.Columns()
-	if len(cols) != len(matrixColumns) && len(cols) != len(matrixColumns)+1 {
+	if len(cols) != len(matrixColumns) {
 		return false, nil
 	}
 	for i, want := range matrixColumns {
 		if cols[i] != want {
 			return false, nil
 		}
-	}
-	if len(cols) == len(matrixColumns)+1 && cols[len(matrixColumns)] != metadataColumn {
-		return false, nil
 	}
 	return true, nil
 }

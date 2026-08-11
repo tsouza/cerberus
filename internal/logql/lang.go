@@ -125,6 +125,13 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 // projects the metric name into. chclient.DecodeLogRows decodes that row
 // into chclient.LogRow, whose Line field is what the Loki streams pivot
 // reads.
+//
+// It is also the MARKER the cursor's shape probe keys the log-row scan
+// off: a result set leading with this alias carries no numeric column, so
+// the cursor binds no float destination. chclient may not import logql
+// (.go-arch-lint.yml), so it mirrors this literal in its own unexported
+// logLineColumn const; TestLogLineColumn_MatchesCursorProbeLiteral pins
+// the pair.
 const LogLineColumn = "Line"
 
 // ProjectSamples wraps plan with the projection that reshapes the
@@ -133,7 +140,8 @@ const LogLineColumn = "Line"
 // (mirrors the promql side's anchor trick to keep matrix step-grid
 // bucketing from dropping the only row); log queries project the log
 // Body under [LogLineColumn], since a log line is a String and the
-// positional row's fourth column is a float64.
+// sample shape's fourth column is a float64 — a log stream has no
+// numeric value, so its projection carries no fourth column at all.
 func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	s := l.Schema
 	if meta.IsMetric {
@@ -223,10 +231,13 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		}
 	}
 	// Log-stream query: the positional row the chclient cursor scans is
-	// (<String>, Attributes, TimeUnix, <Float64>). A log line is a String,
+	// (<String>, Attributes, TimeUnix[, Metadata]). A log line is a String,
 	// so it takes the first column — the slot a metric query fills with the
-	// metric name — under the [LogLineColumn] alias, and the Float64 slot
-	// takes a 0.0 placeholder to keep the row as wide as the scan.
+	// metric name — under the [LogLineColumn] alias, and there is NO fourth
+	// Float64 column: a log stream has no numeric value, so projecting a
+	// placeholder would be width every log query pays for and then discards
+	// (issue #1430). The chclient cursor recognises the shape by this
+	// leading alias and binds a scan with no numeric destination.
 	// chclient.DecodeLogRows turns that row into the named
 	// chclient.LogRow the Loki streams pivot consumes.
 	//
@@ -284,11 +295,6 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		{Expr: lineExpr, Alias: LogLineColumn},
 		{Expr: attrsExpr, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-		// LitFloat is wrapped centrally in toFloat64(?) by
-		// internal/chsql/Builder.Expr; without that pin CH would
-		// narrow the bare `0` placeholder to UInt8 and clickhouse-go's
-		// Sample Scan would reject UInt8 → *float64.
-		{Expr: &chplan.LitFloat{V: 0}, Alias: "Value"},
 	}
 	// Surface the OTel-CH LogAttributes map as Loki structured metadata —
 	// the third element of each `[ts, line, {metadata}]` value tuple. The
@@ -297,11 +303,11 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	// the genuinely per-line keys (duration / bytes / query_id / …) ride
 	// here instead, which is exactly the shape Grafana's Logs Drilldown
 	// reads to render clean, well-formed columns. The chclient cursor
-	// detects this fifth `Metadata` column and binds a five-destination
-	// scan; the four-column metric / prom / tempo paths are untouched.
-	// Schemas without a structured-metadata column (AttributesColumn == "")
-	// skip the projection entirely, falling back to the prior four-column
-	// shape byte-for-byte.
+	// detects this trailing `Metadata` column and binds a four-destination
+	// log-row scan; the four-column metric / prom / tempo paths are
+	// untouched. Schemas without a structured-metadata column
+	// (AttributesColumn == "") skip the projection entirely, leaving the
+	// bare three-column log-row shape.
 	if s.AttributesColumn != "" {
 		projections = append(projections, chplan.Projection{
 			Expr:  structuredMetadataExpr(s),

@@ -292,12 +292,25 @@ func TestTail_SQLShape(t *testing.T) {
 		"`Body` AS `Line`",
 		"`ResourceAttributes` AS `Attributes`",
 		"`Timestamp` AS `TimeUnix`",
-		"toFloat64(?) AS `Value`",
 		"ORDER BY `Timestamp`",
 		"LIMIT 100",
 	} {
 		if !strings.Contains(sqlStr, frag) {
 			t.Errorf("expected SQL to contain %q, got %q", frag, sqlStr)
+		}
+	}
+	// The tail projection is the log-stream shape: line, labels, timestamp
+	// and nothing else. It carries no numeric column, because a log stream
+	// has no value — the cursor recognises the leading `Line` alias and
+	// binds no float destination (issue #1430). Pinning the ABSENCE keeps a
+	// placeholder from creeping back in under any alias.
+	for _, frag := range []string{
+		"toFloat64(",
+		"AS `Value`",
+	} {
+		if strings.Contains(sqlStr, frag) {
+			t.Errorf("tail SQL must not contain %q — the log-stream projection carries "+
+				"no numeric placeholder column (issue #1430); got %q", frag, sqlStr)
 		}
 	}
 }

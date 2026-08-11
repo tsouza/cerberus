@@ -416,10 +416,12 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 		t.Fatalf("ProjectSamples returned %T, want *chplan.Project", wrapped)
 	}
 	// The default OTel-logs schema carries a structured-metadata column,
-	// so the wire projection adds a fifth `Metadata` slot surfacing the
+	// so the wire projection adds a trailing `Metadata` slot surfacing the
 	// per-line LogAttributes map (Loki's `[ts, line, {metadata}]` tuple).
-	if len(proj.Projections) != 5 {
-		t.Fatalf("got %d projections, want 5 (Line, Attributes, TimeUnix, Value, Metadata)",
+	// Four slots, not five: a log stream has no numeric value, so there is
+	// no Value column (issue #1430).
+	if len(proj.Projections) != 4 {
+		t.Fatalf("got %d projections, want 4 (Line, Attributes, TimeUnix, Metadata)",
 			len(proj.Projections))
 	}
 	// The line slot is the positional row's first, String-typed column,
@@ -438,7 +440,7 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 		t.Fatalf("line slot ColumnRef.Name: got %q, want %q (schema's BodyColumn)",
 			lineRef.Name, s.BodyColumn)
 	}
-	metaSlot := proj.Projections[4]
+	metaSlot := proj.Projections[3]
 	if metaSlot.Alias != "Metadata" {
 		t.Fatalf("metadata slot alias: got %q, want %q", metaSlot.Alias, "Metadata")
 	}

@@ -1187,8 +1187,10 @@ type Sample struct {
 	Labels     map[string]string
 	Timestamp  time.Time
 	// Value is the projection's fourth, Float64 column: the metric value.
-	// A log-stream projection has no numeric value and binds a constant
-	// placeholder here; [DecodeLogRows] drops it.
+	// A log-stream projection has no numeric value, so it projects no
+	// fourth column at all and the log-row scan binds no destination for
+	// this field — it stays zero on that path, and [DecodeLogRows] has no
+	// slot for it (issue #1430).
 	Value float64
 	// SeriesID is a stable, per-cursor identity for the interned Labels
 	// map: every Sample whose Labels alias the same interned instance
@@ -1209,11 +1211,12 @@ type Sample struct {
 	SeriesID uint32
 	// Metadata carries per-row structured metadata for Loki log-stream
 	// queries — the OTel-CH LogAttributes map surfaced as the third
-	// element of Loki's `[ts, line, {metadata}]` value tuple. It is
-	// populated only when the projection emits a fifth `Metadata` column
-	// (the log-stream path), and stays nil for every metric query and
-	// for the prom / tempo heads, whose four-column projections leave the
-	// shared cursor's 4-column scan path untouched.
+	// element of Loki's `[ts, line, {metadata}]` value tuple. Structured
+	// metadata is a log-stream concept: it is populated only on the
+	// log-row layout that emits a trailing `Metadata` column, and stays
+	// nil for every metric query and for the prom / tempo heads, whose
+	// four-column projections leave the shared cursor's sample-shaped scan
+	// path untouched.
 	Metadata map[string]string
 	// Histogram carries a decoded OTel exponential (native) histogram
 	// value — the shape a histogram-VALUED PromQL result (`rate()`,

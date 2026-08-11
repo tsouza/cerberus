@@ -39,8 +39,9 @@ import (
 // matrixColumns is the four-column projection the prom `query_range` matrix
 // pivot drains: MetricName, the Attributes Map(String,String), TimeUnix, and
 // Value, in that order. The columnar path engages ONLY when a result block's
-// shape matches this exactly; any other shape (the five-column Loki log-stream
-// projection, the metadata endpoints) falls back to the row path.
+// shape matches this exactly; any other shape (the Loki log-stream
+// projection, which leads with `Line` and carries no Value column at all, or
+// the metadata endpoints) falls back to the row path.
 //
 // This is a name/type collision test, not a proof of intent: a future
 // projection that happens to reuse these four names and types (e.g. a
@@ -411,8 +412,9 @@ type timeColumn interface {
 }
 
 // bindColumns type-asserts the Auto-inferred result columns into the matrix
-// shape. A mismatch (wrong count, wrong names, wrong types — e.g. the
-// five-column Loki projection) reports false so the caller falls back.
+// shape. A mismatch (wrong count, wrong names, wrong types — e.g. the Loki
+// log-stream projection, whose first column is `Line`) reports false so the
+// caller falls back.
 //
 // This ANDs two independent checks (#1429): the structural name/type test
 // below, unchanged, PLUS — when the caller declared a ResponseShape — a
@@ -426,8 +428,10 @@ func (d *columnarCursor) bindColumns() (matrixCols, bool) {
 		return matrixCols{}, false
 	}
 	// Two column counts are the matrix shape: the base four, and the base
-	// four plus the nine histogram columns. Anything else (the five-column
-	// Loki log-stream projection, the metadata endpoints) falls back.
+	// four plus the nine histogram columns. Anything else falls back. The
+	// log-stream projection can share the base COUNT (Line, Attributes,
+	// TimeUnix, Metadata is four wide), so it is the per-column name test
+	// below — not the count — that declines it.
 	histogramShaped := false
 	switch len(d.results) {
 	case len(matrixColumns):
