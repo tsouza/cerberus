@@ -253,6 +253,12 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	if c, ok := r.Input.(*chplan.MetricsCompare); ok {
 		return e.emitRangeWindowCompare(r, c)
 	}
+	// The fused multi-arm shape reduces ONE grouped pass once per arm, so it
+	// owns the whole emission rather than dispatching on a single r.Func —
+	// which describes no arm in that mode. See range_window_variants.go.
+	if len(r.Variants) > 0 {
+		return e.emitRangeWindowVariants(r)
+	}
 	if r.Identity {
 		return e.emitRangeWindowIdentity(r)
 	}

@@ -178,6 +178,14 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Identity {
 			b.WriteString(" identity=true")
 		}
+		if len(v.Variants) > 0 {
+			vs := make([]string, len(v.Variants))
+			for i, a := range v.Variants {
+				vs[i] = fmt.Sprintf("%s:%s=%s", a.Label, a.Func, a.ValueColumn)
+			}
+			fmt.Fprintf(b, " variants=[%s] variantCol=%s",
+				strings.Join(vs, ", "), v.VariantColumn)
+		}
 		if v.TimestampColumn != "" {
 			fmt.Fprintf(b, " ts=%s", v.TimestampColumn)
 		}

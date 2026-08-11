@@ -262,6 +262,40 @@ func (v RangeWindowVariant) Equal(o RangeWindowVariant) bool {
 	return v.Func == o.Func && v.ValueColumn == o.ValueColumn && v.Label == o.Label
 }
 
+// FusibleWindowFunc reports whether fn is a range function the FUSED
+// multi-arm window can reduce out of the shared per-window sample array.
+//
+// It is the contract between the two sides of the fused shape: a lowering
+// consults it BEFORE building a RangeWindow.Variants, so an arm the emitter
+// could not render never reaches the emitter as an error — the query stays on
+// the correct-but-slower per-arm path instead. The set is exactly the
+// *_over_time family whose value is a reduction over the window's values
+// array; the functions with their own bespoke emission (rate / increase /
+// delta and the pairwise / extrapolating forms, quantile_over_time's sorted
+// interpolation, the ts_of_* timestamp pickers) are not members, because they
+// read the (timestamp, value) PAIRS rather than a values array.
+//
+// TestFusibleWindowFuncMatchesEmitter pins this list against the emitter's
+// own dispatch in both directions, so neither side can grow a function the
+// other does not know about.
+func FusibleWindowFunc(fn string) bool {
+	switch fn {
+	case "sum_over_time",
+		"avg_over_time",
+		"min_over_time",
+		"max_over_time",
+		"count_over_time",
+		"present_over_time",
+		"first_over_time",
+		"last_over_time",
+		"mad_over_time",
+		"stddev_over_time",
+		"stdvar_over_time":
+		return true
+	}
+	return false
+}
+
 func (*RangeWindow) planNode() {}
 
 func (r *RangeWindow) Children() []Node { return []Node{r.Input} }
