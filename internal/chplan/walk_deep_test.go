@@ -183,11 +183,17 @@ func TestNodeExprs_FindsEveryNodeTypeWithExprSlots(t *testing.T) {
 	t.Parallel()
 	withSlots := map[string]bool{}
 	for _, c := range allNodeCases() {
-		ptr := reflect.New(reflect.TypeOf(c.node).Elem())
+		elem := reflect.TypeOf(c.node).Elem()
+		ptr := reflect.New(elem)
 		var planted []plantedSlot
 		plantExprSlots(t, ptr.Elem(), c.name, &planted, 0)
 		if len(planted) > 0 {
-			withSlots[c.name] = true
+			// Keyed by the CONCRETE TYPE name, which is what the other
+			// side of this comparison reads out of the switch. The
+			// table's row name is a label and nothing pins the two
+			// together, so keying on it would let a descriptive row name
+			// invent a two-sided failure.
+			withSlots[elem.Name()] = true
 		}
 	}
 	// Both sides of this comparison are derived, and they are derived

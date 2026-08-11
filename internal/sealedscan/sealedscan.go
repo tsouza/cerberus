@@ -21,6 +21,13 @@
 // go/parser rather than loading it with golang.org/x/tools/go/packages:
 // nothing here needs types, build-tag resolution or import graphs, which
 // is all the heavier loader would buy.
+//
+// Two consequences of parsing rather than type-checking, neither of
+// which any package in this tree runs into today. Markers are keyed by
+// method name alone, so two interfaces in one package sealed by the same
+// unexported niladic method would be reported as one. And the scan is
+// per-directory, so an interface whose implementers live in a different
+// package than its declaration reports no marker at all.
 package sealedscan
 
 import (
@@ -116,6 +123,7 @@ func scan(dir string) (sealed map[string]string, impls map[string][]string, err 
 	}
 	sealed = map[string]string{}
 	impls = map[string][]string{}
+	embedders := map[string][]string{}
 	fset := token.NewFileSet()
 	for _, entry := range entries {
 		name := entry.Name()
@@ -126,16 +134,20 @@ func scan(dir string) (sealed map[string]string, impls map[string][]string, err 
 		if perr != nil {
 			return nil, nil, fmt.Errorf("sealedscan: parse %s: %w", name, perr)
 		}
-		collectFile(file, sealed, impls)
+		collectFile(file, sealed, impls, embedders)
+	}
+	for method, names := range impls {
+		impls[method] = resolveEmbeddedBases(names, embedders)
 	}
 	return sealed, impls, nil
 }
 
-func collectFile(file *ast.File, sealed map[string]string, impls map[string][]string) {
+func collectFile(file *ast.File, sealed map[string]string, impls, embedders map[string][]string) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch v := n.(type) {
 		case *ast.TypeSpec:
 			collectInterface(v, sealed)
+			collectEmbedders(v, embedders)
 		case *ast.FuncDecl:
 			if method, recv, ok := markerDecl(v); ok {
 				impls[method] = append(impls[method], recv)
@@ -143,6 +155,63 @@ func collectFile(file *ast.File, sealed map[string]string, impls map[string][]st
 		}
 		return true
 	})
+}
+
+// collectEmbedders records, for each struct type, the named types it
+// embeds — `base -> [types embedding base]`.
+func collectEmbedders(ts *ast.TypeSpec, embedders map[string][]string) {
+	st, ok := ts.Type.(*ast.StructType)
+	if !ok || st.Fields == nil {
+		return
+	}
+	for _, f := range st.Fields.List {
+		if len(f.Names) != 0 {
+			continue // a named field is not an embedding
+		}
+		if base := receiverOrEmbeddedName(f.Type); base != "" {
+			embedders[base] = append(embedders[base], ts.Name.Name)
+		}
+	}
+}
+
+// resolveEmbeddedBases rewrites a marker's receiver list so that a type
+// which exists only to SUPPLY the marker to others is replaced by the
+// types that embed it.
+//
+// Go promotes an embedded type's methods, so a package can seal an
+// interface by declaring the marker once on a shared base struct and
+// embedding that base — internal/logql/lsyntax does exactly this with
+// stageBase. Counting the declaration alone would derive a set of one,
+// which is not merely incomplete but confidently wrong: the vacuity
+// guard cannot fire on a non-empty set, so a ratchet would diff a real
+// table against a fictional set and report the whole table as extra.
+//
+// The base itself drops out. It carries the method but is not a member:
+// nothing constructs a bare stageBase as a StageExpr, and admitting it
+// would make every ratchet over the set demand a row for it.
+func resolveEmbeddedBases(names []string, embedders map[string][]string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if into := embedders[name]; len(into) > 0 {
+			out = append(out, into...)
+			continue
+		}
+		out = append(out, name)
+	}
+	return dedupe(out)
+}
+
+func dedupe(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
 }
 
 // collectInterface records ts as a sealed interface when it declares an
@@ -177,7 +246,7 @@ func markerDecl(fd *ast.FuncDecl) (method, recv string, ok bool) {
 	if ast.IsExported(fd.Name.Name) || !niladic(fd.Type) {
 		return "", "", false
 	}
-	recv = receiverTypeName(fd.Recv)
+	recv = receiverName(fd.Recv)
 	if recv == "" {
 		return "", "", false
 	}
@@ -188,17 +257,26 @@ func niladic(ft *ast.FuncType) bool {
 	return ft.Params.NumFields() == 0 && ft.Results.NumFields() == 0
 }
 
-// receiverTypeName returns the bare type name of a method receiver,
+// receiverName returns the bare type name of a method receiver,
 // unwrapping the pointer a marker declaration uses (`func (*Scan)
 // planNode() {}`). It returns "" for a shape the scan does not
 // recognise, so the caller skips it rather than recording a bogus name.
-func receiverTypeName(recv *ast.FieldList) string {
+func receiverName(recv *ast.FieldList) string {
 	if len(recv.List) != 1 {
 		return ""
 	}
-	expr := recv.List[0].Type
+	return receiverOrEmbeddedName(recv.List[0].Type)
+}
+
+// receiverOrEmbeddedName reduces a receiver or embedded-field type
+// expression to its bare name, unwrapping a pointer. Generic types are
+// unwrapped to their base name too, so `Box[T]` reads as `Box`.
+func receiverOrEmbeddedName(expr ast.Expr) string {
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = star.X
+	}
+	if idx, ok := expr.(*ast.IndexExpr); ok {
+		expr = idx.X
 	}
 	ident, ok := expr.(*ast.Ident)
 	if !ok {

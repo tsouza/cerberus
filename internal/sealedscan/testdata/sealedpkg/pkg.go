@@ -47,3 +47,24 @@ func (*Only) lonelyNode() {}
 // busyNode has a body, so it is ordinary behaviour rather than a
 // sealing marker even though it is unexported and niladic.
 func (*Busy) busyNode() { _ = 1 }
+
+// --- the embedded-base sealing pattern, as internal/logql/lsyntax uses
+// it: the marker is declared ONCE on a shared base struct, and the
+// members embed the base to acquire it by method promotion. Counting
+// declarations alone would derive a set of one here. ---
+
+// Sound is sealed by soundNode(), supplied via soundBase.
+type Sound interface{ soundNode() }
+
+type soundBase struct{}
+
+func (soundBase) soundNode() {}
+
+type (
+	Bark struct {
+		soundBase
+		Loud bool
+	}
+	Meow struct{ soundBase }
+	Moo  struct{ *soundBase }
+)

@@ -13,16 +13,13 @@ import (
 // the source instead of trusting a list that nothing re-derives.
 const sampleExprMarkerMethod = "isSampleExpr"
 
-// sampleExprTypeNames returns the concrete type name of the expr field
-// on each table row, e.g. "BinOpExpr".
-func sampleExprTypeNames(cases []struct {
-	name string
-	expr SampleExpr
-},
-) map[string]bool {
-	names := make(map[string]bool, len(cases))
-	for _, c := range cases {
-		names[reflect.TypeOf(c.expr).Elem().Name()] = true
+// sampleExprTypeNames returns the concrete type name of each expression,
+// e.g. "BinOpExpr". It takes the expressions rather than the caller's
+// table so that adding a column to that table cannot break it.
+func sampleExprTypeNames(exprs []SampleExpr) map[string]bool {
+	names := make(map[string]bool, len(exprs))
+	for _, e := range exprs {
+		names[reflect.TypeOf(e).Elem().Name()] = true
 	}
 	return names
 }

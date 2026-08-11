@@ -24,6 +24,9 @@ func TestMarkers_ReportsSealedInterfacesWithTheirImplementers(t *testing.T) {
 	want := []sealedscan.Marker{
 		{Method: "colourNode", Interface: "Colour", Implementers: []string{"Blue", "Red"}},
 		{Method: "shapeNode", Interface: "Shape", Implementers: []string{"Circle", "Square", "Triangle"}},
+		// The base itself is absent and its embedders stand in its
+		// place, by value and by pointer alike.
+		{Method: "soundNode", Interface: "Sound", Implementers: []string{"Bark", "Meow", "Moo"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Markers = %+v, want %+v", got, want)
@@ -101,28 +104,52 @@ func TestImplementers_MissingDirectoryIsAnError(t *testing.T) {
 	}
 }
 
-// TestMarkers_ScansTheLiveChplanSets is the end-to-end check that the
-// scanner still recognises the real convention it exists for. The
-// assertion is deliberately a lower bound rather than an exact count:
-// pinning the numbers here would reintroduce, in the scanner's own test,
-// exactly the hand-maintained restatement the scanner exists to
-// eliminate.
-func TestMarkers_ScansTheLiveChplanSets(t *testing.T) {
+// TestMarkers_ScansTheLiveSets is the end-to-end check that the scanner
+// still recognises the conventions it exists for, on the real packages
+// that use them.
+//
+// It asserts MEMBERSHIP, not size. Pinning 32 and 23 here would
+// reintroduce, inside the scanner's own test, exactly the restatement
+// the scanner exists to eliminate — but the obvious alternative, a lower
+// bound like "at least two", degrades to "the marker was reported at
+// all" and cannot tell a correct set from a plausible wrong one. That is
+// not hypothetical: before the embedded-base case was handled, lsyntax's
+// Expr set derived to a confident, non-empty, entirely fictional ten
+// names, and a size bound saw nothing wrong. Naming members that must be
+// present costs nothing to maintain — a type is only removed
+// deliberately — and fails loudly when the derivation drifts.
+func TestMarkers_ScansTheLiveSets(t *testing.T) {
 	t.Parallel()
 
-	const chplanDir = "../chplan"
-	got, err := sealedscan.Markers(chplanDir)
-	if err != nil {
-		t.Fatalf("Markers: %v", err)
+	cases := []struct {
+		dir     string
+		method  string
+		members []string
+	}{
+		{"../chplan", "planNode", []string{"Scan", "Filter", "Project", "VectorSetOp"}},
+		{"../chplan", "exprNode", []string{"ColumnRef", "Binary", "ScalarSubquery"}},
+		// The embedded-base users: every one of these acquires its
+		// marker through stageBase rather than declaring it.
+		{"../logql/lsyntax", "isStageExpr", []string{"LineFilterExpr", "LabelFilterExpr", "KeepLabelsExpr"}},
+		{"../logql/lsyntax", "isExpr", []string{"LineFilterExpr", "MatchersExpr", "BinOpExpr"}},
+		{"../logql/lsyntax", "isSampleExpr", []string{"RangeAggregationExpr", "BinOpExpr"}},
+		{"../traceql/ast", "isPipelineElement", []string{"Pipeline", "SpansetFilter"}},
 	}
-	found := map[string]int{}
-	for _, m := range got {
-		found[m.Method] = len(m.Implementers)
-	}
-	for _, method := range []string{"planNode", "exprNode"} {
-		if found[method] < 2 {
-			t.Errorf("scanning %s found %d %s() implementers, want the live set — the scanner "+
-				"no longer recognises the convention it exists for", chplanDir, found[method], method)
+	for _, tc := range cases {
+		got, err := sealedscan.Implementers(tc.dir, tc.method)
+		if err != nil {
+			t.Errorf("Implementers(%s, %s): %v", tc.dir, tc.method, err)
+			continue
+		}
+		have := make(map[string]bool, len(got))
+		for _, name := range got {
+			have[name] = true
+		}
+		for _, member := range tc.members {
+			if !have[member] {
+				t.Errorf("scanning %s: %s() set is %v, missing %s — the scanner no longer "+
+					"recognises the convention it exists for", tc.dir, tc.method, got, member)
+			}
 		}
 	}
 }
