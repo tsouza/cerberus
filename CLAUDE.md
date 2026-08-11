@@ -121,9 +121,15 @@ per-layer "catches X / misses Y" guidance.
    `lint` (golangci-lint in an agent worktree reports "No issues found" without analysing — a local
    green is not evidence), `strict-scan` and the compat lanes (need a real ClickHouse, not chDB), and
    `e2e` / `compose-smoke` / crawl (need k3d or Docker Compose). For those, read the CI log for the
-   exact rule, `file:line`, or assertion and reason about it directly. Concurrency hazard: this repo
-   has no per-worktree Docker Compose project-name isolation, so a compose run from one worktree
-   corrupts another's containers — never start compose while another agent is live.
+   exact rule, `file:line`, or assertion and reason about it directly. Concurrency: `scripts/
+   compose-project-suffix.sh` gives every linked worktree's compose stack a distinct project name
+   (a hash of the worktree path), so container, network, volume and image names do not collide
+   between agents — a compose run from one worktree does not adopt or corrupt another's containers
+   (enforced by `test/regression/compose_project_isolation_test.go`). The residual hazard is
+   published **host ports**: every stack still binds the same literal ports, so two worktrees cannot
+   run the SAME stack concurrently — the second `up` fails loudly on a port bind rather than
+   corrupting anything. Pick an unused port range (or confirm the default one is free) before
+   bringing up a stack alongside other live agents.
 6. **Tests assert or are removed.** Never `t.Skip`, soft-assert, silent-recover, or `should_skip` a
    test. A feature that cannot run on the CI substrate (for example a CH function above the chDB
    floor) is gated at runtime and validated elsewhere, never skipped. `forbid-skip` enforces this
