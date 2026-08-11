@@ -33,9 +33,10 @@ import (
 //
 // A future new Node type that lacks an arm will fall through to the
 // default and be returned unchanged; if it is added to the table below
-// (which it must be — see the count guard) the interior-node assertion
-// fires. The count guard makes "forgot to add the new type to the table"
-// itself a failure.
+// (which it must be — see the coverage guard) the interior-node
+// assertion fires. The coverage guard derives the Node set from the
+// planNode() declarations, so "forgot to add the new type to the table"
+// is itself a failure, named after the type that was forgotten.
 
 // sentinelChild is the recognisable child planted in every interior node
 // in the table. rewriteChildrenFn rewrites exactly this node.
@@ -65,8 +66,9 @@ type nodeExhaustivenessCase struct {
 }
 
 // allNodeCases enumerates EVERY concrete Node implementation. Adding
-// a new Node type to chplan requires adding a row here (the count guard in
-// TestRewriteChildren_TableCoversEveryNodeType fails otherwise) and an arm
+// a new Node type to chplan requires adding a row here (the coverage
+// guard in TestRewriteChildren_TableCoversEveryNodeType diffs this table
+// against the planNode() implementer set and fails otherwise) and an arm
 // to RewriteChildren (the interior-node assertion in
 // TestRewriteChildren_Exhaustive fails otherwise).
 //
@@ -127,35 +129,33 @@ func allNodeCases() []nodeExhaustivenessCase {
 	}
 }
 
-// expectedNodeTypeCount is the number of concrete Node
-// implementations. Cross-checked against
-// `grep -rn 'planNode()' internal/chplan/*.go`. Bump this (and add a table
-// row + a RewriteChildren arm) when a new Node type lands.
-const expectedNodeTypeCount = 32
-
-// TestRewriteChildren_TableCoversEveryNodeType is the count guard. If a new
-// Node type is added without a corresponding allNodeCases() row, the
-// counts diverge and this fails, forcing the author to confront the
-// exhaustiveness contract (and, via TestRewriteChildren_Exhaustive, add the
-// recursion arm).
+// TestRewriteChildren_TableCoversEveryNodeType is the coverage guard. It
+// derives the Node set from the planNode() declarations in this
+// package's source and diffs allNodeCases() against it, so a Node type
+// added without a table row fails here BY NAME — and, via
+// TestRewriteChildren_Exhaustive, drags the missing recursion arm into
+// the same failure.
+//
+// It derives rather than counting. A pinned row count could not catch
+// the failure it existed to catch: the count and the table are both
+// hand-maintained, so they are edited in the same commit or in neither,
+// and a new Node type leaves them agreeing with each other and wrong
+// about the IR.
 func TestRewriteChildren_TableCoversEveryNodeType(t *testing.T) {
 	t.Parallel()
 	cases := allNodeCases()
-	if len(cases) != expectedNodeTypeCount {
-		t.Fatalf("allNodeCases() has %d rows, expected %d concrete Node types; "+
-			"a Node type was added/removed without updating this table", len(cases), expectedNodeTypeCount)
-	}
 	seen := make(map[reflect.Type]string, len(cases))
+	covered := make(map[string]bool, len(cases))
 	for _, c := range cases {
 		ty := reflect.TypeOf(c.node)
 		if prev, dup := seen[ty]; dup {
 			t.Errorf("duplicate node type %v in table (rows %q and %q)", ty, prev, c.name)
 		}
 		seen[ty] = c.name
+		covered[ty.Elem().Name()] = true
 	}
-	if len(seen) != expectedNodeTypeCount {
-		t.Fatalf("table covers %d distinct node types, expected %d", len(seen), expectedNodeTypeCount)
-	}
+	assertCoversEverySealedKind(t, nodeMarkerMethod, covered, "allNodeCases",
+		"add a table row here and a RewriteChildren arm in rewrite.go")
 }
 
 // TestRewriteChildren_Exhaustive is the core contract test. For each node

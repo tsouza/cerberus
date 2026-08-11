@@ -7,13 +7,13 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// TestIsSliceInvariant_RegisteredKinds asserts exactly the phase-1 node
-// kinds are registered slice-invariant, and that the registry is driven by
-// node kind (not instance state).
-func TestIsSliceInvariant_RegisteredKinds(t *testing.T) {
-	t.Parallel()
-
-	registered := []chplan.Node{
+// sliceInvariantRegisteredKinds is the phase-1 registered set: the node
+// kinds IsSliceInvariant answers true for. It is a policy declaration,
+// not a restatement of anything derivable — which kinds have a proof of
+// slice-invariance is a decision, and the default-deny complement below
+// is computed from it rather than written down a second time.
+func sliceInvariantRegisteredKinds() []chplan.Node {
+	return []chplan.Node{
 		&chplan.Scan{},
 		&chplan.Filter{},
 		&chplan.Project{},
@@ -25,7 +25,15 @@ func TestIsSliceInvariant_RegisteredKinds(t *testing.T) {
 		&chplan.UnionAll{},
 		&chplan.VectorJoin{},
 	}
-	for _, n := range registered {
+}
+
+// TestIsSliceInvariant_RegisteredKinds asserts exactly the phase-1 node
+// kinds are registered slice-invariant, and that the registry is driven by
+// node kind (not instance state).
+func TestIsSliceInvariant_RegisteredKinds(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range sliceInvariantRegisteredKinds() {
 		if !chplan.IsSliceInvariant(n) {
 			t.Errorf("%T should be registered slice-invariant", n)
 		}
@@ -33,24 +41,16 @@ func TestIsSliceInvariant_RegisteredKinds(t *testing.T) {
 }
 
 // TestIsSliceInvariant_UnregisteredKinds asserts every node kind NOT in the
-// phase-1 set returns false — the default-deny posture. This list is the
-// complement of the registered set over allNodeKinds (defined in
-// clone_test.go); together they cover all 31 node kinds, so adding a node
-// type without a deliberate registry decision fails the count guard below.
+// phase-1 set returns false — the default-deny posture. The unregistered
+// set is the complement of sliceInvariantRegisteredKinds over
+// allNodeKinds (defined in clone_test.go), so adding a node type without
+// a deliberate registry decision fails the guard below.
 func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	t.Parallel()
 
-	registered := map[reflect.Type]bool{
-		reflect.TypeOf(&chplan.Scan{}):              true,
-		reflect.TypeOf(&chplan.Filter{}):            true,
-		reflect.TypeOf(&chplan.Project{}):           true,
-		reflect.TypeOf(&chplan.Aggregate{}):         true,
-		reflect.TypeOf(&chplan.RangeWindow{}):       true,
-		reflect.TypeOf(&chplan.RangeLWR{}):          true,
-		reflect.TypeOf(&chplan.RangeBucketFanout{}): true,
-		reflect.TypeOf(&chplan.StepGrid{}):          true,
-		reflect.TypeOf(&chplan.UnionAll{}):          true,
-		reflect.TypeOf(&chplan.VectorJoin{}):        true,
+	registered := map[reflect.Type]bool{}
+	for _, n := range sliceInvariantRegisteredKinds() {
+		registered[reflect.TypeOf(n)] = true
 	}
 
 	var unregisteredSeen int
@@ -65,10 +65,14 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 		}
 	}
 
-	// 32 total node kinds, 10 registered → 22 must be default-denied. If this
-	// drifts, a node kind was added: decide explicitly whether it is
-	// slice-invariant (extend sliceInvariantKinds + the registered set here)
-	// or not (it falls into the default-deny count).
+	// Every node kind the registry does not name must be default-denied.
+	// The expected number is DERIVED — the live planNode() implementer
+	// set minus the registered set — rather than pinned, because a
+	// pinned total is a second copy of the Node set that drifts silently
+	// the moment a node kind lands. If this fails, a node kind was
+	// added: decide explicitly whether it is slice-invariant (extend
+	// sliceInvariantKinds + sliceInvariantRegisteredKinds) or not (it
+	// falls into the default-deny count).
 	//
 	// VectorJoin is now REGISTERED (the step-aligned vector-vector join —
 	// each output row reduces one anchor's window on each arm because the
@@ -88,7 +92,7 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	// too: like HistogramQuantileNative, it aggregates bucket columns per
 	// group from its input rather than passing a sliced row stream through
 	// unchanged, and no lowering builds it yet regardless.
-	const wantUnregistered = 32 - 10
+	wantUnregistered := len(planNodeImplementers(t)) - len(registered)
 	if unregisteredSeen != wantUnregistered {
 		t.Fatalf("expected %d default-denied node kinds, saw %d — a node kind was added; "+
 			"make an explicit slice-invariance decision", wantUnregistered, unregisteredSeen)

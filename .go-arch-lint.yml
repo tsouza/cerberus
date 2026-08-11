@@ -141,6 +141,7 @@ components:
   # the CH driver. Declared explicitly with its own deps block instead.
   api-reqctx:     { in: api/reqctx }
   chclienttest:   { in: chclienttest }
+  sealedscan:     { in: sealedscan }
   testsql:        { in: testsql }
   qlcommon:       { in: qlcommon }
   # Clean-room in-house Drain log-template miner (replaces the AGPL
@@ -209,6 +210,12 @@ commonComponents:
   - chclienttest
   - qlcommon
   - chopt
+  # sealedscan derives a sealed interface's implementer set from Go
+  # source. Every layer's exhaustiveness ratchets consume it — chplan's
+  # Node and Expr sets, lsyntax's SampleExpr set — so it is common by
+  # construction. It imports nothing but the standard library and knows
+  # nothing about cerberus, which keeps it a true leaf.
+  - sealedscan
 
 deps:
   # chplan is the foundation. No internal dependencies declared — entries

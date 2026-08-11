@@ -2,6 +2,9 @@ package chplan
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"reflect"
 	"testing"
 )
@@ -178,25 +181,103 @@ func TestNodeExprs_Exhaustive(t *testing.T) {
 // TestNodeExprs_Exhaustive cannot pass vacuously by planting nothing.
 func TestNodeExprs_FindsEveryNodeTypeWithExprSlots(t *testing.T) {
 	t.Parallel()
-	withSlots := 0
+	withSlots := map[string]bool{}
 	for _, c := range allNodeCases() {
 		ptr := reflect.New(reflect.TypeOf(c.node).Elem())
 		var planted []plantedSlot
 		plantExprSlots(t, ptr.Elem(), c.name, &planted, 0)
 		if len(planted) > 0 {
-			withSlots++
+			withSlots[c.name] = true
 		}
 	}
-	// Filter, Project, Aggregate, RangeWindow, RangeWindowNative, OrderBy,
-	// TopK, RangeBucketFanout, HistogramQuantile, HistogramQuantileNative,
-	// HistogramProjection, MetricsAggregate, MetricsHistogramOverTime,
-	// MetricsCompare.
-	const wantNodeTypesWithExprSlots = 14
-	if withSlots != wantNodeTypesWithExprSlots {
-		t.Fatalf("reflection found Expr slots on %d Node types, expected %d — the IR gained or lost an "+
-			"Expr-bearing Node type: update nodeExprs in walk_deep.go and this count",
-			withSlots, wantNodeTypesWithExprSlots)
+	// Both sides of this comparison are derived, and they are derived
+	// from different things — that is what makes it an assertion rather
+	// than a restatement. The left side is reflection over the struct
+	// fields: which Node types actually HAVE an Expr-typed slot. The
+	// right side is nodeExprs' own dispatch, read out of walk_deep.go:
+	// which Node types it treats as having one. A pinned number in the
+	// middle could only ever agree with whichever of the two its author
+	// last looked at.
+	//
+	// The failure this catches is a Node type that gains an Expr field
+	// while staying in nodeExprs' no-op arm, which leaves every plan
+	// subtree nested in that slot invisible to WalkDeep.
+	handled := nodeExprsHandledTypes(t)
+	for name := range handled {
+		if !withSlots[name] {
+			t.Errorf("nodeExprs has an Expr-visiting arm for %s, but reflection finds no "+
+				"Expr-typed field on it — the arm is dead, drop it from walk_deep.go", name)
+		}
 	}
+	for name := range withSlots {
+		if !handled[name] {
+			t.Errorf("%s has an Expr-typed field but nodeExprs does not visit it — add an arm "+
+				"for %s in walk_deep.go, or every plan subtree nested in that slot stays "+
+				"invisible to WalkDeep", name, name)
+		}
+	}
+}
+
+// nodeExprsHandledTypes returns the Node type names nodeExprs dispatches
+// on with a non-empty arm, read out of walk_deep.go.
+//
+// The empty arm is meaningful and is deliberately excluded: it is the
+// explicit roster of Node types with no Expr-typed field, and listing
+// them there rather than under a `default` is what makes the switch
+// total. So the arms partition the Node set, and this returns the half
+// that carries Exprs.
+func nodeExprsHandledTypes(t *testing.T) map[string]bool {
+	t.Helper()
+
+	const scannedFile = "walk_deep.go"
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, scannedFile, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", scannedFile, err)
+	}
+
+	handled := map[string]bool{}
+	var arms int
+	ast.Inspect(file, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "nodeExprs" {
+			return true
+		}
+		ast.Inspect(fn, func(inner ast.Node) bool {
+			cc, ok := inner.(*ast.CaseClause)
+			if !ok {
+				return true
+			}
+			arms++
+			if len(cc.Body) == 0 {
+				return true
+			}
+			for _, expr := range cc.List {
+				if name := nodeExprsCaseTypeName(expr); name != "" {
+					handled[name] = true
+				}
+			}
+			return true
+		})
+		return false
+	})
+	if arms == 0 {
+		t.Fatalf("scanned %s and found no case arms in nodeExprs — the scan lost its grip "+
+			"on the source shape, so this ratchet is vacuous", scannedFile)
+	}
+	return handled
+}
+
+// nodeExprsCaseTypeName returns the bare type name of one `case *T:`
+// entry, or "" for a shape the scan does not recognise.
+func nodeExprsCaseTypeName(e ast.Expr) string {
+	if star, ok := e.(*ast.StarExpr); ok {
+		e = star.X
+	}
+	if ident, ok := e.(*ast.Ident); ok {
+		return ident.Name
+	}
+	return ""
 }
 
 // TestWalkDeep_ReachesNodesBehindExprSlots pins the reachability contract
