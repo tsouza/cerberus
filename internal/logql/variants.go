@@ -2,6 +2,8 @@ package logql
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
@@ -35,16 +37,37 @@ const variantLabel = "__variant__"
 // identity. (See grafana/loki pkg/logql/log/consolidated_variant_extractor.go
 // — `appendVariantLabel` adds constants.VariantLabel with the arm index.)
 //
-// Lowering approach: cerberus has no shared-scan fusion across sibling
-// metric arms, so each variant lowers independently through the ordinary
-// [lower] dispatch (it is already a self-contained SampleExpr carrying
-// its own selector — the `of (...)` arm is upstream's scan-fusion hint,
-// not an extra data source). Each lowered arm is then re-projected into
-// the canonical Sample shape (MetricName, Attributes, TimeUnix, Value)
-// with `__variant__="<i>"` folded into its Attributes map, and the arms
-// are concatenated with [chplan.UnionAll]. Because every arm already
-// carries the canonical Sample columns, [Lang.ProjectSamples] recognises
-// the union (via [isVariantUnion]) and forwards it unchanged.
+// Lowering approach: each variant lowers independently through the
+// ordinary [lower] dispatch (it is already a self-contained SampleExpr
+// carrying its own selector — the `of (...)` arm is upstream's
+// scan-fusion hint, not an extra data source), and the arms are then
+// FUSED whenever they turn out to read the same log stream.
+//
+// [fuseVariantArms] decides that structurally rather than trusting the
+// `of (...)` hint: the parser does not require an arm's selector to match
+// it, so `variants(count_over_time({a="1"}[5m]),
+// count_over_time({b="2"}[5m])) of ({a="1"}[5m])` is legal and genuinely
+// reads two streams. When the arms' lowered subtrees ARE identical below
+// their per-sample value expression, they collapse into ONE
+// [chplan.RangeWindow] carrying a [chplan.RangeWindowVariant] per arm,
+// which the emitter renders as a single grouped pass reduced once per arm
+// and unpivoted — one scan for N arms instead of N. Arms that are not
+// identical (or whose range function the fused emitter does not reduce)
+// keep the per-arm shape, which is correct and merely costs a scan each.
+//
+// The saving is the whole reason `variants(...)` exists rather than N
+// separate queries, and it is not recoverable at the SQL level: ClickHouse
+// inlines a multiply-referenced CTE and re-reads the table per reference,
+// so a shared subquery measures identically to duplicated arms (issue
+// #1501 records 10.0M read_rows for a two-arm query against the fused
+// shape's 5.0M, and 15.0M for three arms against the same 5.0M).
+//
+// Each arm (fused or not) is re-projected into the canonical Sample shape
+// (MetricName, Attributes, TimeUnix, Value) with `__variant__` folded into
+// its Attributes map — a literal `"<i>"` per arm in the unfused shape, the
+// fused window's own variant column in the fused one. Because the result
+// already carries the canonical Sample columns, [Lang.ProjectSamples]
+// recognises it (via [isVariantPlan]) and forwards it unchanged.
 //
 // The variant index is stamped via `mapConcat(<srcAttrs>, map('__variant__',
 // '<i>'))`: ClickHouse's mapConcat lets later keys win on conflict, and
@@ -57,7 +80,7 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 		return nil, fmt.Errorf("logql: variants(...) has no variant arms")
 	}
 
-	arms := make([]chplan.Node, 0, len(variants))
+	lowered := make([]chplan.Node, 0, len(variants))
 	for i, v := range variants {
 		ve, ok := v.(syntax.Expr)
 		if !ok {
@@ -67,6 +90,16 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 		if err != nil {
 			return nil, fmt.Errorf("logql: variant %d: %w", i, err)
 		}
+		lowered = append(lowered, inner)
+	}
+
+	// Fused shape: one scan feeding every arm's aggregation.
+	if top, ok := fuseVariants(lowered); ok {
+		return variantFusedSampleShape(top, s, lc), nil
+	}
+
+	arms := make([]chplan.Node, 0, len(lowered))
+	for i, inner := range lowered {
 		arms = append(arms, variantSampleArm(inner, s, lc, i))
 	}
 
@@ -74,6 +107,364 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 	// the series with `__variant__="0"`. UnionAll with one input renders
 	// as the bare arm (no UNION ALL keyword), which is correct.
 	return &chplan.UnionAll{Inputs: arms}, nil
+}
+
+// variantArmValueColumn names the per-sample value column the fused window
+// reads for arm i. The unfused arms all project their value under the one
+// [rangeAggSynthValueColumn] alias; fusing them into a single row means each
+// needs its own column, so they are re-aliased by index.
+func variantArmValueColumn(i int) string {
+	return fmt.Sprintf("%s_%d", rangeAggSynthValueColumn, i)
+}
+
+// variantLabelFor renders the `__variant__` value for arm i — its zero-based
+// index as a decimal string, matching reference Loki's appendVariantLabel.
+func variantLabelFor(i int) string {
+	return strconv.Itoa(i)
+}
+
+// fuseVariants collapses N independently-lowered variant arms into ONE plan
+// that reads the shared log stream a single time, reporting ok=false when the
+// arms do not in fact share one.
+//
+// An arm is a range aggregation, optionally under a per-arm pipeline — the
+// vector-aggregation wrap `sum by (level) (count_over_time({…}[r]))` puts an
+// Aggregate and a re-shaping Project above the window. [peelVariantWrap]
+// splits each arm into that wrap and its window, [fuseVariantArms] fuses the
+// windows, and the wrap is re-applied ONCE with the fused window's variant
+// column threaded through it, so the arms stay separated by
+// `__variant__` at every grouping above the window.
+//
+// The wrap must be identical across arms: a per-arm pipeline that differs
+// (`variants(sum by (svc) (count_over_time(…)), count_over_time(…))`) cannot
+// run as one pipeline, so those arms keep the per-arm shape.
+func fuseVariants(arms []chplan.Node) (chplan.Node, bool) {
+	const minFusedArms = 2
+	if len(arms) < minFusedArms {
+		return nil, false
+	}
+	wraps := make([][]chplan.Node, 0, len(arms))
+	windows := make([]chplan.Node, 0, len(arms))
+	for _, arm := range arms {
+		wrap, rw, ok := peelVariantWrap(arm)
+		if !ok {
+			return nil, false
+		}
+		wraps = append(wraps, wrap)
+		windows = append(windows, rw)
+	}
+	if !variantWrapsAgree(wraps) {
+		return nil, false
+	}
+	fused, ok := fuseVariantArms(windows)
+	if !ok {
+		return nil, false
+	}
+	return rebuildVariantWrap(wraps[0], fused, fused.VariantColumn)
+}
+
+// maxVariantWrapDepth bounds the per-arm pipeline peel. The wraps the LogQL
+// lowering produces above a range aggregation are at most an Aggregate plus
+// its re-shaping Project; the bound stops an unexpected deep plan from being
+// walked (and re-applied) node by node.
+const maxVariantWrapDepth = 4
+
+// peelVariantWrap splits a lowered arm into the pipeline above its range
+// window (outermost first) and the window itself. It reports ok=false for an
+// arm whose pipeline holds a node the variant column cannot be threaded
+// through, since re-applying such a node once for all arms would merge rows
+// that must stay separated by arm.
+func peelVariantWrap(arm chplan.Node) ([]chplan.Node, *chplan.RangeWindow, bool) {
+	var wrap []chplan.Node
+	n := arm
+	for range maxVariantWrapDepth {
+		switch v := n.(type) {
+		case *chplan.RangeWindow:
+			return wrap, v, true
+		case *chplan.Project:
+			wrap = append(wrap, v)
+			n = v.Input
+		case *chplan.Aggregate:
+			// A Having clause filters post-aggregation rows; threading the
+			// variant column through it would need the predicate rewritten
+			// per arm, which the fused single pipeline cannot express.
+			if v.Having != nil {
+				return nil, nil, false
+			}
+			wrap = append(wrap, v)
+			n = v.Input
+		default:
+			return nil, nil, false
+		}
+	}
+	return nil, nil, false
+}
+
+// variantWrapsAgree reports whether every arm's pipeline above the window is
+// the same pipeline. The comparison rebuilds each wrap over a shared stand-in
+// so it sees the pipeline alone, not the windows the arms differ in.
+func variantWrapsAgree(wraps [][]chplan.Node) bool {
+	base, ok := rebuildVariantWrap(wraps[0], &chplan.OneRow{}, "")
+	if !ok {
+		return false
+	}
+	for _, w := range wraps[1:] {
+		if len(w) != len(wraps[0]) {
+			return false
+		}
+		other, ok := rebuildVariantWrap(w, &chplan.OneRow{}, "")
+		if !ok || !base.Equal(other) {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildVariantWrap re-applies a peeled pipeline (outermost first) over
+// input, threading variantCol through every node so the arms stay separated:
+// an Aggregate gains it as a group key, a Project gains it as a passthrough
+// projection. An empty variantCol rebuilds the pipeline unchanged, which is
+// what [variantWrapsAgree] compares.
+//
+// It reports ok=false if a node already carries the column, since the plan
+// would then have two columns of that name and the arms' identity would
+// depend on which one a consumer read.
+func rebuildVariantWrap(wrap []chplan.Node, input chplan.Node, variantCol string) (chplan.Node, bool) {
+	n := input
+	for i := len(wrap) - 1; i >= 0; i-- {
+		switch v := wrap[i].(type) {
+		case *chplan.Project:
+			// An empty Projections slice is the pass-through `SELECT *`
+			// form, and Replacements is its `* REPLACE (...)` modifier.
+			// Appending a projection to either would turn the whole
+			// pass-through into a one-column SELECT and silently drop every
+			// other column, so refuse rather than rewrite a shape this was
+			// not designed for.
+			if len(v.Projections) == 0 || len(v.Replacements) > 0 {
+				return nil, false
+			}
+			c := *v
+			c.Input = n
+			c.Projections = slices.Clone(v.Projections)
+			if variantCol != "" {
+				for _, p := range c.Projections {
+					if p.Alias == variantCol {
+						return nil, false
+					}
+				}
+				c.Projections = append(c.Projections, chplan.Projection{
+					Expr:  &chplan.ColumnRef{Name: variantCol},
+					Alias: variantCol,
+				})
+			}
+			n = &c
+		case *chplan.Aggregate:
+			c := *v
+			c.Input = n
+			c.GroupBy = slices.Clone(v.GroupBy)
+			c.GroupByAliases = slices.Clone(v.GroupByAliases)
+			if variantCol != "" {
+				if slices.Contains(c.GroupByAliases, variantCol) {
+					return nil, false
+				}
+				c.GroupBy = append(c.GroupBy, &chplan.ColumnRef{Name: variantCol})
+				// GroupByAliases is a parallel slice when non-empty, so it
+				// only grows alongside GroupBy when it is already in use.
+				if len(c.GroupByAliases) > 0 {
+					c.GroupByAliases = append(c.GroupByAliases, variantCol)
+				}
+			}
+			n = &c
+		default:
+			return nil, false
+		}
+	}
+	return n, true
+}
+
+// fuseVariantArms collapses N independently-lowered range windows into ONE
+// window that reads the shared log stream a single time, reporting ok=false
+// when the arms do not in fact share one.
+//
+// The arms are fusible exactly when they are the same plan but for the
+// per-sample value they compute, i.e. each arm is
+//
+//	RangeWindow{Func: fᵢ}
+//	  Project[<shared identity>, <shared timestamp>, vᵢ AS Value]
+//	    <shared subtree>
+//
+// with every RangeWindow field except Func equal, every projection except the
+// `Value` one equal, and the subtrees below structurally equal. That is what
+// `variants(...)` produces when its arms genuinely share the `of (...)`
+// selector — and it is checked rather than assumed, because the parser does
+// not force an arm's selector to match the `of (...)` one.
+//
+// A single arm is never fused: there is no second arm to share the pass with,
+// and the ordinary path already emits exactly one scan for it.
+func fuseVariantArms(arms []chplan.Node) (*chplan.RangeWindow, bool) {
+	const minFusedArms = 2
+	if len(arms) < minFusedArms {
+		return nil, false
+	}
+	windows := make([]*chplan.RangeWindow, 0, len(arms))
+	projects := make([]*chplan.Project, 0, len(arms))
+	for _, arm := range arms {
+		rw, ok := arm.(*chplan.RangeWindow)
+		// An arm already carrying Variants is a fused window, which the
+		// lowering never nests; and a function the fused emitter cannot
+		// reduce keeps the whole query on the per-arm path.
+		if !ok || len(rw.Variants) > 0 || rw.Identity || !chplan.FusibleWindowFunc(rw.Func) {
+			return nil, false
+		}
+		proj, ok := rw.Input.(*chplan.Project)
+		if !ok {
+			return nil, false
+		}
+		windows = append(windows, rw)
+		projects = append(projects, proj)
+	}
+	valueIdx, ok := sharedValueProjectionIndex(projects)
+	if !ok {
+		return nil, false
+	}
+	if !windowsAgreeModuloFunc(windows) {
+		return nil, false
+	}
+	// The subtrees the arms' Projects read must be the SAME stream — this is
+	// the check that makes the fusion honest rather than a bet on the
+	// `of (...)` hint.
+	for _, p := range projects[1:] {
+		if !p.Input.Equal(projects[0].Input) {
+			return nil, false
+		}
+	}
+
+	// Shared input Project: every projection but the value one verbatim from
+	// arm 0, then each arm's own value expression under its own alias.
+	base := projects[0]
+	var shared []chplan.Projection
+	shared = append(shared, base.Projections[:valueIdx]...)
+	for i, p := range projects {
+		shared = append(shared, chplan.Projection{
+			Expr:  p.Projections[valueIdx].Expr,
+			Alias: variantArmValueColumn(i),
+		})
+	}
+	shared = append(shared, base.Projections[valueIdx+1:]...)
+
+	fused := *windows[0]
+	fused.Input = &chplan.Project{Input: base.Input, Projections: shared}
+	// Func / ValueColumn describe no single arm now: each arm names its own
+	// pair, and ValueColumn becomes the OUTPUT alias the unpivot writes.
+	fused.Func = ""
+	fused.ValueColumn = rangeAggSynthValueColumn
+	fused.VariantColumn = variantLabel
+	fused.Variants = make([]chplan.RangeWindowVariant, 0, len(windows))
+	for i, w := range windows {
+		fused.Variants = append(fused.Variants, chplan.RangeWindowVariant{
+			Func:        w.Func,
+			ValueColumn: variantArmValueColumn(i),
+			Label:       variantLabelFor(i),
+		})
+	}
+	return &fused, true
+}
+
+// sharedValueProjectionIndex locates the ONE projection position at which the
+// arms' input Projects differ — the per-sample value expression. It reports
+// ok=false unless every Project has the same projection list length, differs
+// at exactly one position, and that position is the [rangeAggSynthValueColumn]
+// alias in every arm.
+//
+// Requiring the differing position to be the value alias is what keeps the
+// fusion sound: two arms differing in their IDENTITY projection describe
+// different series, and folding them onto one grouped pass would report one
+// arm's grouping for both.
+func sharedValueProjectionIndex(projects []*chplan.Project) (int, bool) {
+	base := projects[0]
+	for _, p := range projects[1:] {
+		if len(p.Projections) != len(base.Projections) {
+			return 0, false
+		}
+	}
+	valueIdx := -1
+	for i := range base.Projections {
+		if armsAgreeAtProjection(projects, i) {
+			continue
+		}
+		if valueIdx >= 0 {
+			// More than one differing position: the arms diverge somewhere
+			// the fused pass cannot represent.
+			return 0, false
+		}
+		valueIdx = i
+	}
+	if valueIdx < 0 {
+		// Every projection agrees, so the arms read the identical per-sample
+		// value and differ only in the reducer applied to it — as in
+		// `variants(max_over_time({app="foo"} | unwrap latency [5m]),
+		// min_over_time({app="foo"} | unwrap latency [5m]))`. That is a real
+		// query, and it IS fusible: the arms would share one value column
+		// rather than getting one each. This lowering does not build that
+		// shape — every arm here names its own column, and the emitter
+		// rejects two arms pointing at one — so the query keeps the per-arm
+		// plan and its scan per arm. Widening the arm-to-column mapping to
+		// many-to-one is issue #2050.
+		return 0, false
+	}
+	for _, p := range projects {
+		if p.Projections[valueIdx].Alias != rangeAggSynthValueColumn {
+			return 0, false
+		}
+	}
+	return valueIdx, true
+}
+
+// armsAgreeAtProjection reports whether every arm projects the same thing at
+// position i, so the caller can find the ONE position they differ at.
+func armsAgreeAtProjection(projects []*chplan.Project, i int) bool {
+	for _, p := range projects[1:] {
+		if !projectionEqual(projects[0].Projections[i], p.Projections[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// projectionEqual compares two projections by alias and expression.
+func projectionEqual(a, b chplan.Projection) bool {
+	if a.Alias != b.Alias {
+		return false
+	}
+	if a.Expr == nil || b.Expr == nil {
+		return a.Expr == nil && b.Expr == nil
+	}
+	return a.Expr.Equal(b.Expr)
+}
+
+// windowsAgreeModuloFunc reports whether the arms' RangeWindows are identical
+// apart from the range function each applies — the grid, the window, the
+// grouping and the source columns must all match for one pass to serve them
+// all. It compares through the IR's own [chplan.Node.Equal] with the Func
+// neutralised and a shared Input, so a field added to RangeWindow later is
+// covered without this predicate being updated.
+func windowsAgreeModuloFunc(windows []*chplan.RangeWindow) bool {
+	norm := func(w *chplan.RangeWindow) *chplan.RangeWindow {
+		c := *w
+		c.Func = ""
+		// Input is compared separately (the arms' Projects differ by design
+		// at the value expression); a shared stand-in keeps Equal focused on
+		// the window's own fields.
+		c.Input = &chplan.OneRow{}
+		return &c
+	}
+	base := norm(windows[0])
+	for _, w := range windows[1:] {
+		if !base.Equal(norm(w)) {
+			return false
+		}
+	}
+	return true
 }
 
 // variantSampleArm re-shapes a lowered variant arm into the canonical
@@ -114,7 +505,7 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 				Name: "map",
 				Args: []chplan.Expr{
 					&chplan.LitString{V: variantLabel},
-					&chplan.LitString{V: fmt.Sprintf("%d", index)},
+					&chplan.LitString{V: variantLabelFor(index)},
 				},
 			},
 		},
@@ -131,14 +522,66 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 	}
 }
 
-// isVariantUnion reports whether plan is the UnionAll a multi-variant
-// lowering produces — a UnionAll whose every arm is already in the
-// canonical Sample shape (a top-level Project aliasing `Attributes`).
-// [Lang.ProjectSamples] uses this to forward the union unchanged rather
-// than wrapping it in the generic metric Sample reshape (which would
-// re-reference `ResourceAttributes`, a column the per-arm Project has
-// already consumed into `Attributes`).
-func isVariantUnion(plan chplan.Node) bool {
+// variantFusedSampleShape re-shapes the fused plan into the canonical Sample
+// contract, folding the fused window's own variant COLUMN into Attributes
+// where [variantSampleArm] stamps a per-arm literal.
+func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan.Node {
+	cols := logSampleColumns(top, s)
+	tsExpr := cols.timeExpr
+	if !cols.hasNativeTime && !lc.End.IsZero() {
+		tsExpr = timeLiteralExpr(lc.End)
+	}
+	attrs := &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: cols.attrsCol},
+			&chplan.FuncCall{
+				Name: "map",
+				Args: []chplan.Expr{
+					&chplan.LitString{V: variantLabel},
+					&chplan.ColumnRef{Name: variantLabel},
+				},
+			},
+		},
+	}
+	return &chplan.Project{
+		Input: top,
+		Projections: []chplan.Projection{
+			{Expr: cols.metricName, Alias: "MetricName"},
+			{Expr: attrs, Alias: "Attributes"},
+			{Expr: tsExpr, Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
+		},
+	}
+}
+
+// fusedVariantWindow returns the fused RangeWindow at the base of plan, if
+// plan is a variant pipeline built over one. It walks the Project / Aggregate
+// wrap [rebuildVariantWrap] re-applies.
+func fusedVariantWindow(plan chplan.Node) (*chplan.RangeWindow, bool) {
+	_, rw, ok := peelVariantWrap(plan)
+	if !ok {
+		return nil, false
+	}
+	return rw, len(rw.Variants) > 0
+}
+
+// isVariantPlan reports whether plan is what a multi-variant lowering
+// produces — either the UnionAll of per-arm subtrees, every arm already in
+// the canonical Sample shape (a top-level Project aliasing `Attributes`), or
+// the fused single-pass shape, a Sample-shaped Project over a RangeWindow
+// carrying its arms in [chplan.RangeWindow.Variants].
+//
+// [Lang.ProjectSamples] uses this to forward the plan unchanged rather than
+// wrapping it in the generic metric Sample reshape (which would re-reference
+// `ResourceAttributes`, a column the variant Project has already consumed
+// into `Attributes`).
+func isVariantPlan(plan chplan.Node) bool {
+	if p, ok := plan.(*chplan.Project); ok {
+		if _, fused := fusedVariantWindow(p); fused {
+			return isVectorAggregateSampleShape(p)
+		}
+	}
 	u, ok := plan.(*chplan.UnionAll)
 	if !ok || len(u.Inputs) == 0 {
 		return false

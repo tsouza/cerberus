@@ -1,6 +1,9 @@
 package chplan
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // CloneNode returns a deep copy of n: a fresh tree that shares no mutable
 // state (no node pointer, no Expr pointer, no slice backing array) with the
@@ -114,6 +117,9 @@ func cloneRangeNode(n Node) Node {
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.Scalars = cloneFloats(v.Scalars)
 		c.ScalarExprs = cloneExprs(v.ScalarExprs)
+		// RangeWindowVariant holds only value fields, so a slice copy
+		// fully detaches the clone's arms from the original's.
+		c.Variants = slices.Clone(v.Variants)
 		// InstantScanBounded is a bool — copied by the `c := *v` above.
 		return &c
 	case *RangeWindowNative:

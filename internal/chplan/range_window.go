@@ -172,6 +172,34 @@ type RangeWindow struct {
 	// exclusive with Scalars: a lowering populates one or the other.
 	ScalarExprs []Expr
 
+	// Variants carries the FUSED multi-arm shape: when it holds more than
+	// one entry, this single window evaluates every entry's range function
+	// over ONE pass of Input and unpivots the results into one row per
+	// (series, anchor, variant), stamping the entry's Label into
+	// VariantColumn. Func / ValueColumn describe no arm in that mode and
+	// are ignored by the emitter; each arm names its own pair.
+	//
+	// The construct that produces it is LogQL's `variants(m0, m1, …) of
+	// ({selector}[r])`, whose arms share a selector by definition — see
+	// internal/logql/variants.go. Without fusion each arm lowers to its own
+	// Scan/Filter subtree and ClickHouse reads the log table once per arm:
+	// a two-arm query measured 10.0M read_rows / 794 MiB against the fused
+	// shape's 5.0M / 510 MiB on the same 5M-row table, and a three-arm one
+	// 15.0M / 1.27 GiB against the same 5.0M / 510 MiB (issue #1501). A CTE
+	// cannot express the saving — ClickHouse inlines a multiply-referenced
+	// CTE and re-reads per reference — so the single pass has to be a
+	// single aggregation, which is what this field asks the emitter for.
+	//
+	// Empty (the default) is the ordinary single-arm window. A one-entry
+	// Variants is rejected rather than fused: a lone arm has nothing to
+	// share a pass with, so it stays on the ordinary path.
+	Variants []RangeWindowVariant
+
+	// VariantColumn names the output column carrying the per-row arm Label
+	// in the fused shape ("__variant__" for LogQL). Required when Variants
+	// is populated, unused otherwise.
+	VariantColumn string
+
 	// InstantScanBounded records, as an IR-level property, that this
 	// INSTANT (OuterRange == 0) windowed-array leaf RangeWindow has had
 	// its scan-prune bound established: the innermost groupArray read is
@@ -204,6 +232,68 @@ type RangeWindow struct {
 	// (#1027 / #1048 / #1056 / #1059 / #1080 / #1088 / #1089 / #1098) into
 	// an enforced plan-build invariant rather than a per-emitter memory.
 	InstantScanBounded bool
+}
+
+// RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
+// function to evaluate, the per-sample value column it reads, and the label
+// stamped into RangeWindow.VariantColumn on the rows it produces.
+//
+// Every arm reduces the SAME window membership — the arms differ only in
+// which per-row value column they read and which reducer they apply — so the
+// emitter builds one sorted (timestamp, value₀, …, valueₙ₋₁) array per
+// (series, anchor) and reduces it once per arm.
+type RangeWindowVariant struct {
+	// Func is the range function, from the same vocabulary as
+	// RangeWindow.Func.
+	Func string
+
+	// ValueColumn names this arm's per-sample value column on Input.
+	// Distinct per arm — that is the whole point of the fused shape.
+	ValueColumn string
+
+	// Label is the value stamped into RangeWindow.VariantColumn for the
+	// rows this arm produces (LogQL uses the arm's zero-based index
+	// rendered as a decimal string).
+	Label string
+}
+
+// Equal reports structural equality of two fused-window arms.
+func (v RangeWindowVariant) Equal(o RangeWindowVariant) bool {
+	return v.Func == o.Func && v.ValueColumn == o.ValueColumn && v.Label == o.Label
+}
+
+// FusibleWindowFunc reports whether fn is a range function the FUSED
+// multi-arm window can reduce out of the shared per-window sample array.
+//
+// It is the contract between the two sides of the fused shape: a lowering
+// consults it BEFORE building a RangeWindow.Variants, so an arm the emitter
+// could not render never reaches the emitter as an error — the query stays on
+// the correct-but-slower per-arm path instead. The set is exactly the
+// *_over_time family whose value is a reduction over the window's values
+// array; the functions with their own bespoke emission (rate / increase /
+// delta and the pairwise / extrapolating forms, quantile_over_time's sorted
+// interpolation, the ts_of_* timestamp pickers) are not members, because they
+// read the (timestamp, value) PAIRS rather than a values array.
+//
+// TestFusibleWindowFuncMatchesEmitter pins this list against the emitter's
+// own dispatch in both directions, so neither side can grow a function the
+// other does not know about.
+func FusibleWindowFunc(fn string) bool {
+	switch fn {
+	case "sum_over_time",
+		"avg_over_time",
+		"min_over_time",
+		"max_over_time",
+		"count_over_time",
+		"present_over_time",
+		"first_over_time",
+		"last_over_time",
+		"mad_over_time",
+		"stddev_over_time",
+		"stdvar_over_time":
+		return true
+	}
+	return false
 }
 
 func (*RangeWindow) planNode() {}
@@ -302,6 +392,14 @@ func (r *RangeWindow) Equal(other Node) bool {
 	}
 	if r.InstantScanBounded != o.InstantScanBounded {
 		return false
+	}
+	if r.VariantColumn != o.VariantColumn || len(r.Variants) != len(o.Variants) {
+		return false
+	}
+	for i := range r.Variants {
+		if !r.Variants[i].Equal(o.Variants[i]) {
+			return false
+		}
 	}
 	return r.Input.Equal(o.Input)
 }

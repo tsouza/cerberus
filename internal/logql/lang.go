@@ -153,7 +153,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		// the generic metric reshape below would re-reference the
 		// `ResourceAttributes` column the per-arm Project has already
 		// consumed into `Attributes`, so forward the union untouched.
-		if isVariantUnion(plan) {
+		if isVariantPlan(plan) {
 			return plan
 		}
 		// Metric queries lower to RangeWindow / Aggregate / Filter(Aggregate),

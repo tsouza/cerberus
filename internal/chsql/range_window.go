@@ -253,6 +253,12 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	if c, ok := r.Input.(*chplan.MetricsCompare); ok {
 		return e.emitRangeWindowCompare(r, c)
 	}
+	// The fused multi-arm shape reduces ONE grouped pass once per arm, so it
+	// owns the whole emission rather than dispatching on a single r.Func —
+	// which describes no arm in that mode. See range_window_variants.go.
+	if len(r.Variants) > 0 {
+		return e.emitRangeWindowVariants(r)
+	}
 	if r.Identity {
 		return e.emitRangeWindowIdentity(r)
 	}
@@ -2056,7 +2062,7 @@ func groupKeyFrags(groupBy []chplan.Expr, aliases []string) []Frag {
 // Drops anchors whose window is empty (1+ samples required to have a
 // "last").
 func (e *emitter) emitRangeWindowIdentity(r *chplan.RangeWindow) error {
-	return e.emitWindowedArray(r, lastWindowValOrNaNFrag(), 1)
+	return e.emitWindowedArray(r, lastWindowValOrNaNFrag(BareIdent("window_vals")), 1)
 }
 
 // emitRangeWindowLogRate emits SQL for LogQL-style `rate({...}[range])`
@@ -2160,22 +2166,43 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	if agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn); ok {
 		return e.emitRangeWindowOverTimeDirect(r, agg)
 	}
+	inner, err := overTimeArrayValueFrag(r.Func, BareIdent("window_vals"))
+	if err != nil {
+		return err
+	}
+	// Every *_over_time variant drops empty-window rows per Prom
+	// semantics (Prom's funcSumOverTime / funcCountOverTime / etc. all
+	// short-circuit on zero samples). The outer SELECT gets
+	// `WHERE length(window_vals) >= 1`.
+	return e.emitWindowedArray(r, inner, 1)
+}
+
+// overTimeArrayValueFrag maps an *_over_time range function to the per-window
+// value expression evaluated over `vals` — the Array(Float64) of the window's
+// sample values, time-ordered ascending.
+//
+// `vals` is a parameter rather than the hardcoded `window_vals` identifier
+// because the FUSED multi-arm window (chplan.RangeWindow.Variants) reduces
+// several per-arm value arrays out of ONE grouped pass and needs this same
+// vocabulary once per arm, over `window_vals_0`, `window_vals_1`, … The
+// single-arm callers pass `window_vals` and get byte-identical SQL.
+func overTimeArrayValueFrag(fn string, vals Frag) (Frag, error) {
 	// Two-pass population variance: μ = arrayAvg(vals); Σ(x - μ)² / N.
 	// arrayWithConstant materialises the broadcast mean exactly once
 	// per row so the lambda doesn't re-evaluate arrayAvg per element.
-	varPopTwoPass := varPopTwoPassFrag()
+	varPopTwoPass := varPopTwoPassFrag(vals)
 	var inner Frag
-	switch r.Func {
+	switch fn {
 	case "sum_over_time":
-		inner = Call("arraySum", BareIdent("window_vals"))
+		inner = Call("arraySum", vals)
 	case "avg_over_time":
-		inner = nonEmptyWindowOrNaNFrag(Call("arrayAvg", BareIdent("window_vals")))
+		inner = nonEmptyWindowOrNaNFrag(vals, Call("arrayAvg", vals))
 	case "min_over_time":
-		inner = nonEmptyWindowOrNaNFrag(Call("arrayMin", BareIdent("window_vals")))
+		inner = nonEmptyWindowOrNaNFrag(vals, Call("arrayMin", vals))
 	case "max_over_time":
-		inner = nonEmptyWindowOrNaNFrag(Call("arrayMax", BareIdent("window_vals")))
+		inner = nonEmptyWindowOrNaNFrag(vals, Call("arrayMax", vals))
 	case "count_over_time":
-		inner = Call("toFloat64", Call("length", BareIdent("window_vals")))
+		inner = Call("toFloat64", Call("length", vals))
 	case "present_over_time":
 		// PromQL present_over_time(v[range]) emits 1 for every series
 		// with ≥1 sample in the window (prometheus/promql/functions.go::
@@ -2190,9 +2217,9 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// streaming aggregator / `first` batch fn, pkg/logql/
 		// range_vector.go). window_vals is time-sorted (arraySort over
 		// (ts, value) tuples upstream), so element 1 is the earliest.
-		inner = nonEmptyWindowOrNaNFrag(Subscript(BareIdent("window_vals"), InlineLit(int64(1))))
+		inner = nonEmptyWindowOrNaNFrag(vals, Subscript(vals, InlineLit(int64(1))))
 	case "last_over_time":
-		inner = lastWindowValOrNaNFrag()
+		inner = lastWindowValOrNaNFrag(vals)
 	case "mad_over_time":
 		// PromQL mad_over_time(v[range]) = median(|x - median(x)|)
 		// (prometheus/promql/functions.go::funcMadOverTime). Prometheus's
@@ -2202,13 +2229,13 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// twice: once over window_vals for the inner median, once over the
 		// absolute deviations. Empty windows are dropped by the shared
 		// outer WHERE length(window_vals) >= 1 below.
-		med := medianOverArrayFrag(BareIdent("window_vals"))
+		med := medianOverArrayFrag(vals)
 		devs := Call(
 			"arrayMap",
 			Lambda1("x", Call("abs", Sub(BareIdent("x"), med))),
-			BareIdent("window_vals"),
+			vals,
 		)
-		inner = nonEmptyWindowOrNaNFrag(medianOverArrayFrag(devs))
+		inner = nonEmptyWindowOrNaNFrag(vals, medianOverArrayFrag(devs))
 	case "stddev_over_time":
 		// Empty window → drop the series (Prom returns no sample).
 		// We mirror with NaN; the engine layer treats NaN as "drop"
@@ -2219,7 +2246,7 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// Two-pass variance under a sqrt: see the package comment
 		// above for the precision rationale (CH varPop one-pass loses
 		// precision at value scale ≥ 2^31; #400 bucket 1).
-		inner = nonEmptyWindowOrNaNFrag(Call("sqrt", varPopTwoPass))
+		inner = nonEmptyWindowOrNaNFrag(vals, Call("sqrt", varPopTwoPass))
 	case "stdvar_over_time":
 		// Population variance (divides by N, not N-1) to match
 		// Prometheus's funcStdvarOverTime / varianceOverTime. Same
@@ -2230,25 +2257,21 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 		// Two-pass variance: see the package comment above for the
 		// precision rationale (CH varPop one-pass loses precision at
 		// value scale ≥ 2^31; #400 bucket 1).
-		inner = nonEmptyWindowOrNaNFrag(varPopTwoPass)
+		inner = nonEmptyWindowOrNaNFrag(vals, varPopTwoPass)
 	default:
-		return fmt.Errorf("%w: over-time function %q", ErrUnsupported, r.Func)
+		return nil, fmt.Errorf("%w: over-time function %q", ErrUnsupported, fn)
 	}
-	// Every *_over_time variant drops empty-window rows per Prom
-	// semantics (Prom's funcSumOverTime / funcCountOverTime / etc. all
-	// short-circuit on zero samples). The outer SELECT gets
-	// `WHERE length(window_vals) >= 1`.
-	return e.emitWindowedArray(r, inner, 1)
+	return inner, nil
 }
 
 // nonEmptyWindowOrNaNFrag wraps a per-window value in the PromQL
 // drop-empty-window guard `if(length(window_vals) > 0, <val>, nan)` —
 // the shared shape the *_over_time family uses so an empty window
 // surfaces NaN (which the engine layer treats as "drop the series").
-func nonEmptyWindowOrNaNFrag(val Frag) Frag {
+func nonEmptyWindowOrNaNFrag(vals, val Frag) Frag {
 	return Call(
 		"if",
-		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
+		Gt(Call("length", vals), InlineLit(int64(0))),
 		val,
 		BareIdent("nan"),
 	)
@@ -2259,10 +2282,8 @@ func nonEmptyWindowOrNaNFrag(val Frag) Frag {
 // the window (last_over_time / bare-subquery identity), or NaN for an
 // empty window. window_vals is arraySort-ordered so the final element
 // is the newest sample.
-func lastWindowValOrNaNFrag() Frag {
-	return nonEmptyWindowOrNaNFrag(
-		Subscript(BareIdent("window_vals"), Call("length", BareIdent("window_vals"))),
-	)
+func lastWindowValOrNaNFrag(vals Frag) Frag {
+	return nonEmptyWindowOrNaNFrag(vals, Subscript(vals, Call("length", vals)))
 }
 
 // varPopTwoPassFrag renders the two-pass population variance
@@ -2271,15 +2292,15 @@ func lastWindowValOrNaNFrag() Frag {
 // length(window_vals)`. The broadcast mean is materialised once via
 // arrayWithConstant so the lambda doesn't re-evaluate arrayAvg per
 // element. Shared by stddev_over_time (under sqrt) and stdvar_over_time.
-func varPopTwoPassFrag() Frag {
+func varPopTwoPassFrag(vals Frag) Frag {
 	diff := Paren(Sub(BareIdent("x"), BareIdent("m")))
 	body := Mul(diff, diff)
 	means := Call("arrayWithConstant",
-		Call("length", BareIdent("window_vals")),
-		Call("arrayAvg", BareIdent("window_vals")))
+		Call("length", vals),
+		Call("arrayAvg", vals))
 	sumSq := Call("arraySum",
-		Call("arrayMap", Lambda2("x", "m", body), BareIdent("window_vals"), means))
-	return Div(sumSq, Call("length", BareIdent("window_vals")))
+		Call("arrayMap", Lambda2("x", "m", body), vals, means))
+	return Div(sumSq, Call("length", vals))
 }
 
 // medianOverArrayFrag renders Prometheus's `quantile(0.5, values)`

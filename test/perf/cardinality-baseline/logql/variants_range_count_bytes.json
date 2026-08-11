@@ -1,8 +1,8 @@
 {
   "fixture": "logql/variants_range_count_bytes",
-  "fan_factor": 1,
-  "scan_rows": 6,
-  "peak_intermediate": 6,
+  "fan_factor": 1.8,
+  "scan_rows": 5,
+  "peak_intermediate": 9,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
