@@ -2259,6 +2259,7 @@ type QueryBuilder struct {
 	prewhere   []Frag
 	groupBy    []Frag
 	having     []Frag
+	qualify    []Frag
 	orderBy    []orderKey
 	limit      int64
 	hasLimit   bool
@@ -2426,6 +2427,27 @@ func (s *QueryBuilder) GroupBy(keys ...Frag) *QueryBuilder {
 // `WHERE TimeUnix >= ?` on the same column cannot.
 func (s *QueryBuilder) Having(conds ...Frag) *QueryBuilder {
 	s.having = append(s.having, conds...)
+	return s
+}
+
+// Qualify appends a post-window predicate (multiple conditions are
+// AND-joined). QUALIFY is to window functions what HAVING is to
+// aggregates: it filters on the value of a `… OVER (…)` expression,
+// which WHERE cannot do because window functions are evaluated after
+// WHERE.
+//
+// Its value over the equivalent `SELECT *, <win> AS g FROM … WHERE g`
+// rewrite is that the window column never enters the projection, so the
+// result keeps the input's exact column set and the caller needs no
+// `* EXCEPT (g)` to strip it back off. That is what lets the `&&`
+// single-pass trace gate (set_op.go) keep `SELECT *` over the bare spans
+// table — the shape whose column set every downstream consumer, and the
+// spec harness's star expansion, already understand.
+//
+// Renders after HAVING and before ORDER BY, matching ClickHouse's clause
+// order.
+func (s *QueryBuilder) Qualify(conds ...Frag) *QueryBuilder {
+	s.qualify = append(s.qualify, conds...)
 	return s
 }
 
@@ -2635,6 +2657,10 @@ func (s *QueryBuilder) writeInto(b *Builder) {
 	if len(s.having) > 0 {
 		b.sb.WriteString(" HAVING ")
 		And(s.having...)(b)
+	}
+	if len(s.qualify) > 0 {
+		b.sb.WriteString(" QUALIFY ")
+		And(s.qualify...)(b)
 	}
 	if len(s.orderBy) > 0 {
 		b.sb.WriteString(" ORDER BY ")

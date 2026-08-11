@@ -16,13 +16,22 @@ import (
 // magic 1.
 const unionDedupLimitPerIdentity = 1
 
-// The `&&` arm CTE names. Each arm subplan is materialised once under
-// these names and referenced three times (its UNION-ALL leg plus both
-// trace-cohort IN subqueries); inlining instead would re-render the
-// whole subplan three times per nesting level, so `A && B && C && D`
-// would grow the emitted text exponentially. The `<n>` suffix comes
-// from emitter.nextCTESeq so a nested `&&` never shadows its parent's
-// arm names in the outer CH scope.
+// The `&&` arm CTE names. Each arm subplan is NAMED once under these
+// names and referenced three times (its UNION-ALL leg plus both
+// trace-cohort IN subqueries). Naming it keeps the emitted TEXT linear —
+// inlining would re-render the whole subplan three times per nesting
+// level, so `A && B && C && D` would grow the SQL exponentially — but it
+// does NOT make ClickHouse read the arm once. A non-recursive `WITH` is
+// a textual substitution: CH re-evaluates every use site independently
+// (the same property nested_set_annotate.go documents), so a two-arm
+// `&&` over bare selectors costs FOUR leaf reads of the spans table and
+// a three-arm chain costs seven — measured, not inferred.
+//
+// That cost is why these names are now the FALLBACK shape rather than
+// the only one; see fusableIntersect for the single-pass gate that
+// replaces them wherever the arms admit it. The `<n>` suffix comes from
+// emitter.nextCTESeq so a nested `&&` never shadows its parent's arm
+// names in the outer CH scope.
 const (
 	intersectLeftArmCTEPrefix  = "_setand_l_"
 	intersectRightArmCTEPrefix = "_setand_r_"
@@ -92,6 +101,16 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		return fmt.Errorf("%w: SetOperation column names unset", ErrUnsupported)
 	}
 
+	// Fast path first, BEFORE the arms are rendered: rendering an arm
+	// advances the shared CTE counter, so probing fusibility afterwards
+	// would leave gaps in the `_setand_*_<n>` numbering of whatever the
+	// fallback then emits.
+	if s.Op == chplan.SetIntersect {
+		if scan, arms, ok := fusableIntersect(s); ok {
+			return e.emitFusedIntersect(s, scan, arms)
+		}
+	}
+
 	leftFrag, err := e.subqueryFrag(s.Left)
 	if err != nil {
 		return err
@@ -146,4 +165,320 @@ func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag, seq int) *
 		Where(armTraceCohort(leftCTE), armTraceCohort(rightCTE)).
 		Limit(unionDedupLimitPerIdentity).
 		LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+}
+
+// fusableIntersect decides whether an `&&` tree can be served by the
+// single-pass window gate instead of the union-gated CTE shape, and if
+// so returns the one Scan every arm reads plus the arms' predicates in
+// left-to-right order.
+//
+// THE DECISION. The gate rewrites "traces where every arm matched at
+// least one span, carrying every span any arm matched" from a union of
+// separately-evaluated arms into ONE pass over the shared table:
+//
+//	SELECT * FROM <spans>
+//	WHERE  (<p1>) OR (<p2>) …            -- the span-level union
+//	QUALIFY max(<p1>) OVER (PARTITION BY <TraceId>)
+//	   AND  max(<p2>) OVER (PARTITION BY <TraceId>) …   -- the trace gate
+//	LIMIT 1 BY <TraceId>, <SpanId>
+//
+// That is only a faithful rewrite when each arm is a ROW PREDICATE over
+// the same rows — every arm must reduce to "this span matches <p>", so
+// that `max(<p>) OVER (PARTITION BY TraceId)` reproduces Tempo's
+// `len(side) > 0` per-trace test, and so that restricting the scan to
+// the disjunction cannot hide a row an arm needed (a row satisfying <p1>
+// always satisfies `<p1> OR <p2>`).
+//
+// An arm qualifies iff it is a chain of Filters bottoming out in a Scan
+// (conjoined into one predicate), the Scan is Equal to every other arm's,
+// and the predicate is gate-safe (see gateSafePredicate).
+//
+// WHAT DOES NOT QUALIFY, and why the choice is load-bearing rather than
+// cosmetic. `spanset_pipeline_intersect`'s arms —
+// `({…} | count() > 0) && ({…} | count() > 0)` — lower to
+// `Filter(TraceId IN {Aggregate pipeline}) → Filter(<selector>) → Scan`.
+// Structurally that IS a Filter chain over the shared Scan, so a purely
+// structural test would fuse it; the result would be WRONG, because the
+// arm's membership is decided by a per-trace aggregate over the arm's own
+// row set, which no per-row predicate — and therefore no `max(<p>) OVER`
+// — can reproduce. gateSafePredicate's "no nested plan" rule is exactly
+// the line between the two cases.
+//
+// Nested `&&` flattens: `A && B && C` arrives as
+// SetOperation(SetOperation(A, B), C) and fuses to a single pass over all
+// three arms, since "(A && B) matched this trace" is precisely "A matched
+// and B matched" and its spans are A's ∪ B's. A chain that is only partly
+// fusable falls back at the level that fails and still fuses below it,
+// because the fallback renders its arms through the ordinary recursive
+// emit.
+func fusableIntersect(s *chplan.SetOperation) (*chplan.Scan, []chplan.Expr, bool) {
+	var scan *chplan.Scan
+	var arms []chplan.Expr
+	if !collectIntersectArms(s, s, &scan, &arms) {
+		return nil, nil, false
+	}
+	return scan, arms, true
+}
+
+// collectIntersectArms walks the `&&` chain rooted at root, appending one
+// predicate per leaf arm and pinning the single Scan they must share.
+// Reports false the moment any arm disqualifies.
+func collectIntersectArms(n chplan.Node, root *chplan.SetOperation, scan **chplan.Scan, arms *[]chplan.Expr) bool {
+	if inner, ok := n.(*chplan.SetOperation); ok {
+		// Only an `&&` on the SAME identity key flattens. A nested `||`
+		// is a different operator, and a nested `&&` keyed on a different
+		// (TraceId, SpanId) pair is a spanset granularity change the gate
+		// must not paper over.
+		if inner.Op != chplan.SetIntersect ||
+			inner.TraceIDColumn != root.TraceIDColumn ||
+			inner.SpanIDColumn != root.SpanIDColumn {
+			return false
+		}
+		return collectIntersectArms(inner.Left, root, scan, arms) &&
+			collectIntersectArms(inner.Right, root, scan, arms)
+	}
+	pred, armScan, ok := filterChainOverScan(n)
+	if !ok || !gateSafePredicate(pred) {
+		return false
+	}
+	if *scan == nil {
+		*scan = armScan
+	} else if !(*scan).Equal(armScan) {
+		return false
+	}
+	*arms = append(*arms, pred)
+	return true
+}
+
+// filterChainOverScan peels a chain of Filters off a Scan and returns the
+// conjunction of their predicates (nil for a bare, unfiltered Scan — an
+// arm that matches every span). Reports false for any other node shape.
+func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, bool) {
+	var preds []chplan.Expr
+	for {
+		switch v := n.(type) {
+		case *chplan.Filter:
+			// Collected outermost-first; reversed below so the rendered
+			// conjunction reads innermost-first, the order the arm's own
+			// Filter(Scan) emit would have produced. A predicate-less
+			// Filter restricts nothing and contributes no conjunct — it
+			// must not reach the AND chain, where a nil operand would
+			// render as an empty token.
+			if v.Predicate != nil {
+				preds = append(preds, v.Predicate)
+			}
+			n = v.Input
+		case *chplan.Scan:
+			for i, j := 0, len(preds)-1; i < j; i, j = i+1, j-1 {
+				preds[i], preds[j] = preds[j], preds[i]
+			}
+			return conjoinExprs(preds), v, true
+		default:
+			return nil, nil, false
+		}
+	}
+}
+
+// conjoinExprs folds preds into a single left-associated AND expression.
+// Empty returns nil, the "no predicate at all" signal.
+func conjoinExprs(preds []chplan.Expr) chplan.Expr {
+	if len(preds) == 0 {
+		return nil
+	}
+	out := preds[0]
+	for _, p := range preds[1:] {
+		out = &chplan.Binary{Op: chplan.OpAnd, Left: out, Right: p}
+	}
+	return out
+}
+
+// gateSafePredicate reports whether pred is a pure row predicate — one
+// whose truth for a span depends on that span's own columns and nothing
+// else — which is the precondition for `max(pred) OVER (PARTITION BY
+// TraceId)` to mean "some span of this trace matched this arm".
+//
+// Two things disqualify, both because they smuggle a whole table read
+// into what looks like a scalar test:
+//
+//   - A nested plan (chplan.InSubquery / chplan.ScalarSubquery). This is
+//     the sub-pipeline arm of fusableIntersect's godoc: the arm's real
+//     membership test lives in that subplan, not in the row.
+//   - A BoundedTraceScope. It is an Expr LEAF, so the Node walk never
+//     sees it, but the emitter re-derives a top-N trace subquery from it
+//     at emit time — fusing one would keep a second read of the spans
+//     table alive behind a shape that advertises a single pass.
+//
+// A nil predicate (unfiltered Scan arm) is trivially gate-safe.
+func gateSafePredicate(pred chplan.Expr) bool {
+	if pred == nil {
+		return true
+	}
+	safe := true
+	chplan.InspectExprNodes(pred, func(e chplan.Expr) bool {
+		if _, ok := e.(*chplan.BoundedTraceScope); ok {
+			safe = false
+		}
+		return safe
+	}, func(chplan.Node) { safe = false })
+	return safe
+}
+
+// emitFusedIntersect renders the single-pass window gate described in
+// fusableIntersect's godoc.
+//
+// The arms' disjunction rides filterScanQuery, the same assembly an arm's
+// own Filter(Scan) would have used, so the fused scan keeps PREWHERE
+// granule pruning rather than trading four pruned reads for one unpruned
+// one. Each arm predicate is therefore rendered twice — once in the
+// WHERE/PREWHERE disjunction, once inside its `max(…) OVER (…)` gate —
+// and binds its `?` args twice; that is the price of never materialising
+// the predicate as a column.
+//
+// Not materialising it is the point. The obvious alternative, projecting
+// `max(…) OVER (…) AS g` and filtering on `g`, forces the outer SELECT to
+// strip the synthetic column back off with `* EXCEPT (g)`, which changes
+// the statement's projection shape for every downstream consumer. QUALIFY
+// filters on the window value while leaving the projection a bare
+// `SELECT *` over the spans table — the same column set the arm CTEs
+// produce today.
+//
+// The trace gate is `max(<pred>)`, not `countIf(<pred>) > 0`, so a
+// Nullable predicate stays correct by CH's own three-valued rules: an arm
+// whose predicate is NULL on every span of a trace yields a NULL gate,
+// and `WHERE NULL` drops the row exactly as the arm's own
+// `TraceId IN (<cohort>)` would have.
+//
+// Row ORDER differs from the fallback shape: the union emits all of the
+// left arm then all of the right, while one pass emits table order. Both
+// are unordered results feeding the same `LIMIT 1 BY` span-identity dedup
+// — TraceQL's own contract fixes the SET of spans, never their order.
+func (e *emitter) emitFusedIntersect(s *chplan.SetOperation, scan *chplan.Scan, arms []chplan.Expr) error {
+	common, residuals := splitCommonConjuncts(arms)
+	conds := append([]chplan.Expr(nil), common...)
+	if disj := disjoinArms(residuals); disj != nil {
+		conds = append(conds, disj)
+	}
+
+	var (
+		sb  *QueryBuilder
+		err error
+	)
+	if len(conds) > 0 {
+		sb, err = filterScanQuery(&chplan.Filter{Input: scan, Predicate: conjoinExprs(conds)}, scan)
+	} else {
+		// Every arm matches every span, so there is nothing to restrict
+		// the scan by.
+		sb, err = scanQuery(scan)
+	}
+	if err != nil {
+		return err
+	}
+	for _, pred := range residuals {
+		if pred == nil {
+			// The arm is fully implied by the shared conjuncts every
+			// surviving row already satisfies, so its gate is constantly
+			// true — including the unfiltered-arm case.
+			continue
+		}
+		sb.Qualify(Window(
+			Call("max", func(b *Builder) { _ = b.Expr(pred) }),
+			[]Frag{Col(s.TraceIDColumn)},
+			nil,
+		))
+	}
+	sb.Limit(unionDedupLimitPerIdentity).
+		LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
+	return e.emitSelect(sb)
+}
+
+// splitCommonConjuncts factors the conjuncts every arm shares out of the
+// arms' predicates, returning them plus each arm's residual (nil when an
+// arm is wholly implied by the shared set).
+//
+// This is what keeps the fused scan as cheap as the arms it replaces. A
+// windowed TraceQL query — the shape Grafana actually sends — puts the
+// SAME request-window bounds on every arm, so the unfactored disjunction
+// would be `(<p1> AND <window>) OR (<p2> AND <window>)`: ONE opaque
+// conjunct, from which partitionPrewhere can promote nothing and CH can
+// prune no `toDate(Timestamp)` partition. Factored, the restriction is
+// `<window> AND (<p1> OR <p2>)` and the window conjuncts reach PREWHERE
+// exactly as they do on an arm's own Filter(Scan). Without this the fast
+// path would trade four partition-pruned reads for one full-retention
+// scan and be a REGRESSION on the production path, not a win.
+//
+// Dropping the shared conjuncts from the gate terms is sound for the same
+// reason it is safe to drop them from the disjunction: every row the
+// window function sees has already passed them, so on that row set
+// `<residual> AND <common>` and `<residual>` agree, and therefore so do
+// their per-partition maxima.
+func splitCommonConjuncts(arms []chplan.Expr) (common, residuals []chplan.Expr) {
+	residuals = make([]chplan.Expr, len(arms))
+	perArm := make([][]chplan.Expr, len(arms))
+	for i, pred := range arms {
+		if pred == nil {
+			// An unfiltered arm shares nothing, so nothing is common to
+			// ALL arms; every arm keeps its own predicate whole.
+			return nil, arms
+		}
+		perArm[i] = flattenAnd(pred)
+	}
+	if len(perArm) == 0 {
+		return nil, residuals
+	}
+
+	shared := make([]bool, len(perArm[0]))
+	for i, c := range perArm[0] {
+		shared[i] = true
+		for _, other := range perArm[1:] {
+			if !containsExpr(other, c) {
+				shared[i] = false
+				break
+			}
+		}
+		if shared[i] {
+			common = append(common, c)
+		}
+	}
+	if len(common) == 0 {
+		return nil, arms
+	}
+	for i, conjuncts := range perArm {
+		var rest []chplan.Expr
+		for _, c := range conjuncts {
+			if !containsExpr(common, c) {
+				rest = append(rest, c)
+			}
+		}
+		residuals[i] = conjoinExprs(rest)
+	}
+	return common, residuals
+}
+
+// containsExpr reports whether list holds an expression equal to want.
+func containsExpr(list []chplan.Expr, want chplan.Expr) bool {
+	for _, e := range list {
+		if e.Equal(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// disjoinArms folds the arms' predicates into the span-level union's
+// restriction. A nil arm predicate makes the whole disjunction a
+// tautology, so the result is nil and the caller emits no restriction at
+// all rather than a redundant `… OR true`.
+func disjoinArms(arms []chplan.Expr) chplan.Expr {
+	var out chplan.Expr
+	for _, pred := range arms {
+		if pred == nil {
+			return nil
+		}
+		if out == nil {
+			out = pred
+			continue
+		}
+		out = &chplan.Binary{Op: chplan.OpOr, Left: out, Right: pred}
+	}
+	return out
 }
