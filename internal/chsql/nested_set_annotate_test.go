@@ -202,7 +202,7 @@ func TestNestedSetAnnotate_TraceLimit_BoundsAnchorScope(t *testing.T) {
 	// The whole point of the binding: the top-N subquery text appears once in
 	// the statement, not once per site that scopes itself by it.
 	if got := strings.Count(sql, unwindowedTopN); got != 1 {
-		t.Errorf("top-N subquery must be materialised once, got %d occurrences:\n%s", got, sql)
+		t.Errorf("top-N subquery text must appear exactly once, got %d occurrences:\n%s", got, sql)
 	}
 	// The bound is a single extra subquery over the root scan — the
 	// recursive numbering CTE still renders exactly once.

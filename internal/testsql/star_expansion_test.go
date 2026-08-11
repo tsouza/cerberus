@@ -7,9 +7,9 @@ import (
 
 // TestExpandStarProjection_CTEUnionResolvesAliases pins the round-trip
 // harness's ability to expand a top-level `SELECT *` that sits over a
-// UNION of CTE references — the exact shape chsql.intersectQuery emits
-// for a Tempo-compatible `&&` whose arms folded to trace granularity
-// (`({…} | count() > 0) && ({…} | count() > 0)`).
+// UNION of relational-CTE references — the shape any emitter naming its
+// arms through chsql.QueryBuilder.With produces, with the arms folded to
+// trace granularity.
 //
 // Without CTE-aware name discovery the star stays a bare `*`, the Map
 // column (`ResourceAttrs`) rides through unwrapped, and chdb-go's
@@ -64,6 +64,63 @@ func TestExpandStarProjection_CTEUnionResolvesAliases(t *testing.T) {
 	full := RewriteMapProjections(got)
 	if !strings.Contains(full, "toJSONString(`ResourceAttrs`)") {
 		t.Errorf("Map column ResourceAttrs was not wrapped in toJSONString:\n%s", full)
+	}
+}
+
+// TestExpandStarProjection_ArmTaggedUnionResolvesAliases pins the harness
+// against the `&&` shape chsql.intersectQuery emits for every intersect the
+// single-pass gate declines (#1525): `* EXCEPT (_setand_side)` over a UNION
+// whose branches project `*` PLUS an arm-marker column.
+//
+// Two things must work together. The expander has to see through the EXCEPT
+// modifier to the star underneath, and it has to resolve that star through a
+// branch whose projection is not a bare `*`. Miss either and the star stays
+// unexpanded, the Map column rides through unwrapped, and chdb-go's parquet
+// driver panics with `could not cast to type: MAP` — the same failure #1431
+// and the CTE-union case above exist to prevent.
+func TestExpandStarProjection_ArmTaggedUnionResolvesAliases(t *testing.T) {
+	t.Parallel()
+
+	const arm = "SELECT `TraceId` AS `TraceId`, `SpanId` AS `SpanId`, " +
+		"`SpanAttributes` AS `SpanAttributes` FROM `otel_traces`"
+	query := "SELECT * EXCEPT (`_setand_side`) FROM (" +
+		"(SELECT *, 0 AS `_setand_side` FROM (" + arm + ")) UNION ALL " +
+		"(SELECT *, 1 AS `_setand_side` FROM (" + arm + "))) " +
+		"QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`) " +
+		"AND max(`_setand_side` = 1) OVER (PARTITION BY `TraceId`) " +
+		"LIMIT 1 BY `TraceId`, `SpanId`"
+
+	got := ExpandStarProjection(query, nil)
+	head, _ := splitOuterSelect(got)
+	proj := strings.TrimSpace(head)
+	if strings.Contains(proj, "*") {
+		t.Fatalf("outer star was not expanded:\n%s", got)
+	}
+	for _, c := range []string{"`TraceId`", "`SpanId`", "`SpanAttributes`"} {
+		if !strings.Contains(proj, c) {
+			t.Errorf("expanded outer projection missing %s:\n%s", c, proj)
+		}
+	}
+	// The marker is exactly what EXCEPT removes. If it survives expansion
+	// the statement projects a column its caller never asked for, and the
+	// expanded form stops matching the shape it replaced.
+	if strings.Contains(proj, "_setand_side") {
+		t.Errorf("the excepted arm marker survived into the expanded projection:\n%s", proj)
+	}
+
+	// Only the outer projection is rewritten: the trace gate and the
+	// span-identity dedup key must come through untouched.
+	if !strings.Contains(got, "QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`)") {
+		t.Errorf("QUALIFY trace gate was altered:\n%s", got)
+	}
+	if !strings.Contains(got, "LIMIT 1 BY `TraceId`, `SpanId`") {
+		t.Errorf("span-identity LIMIT BY key was altered:\n%s", got)
+	}
+
+	// The Map-wrap pass must now find the named Map column and wrap it.
+	full := RewriteMapProjections(got)
+	if !strings.Contains(full, "toJSONString(`SpanAttributes`)") {
+		t.Errorf("Map column SpanAttributes was not wrapped in toJSONString:\n%s", full)
 	}
 }
 

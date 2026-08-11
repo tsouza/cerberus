@@ -2053,6 +2053,40 @@ func StarReplace(replacements []Frag) Frag {
 	}
 }
 
+// StarExcept returns a Frag rendering ClickHouse's asterisk modifier
+// "<star> EXCEPT (<col>, …)" — the wildcard with the named columns
+// dropped from its expansion while every other column, and every other
+// column's name, passes through untouched. star is the wildcard the
+// modifier applies to: [Star] for the bare "*", [QualStar] for the
+// table-qualified form.
+//
+// It is the projection-side counterpart to a synthetic column. An emitter
+// that must carry a marker through a subquery — a UNION-ALL arm tag, a
+// windowed gate — projects it on the inside and strips it here, so the
+// statement it hands back exposes exactly its input's column set and no
+// downstream consumer has to learn about the marker. An empty column list
+// renders the bare wildcard, so a caller need not guard that case.
+//
+// The " EXCEPT (" / ")" glue is emitter-chosen syntax with no operand of
+// its own, so it rides verbatim; the column names flow through Col's
+// backtick quoting.
+func StarExcept(star Frag, cols ...string) Frag {
+	return func(b *Builder) {
+		star(b)
+		if len(cols) == 0 {
+			return
+		}
+		b.sb.WriteString(" EXCEPT (")
+		for i, c := range cols {
+			if i > 0 {
+				b.sb.WriteString(", ")
+			}
+			Col(c)(b)
+		}
+		b.sb.WriteByte(')')
+	}
+}
+
 // QualStar returns a Frag rendering "<table>.*" with the table
 // identifier flowing through Ident's backtick quoting (so embedded
 // backticks are doubled).
@@ -2196,12 +2230,15 @@ type joinClause struct {
 //     Used by structural_join.go's >> / << closure emitter.
 //
 //   - Non-recursive (Body set, Anchor + Recursive nil):
-//     `WITH <name> AS (<body>)`. Used by vector_set_op.go to
-//     materialise each set-op arm subplan exactly once and reference
-//     it by name in both the UNION-ALL leg and the IN / NOT-IN
-//     signature subquery (common-subexpression elimination — avoids
-//     the textual duplication that blew set-op chains up
-//     exponentially). Body renders the (already-parenthesised) arm
+//     `WITH <name> AS (<body>)` — a NAME for a relation, never a
+//     materialisation of one: ClickHouse inlines the body at every
+//     reference, so this shape deduplicates the emitted TEXT and
+//     nothing else. It is the right tool when the duplication being
+//     removed is textual (a subplan spliced into several places would
+//     grow a chain's SQL exponentially) and the wrong one when the
+//     duplication being removed is WORK — see the Scalar shape below,
+//     and set_op.go for a rewrite that removes the extra references
+//     instead of naming them. Body renders the (already-parenthesised)
 //     subquery Frag.
 //
 //   - Scalar (Body set, Scalar true):
@@ -2354,11 +2391,13 @@ func (s *QueryBuilder) WithRecursive(name string, anchor, recursive *QueryBuilde
 // order, because writeInto renders the CTE chain before the SELECT
 // keyword.
 //
-// Used by the vector-set-op emitter to materialise each arm subplan
-// exactly once and reference it by name in both the UNION-ALL leg and
-// the IN / NOT-IN signature subquery, instead of inlining (and so
-// re-rendering) the whole subplan twice per chain level — the textual
-// duplication that made `a or b or c …` chains grow exponentially.
+// The name binds a RELATION, and ClickHouse inlines the body at every
+// reference — N references cost N evaluations. So this shape buys
+// emitted-TEXT linearity and never fewer reads: reach for it to stop a
+// subplan spliced into several places from growing a chain's SQL
+// exponentially, and reach for [QueryBuilder.WithScalar] (or a rewrite
+// that leaves only one reference, as set_op.go's `&&` does) when the
+// goal is to stop re-reading the relation.
 //
 // When a QueryBuilder mixes recursive and non-recursive CTEs the head
 // renders as `WITH RECURSIVE` (CH accepts non-recursive entries under
