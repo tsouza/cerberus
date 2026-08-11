@@ -2,8 +2,10 @@ package tempo_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -48,7 +50,12 @@ func TestPostProcessCompare_Semantics(t *testing.T) {
 		compareRow("1", "name", "a", t1, 4),
 	}
 
-	series := tempo.PostProcessCompareForTest(samples, 2, anchors)
+	// 0 disables the grid budget, so this case keeps asserting the fold
+	// semantics alone (the budget has its own boundary test below).
+	series, err := tempo.PostProcessCompareForTest(samples, 2, anchors, 0)
+	if err != nil {
+		t.Fatalf("postProcessCompare: %v", err)
+	}
 
 	type key struct{ meta, attr, val string }
 	got := map[key][]float64{}
@@ -234,4 +241,119 @@ func TestMetricsQueryInstant_Compare(t *testing.T) {
 	if byMeta["baseline_total"] != 5 || byMeta["selection_total"] != 2 {
 		t.Errorf("instant totals = %v, want baseline_total=5 selection_total=2", byMeta)
 	}
+}
+
+// TestPostProcessCompare_GridBudget is the regression pin for the compare()
+// sample-budget bypass.
+//
+// compare() is the only metrics shape that SYNTHESISES its samples instead of
+// forwarding ClickHouse's rows, so the Go-side result drain — the thing that
+// enforces MaxQuerySamples for every other shape — never sees them. Measured on
+// a live compose stack before the fix: a 15 m window at Grafana's auto-step
+// drained a handful of sparse rows and emitted 540,300 samples against a
+// configured 5,000-sample budget (108x) as a 21.6 MB HTTP 200. The budget has to
+// be charged on the emitted product, which is what these cases pin.
+func TestPostProcessCompare_GridBudget(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC)
+
+	// One attribute with one value yields exactly two series: the value series
+	// and its totals series. Emitted samples are therefore 2 x len(anchors).
+	const seriesPerAttr = 2
+	rows := []chclient.Sample{compareRow("0", "name", "a", t0, 1)}
+
+	anchorsOf := func(n int) []time.Time {
+		out := make([]time.Time, n)
+		for i := range out {
+			out[i] = t0.Add(time.Duration(i) * time.Minute)
+		}
+		return out
+	}
+
+	t.Run("at the cap is served", func(t *testing.T) {
+		t.Parallel()
+		const anchors = 50
+		series, err := tempo.PostProcessCompareForTest(
+			rows, 0, anchorsOf(anchors), seriesPerAttr*anchors,
+		)
+		if err != nil {
+			t.Fatalf("a grid exactly at the budget must be served, got: %v", err)
+		}
+		got := 0
+		for _, s := range series {
+			got += len(s.Samples)
+		}
+		if got != seriesPerAttr*anchors {
+			t.Fatalf("emitted %d samples, want %d — the case no longer sits ON the cap, "+
+				"so the boundary it claims to pin is untested", got, seriesPerAttr*anchors)
+		}
+	})
+
+	t.Run("one sample over the cap is refused", func(t *testing.T) {
+		t.Parallel()
+		const anchors = 50
+		_, err := tempo.PostProcessCompareForTest(
+			rows, 0, anchorsOf(anchors), seriesPerAttr*anchors-1,
+		)
+		if err == nil {
+			t.Fatal("a grid one sample over the budget was served")
+		}
+		if !errors.Is(err, chclient.ErrTooManySamples) {
+			t.Fatalf("over-budget compare must raise ErrTooManySamples so ClassifyErr "+
+				"answers 422 (not a 500); got %v", err)
+		}
+	})
+
+	t.Run("a sparse drain cannot buy an unbounded grid", func(t *testing.T) {
+		t.Parallel()
+		// THE bug: one input row, a dense output grid. Every bound upstream of
+		// this point sees a single cheap row — the CH memory cap, the drain
+		// budget and format.MaxResolutionPoints all pass — so if the product is
+		// not charged here it is never charged at all.
+		const anchors = 10_000
+		if seriesPerAttr*anchors <= len(rows) {
+			t.Fatal("test setup is wrong: the emitted grid must dwarf the drained rows")
+		}
+		_, err := tempo.PostProcessCompareForTest(rows, 0, anchorsOf(anchors), 5_000)
+		if err == nil {
+			t.Fatalf("%d drained row(s) synthesised a %d-sample grid under a 5,000-sample "+
+				"budget without rejection — the drain-side budget cannot see synthesised "+
+				"samples, so this path is unbounded", len(rows), seriesPerAttr*anchors)
+		}
+		if !errors.Is(err, chclient.ErrTooManySamples) {
+			t.Fatalf("want ErrTooManySamples, got %v", err)
+		}
+	})
+
+	t.Run("many series over few anchors is charged on the product", func(t *testing.T) {
+		t.Parallel()
+		// The mirror of the sparse-drain case: the anchor axis is small (well
+		// inside format.MaxResolutionPoints) and the CARDINALITY axis is what
+		// runs away. Neither axis alone is over any threshold — only the
+		// product is, which is the whole point of charging it here.
+		manyVals := make([]chclient.Sample, 0, 4096)
+		for i := range 4096 {
+			manyVals = append(manyVals,
+				compareRow("0", "name", "v"+strconv.Itoa(i), t0, 1))
+		}
+		const anchors = 100
+		_, err := tempo.PostProcessCompareForTest(manyVals, 0, anchorsOf(anchors), 100_000)
+		if err == nil {
+			t.Fatalf("4096 values over %d anchors (~%d samples) was served under a "+
+				"100,000-sample budget", anchors, 4097*anchors)
+		}
+		if !errors.Is(err, chclient.ErrTooManySamples) {
+			t.Fatalf("want ErrTooManySamples, got %v", err)
+		}
+	})
+
+	t.Run("a non-positive budget stays inert", func(t *testing.T) {
+		t.Parallel()
+		// Matches the cursor's and requireSubquerySampleBudget's semantics, so a
+		// handler that never wired a budget keeps serving.
+		if _, err := tempo.PostProcessCompareForTest(rows, 0, anchorsOf(10_000), 0); err != nil {
+			t.Fatalf("maxSamples<=0 must disable the budget, got: %v", err)
+		}
+	})
 }
