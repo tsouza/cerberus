@@ -21,8 +21,9 @@ const (
 // buckets}]` wire pair upstream Prometheus emits for a histogram-valued
 // point (marshalSampleJSON / marshalHPointJSON's `histogram` key
 // shape — prometheus/web/api/v1/json_codec.go), from a decoded
-// chclient.HistogramValue. Populated only when a row carries one — see
-// chclient.Sample.Histogram's doc comment for why that is nil today.
+// chclient.HistogramValue. Populated only when a row carries one — the
+// histogram-VALUED shapes (a bare exp-histogram selector, `sum()` over
+// one, `rate()`/`increase()` over one).
 func histogramSample(ts time.Time, hv *chclient.HistogramValue) Sample {
 	stamp := float64(ts.UnixMilli()) / 1e3
 	return Sample{stamp, histogramFromValue(hv)}
@@ -77,7 +78,7 @@ func histogramFromValue(hv *chclient.HistogramValue) *Histogram {
 			Count:      formatWireFloat(count),
 		})
 	}
-	if hv.ZeroCount > 0 {
+	if hv.ZeroCount != 0 {
 		lower, upper := -hv.ZeroThreshold, hv.ZeroThreshold
 		if nlen == 0 && len(hv.PositiveBucketCounts) > 0 {
 			lower = 0

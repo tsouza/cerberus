@@ -28,8 +28,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/promql"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclienttest"
@@ -271,4 +277,197 @@ func assertMetric(t *testing.T, got, want map[string]string) {
 			t.Errorf("metric[%q] = %q, want %q (full: %v)", k, got[k], v, got)
 		}
 	}
+}
+
+// TestHistogramProjection_RuntimeColumnTypes_ChDB pins the half of the
+// decode contract that neither the emitter's own tests nor the
+// scan-contract test can see: what ClickHouse actually REPORTS for the
+// nine output columns.
+//
+// The emitter's casts are pinned as SQL TEXT (chsql's shape test and the
+// `-- sql --` cells of test/spec/promql/exp_histogram_*.txtar), and
+// internal/chclient's scan-contract test pins that each named type scans
+// into its HistogramValue field. Neither executes the expression. That
+// matters because the chDB-backed handler tests CANNOT catch a reverted
+// cast on their own: chdb-go's driver coerces an int64 or a text-rendered
+// array into the destination, so a UInt64 HistogramCount would still
+// decode here while failing on a real ClickHouse — the exact
+// chDB-coerces / prod-is-strict split that produced #1967.
+//
+// Asserting toTypeName over the emitted SQL closes that: chDB is
+// ClickHouse's own engine, so its type inference IS ClickHouse's.
+func TestHistogramProjection_RuntimeColumnTypes_ChDB(t *testing.T) {
+	c := chclienttest.NewChDB(t)
+	// promql.Lower anchors an instant query to now64(), so this fixture
+	// is seeded RELATIVE TO NOW rather than reusing histValuedSeed's
+	// fixed 2026-01-01 rows — those fall outside the lookback and the
+	// projection would report types over an empty result. Two scrapes
+	// 60s apart keep rate()'s two-sample floor satisfied.
+	c.Seed(t, histValuedDDL+`
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('typecheck_exp_hist', map('service', 'api'), now64(9) - toIntervalSecond(60),  6,  3.0, 0, 1, 0, [ 2,  3], 0, []),
+    ('typecheck_exp_hist', map('service', 'api'), now64(9),                        30, 15.0, 0, 1, 0, [14, 15], 0, []);`)
+
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	// The pinned type of each of the nine outputs, in projection order.
+	wantTypes := []string{
+		"Float64", // HistogramCount
+		"Float64", // HistogramSum
+		"Int32",   // HistogramScale
+		"Float64", // HistogramZeroThreshold
+		"Float64", // HistogramZeroCount
+		"Int32",   // HistogramPositiveOffset
+		"Array(Float64)",
+		"Int32", // HistogramNegativeOffset
+		"Array(Float64)",
+	}
+
+	// Both shapes matter: a bare selector forwards the physical OTel-CH
+	// columns (UInt64 / Array(UInt64)) and rate() derives Float64 ones,
+	// so before the pin these two disagreed. They must now report the
+	// SAME nine types.
+	for _, tc := range []struct{ name, query string }{
+		{"bare selector", "typecheck_exp_hist"},
+		{"rate", "rate(typecheck_exp_hist[5m])"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.query, err)
+			}
+			plan, err := promql.Lower(t.Context(), expr, schema.DefaultOTelMetrics())
+			if err != nil {
+				t.Fatalf("lower %q: %v", tc.query, err)
+			}
+			sql, args, err := chsql.Emit(t.Context(), plan)
+			if err != nil {
+				t.Fatalf("emit %q: %v", tc.query, err)
+			}
+
+			// Wrap the emitted SQL without touching its parameter
+			// order, so the recorded args still bind positionally.
+			var sb strings.Builder
+			sb.WriteString("SELECT arrayStringConcat([")
+			for i, col := range histogramOutputColumns {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString("toTypeName(`" + col + "`)")
+			}
+			sb.WriteString("], '|') FROM (")
+			sb.WriteString(sql)
+			sb.WriteString(") LIMIT 1")
+
+			got, err := c.QueryStrings(t.Context(), sb.String(), args...)
+			if err != nil {
+				t.Fatalf("query column types: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d type rows, want 1 (is the seeded row in the query window?)", len(got))
+			}
+			gotTypes := strings.Split(got[0], "|")
+			if len(gotTypes) != len(wantTypes) {
+				t.Fatalf("got %d types %v, want %d", len(gotTypes), gotTypes, len(wantTypes))
+			}
+			for i := range wantTypes {
+				if gotTypes[i] != wantTypes[i] {
+					t.Errorf("%s reports %s, want %s", histogramOutputColumns[i], gotTypes[i], wantTypes[i])
+				}
+			}
+		})
+	}
+}
+
+// histogramOutputColumns is the projection order chplan.HistogramProjection
+// publishes its nine outputs in.
+var histogramOutputColumns = []string{
+	"HistogramCount",
+	"HistogramSum",
+	"HistogramScale",
+	"HistogramZeroThreshold",
+	"HistogramZeroCount",
+	"HistogramPositiveOffset",
+	"HistogramPositiveBucketCounts",
+	"HistogramNegativeOffset",
+	"HistogramNegativeBucketCounts",
+}
+
+// TestQueryRange_HistogramValued_ChDB covers the MATRIX half of the
+// histogram-valued wire shape — the `histograms` key rather than
+// `histogram`.
+//
+// It is not redundant with the instant tests above. internal/api/prom's
+// lang.go stamps chclient.ResponseShapeMatrix only when Step > 0, so the
+// columnar decode path this change taught the histogram shape to is
+// reachable EXCLUSIVELY from /api/v1/query_range. An instant query never
+// exercises it.
+func TestQueryRange_HistogramValued_ChDB(t *testing.T) {
+	srv := newHistValuedServer(t)
+
+	// A single anchor at the fixture's evaluation time, so the expected
+	// values are exp_histogram_rate.txtar's hand-worked ones unchanged.
+	stamp := histValuedEvalTime.Format(time.RFC3339)
+	reqURL := fmt.Sprintf("%s/api/v1/query_range?query=%s&start=%s&end=%s&step=60",
+		srv.URL, url.QueryEscape("rate(latency_exp_hist[5m])"), stamp, stamp)
+
+	resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
+	if err != nil {
+		t.Fatalf("GET /api/v1/query_range: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET /api/v1/query_range: status %d\nbody: %s", resp.StatusCode, body)
+	}
+
+	var body struct {
+		Data struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric     map[string]string `json:"metric"`
+				Values     []any             `json:"values"`
+				Histograms []any             `json:"histograms"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode range response: %v", err)
+	}
+	if body.Data.ResultType != "matrix" {
+		t.Fatalf("resultType = %q, want matrix", body.Data.ResultType)
+	}
+	if len(body.Data.Result) != 1 {
+		t.Fatalf("got %d series, want 1", len(body.Data.Result))
+	}
+	series := body.Data.Result[0]
+	if len(series.Histograms) == 0 {
+		t.Fatalf("range query returned float values (%v), not histograms — "+
+			"the matrix path collapsed the histogram-valued shape to a scalar", series.Values)
+	}
+	if len(series.Values) != 0 {
+		t.Errorf("range query returned BOTH values and histograms: %v", series.Values)
+	}
+	assertMetric(t, series.Metric, map[string]string{"service": "api"})
+
+	// Each entry is [timestamp, {count, sum, buckets}].
+	point, ok := series.Histograms[0].([]any)
+	if !ok || len(point) != 2 {
+		t.Fatalf("histogram point is %v, want a [ts, body] pair", series.Histograms[0])
+	}
+	raw, err := json.Marshal(point[1])
+	if err != nil {
+		t.Fatalf("re-marshal histogram body: %v", err)
+	}
+	var hist wireHistogram
+	if err := json.Unmarshal(raw, &hist); err != nil {
+		t.Fatalf("decode histogram body: %v", err)
+	}
+	if hist.Count != "0.1" || hist.Sum != "0.05" {
+		t.Errorf("count/sum = %q/%q, want 0.1/0.05", hist.Count, hist.Sum)
+	}
+	assertBuckets(t, hist.Buckets, [][4]any{
+		{float64(0), "1", "2", "0.05"},
+		{float64(0), "2", "4", "0.05"},
+	})
 }

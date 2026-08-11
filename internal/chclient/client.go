@@ -1221,8 +1221,9 @@ type Sample struct {
 	// see issue #1926) must carry end to end instead of collapsing to
 	// Value. Populated only when the projection emits the nine trailing
 	// Histogram*Column columns chplan.HistogramProjection's emitter
-	// produces (see [rowsCursor.Next]); nil for every query today,
-	// since no lowering builds that plan shape yet. Value stays bound
+	// produces (see [rowsCursor.Next]), which the bare-selector,
+	// `sum()` and `rate()`/`increase()` lowerings all build. Value
+	// stays bound
 	// alongside it to a meaningless placeholder on a histogram row,
 	// mirroring reference Prometheus's own `Sample{F: resultFloat, H:
 	// resultHistogram}` contract (promql/functions.go's

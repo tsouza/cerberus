@@ -56,11 +56,11 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	sb.SelectAs(histogramCountFrag(Col(h.CountColumn)), chplan.HistogramCountColumn)
-	sb.SelectAs(histogramCountFrag(Col(h.SumColumn)), chplan.HistogramSumColumn)
+	sb.SelectAs(histogramFloatFrag(Col(h.CountColumn)), chplan.HistogramCountColumn)
+	sb.SelectAs(histogramFloatFrag(Col(h.SumColumn)), chplan.HistogramSumColumn)
 	sb.SelectAs(histogramIndexFrag(Col(h.ScaleColumn)), chplan.HistogramScaleColumn)
-	sb.SelectAs(histogramCountFrag(histogramProjectionZeroThresholdFrag(h)), chplan.HistogramZeroThresholdColumn)
-	sb.SelectAs(histogramCountFrag(Col(h.ZeroCountColumn)), chplan.HistogramZeroCountColumn)
+	sb.SelectAs(histogramFloatFrag(histogramProjectionZeroThresholdFrag(h)), chplan.HistogramZeroThresholdColumn)
+	sb.SelectAs(histogramFloatFrag(Col(h.ZeroCountColumn)), chplan.HistogramZeroCountColumn)
 	sb.SelectAs(histogramIndexFrag(Col(h.PositiveOffsetColumn)), chplan.HistogramPositiveOffsetColumn)
 	sb.SelectAs(histogramBucketsFrag(Col(h.PositiveBucketCountsColumn)), chplan.HistogramPositiveBucketCountsColumn)
 	sb.SelectAs(histogramIndexFrag(Col(h.NegativeOffsetColumn)), chplan.HistogramNegativeOffsetColumn)
@@ -94,8 +94,9 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 // promotes to Int64 on some ClickHouse versions while the physical
 // column is Int32.
 
-// histogramCountFrag pins an observation-count / sum slot to Float64.
-func histogramCountFrag(f Frag) Frag { return Call("toFloat64", f) }
+// histogramFloatFrag pins a real-valued slot — the counts, the sum and
+// the zero threshold — to Float64.
+func histogramFloatFrag(f Frag) Frag { return Call("toFloat64", f) }
 
 // histogramIndexFrag pins a bucket-index slot (Scale, the two offsets) to
 // Int32.

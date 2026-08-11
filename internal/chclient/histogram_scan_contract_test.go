@@ -38,9 +38,19 @@ import (
 type histogramScanSlot struct {
 	// column is the chplan.Histogram*Column output alias.
 	column string
-	// chType is the ClickHouse type internal/chsql/histogram_projection.go
-	// pins this column to. Changing the emitter's cast without changing
-	// this string fails the test.
+	// chType is the ClickHouse type internal/chsql's emitter pins this
+	// column to.
+	//
+	// This file does NOT read the emitter, and cannot: chclient declares
+	// no internal dependencies in .go-arch-lint.yml, the same constraint
+	// that makes histogramLastColumn a duplicated literal. So this table
+	// is maintained in lockstep with the emitter rather than derived from
+	// it, and the emitter's own half is pinned separately by
+	// chsql.TestEmit_HistogramProjection_ShapeSanity plus the `-- sql --`
+	// cells of test/spec/promql/exp_histogram_*.txtar. What this file
+	// uniquely pins is the half neither of those can see: that the type
+	// named here is one clickhouse-go will actually scan into the
+	// HistogramValue field bound at the same position.
 	chType string
 	// sample is a representative value to round-trip.
 	sample any

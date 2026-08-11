@@ -161,6 +161,22 @@ func TestColumnarCursor_DecodesHistogramRows(t *testing.T) {
 	if cur.samples[0].Histogram == cur.samples[1].Histogram {
 		t.Error("both samples share one *HistogramValue")
 	}
+
+	// The ladders must be COPIES, not windows onto the block's own
+	// storage — the block is reset when the next one decodes over it, so
+	// an aliased slice would report the wrong buckets (or racy garbage)
+	// on any multi-block result. ch-go's ColArr.Row appends into a fresh
+	// slice, and this pins that we keep relying on it: mutating one
+	// decoded ladder must not disturb the column or the sibling row.
+	first := cur.samples[0].Histogram.PositiveBucketCounts
+	if len(first) == 0 {
+		t.Fatal("fixture row 0 has no positive buckets to test aliasing with")
+	}
+	sentinel := first[0] + 1
+	first[0] = sentinel
+	if got := cols.hist.posBuckets.Row(0); got[0] == sentinel {
+		t.Error("decoded PositiveBucketCounts aliases the block's storage")
+	}
 }
 
 // assertHistogramEqual compares a decoded histogram field by field.

@@ -826,8 +826,9 @@ func cellFloats(v any, column string) ([]float64, error) {
 }
 
 // parseArrayLiteral decodes ClickHouse's text rendering of a numeric
-// array. An empty CH array renders "[]", which decodes to a nil slice —
-// matching what the production driver produces for the same row.
+// array. An empty CH array renders "[]", which decodes to an empty
+// non-nil slice; every consumer reads these ladders through len(), so
+// empty and nil are interchangeable here.
 func parseArrayLiteral(s, column string) ([]float64, error) {
 	var out []float64
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
