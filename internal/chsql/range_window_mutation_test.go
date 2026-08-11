@@ -20,20 +20,22 @@ import (
 //     (holt_winters smoothing weights): wrong (1∓w) factor in the recurrence.
 //   - range_window.go:662:19 — `minWindowSize > 0` → `>= 0`: spuriously emits the
 //     window-length WHERE filter when no minimum was requested.
-//   - range_window.go:2346:13 — `r.Step <= 0` → `< 0`: stops rejecting OuterRange>0
-//     subqueries that forgot Step (would divide by zero / emit a degenerate grid).
-//   - range_window.go:2357:63 — `handled || err != nil` → `handled && err != nil`:
-//     a successful fused emit (handled=true, err=nil) would fall through to the
-//     materialized path, double-emitting / changing SQL.
-//   - range_window.go:2465:48 — `len(groupFrags)+1` → `len(groupFrags)-1`: with no
-//     GroupBy this is `make([]Frag, 0, -1)` → runtime panic (cap out of range).
-//   - range_window_fused.go:93:18 / 93:23 / 93:33 — the self-guard
-//     `if r.OuterRange != 0 || r.Step != 0` that keeps the fused entry instant-only.
+//   - range_window.go, emitRangeWindowOverTimeDirect — `r.Step <= 0` → `< 0`: stops
+//     rejecting OuterRange>0 subqueries that forgot Step (would divide by zero /
+//     emit a degenerate grid).
+//   - range_window.go, emitRangeWindowOverTimeDirect — `handled || err != nil` →
+//     `handled && err != nil`: a successful fused emit (handled=true, err=nil) would
+//     fall through to the materialized path, double-emitting / changing SQL.
+//   - range_window.go, emitRangeWindowOverTimeDirectMatrix — `len(groupFrags)+1` →
+//     `len(groupFrags)-1`: with no GroupBy this is `make([]Frag, 0, -1)` → runtime
+//     panic (cap out of range).
+//   - range_window_fused.go, tryEmitFusedSubquery — the outer-shape guard
+//     (`instantOuter` / `matrixOuter`) that decides which shapes fuse at all.
 
 func mutTestStart() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
 // fusibleInner returns a fully-valid extrapolating MATRIX RangeWindow that
-// satisfies every gate in tryEmitFusedInstantSubquery (Func extrapolating,
+// satisfies every gate in tryEmitFusedSubquery (Func extrapolating,
 // OuterRange>0, Step>0, columns set, Start/End non-zero) so that IF the
 // instant-only self-guard passes, the fused emit returns handled=true.
 func fusibleInner() *chplan.RangeWindow {
@@ -173,12 +175,13 @@ func TestOverTimeDirectRejectsZeroStepSubquery(t *testing.T) {
 	}
 }
 
-// TestFusedInstantSubqueryTaken kills range_window.go:2357 (and, via the
-// public path, fused.go 93:18 + 93:33). A fusible instant subquery must emit
-// the fused shape — `arrayReduce('max', vals)` over a per-series `samples`
-// array. The `||` → `&&` flip at 2357 would drop handled=true on the floor and
-// fall through to the materialized regroup, which reduces with `max(Value)`
-// over an `anchor_ts` group and never builds the `vals` / `samples` arrays.
+// TestFusedInstantSubqueryTaken kills the `handled || err != nil` conjunction in
+// emitRangeWindowOverTimeDirect (and, via the public path, the instant arm of
+// tryEmitFusedSubquery's outer-shape guard). A fusible instant subquery must
+// emit the fused shape — `arrayReduce('max', vals)` over a per-series `samples`
+// array. The `||` → `&&` flip would drop handled=true on the floor and fall
+// through to the materialized regroup, which reduces with `max(Value)` over an
+// `anchor_ts` group and never builds the `vals` / `samples` arrays.
 func TestFusedInstantSubqueryTaken(t *testing.T) {
 	t.Parallel()
 	sql, _, err := Emit(context.Background(), fusedOuter())
@@ -187,8 +190,8 @@ func TestFusedInstantSubqueryTaken(t *testing.T) {
 	}
 	for _, want := range []string{"arrayReduce('max', vals)", "AS `samples`", "WHERE length(vals) > 0"} {
 		if !strings.Contains(sql, want) {
-			t.Errorf("fused shape not emitted (missing %q) — line 2357 `||`→`&&` "+
-				"or fused.go:93 self-guard flipped\nSQL: %s", want, sql)
+			t.Errorf("fused shape not emitted (missing %q) — the `handled || err != nil` "+
+				"conjunction or the fused outer-shape guard flipped\nSQL: %s", want, sql)
 		}
 	}
 	// The materialized fall-through regroup must NOT be what we emitted.
@@ -197,16 +200,90 @@ func TestFusedInstantSubqueryTaken(t *testing.T) {
 	}
 }
 
-// TestFusedInstantSelfGuard kills range_window_fused.go:93:18 / 93:23 / 93:33.
-// The self-guard `OuterRange != 0 || Step != 0` returns handled=false for any
-// non-instant outer. Calling the entry point directly with a valid fusible
-// inner pins all three sub-mutations:
-//   - OuterRange!=0, Step==0 → handled=false (kills `!=`→`==` on OuterRange, and
-//     `||`→`&&`, both of which would proceed to fuse → handled=true).
-//   - OuterRange==0, Step!=0 → handled=false (kills `!=`→`==` on Step, and
-//     `||`→`&&`).
-//   - OuterRange==0, Step==0 → handled=true (the genuinely-fusible case).
-func TestFusedInstantSelfGuard(t *testing.T) {
+// fusedMatrixOuter is the `/api/v1/query_range` sibling of fusedOuter: the same
+// fusible inner under an outer reducer that carries the request's own step grid.
+func fusedMatrixOuter() *chplan.RangeWindow {
+	r := fusedOuter()
+	r.Step = 1 * time.Minute
+	r.OuterRange = 10 * time.Minute
+	return r
+}
+
+// TestFusedMatrixSubqueryTaken pins #1505: a range-mode outer reducer over a
+// fusible subquery must take the FUSED matrix shape, not the materialized
+// regroup it used to fall through to. The call-site ordering is what this
+// catches — returning emitRangeWindowOverTimeDirectMatrix before attempting
+// fusion (the pre-#1505 order) puts every marker below on the wrong side.
+func TestFusedMatrixSubqueryTaken(t *testing.T) {
+	t.Parallel()
+	sql, _, err := Emit(context.Background(), fusedMatrixOuter())
+	if err != nil {
+		t.Fatalf("Emit(fused matrix subquery): %v", err)
+	}
+	// The fused matrix markers: the per-series inner grid, the per-outer-anchor
+	// arrayJoin, and the outer reduce over the covered run.
+	for _, want := range []string{
+		"AS `samples`",
+		"AS `" + fusedAnchorGridAlias + "`",
+		"AS `" + fusedOuterAnchorAlias + "`",
+		"arrayJoin(arrayFilter(",
+		"arraySlice(" + fusedAnchorGridAlias,
+		"arrayReduce('max', q)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("fused matrix shape not emitted (missing %q) — fusion is still "+
+				"attempted AFTER the materialized matrix delegation\nSQL: %s", want, sql)
+		}
+	}
+	// The materialized inner matrix must be gone: no per-(series, anchor)
+	// regroup and no window_pairs array.
+	for _, unwanted := range []string{"window_pairs", "GROUP BY `Attributes`, `anchor_ts`"} {
+		if strings.Contains(sql, unwanted) {
+			t.Errorf("materialized inner matrix still emitted (found %q)\nSQL: %s", unwanted, sql)
+		}
+	}
+	// The matrix contract still holds: one row per (series, anchor), with the
+	// anchor surfaced under both the internal alias and the schema timestamp
+	// column the wrapping projection reads.
+	if !strings.Contains(sql, "AS `anchor_ts`") || !strings.Contains(sql, "AS `TimeUnix`") {
+		t.Errorf("fused matrix must project anchor_ts and the schema timestamp column\nSQL: %s", sql)
+	}
+}
+
+// TestNonFusibleMatrixSubqueryFallsThrough is the negative control for the
+// call-site reordering: a range-mode outer over a NON-extrapolating inner
+// (irate is pairwise, never fusible) must still reach the materialized matrix
+// emitter. Without this, "fusion first" could be satisfied by a guard that
+// swallows shapes it cannot render.
+func TestNonFusibleMatrixSubqueryFallsThrough(t *testing.T) {
+	t.Parallel()
+	r := fusedMatrixOuter()
+	r.Input.(*chplan.RangeWindow).Func = "irate"
+	sql, _, err := Emit(context.Background(), r)
+	if err != nil {
+		t.Fatalf("Emit(non-fusible matrix subquery): %v", err)
+	}
+	if strings.Contains(sql, fusedAnchorGridAlias) {
+		t.Errorf("irate inner must not fuse\nSQL: %s", sql)
+	}
+	if !strings.Contains(sql, "GROUP BY `Attributes`, `anchor_ts`") {
+		t.Errorf("non-fusible matrix subquery must fall through to the materialized "+
+			"regroup\nSQL: %s", sql)
+	}
+}
+
+// TestFusedSubqueryOuterShapeGuard pins tryEmitFusedSubquery's outer-shape
+// guard. Two outer shapes fuse — INSTANT (OuterRange == 0 && Step == 0) and
+// MATRIX (OuterRange > 0 && Step > 0) — and the two half-set pairs must not:
+// an OuterRange with no Step has no grid spacing and a Step with no OuterRange
+// has no span, so neither can name an anchor grid. Calling the entry point
+// directly with a valid fusible inner pins every arm:
+//   - OuterRange>0, Step==0 → handled=false (a `&&`→`||` on matrixOuter, or
+//     dropping the Step conjunct, would fuse a grid-less shape).
+//   - OuterRange==0, Step>0 → handled=false (same, on the other conjunct).
+//   - OuterRange==0, Step==0 → handled=true (instant).
+//   - OuterRange>0, Step>0  → handled=true (matrix, #1505).
+func TestFusedSubqueryOuterShapeGuard(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name        string
@@ -214,9 +291,10 @@ func TestFusedInstantSelfGuard(t *testing.T) {
 		step        time.Duration
 		wantHandled bool
 	}{
-		{"non-instant OuterRange", 1 * time.Minute, 0, false},
-		{"non-instant Step", 0, 1 * time.Minute, false},
+		{"OuterRange without Step", 1 * time.Minute, 0, false},
+		{"Step without OuterRange", 0, 1 * time.Minute, false},
 		{"instant fuses", 0, 0, true},
+		{"matrix fuses", 10 * time.Minute, 1 * time.Minute, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -226,9 +304,9 @@ func TestFusedInstantSelfGuard(t *testing.T) {
 			r.OuterRange = tc.outerRange
 			r.Step = tc.step
 			e := &emitter{}
-			handled, err := e.tryEmitFusedInstantSubquery(r)
+			handled, err := e.tryEmitFusedSubquery(r)
 			if handled != tc.wantHandled {
-				t.Errorf("tryEmitFusedInstantSubquery(OuterRange=%v, Step=%v) handled=%v, want %v",
+				t.Errorf("tryEmitFusedSubquery(OuterRange=%v, Step=%v) handled=%v, want %v",
 					tc.outerRange, tc.step, handled, tc.wantHandled)
 			}
 			if tc.wantHandled && err != nil {
@@ -239,7 +317,7 @@ func TestFusedInstantSelfGuard(t *testing.T) {
 }
 
 // TestFusedInstantInnerGate kills the inner-matrix gate in
-// tryEmitFusedInstantSubquery (range_window_fused.go:102/113/122). Each case
+// tryEmitFusedSubquery (range_window_fused.go:102/113/122). Each case
 // starts from the fully-fusible fusedOuter() and perturbs ONE inner field so
 // the gate should reject (handled=false); the flip would proceed to fuse
 // (handled=true). The clean baseline fuses (handled=true).
@@ -271,7 +349,7 @@ func TestFusedInstantInnerGate(t *testing.T) {
 			r := fusedOuter()
 			tc.perturb(r.Input.(*chplan.RangeWindow))
 			e := &emitter{}
-			handled, err := e.tryEmitFusedInstantSubquery(r)
+			handled, err := e.tryEmitFusedSubquery(r)
 			if err != nil {
 				t.Fatalf("gate rejection must not error, got %v", err)
 			}
@@ -282,7 +360,7 @@ func TestFusedInstantInnerGate(t *testing.T) {
 	}
 	// Positive control: the untouched fusible shape fuses.
 	e := &emitter{}
-	if handled, err := e.tryEmitFusedInstantSubquery(fusedOuter()); err != nil || !handled {
+	if handled, err := e.tryEmitFusedSubquery(fusedOuter()); err != nil || !handled {
 		t.Fatalf("clean fusible inner must fuse: handled=%v err=%v", handled, err)
 	}
 }

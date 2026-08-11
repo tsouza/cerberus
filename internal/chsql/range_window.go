@@ -1617,6 +1617,21 @@ func anchorGridFloorIdxFrag(dist Frag, addNS, stepNS int64) Frag {
 	)
 }
 
+// anchorGridCeilIdxFrag renders the CEILING grid index
+// `ceil((<dist> + <addNS>) / <stepNS>)`, the sibling anchorGridFloorIdxFrag's
+// floor index answers.
+//
+// The two differ only by which side of the grid the open window edge sits on:
+// a floor index answers "the last anchor at or before x", a ceiling index "the
+// first anchor at or after x". For integers with stepNS > 0,
+// `ceil(x/s) == floor((x-1)/s) + 1`, and anchorGridFloorIdxFrag(dist, a, s)
+// already renders exactly `floorDiv(dist + a, s) + 1` — so shifting its addend
+// down by one nanosecond turns its floor division into the ceiling, reusing the
+// signed-divisor / negative-floor correction verbatim rather than cloning it.
+func anchorGridCeilIdxFrag(dist Frag, addNS, stepNS int64) Frag {
+	return anchorGridFloorIdxFrag(dist, addNS-1, stepNS)
+}
+
 // maybePushInnerScanTimeBounds pushes the (Start - range, End] time
 // bound onto `innerSb` (the wrapping SELECT over the MetricsAggregate
 // Inner subquery) so ClickHouse can prune partitions / granules by the
@@ -2534,22 +2549,35 @@ func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag)
 	if r.ValueColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
 	}
-	if r.OuterRange > 0 {
-		if r.Step <= 0 {
-			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
-		}
-		return e.emitRangeWindowOverTimeDirectMatrix(r, agg)
+	if r.OuterRange > 0 && r.Step <= 0 {
+		return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
 	}
 
-	// Memory-bounded fused path for instant PromQL subqueries
+	// Memory-bounded fused path for PromQL subqueries
 	// `<reducer>(rate|increase|delta(m[range])[outer:step])`: collapse the
 	// inner matrix regroup + outer reducer regroup into a single
 	// `GROUP BY <series>` over one per-series samples array (see
 	// range_window_fused.go). Non-fusible shapes fall through unchanged.
-	if handled, err := e.tryEmitFusedInstantSubquery(r); handled || err != nil {
+	//
+	// This is attempted BEFORE the matrix delegation below, not after: a
+	// `/api/v1/query_range` outer reducer is exactly the shape whose inner
+	// matrix is widened to the whole request window and therefore the shape
+	// that most needs never to materialise it (#1505).
+	if handled, err := e.tryEmitFusedSubquery(r); handled || err != nil {
 		return err
 	}
 
+	if r.OuterRange > 0 {
+		return e.emitRangeWindowOverTimeDirectMatrix(r, agg)
+	}
+	return e.emitRangeWindowOverTimeDirectInstant(r, agg)
+}
+
+// emitRangeWindowOverTimeDirectInstant is the OuterRange == 0 variant of
+// emitRangeWindowOverTimeDirect — the single-anchor shape described there,
+// split out so the fused emitter's differential coverage can render the
+// materialized shape a fusible instant subquery would otherwise never reach.
+func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, agg Frag) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)

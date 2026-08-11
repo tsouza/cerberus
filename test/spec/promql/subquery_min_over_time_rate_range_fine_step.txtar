@@ -1,0 +1,109 @@
+-- query.promql --
+min_over_time(rate(http_requests_total[2m])[4m:30s])
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:53:00', 9), 0.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:53:00', 9), 0.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:53:20', 9), 7.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:53:40', 9), 14.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:54:00', 9), 21.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:54:00', 9), 9.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:54:20', 9), 28.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:54:40', 9), 35.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:00', 9), 42.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:55:00', 9), 18.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:20', 9), 49.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:40', 9), 56.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:56:00', 9), 63.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:56:00', 9), 27.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:56:20', 9), 70.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:56:40', 9), 77.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 84.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:57:00', 9), 36.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:20', 9), 91.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:57:40', 9), 98.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 105.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:58:00', 9), 45.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:58:20', 9), 112.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:58:40', 9), 119.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 126.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2025-12-31 23:59:00', 9), 54.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:20', 9), 133.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:40', 9), 140.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 147.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2026-01-01 00:00:00', 9), 63.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:20', 9), 154.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:40', 9), 161.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 168.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2026-01-01 00:01:00', 9), 72.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:20', 9), 175.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:40', 9), 182.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 189.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2026-01-01 00:02:00', 9), 81.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:20', 9), 196.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:40', 9), 203.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 210.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2026-01-01 00:03:00', 9), 90.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:20', 9), 217.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:40', 9), 224.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 231.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2026-01-01 00:04:00', 9), 99.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:20', 9), 238.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:40', 9), 245.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 252.0),
+    ('http_requests_total', map('job', 'worker'), toDateTime64('2026-01-01 00:05:00', 9), 108.0);
+-- expected_rows --
+[
+  [{"job": "api"}, "2026-01-01T00:00:00Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:00:30Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:01:00Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:01:30Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:02:00Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:02:30Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:03:00Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:03:30Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:04:00Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:04:30Z", 0.35],
+  [{"job": "api"}, "2026-01-01T00:05:00Z", 0.35],
+  [{"job": "worker"}, "2026-01-01T00:00:00Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:00:30Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:01:00Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:01:30Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:02:00Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:02:30Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:03:00Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:03:30Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:04:00Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:04:30Z", 0.15],
+  [{"job": "worker"}, "2026-01-01T00:05:00Z", 0.15]
+]
+-- args --
+[0] string = "service.name"
+[1] string = "service_name"
+[2] string = "service.name"
+[3] string = "service_name"
+[4] string = ""
+[5] string = "service_name"
+[6] string = "http_requests_total"
+[7] string = "http.requests.total"
+[8] string = "http.requests/total"
+[9] string = "http.requests_total"
+[10] string = "http/requests/total"
+[11] string = "http/requests_total"
+[12] string = "http_requests.total"
+-- chplan --
+RangeWindow func=min_over_time range=4m0s step=30s outerRange=5m0s ts=anchor_ts value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  RangeWindow func=rate range=2m0s step=30s outerRange=9m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:56:00Z end=2026-01-01T00:05:00Z
+    Project [MetricName AS MetricName, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+        Scan(otel_metrics_sum)
+-- sql --
+SELECT `Attributes`, tupleElement(outer_anchor, 1) AS `anchor_ts`, tupleElement(outer_anchor, 2) AS `Value` FROM (SELECT `Attributes`, arrayJoin(arrayFilter(p -> tupleElement(p, 3) > 0, arrayMap(o -> arrayMap(q -> (o, arrayReduce('min', q), length(q)), [arrayMap(c -> tupleElement(c, 3), arrayFilter(c -> tupleElement(c, 2), arraySlice(anchor_grid, greatest(0, intDiv(dateDiff('nanosecond', o, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 1, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', o, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 1, toInt64(30000000000)) < 0) + 1) + 1, greatest(0, least(18, intDiv(dateDiff('nanosecond', o, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) + 239999999999, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', o, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) + 239999999999, toInt64(30000000000)) < 0) + 1) - greatest(0, intDiv(dateDiff('nanosecond', o, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 1, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', o, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 1, toInt64(30000000000)) < 0) + 1)))))])[1], arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(11))))) AS `outer_anchor` FROM (SELECT `Attributes`, arrayMap(a -> arrayMap(s -> (a, length(s) >= 2, if((toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) > 0, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), s)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), s)))) * ((toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) + if(arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), s)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), s)))) > 0 AND tupleElement(s[1], 2) >= 0, least(if((toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(120000000000), tupleElement(s[1], 1))) / 1e9) >= 1.1 * (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1) / 2, (toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(120000000000), tupleElement(s[1], 1))) / 1e9)), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) * tupleElement(s[1], 2) / arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), s)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), s))))), if((toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(120000000000), tupleElement(s[1], 1))) / 1e9) >= 1.1 * (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1) / 2, (toFloat64(dateDiff('nanosecond', a - toIntervalNanosecond(120000000000), tupleElement(s[1], 1))) / 1e9))) + if((toFloat64(dateDiff('nanosecond', tupleElement(s[length(s)], 1), a)) / 1e9) >= 1.1 * (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1), (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / (length(s) - 1) / 2, (toFloat64(dateDiff('nanosecond', tupleElement(s[length(s)], 1), a)) / 1e9))) / (toFloat64(dateDiff('nanosecond', tupleElement(s[1], 1), tupleElement(s[length(s)], 1))) / 1e9) / 120, nan)), [arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(arrayFilter(p -> tupleElement(p, 1) > a - toIntervalNanosecond(120000000000) AND tupleElement(p, 1) <= a, samples))))])[1], arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000) - toIntervalNanosecond(i * 30000000000), range(18))) AS `anchor_grid` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `samples` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:56:00.000000000', 9) - toIntervalNanosecond(120000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`)))
