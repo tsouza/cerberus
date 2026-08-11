@@ -74,36 +74,133 @@ const interleavedSpelling = "http.server/request.body.size"
 // spelling above, and the name it sends back in `match[]`.
 const promGrammarName = "http_server_request_body_size"
 
+// capBoundaryBase has exactly maxRewritableUnderscores (6) internal
+// underscores, which puts its classic-histogram / counter COMPANION names one
+// over the cap. That boundary is the second place the two layers differed, and
+// the reason the retirement's justification is about composition rather than
+// about interleaved separators alone:
+//
+//   - The bare base is AT the cap, so
+//     [format.PromLabelToOTelCandidates] still enumerates its full dot powerset
+//     and zone forms — every stored spelling of the base resolves.
+//   - A companion name (`<base>_count`) has 7, so the generator falls back to
+//     `{self, all-dots, all-slashes}` and drops the powerset and the zone
+//     enumeration entirely.
+//
+// The companion arm that scans the sum/gauge table under the LITERAL suffixed
+// name (internal/promql.buildLiteralNameCompanionArm) therefore cannot reach a
+// stored `<dotted base>_count`, while the retired layer reached it by dotting
+// the base FIRST and appending the suffix to each candidate. The histogram arms
+// are unaffected — they strip the suffix before expanding, so they expand the
+// base and stay under the cap.
+//
+// As with the interleaved spelling, the PromQL query path never reached these
+// either, so the surfaces now agree. The family below pins BOTH halves: the
+// base spellings resolve on both surfaces, and the over-cap companion spelling
+// resolves on neither.
+const capBoundaryBase = "deep_a_b_c_d_e_f"
+
+// capBoundaryGaugeSpellings are stored spellings of capBoundaryBase itself —
+// all reachable, because the base sits AT the cap.
+var capBoundaryGaugeSpellings = []string{
+	"deep_a_b_c_d_e_f",
+	"deep.a.b.c.d.e.f",
+	"deep.a.b.c.d.e_f",
+}
+
+// capBoundarySumSpellings are stored spellings of the `_count` COMPANION. The
+// underscored one is reachable (it is the literal the companion arm binds);
+// the dotted one is over the cap and is not.
+var capBoundarySumSpellings = []string{
+	"deep_a_b_c_d_e_f_count",
+	"deep.a.b.c.d.e.f_count",
+}
+
+// overCapCompanionSpelling is the spelling this change stopped reaching, and
+// which the query path never reached.
+const overCapCompanionSpelling = "deep.a.b.c.d.e.f_count"
+
+// The probe seeds and asserts on the CONTENTS of its tables, so it must not
+// share table names with any other test in this package. chDB sessions are
+// per-Client, but several chdb-tagged tests here seed the default OTel table
+// names, and `CREATE OR REPLACE TABLE` from one of them running concurrently
+// would silently empty this probe's rows — the assertions would then compare
+// two empty sets and agree for the wrong reason. Pinning probe-private table
+// names through the schema makes the probe independent of test ordering and
+// parallelism.
+const (
+	probeGaugeTable     = "probe_spelling_gauge"
+	probeSumTable       = "probe_spelling_sum"
+	probeHistogramTable = "probe_spelling_histogram"
+)
+
+// probeSeedAgeSeconds backdates every seeded row. The instant-query surface
+// takes its evaluation instant from the `time` parameter, which carries
+// whole-second precision, while `now64(9)` writes a sub-second timestamp: a row
+// inserted at T.83 is strictly AFTER an evaluation instant of T, so the
+// `TimeUnix <= eval` half of the staleness window drops it. Seeding at
+// now64(9) therefore makes the result depend on where in the wall-clock second
+// the seed landed — 5 rows, some rows, or none. Backdating well clear of that
+// boundary (and well inside the 5m staleness lookback, so every row is still
+// the live sample for its series) makes the probe deterministic.
+const probeSeedAgeSeconds = 30
+
+func storageSpellingSchema() schema.Metrics {
+	s := schema.DefaultOTelMetrics()
+	s.GaugeTable = probeGaugeTable
+	s.SumTable = probeSumTable
+	s.HistogramTable = probeHistogramTable
+	return s
+}
+
 func storageSpellingSeed() string {
 	var b strings.Builder
-	b.WriteString(`CREATE OR REPLACE TABLE otel_metrics_gauge (
+	b.WriteString(`CREATE OR REPLACE TABLE ` + probeGaugeTable + ` (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, toUnixTimestamp64Nano(TimeUnix));`)
-	b.WriteString(`CREATE OR REPLACE TABLE otel_metrics_sum (
+	b.WriteString(`CREATE OR REPLACE TABLE ` + probeSumTable + ` (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, toUnixTimestamp64Nano(TimeUnix));`)
-	b.WriteString(`CREATE OR REPLACE TABLE otel_metrics_histogram (
+	b.WriteString(`CREATE OR REPLACE TABLE ` + probeHistogramTable + ` (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Count UInt64, Sum Float64,
 	  BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, toUnixTimestamp64Nano(TimeUnix));`)
 	for _, n := range storageSpellings {
-		b.WriteString(fmt.Sprintf(
-			`INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value) `+
-				`VALUES ('svc','%s', map('%s','%s'), now64(9), 1);`,
-			n, storageSpellingProbeLabel, n,
-		))
-		b.WriteString(fmt.Sprintf(
-			`INSERT INTO otel_metrics_histogram (ServiceName, MetricName, Attributes, TimeUnix, `+
+		fmt.Fprintf(
+			&b,
+			`INSERT INTO `+probeGaugeTable+` (ServiceName, MetricName, Attributes, TimeUnix, Value) `+
+				`VALUES ('svc','%s', map('%s','%s'), now64(9) - INTERVAL %d SECOND, 1);`,
+			n, storageSpellingProbeLabel, n, probeSeedAgeSeconds,
+		)
+		fmt.Fprintf(
+			&b,
+			`INSERT INTO `+probeHistogramTable+` (ServiceName, MetricName, Attributes, TimeUnix, `+
 				`Count, Sum, BucketCounts, ExplicitBounds) `+
-				`VALUES ('svc','%s', map('%s','%s'), now64(9), 10, 5.0, [1,2,3],[0.1,0.5]);`,
-			n, storageSpellingProbeLabel, n,
-		))
+				`VALUES ('svc','%s', map('%s','%s'), now64(9) - INTERVAL %d SECOND, 10, 5.0, [1,2,3],[0.1,0.5]);`,
+			n, storageSpellingProbeLabel, n, probeSeedAgeSeconds,
+		)
+	}
+	for _, n := range capBoundaryGaugeSpellings {
+		fmt.Fprintf(
+			&b,
+			`INSERT INTO `+probeGaugeTable+` (ServiceName, MetricName, Attributes, TimeUnix, Value) `+
+				`VALUES ('svc','%s', map('%s','%s'), now64(9) - INTERVAL %d SECOND, 1);`,
+			n, storageSpellingProbeLabel, n, probeSeedAgeSeconds,
+		)
+	}
+	for _, n := range capBoundarySumSpellings {
+		fmt.Fprintf(
+			&b,
+			`INSERT INTO `+probeSumTable+` (ServiceName, MetricName, Attributes, TimeUnix, Value) `+
+				`VALUES ('svc','%s', map('%s','%s'), now64(9) - INTERVAL %d SECOND, 1);`,
+			n, storageSpellingProbeLabel, n, probeSeedAgeSeconds,
+		)
 	}
 	return b.String()
 }
@@ -112,7 +209,7 @@ func storageSpellingServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	client := chclienttest.NewChDB(t)
 	client.Seed(t, storageSpellingSeed())
-	h := prom.New(client, schema.DefaultOTelMetrics(), nil)
+	h := prom.New(client, storageSpellingSchema(), nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -378,5 +475,185 @@ func gaugeOnly(entries []string) []string {
 			out = append(out, e)
 		}
 	}
+	return out
+}
+
+// TestSeriesStorageSpellings_CapBoundaryCompanionMatchesQueryPath pins the
+// second place the retired composition reached further than the surviving
+// predicate: a stored COMPANION name whose Prom-grammar spelling sits one
+// underscore over maxRewritableUnderscores. See capBoundaryBase for the
+// mechanism.
+//
+// Both halves are asserted, because only the pair is meaningful. If just the
+// negative half were pinned, an accidental narrowing of the base expansion
+// would pass; if just the positive half were, the divergence this documents
+// would go unrecorded.
+func TestSeriesStorageSpellings_CapBoundaryCompanionMatchesQueryPath(t *testing.T) {
+	srv := storageSpellingServer(t)
+
+	// Positive half: the base is AT the cap, so every stored spelling of it
+	// resolves, and both surfaces agree on the set.
+	baseSeries := spellingsOnly(seriesSpellings(t, srv, `{__name__="`+capBoundaryBase+`"}`), capBoundaryGaugeSpellings)
+	baseQuery := spellingsOnly(querySpellings(t, srv, `{__name__="`+capBoundaryBase+`"}`), capBoundaryGaugeSpellings)
+	if diff := setDiff(baseSeries, baseQuery); diff != "" {
+		t.Fatalf("/series and /query disagree on the stored spellings of the at-cap base %q:\n%s",
+			capBoundaryBase, diff)
+	}
+	if len(baseSeries) != len(capBoundaryGaugeSpellings) {
+		t.Fatalf("the at-cap base %q resolved %d of its %d seeded spellings (%v) — the base "+
+			"expansion is meant to be unaffected by the cap, since 6 underscores is exactly "+
+			"maxRewritableUnderscores; a short count means the candidate powerset degenerated "+
+			"one name too early", capBoundaryBase, len(baseSeries), len(capBoundaryGaugeSpellings), baseSeries)
+	}
+
+	// Negative half: the over-cap companion spelling resolves on NEITHER
+	// surface.
+	//
+	// The two surfaces must be probed with DIFFERENT matchers, because the
+	// divergence only ever appeared on one of them. The retired layer
+	// short-circuited on an input name that already carried a companion suffix
+	// (its equalNameMatcherValue skipped `_bucket` / `_count` / `_sum` /
+	// `_total`), so `match[]={__name__="<base>_count"}` never fanned out. What
+	// it DID fan out was the BARE base: it dotted the base first, and the
+	// companion layer then appended `_count` to each dotted candidate,
+	// producing a literal-name arm that matched the stored dotted companion
+	// row. So the /series half must use the bare base to reproduce it.
+	//
+	// On the query side the reachable spelling of that row is its Prom-grammar
+	// wire name — `<base>_count` — which is what /series would advertise, and
+	// which is the matcher a Grafana panel built from that listing sends back.
+	companionMatcher := `{__name__="` + capBoundaryBase + `_count"}`
+	for _, surface := range []struct {
+		name string
+		got  []string
+	}{
+		{"/series", seriesSpellings(t, srv, `{__name__="`+capBoundaryBase+`"}`)},
+		{"/query", querySpellings(t, srv, companionMatcher)},
+	} {
+		for _, entry := range surface.got {
+			if strings.HasPrefix(entry, overCapCompanionSpelling+"|") {
+				t.Errorf("%s resolved the over-cap companion spelling %q. Both surfaces must "+
+					"agree here: /series advertising it while a query for the name it advertises "+
+					"cannot fetch it is exactly the divergence #1528 removed. If this row is to "+
+					"be reachable, the fix is in format.PromLabelToOTelCandidates (raise or "+
+					"remove maxRewritableUnderscores), which BOTH surfaces read — not a "+
+					"metadata-only string expansion.",
+					surface.name, overCapCompanionSpelling)
+			}
+		}
+	}
+
+	// The under-cap companion spelling DOES resolve — without this the
+	// negative half above could pass because the companion arm stopped
+	// working altogether.
+	underCap := spellingsOnly(seriesSpellings(t, srv, companionMatcher), []string{capBoundaryBase + "_count"})
+	if len(underCap) == 0 {
+		t.Fatalf("/series resolved none of the seeded `%s_count` rows — the companion arm is "+
+			"not running at all, so the over-cap assertion above proves nothing",
+			capBoundaryBase)
+	}
+
+	var seeded bool
+	for _, n := range capBoundarySumSpellings {
+		if n == overCapCompanionSpelling {
+			seeded = true
+		}
+	}
+	if !seeded {
+		t.Fatalf("%q is not in the seeded corpus — the assertion above is vacuous",
+			overCapCompanionSpelling)
+	}
+}
+
+// TestLabelValuesStorageSpellings_MatchSeries extends the value-level proof to
+// the third matched metadata surface. /series, /labels and
+// /label/<name>/values all fan out through the same
+// Handler.expandMetadataMatchers, so retiring a layer there changes all three;
+// pinning only /series would leave the other two asserted by construction
+// rather than by measurement.
+//
+// The probe label carries the stored spelling, so asking for that label's
+// VALUES under the same matcher yields exactly the set of stored rows the
+// surface resolved — directly comparable with /series.
+func TestLabelValuesStorageSpellings_MatchSeries(t *testing.T) {
+	srv := storageSpellingServer(t)
+
+	matcher := `{__name__="` + promGrammarName + `"}`
+	fromSeries := map[string]struct{}{}
+	for _, entry := range seriesSpellings(t, srv, matcher) {
+		fromSeries[strings.SplitN(entry, "|", 2)[0]] = struct{}{}
+	}
+
+	reqURL := fmt.Sprintf("%s/api/v1/label/%s/values?match[]=%s&start=%d&end=%d",
+		srv.URL, storageSpellingProbeLabel, url.QueryEscape(matcher),
+		time.Now().Add(-time.Hour).Unix(), time.Now().Add(time.Hour).Unix())
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET /label/values: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Status string   `json:"status"`
+		Error  string   `json:"error"`
+		Data   []string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /label/values: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || body.Status != "success" {
+		t.Fatalf("/label/values status=%d body.status=%s err=%s", resp.StatusCode, body.Status, body.Error)
+	}
+
+	fromValues := map[string]struct{}{}
+	for _, v := range body.Data {
+		fromValues[v] = struct{}{}
+	}
+	if len(fromValues) == 0 {
+		t.Fatal("/label/values returned nothing for the seeded probe label — the comparison " +
+			"below would agree vacuously")
+	}
+
+	var missing, extra []string
+	for s := range fromSeries {
+		if _, ok := fromValues[s]; !ok {
+			missing = append(missing, s)
+		}
+	}
+	for s := range fromValues {
+		if _, ok := fromSeries[s]; !ok {
+			extra = append(extra, s)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Fatalf("/label/%s/values and /series disagree on which stored spellings of %q "+
+			"resolve:\n  only in /series: %v\n  only in /label/values: %v\n"+
+			"Both fan out through the same Handler.expandMetadataMatchers and lower through the "+
+			"same predicate, so a divergence means one surface grew or lost a resolution path "+
+			"the other did not.", storageSpellingProbeLabel, promGrammarName, missing, extra)
+	}
+}
+
+// spellingsOnly keeps the entries whose stored spelling is in `want`.
+func spellingsOnly(entries, want []string) []string {
+	in := make(map[string]struct{}, len(want))
+	for _, w := range want {
+		in[w] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		spelling := strings.SplitN(e, "|", 2)[0]
+		if _, ok := in[spelling]; !ok {
+			continue
+		}
+		if _, dup := seen[spelling]; dup {
+			continue
+		}
+		seen[spelling] = struct{}{}
+		out = append(out, spelling)
+	}
+	sort.Strings(out)
 	return out
 }

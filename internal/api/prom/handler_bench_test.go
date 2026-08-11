@@ -281,7 +281,7 @@ func (c *countingSeriesQuerier) QueryExemplars(_ context.Context, _ string, _ ..
 //   - typical: a small batch of selectors (the common Grafana variable
 //     picker shape) collapses into exactly 1 combined CH round-trip.
 //   - broad:   a metrics-explorer "every published metric" probe whose
-//     V×H expansion blows past the K=128 arm cap fans into ⌈N/K⌉ bounded
+//     companion expansion blows past the K=128 arm cap fans into ⌈N/K⌉ bounded
 //     round-trips — far fewer than the per-variant count the un-batched
 //     fan-out would have issued, and never the single un-bounded statement
 //     that 502'd PR #790.

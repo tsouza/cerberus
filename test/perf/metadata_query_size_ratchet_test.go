@@ -66,6 +66,26 @@ const metadataQuerySizeBaselinePath = "metadata-query-size-baseline.json"
 // `just update-metadata-query-size-baseline`; mirrors UPDATE_SCALE_WALL_BASELINE.
 const metadataQuerySizeUpdateEnv = "UPDATE_METADATA_QUERY_SIZE_BASELINE"
 
+// metadataQuerySizeFloorFactor is the fraction of the measured figure the
+// regenerated FLOOR carries. A ratchet with ceilings only is half a gate: if a
+// change silently stopped emitting the classic-histogram companion arms, every
+// upper bound would fall and the run would report a win while the metadata
+// surface quietly answered for fewer series. The floor makes "less rendered
+// SQL" fail too, so a drop has to be explained rather than banked. It is
+// generous enough (25% below) that ordinary emit-shape churn does not trip it,
+// while losing a whole arm family (a 4x drop) does.
+const metadataQuerySizeFloorFactor = 0.75
+
+// maxRenderedQueryBudgetBytes mirrors maxRenderedQueryBytes in
+// internal/api/prom/metadata.go: the budget the production rendered-size guard
+// splits a combined query to stay under. It is asserted directly rather than
+// recorded in the baseline because it is a CONTRACT, not a measurement — the
+// guard promises it for any request, however broad. Recording a measured
+// fraction of it instead (the first cut of this ratchet pinned ~175KB) makes a
+// benign re-pack that lands a chunk at 180KB fail as if it were a fan-out
+// regression, which is noise, not signal.
+const maxRenderedQueryBudgetBytes = 200 * 1024
+
 // metadataQuerySizeHeadroom is the multiple of the measured figure the
 // regenerated budget carries. Small on purpose: the measurement is fully
 // deterministic (no engine, no timing), so the only reason to leave room at
@@ -112,17 +132,17 @@ type metadataQuerySizeBaseline struct {
 	// the guard puts it.
 	BoundBytesPerSelectorBound int `json:"bound_bytes_per_selector_bound"`
 
-	// MaxBoundQueryBytesBound is the max BOUND size (placeholder SQL with
-	// every `?` accounted for by its inlined arg literal — the bytes CH's
-	// parser actually counts) of any single combined query the probe
-	// produces. This is the figure both incidents were measured in, and the
-	// one that must stay far below ClickHouse's 262144-byte ceiling.
-	MaxBoundQueryBytesBound int `json:"max_bound_query_bytes_bound"`
+	// BoundBytesPerSelectorFloor is the same measurement's LOWER bound. See
+	// metadataQuerySizeFloorFactor for why a ceiling alone is not enough.
+	BoundBytesPerSelectorFloor int `json:"bound_bytes_per_selector_floor"`
 
 	// CombinedQueriesBound is the max number of round-trips the probe may
 	// fan into. A broad probe splits into ⌈arms/128⌉ queries (and further on
 	// the byte guard), so this rises in lock-step with the fan-out and pins
-	// the round-trip cost the fan-in batching (task #71) bought.
+	// the round-trip cost the fan-in batching (task #71) bought. The `+1` the
+	// regenerator adds on top of the headroom is because this axis is a small
+	// integer: at a measured 4, the multiplicative headroom alone leaves no
+	// room for a single extra split from an unrelated emit-shape change.
 	CombinedQueriesBound int `json:"combined_queries_bound"`
 }
 
@@ -281,12 +301,23 @@ func TestMetadataQuerySizeRatchet(t *testing.T) {
 			"reaches stored rows the predicate cannot.", got, base.BoundBytesPerSelectorBound)
 	}
 
-	if m.maxBoundBytes > base.MaxBoundQueryBytesBound {
-		t.Errorf("largest bound combined query regressed: %d > %d byte budget. This is the "+
-			"figure ClickHouse's max_query_size (262144) counts — the driver inlines every bound "+
-			"arg client-side — and the budget sits far below the ceiling on purpose, so this "+
-			"fails while there is still margin rather than as a 502 in production.",
-			m.maxBoundBytes, base.MaxBoundQueryBytesBound)
+	if got := m.boundBytesPerSelector(); got < base.BoundBytesPerSelectorFloor {
+		t.Errorf("rendered SQL per match[] selector FELL to %d, below the %d floor. A drop is "+
+			"not automatically a win: the surviving fan-out is one arm per classic-histogram "+
+			"companion, so materially less rendered SQL most likely means an arm family stopped "+
+			"being emitted and the metadata surface now answers for fewer series. Confirm "+
+			"against the value-level pins in "+
+			"internal/api/prom/handler_chdb_series_storage_spelling_test.go, then run "+
+			"`just update-metadata-query-size-baseline` if the reduction is real and intended.",
+			got, base.BoundBytesPerSelectorFloor)
+	}
+
+	if m.maxBoundBytes > maxRenderedQueryBudgetBytes {
+		t.Errorf("a single combined query bound to %d bytes, over the %d budget the production "+
+			"rendered-size guard promises to split under. This is the figure ClickHouse's "+
+			"max_query_size (262144) counts — the driver inlines every bound arg client-side — "+
+			"so a breach here is the #790 / #799 502 class reaching the wire.",
+			m.maxBoundBytes, maxRenderedQueryBudgetBytes)
 	}
 
 	if m.combinedQueries > base.CombinedQueriesBound {
@@ -350,7 +381,7 @@ func readMetadataQuerySizeBaseline(t *testing.T) metadataQuerySizeBaseline {
 	if err := json.Unmarshal(raw, &b); err != nil {
 		t.Fatalf("parse baseline %s: %v", metadataQuerySizeBaselinePath, err)
 	}
-	if b.BoundBytesPerSelectorBound <= 0 || b.MaxBoundQueryBytesBound <= 0 || b.CombinedQueriesBound <= 0 {
+	if b.BoundBytesPerSelectorBound <= 0 || b.BoundBytesPerSelectorFloor <= 0 || b.CombinedQueriesBound <= 0 {
 		t.Fatalf("baseline %s has a non-positive bound (%+v) — every assertion would pass or "+
 			"fail for the wrong reason", metadataQuerySizeBaselinePath, b)
 	}
@@ -361,7 +392,7 @@ func writeMetadataQuerySizeBaseline(t *testing.T, m metadataProbeMeasurement) {
 	t.Helper()
 	b := metadataQuerySizeBaseline{
 		BoundBytesPerSelectorBound: int(float64(m.boundBytesPerSelector()) * metadataQuerySizeHeadroom),
-		MaxBoundQueryBytesBound:    int(float64(m.maxBoundBytes) * metadataQuerySizeHeadroom),
+		BoundBytesPerSelectorFloor: int(float64(m.boundBytesPerSelector()) * metadataQuerySizeFloorFactor),
 		CombinedQueriesBound:       int(float64(m.combinedQueries)*metadataQuerySizeHeadroom) + 1,
 	}
 	raw, err := json.MarshalIndent(b, "", "  ")

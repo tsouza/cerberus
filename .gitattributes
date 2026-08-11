@@ -108,6 +108,14 @@ test/perf/solver-decision-baseline/*.json    -merge
 #   only when a cost increase is genuinely intended.
 test/perf/scale-wall-baseline.json           -merge
 
+# Regenerate: `just update-metadata-query-size-baseline`
+#   (UPDATE_METADATA_QUERY_SIZE_BASELINE=1 go test -count=1
+#    -run TestMetadataQuerySizeRatchet ./test/perf/ — pure Go, no chDB). NOT
+#   chained into `just update-golden`: like the scale-wall bounds it records a
+#   measured ceiling on rendered query size, so it moves only when a size
+#   increase is genuinely intended.
+test/perf/metadata-query-size-baseline.json  -merge
+
 # Regenerate: `just update-coverage-floor`
 #   (COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs, reading
 #    the cover-merged.out `just coverage` leaves behind — needs libchdb.so so the

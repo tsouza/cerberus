@@ -18,10 +18,10 @@
 // The V layer itself is gone as of the #1528 retirement — the dotted-storage
 // candidates resolve inside the lowering as a flat `MetricName IN (?,…)` per
 // arm, so a match[] selector fans out over the H (classic-histogram
-// companion) layer alone. TestMetadataQueryArmBudget_ChDB pins the resulting
-// arm count and rendered-query size.
+// companion) layer alone. TestMetadataQuerySizeRatchet (pure Go, same package)
+// pins the resulting rendered-query size and round-trip count.
 //
-// Task #71 fixed the fan-in: the V×H×matcher variant set collapses into ONE
+// Task #71 fixed the fan-in: the H×matcher variant set collapses into ONE
 // combined UNION-ALL query (chunked to ⌈N/K⌉ only past the K=128 arm cap,
 // with a rendered-size guard keeping every query under CH's max_query_size).
 // This harness drives the real in-process Prom handler against a chDB
@@ -287,18 +287,17 @@ SELECT DISTINCT MetricName, Attributes FROM (
 	// --- ASSERTION: fan-in shipped — typical request is ONE round-trip ---
 	//
 	// The /series fan-in batching (task #71) landed on main: the
-	// triple-nested V×H×matcher fan-out now collapses into ONE combined
-	// UNION-ALL query (chunked to ⌈N/K⌉ only past the K=128 arm cap). The
-	// matcher above (`{__name__="http_server_request_duration"}`) fans out
-	// to V (dotted-candidate) × H (classic-histogram companion) variants —
-	// far below the cap — so the batched handler issues EXACTLY ONE CH
+	// nested matcher fan-out now collapses into ONE combined UNION-ALL
+	// query (chunked to ⌈N/K⌉ only past the K=128 arm cap). The matcher
+	// above (`{__name__="http_server_request_duration"}`) fans out to its
+	// H (classic-histogram companion) variants — far below the cap — so the batched handler issues EXACTLY ONE CH
 	// round-trip. This is the deterministic post-fan-in guard: a regression
 	// that re-introduced the per-variant loop (or otherwise un-batched the
 	// fan-out) would inflate n back above 1 and trip here.
 	if n != 1 {
 		t.Fatalf("/series fan-in regression: a typical histogram-shaped match[] request "+
 			"issued %d ClickHouse round-trips, want exactly 1. The fan-in batching (task "+
-			"#71) collapses the V×H variant fan-out into one combined UNION-ALL query for "+
+			"#71) collapses the variant fan-out into one combined UNION-ALL query for "+
 			"any request below the K=128 arm cap; an n>1 here means the per-variant loop "+
 			"regressed or the combined query was split when it should not have been.", n)
 	}

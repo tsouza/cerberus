@@ -1865,8 +1865,8 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 //     The IN / NOT IN tuple is the flat, constant-depth, parameterised
 //     equivalent of an OR / AND chain of (in)equalities: a span-metric
 //     name fans out to a 2^6 = 64-element candidate powerset, and the
-//     metadata handlers UNION-ALL up to 192 such variant arms into one
-//     combined query — an inline OR-chain blew past ClickHouse's 256KB
+//     metadata handlers UNION-ALL one such arm per classic-histogram
+//     companion into one combined query — an inline OR-chain blew past ClickHouse's 256KB
 //     `max_query_size` (code 62) on the metrics-explorer broad probe,
 //     while the IN tuple renders the column once + N `?` placeholders.
 //   - `__name__=~"<re>"`  → `match(MetricName, re) OR
@@ -1957,8 +1957,8 @@ func metricNamePredicateOn(m *labels.Matcher, s schema.Metrics, nameExpr func() 
 	// is the load-bearing shape: a heavily-underscored span-metric name
 	// (e.g. `traces_service_graph_request_server_seconds_sum`) fans out to
 	// the 2^6 = 64-element powerset of dotted re-expansions, and the
-	// metadata handlers UNION-ALL up to 192 such variant arms into one
-	// combined query. An OR-chain renders 64 inline `(MetricName = 'lit'
+	// metadata handlers UNION-ALL one such arm per classic-histogram
+	// companion into one combined query. An OR-chain renders 64 inline `(MetricName = 'lit'
 	// OR …)` terms *per arm*; crossed with the arm fan-out the rendered
 	// SQL crossed ClickHouse's 256KB `max_query_size` at position 262124
 	// (code 62, "Max query size exceeded") on the metrics-explorer broad

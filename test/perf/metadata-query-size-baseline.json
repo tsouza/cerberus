@@ -1,5 +1,5 @@
 {
   "bound_bytes_per_selector_bound": 37755,
-  "max_bound_query_bytes_bound": 174903,
+  "bound_bytes_per_selector_floor": 22653,
   "combined_queries_bound": 6
 }
