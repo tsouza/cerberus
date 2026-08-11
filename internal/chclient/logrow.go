@@ -4,13 +4,14 @@ import "time"
 
 // logrow.go — the log-stream row decode.
 //
-// [Sample] is the POSITIONAL row of the four/five-column projection every
-// head's SQL emits: the scan binds column 1 into a String, column 2 into the
-// label map, column 3 into a timestamp, column 4 into a float, and the
-// optional fifth column into per-row metadata. What column 1 MEANS is
-// per-query: a metric query projects the metric name into it, a log-stream
-// query projects the log line (a log line is a String, so it cannot ride in
-// the Float64 slot the metric value occupies).
+// [Sample] is the POSITIONAL row of whichever projection a head's SQL
+// emits: the scan binds column 1 into a String, column 2 into the label map,
+// column 3 into a timestamp, and — on the sample-shaped layouts only —
+// column 4 into a float, with an optional trailing column for per-row
+// metadata. What column 1 MEANS is per-query: a metric query projects the
+// metric name into it, a log-stream query projects the log line (a log line
+// is a String, so it cannot ride in the Float64 slot the metric value
+// occupies).
 //
 // [LogRow] is the semantic row for the log-stream shape, and
 // [DecodeLogRows] is the single place that positional knowledge is turned
@@ -41,11 +42,12 @@ type LogRow struct {
 // DecodeLogRows decodes a log-stream result set into the named [LogRow]
 // shape. The rows it takes are the positional [Sample] rows the shared
 // cursor produced for a log-stream projection — `(<line>, Attributes,
-// TimeUnix, Value[, Metadata])`.
+// TimeUnix[, Metadata])`.
 //
-// The projection's Value column is a constant placeholder: it exists only so
-// the log-stream shape is as wide as the positional scan the shared cursor
-// runs, and carries no log-stream meaning. Decoding drops it.
+// That projection carries no numeric column: a log stream has no value to
+// report, so the cursor's log-row scan binds no float destination and
+// [Sample.Value] is zero on every row here. [LogRow] has no slot for it by
+// construction.
 //
 // A nil or empty input returns nil. Labels and Metadata are carried over by
 // reference — Labels is the cursor's interned per-series map, so the

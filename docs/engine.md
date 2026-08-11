@@ -92,11 +92,14 @@ type Lang interface {
   TimeUnix, Value)`. Each head's per-shape switch
   (canonical / derived / structural-join) lives in the adapter,
   not in the engine. The shape is *positional*: the Loki
-  log-stream projection reuses the same four/five-column scan with
-  a log line in the first, String-typed column (aliased
-  `logql.LogLineColumn`) and a placeholder in the Float64 one, and
-  `chclient.DecodeLogRows` decodes that row into the named
-  `chclient.LogRow` the streams pivot consumes.
+  log-stream projection is `(Line, Attributes, TimeUnix)`, plus a
+  trailing `Metadata` column on a schema that carries structured
+  metadata. It puts the log line in the first, String-typed column
+  (aliased `logql.LogLineColumn`) and carries no numeric column at
+  all, because a log stream has no value to report. The cursor
+  recognises the shape by that leading alias and binds a scan with
+  no float destination; `chclient.DecodeLogRows` then decodes the
+  row into the named `chclient.LogRow` the streams pivot consumes.
 
 ### `Meta`
 

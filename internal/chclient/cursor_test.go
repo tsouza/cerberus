@@ -1,6 +1,7 @@
 package chclient
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -43,35 +44,77 @@ func (r *fakeRows) Next() bool {
 // mismatching.
 const wantHistogramDest = 4 + histogramColumnCount
 
+// scanLeadingThree binds the (String, label map, timestamp) prefix every
+// layout shares, whatever follows it.
+func scanLeadingThree(dest []any, s Sample) {
+	if p, ok := dest[0].(*string); ok {
+		*p = s.MetricName
+	}
+	if p, ok := dest[1].(*map[string]string); ok {
+		*p = s.Labels
+	}
+	if p, ok := dest[2].(*time.Time); ok {
+		*p = s.Timestamp
+	}
+}
+
+// scanMetadataJSON binds a trailing metadata destination the way the server
+// delivers it: the `Metadata` column is a `toJSONString(<Map>)` payload, so
+// it arrives as a JSON-object String the cursor unmarshals back into a map.
+func scanMetadataJSON(dst any, s Sample) error {
+	p, ok := dst.(*string)
+	if !ok {
+		return fmt.Errorf("fakeRows.Scan: metadata destination is %T, want *string", dst)
+	}
+	if s.Metadata == nil {
+		*p = ""
+		return nil
+	}
+	encoded, err := json.Marshal(s.Metadata)
+	if err != nil {
+		return fmt.Errorf("fakeRows.Scan: marshal metadata fixture: %w", err)
+	}
+	*p = string(encoded)
+	return nil
+}
+
+// isFloatDest reports whether d is the *float64 destination the SAMPLE
+// layouts bind in position 4. It is what disambiguates the two four-wide
+// layouts: the sample shape's fourth column is the numeric Value, the
+// log+metadata shape's fourth is the metadata String. Keying on the bound
+// TYPE rather than on the production probe's verdict keeps the fake an
+// independent check — a probe that mis-classified a shape would bind the
+// wrong destinations here and fail, rather than being rubber-stamped.
+func isFloatDest(d any) bool {
+	_, ok := d.(*float64)
+	return ok
+}
+
 func (r *fakeRows) Scan(dest ...any) error {
 	if r.scanErr != nil {
 		return r.scanErr
 	}
 	s := r.samples[r.idx-1]
-	switch len(dest) {
-	case 4:
-		if p, ok := dest[0].(*string); ok {
-			*p = s.MetricName
+	switch {
+	// (Line, Attributes, TimeUnix) — the log-stream layout, which binds no
+	// numeric destination at all (issue #1430).
+	case len(dest) == logRowColumns:
+		scanLeadingThree(dest, s)
+	// (Line, Attributes, TimeUnix, Metadata) — the log-stream layout with
+	// structured metadata. Same width as the sample layout, told apart by
+	// the fourth destination's type.
+	case len(dest) == logRowMetadataColumns && !isFloatDest(dest[3]):
+		scanLeadingThree(dest, s)
+		if err := scanMetadataJSON(dest[3], s); err != nil {
+			return err
 		}
-		if p, ok := dest[1].(*map[string]string); ok {
-			*p = s.Labels
-		}
-		if p, ok := dest[2].(*time.Time); ok {
-			*p = s.Timestamp
-		}
+	case len(dest) == sampleColumns:
+		scanLeadingThree(dest, s)
 		if p, ok := dest[3].(*float64); ok {
 			*p = s.Value
 		}
-	case wantHistogramDest:
-		if p, ok := dest[0].(*string); ok {
-			*p = s.MetricName
-		}
-		if p, ok := dest[1].(*map[string]string); ok {
-			*p = s.Labels
-		}
-		if p, ok := dest[2].(*time.Time); ok {
-			*p = s.Timestamp
-		}
+	case len(dest) == wantHistogramDest:
+		scanLeadingThree(dest, s)
 		if p, ok := dest[3].(*float64); ok {
 			*p = s.Value
 		}
@@ -107,7 +150,8 @@ func (r *fakeRows) Scan(dest ...any) error {
 			*p = hv.NegativeBucketCounts
 		}
 	default:
-		return fmt.Errorf("fakeRows.Scan: want 4 or %d destinations, got %d", wantHistogramDest, len(dest))
+		return fmt.Errorf("fakeRows.Scan: want %d, %d or %d destinations, got %d",
+			logRowColumns, sampleColumns, wantHistogramDest, len(dest))
 	}
 	return nil
 }

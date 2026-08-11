@@ -41,6 +41,24 @@ const histogramLastColumn = "HistogramNegativeBucketCounts"
 // appends after the base four.
 const histogramColumnCount = 9
 
+// logLineColumn is the FIRST projection alias a Loki log-stream query
+// binds its log line to, and logRowColumns / logRowMetadataColumns are
+// the two widths that shape comes in: (Line, Attributes, TimeUnix) and
+// the same plus a trailing metadataColumn. They mirror the production
+// rowsCursor's probe constants so this double binds the same
+// no-numeric-destination scan off the result-set column shape.
+//
+// A log stream has no numeric value, so the log-row layouts project no
+// Value column at all (issue #1430) — matching on the leading alias AND
+// the exact width is what keeps the four-wide log+metadata layout from
+// being read as the four-wide sample layout.
+const logLineColumn = "Line"
+
+const (
+	logRowColumns         = 3
+	logRowMetadataColumns = 4
+)
+
 // Client is a chDB-backed implementation of the Querier interface each
 // handler defines (api/prom.Querier, api/loki.Querier, api/tempo.Querier).
 // All three are subsets of *chclient.Client's surface, so a single struct
@@ -247,9 +265,10 @@ func (c *Client) prepareQuery(query string) string {
 // Query satisfies the *chclient.Client.Query surface — it runs sql
 // with positional args and decodes each row into a chclient.Sample.
 // The SQL must project (MetricName, Attributes, TimeUnix, Value) in
-// that order; the Attributes column is rewritten to toJSONString(…)
-// before the round-trip and JSON-decoded back to a map[string]string
-// on the Go side.
+// that order, or the Loki log-stream shape (Line, Attributes,
+// TimeUnix[, Metadata]), which carries no Value column; the Attributes
+// column is rewritten to toJSONString(…) before the round-trip and
+// JSON-decoded back to a map[string]string on the Go side.
 func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclient.Sample, error) {
 	if c.err != nil {
 		return nil, c.err
@@ -261,18 +280,27 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 	}
 	defer func() { _ = rows.Close() }()
 
-	// Mirror the production rowsCursor metadata probe: the Loki log-stream
-	// projection appends a fifth `Metadata` column (a `toJSONString(<Map>)`
-	// JSON-object String), every other path projects four. Bind the scan
-	// to the column shape so the four-column metric / prom / tempo paths
-	// stay a four-destination scan and the log-stream path picks up the
-	// structured-metadata string.
+	// Mirror the production rowsCursor shape probe: the Loki log-stream
+	// projection leads with `Line` and carries no Value column, optionally
+	// appending a trailing `Metadata` column (a `toJSONString(<Map>)`
+	// JSON-object String); every metric path projects the base four. Bind
+	// the scan to the column shape so the four-column metric / prom /
+	// tempo paths stay a four-destination scan and the log-stream path
+	// binds no float.
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: columns: %w", err)
 	}
 	hasMetadata := len(cols) > 0 && cols[len(cols)-1] == metadataColumn
 	hasHistogram := len(cols) > 0 && cols[len(cols)-1] == histogramLastColumn
+	// The log-row layouts bind no numeric destination at all. Recognise
+	// them by the leading alias plus the exact width, exactly as the
+	// production probeRowShape does, so the four-wide log+metadata layout
+	// is never mistaken for the four-wide sample layout. Structured
+	// metadata rides only on a log row — no head projects a metric result
+	// with metadata attached.
+	isLogRow := len(cols) == logRowColumns && cols[0] == logLineColumn
+	isLogRowMetadata := len(cols) == logRowMetadataColumns && cols[0] == logLineColumn && hasMetadata
 
 	var out []chclient.Sample
 	for rows.Next() {
@@ -306,8 +334,15 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 				return nil, err
 			}
 			hv = decoded
-		case hasMetadata:
-			if err := rows.Scan(&name, &attrsJSON, &ts, &value, &metadataJSON); err != nil {
+		// The log-row arms come BEFORE hasMetadata: a log+metadata result
+		// satisfies both predicates, and only the log-row arm binds the
+		// correct destination count (no float).
+		case isLogRow:
+			if err := rows.Scan(&name, &attrsJSON, &ts); err != nil {
+				return nil, fmt.Errorf("chclienttest: scan: %w", err)
+			}
+		case isLogRowMetadata:
+			if err := rows.Scan(&name, &attrsJSON, &ts, &metadataJSON); err != nil {
 				return nil, fmt.Errorf("chclienttest: scan: %w", err)
 			}
 		default:

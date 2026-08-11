@@ -307,17 +307,19 @@ func writeTailChunk(conn *websocket.Conn, streams []Stream, writeTimeout time.Du
 // buildTailSQL constructs the per-tick polling SELECT. The shape is:
 //
 //	SELECT `Body` AS Line, `ResourceAttributes` AS Attributes,
-//	       `Timestamp` AS TimeUnix, toFloat64(0) AS Value
+//	       `Timestamp` AS TimeUnix
 //	FROM `otel_logs`
 //	WHERE <matchers> AND `Timestamp` >= <cursor> AND `Timestamp` <= <end>
 //	ORDER BY `Timestamp` ASC
 //	LIMIT <n>
 //
 // That is the log-stream projection shape [logql.LogLineColumn] names:
-// the line takes the positional row's first, String-typed column and the
-// Float64 column takes a placeholder, and chclient.DecodeLogRows decodes
-// the row into chclient.LogRow. All identifiers and time-range bounds
-// flow through chsql.QueryBuilder — no fmt.Sprintf-on-SQL.
+// the line takes the positional row's first, String-typed column, and
+// there is no numeric column at all — a log stream has no value, so the
+// cursor recognises the leading alias and binds no float destination
+// (issue #1430). chclient.DecodeLogRows decodes the row into
+// chclient.LogRow. All identifiers and time-range bounds flow through
+// chsql.QueryBuilder — no fmt.Sprintf-on-SQL.
 //
 // Rows are sorted ascending so the runTailLoop cursor-advance logic
 // picks the genuinely latest sample. Without ORDER BY the LIMIT could
@@ -330,7 +332,6 @@ func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Ti
 			chsql.As(chsql.Col(s.BodyColumn), logql.LogLineColumn),
 			chsql.As(chsql.Col(s.ResourceAttributesColumn), "Attributes"),
 			chsql.As(chsql.Col(s.TimestampColumn), "TimeUnix"),
-			chsql.As(toFloat64Zero(), "Value"),
 		).
 		From(chsql.Col(s.LogsTable))
 
@@ -348,15 +349,6 @@ func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Ti
 
 	sqlStr, args := sb.Build()
 	return sqlStr, args, nil
-}
-
-// toFloat64Zero is the chsql.Frag for `toFloat64(0)` — used as the
-// placeholder Value column so the positional row scanner reads a
-// stable Float64 instead of CH's UInt8 default for a bare literal `0`.
-// Composed via the typed Call constructor wrapping a Lit(0) argument;
-// the 0 binds as a positional `?` and CH coerces it inside toFloat64.
-func toFloat64Zero() chsql.Frag {
-	return chsql.Call("toFloat64", chsql.Lit(0))
 }
 
 // parseTailDelayFor reads the optional `delay_for` query param.
