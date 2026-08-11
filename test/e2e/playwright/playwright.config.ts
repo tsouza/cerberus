@@ -46,7 +46,18 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  // A regeneration run never retries. The crawl it exists to run takes
+  // 30-40 minutes, so three attempts cannot fit any sane job ceiling:
+  // the shard dies partway through attempt three having spent 90
+  // minutes, and the kill takes Playwright's failure SUMMARY with it —
+  // which is the only place a thrown crawl error is printed. Four such
+  // dispatches reported neither why the crawl failed nor whether the
+  // artifact they uploaded could be trusted, because the evidence was
+  // destroyed by the retry that overran the clock. One attempt fits,
+  // finishes, and prints. Ordinary CI runs keep their retries: there
+  // the crawl is a short lean sweep and a genuine browser flake is
+  // worth absorbing (still surfaced, via failOnFlakyTests below).
+  retries: process.env.CERBERUS_UPDATE_INVENTORY ? 0 : process.env.CI ? 2 : 0,
   // A pass-on-retry is a masked intermittent bug; the suite must
   // surface it red in CI (run 27284868985 went green over a real
   // non-determinism bug — the trace-by-id batch-order flake — exactly

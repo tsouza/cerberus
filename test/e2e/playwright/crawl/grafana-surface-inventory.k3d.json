@@ -11,6 +11,286 @@
       "lean": true
     },
     {
+      "url": "/a/grafana-exploretraces-app/explore#adhoc[+ label = value]={rep}",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#radio[Single|Grid|Rows]=Rows",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#radio[Single|Grid|Rows]=Single",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#tabs[Favorites|All|Resource|Span]=All",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#tabs[Favorites|All|Resource|Span]=Resource",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore#tabs[Favorites|All|Resource|Span]=Span",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=comparison&var-groupBy={var-groupBy}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}&var-metric=duration",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-groupBy={var-groupBy}&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-metric=duration",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=structure&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList#attribute-list={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy={var-groupBy}&var-metric=duration",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-groupBy={var-groupBy}&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?actionView=traceList&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#attribute-list={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=duration",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-metric=errors",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#select[downshift-{rid}-input]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=duration&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=kind=server",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-metric=errors&var-primarySignal=true",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=consumer#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=kind=server#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=span.db.system.name!=\"\"#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true",
+      "lean": true
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true#adhoc[+ label = value]={rep}",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true#radio[Single|Grid|Rows]=Single",
+      "lean": false
+    },
+    {
+      "url": "/a/grafana-exploretraces-app/explore?var-primarySignal=true#tabs[Favorites|All|Resource|Span]=All",
+      "lean": false
+    },
+    {
       "url": "/a/grafana-lokiexplore-app/explore",
       "lean": true
     },
@@ -79,7 +359,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -107,7 +387,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -127,11 +407,15 @@
       "lean": false
     },
     {
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy direction]=Asc",
+      "lean": false
+    },
+    {
       "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[SortBy function]=Most relevantSmart ordering of graphs based on the most significant spikes in the data",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -151,7 +435,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -171,7 +455,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -191,7 +475,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/fields?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -255,7 +539,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -283,7 +567,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -311,7 +595,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/label/{label}?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -331,7 +615,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -351,7 +635,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -371,7 +655,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/labels?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -387,15 +671,11 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]=error",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]={rep}",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[detected_level]=warn",
-      "lean": false
-    },
-    {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -427,11 +707,11 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[detected_level]=warn",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[detected_level]={rep}",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -451,11 +731,11 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[detected_level]=warn",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[detected_level]={rep}",
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/logs?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -475,7 +755,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -491,7 +771,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"json\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {
@@ -507,7 +787,7 @@
       "lean": false
     },
     {
-      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#select[downshift-{rid}-input]=Exclude",
+      "url": "/a/grafana-lokiexplore-app/explore/service/{service}/patterns?visualizationType=\"table\"#select[downshift-{rid}-input]={rep}",
       "lean": false
     },
     {

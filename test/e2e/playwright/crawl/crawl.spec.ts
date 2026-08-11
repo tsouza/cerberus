@@ -149,13 +149,14 @@ import {
   type SurfaceInventory,
 } from './lib.js';
 import {
-  comboboxCardinalityRule,
+  declaredVocabulary,
   discoverControls,
   driveInteraction,
   interactionStateKey,
   planInteractions,
   representativeOption,
   settleAdhocFilterBar,
+  type DiscoveredControl,
   type PlannedInteraction,
 } from './interactions.js';
 import {
@@ -811,48 +812,65 @@ test.describe('crawl: canonicalization pins', () => {
   });
 
   test('interaction planning honours the locked pairwise bounds', () => {
-    const control = (key: string, n: number, forced = false) => ({
+    const opts = (n: number) => Array.from({ length: n }, (_, i) => `opt${i}`);
+    // A radio group's discovery key EMBEDS its option vocabulary
+    // (`radio[a|b|c]`) — that embedding IS what declares the set
+    // closed, so the fixture has to be the shape discovery mints or it
+    // is testing a control that cannot exist.
+    const declared = (n: number) => ({
       kind: 'radio' as const,
-      key,
-      options: Array.from({ length: n }, (_, i) => `opt${i}`),
+      key: `radio[${opts(n).join('|')}]`,
+      options: opts(n),
       selectedIndex: 0,
-      forcedHighCardinality: forced,
-      optionHints: Array.from({ length: n }, (_, i) => `opt${i}`),
+      optionHints: opts(n),
       controlHint: '',
       clickHops: 0,
     });
-    // Structural controls enumerate fully (minus the selected option).
-    const single = planInteractions([control('a', 4)], 0);
+    // A combobox nothing declares: data-derived by default.
+    const undeclared = (name: string, n: number) => ({
+      kind: 'combobox' as const,
+      key: `select[${name}]`,
+      options: opts(n),
+      selectedIndex: 0,
+      optionHints: opts(n),
+      controlHint: '',
+      clickHops: 0,
+    });
+    // A declared vocabulary enumerates fully (minus the selected option).
+    const single = planInteractions([declared(4)], 0);
     expect(single.map((p) => p.option)).toEqual(['opt1', 'opt2', 'opt3']);
     expect(single.map((p) => p.leanRepresentative)).toEqual([
       true,
       false,
       false,
     ]);
-    // High-cardinality (by size or by construction) → one
-    // representative with a parameterized state value.
+    // Undeclared → one representative with a parameterized state
+    // value, and the option COUNT no longer changes that verdict.
     const high = planInteractions(
-      [control('big', 20), control('tiles', 3, true)],
+      [undeclared('big', 20), undeclared('tiles', 3)],
       0,
     );
     expect(high.map((p) => `${p.control.key}=${p.stateValue}`)).toEqual([
-      'big={rep}',
-      'tiles={rep}',
+      'select[big]={rep}',
+      'select[tiles]={rep}',
     ]);
     // One pinned param → representative plan (pairwise combos).
     expect(
-      planInteractions([control('a', 4), control('b', 4)], 1).map(
+      planInteractions([declared(4), declared(3)], 1).map(
         (p) => `${p.control.key}=${p.option}`,
       ),
-    ).toEqual(['a=opt1', 'b=opt1']);
+    ).toEqual([
+      'radio[opt0|opt1|opt2|opt3]=opt1',
+      'radio[opt0|opt1|opt2]=opt1',
+    ]);
     // ≥2 pinned params → terminal.
-    expect(planInteractions([control('a', 4)], 2)).toEqual([]);
+    expect(planInteractions([declared(4)], 2)).toEqual([]);
     // Cap overflow fails loudly, listing the plan.
-    const many = Array.from({ length: 30 }, (_, i) => control(`c${i}`, 2));
+    const many = Array.from({ length: 30 }, (_, i) => undeclared(`c${i}`, 2));
     expect(() => planInteractions(many, 0)).toThrow(/exceeding the single-sweep cap/);
     expect(() =>
       planInteractions(
-        Array.from({ length: 20 }, (_, i) => control(`c${i}`, 2)),
+        Array.from({ length: 20 }, (_, i) => undeclared(`c${i}`, 2)),
         1,
       ),
     ).toThrow(/exceeding the pairwise cap/);
@@ -865,8 +883,8 @@ test.describe('crawl: canonicalization pins', () => {
     // discovery's key derivation falls through to the react-select
     // mount-order id, normalized to the generic
     // `select[react-select-{rid}-input]` shape. Left unrecognised, that
-    // key matches no COMBOBOX_CARDINALITY_RULES entry, so planInteractions
-    // treats it as high-cardinality and representativeOption's
+    // key declares no closed vocabulary, so planInteractions treats it
+    // as data-derived and
     // codepoint-order pick lands on "Consumer spans…" every run
     // ('C' < 'D' < 'S') — the app never shows the crawl "Server spans…",
     // no matter how much backing data Server carries in ClickHouse
@@ -886,13 +904,16 @@ test.describe('crawl: canonicalization pins', () => {
       key: 'select[react-select-{rid}-input]',
       options: [serverLabel, consumerLabel, databaseLabel],
       selectedIndex: -1,
-      forcedHighCardinality: false,
       optionHints: [serverLabel, consumerLabel, databaseLabel],
       controlHint: 'id=react-select-3-input',
       clickHops: 3,
     };
 
-    expect(comboboxCardinalityRule(control.key)?.mode).toBe('enumerate');
+    expect(declaredVocabulary(control.key)).toEqual([
+      serverLabel,
+      consumerLabel,
+      databaseLabel,
+    ]);
 
     const plan = planInteractions([control], 0);
     expect(plan.map((p) => p.option)).toEqual([
@@ -953,10 +974,9 @@ test.describe('crawl: canonicalization pins', () => {
     // The same set drives the same plan whichever order it arrives in.
     const forced = (options: string[]) => ({
       kind: 'combobox' as const,
-      key: 'k',
+      key: 'select[an undeclared, therefore data-derived, control]',
       options,
       selectedIndex: -1,
-      forcedHighCardinality: true,
       optionHints: options,
       controlHint: '',
       clickHops: 0,
@@ -1218,65 +1238,282 @@ test.describe('crawl: canonicalization pins', () => {
     ).toEqual(new Set());
   });
 
-  test('#1872: a combobox with no declared cardinality rule parameterizes regardless of option count', () => {
-    // The old defect: an UNDECLARED combobox's mode followed the
-    // CURRENT option count against STRUCTURAL_MAX_OPTIONS, so a
-    // data-derived list (dashboard tags, detected field names) pinned
-    // literal seeded values whenever the seed happened to produce
-    // ≤12 of them — real, live rows in the committed compose
-    // inventory (`Tag filter=cerberus (7)`, `group-by-selector-
-    // combobox=cerberus_ql`) despite being unambiguously DATA, not
-    // app structure. An undeclared key must now parameterize no
-    // matter how small the option set is.
-    const combobox = (key: string, options: string[]) => ({
-      kind: 'combobox' as const,
-      key,
-      options,
-      selectedIndex: -1,
-      forcedHighCardinality: false,
-      optionHints: options,
-      controlHint: '',
-      clickHops: 0,
-    });
+  // Discovery-shaped fixture: every DiscoveredControl field a plan
+  // decision reads, and nothing else.
+  const control = (
+    kind: DiscoveredControl['kind'],
+    key: string,
+    options: string[],
+  ): DiscoveredControl => ({
+    kind,
+    key,
+    options,
+    selectedIndex: -1,
+    optionHints: options,
+    controlHint: '',
+    clickHops: 0,
+  });
+
+  test('#1872: an undeclared control parameterizes regardless of option count', () => {
+    // The defect: whether a control keyed its options VERBATIM was
+    // decided by counting how many options happened to render against
+    // a STRUCTURAL_MAX_OPTIONS threshold — a measurement of the SEED,
+    // not of the app. A data-derived list pinned literal seeded values
+    // whenever that day's dataset produced few enough of them, and the
+    // committed compose inventory carried the proof: `Tag filter=
+    // cerberus (7)`, `group-by-selector-combobox=cerberus_ql`,
+    // `detected_level=info` and `attribute-list=service.name` are all
+    // dataset properties. An undeclared key parameterizes no matter
+    // how small the option set is.
     const smallUndeclared = planInteractions(
-      [combobox('select[Tag filter]', ['cerberus (7)', 'dogfood (1)'])],
+      [control('combobox', 'select[Tag filter]', ['cerberus (7)', 'dogfood (1)'])],
       0,
     );
     expect(smallUndeclared.map((p) => p.stateValue)).toEqual(['{rep}']);
-    expect(comboboxCardinalityRule('select[Tag filter]')).toBeUndefined();
+    expect(declaredVocabulary('select[Tag filter]')).toBeUndefined();
 
-    // A DECLARED enumerate key still drives every option, however few.
+    // A DECLARED vocabulary still drives every option, however few.
     const declared = planInteractions(
-      [combobox('select[SortBy direction]', ['Asc', 'Desc'])],
+      [control('combobox', 'select[SortBy direction]', ['Asc', 'Desc'])],
       0,
     );
     expect(declared.map((p) => p.stateValue)).toEqual(['Asc', 'Desc']);
-    expect(comboboxCardinalityRule('select[SortBy direction]')?.mode).toBe(
-      'enumerate',
-    );
+    expect(declaredVocabulary('select[SortBy direction]')).toEqual([
+      'Asc',
+      'Desc',
+    ]);
 
     // The disambiguation suffix a duplicate control on one page gets
-    // (assignUniqueKeys) does not escape the declared rule.
-    expect(comboboxCardinalityRule('select[Sort]#1')?.mode).toBe('enumerate');
+    // (assignUniqueKeys) does not escape the declaration.
+    expect(declaredVocabulary('select[Sort]#1')).toBeDefined();
   });
 
-  test('#1872: a closed-set rule rejects an option outside its declared values', () => {
-    const combobox = (key: string, options: string[]) => ({
-      kind: 'combobox' as const,
-      key,
-      options,
-      selectedIndex: -1,
-      forcedHighCardinality: false,
-      optionHints: options,
-      controlHint: '',
-      clickHops: 0,
-    });
+  test('#1872: the derivation is control-KIND general, not a combobox special case', () => {
+    // The predecessor only asked comboboxes to declare themselves;
+    // every other kind kept the size heuristic. That left the Traces
+    // Drilldown groupBy picker — an 'option-list' whose options are
+    // span-attribute NAMES read out of live query results — pinning
+    // `#attribute-list=service.name` into the committed compose
+    // inventory, which is the same defect wearing a different kind.
+    const attributes = ['service.name', 'http.method', 'span.kind'];
+    const plan = planInteractions(
+      [control('option-list', 'attribute-list', attributes)],
+      0,
+    );
+    // Keys `{rep}` — no attribute name reaches the canonical key…
+    expect(new Set(plan.map((p) => p.stateValue))).toEqual(new Set(['{rep}']));
+    expect(declaredVocabulary('attribute-list')).toBeUndefined();
+    // …while still DRIVING every attribute, because each one fires a
+    // distinct `rate() by(<attr>)` query and that gesture class is
+    // what the crawler exists for. Purity of the key and coverage of
+    // the gestures are decoupled, and only here.
+    expect(plan.map((p) => p.option).sort()).toEqual([...attributes].sort());
+
+    // The decoupling is what lets a COST bound exist without touching
+    // the key. The picker's scope tabs change how many attributes it
+    // offers — Favorites renders ~10, All renders ~51 — and sweeping
+    // all 51 would blow SINGLE_SWEEP_CAP and fail the crawl. Past the
+    // declared bound the control falls back to the one deterministic
+    // representative, and the state value is `{rep}` on both sides of
+    // it, so no seed size can move the pin either way.
+    const wideScope = planInteractions(
+      [
+        control(
+          'option-list',
+          'attribute-list',
+          Array.from({ length: 51 }, (_, i) => `attr${String(i).padStart(2, '0')}`),
+        ),
+      ],
+      0,
+    );
+    expect(wideScope.map((p) => p.option)).toEqual(['attr00']);
+    expect(wideScope.map((p) => p.stateValue)).toEqual(['{rep}']);
+
+    // A select-tile / adhoc-filter needs no 'forced' flag any more: it
+    // parameterizes because nothing declares it, which is the same
+    // reason everything else does.
+    for (const kind of ['select-tile', 'adhoc-filter'] as const) {
+      const tiles = planInteractions(
+        [control(kind, kind, ['b_metric', 'a_metric'])],
+        0,
+      );
+      expect(tiles.map((p) => p.stateValue)).toEqual(['{rep}']);
+      // One representative, picked from the SET rather than the order.
+      expect(tiles.map((p) => p.option)).toEqual(['a_metric']);
+    }
+  });
+
+  test('#1872: a duplicate option label does not multiply the lean representative', () => {
+    // The lean lane drives ONE state per control. tabName strips a
+    // trailing live-count run off a tab's text ("Logs1K" and "Logs"
+    // both reduce to "Logs"), so two options can carry the same label,
+    // and flagging the representative by VALUE rather than by index
+    // would mark every duplicate lean and quietly widen the lean lane.
+    const plan = planInteractions(
+      [control('radio', 'radio[Logs|Logs|Traces]', ['Logs', 'Logs', 'Traces'])],
+      0,
+    );
+    expect(plan.map((p) => p.leanRepresentative)).toEqual([true, false, false]);
+  });
+
+  test('#1872: a key-embedded vocabulary only counts when the key round-trips', () => {
+    // Discovery builds these keys by joining the option labels on '|',
+    // so a label that itself contains '|' splits back into tokens the
+    // control never offered. Reading that as a closed set would fail
+    // the whole surface's sweep over a cosmetic label, so the control
+    // falls back to the placeholder instead.
+    const options = ['Grid|List', 'Rows'];
+    const key = 'radio[Grid|List|Rows]';
+    // On the key alone the embedding looks like three options…
+    expect(declaredVocabulary(key)).toEqual(['Grid', 'List', 'Rows']);
+    // …but against what the control actually offers it does not
+    // round-trip, so nothing is declared and nothing throws.
+    expect(declaredVocabulary(key, options)).toBeUndefined();
+    const plan = planInteractions([control('radio', key, options)], 0);
+    expect(plan.map((p) => p.stateValue)).toEqual(['{rep}']);
+    // A key that DOES round-trip still declares its set.
+    expect(declaredVocabulary('radio[Grid|Rows]', ['Grid', 'Rows'])).toEqual([
+      'Grid',
+      'Rows',
+    ]);
+  });
+
+  test('#1872: a collision-bucket key parameterizes but still sweeps every option', () => {
+    // `select[downshift-{rid}-input]` is not one control. An unlabeled
+    // downshift input falls back to its React useId element id, erased
+    // to the shared `{rid}` placeholder, so every such widget on every
+    // page lands on this one key. It carried a closed set — the Logs
+    // Drilldown Include|Exclude step unioned with the Traces Drilldown
+    // p50|p90|p99 picker — until a lean crawl of the Logs Drilldown
+    // entry page found the bucket offering `10`, a third widget the
+    // union never described, on a page whose full-depth crawl had never
+    // shown it. A key that identifies no single widget cannot carry a
+    // closed vocabulary, so it declares none.
+    const key = 'select[downshift-{rid}-input]';
+    expect(declaredVocabulary(key)).toBeUndefined();
+
+    // The value that falsified the old declaration is now keyed like
+    // any other data: it cannot reach a surface key…
+    const options = ['Include', 'Exclude', '10'];
+    const plan = planInteractions([control('combobox', key, options)], 0);
+    expect(new Set(plan.map((p) => p.stateValue))).toEqual(new Set(['{rep}']));
+    // …and crucially it no longer THROWS, because nothing claims the
+    // set is closed any more.
+    expect(() =>
+      planInteractions([control('combobox', key, options)], 0),
+    ).not.toThrow();
+    // Coverage is unchanged: every option still drives its own gesture,
+    // because each one fires a materially different query.
+    expect(plan.map((p) => p.option).sort()).toEqual(['10', 'Exclude', 'Include']);
+
+    // Past the declared cost bound it falls back to the single
+    // deterministic representative, like any data-derived control.
+    const wide = planInteractions(
+      [
+        control(
+          'combobox',
+          key,
+          Array.from({ length: 13 }, (_, i) => `opt${String(i).padStart(2, '0')}`),
+        ),
+      ],
+      0,
+    );
+    expect(wide.map((p) => p.option)).toEqual(['opt00']);
+    expect(wide.map((p) => p.stateValue)).toEqual(['{rep}']);
+  });
+
+  test('#1872: a tab strip and a radio group declare their own vocabulary', () => {
+    // These two kinds need no manifest entry: discovery builds their
+    // key OUT of the option labels, so the value half of the fragment
+    // says nothing the key half has not already said. Nothing about
+    // the pin can move that control identity does not move with it —
+    // and identity is the axis #1977 closed.
+    expect(declaredVocabulary('radio[Grid|Rows]')).toEqual(['Grid', 'Rows']);
+    expect(declaredVocabulary('tabs[Favorites|All|Resource|Span]')).toEqual([
+      'Favorites',
+      'All',
+      'Resource',
+      'Span',
+    ]);
+    // The disambiguation suffix does not break the embedding.
+    expect(declaredVocabulary('radio[folders|list]#2')).toEqual([
+      'folders',
+      'list',
+    ]);
+    // A key that embeds no vocabulary declares nothing.
+    expect(declaredVocabulary('select[Filter by fields]')).toBeUndefined();
+
+    const plan = planInteractions(
+      [control('radio', 'radio[Grid|Rows]', ['Grid', 'Rows'])],
+      0,
+    );
+    expect(plan.map((p) => p.stateValue)).toEqual(['Grid', 'Rows']);
+  });
+
+  test('#1872: detected_level is data-derived — two seeds, two different option sets', () => {
+    // The predecessor declared this one 'enumerate' on the reasoning
+    // that Loki normalizes severity into a fixed vocabulary. The
+    // vocabulary is fixed; the RENDERED set is not — the picker offers
+    // only the levels the ingested logs actually carry. The two
+    // committed inventories are the evidence, captured from two
+    // genuinely different datasets: compose pinned
+    // `#select[detected_level]=info` where k3d pinned `=warn`. That is
+    // precisely "a full-depth run against different data produces a
+    // different pin", so the control parameterizes.
+    expect(declaredVocabulary('select[detected_level]')).toBeUndefined();
+    const composeSeed = planInteractions(
+      [control('combobox', 'select[detected_level]', ['error', 'info'])],
+      0,
+    );
+    const k3dSeed = planInteractions(
+      [control('combobox', 'select[detected_level]', ['error', 'warn'])],
+      0,
+    );
+    expect(composeSeed.map((p) => p.stateValue)).toEqual(
+      k3dSeed.map((p) => p.stateValue),
+    );
+    expect(composeSeed.map((p) => p.stateValue)).toEqual(['{rep}', '{rep}']);
+
+    // Keying `{rep}` is the purity half. The coverage half is that the
+    // sweep still drives every level it is offered — each one filters a
+    // distinct LogQL query — so closing the seed axis did not quietly
+    // trade itself for a gesture loss.
+    expect(composeSeed.map((p) => p.option)).toEqual(['error', 'info']);
+    expect(k3dSeed.map((p) => p.option)).toEqual(['error', 'warn']);
+  });
+
+  test('#1872: a closed vocabulary rejects an option outside its declared set', () => {
     // 'Select match operator' declares the closed 4-symbol matcher set
     // — a value outside it means either the app gained a real new
-    // operator (pin it deliberately) or the rule is miscategorised.
+    // operator (pin it deliberately) or the declaration is wrong and
+    // must go, which reverts the control to `{rep}`. Either way a
+    // human decides; the crawl never mines the value silently.
     expect(() =>
       planInteractions(
-        [combobox('select[Select match operator]', ['=', '!=', 'contains'])],
+        [
+          control('combobox', 'select[Select match operator]', [
+            '=',
+            '!=',
+            'contains',
+          ]),
+        ],
+        0,
+      ),
+    ).toThrow(/outside its declared closed set/);
+    // The check reads the LIVE option set, so it fires on options the
+    // plan would never even drive (here the selected one).
+    expect(() =>
+      planInteractions(
+        [
+          {
+            ...control('combobox', 'select[SortBy direction]', [
+              'Asc',
+              'Desc',
+              'Relevance',
+            ]),
+            selectedIndex: 2,
+          },
+        ],
         0,
       ),
     ).toThrow(/outside its declared closed set/);

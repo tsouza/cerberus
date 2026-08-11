@@ -1,0 +1,92 @@
+{
+  "doc": "Closed option vocabularies for the Grafana crawl's interaction sweep — the ONLY place a control's option labels may be declared a fact about the pinned APPLICATION rather than about the seeded dataset. Read by the crawler (test/e2e/playwright/crawl/interactions.ts), which checks every declaration against the live app on each run, and by the PR-time purity gate (.github/scripts/crawl-surface-inventory-purity.mjs), which proves no literal outside these sets ever reached a committed surface inventory. A control this file does not name PARAMETERIZES: its interaction fragment keys as `{rep}` and its option labels never enter the pin. That default is the whole design — the canonical key is a function of the app by construction, and pinning a literal costs a declaration that a live run re-verifies, instead of a growing list of known-bad field names (tsouza/cerberus#1872).",
+  "representativePlaceholder": "{rep}",
+  "keyEmbeddedVocabularyPattern": "^(?:tabs|radio)\\[([\\s\\S]+)\\](?:#\\d+)?$",
+  "keyEmbeddedVocabularyRationale": "The second route to a verbatim key, and the reason it needs no entry below: a tab strip and a radio group build their discovery key OUT of their option labels (`tabs[a|b|c]`, `radio[a|b]`), so the value half of an interaction fragment says nothing the key half has not already said. The pattern is data here rather than a literal in either consumer because it decides what may be pinned verbatim — exactly what the closed vocabularies decide — and two copies of that decision would let the gate certify a pin the crawler never produced. The crawler additionally requires the key to ROUND-TRIP (the option labels rejoined on '|' must reproduce the bracket content) before it treats the embedding as a declaration, so a label that itself contains '|' falls back to the placeholder instead of failing the crawl.",
+  "closedVocabularies": [
+    {
+      "control": "^select\\[Select match operator\\](#\\d+)?$",
+      "rationale": "Prometheus/Loki adhoc-filter matcher operator: exactly the four matcher symbols the query languages define — a protocol constant, not app or data state.",
+      "values": [
+        "=",
+        "!=",
+        "=~",
+        "!~"
+      ]
+    },
+    {
+      "control": "^select\\[react-select-\\{rid\\}-input\\](#\\d+)?$",
+      "rationale": "Traces Drilldown 'primary signal' picker (the Select half; the RadioButtonGroup half is a separate control). The widget carries neither a testid nor an aria-label nor a placeholder — a plugin-side accessibility gap verified live against grafana-exploretraces-app — so discovery's identity chain falls through to the react-select mount-order id, normalized to the generic `react-select-{rid}-input` that every unlabeled react-select on any page shares. That generic key is deliberately NOT enough on its own: the closed set below is what earns the verbatim key, and it is the same primarySignal option set lib.ts's `var-primarySignal` structural-param rule declares, read off the plugin bundle rather than off a seed. A coincidentally-anonymous but genuinely data-derived select elsewhere matches the key, fails this set, and fails the crawl loudly instead of inheriting the classification (tsouza/cerberus#1992, #2000, #2012).",
+      "values": [
+        "Server spansExplore server-specific segments of traces",
+        "Consumer spansAnalyze interactions initiated by consumer services",
+        "Database callsEvaluate the performance issues in database interactions"
+      ]
+    },
+    {
+      "control": "^select\\[SortBy direction\\](#\\d+)?$",
+      "rationale": "Logs/Traces Drilldown table sort direction — a two-way widget constant. How a table SORTS does not depend on what the seeded logs say, and both seeded stacks observe the identical set.",
+      "values": [
+        "Asc",
+        "Desc"
+      ]
+    },
+    {
+      "control": "^select\\[SortBy function\\](#\\d+)?$",
+      "rationale": "Logs Drilldown breakdown ordering menu. Option labels concatenate the entry's name and its description because the widget renders both inside one option row, so the label text is the bundle's own copy. Both seeded stacks (compose and k3d, different datasets) observe exactly this set, which is the evidence that it is bundle-fixed rather than data-derived.",
+      "values": [
+        "10th %10th percentile value",
+        "25th %25th percentile value",
+        "75th %75th percentile value",
+        "CountSort graphs by total number of logs",
+        "Highest spikeSort graphs by the highest values (max)",
+        "Lowest dipSort graphs by the smallest values (min)",
+        "Most relevantSmart ordering of graphs based on the most significant spikes in the data",
+        "NameAlphabetical order",
+        "Outlying valuesOrder by the amount of outlying values in the data",
+        "Widest spreadSort graphs by deviation from the average value"
+      ]
+    },
+    {
+      "control": "^select\\[Sort\\](#\\d+)?$",
+      "rationale": "Alphabetical sort pickers. Two widgets share this key — the dashboard-browse picker, whose copy uses parentheses and an en dash, and the Drilldown picker, whose copy uses square brackets and a hyphen — so the closed set is the union of both vocabularies. Both seeded stacks observe the identical set.",
+      "values": [
+        "Alphabetically (A–Z)",
+        "Alphabetically (Z–A)",
+        "Alphabetically [A-Z]",
+        "Alphabetically [Z-A]"
+      ]
+    },
+    {
+      "control": "^select\\[\\{n\\} (logs|lines|rows)\\](#\\d+)?$",
+      "rationale": "Logs Drilldown result-count picker. How many rows a table FETCHES is a widget constant, not a property of the seeded logs. The placeholder mirrors the current selection, so discovery erases the count from the KEY (`{n} logs`) — which also means the currently-selected value is the one option the sweep never drives, and 1000 is that default.",
+      "values": [
+        "100",
+        "500",
+        "1000",
+        "2000",
+        "5000"
+      ]
+    }
+  ],
+  "exhaustiveDataControls": [
+    {
+      "control": "^select\\[downshift-\\{rid\\}-input\\](#\\d+)?$",
+      "rationale": "Not one control — a COLLISION BUCKET. A downshift input carrying neither a testid nor an aria-label falls back to its bare React useId element id, which discovery erases to the shared `{rid}` placeholder, so every unlabeled downshift widget on every page keys here. It was declared a closed set (the Logs Drilldown Include|Exclude operator step unioned with the Traces Drilldown p50|p90|p99 percentile picker) and the live self-check falsified that claim: a lean-depth crawl of /a/grafana-lokiexplore-app/explore found the bucket offering `10`, a third widget the union never described. A key that identifies no single widget cannot carry a closed vocabulary, and the option set behind this one is not even stable — the full-depth regen of the same page never saw `10`. So it parameterizes, and nothing from an unidentifiable bucket reaches the pin. This is the mechanism working rather than failing: the declaration was a falsifiable claim about the app, a live crawl falsified it instead of mining `10` into a surface key, and the remedy is the one the failure message itself prescribes.",
+      "maxOptions": 12,
+      "maxOptionsRationale": "A COST bound only; every member of the bucket keys `{rep}` either way. It holds unlabeled PARAMETER pickers — an operator step, a percentile, a count — and each option drives a materially different query, so the sweep spends a gesture on all of them rather than one. A member offering more than a dozen options is not a parameter picker but a value list read out of the data, for which the single representative is the right answer; a dozen is also the point past which one control would crowd every other control on the surface out of SINGLE_SWEEP_CAP."
+    },
+    {
+      "control": "^select\\[detected_level\\](#\\d+)?$",
+      "rationale": "Loki's severity picker. Its RENDERED options are data — the picker offers only the levels the ingested logs actually carry, which is why compose pinned `=info` where k3d pinned `=warn` — so it keys `{rep}` and no level reaches the pin. It sweeps exhaustively for the same reason attribute-list does: each level drives a distinct LogQL filter, and dropping to one representative would have silently traded the seed axis for a coverage loss rather than fixing it.",
+      "maxOptions": 7,
+      "maxOptionsRationale": "Loki normalizes severity into a closed seven-name vocabulary (critical, error, warn, info, debug, trace, unknown). WHICH of the seven render is data and cannot key the pin, but HOW MANY can ever render is a property of Loki, so seven bounds the gesture cost exactly and a picker offering more has stopped being the control this entry describes."
+    },
+    {
+      "control": "^attribute-list(#\\d+)?$",
+      "rationale": "The Traces Drilldown groupBy attribute picker. Its options are span-attribute NAMES read out of live query results, so they are data and can never key the pin — this control parameterizes to `{rep}` like any other undeclared one. It is listed here for the ORTHOGONAL axis: the sweep still drives every offered attribute rather than one representative, because driving a groupBy attribute is what fires a distinct `rate() by(<attr>)` TraceQL query, and that is the gesture class the crawler was built for (the 2026-06-10 `var-groupBy=kind` 422 that no enumerated spec reached). Coverage of the gestures and purity of the key are separate decisions, and this list is the only place they are decoupled.",
+      "maxOptions": 12,
+      "maxOptionsRationale": "A COST bound on gestures, never a decision about the key — that is the distinction the old STRUCTURAL_MAX_OPTIONS threshold collapsed. The picker's scope tabs change how many attributes it offers: the Favorites scope renders 10 and the All scope renders 51, and driving all 51 would blow SINGLE_SWEEP_CAP and fail the crawl. Above this bound the control falls back to the single deterministic representative every data-derived control gets. Either way it keys `{rep}`, so no seed can move the pin — only how much of the seed the sweep spends gestures on."
+    }
+  ]
+}

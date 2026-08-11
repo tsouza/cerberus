@@ -1101,3 +1101,37 @@ have emitted. `lean` has no offline source of truth, so that residue belongs to
 `crawl-surface-inventory-guard.test.mjs` carries a negative control per check
 plus a pin on the documented blind spot, so the gate cannot rot into a rubber
 stamp in either direction.
+
+The form ratchet says nothing about whether the inventory's *content* is a
+function of the Grafana application, and it was not. Whether a control keyed its
+options verbatim was decided by counting how many options happened to render
+against a size threshold, and an option count measures the seeded dataset: the
+committed rows carried dashboard tags, detected severity levels, a label name and
+a span-attribute name, so a full-depth run against a different seed legitimately
+produced a different pin and the ratchet could not tell that from a regression.
+`.github/scripts/crawl-surface-inventory-purity.mjs` closes the seed axis in the
+same required `forbid-skip` job. It fails on any interaction fragment
+(`<canonical>#<control>=<value>`) whose value is neither the representative
+placeholder nor a member of a closed option set the control *declares* — either
+because its discovery key already embeds the vocabulary (`radio[Grid|Rows]`,
+`tabs[a|b|c]`, where the value half says nothing the key half has not) or because
+`test/e2e/playwright/crawl/control-vocabularies.json` names it with a rationale.
+Undeclared controls parameterize, so after the gate passes there is no literal in
+the pin that came from a query result. That manifest is the same file
+`crawl/interactions.ts` reads when it plans gestures — two copies would let the
+gate certify a pin the crawler never produced — and the crawler re-checks every
+declared set against the live app on each run, so a declaration that goes stale
+fails the crawl loudly instead of quietly readmitting data.
+
+The visit-order axis is the other half of the same property, and it is
+deliberately *not* asserted over the committed bytes: `marshalInventory` sorts, so
+re-sorting the rows and finding them unchanged is an assertion that cannot fail.
+Order independence lives in the crawl's fold — a canonical's representative is
+picked from the candidate set rather than from arrival order, and lean membership
+is unioned across candidates rather than read off the fold winner — and it is
+pinned by the browser-free `crawl: canonicalization pins` specs. Those ran only in
+the de-gated compose crawl shard and the nightly k3d lane, so nothing gated them at
+PR time; the `forbid-skip` job now runs them directly. No test in that grep takes
+a `page` fixture, so the step installs `@playwright/test` with the browser download
+suppressed and runs in about a second — no stack, no browser, and nothing off the
+network beyond the seven packages `npm ci` fetches.
