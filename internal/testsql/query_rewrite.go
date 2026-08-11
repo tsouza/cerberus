@@ -293,7 +293,7 @@ func expandStarProjectionWithCTEs(query, withHead string, tableCols map[string][
 	if head == "" {
 		return query
 	}
-	star := strings.TrimSpace(head)
+	star, except := splitStarExcept(strings.TrimSpace(head))
 	if star != "*" {
 		return expandQualifiedStar(query, tableCols)
 	}
@@ -321,7 +321,7 @@ func expandStarProjectionWithCTEs(query, withHead string, tableCols map[string][
 	// resolve a bare-CTE-reference branch (`SELECT * FROM <ident>`)
 	// against the WITH head so the column names come from the CTE body.
 	branch := peelUnionPrefix(inner)
-	names := cteBranchAliases(branch, withHead, tableCols)
+	names := dropNames(unionBranchAliases(branch, withHead, tableCols), except)
 	if len(names) == 0 {
 		return expandQualifiedStar(query, tableCols)
 	}
@@ -332,29 +332,102 @@ func expandStarProjectionWithCTEs(query, withHead string, tableCols map[string][
 	return "SELECT " + strings.Join(quoted, ", ") + tail
 }
 
-// cteBranchAliases returns the projected column aliases of a UNION
-// branch of the form `SELECT * FROM <cte-ident>` by looking the CTE up
-// in withHead and borrowing its body's projection aliases. Returns nil
-// for any shape it cannot canonically enumerate, so the caller falls
-// back to the conservative [ExpandStarProjection] path.
-func cteBranchAliases(branch, withHead string, tableCols map[string][]string) []string {
+// splitStarExcept splits a `* EXCEPT (<col>, …)` outer projection into the
+// bare star and the excluded column names, unquoted. A projection carrying
+// no EXCEPT modifier comes back unchanged with a nil exclusion list.
+//
+// chsql.intersectQuery projects `* EXCEPT (_setand_side)` so the `&&`
+// fallback's arm marker never reaches its caller (#1525). The expander has
+// to see through the modifier to the star underneath, and then drop the
+// same columns from the alias list it builds in the star's place.
+func splitStarExcept(head string) (string, []string) {
+	const kw = " EXCEPT ("
+	i := strings.Index(head, kw)
+	if i < 0 || !strings.HasSuffix(head, ")") {
+		return head, nil
+	}
+	var cols []string
+	for _, c := range strings.Split(head[i+len(kw):len(head)-1], ",") {
+		c = strings.Trim(strings.TrimSpace(c), "`")
+		if c == "" {
+			return head, nil
+		}
+		cols = append(cols, c)
+	}
+	return strings.TrimSpace(head[:i]), cols
+}
+
+// dropNames returns names with every entry of drop removed, preserving
+// order. Used to apply an EXCEPT list to an expanded star.
+func dropNames(names, drop []string) []string {
+	if len(drop) == 0 {
+		return names
+	}
+	out := names[:0]
+	for _, n := range names {
+		if !slices.Contains(drop, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// unionBranchAliases returns the column names a UNION branch projects, for
+// the two starred branch shapes the emitters produce:
+//
+//   - `SELECT * FROM <cte-ident>` — a relational-CTE arm reference. The
+//     names come from the CTE's body, looked up in withHead.
+//   - `SELECT *, <expr> AS <tag> FROM (<subquery>)` — the arm-tagged leg
+//     chsql.intersectQuery emits for `&&` (#1525). The star resolves
+//     against the subquery and each trailing tag projection appends its
+//     own alias, so the branch's column ORDER is preserved.
+//
+// Returns nil for any shape it cannot canonically enumerate, so the caller
+// falls back to the conservative [ExpandStarProjection] path.
+func unionBranchAliases(branch, withHead string, tableCols map[string][]string) []string {
 	bHead, bTail := splitOuterSelect(branch)
-	if strings.TrimSpace(bHead) != "*" {
+	if bHead == "" {
 		return nil
 	}
-	ident := strings.TrimSpace(strings.TrimPrefix(bTail, " FROM "))
-	// The FROM target must be a single bare identifier (the CTE name),
-	// not a subquery or a further expression.
-	if ident == "" || strings.ContainsAny(ident, " ,()`*") {
+	projs := splitProjections(bHead)
+	if len(projs) == 0 || strings.TrimSpace(projs[0]) != "*" {
 		return nil
 	}
-	body := cteBody(withHead, ident)
-	if body == "" {
+	names := starSourceAliases(bTail, withHead, tableCols)
+	if len(names) == 0 {
 		return nil
 	}
-	// The CTE body is itself a `SELECT * FROM (SELECT <aliased projs>…)`
-	// shape with no further WITH head; reuse the CTE-unaware star
-	// expander for name discovery only.
+	for _, p := range projs[1:] {
+		expr, alias := splitAlias(p)
+		if alias == "" {
+			alias = mapColAlias(strings.TrimSpace(expr))
+		}
+		if alias == "" || alias == "*" || strings.ContainsAny(alias, "()`") {
+			return nil
+		}
+		names = append(names, alias)
+	}
+	return names
+}
+
+// starSourceAliases enumerates the columns a branch's leading `*` expands
+// to, from that branch's FROM tail. A bare identifier is a CTE name and
+// resolves against withHead; anything else is a subquery the CTE-unaware
+// expander can borrow a projection list from directly.
+func starSourceAliases(tail, withHead string, tableCols map[string][]string) []string {
+	src := strings.TrimSpace(strings.TrimPrefix(tail, " FROM "))
+	if src == "" {
+		return nil
+	}
+	body := "SELECT *" + tail
+	if !strings.ContainsAny(src, " ,()`*") {
+		// A bare identifier: the CTE body is itself a
+		// `SELECT * FROM (SELECT <aliased projs>…)` shape with no further
+		// WITH head of its own.
+		if body = cteBody(withHead, src); body == "" {
+			return nil
+		}
+	}
 	expanded := expandQualifiedStar(body, tableCols)
 	eHead, _ := splitOuterSelect(expanded)
 	if eHead == "" || strings.TrimSpace(eHead) == "*" {

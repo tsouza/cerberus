@@ -353,10 +353,28 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 	const (
 		fusedGateLeft  = "QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`)"
 		fusedGateRight = "max((`Duration` = ?)) OVER (PARTITION BY `TraceId`)"
-		armCTELeft     = "WITH _setand_l_1 AS"
-		armCTERight    = "_setand_r_1 AS"
 		identityDedup  = "LIMIT 1 BY `TraceId`, `SpanId`"
+
+		// The union-tagged fallback (#1525): each arm is referenced ONCE,
+		// as a UNION-ALL leg carrying the marker that tells the trace gate
+		// which arm produced the row. The marker is stripped on the way
+		// out, so the statement's column set is still the arms' own.
+		markerStripped = "SELECT * EXCEPT (`_setand_side`)"
+		armTagLeft     = "(SELECT *, 0 AS `_setand_side` FROM "
+		armTagRight    = "(SELECT *, 1 AS `_setand_side` FROM "
+		armGateLeft    = "QUALIFY max(`_setand_side` = 0) OVER (PARTITION BY `TraceId`)"
+		armGateRight   = "AND max(`_setand_side` = 1) OVER (PARTITION BY `TraceId`)"
 	)
+
+	// A fallback shape is pinned positively (it IS the tagged union) and
+	// negatively (the arm CTE names it replaced are gone). Naming each arm
+	// and referencing it twice cost two evaluations of it, because
+	// ClickHouse inlines a relational WITH at every reference — #1525.
+	fallbackWant := []string{
+		markerStripped, armTagLeft, armTagRight,
+		armGateLeft, armGateRight, "UNION ALL", identityDedup,
+	}
+	fallbackNotWant := []string{"_setand_l_", "_setand_r_"}
 
 	cases := []struct {
 		name    string
@@ -375,7 +393,7 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 				fusedGateRight,
 				identityDedup,
 			},
-			notWant: []string{armCTELeft, armCTERight, "UNION ALL", "_setand_"},
+			notWant: []string{"UNION ALL", "_setand_"},
 		},
 		{
 			// `{} && {}` — both arms match every span, so the disjunction
@@ -384,7 +402,7 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 			plan: intersect(scan(), scan()),
 			want: []string{"SELECT * FROM `otel_traces`", identityDedup},
 			notWant: []string{
-				armCTELeft, "UNION ALL", "QUALIFY", "WHERE",
+				"_setand_", "UNION ALL", "QUALIFY", "WHERE",
 			},
 		},
 		{
@@ -407,17 +425,17 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 		{
 			// THE correctness boundary: structurally a Filter chain over
 			// the shared Scan, semantically a per-trace aggregate.
-			name:    "sub-pipeline arm keeps the union-gated shape",
+			name:    "sub-pipeline arm keeps the union-tagged fallback",
 			plan:    intersect(subPipelineArm(), filtered("Duration", "5")),
-			want:    []string{armCTELeft, armCTERight, "UNION ALL", "`TraceId` IN (SELECT `TraceId` FROM _setand_l_1)", identityDedup},
-			notWant: []string{"QUALIFY"},
+			want:    fallbackWant,
+			notWant: append([]string{fusedGateLeft}, fallbackNotWant...),
 		},
 		{
 			// A BoundedTraceScope is an Expr LEAF, so a Node-only walk
 			// never sees it — but the emitter re-derives a top-N spans
 			// subquery from it, so fusing would hide a second table read
 			// behind a shape advertising one pass.
-			name: "bounded-trace-scope arm keeps the union-gated shape",
+			name: "bounded-trace-scope arm keeps the union-tagged fallback",
 			plan: intersect(
 				&chplan.Filter{Input: scan(), Predicate: &chplan.BoundedTraceScope{
 					SpansTable: "otel_traces", TraceIDColumn: "TraceId",
@@ -425,24 +443,24 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 				}},
 				filtered("Duration", "5"),
 			),
-			want:    []string{armCTELeft, armCTERight, identityDedup},
-			notWant: []string{"QUALIFY"},
+			want:    fallbackWant,
+			notWant: fallbackNotWant,
 		},
 		{
 			// Different tables are not one shared pass, however similar
 			// the arm shapes look.
-			name: "arms over different tables keep the union-gated shape",
+			name: "arms over different tables keep the union-tagged fallback",
 			plan: intersect(
 				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: &chplan.ColumnRef{Name: "A"}},
 				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces_other"}, Predicate: &chplan.ColumnRef{Name: "B"}},
 			),
-			want:    []string{armCTELeft, armCTERight, identityDedup},
-			notWant: []string{"QUALIFY"},
+			want:    fallbackWant,
+			notWant: fallbackNotWant,
 		},
 		{
 			// A nested `||` is a different operator; flattening it into
 			// the conjunctive gate would turn "either arm" into "both".
-			name: "nested union arm keeps the union-gated shape",
+			name: "nested union arm keeps the union-tagged fallback",
 			plan: intersect(
 				&chplan.SetOperation{
 					Left: filtered("SpanName", "left"), Right: filtered("Duration", "5"),
@@ -450,8 +468,8 @@ func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 				},
 				filtered("StatusCode", "Error"),
 			),
-			want:    []string{armCTELeft, armCTERight, identityDedup},
-			notWant: []string{"QUALIFY"},
+			want:    fallbackWant,
+			notWant: fallbackNotWant,
 		},
 	}
 

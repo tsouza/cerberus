@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -16,25 +15,22 @@ import (
 // magic 1.
 const unionDedupLimitPerIdentity = 1
 
-// The `&&` arm CTE names. Each arm subplan is NAMED once under these
-// names and referenced three times (its UNION-ALL leg plus both
-// trace-cohort IN subqueries). Naming it keeps the emitted TEXT linear —
-// inlining would re-render the whole subplan three times per nesting
-// level, so `A && B && C && D` would grow the SQL exponentially — but it
-// does NOT make ClickHouse read the arm once. A non-recursive `WITH` is
-// a textual substitution: CH re-evaluates every use site independently
-// (the same property nested_set_annotate.go documents), so a two-arm
-// `&&` over bare selectors costs FOUR leaf reads of the spans table and
-// a three-arm chain costs seven — measured, not inferred.
+// intersectSideCol is the marker column the `&&` fallback appends to
+// each UNION-ALL leg, naming the arm that produced the row. It is what
+// lets both trace cohorts be read off the union the shape is ALREADY
+// scanning, instead of re-deriving each one from a second evaluation of
+// its own arm — see intersectQuery.
 //
-// That cost is why these names are now the FALLBACK shape rather than
-// the only one; see fusableIntersect for the single-pass gate that
-// replaces them wherever the arms admit it. The `<n>` suffix comes from
-// emitter.nextCTESeq so a nested `&&` never shadows its parent's arm
-// names in the outer CH scope.
+// It never escapes the statement: the outer projection is
+// `* EXCEPT (_setand_side)`, so a nested `&&` sees its inner `&&`'s
+// column set unchanged and the two markers can never collide.
+const intersectSideCol = "_setand_side"
+
+// The intersectSideCol values, one per arm of the fallback's binary
+// UNION ALL. Shape constants chosen by the emitter, never user data.
 const (
-	intersectLeftArmCTEPrefix  = "_setand_l_"
-	intersectRightArmCTEPrefix = "_setand_r_"
+	intersectLeftSide  = 0
+	intersectRightSide = 1
 )
 
 // emitSetOperation renders a TraceQL spanset set-op (`A && B`, `A || B`).
@@ -58,13 +54,17 @@ const (
 // of one trace returns both spans, where a span intersection returns
 // nothing.
 //
-//   - SetIntersect (`&&`): `WITH l AS (<left>), r AS (<right>)
-//     SELECT * FROM ((SELECT * FROM l) UNION ALL (SELECT * FROM r))
-//     WHERE TraceId IN (SELECT TraceId FROM l)
-//     AND TraceId IN (SELECT TraceId FROM r)
-//     LIMIT 1 BY (TraceID, SpanID)` — the two IN predicates are the
+//   - SetIntersect (`&&`): one pass over the arms' union, each leg
+//     tagged with the arm that produced its rows —
+//     `SELECT * EXCEPT (_setand_side) FROM (
+//     (SELECT *, 0 AS _setand_side FROM (<left>)) UNION ALL
+//     (SELECT *, 1 AS _setand_side FROM (<right>)))
+//     QUALIFY max(_setand_side = 0) OVER (PARTITION BY TraceId)
+//     AND max(_setand_side = 1) OVER (PARTITION BY TraceId)
+//     LIMIT 1 BY (TraceID, SpanID)` — the two window gates are the
 //     `len(lhs) > 0 && len(rhs) > 0` trace gate, the UNION ALL +
-//     `LIMIT 1 BY` is `uniqueSpans`.
+//     `LIMIT 1 BY` is `uniqueSpans`. See intersectQuery for why the
+//     cohorts are read off the union rather than from each arm.
 //   - SetUnion (`||`): the same shape minus the trace gate, because
 //     `len(lhs) > 0 || len(rhs) > 0` admits every trace either arm
 //     already emitted a row for.
@@ -101,10 +101,11 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 		return fmt.Errorf("%w: SetOperation column names unset", ErrUnsupported)
 	}
 
-	// Fast path first, BEFORE the arms are rendered: rendering an arm
-	// advances the shared CTE counter, so probing fusibility afterwards
-	// would leave gaps in the `_setand_*_<n>` numbering of whatever the
-	// fallback then emits.
+	// Fast path first, BEFORE the arms are rendered: the fused shape
+	// reads its predicates off the plan and never consumes an arm's
+	// rendered SQL, so probing afterwards would render — and throw away —
+	// both arms, and would advance the shared CTE counter that any
+	// structural closure inside them draws from.
 	if s.Op == chplan.SetIntersect {
 		if scan, arms, ok := fusableIntersect(s); ok {
 			return e.emitFusedIntersect(s, scan, arms)
@@ -122,7 +123,7 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 
 	switch s.Op {
 	case chplan.SetIntersect:
-		return e.emitSelect(intersectQuery(s, leftFrag, rightFrag, e.nextCTESeq()))
+		return e.emitSelect(intersectQuery(s, leftFrag, rightFrag))
 	case chplan.SetUnion:
 		sb := NewQuery().
 			Select(verbatim("*")).
@@ -134,35 +135,89 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 	return fmt.Errorf("%w: set op %q", ErrUnsupported, s.Op)
 }
 
-// intersectQuery assembles the `&&` shape described in
-// emitSetOperation's godoc: both arms materialised as CTEs, their rows
-// unioned and deduped on span identity, gated on the trace appearing in
-// BOTH arms.
+// intersectQuery assembles the `&&` fallback shape described in
+// emitSetOperation's godoc: ONE pass over the arms' union, from which
+// both trace cohorts are read.
 //
-// seq disambiguates the arm CTE names against an enclosing `&&` (or an
-// enclosing structural closure, which draws from the same counter).
-func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag, seq int) *QueryBuilder {
-	suffix := strconv.Itoa(seq)
-	leftCTE := intersectLeftArmCTEPrefix + suffix
-	rightCTE := intersectRightArmCTEPrefix + suffix
-
-	// (SELECT * FROM <cte>) — the arm's rows, as a UNION ALL leg.
-	armRows := func(cte string) Frag { return NewQuery().From(BareIdent(cte)).Frag() }
-	// TraceId IN (SELECT TraceId FROM <cte>) — "this arm matched at
-	// least one span in this trace", i.e. Tempo's `len(side) > 0`.
-	armTraceCohort := func(cte string) Frag {
-		return InSubquery(
-			Col(s.TraceIDColumn),
-			NewQuery().Select(Col(s.TraceIDColumn)).From(BareIdent(cte)).Frag(),
+// This is the shape for every `&&` fusableIntersect declines — a
+// sub-pipeline arm (`({…} | count() > 0) && …`), a nested `||`, a
+// BoundedTraceScope, arms over different Scans. Those arms are real
+// subplans rather than row predicates, so the single-pass window gate
+// cannot reproduce them; but that is no reason to READ each arm twice.
+//
+// WHY NOT A CTE PER ARM. The previous shape named each arm in a
+// non-recursive `WITH` and then referenced that name TWICE: once as a
+// UNION-ALL leg, and once as its own cohort gate
+// `TraceId IN (SELECT TraceId FROM <arm>)`. A non-recursive relational
+// `WITH` is a NAME, not a materialisation — ClickHouse INLINES it at
+// every reference, so N references cost N evaluations (the same property
+// vector_set_op.go and nested_set_annotate.go document). Naming the arm
+// kept the emitted TEXT linear and left every re-read exactly where it
+// was. Measured on chDB, counting leaf reads off `EXPLAIN PLAN` (#1525):
+//
+//	shape                        leaf reads   min-of-9 over 2M spans
+//	CTE-named arms (before)           4             493 ms
+//	arms written out in full          4             460 ms
+//	union-tagged (after)              2             411 ms
+//
+// The first two rows are the whole point: naming an arm and splicing it in
+// full cost exactly the same, because the name never materialised
+// anything. The sub-pipeline shape, whose arms are two reads each, goes
+// 8 -> 4 the same way. Count the reads on a Memory-engine table — a
+// MergeTree `EXPLAIN` renders the cohort gates' `CreatingSets` step
+// WITHOUT its children, so it reports the before and after shapes as
+// identical and cannot see this at all.
+//
+// WHAT THIS SHAPE DOES INSTEAD. Each UNION-ALL leg tags its rows with
+// intersectSideCol, so "did this arm match any span of this trace?"
+// becomes `max(_setand_side = <arm>) OVER (PARTITION BY TraceId)` — read
+// off rows the union is already carrying rather than from a second
+// evaluation of the arm. Each arm is therefore referenced exactly ONCE,
+// which is also what makes the arm CTE names redundant: a single
+// reference has no text to deduplicate.
+//
+// The gates ride QUALIFY so no window value enters the projection. The
+// marker cannot: it is real per-row data the window reads, so it must be
+// projected, and the outer `* EXCEPT (_setand_side)` strips it back off.
+// That keeps the statement's column set exactly the arms' own — the shape
+// every downstream consumer, and the spec harness's star expansion,
+// already understand.
+//
+// SEMANTICS ARE UNCHANGED, not approximated. The marker is a non-NULL
+// shape constant, so each gate is a plain UInt8 0/1 with no three-valued
+// corner, and a trace passes iff every arm contributed at least one row
+// to it — precisely the membership `TraceId IN (SELECT TraceId FROM
+// <arm>)` tested, which is Tempo's `len(side) > 0`. Row ORDER differs
+// (a gate no longer sits between the union and its consumer), but both
+// shapes feed the same `LIMIT 1 BY` span-identity dedup and TraceQL fixes
+// the SET of spans a query returns, never their order.
+func intersectQuery(s *chplan.SetOperation, leftFrag, rightFrag Frag) *QueryBuilder {
+	// (SELECT *, <side> AS _setand_side FROM (<arm>)) — the arm's rows,
+	// tagged with the arm that produced them.
+	sideArm := func(armFrag Frag, side int) Frag {
+		return NewQuery().
+			Select(Star(), As(InlineLit(side), intersectSideCol)).
+			From(armFrag).
+			Frag()
+	}
+	// max(_setand_side = <side>) OVER (PARTITION BY TraceId) — "this arm
+	// matched at least one span in this trace", i.e. Tempo's
+	// `len(side) > 0`, computed over the union rather than over the arm.
+	armTraceCohort := func(side int) Frag {
+		return Window(
+			Call("max", Eq(Col(intersectSideCol), InlineLit(side))),
+			[]Frag{Col(s.TraceIDColumn)},
+			nil,
 		)
 	}
 
 	return NewQuery().
-		With(leftCTE, leftFrag).
-		With(rightCTE, rightFrag).
-		Select(verbatim("*")).
-		From(Paren(UnionAll(armRows(leftCTE), armRows(rightCTE)))).
-		Where(armTraceCohort(leftCTE), armTraceCohort(rightCTE)).
+		Select(StarExcept(Star(), intersectSideCol)).
+		From(Paren(UnionAll(
+			sideArm(leftFrag, intersectLeftSide),
+			sideArm(rightFrag, intersectRightSide),
+		))).
+		Qualify(armTraceCohort(intersectLeftSide), armTraceCohort(intersectRightSide)).
 		Limit(unionDedupLimitPerIdentity).
 		LimitBy(Col(s.TraceIDColumn), Col(s.SpanIDColumn))
 }
