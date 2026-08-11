@@ -505,6 +505,188 @@ data:
         },
         {
           "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "Error rate split by HTTP status family — the cerberus_status_class label on cerberus_queries_total, filtered to result=error. Separates a caller-side 4xx spike (queries cerberus cannot answer as written) from a 5xx spike (cerberus failed to answer something valid). Alert on 5xx; 4xx belongs to a lower-urgency rule.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "opacity",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 24
+          },
+          "id": 6,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (cerberus_status_class) (rate(cerberus_queries_total{result=\"error\"}[5m]))",
+              "legendFormat": "{{cerberus_status_class}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Errors by status class",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "description": "Error rate split by the closed cerberus_error_reason enum on cerberus_queries_total — bad_request, backend_unavailable, resource_exhausted, timeout, internal. Names WHY the errors in the status-class panel happened; internal is the page-worthy one. Admission-control rejections are absent by construction: the limiter sits outside the query pipeline and reports on the Admission rejections panel instead.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "opacity",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 24
+          },
+          "id": 8,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "cerberus-prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (cerberus_error_reason) (rate(cerberus_queries_total{result=\"error\"}[5m]))",
+              "legendFormat": "{{cerberus_error_reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Errors by failure reason",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
             "type": "tempo",
             "uid": "cerberus-tempo"
           },
