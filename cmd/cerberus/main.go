@@ -180,7 +180,7 @@ func mountAPIHeads(
 
 	if cfg.HeadEnabled(config.HeadLoki) {
 		lokiClient := client.ForHead(chclient.HeadLoki)
-		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters.loki, limiters.lokiTail, logger)
+		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger)
 		lokiHandler.Mount(traceMux)
 		engines = append(engines, lokiHandler.Engine)
 	}
@@ -827,14 +827,18 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 // Extracted (mirroring newPromHandler) so run's bootstrap stays within its
 // maintainability budget as the optimization suite adds wiring.
 //
-// The head takes TWO limiters: `limiter` (CERBERUS_ADMIT_LOKI) fronts every
-// short-lived route, and `tailLimiter` (CERBERUS_ADMIT_TAIL) fronts only the
-// long-lived /tail WebSocket. They must be distinct instances — see
-// loki.Handler.TailLimiter and issue #1482.
-func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiter, tailLimiter *admit.Limiter, logger *slog.Logger) *loki.Handler {
+// The head draws on TWO of the process's admission budgets: limiters.loki
+// (CERBERUS_ADMIT_LOKI) fronts every short-lived route, and limiters.lokiTail
+// (CERBERUS_ADMIT_TAIL) fronts only the long-lived /tail WebSocket. It takes
+// the whole admitLimiters rather than the two pointers positionally for the
+// reason that type exists: two same-typed *admit.Limiter parameters transpose
+// silently at the callsite, and transposing THESE two mounts /tail on the
+// request budget and every ordinary route on the tail budget — a subtler
+// #1482. Selecting the fields by name here makes that untypeable.
+func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiters admitLimiters, logger *slog.Logger) *loki.Handler {
 	h := loki.New(client, cfg.Logs, logger.With("api", "loki"))
-	h.Limiter = limiter
-	h.TailLimiter = tailLimiter
+	h.Limiter = limiters.loki
+	h.TailLimiter = limiters.lokiTail
 	h.Version = Version
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout

@@ -1183,11 +1183,17 @@ func tailDialStatus(t *testing.T, srv *httptest.Server, query string) int {
 // replica 503'd until a tail client disconnected — a starvation that only
 // ever ratcheted one way.
 //
-// So: saturate the tail budget completely, then drive the ordinary routes
-// to their OWN full capacity. Every one must be admitted. Sizing the tail
-// budget at 1 and the request budget at 2 makes the pre-fix behaviour
-// impossible to pass: a shared semaphore of either size would be fully
-// consumed by the held tail slot and reject the very first query.
+// So: saturate the tail budget with a REAL, live /tail session — dialled
+// through the mux, holding its slot through the admission middleware
+// exactly as a Grafana Live-tail panel does — and then drive the ordinary
+// routes to their OWN full capacity. Every one must be admitted.
+//
+// Occupying the budget by dialling rather than by calling Acquire on the
+// limiter is what makes this test see the MOUNT as well as the budgets:
+// were /tail re-mounted on the request limiter, the live session would
+// consume a request slot and the query loop below would 503 — which is
+// precisely the pre-fix behaviour. Sizing the tail budget at 1 and the
+// request budget at 2 leaves no room for that to pass by luck.
 func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
 	t.Parallel()
 
@@ -1195,15 +1201,17 @@ func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
 	tailLimiter := admit.NewTail("loki", 1)
 	limiter := admit.New("loki", requestCap)
 
-	// Occupy the ENTIRE tail budget and never give it back, exactly as a
-	// live Grafana tail panel does.
-	rel, ok := tailLimiter.Acquire(context.Background())
-	if !ok {
-		t.Fatalf("setup: tail budget must start free")
-	}
-	defer rel()
-
 	srv := newSplitBudgetServer(t, limiter, tailLimiter)
+
+	// A live tail session takes the one tail slot and keeps it for the
+	// rest of the test (the conn closes on cleanup).
+	_ = dialTail(t, srv, `{job="api"}`)
+
+	// Corroborate that the tail budget really is full — otherwise the
+	// assertions below would pass trivially on an unoccupied budget.
+	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusServiceUnavailable {
+		t.Fatalf("second /tail dial: status %d, want 503 — the live session did not occupy the tail budget, so this test proves nothing", got)
+	}
 
 	// Every short-lived route, twice over the request cap, all serial so
 	// each slot is released before the next acquire. A single 503 here is

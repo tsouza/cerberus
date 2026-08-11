@@ -271,9 +271,9 @@ var envDocs = []EnvDoc{
 	{envCHBreakerOpenIntrvl, "duration", "Circuit breaker", "OPEN-state backoff before the breaker admits a single HALF-OPEN probe, and the `Retry-After` a breaker-open 503 advertises. Must be > 0."},
 
 	// --- Admission control ---
-	{envAdmitDisabled, "bool", "Admission control", "Disable admission control entirely on every head (handy for local development)."},
+	{envAdmitDisabled, "bool", "Admission control", "Disable admission control entirely, on every budget at once (handy for local development)."},
 	{envAdmitProm, "int | bool", "Admission control", "Prom API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
-	{envAdmitLoki, "int | bool", "Admission control", "Loki API in-flight cap. Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
+	{envAdmitLoki, "int | bool", "Admission control", "Loki API in-flight cap, covering every route EXCEPT `/tail` (see `CERBERUS_ADMIT_TAIL`). Integer caps the head; `true` = default cap 64; `false`/`0` = unlimited."},
 	{envAdmitTempo, "int | bool", "Admission control", "Tempo API in-flight cap. Integer caps the head; `true` = default cap 32; `false`/`0` = unlimited."},
 	{envAdmitTail, "int | bool", "Admission control", "Concurrent Loki `/tail` WebSocket sessions, on a budget SEPARATE from `CERBERUS_ADMIT_LOKI`. Integer caps it; `true` = default cap 16; `false`/`0` = unlimited."},
 

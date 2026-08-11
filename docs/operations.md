@@ -656,6 +656,21 @@ demand exceeds `CERBERUS_ADMIT_TAIL`; sustained `budget="request"`
 rejections on `cerberus_ql="logql"` are ordinary query saturation and are
 now unaffected by how many tails are open.
 
+The tail budget is independent of `CERBERUS_ADMIT_LOKI` in both
+directions, including when that knob is off: a replica running
+`CERBERUS_ADMIT_LOKI=0` (unlimited Loki requests) still admits at most
+`CERBERUS_ADMIT_TAIL` concurrent tail sessions, because "unlimited
+requests" says nothing about how many unbounded-duration streams the
+replica should carry. Set `CERBERUS_ADMIT_TAIL=0` to opt out of the tail
+cap as well, or `CERBERUS_ADMIT_DISABLED=true` to opt out of both.
+
+A tail refused by the tail cap is refused at the HTTP upgrade — `503` +
+`Retry-After: 1`, before the connection becomes a WebSocket — rather than
+upgraded and then closed with a close frame the way reference Loki
+answers its own `querier.max-concurrent-tail-requests`. Issue
+[#2048](https://github.com/tsouza/cerberus/issues/2048) tracks aligning
+the two, since a WebSocket client does not read the `Retry-After` header.
+
 `CERBERUS_ADMIT_DISABLED=true` removes admission control entirely, on
 every budget at once — useful for local development where artificial caps
 mask real concurrency bugs.

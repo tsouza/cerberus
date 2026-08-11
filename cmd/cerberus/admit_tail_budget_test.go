@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -137,7 +143,7 @@ func TestNewLokiHandler_WiresBothBudgets(t *testing.T) {
 	})
 	limiters := newAdmitLimiters(cfg, quietLogger())
 
-	h := newLokiHandler(lazyClient(t), cfg, chopt.EnabledSet{}, limiters.loki, limiters.lokiTail, quietLogger())
+	h := newLokiHandler(lazyClient(t), cfg, chopt.EnabledSet{}, limiters, quietLogger())
 
 	if h.Limiter != limiters.loki {
 		t.Errorf("Handler.Limiter = %p, want the loki request budget %p", h.Limiter, limiters.loki)
@@ -147,5 +153,82 @@ func TestNewLokiHandler_WiresBothBudgets(t *testing.T) {
 	}
 	if h.TailLimiter == h.Limiter {
 		t.Error("Handler.TailLimiter aliases Handler.Limiter — /tail would draw on the query budget again (#1482)")
+	}
+}
+
+// TestMountAPIHeads_TailAndQueryBudgetsAreWiredEndToEnd is the only test
+// that exercises the WHOLE wiring chain the way the process does it:
+// config caps → newAdmitLimiters → mountAPIHeads → newLokiHandler →
+// loki.Handler.Mount → the real ServeMux → HTTP.
+//
+// Every other test in this file inspects one link. That leaves the
+// composition itself unpinned, and the composition is where issue #1482
+// actually lived: each part was individually reasonable, and the bug was
+// which budget the /tail pattern got mounted on. A wiring that fed the
+// request limiter to both fields — or swapped them — would satisfy the
+// per-link tests and fail here.
+//
+// The caps are deliberately asymmetric and both exhausted-by-one: hold
+// the single Loki request slot and the ordinary route must 503 while the
+// tail upgrade must still reach 101. Swap the two budgets anywhere along
+// the chain and the two assertions trade places.
+func TestMountAPIHeads_TailAndQueryBudgetsAreWiredEndToEnd(t *testing.T) {
+	t.Setenv("CERBERUS_ENABLED_HEADS", "loki")
+	t.Setenv("CERBERUS_ADMIT_LOKI", "1")
+	t.Setenv("CERBERUS_ADMIT_TAIL", "1")
+
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatalf("config.FromEnv: %v", err)
+	}
+	logger := quietLogger()
+	limiters := newAdmitLimiters(cfg, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mux := http.NewServeMux()
+	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger); err != nil {
+		t.Fatalf("mountAPIHeads: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	// Occupy the entire Loki REQUEST budget.
+	rel, ok := limiters.loki.Acquire(t.Context())
+	if !ok {
+		t.Fatal("setup: the loki request budget must start free")
+	}
+	defer rel()
+
+	resp, err := http.Get(srv.URL + `/loki/api/v1/labels`)
+	if err != nil {
+		t.Fatalf("GET /labels: %v", err)
+	}
+	status := resp.StatusCode
+	resp.Body.Close()
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("GET /labels with the request budget held: status %d, want 503 — the ordinary routes are not on limiters.loki", status)
+	}
+
+	// The tail budget is untouched, so the upgrade succeeds. The
+	// unreachable ClickHouse behind it only affects what the session
+	// streams AFTER the handshake, which is not what this asserts.
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/loki/api/v1/tail"
+	u.RawQuery = "query=" + url.QueryEscape(`{job="api"}`)
+	conn, wsResp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if conn != nil {
+		t.Cleanup(func() { _ = conn.Close() })
+	}
+	if wsResp == nil {
+		t.Fatalf("dial /tail: no handshake response (err=%v)", err)
+	}
+	defer wsResp.Body.Close()
+	if wsResp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("dial /tail with only the REQUEST budget held: status %d, want 101 — /tail is drawing on the wrong budget (#1482)", wsResp.StatusCode)
 	}
 }

@@ -324,9 +324,9 @@ func (l *Limiter) Head() string {
 
 // Budget returns which of its head's admission budgets this Limiter
 // bounds — [BudgetRequest] or [BudgetTail]. A nil receiver (admission
-// disabled) returns "". Callers use it to assert a route was wired to
-// the budget it was meant to draw on, and to attribute a rejection log
-// line to the right cap.
+// disabled) returns "". It exists so a caller can assert a route was
+// wired to the budget it was meant to draw on: the two are the same
+// type, so nothing else distinguishes them at a callsite.
 func (l *Limiter) Budget() string {
 	if l == nil {
 		return ""
