@@ -321,6 +321,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 // e.g. `edge_abs_over_rate.txtar` (instant fn over rate) and
 // `unary_minus_rate.txtar` (unary minus over rate).
 func projectValueOverInner(inner chplan.Node, s schema.Metrics, newValue chplan.Expr) chplan.Node {
+	assertValueShapedInput(inner, "projectValueOverInner")
 	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
 		projections := []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}},

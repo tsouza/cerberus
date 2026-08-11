@@ -24,6 +24,23 @@ import (
 // same five- vs four-destination scan off the result-set column shape.
 const metadataColumn = "Metadata"
 
+// histogramLastColumn is the LAST of the nine Histogram*Column aliases a
+// chplan.HistogramProjection publishes, mirroring the production
+// rowsCursor's own probe constant. A result set ending in it carries the
+// histogram-VALUED shape — a bare exp-histogram selector, `sum()` over
+// one, or `rate()`/`increase()` over one — and binds thirteen
+// destinations instead of four.
+//
+// Without this branch the harness could not serve ANY histogram-valued
+// query: the four-destination scan fails on a thirteen-column result, so
+// every chDB-backed handler test was structurally unable to exercise the
+// shape (issue #1967).
+const histogramLastColumn = "HistogramNegativeBucketCounts"
+
+// histogramColumnCount is the number of columns the histogram projection
+// appends after the base four.
+const histogramColumnCount = 9
+
 // Client is a chDB-backed implementation of the Querier interface each
 // handler defines (api/prom.Querier, api/loki.Querier, api/tempo.Querier).
 // All three are subsets of *chclient.Client's surface, so a single struct
@@ -255,6 +272,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 		return nil, fmt.Errorf("chclienttest: columns: %w", err)
 	}
 	hasMetadata := len(cols) > 0 && cols[len(cols)-1] == metadataColumn
+	hasHistogram := len(cols) > 0 && cols[len(cols)-1] == histogramLastColumn
 
 	var out []chclient.Sample
 	for rows.Next() {
@@ -264,13 +282,38 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 			ts           time.Time
 			value        float64
 			metadataJSON string
+			hv           *chclient.HistogramValue
 		)
-		if hasMetadata {
+		switch {
+		case hasHistogram:
+			// The nine histogram columns scan into `any` rather than
+			// typed destinations: chdb-go's Parquet driver hands back
+			// its own native Go values (int64 / float64 / []any) and
+			// does not implement the typed conversions clickhouse-go
+			// does, so the harness normalises them itself. Production
+			// binds concrete types against the emitter's pinned CH
+			// types instead — see internal/chclient/cursor.go.
+			cells := make([]any, histogramColumnCount)
+			dest := []any{&name, &attrsJSON, &ts, &value}
+			for i := range cells {
+				dest = append(dest, &cells[i])
+			}
+			if err := rows.Scan(dest...); err != nil {
+				return nil, fmt.Errorf("chclienttest: scan: %w", err)
+			}
+			decoded, err := histogramFromCells(cells)
+			if err != nil {
+				return nil, err
+			}
+			hv = decoded
+		case hasMetadata:
 			if err := rows.Scan(&name, &attrsJSON, &ts, &value, &metadataJSON); err != nil {
 				return nil, fmt.Errorf("chclienttest: scan: %w", err)
 			}
-		} else if err := rows.Scan(&name, &attrsJSON, &ts, &value); err != nil {
-			return nil, fmt.Errorf("chclienttest: scan: %w", err)
+		default:
+			if err := rows.Scan(&name, &attrsJSON, &ts, &value); err != nil {
+				return nil, fmt.Errorf("chclienttest: scan: %w", err)
+			}
 		}
 		labels, err := decodeMapJSON(attrsJSON)
 		if err != nil {
@@ -286,6 +329,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 			Timestamp:  ts,
 			Value:      value,
 			Metadata:   metadata,
+			Histogram:  hv,
 		})
 	}
 	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
@@ -656,6 +700,138 @@ func decodeMapJSON(s string) (map[string]string, error) {
 	out := map[string]string{}
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
 		return nil, fmt.Errorf("chclienttest: decode map %q: %w", s, err)
+	}
+	return out, nil
+}
+
+// histogramFromCells normalises the nine driver-native histogram cells
+// into a chclient.HistogramValue, in the positional order
+// chplan.HistogramProjection publishes them: Count, Sum, Scale,
+// ZeroThreshold, ZeroCount, PositiveOffset, PositiveBucketCounts,
+// NegativeOffset, NegativeBucketCounts.
+func histogramFromCells(cells []any) (*chclient.HistogramValue, error) {
+	if len(cells) != histogramColumnCount {
+		return nil, fmt.Errorf("chclienttest: histogram row has %d cells, want %d", len(cells), histogramColumnCount)
+	}
+	count, err := cellFloat(cells[0], "HistogramCount")
+	if err != nil {
+		return nil, err
+	}
+	sum, err := cellFloat(cells[1], "HistogramSum")
+	if err != nil {
+		return nil, err
+	}
+	scale, err := cellInt32(cells[2], "HistogramScale")
+	if err != nil {
+		return nil, err
+	}
+	zeroThreshold, err := cellFloat(cells[3], "HistogramZeroThreshold")
+	if err != nil {
+		return nil, err
+	}
+	zeroCount, err := cellFloat(cells[4], "HistogramZeroCount")
+	if err != nil {
+		return nil, err
+	}
+	posOffset, err := cellInt32(cells[5], "HistogramPositiveOffset")
+	if err != nil {
+		return nil, err
+	}
+	posBuckets, err := cellFloats(cells[6], "HistogramPositiveBucketCounts")
+	if err != nil {
+		return nil, err
+	}
+	negOffset, err := cellInt32(cells[7], "HistogramNegativeOffset")
+	if err != nil {
+		return nil, err
+	}
+	negBuckets, err := cellFloats(cells[8], "HistogramNegativeBucketCounts")
+	if err != nil {
+		return nil, err
+	}
+	return &chclient.HistogramValue{
+		Count:                count,
+		Sum:                  sum,
+		Scale:                scale,
+		ZeroThreshold:        zeroThreshold,
+		ZeroCount:            zeroCount,
+		PositiveOffset:       posOffset,
+		PositiveBucketCounts: posBuckets,
+		NegativeOffset:       negOffset,
+		NegativeBucketCounts: negBuckets,
+	}, nil
+}
+
+// cellFloat coerces one driver-native numeric cell to float64. chdb-go
+// returns an integral column as int64 and a floating one as float64, so
+// both are accepted for the count/sum slots the emitter pins to Float64.
+func cellFloat(v any, column string) (float64, error) {
+	switch n := v.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		return n, nil
+	case float32:
+		return float64(n), nil
+	case int64:
+		return float64(n), nil
+	case int32:
+		return float64(n), nil
+	case uint64:
+		return float64(n), nil
+	}
+	return 0, fmt.Errorf("chclienttest: %s is %T, want a number", column, v)
+}
+
+// cellInt32 coerces one driver-native numeric cell to int32 — the width
+// the emitter pins Scale and the two bucket offsets to.
+func cellInt32(v any, column string) (int32, error) {
+	f, err := cellFloat(v, column)
+	if err != nil {
+		return 0, err
+	}
+	return int32(f), nil
+}
+
+// cellFloats coerces one driver-native array cell to []float64.
+//
+// chdb-go's Parquet driver does not surface an Array column as a Go
+// slice: it hands back ClickHouse's own text rendering of the array
+// ("[1,2,3]"), as a string or []byte. That form is valid JSON for a
+// numeric array, so it decodes directly. The []any / []float64 cases
+// cover a driver that does return a slice, so this helper does not have
+// to change if chdb-go starts doing so.
+func cellFloats(v any, column string) ([]float64, error) {
+	switch arr := v.(type) {
+	case nil:
+		return nil, nil
+	case []float64:
+		return arr, nil
+	case []any:
+		out := make([]float64, 0, len(arr))
+		for i, e := range arr {
+			f, err := cellFloat(e, fmt.Sprintf("%s[%d]", column, i))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, f)
+		}
+		return out, nil
+	case string:
+		return parseArrayLiteral(arr, column)
+	case []byte:
+		return parseArrayLiteral(string(arr), column)
+	}
+	return nil, fmt.Errorf("chclienttest: %s is %T, want an array", column, v)
+}
+
+// parseArrayLiteral decodes ClickHouse's text rendering of a numeric
+// array. An empty CH array renders "[]", which decodes to a nil slice —
+// matching what the production driver produces for the same row.
+func parseArrayLiteral(s, column string) ([]float64, error) {
+	var out []float64
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, fmt.Errorf("chclienttest: %s is %q, which is not a numeric array: %w", column, s, err)
 	}
 	return out, nil
 }

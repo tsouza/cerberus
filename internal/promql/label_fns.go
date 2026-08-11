@@ -166,6 +166,7 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 // the same derive-don't-declare question [chplan.IsDerivedShape] answers
 // for the emitter and the HTTP layer.
 func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) *chplan.Project {
+	assertValueShapedInput(inner, "projectAttributesOverInner")
 	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
 		projections := []chplan.Projection{{Expr: attrs, Alias: s.AttributesColumn}}
 		if shape == chplan.GridWindowRowShape {
