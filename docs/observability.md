@@ -304,6 +304,22 @@ for a code outside them). Alert on
 `cerberus_queries_total{cerberus_status_class="5xx"}` for "cerberus is
 broken" and leave `4xx` to a separate, lower-urgency rule.
 
+Both labels reach the surface on the provisioned Cerberus dashboard,
+which carries an "Errors by status class" panel
+(`sum by (cerberus_status_class) (rate(cerberus_queries_total{result="error"}[5m]))`)
+beside an "Errors by failure reason" panel over
+`cerberus_error_reason`. The pair is what the plain "Error rate by
+language" panel above them cannot answer: that panel says a head is
+failing, these two say whether the caller or the gateway is at fault
+and which failure mode is behind it. The dashboard ships in three
+hand-maintained copies — the k3d source at
+`test/e2e/grafana/dashboards/cerberus.json`, the ConfigMap literal in
+`test/e2e/k3s/grafana-dashboards.yaml` that the k3d stack actually
+serves, and the compose copy at
+`test/e2e/grafana/compose/dashboards/cerberus.json` — held in lockstep
+by `test/regression/grafana_dashboard_copy_parity_test.go`, so a panel
+added to one is a failure until it is added to all three.
+
 #### Duration buckets
 
 The duration ladders are explicit (the SDK default is
