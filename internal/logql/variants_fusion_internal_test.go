@@ -259,3 +259,144 @@ func TestIsVariantPlan_AcceptsBothShapes(t *testing.T) {
 		t.Error("a bare RangeWindow was recognised as a variant plan")
 	}
 }
+
+// groupedArm wraps a range-aggregation arm in the vector-aggregation pipeline
+// `sum by (app) (…)` lowers to: an Aggregate over the window, then the
+// re-shaping Project into the Sample contract.
+func groupedArm(rw *chplan.RangeWindow, groupKey string) chplan.Node {
+	return &chplan.Project{
+		Input: &chplan.Aggregate{
+			Input: rw,
+			GroupBy: []chplan.Expr{
+				&chplan.MapAccess{
+					Map: &chplan.ColumnRef{Name: "ResourceAttributes"},
+					Key: &chplan.LitString{V: groupKey},
+				},
+			},
+			GroupByAliases: []string{"gkey_0"},
+			AggFuncs: []chplan.AggFunc{{
+				Name:  "sum",
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
+				Alias: "Value",
+			}},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
+			{Expr: &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+				&chplan.LitString{V: groupKey}, &chplan.ColumnRef{Name: "gkey_0"},
+			}}, Alias: "Attributes"},
+			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
+		},
+	}
+}
+
+// TestFuseVariants_FusesGroupedArms pins the shape Grafana's Logs Drilldown
+// breakdown panels generate — `sum by (…)` over each arm. The per-arm
+// pipelines are identical, so they collapse to ONE pipeline over the fused
+// window, with the variant column threaded through every grouping above it so
+// the arms stay separated.
+func TestFuseVariants_FusesGroupedArms(t *testing.T) {
+	t.Parallel()
+	arms := []chplan.Node{
+		groupedArm(countArm(), "app"),
+		groupedArm(bytesArm(), "app"),
+	}
+	top, ok := fuseVariants(arms)
+	if !ok {
+		t.Fatal("identically-wrapped arms were not fused")
+	}
+	rw, fused := fusedVariantWindow(top)
+	if !fused {
+		t.Fatal("fused plan carries no fused window")
+	}
+	if len(rw.Variants) != 2 {
+		t.Fatalf("fused window carries %d arms, want 2", len(rw.Variants))
+	}
+
+	// The pipeline must be applied ONCE.
+	proj, ok := top.(*chplan.Project)
+	if !ok {
+		t.Fatalf("fused top is %T, want *chplan.Project", top)
+	}
+	agg, ok := proj.Input.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("fused pipeline holds %T where the Aggregate belongs", proj.Input)
+	}
+	if agg.Input != chplan.Node(rw) {
+		t.Error("the Aggregate does not sit directly on the fused window")
+	}
+
+	// The variant column must be threaded through both levels, or the
+	// Aggregate would merge the arms' rows into one.
+	if len(agg.GroupBy) != 2 {
+		t.Fatalf("Aggregate groups by %d keys, want 2 (user key + variant)", len(agg.GroupBy))
+	}
+	if got := agg.GroupByAliases; len(got) != 2 || got[1] != variantLabel {
+		t.Errorf("Aggregate GroupByAliases = %v, want the variant column appended", got)
+	}
+	var carried bool
+	for _, p := range proj.Projections {
+		if p.Alias == variantLabel {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Error("the re-shaping Project drops the variant column")
+	}
+}
+
+// TestFuseVariants_RefusesDivergentWraps pins that arms whose per-arm
+// pipelines differ keep the per-arm shape: one pipeline cannot serve two
+// different ones, and applying either would report the wrong answer for the
+// other arm.
+func TestFuseVariants_RefusesDivergentWraps(t *testing.T) {
+	t.Parallel()
+	cases := map[string][]chplan.Node{
+		// `variants(sum by (svc) (count_over_time(…)), count_over_time(…))`
+		// — one arm aggregates, the other does not.
+		"wrapped and bare": {
+			groupedArm(countArm(), "app"),
+			bytesArm(),
+		},
+		// Different grouping keys are different pipelines.
+		"different group keys": {
+			groupedArm(countArm(), "app"),
+			groupedArm(bytesArm(), "svc"),
+		},
+		// A Having clause would need rewriting per arm.
+		"aggregate with having": func() []chplan.Node {
+			a := groupedArm(countArm(), "app")
+			a.(*chplan.Project).Input.(*chplan.Aggregate).Having = &chplan.ColumnRef{Name: "keep"}
+			return []chplan.Node{a, groupedArm(bytesArm(), "app")}
+		}(),
+		// A node the variant column cannot be threaded through.
+		"unthreadable pipeline node": {
+			&chplan.Limit{Input: countArm(), Count: 5},
+			&chplan.Limit{Input: bytesArm(), Count: 5},
+		},
+	}
+	for name, arms := range cases {
+		if _, ok := fuseVariants(arms); ok {
+			t.Errorf("%s: fused, want refusal", name)
+		}
+	}
+}
+
+// TestFuseVariants_RefusesPreexistingVariantColumn pins that a pipeline
+// already carrying a `__variant__` column is left alone: threading a second
+// one would leave the arms' identity depending on which column a consumer
+// read.
+func TestFuseVariants_RefusesPreexistingVariantColumn(t *testing.T) {
+	t.Parallel()
+	withCol := func(rw *chplan.RangeWindow) chplan.Node {
+		p := groupedArm(rw, "app").(*chplan.Project)
+		p.Projections = append(p.Projections, chplan.Projection{
+			Expr: &chplan.LitString{V: "x"}, Alias: variantLabel,
+		})
+		return p
+	}
+	if _, ok := fuseVariants([]chplan.Node{withCol(countArm()), withCol(bytesArm())}); ok {
+		t.Error("fused a pipeline that already carries the variant column, want refusal")
+	}
+}

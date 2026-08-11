@@ -2,6 +2,7 @@ package logql
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -93,8 +94,8 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 	}
 
 	// Fused shape: one scan feeding every arm's aggregation.
-	if fused, ok := fuseVariantArms(lowered); ok {
-		return variantFusedSampleShape(fused, s, lc), nil
+	if top, ok := fuseVariants(lowered); ok {
+		return variantFusedSampleShape(top, s, lc), nil
 	}
 
 	arms := make([]chplan.Node, 0, len(lowered))
@@ -122,9 +123,159 @@ func variantLabelFor(i int) string {
 	return strconv.Itoa(i)
 }
 
-// fuseVariantArms collapses N independently-lowered variant arms into ONE
-// RangeWindow that reads the shared log stream a single time, reporting
-// ok=false when the arms do not in fact share one.
+// fuseVariants collapses N independently-lowered variant arms into ONE plan
+// that reads the shared log stream a single time, reporting ok=false when the
+// arms do not in fact share one.
+//
+// An arm is a range aggregation, optionally under a per-arm pipeline — the
+// vector-aggregation wrap `sum by (level) (count_over_time({…}[r]))` puts an
+// Aggregate and a re-shaping Project above the window. [peelVariantWrap]
+// splits each arm into that wrap and its window, [fuseVariantArms] fuses the
+// windows, and the wrap is re-applied ONCE with the fused window's variant
+// column threaded through it, so the arms stay separated by
+// `__variant__` at every grouping above the window.
+//
+// The wrap must be identical across arms: a per-arm pipeline that differs
+// (`variants(sum by (svc) (count_over_time(…)), count_over_time(…))`) cannot
+// run as one pipeline, so those arms keep the per-arm shape.
+func fuseVariants(arms []chplan.Node) (chplan.Node, bool) {
+	const minFusedArms = 2
+	if len(arms) < minFusedArms {
+		return nil, false
+	}
+	wraps := make([][]chplan.Node, 0, len(arms))
+	windows := make([]chplan.Node, 0, len(arms))
+	for _, arm := range arms {
+		wrap, rw, ok := peelVariantWrap(arm)
+		if !ok {
+			return nil, false
+		}
+		wraps = append(wraps, wrap)
+		windows = append(windows, rw)
+	}
+	if !variantWrapsAgree(wraps) {
+		return nil, false
+	}
+	fused, ok := fuseVariantArms(windows)
+	if !ok {
+		return nil, false
+	}
+	return rebuildVariantWrap(wraps[0], fused, fused.VariantColumn)
+}
+
+// maxVariantWrapDepth bounds the per-arm pipeline peel. The wraps the LogQL
+// lowering produces above a range aggregation are at most an Aggregate plus
+// its re-shaping Project; the bound stops an unexpected deep plan from being
+// walked (and re-applied) node by node.
+const maxVariantWrapDepth = 4
+
+// peelVariantWrap splits a lowered arm into the pipeline above its range
+// window (outermost first) and the window itself. It reports ok=false for an
+// arm whose pipeline holds a node the variant column cannot be threaded
+// through, since re-applying such a node once for all arms would merge rows
+// that must stay separated by arm.
+func peelVariantWrap(arm chplan.Node) ([]chplan.Node, *chplan.RangeWindow, bool) {
+	var wrap []chplan.Node
+	n := arm
+	for range maxVariantWrapDepth {
+		switch v := n.(type) {
+		case *chplan.RangeWindow:
+			return wrap, v, true
+		case *chplan.Project:
+			wrap = append(wrap, v)
+			n = v.Input
+		case *chplan.Aggregate:
+			// A Having clause filters post-aggregation rows; threading the
+			// variant column through it would need the predicate rewritten
+			// per arm, which the fused single pipeline cannot express.
+			if v.Having != nil {
+				return nil, nil, false
+			}
+			wrap = append(wrap, v)
+			n = v.Input
+		default:
+			return nil, nil, false
+		}
+	}
+	return nil, nil, false
+}
+
+// variantWrapsAgree reports whether every arm's pipeline above the window is
+// the same pipeline. The comparison rebuilds each wrap over a shared stand-in
+// so it sees the pipeline alone, not the windows the arms differ in.
+func variantWrapsAgree(wraps [][]chplan.Node) bool {
+	base, ok := rebuildVariantWrap(wraps[0], &chplan.OneRow{}, "")
+	if !ok {
+		return false
+	}
+	for _, w := range wraps[1:] {
+		if len(w) != len(wraps[0]) {
+			return false
+		}
+		other, ok := rebuildVariantWrap(w, &chplan.OneRow{}, "")
+		if !ok || !base.Equal(other) {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildVariantWrap re-applies a peeled pipeline (outermost first) over
+// input, threading variantCol through every node so the arms stay separated:
+// an Aggregate gains it as a group key, a Project gains it as a passthrough
+// projection. An empty variantCol rebuilds the pipeline unchanged, which is
+// what [variantWrapsAgree] compares.
+//
+// It reports ok=false if a node already carries the column, since the plan
+// would then have two columns of that name and the arms' identity would
+// depend on which one a consumer read.
+func rebuildVariantWrap(wrap []chplan.Node, input chplan.Node, variantCol string) (chplan.Node, bool) {
+	n := input
+	for i := len(wrap) - 1; i >= 0; i-- {
+		switch v := wrap[i].(type) {
+		case *chplan.Project:
+			c := *v
+			c.Input = n
+			c.Projections = slices.Clone(v.Projections)
+			if variantCol != "" {
+				for _, p := range c.Projections {
+					if p.Alias == variantCol {
+						return nil, false
+					}
+				}
+				c.Projections = append(c.Projections, chplan.Projection{
+					Expr:  &chplan.ColumnRef{Name: variantCol},
+					Alias: variantCol,
+				})
+			}
+			n = &c
+		case *chplan.Aggregate:
+			c := *v
+			c.Input = n
+			c.GroupBy = slices.Clone(v.GroupBy)
+			c.GroupByAliases = slices.Clone(v.GroupByAliases)
+			if variantCol != "" {
+				if slices.Contains(c.GroupByAliases, variantCol) {
+					return nil, false
+				}
+				c.GroupBy = append(c.GroupBy, &chplan.ColumnRef{Name: variantCol})
+				// GroupByAliases is a parallel slice when non-empty, so it
+				// only grows alongside GroupBy when it is already in use.
+				if len(c.GroupByAliases) > 0 {
+					c.GroupByAliases = append(c.GroupByAliases, variantCol)
+				}
+			}
+			n = &c
+		default:
+			return nil, false
+		}
+	}
+	return n, true
+}
+
+// fuseVariantArms collapses N independently-lowered range windows into ONE
+// window that reads the shared log stream a single time, reporting ok=false
+// when the arms do not in fact share one.
 //
 // The arms are fusible exactly when they are the same plan but for the
 // per-sample value they compute, i.e. each arm is
@@ -296,39 +447,6 @@ func windowsAgreeModuloFunc(windows []*chplan.RangeWindow) bool {
 	return true
 }
 
-// variantFusedSampleShape re-shapes the fused window into the canonical
-// Sample contract, folding the window's own variant column into Attributes
-// instead of the per-arm literal [variantSampleArm] stamps.
-func variantFusedSampleShape(fused *chplan.RangeWindow, s schema.Logs, lc lowerCtx) chplan.Node {
-	cols := logSampleColumns(fused, s)
-	tsExpr := cols.timeExpr
-	if !cols.hasNativeTime && !lc.End.IsZero() {
-		tsExpr = timeLiteralExpr(lc.End)
-	}
-	attrs := &chplan.FuncCall{
-		Name: "mapConcat",
-		Args: []chplan.Expr{
-			&chplan.ColumnRef{Name: cols.attrsCol},
-			&chplan.FuncCall{
-				Name: "map",
-				Args: []chplan.Expr{
-					&chplan.LitString{V: variantLabel},
-					&chplan.ColumnRef{Name: fused.VariantColumn},
-				},
-			},
-		},
-	}
-	return &chplan.Project{
-		Input: fused,
-		Projections: []chplan.Projection{
-			{Expr: cols.metricName, Alias: "MetricName"},
-			{Expr: attrs, Alias: "Attributes"},
-			{Expr: tsExpr, Alias: "TimeUnix"},
-			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
-		},
-	}
-}
-
 // variantSampleArm re-shapes a lowered variant arm into the canonical
 // Sample contract (MetricName, Attributes, TimeUnix, Value) and folds the
 // `__variant__="<index>"` label into its Attributes map.
@@ -384,6 +502,59 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 	}
 }
 
+// variantFusedSampleShape re-shapes the fused plan into the canonical Sample
+// contract, folding the fused window's own variant COLUMN into Attributes
+// where [variantSampleArm] stamps a per-arm literal.
+func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan.Node {
+	cols := logSampleColumns(top, s)
+	tsExpr := cols.timeExpr
+	if !cols.hasNativeTime && !lc.End.IsZero() {
+		tsExpr = timeLiteralExpr(lc.End)
+	}
+	attrs := &chplan.FuncCall{
+		Name: "mapConcat",
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: cols.attrsCol},
+			&chplan.FuncCall{
+				Name: "map",
+				Args: []chplan.Expr{
+					&chplan.LitString{V: variantLabel},
+					&chplan.ColumnRef{Name: variantLabel},
+				},
+			},
+		},
+	}
+	return &chplan.Project{
+		Input: top,
+		Projections: []chplan.Projection{
+			{Expr: cols.metricName, Alias: "MetricName"},
+			{Expr: attrs, Alias: "Attributes"},
+			{Expr: tsExpr, Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
+		},
+	}
+}
+
+// fusedVariantWindow returns the fused RangeWindow at the base of plan, if
+// plan is a variant pipeline built over one. It walks the Project / Aggregate
+// wrap [rebuildVariantWrap] re-applies.
+func fusedVariantWindow(plan chplan.Node) (*chplan.RangeWindow, bool) {
+	n := plan
+	for range maxVariantWrapDepth + 1 {
+		switch v := n.(type) {
+		case *chplan.RangeWindow:
+			return v, len(v.Variants) > 0
+		case *chplan.Project:
+			n = v.Input
+		case *chplan.Aggregate:
+			n = v.Input
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
 // isVariantPlan reports whether plan is what a multi-variant lowering
 // produces — either the UnionAll of per-arm subtrees, every arm already in
 // the canonical Sample shape (a top-level Project aliasing `Attributes`), or
@@ -396,8 +567,9 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 // into `Attributes`).
 func isVariantPlan(plan chplan.Node) bool {
 	if p, ok := plan.(*chplan.Project); ok {
-		rw, ok := p.Input.(*chplan.RangeWindow)
-		return ok && len(rw.Variants) > 0 && isVectorAggregateSampleShape(p)
+		if _, fused := fusedVariantWindow(p); fused {
+			return isVectorAggregateSampleShape(p)
+		}
 	}
 	u, ok := plan.(*chplan.UnionAll)
 	if !ok || len(u.Inputs) == 0 {
