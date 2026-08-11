@@ -1589,7 +1589,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// happens server-side. Float64 widens both int and float literals
 	// without precision loss for the magnitudes typical of attribute
 	// values (HTTP status codes, percentages, sizes).
-	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs)
+	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs, binaryHasNumericOperand(b))
 	// Boolean coercion: the OTel-CH exporter stringifies bool-typed
 	// attribute values into the Map(String, String) carriers as
 	// "true" / "false", so `{ .cache.hit = true }` must compare against
@@ -1962,7 +1962,12 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 	if err != nil {
 		return nil, true, err
 	}
-	pred := &chplan.Binary{Op: effectiveOp, Left: &chplan.ColumnRef{Name: traceScopedValueAlias}, Right: rhs}
+	// traceDuration's per-trace aggregate is Int64 nanoseconds while
+	// rootName / rootServiceName are Strings, so only the duration case
+	// makes the comparison numeric and needs its dynamic peer parsed.
+	left := chplan.Expr(&chplan.ColumnRef{Name: traceScopedValueAlias})
+	left, rhs = coerceNumericFieldAccess(effectiveOp, left, rhs, numericIntrinsicColumn(attr.Intrinsic))
+	pred := &chplan.Binary{Op: effectiveOp, Left: left, Right: rhs}
 	return traceScopedInSubquery(valueNode, pred, s), true, nil
 }
 
@@ -2070,11 +2075,24 @@ func coerceBoolFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Exp
 // already Int64) doesn't reach this path — intrinsics lower to a
 // ColumnRef, not a FieldAccess. So the wrap is restricted to the
 // Map(String, String) carriers by construction.
-func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, chplan.Expr) {
+//
+// numericPeer is the caller's answer to the question the lowered
+// expressions cannot answer for themselves: does the SOURCE query put a
+// statically numeric operand on one side? A numeric intrinsic (duration,
+// childCount, a nested-set position, traceDuration) lowers to a bare
+// ColumnRef, which isNumericExpr deliberately does not treat as numeric —
+// it cannot tell Duration from SpanName. Without the hint
+// `{ duration > span.foo }` emitted `Duration > SpanAttributes['foo']`,
+// a UInt64-vs-String compare ClickHouse rejects with NO_COMMON_TYPE,
+// aborting the whole query (issue #2033). The reference backend types
+// attributes per span instead: a span whose `foo` is not a number simply
+// does not match. The OrNull wrap reproduces exactly that — unparseable
+// values evaluate NULL and WHERE drops the row.
+func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr, numericPeer bool) (chplan.Expr, chplan.Expr) {
 	if isArithmeticOp(op) {
 		return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
 	}
-	if isComparisonOp(op) && (isNumericExpr(lhs) || isNumericExpr(rhs)) {
+	if isComparisonOp(op) && (numericPeer || isNumericExpr(lhs) || isNumericExpr(rhs)) {
 		return coerceFieldAccess(lhs), coerceFieldAccess(rhs)
 	}
 	// Two bare attribute accesses under an ORDERING comparison (`span.a > span.b`,
@@ -2093,6 +2111,55 @@ func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.
 		}
 	}
 	return lhs, rhs
+}
+
+// binaryHasNumericOperand reports whether either operand of b resolves to
+// a NUMERIC ClickHouse expression — the numericPeer answer
+// coerceNumericFieldAccess needs and cannot derive from the lowered tree.
+//
+// The question is deliberately asked of the SOURCE operands rather than of
+// the lowered plan: a numeric intrinsic and a string intrinsic both lower
+// to a bare ColumnRef, indistinguishable downstream.
+//
+// It is answered from the COLUMN each intrinsic resolves to rather than
+// from the language's static type, because the two answer different
+// questions — the type system says what the value means, the schema says
+// what ClickHouse will compare. They agree today over every intrinsic the
+// parser can produce, and this file is the one that has to be right when
+// they stop agreeing.
+func binaryHasNumericOperand(b *traceql.BinaryOperation) bool {
+	return numericIntrinsicOperand(b.LHS) || numericIntrinsicOperand(b.RHS)
+}
+
+// numericIntrinsicOperand reports whether e is an attribute reference to
+// an intrinsic backed by a numeric column.
+func numericIntrinsicOperand(e traceql.FieldExpression) bool {
+	a, ok := fieldExprAttribute(e)
+	return ok && numericIntrinsicColumn(a.Intrinsic)
+}
+
+// numericIntrinsicColumn lists the intrinsics whose lowering yields a
+// numeric ClickHouse expression: the durations (Duration, the per-trace
+// max(end)-min(start) aggregate, an event's offset from span start), the
+// child count, and the synthetic nested-set positions. Every other
+// intrinsic resolves to a String column, where a comparison against an
+// attribute needs no coercion because the attribute maps are String-valued
+// too.
+// The scoped spellings need no entries of their own: the parser
+// normalises `span:duration` onto IntrinsicDuration and `trace:duration`
+// onto IntrinsicTraceDuration (scopedIntrinsic in ast/parser.go), so the
+// ScopedIntrinsic* constants never reach lowering.
+func numericIntrinsicColumn(i traceql.Intrinsic) bool {
+	switch i {
+	case traceql.IntrinsicDuration,
+		traceql.IntrinsicTraceDuration,
+		traceql.IntrinsicEventTimeSinceStart,
+		traceql.IntrinsicChildCount,
+		traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight,
+		traceql.IntrinsicNestedSetParent:
+		return true
+	}
+	return false
 }
 
 // isOrderingComparisonOp reports whether op is an ordering comparison
@@ -2252,7 +2319,9 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 		return nil, true, err
 	}
 	left := chplan.Expr(&chplan.ColumnRef{Name: col})
-	left, rhs = coerceNumericFieldAccess(op, left, rhs)
+	// The nested-set columns are Int64 positions, so the comparison always
+	// has a numeric side even when the AST operand order was flipped.
+	left, rhs = coerceNumericFieldAccess(op, left, rhs, true)
 	return &chplan.Binary{Op: op, Left: left, Right: rhs}, true, nil
 }
 

@@ -18,28 +18,29 @@ import "testing"
 // shape a naive "both sides must agree" walk gets wrong.
 
 // TestReferencesIntrinsic_ScalarFilterSide pins that a scalar filter's two
-// operands are searched independently. `max(name) > 1s` names the intrinsic
-// on the aggregate side only; the literal side names nothing.
+// operands are searched independently. `max(duration) > 1s` names the
+// intrinsic on the aggregate side only; the literal side names nothing.
 func TestReferencesIntrinsic_ScalarFilterSide(t *testing.T) {
-	expr := mustParse(t, `{ } | max(name) > 1s`)
-	if !expr.ReferencesIntrinsic(IntrinsicName) {
-		t.Errorf("`{ } | max(name) > 1s` should reference name: the aggregate's inner expression is the intrinsic")
+	expr := mustParse(t, `{ } | max(duration) > 1s`)
+	if !expr.ReferencesIntrinsic(IntrinsicDuration) {
+		t.Errorf("`{ } | max(duration) > 1s` should reference duration: the aggregate's inner expression is the intrinsic")
 	}
 	// The same shape without the intrinsic must stay false, so the case
 	// above cannot pass by returning true unconditionally.
-	other := mustParse(t, `{ } | max(duration) > 1s`)
-	if other.ReferencesIntrinsic(IntrinsicName) {
-		t.Errorf("`{ } | max(duration) > 1s` must not reference name")
+	other := mustParse(t, `{ } | max(span.elapsed) > 1s`)
+	if other.ReferencesIntrinsic(IntrinsicDuration) {
+		t.Errorf("`{ } | max(span.elapsed) > 1s` must not reference duration")
 	}
 }
 
 // TestReferencesIntrinsic_ScalarOperationSide pins the recursion through
-// scalar arithmetic: `max(name) + 1` is a ScalarOperation whose left operand
-// is the aggregate naming the intrinsic and whose right operand is a literal.
+// scalar arithmetic: `max(duration) + 1` is a ScalarOperation whose left
+// operand is the aggregate naming the intrinsic and whose right operand is a
+// literal.
 func TestReferencesIntrinsic_ScalarOperationSide(t *testing.T) {
-	expr := mustParse(t, `{ } | max(name) + 1 > 2`)
-	if !expr.ReferencesIntrinsic(IntrinsicName) {
-		t.Errorf("`max(name) + 1 > 2` should reference name through the scalar operation's left operand")
+	expr := mustParse(t, `{ } | max(duration) + 1 > 2`)
+	if !expr.ReferencesIntrinsic(IntrinsicDuration) {
+		t.Errorf("`max(duration) + 1 > 2` should reference duration through the scalar operation's left operand")
 	}
 }
 
@@ -63,14 +64,15 @@ func TestReferencesIntrinsic_NestedSpansetOperation(t *testing.T) {
 // token to parseScalarStage, and parseParenPipeline hands the result back
 // unwrapped because ScalarFilter satisfies SpansetExpression. So it lands on
 // one side of a structural operator with no enclosing Pipeline to walk
-// through. Note the parens must NOT contain a `|` chain: `({ } | max(name) >
-// 1s)` would parse to a Pipeline and exercise a different arm.
+// through. Note the parens must NOT contain a `|` chain: `({ } |
+// max(duration) > 1s)` would parse to a Pipeline and exercise a different
+// arm.
 func TestReferencesIntrinsic_ScalarFilterAsSpansetOperand(t *testing.T) {
-	expr := mustParse(t, `(max(name) > 1s) >> { .x = 1 }`)
+	expr := mustParse(t, `(max(duration) > 1s) >> { .x = 1 }`)
 	if _, ok := expr.Pipeline.Elements[0].(SpansetOperation); !ok {
 		t.Fatalf("expected a SpansetOperation, got %T — the query no longer exercises the intended arm", expr.Pipeline.Elements[0])
 	}
-	if !expr.ReferencesIntrinsic(IntrinsicName) {
+	if !expr.ReferencesIntrinsic(IntrinsicDuration) {
 		t.Errorf("a scalar filter on one side of a structural operator should be searched")
 	}
 }

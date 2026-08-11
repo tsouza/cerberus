@@ -5,6 +5,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chclient"
 )
 
 // grpcStatusFor is the gRPC transport encoder for the Tempo head's single
@@ -33,7 +34,10 @@ func grpcStatusFor(err error) error {
 	if err == nil {
 		return nil
 	}
-	return status.Errorf(grpcCodeFor(err), "%v", err)
+	// SafeMessage keeps ClickHouse's own exception text (error code, type
+	// names, SQL fragment) off the RPC surface, exactly as the HTTP
+	// envelope does — Grafana's Tempo datasource reads this stream.
+	return status.Error(grpcCodeFor(err), chclient.SafeMessage(err))
 }
 
 // grpcCodeFor is grpcStatusFor's classification half, split out so the

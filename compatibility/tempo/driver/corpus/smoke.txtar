@@ -1395,3 +1395,57 @@ cross_scope_attribute_never_equal
 search
 -- expected_max_traces --
 0
+
+# --- Type-mismatched comparisons (2) ---
+#
+# Both cases come from #2033, where cerberus answered each of them with
+# HTTP 502 carrying ClickHouse's own NO_COMMON_TYPE exception. They pin
+# the two OPPOSITE verdicts the language draws for what looks like one
+# kind of mistake, so a fix that collapsed them onto a single verdict
+# fails here even though each half looks right on its own.
+
+-- name --
+duration_gt_dynamic_attribute
+# A scoped attribute is typed per span at query time, so a comparison
+# against one is ANSWERED, not rejected: a span whose `budget_ns` is
+# absent or non-numeric simply does not match. The seeder writes no
+# `budget_ns`, so both backends return zero traces — and, crucially,
+# both return 2xx. This is the half that must NOT become a 400.
+#
+# NOT repointed at a real numeric attribute (e.g. `span.child.index`):
+# doing so exposed a genuine, separate divergence — reference Tempo
+# returns 0 traces for `duration > span.child.index` (an Int-typed
+# attribute) while cerberus returns 100, so cerberus's per-row
+# coercion is over-eager relative to Tempo's real per-row typing rule.
+# See #2039, which tracks that divergence on its own; fixing it is out
+# of scope for this PR's static-validation subject.
+-- query --
+{ duration > span.budget_ns }
+-- endpoint --
+search
+-- expected_max_traces --
+0
+
+-- name --
+name_gt_int_rejected
+# `name` is a String on every span, so comparing it against an integer
+# cannot match anything on any span — it is a mistake in the query
+# text, not a query with an empty answer. Both backends reject it at
+# validation with "binary operations must operate on the same type".
+# Status-parity axis rather than a body diff: there is no body.
+#
+# Carries the gRPC sibling too, so the rejection is graded on both
+# transports rather than skipped on one (grpc_diff.go skips an
+# expect_status case with no expect_grpc_code). Grounded by reading
+# both implementations: cerberus's grpcCodeFor maps ErrClassParse to
+# codes.InvalidArgument (internal/api/tempo/grpc/errclass.go), and
+# reference Tempo's combiner maps its own HTTP 400 to the identical
+# code (modules/frontend/combiner/common.go's erroredResponse).
+-- query --
+{ name > 3 }
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument

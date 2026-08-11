@@ -2244,7 +2244,7 @@ func writeError(w http.ResponseWriter, status int, traceID, spanID string, err e
 	}
 	httperr.WriteJSON(w, status, ErrorResponse{
 		TraceID: traceID, SpanID: spanID, Error: true,
-		Message: err.Error(),
+		Message: chclient.SafeMessage(err),
 	})
 }
 

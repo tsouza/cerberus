@@ -42,7 +42,24 @@ func Parse(s string) (expr *RootExpr, err error) {
 		}
 	}()
 
-	return applyRewrites(c.parseRoot()), nil
+	// Static typing runs on the tree the grammar produced, BEFORE the
+	// array-fold rewrites — the order the reference validates in, and the
+	// reason both report the same sentence for the same query. The
+	// reference's Parse applies no validation at all; its query path
+	// validates through ParseNoOptimizations, which skips every AST
+	// transformation (the OR-to-IN fold among them), so the message names
+	// the comparison the client actually wrote rather than a folded form
+	// of it.
+	//
+	// The order is also what lets the rule stay complete without an array
+	// case: a chain can only fold into a mismatched array comparison if
+	// one of its scalar comparisons was already mismatched, and that
+	// comparison is rejected here, before any fold runs.
+	root := c.parseRoot()
+	if verr := root.validate(); verr != nil {
+		return nil, verr
+	}
+	return applyRewrites(root), nil
 }
 
 // ParseIdentifier parses a single attribute/intrinsic reference (e.g.
