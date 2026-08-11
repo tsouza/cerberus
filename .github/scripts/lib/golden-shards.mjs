@@ -255,7 +255,17 @@ export function commandsFor(name, { justExecutable = 'just' } = {}) {
     return [{ argv: [justExecutable, shard.recipe], env: {} }];
   }
   return shard.generators.map((g) => {
-    const argv = ['go', 'test', '-count=1'];
+    // go test's own default (10m) is tight even for one chdb-tagged
+    // generator running alone on a loaded machine — verified directly: a
+    // solo `TestRoundTripChDB` run hit that ceiling under contention from
+    // unrelated concurrent processes, with no code change involved. Since
+    // golden-update.mjs now runs a stage's shards concurrently (see the
+    // module's own top comment), the same generator can share a machine
+    // with several siblings at once, so headroom matters more, not less. A
+    // generous fixed bound still catches a genuine hang — this widens the
+    // window for legitimate CPU-sharing slowness, it does not remove the
+    // ceiling.
+    const argv = ['go', 'test', '-count=1', '-timeout=20m'];
     if ((g.tags ?? []).length > 0) argv.push('-tags', g.tags.join(','));
     if (g.run) argv.push('-run', g.run);
     argv.push(...g.pkgs);
