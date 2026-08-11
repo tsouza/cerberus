@@ -47,6 +47,7 @@
   "internal/schema": 94.9,
   "internal/schema/ddl": 93.1,
   "internal/schemaboot": 99,
+  "internal/sealedscan": 93.0,
   "internal/solver": 83.6,
   "internal/spansscan": 97.6,
   "internal/telemetry": 79.5,
