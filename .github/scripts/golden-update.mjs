@@ -13,6 +13,26 @@
 // blunt fix; computing the coverage is the precise one. See lib/golden-shards.mjs
 // for the two derivations that compute it.
 //
+// Execution is concurrent WITHIN a stage, sequential ACROSS stages. The three
+// stages (STAGE_PRE / STAGE_BODY / STAGE_POST) encode a real dependency — the
+// solver/parity/migration shards must finish before the TXTAR body rewrite
+// starts, and the cardinality shard must start after it, because it profiles
+// the body's freshly-rewritten `-- sql --` text (see golden-shards.mjs's
+// per-stage comment). Shards WITHIN one stage share no such ordering: each
+// declares a disjoint `goldens` output path (enforced by
+// test/regression/golden_shard_coverage_test.go), so promql/logql/traceql/
+// chsql/optimizer/codegen — the six STAGE_BODY shards, the ones that actually
+// dominate `update-golden all`'s wall clock — can run as concurrent `go test`
+// child processes with no shared mutable state: each is a separate OS process,
+// and chdb-go's `chdb.NewSession()` (chdb/session.go) provisions a fresh
+// `os.MkdirTemp("", "chdb_")`-backed session per process, so there is no data
+// directory to collide over. CI already leans on the same fact one level up —
+// chdb.yml's `roundtrip (<ql>)` matrix runs the three QL heads as parallel
+// jobs today. A shard's own multiple generators (e.g. promql's `TestLower`
+// writing `-- sql --`/`-- chplan --`, then `TestRoundTripChDB` reading that
+// freshly-written SQL to fill `-- expected_rows --`) still run sequentially,
+// in declaration order, because that ordering IS a real data dependency.
+//
 // Environment inputs:
 //
 //   GOLDEN_SHARDS                (required) space/comma separated shard names,
@@ -39,9 +59,12 @@
 //   JUST_EXECUTABLE              (optional) how to re-invoke `just`.
 //
 // Exits 1 on an empty/unknown shard set, on a coverage violation, on a missing
-// libchdb.so, or on the first regeneration command that fails.
+// libchdb.so, or on a regeneration command failing. Within a stage, every
+// shard's siblings still finish (they were already running concurrently) so
+// one invocation surfaces every failure in that stage rather than just the
+// first; a later stage never starts once its predecessor reports a failure.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import process from 'node:process';
 
@@ -108,7 +131,82 @@ function fail(message) {
   process.exit(1);
 }
 
-function main() {
+/**
+ * Runs one child process, streaming its stdout/stderr to this process's own
+ * streams line-by-line, each line tagged `[name] `. Line-buffering (rather
+ * than piping the raw stream through) is what keeps concurrent children's
+ * output from interleaving mid-line into unreadable garbage; a whole line is
+ * still the smallest unit two children can race to print.
+ *
+ * Resolves to the exit code rather than rejecting, so a caller running
+ * several of these concurrently can let every child finish (and print its
+ * output) before deciding whether the group as a whole failed.
+ */
+function runTagged(name, argv, env, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd,
+      env: { ...process.env, ...env },
+    });
+
+    const tag = (stream, sink) => {
+      let carry = '';
+      stream.on('data', (chunk) => {
+        carry += chunk.toString();
+        const lines = carry.split('\n');
+        carry = lines.pop();
+        for (const l of lines) sink(`[${name}] ${l}`);
+      });
+      stream.on('end', () => {
+        if (carry) sink(`[${name}] ${carry}`);
+      });
+    };
+    tag(child.stdout, log);
+    tag(child.stderr, log);
+
+    child.on('close', (code) => resolve(code === null ? 1 : code));
+  });
+}
+
+/** Runs one shard's generators sequentially (declaration order is a real
+ * data dependency — see the module comment). Resolves to `{ name, code }`;
+ * `code` is the first non-zero exit, or 0 if every generator succeeded. */
+async function runShard(name, justExecutable, repoRoot) {
+  for (const { argv, env } of commandsFor(name, { justExecutable })) {
+    log(`==> ${name}: ${Object.entries(env)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ')} ${argv.join(' ')}`.replace(/\s+/g, ' '));
+    const code = await runTagged(name, argv, env, repoRoot);
+    if (code !== 0) return { name, code };
+  }
+  return { name, code: 0 };
+}
+
+/** Groups an already stage-ordered shard list into consecutive same-stage
+ * runs, preserving the incoming order within and across groups. */
+function groupByStage(names) {
+  const groups = [];
+  for (const name of names) {
+    const stage = SHARDS[name].stage;
+    const last = groups[groups.length - 1];
+    if (last && last.stage === stage) last.names.push(name);
+    else groups.push({ stage, names: [name] });
+  }
+  return groups;
+}
+
+async function runShards(shards, justExecutable, repoRoot) {
+  for (const { names } of groupByStage(shards)) {
+    const results = await Promise.all(names.map((n) => runShard(n, justExecutable, repoRoot)));
+    const failed = results.find((r) => r.code !== 0);
+    if (failed) {
+      error(`\`${failed.name}\` shard regeneration failed`);
+      process.exit(failed.code);
+    }
+  }
+}
+
+async function main() {
   const { shards, error: parseError } = resolveRequested(process.env.GOLDEN_SHARDS);
   if (parseError) fail(parseError);
 
@@ -142,22 +240,7 @@ function main() {
     );
   }
 
-  for (const name of shards) {
-    for (const { argv, env } of commandsFor(name, { justExecutable })) {
-      log(`==> ${name}: ${Object.entries(env)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(' ')} ${argv.join(' ')}`.replace(/\s+/g, ' '));
-      const r = spawnSync(argv[0], argv.slice(1), {
-        cwd: repoRoot,
-        stdio: 'inherit',
-        env: { ...process.env, ...env },
-      });
-      if (r.status !== 0) {
-        error(`\`${name}\` shard regeneration failed: ${argv.join(' ')}`);
-        process.exit(r.status === null ? 1 : r.status);
-      }
-    }
-  }
+  await runShards(shards, justExecutable, repoRoot);
 
   log('');
   log(`Diff of regenerated artefacts (${shards.join(' ')}):`);
@@ -168,4 +251,4 @@ function main() {
   if (stat.status !== 0) log('(no diff-stat available)');
 }
 
-main();
+await main();
