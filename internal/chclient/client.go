@@ -1239,11 +1239,20 @@ type Sample struct {
 // field set chplan.HistogramQuantileNative already consumes from the
 // same physical schema columns, minus the quantile-only Phi.
 type HistogramValue struct {
-	// Count is the OTel exponential histogram's stored observation
-	// count. Not necessarily equal to ZeroCount plus the sum of the
-	// bucket-count arrays: OTLP persists it as an independent field
-	// rather than deriving it, and so does cerberus's decode.
-	Count uint64
+	// Count is the OTel exponential histogram's observation count. Not
+	// necessarily equal to ZeroCount plus the sum of the bucket-count
+	// arrays: OTLP persists it as an independent field rather than
+	// deriving it, and so does cerberus's decode.
+	//
+	// Float64 rather than an integer because a histogram-VALUED result
+	// is not always the stored histogram: `rate()` / `increase()`
+	// divide the stored counts by the window and produce FRACTIONAL
+	// ones, exactly as reference Prometheus's `rate()` over a native
+	// histogram returns a *histogram.FloatHistogram. The nine
+	// Histogram*Column output columns are pinned to this width by
+	// chsql's emitter regardless of which lowering built them — see
+	// internal/chsql/histogram_projection.go.
+	Count float64
 	// Sum is the OTel exponential histogram's stored sum of observed
 	// values.
 	Sum float64
@@ -1256,18 +1265,20 @@ type HistogramValue struct {
 	// chplan.HistogramProjection's doc comment.
 	ZeroThreshold float64
 	// ZeroCount is the count of observations at or below ZeroThreshold.
-	ZeroCount uint64
+	// Float64 for the same reason as Count.
+	ZeroCount float64
 	// PositiveOffset is the index of the first positive bucket.
 	PositiveOffset int32
 	// PositiveBucketCounts holds the per-bucket counts for positive
-	// observations, starting at PositiveOffset.
-	PositiveBucketCounts []uint64
+	// observations, starting at PositiveOffset. Float64 elements for
+	// the same reason as Count.
+	PositiveBucketCounts []float64
 	// NegativeOffset is the index of the first negative bucket.
 	NegativeOffset int32
 	// NegativeBucketCounts holds the per-bucket counts for negative
 	// observations, starting at NegativeOffset, mirroring
 	// PositiveBucketCounts.
-	NegativeBucketCounts []uint64
+	NegativeBucketCounts []float64
 }
 
 // PeekBreakerState reports the circuit-breaker lifecycle phase as a stable

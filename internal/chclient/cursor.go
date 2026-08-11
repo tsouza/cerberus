@@ -203,10 +203,11 @@ type rowsCursor struct {
 	// a bare exp-histogram selector, `sum()` over one, and
 	// `rate()`/`increase()` over one — and stays false, leaving the scan
 	// byte-identical to before, on every other query. Only this
-	// ROW-based cursor reads those nine columns; the columnar sibling in
-	// columnar.go still binds four and rejects a thirteen-column result
-	// as a matrix mismatch, which makes queryCursorColumnar fall back to
-	// this path rather than mis-decode one (issue #1967).
+	// ROW-based cursor is no longer alone in reading those nine columns:
+	// the columnar sibling in columnar.go binds the SAME thirteen (see
+	// histogramMatrixColumns), so a histogram query keeps the columnar
+	// fast path instead of being re-dispatched to ClickHouse in full by
+	// columnarDecoder.decode's row fallback (issue #1967).
 	histogramProbed bool
 	hasHistogram    bool
 }

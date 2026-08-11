@@ -74,7 +74,7 @@ func histogramFromValue(hv *chclient.HistogramValue) *Histogram {
 			Boundaries: boundariesLowerInclusiveUpperExclusive,
 			Lower:      formatWireFloat(-math.Pow(base, idx+1)),
 			Upper:      formatWireFloat(-math.Pow(base, idx)),
-			Count:      formatWireFloat(float64(count)),
+			Count:      formatWireFloat(count),
 		})
 	}
 	if hv.ZeroCount > 0 {
@@ -89,7 +89,7 @@ func histogramFromValue(hv *chclient.HistogramValue) *Histogram {
 			Boundaries: boundariesBothInclusive,
 			Lower:      formatWireFloat(lower),
 			Upper:      formatWireFloat(upper),
-			Count:      formatWireFloat(float64(hv.ZeroCount)),
+			Count:      formatWireFloat(hv.ZeroCount),
 		})
 	}
 	for i, count := range hv.PositiveBucketCounts {
@@ -101,12 +101,12 @@ func histogramFromValue(hv *chclient.HistogramValue) *Histogram {
 			Boundaries: boundariesLowerExclusiveUpperInclusive,
 			Lower:      formatWireFloat(math.Pow(base, idx)),
 			Upper:      formatWireFloat(math.Pow(base, idx+1)),
-			Count:      formatWireFloat(float64(count)),
+			Count:      formatWireFloat(count),
 		})
 	}
 
 	return &Histogram{
-		Count:   formatWireFloat(float64(hv.Count)),
+		Count:   formatWireFloat(hv.Count),
 		Sum:     formatWireFloat(hv.Sum),
 		Buckets: buckets,
 	}

@@ -56,16 +56,56 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	sb.SelectAs(Col(h.CountColumn), chplan.HistogramCountColumn)
-	sb.SelectAs(Col(h.SumColumn), chplan.HistogramSumColumn)
-	sb.SelectAs(Col(h.ScaleColumn), chplan.HistogramScaleColumn)
-	sb.SelectAs(histogramProjectionZeroThresholdFrag(h), chplan.HistogramZeroThresholdColumn)
-	sb.SelectAs(Col(h.ZeroCountColumn), chplan.HistogramZeroCountColumn)
-	sb.SelectAs(Col(h.PositiveOffsetColumn), chplan.HistogramPositiveOffsetColumn)
-	sb.SelectAs(Col(h.PositiveBucketCountsColumn), chplan.HistogramPositiveBucketCountsColumn)
-	sb.SelectAs(Col(h.NegativeOffsetColumn), chplan.HistogramNegativeOffsetColumn)
-	sb.SelectAs(Col(h.NegativeBucketCountsColumn), chplan.HistogramNegativeBucketCountsColumn)
+	sb.SelectAs(histogramCountFrag(Col(h.CountColumn)), chplan.HistogramCountColumn)
+	sb.SelectAs(histogramCountFrag(Col(h.SumColumn)), chplan.HistogramSumColumn)
+	sb.SelectAs(histogramIndexFrag(Col(h.ScaleColumn)), chplan.HistogramScaleColumn)
+	sb.SelectAs(histogramCountFrag(histogramProjectionZeroThresholdFrag(h)), chplan.HistogramZeroThresholdColumn)
+	sb.SelectAs(histogramCountFrag(Col(h.ZeroCountColumn)), chplan.HistogramZeroCountColumn)
+	sb.SelectAs(histogramIndexFrag(Col(h.PositiveOffsetColumn)), chplan.HistogramPositiveOffsetColumn)
+	sb.SelectAs(histogramBucketsFrag(Col(h.PositiveBucketCountsColumn)), chplan.HistogramPositiveBucketCountsColumn)
+	sb.SelectAs(histogramIndexFrag(Col(h.NegativeOffsetColumn)), chplan.HistogramNegativeOffsetColumn)
+	sb.SelectAs(histogramBucketsFrag(Col(h.NegativeBucketCountsColumn)), chplan.HistogramNegativeBucketCountsColumn)
 	return e.emitSelect(sb)
+}
+
+// The nine output columns carry a PINNED ClickHouse type, independent of
+// which lowering built the node and of what the physical schema stores.
+// Without the casts below the emitted types depend on the shape: a bare
+// selector and `sum()` forward the OTel-CH columns verbatim (`Count`
+// UInt64, `PositiveBucketCounts` Array(UInt64)), while `rate()` /
+// `increase()` divide those by the window and merge the ladders, landing
+// on Float64 / Array(Float64). One output contract cannot be two types:
+// [chclient.HistogramValue] binds ONE set of scan destinations by
+// position, and the ch-go columnar decoder type-ASSERTS one concrete
+// proto column per slot. A UInt64-shaped `rate()` result is not merely
+// awkward there — `clickhouse-go/v2`'s `Float64.ScanRow` rejects a
+// `*uint64` destination outright, so the un-pinned shape failed to decode
+// at all (issue #1967).
+//
+// Float64 (not UInt64) is the correct pin, not just the convenient one:
+// `rate()` over a native histogram yields FRACTIONAL observation counts,
+// exactly as reference Prometheus's own `rate()` returns a
+// `*histogram.FloatHistogram` rather than an integer `Histogram`.
+// Rounding a 0.1/s rate back to an integer count would answer 0.
+//
+// Scale and the two bucket offsets are BUCKET INDICES, not counts: they
+// stay integral, pinned to Int32 because the merge expression
+// (`arrayMin(arrayMap((s, off) -> bitShiftRight(off, s - <scale>), …))`)
+// promotes to Int64 on some ClickHouse versions while the physical
+// column is Int32.
+
+// histogramCountFrag pins an observation-count / sum slot to Float64.
+func histogramCountFrag(f Frag) Frag { return Call("toFloat64", f) }
+
+// histogramIndexFrag pins a bucket-index slot (Scale, the two offsets) to
+// Int32.
+func histogramIndexFrag(f Frag) Frag { return Call("toInt32", f) }
+
+// histogramBucketsFrag pins a bucket-count ladder to Array(Float64),
+// element-wise. Mirrors the identical widening histogram_quantile.go
+// already applies before its own bucket walk.
+func histogramBucketsFrag(f Frag) Frag {
+	return Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), f)
 }
 
 // histogramProjectionZeroThresholdFrag renders the HistogramZeroThreshold

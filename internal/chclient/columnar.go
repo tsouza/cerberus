@@ -48,6 +48,35 @@ import (
 // ResponseShapeMatrix below for the defense-in-depth layered on top (#1429).
 var matrixColumns = [...]string{"MetricName", "Attributes", "TimeUnix", "Value"}
 
+// histogramMatrixColumns is the nine trailing Histogram*Column aliases a
+// chplan.HistogramProjection subquery appends AFTER the base four — the
+// histogram-VALUED prom shapes (a bare exp-histogram selector, `sum()`
+// over one, `rate()`/`increase()` over one). A result block is the matrix
+// shape when its columns are matrixColumns alone OR matrixColumns
+// followed by exactly these, in this order; the row cursor probes the
+// same contract by its last column name (see cursor.go's
+// histogramLastColumn).
+//
+// Binding them here is what keeps the columnar path from DOUBLE-EXECUTING
+// a histogram query: a shape it declines is not merely decoded slowly,
+// it is re-dispatched to ClickHouse in full under a fresh query_id by
+// columnarDecoder.decode's row fallback (issue #1967).
+//
+// The names are duplicated from chplan.Histogram*Column by convention
+// rather than imported — chclient declares no internal dependencies in
+// .go-arch-lint.yml — exactly as cursor.go's histogramLastColumn is.
+var histogramMatrixColumns = [...]string{
+	"HistogramCount",
+	"HistogramSum",
+	"HistogramScale",
+	"HistogramZeroThreshold",
+	"HistogramZeroCount",
+	"HistogramPositiveOffset",
+	"HistogramPositiveBucketCounts",
+	"HistogramNegativeOffset",
+	"HistogramNegativeBucketCounts",
+}
+
 // ResponseShapeMatrix is the engine.Meta.ResponseShape value a caller stamps
 // onto a QueryCursor ctx (via WithResponseShape) to declare "this query's SQL
 // really is the prom query_range matrix projection". bindColumns ANDs this
@@ -327,11 +356,51 @@ func (d *columnarCursor) onResult(_ context.Context, block chproto.Block) error 
 }
 
 // matrixCols is the typed view of the four matrix columns after Auto inference.
+// hist is non-nil only for the thirteen-column histogram-valued shape.
 type matrixCols struct {
 	name  *chproto.ColStr
 	attrs *chproto.ColMap[string, string]
 	ts    timeColumn
 	val   *chproto.ColFloat64
+	hist  *histogramCols
+}
+
+// histogramCols is the typed view of the nine trailing Histogram*Column
+// columns. Every slot asserts ONE concrete ch-go column type, which is
+// sound only because chsql's emitter pins the nine output types
+// regardless of which lowering built the projection — counts and sums to
+// Float64, bucket ladders to Array(Float64), Scale and the two offsets to
+// Int32 (see internal/chsql/histogram_projection.go). Before that pin the
+// same query answered UInt64 from a bare selector and Float64 from
+// `rate()`, which no single assertion can bind.
+type histogramCols struct {
+	count         *chproto.ColFloat64
+	sum           *chproto.ColFloat64
+	scale         *chproto.ColInt32
+	zeroThreshold *chproto.ColFloat64
+	zeroCount     *chproto.ColFloat64
+	posOffset     *chproto.ColInt32
+	posBuckets    *chproto.ColArr[float64]
+	negOffset     *chproto.ColInt32
+	negBuckets    *chproto.ColArr[float64]
+}
+
+// row materialises the histogram value for block row r. ColArr.Row copies
+// the span into a fresh slice (ch-go's RowAppend), so the returned value
+// shares no storage with the block and stays valid after the next block
+// decodes over it.
+func (h *histogramCols) row(r int) *HistogramValue {
+	return &HistogramValue{
+		Count:                h.count.Row(r),
+		Sum:                  h.sum.Row(r),
+		Scale:                h.scale.Row(r),
+		ZeroThreshold:        h.zeroThreshold.Row(r),
+		ZeroCount:            h.zeroCount.Row(r),
+		PositiveOffset:       h.posOffset.Row(r),
+		PositiveBucketCounts: h.posBuckets.Row(r),
+		NegativeOffset:       h.negOffset.Row(r),
+		NegativeBucketCounts: h.negBuckets.Row(r),
+	}
 }
 
 // timeColumn is the read surface shared by ColDateTime and ColDateTime64 — the
@@ -356,7 +425,15 @@ func (d *columnarCursor) bindColumns() (matrixCols, bool) {
 	if d.responseShape != "" && d.responseShape != ResponseShapeMatrix {
 		return matrixCols{}, false
 	}
-	if len(d.results) != len(matrixColumns) {
+	// Two column counts are the matrix shape: the base four, and the base
+	// four plus the nine histogram columns. Anything else (the five-column
+	// Loki log-stream projection, the metadata endpoints) falls back.
+	histogramShaped := false
+	switch len(d.results) {
+	case len(matrixColumns):
+	case len(matrixColumns) + len(histogramMatrixColumns):
+		histogramShaped = true
+	default:
 		return matrixCols{}, false
 	}
 	for i, want := range matrixColumns {
@@ -380,7 +457,76 @@ func (d *columnarCursor) bindColumns() (matrixCols, bool) {
 	if !ok {
 		return matrixCols{}, false
 	}
-	return matrixCols{name: name, attrs: attrs, ts: ts, val: val}, true
+	cols := matrixCols{name: name, attrs: attrs, ts: ts, val: val}
+	if !histogramShaped {
+		return cols, true
+	}
+	hist, ok := d.bindHistogramColumns()
+	if !ok {
+		return matrixCols{}, false
+	}
+	cols.hist = hist
+	return cols, true
+}
+
+// bindHistogramColumns type-asserts the nine trailing Histogram*Column
+// results, after bindColumns has already confirmed the count. A name or
+// type mismatch reports false so the whole block falls back to the row
+// path rather than decoding a partially-bound histogram.
+func (d *columnarCursor) bindHistogramColumns() (*histogramCols, bool) {
+	base := len(matrixColumns)
+	for i, want := range histogramMatrixColumns {
+		if d.results[base+i].Name != want {
+			return nil, false
+		}
+	}
+	count, ok := d.results[base+0].Data.(*chproto.ColFloat64)
+	if !ok {
+		return nil, false
+	}
+	sum, ok := d.results[base+1].Data.(*chproto.ColFloat64)
+	if !ok {
+		return nil, false
+	}
+	scale, ok := d.results[base+2].Data.(*chproto.ColInt32)
+	if !ok {
+		return nil, false
+	}
+	zeroThreshold, ok := d.results[base+3].Data.(*chproto.ColFloat64)
+	if !ok {
+		return nil, false
+	}
+	zeroCount, ok := d.results[base+4].Data.(*chproto.ColFloat64)
+	if !ok {
+		return nil, false
+	}
+	posOffset, ok := d.results[base+5].Data.(*chproto.ColInt32)
+	if !ok {
+		return nil, false
+	}
+	posBuckets, ok := d.results[base+6].Data.(*chproto.ColArr[float64])
+	if !ok {
+		return nil, false
+	}
+	negOffset, ok := d.results[base+7].Data.(*chproto.ColInt32)
+	if !ok {
+		return nil, false
+	}
+	negBuckets, ok := d.results[base+8].Data.(*chproto.ColArr[float64])
+	if !ok {
+		return nil, false
+	}
+	return &histogramCols{
+		count:         count,
+		sum:           sum,
+		scale:         scale,
+		zeroThreshold: zeroThreshold,
+		zeroCount:     zeroCount,
+		posOffset:     posOffset,
+		posBuckets:    posBuckets,
+		negOffset:     negOffset,
+		negBuckets:    negBuckets,
+	}, true
 }
 
 // decodeBlock turns one bound block into Samples. The Attributes Map exposes
@@ -432,13 +578,17 @@ func (d *columnarCursor) decodeBlock(cols matrixCols, rows int) error {
 				}
 			}
 		}
-		d.samples = append(d.samples, Sample{
+		sample := Sample{
 			MetricName: cols.name.Row(r),
 			Labels:     curInterned,
 			SeriesID:   curID,
 			Timestamp:  cols.ts.Row(r),
 			Value:      cols.val.Row(r),
-		})
+		}
+		if cols.hist != nil {
+			sample.Histogram = cols.hist.row(r)
+		}
+		d.samples = append(d.samples, sample)
 	}
 	return nil
 }

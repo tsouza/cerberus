@@ -79,7 +79,7 @@ func (r *fakeRows) Scan(dest ...any) error {
 		if hv == nil {
 			return errors.New("fakeRows.Scan: histogram-shaped row requires a non-nil Sample.Histogram fixture")
 		}
-		if p, ok := dest[4].(*uint64); ok {
+		if p, ok := dest[4].(*float64); ok {
 			*p = hv.Count
 		}
 		if p, ok := dest[5].(*float64); ok {
@@ -91,19 +91,19 @@ func (r *fakeRows) Scan(dest ...any) error {
 		if p, ok := dest[7].(*float64); ok {
 			*p = hv.ZeroThreshold
 		}
-		if p, ok := dest[8].(*uint64); ok {
+		if p, ok := dest[8].(*float64); ok {
 			*p = hv.ZeroCount
 		}
 		if p, ok := dest[9].(*int32); ok {
 			*p = hv.PositiveOffset
 		}
-		if p, ok := dest[10].(*[]uint64); ok {
+		if p, ok := dest[10].(*[]float64); ok {
 			*p = hv.PositiveBucketCounts
 		}
 		if p, ok := dest[11].(*int32); ok {
 			*p = hv.NegativeOffset
 		}
-		if p, ok := dest[12].(*[]uint64); ok {
+		if p, ok := dest[12].(*[]float64); ok {
 			*p = hv.NegativeBucketCounts
 		}
 	default:
@@ -244,9 +244,9 @@ func TestRowsCursor_DecodesHistogramColumns(t *testing.T) {
 		ZeroThreshold:        0.001,
 		ZeroCount:            7,
 		PositiveOffset:       -2,
-		PositiveBucketCounts: []uint64{1, 2, 3},
+		PositiveBucketCounts: []float64{1, 2, 3},
 		NegativeOffset:       -5,
-		NegativeBucketCounts: []uint64{4, 5},
+		NegativeBucketCounts: []float64{4, 5},
 	}
 	rows := &fakeRows{
 		columns: histogramProjectionColumns,
@@ -294,8 +294,8 @@ func TestRowsCursor_HistogramProbeIsStableAcrossStream(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	h1 := HistogramValue{Count: 1, PositiveBucketCounts: []uint64{1}, NegativeBucketCounts: []uint64{}}
-	h2 := HistogramValue{Count: 2, PositiveBucketCounts: []uint64{2}, NegativeBucketCounts: []uint64{}}
+	h1 := HistogramValue{Count: 1, PositiveBucketCounts: []float64{1}, NegativeBucketCounts: []float64{}}
+	h2 := HistogramValue{Count: 2, PositiveBucketCounts: []float64{2}, NegativeBucketCounts: []float64{}}
 	rows := &fakeRows{
 		columns: histogramProjectionColumns,
 		samples: []Sample{
