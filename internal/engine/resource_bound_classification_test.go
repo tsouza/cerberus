@@ -64,7 +64,7 @@ var resourceBoundClassification = map[string]struct {
 	"Aggregate":                {boundRuntimeNet, "axis 4: GROUP BY cardinality; external-aggregation spill + max_memory_usage; output bounded by the result drain SampleBudget"},
 	"MetricsAggregate":         {boundRuntimeNet, "axis 4: TraceQL metrics GROUP BY; spill + max_memory_usage"},
 	"MetricsSecondStage":       {boundRuntimeNet, "axis 4/7: second-stage metrics reduction over the bounded first stage"},
-	"MetricsCompare":           {boundRuntimeNet, "axis 7: compare() arithmetic over the scan-bounded input"},
+	"MetricsCompare":           {boundGated, "axis 4/7: compare() arithmetic over the scan-bounded input, PLUS the zero-filled series x anchor grid it synthesises after the drain — gated by requireCompareGridBudget, the only place that product can be charged (the result-drain SampleBudget never sees a synthesised sample)"},
 	"MetricsHistogramOverTime": {boundRuntimeNet, "axis 4/7: per-bucket histogram over the bounded window"},
 	"CrossJoin":                {boundRuntimeNet, "axis 4: row product; current callers (absent lowering) feed it a single-row side; max_memory_usage"},
 	"InfoJoin":                 {boundRuntimeNet, "axis 4: info-metric enrichment join; spill + max_memory_usage"},

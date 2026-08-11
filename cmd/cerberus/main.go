@@ -192,6 +192,13 @@ func mountAPIHeads(
 		tempoHandler.Limiter = limiters.tempo
 		tempoHandler.StructuralTwoPhase = cfg.TempoStructuralTwoPhase
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
+		// The per-query sample budget the ENGINE-level bounds read. The cursor
+		// enforces the same ceiling on rows it drains from ClickHouse, but the
+		// engine's own gates (requireSubquerySampleBudget, and compare()'s
+		// synthesised-grid budget) read it from here — left at zero they are
+		// silently inert, which is how a compare() grid 108x over the configured
+		// budget was still served.
+		tempoHandler.Engine.MaxQuerySamples = tempoClient.MaxQuerySamples()
 		tempoHandler.Mount(traceMux)
 		engines = append(engines, tempoHandler.Engine)
 

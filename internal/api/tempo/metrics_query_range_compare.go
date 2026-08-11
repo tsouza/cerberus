@@ -156,12 +156,67 @@ type compareSeriesState struct {
 	total  float64
 }
 
+// requireCompareGridBudget fail-closes a compare() whose ZERO-FILLED wire grid
+// would exceed the per-query sample budget (Config.MaxQuerySamples).
+//
+// compare() is the one metrics shape whose result size is not bounded by
+// anything upstream of it. Every other shape hands ClickHouse's rows straight
+// to the wire, so the Go-side result drain (chclient.SampleBudget /
+// Config.MaxQuerySamples) charges each sample as it is read and aborts a
+// runaway mid-drain. compare() instead SYNTHESISES its grid after the drain:
+// postProcessCompare folds a SPARSE row stream (only the anchors that carry
+// data) into a DENSE series x anchor matrix, zero-filling every gap. The rows
+// actually read from CH can therefore be a handful while the emitted matrix is
+// six orders of magnitude larger — so the drain budget never sees the samples
+// it is supposed to bound, and neither does the CH-side max_memory_usage cap
+// (the query is cheap; the expansion happens here, on the Go heap).
+//
+// The other two bounds miss it for the same structural reason:
+// format.MaxResolutionPoints caps the anchor axis ALONE (11000) and
+// requireSubquerySampleBudget deliberately counts one series' grid rather than
+// anchors x series, documenting that the cardinality axis "is bounded elsewhere
+// ... the result-drain SampleBudget". For compare() that elsewhere does not
+// exist. This restores it: the product series x anchors IS the sample count the
+// response will carry, so it is charged before a single MetricsSample is
+// allocated.
+//
+// Rejecting (rather than truncating) matches every peer bound: the caller gets
+// the same chclient.ErrTooManySamples that a drained overrun raises, which
+// ClassifyErr maps to the same resource-exhausted 422 on both the HTTP and gRPC
+// surfaces. Truncating would instead answer a comparison with a silently
+// partial baseline, which is worse than an honest refusal.
+//
+// maxSamples <= 0 disables the budget, matching the cursor's and the subquery
+// gate's semantics so the bound stays inert in tests that do not wire it.
+// The comparison is written as a division rather than `series*anchors > max`
+// so no input can overflow it into a wrapped negative that slips under the
+// budget. Today's operands cannot reach that (anchors is already capped at
+// format.MaxResolutionPoints upstream), so this is defence against a future
+// caller with a wider grid, not a live hazard. For positive operands
+// `anchors > max/series` (integer division) is exactly equivalent to
+// `series*anchors > max`.
+func requireCompareGridBudget(seriesCount, anchorCount int, maxSamples int64) error {
+	if maxSamples <= 0 || seriesCount <= 0 || anchorCount <= 0 {
+		return nil
+	}
+	if int64(anchorCount) > maxSamples/int64(seriesCount) {
+		return &chclient.TooManySamplesError{Limit: maxSamples}
+	}
+	return nil
+}
+
 // postProcessCompare folds the raw (cohort, attr, val, anchor, count)
 // row stream into the wire series set — the cerberus-side equivalent
 // of upstream Tempo's BaselineAggregator.Results. `anchors` is the
 // full matrix grid (every series zero-fills across it); `topN` is the
 // per-(cohort, attribute) value cap.
-func postProcessCompare(samples []chclient.Sample, topN int, anchors []time.Time) []MetricsSeries {
+//
+// `maxSamples` bounds the zero-filled series x anchor product this builds; see
+// requireCompareGridBudget for why this is the only place that product can be
+// charged. A crossing returns chclient.ErrTooManySamples and no series.
+func postProcessCompare(
+	samples []chclient.Sample, topN int, anchors []time.Time, maxSamples int64,
+) ([]MetricsSeries, error) {
 	type cohortAttr struct {
 		meta string // baseline | selection
 		attr string
@@ -201,6 +256,25 @@ func postProcessCompare(samples []chclient.Sample, topN int, anchors []time.Time
 			totals[ca] = tm
 		}
 		tm[ns] += s.Value
+	}
+
+	// Charge the grid BEFORE building it. The emitted series set is one series
+	// per surviving (cohort, attr, val) plus one totals series per
+	// (cohort, attr), and every one of them zero-fills across every anchor —
+	// so this product is exactly the sample count the response would carry.
+	// Counting it here needs no sorting and allocates nothing, which is the
+	// point: an over-budget compare() is refused before the matrix exists on
+	// the heap, not after.
+	emitted := len(totals)
+	for _, vm := range values {
+		n := len(vm)
+		if topN > 0 && n > topN {
+			n = topN
+		}
+		emitted += n
+	}
+	if err := requireCompareGridBudget(emitted, len(anchors), maxSamples); err != nil {
+		return nil, err
 	}
 
 	gridSamples := func(counts map[int64]float64) []MetricsSample {
@@ -282,7 +356,7 @@ func postProcessCompare(samples []chclient.Sample, topN int, anchors []time.Time
 		addSeries(totalMeta(ca.meta), ca.attr, compareNilLabelValue, totals[ca])
 	}
 
-	return series
+	return series, nil
 }
 
 // execCompareRange runs the matrix-shape pipeline for a lowered
@@ -324,7 +398,12 @@ func (h *Handler) execCompareRange(
 		"start", start, "end", end, "step", step,
 		"sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
-	series := postProcessCompare(res.Samples, cmp.TopN, compareAnchorGrid(start, end, step))
+	series, err := postProcessCompare(
+		res.Samples, cmp.TopN, compareAnchorGrid(start, end, step), h.Engine.MaxQuerySamples,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
 	return series, res.Headers, nil
 }
 

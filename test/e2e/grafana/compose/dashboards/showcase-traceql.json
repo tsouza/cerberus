@@ -2055,8 +2055,7 @@
      },
      "query": "{ } | rate()",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     },
     {
      "datasource": {
@@ -2065,8 +2064,7 @@
      },
      "query": "{ } | rate() by (resource.service.name)",
      "queryType": "traceql",
-     "refId": "B",
-     "step": "15s"
+     "refId": "B"
     }
    ],
    "title": "rate() \u2014 bare and by()",
@@ -2154,8 +2152,7 @@
      },
      "query": "{ } | count_over_time()",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     },
     {
      "datasource": {
@@ -2164,8 +2161,7 @@
      },
      "query": "{ } | count_over_time() by (name)",
      "queryType": "traceql",
-     "refId": "B",
-     "step": "15s"
+     "refId": "B"
     }
    ],
    "title": "count_over_time()",
@@ -2253,8 +2249,7 @@
      },
      "query": "{ } | min_over_time(duration)",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     },
     {
      "datasource": {
@@ -2263,8 +2258,7 @@
      },
      "query": "{ } | max_over_time(duration)",
      "queryType": "traceql",
-     "refId": "B",
-     "step": "15s"
+     "refId": "B"
     },
     {
      "datasource": {
@@ -2273,8 +2267,7 @@
      },
      "query": "{ } | avg_over_time(duration)",
      "queryType": "traceql",
-     "refId": "C",
-     "step": "15s"
+     "refId": "C"
     }
    ],
    "title": "min / max / avg over time (duration)",
@@ -2362,8 +2355,7 @@
      },
      "query": "{ } | sum_over_time(.payload_bytes)",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     }
    ],
    "title": "sum_over_time over a numeric attribute",
@@ -2451,8 +2443,7 @@
      },
      "query": "{ } | quantile_over_time(duration, .5, .9, .99)",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     }
    ],
    "title": "quantile_over_time multi-phi",
@@ -2540,8 +2531,7 @@
      },
      "query": "{ } | histogram_over_time(duration)",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     }
    ],
    "title": "histogram_over_time",
@@ -2629,8 +2619,7 @@
      },
      "query": "{ } | rate() with (exemplars = true)",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     }
    ],
    "title": "Hints: with(exemplars = true)",
@@ -2718,8 +2707,7 @@
      },
      "query": "{ } | rate() by (name) | topk(3)",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     },
     {
      "datasource": {
@@ -2728,8 +2716,7 @@
      },
      "query": "{ } | rate() by (name) | bottomk(3)",
      "queryType": "traceql",
-     "refId": "B",
-     "step": "15s"
+     "refId": "B"
     }
    ],
    "title": "Second stage: topk / bottomk",
@@ -2817,8 +2804,7 @@
      },
      "query": "{ } | rate() by (name) > 0.0001",
      "queryType": "traceql",
-     "refId": "A",
-     "step": "15s"
+     "refId": "A"
     }
    ],
    "title": "Second stage: threshold filter",
@@ -3690,8 +3676,7 @@
        },
        "query": "{ } | compare({ status = error })",
        "queryType": "traceql",
-       "refId": "A",
-       "step": "15s"
+       "refId": "A"
       }
      ],
      "title": "compare() \u2014 baseline vs selection",
