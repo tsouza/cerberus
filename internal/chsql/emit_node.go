@@ -85,8 +85,21 @@ func (e *emitter) splice(b *Builder) error {
 }
 
 func (e *emitter) emitScan(s *chplan.Scan) error {
-	if err := validateScanShape(s); err != nil {
+	sb, err := scanQuery(s)
+	if err != nil {
 		return err
+	}
+	return e.emitSelect(sb)
+}
+
+// scanQuery assembles the bare `SELECT [cols] FROM <table>` QueryBuilder
+// for a predicate-less Scan, returned unrendered so a caller can hang
+// further slots off it — the unfiltered-arm case of the `&&` single-pass
+// gate (set_op.go), where every arm matches every span and there is no
+// disjunction to restrict the scan by.
+func scanQuery(s *chplan.Scan) (*QueryBuilder, error) {
+	if err := validateScanShape(s); err != nil {
+		return nil, err
 	}
 	sb := NewQuery().From(scanTableFrag(s))
 	// An empty Columns slice appends nothing to the SELECT list, which
@@ -98,7 +111,7 @@ func (e *emitter) emitScan(s *chplan.Scan) error {
 		cols = append(cols, Col(c))
 	}
 	sb.Select(cols...)
-	return e.emitSelect(sb)
+	return sb, nil
 }
 
 // validateScanShape enforces the mutual exclusion between Scan.Table and
@@ -380,8 +393,27 @@ func (e *emitter) emitFilter(f *chplan.Filter) error {
 // promotion always activates in that case when the table shape has
 // wide columns registered.
 func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
-	if err := validateScanShape(scan); err != nil {
+	sb, err := filterScanQuery(f, scan)
+	if err != nil {
 		return err
+	}
+	return e.emitSelect(sb)
+}
+
+// filterScanQuery assembles the Filter-directly-above-Scan QueryBuilder
+// that emitFilterScan renders, returning it unrendered so a caller that
+// needs to hang further slots off the same single-table SELECT can do so
+// without losing the PREWHERE split.
+//
+// The `&&` single-pass trace gate (set_op.go's fusedIntersectQuery) is
+// that caller: it drives the arms' disjunction through here so the fused
+// scan keeps the same granule-skipping PREWHERE promotion each arm's own
+// Filter(Scan) would have received, then adds its QUALIFY window gate.
+// Sharing the assembly is what keeps the fast path from silently trading
+// four cheap PREWHERE-pruned reads for one unpruned one.
+func filterScanQuery(f *chplan.Filter, scan *chplan.Scan) (*QueryBuilder, error) {
+	if err := validateScanShape(scan); err != nil {
+		return nil, err
 	}
 	// For a UnionTables scan every member table shares the metric-row
 	// shape (the cerberus-created metrics tables all order by
@@ -431,7 +463,7 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 	if len(whereExprs) > 0 {
 		sb.Where(conjunctionFrag(whereExprs))
 	}
-	return e.emitSelect(sb)
+	return sb, nil
 }
 
 // conjunctionFrag returns a Frag that renders exprs joined with " AND ".

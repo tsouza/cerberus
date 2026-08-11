@@ -300,40 +300,182 @@ func TestEmitNode_Aggregate_PropagatesChildError(t *testing.T) {
 // TestEmitNode_SetOperation_Intersect pins TraceQL's `A && B` semantics:
 // both arms must match the same trace, but the result is the identity-deduped
 // span-level union of those arms. Tempo uses this shape for both `&&` and
-// `||`; `&&` differs only by the two trace-cohort predicates.
+// `||`; `&&` differs only by the trace gate.
+//
+// It also pins the DECISION BOUNDARY between the two shapes that gate
+// (see chsql.fusableIntersect):
+//
+//   - Arms that are Filter-chains over one shared Scan with pure row
+//     predicates fuse into ONE pass — `WHERE <p1> OR <p2> QUALIFY
+//     max(<p1>) OVER (PARTITION BY TraceId) AND …` — costing one leaf
+//     read of the spans table.
+//   - Every other arm shape keeps the union-gated `_setand_{l,r}_<n>` CTE
+//     pair, which is correct but re-reads the table per use site.
+//
+// The negative cases are the load-bearing half. A sub-pipeline arm is
+// STRUCTURALLY a Filter chain over the shared Scan, so an emitter that
+// swapped shapes on structure alone would fuse it and return wrong rows:
+// its membership test is a per-trace aggregate that no per-row predicate
+// can reproduce. These cases fail on exactly that mistake.
 func TestEmitNode_SetOperation_Intersect(t *testing.T) {
 	t.Parallel()
 
-	plan := &chplan.SetOperation{
-		Left:          &chplan.Scan{Table: "otel_traces"},
-		Right:         &chplan.Scan{Table: "otel_traces"},
-		Op:            chplan.SetIntersect,
-		TraceIDColumn: "TraceId",
-		SpanIDColumn:  "SpanId",
-	}
-	sql, args, err := chsql.Emit(context.Background(), plan)
-	if err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
-	// Verify the structural shape: arm CTEs, UNION ALL, trace gate, and
-	// identity deduplication.
-	for _, frag := range []string{
-		"WITH _setand_l_1 AS",
-		"_setand_r_1 AS",
-		"UNION ALL",
-		"`TraceId` IN (SELECT `TraceId` FROM _setand_l_1)",
-		"`TraceId` IN (SELECT `TraceId` FROM _setand_r_1)",
-		"LIMIT 1 BY `TraceId`, `SpanId`",
-	} {
-		if !strings.Contains(sql, frag) {
-			t.Errorf("SetIntersect SQL missing fragment %q; got %q", frag, sql)
+	scan := func() *chplan.Scan { return &chplan.Scan{Table: "otel_traces"} }
+	filtered := func(col, val string) chplan.Node {
+		return &chplan.Filter{
+			Input:     scan(),
+			Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: col}, Right: &chplan.LitString{V: val}},
 		}
 	}
-	if strings.Contains(sql, "INNER JOIN") {
-		t.Errorf("SetIntersect must union distinct spans from matching traces, not intersect span identities: %q", sql)
+	intersect := func(l, r chplan.Node) *chplan.SetOperation {
+		return &chplan.SetOperation{
+			Left: l, Right: r, Op: chplan.SetIntersect,
+			TraceIDColumn: "TraceId", SpanIDColumn: "SpanId",
+		}
 	}
-	if args != nil {
-		t.Errorf("Args = %v; want nil (no `?` in this shape)", args)
+	// A parenthesised sub-pipeline arm: the span rows under a per-trace
+	// aggregate cohort, exactly what test/spec/traceql's
+	// spanset_pipeline_intersect fixture lowers to.
+	subPipelineArm := func() chplan.Node {
+		return &chplan.Filter{
+			Input: filtered("SpanName", "left"),
+			Predicate: &chplan.InSubquery{
+				Left: &chplan.ColumnRef{Name: "TraceId"},
+				Subquery: &chplan.Aggregate{
+					Input:          scan(),
+					GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+					GroupByAliases: []string{"TraceId"},
+				},
+			},
+		}
+	}
+
+	const (
+		fusedGateLeft  = "QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`)"
+		fusedGateRight = "max((`Duration` = ?)) OVER (PARTITION BY `TraceId`)"
+		armCTELeft     = "WITH _setand_l_1 AS"
+		armCTERight    = "_setand_r_1 AS"
+		identityDedup  = "LIMIT 1 BY `TraceId`, `SpanId`"
+	)
+
+	cases := []struct {
+		name    string
+		plan    *chplan.SetOperation
+		want    []string
+		notWant []string
+	}{
+		{
+			// The issue-#1519 case: two bare selectors over one table.
+			name: "bare selector arms fuse to a single pass",
+			plan: intersect(filtered("SpanName", "left"), filtered("Duration", "5")),
+			want: []string{
+				"SELECT * FROM `otel_traces`",
+				"WHERE ((`SpanName` = ?) OR (`Duration` = ?))",
+				fusedGateLeft,
+				fusedGateRight,
+				identityDedup,
+			},
+			notWant: []string{armCTELeft, armCTERight, "UNION ALL", "_setand_"},
+		},
+		{
+			// `{} && {}` — both arms match every span, so the disjunction
+			// is a tautology and every trace already satisfies both gates.
+			name: "unfiltered arms need neither restriction nor gate",
+			plan: intersect(scan(), scan()),
+			want: []string{"SELECT * FROM `otel_traces`", identityDedup},
+			notWant: []string{
+				armCTELeft, "UNION ALL", "QUALIFY", "WHERE",
+			},
+		},
+		{
+			// `A && B && C` arrives left-nested; all three arms fuse into
+			// ONE pass with three gate terms rather than nesting a second
+			// union-gated statement inside the first.
+			name: "nested intersect chain flattens into one pass",
+			plan: intersect(
+				intersect(filtered("SpanName", "left"), filtered("Duration", "5")),
+				filtered("StatusCode", "Error"),
+			),
+			want: []string{
+				"WHERE (((`SpanName` = ?) OR (`Duration` = ?)) OR (`StatusCode` = ?))",
+				fusedGateLeft,
+				fusedGateRight,
+				"max((`StatusCode` = ?)) OVER (PARTITION BY `TraceId`)",
+			},
+			notWant: []string{"_setand_", "UNION ALL"},
+		},
+		{
+			// THE correctness boundary: structurally a Filter chain over
+			// the shared Scan, semantically a per-trace aggregate.
+			name:    "sub-pipeline arm keeps the union-gated shape",
+			plan:    intersect(subPipelineArm(), filtered("Duration", "5")),
+			want:    []string{armCTELeft, armCTERight, "UNION ALL", "`TraceId` IN (SELECT `TraceId` FROM _setand_l_1)", identityDedup},
+			notWant: []string{"QUALIFY"},
+		},
+		{
+			// A BoundedTraceScope is an Expr LEAF, so a Node-only walk
+			// never sees it — but the emitter re-derives a top-N spans
+			// subquery from it, so fusing would hide a second table read
+			// behind a shape advertising one pass.
+			name: "bounded-trace-scope arm keeps the union-gated shape",
+			plan: intersect(
+				&chplan.Filter{Input: scan(), Predicate: &chplan.BoundedTraceScope{
+					SpansTable: "otel_traces", TraceIDColumn: "TraceId",
+					ParentSpanIDColumn: "ParentSpanId", TimestampColumn: "Timestamp", TraceLimit: 20,
+				}},
+				filtered("Duration", "5"),
+			),
+			want:    []string{armCTELeft, armCTERight, identityDedup},
+			notWant: []string{"QUALIFY"},
+		},
+		{
+			// Different tables are not one shared pass, however similar
+			// the arm shapes look.
+			name: "arms over different tables keep the union-gated shape",
+			plan: intersect(
+				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: &chplan.ColumnRef{Name: "A"}},
+				&chplan.Filter{Input: &chplan.Scan{Table: "otel_traces_other"}, Predicate: &chplan.ColumnRef{Name: "B"}},
+			),
+			want:    []string{armCTELeft, armCTERight, identityDedup},
+			notWant: []string{"QUALIFY"},
+		},
+		{
+			// A nested `||` is a different operator; flattening it into
+			// the conjunctive gate would turn "either arm" into "both".
+			name: "nested union arm keeps the union-gated shape",
+			plan: intersect(
+				&chplan.SetOperation{
+					Left: filtered("SpanName", "left"), Right: filtered("Duration", "5"),
+					Op: chplan.SetUnion, TraceIDColumn: "TraceId", SpanIDColumn: "SpanId",
+				},
+				filtered("StatusCode", "Error"),
+			),
+			want:    []string{armCTELeft, armCTERight, identityDedup},
+			notWant: []string{"QUALIFY"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sql, _, err := chsql.Emit(context.Background(), tc.plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			for _, frag := range tc.want {
+				if !strings.Contains(sql, frag) {
+					t.Errorf("SetIntersect SQL missing fragment %q; got %q", frag, sql)
+				}
+			}
+			for _, frag := range tc.notWant {
+				if strings.Contains(sql, frag) {
+					t.Errorf("SetIntersect SQL must not contain %q; got %q", frag, sql)
+				}
+			}
+			if strings.Contains(sql, "INNER JOIN") {
+				t.Errorf("SetIntersect must union distinct spans from matching traces, not intersect span identities: %q", sql)
+			}
+		})
 	}
 }
 

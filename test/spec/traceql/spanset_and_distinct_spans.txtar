@@ -3,8 +3,10 @@
 -- args --
 [0] string = "left"
 [1] string = "right"
+[2] string = "left"
+[3] string = "right"
 -- sql --
-WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`SpanName` = ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT * FROM `otel_traces` WHERE ((`SpanName` = ?) OR (`SpanName` = ?)) QUALIFY max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) AND max((`SpanName` = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,

@@ -1,11 +1,14 @@
 -- query.traceql --
 { resource.service.name = "a" } && { duration > 1s }
 -- sql --
-WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`Duration` > ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT * FROM `otel_traces` WHERE ((`ResourceAttributes`[?] = ?) OR (`Duration` > ?)) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) AND max((`Duration` > ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
 -- args --
 [0] string = "service.name"
 [1] string = "a"
 [2] int64 = 1000000000
+[3] string = "service.name"
+[4] string = "a"
+[5] int64 = 1000000000
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,

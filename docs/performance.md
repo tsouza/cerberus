@@ -132,6 +132,22 @@ The typed emitter is CH-native, not ANSI-ish:
 - **`PREWHERE` promotion** fuses `Filter(Scan)` and partitions conjuncts into a
   sort-prefix bucket / skip-index bucket / rest, promoting cheap predicates
   that touch no wide column so CH evaluates them before reading wide columns.
+- **Single-pass spanset intersect** — TraceQL `&&` is a trace-level
+  conjunction over a span-level union, and the portable spelling of it names
+  each arm as a `WITH` CTE referenced three times. A non-recursive CTE is a
+  textual substitution, so ClickHouse re-reads the spans table per use site:
+  four leaf passes for two arms, seven for three. Where every arm is a filter
+  chain over one shared scan with a pure row predicate, the emitter collapses
+  the whole chain to one pass, gating traces with
+  `QUALIFY max(<p>) OVER (PARTITION BY TraceId)`. `QUALIFY` filters on the
+  window value without projecting it, so the statement keeps its bare
+  `SELECT *` column set. Shared conjuncts are factored out of the arms'
+  disjunction first — otherwise a windowed query's request bounds would
+  vanish into one opaque `OR` and lose partition pruning, making the single
+  pass a full-retention scan. Arms whose membership is decided by a subplan
+  rather than by the row — a parenthesised sub-pipeline ending in a spanset
+  aggregate — keep the CTE shape, because no per-row predicate reproduces a
+  per-trace aggregate.
 - **Streaming `clickhouse-go/v2` cursor** — bounded RSS, no full row buffer on
   the hot path.
 
@@ -214,8 +230,9 @@ ceiling only tightens when a maintainer re-runs
 **fan_factor is nullable, and null is never a free pass.** The profiler's
 per-subquery `count()` decomposition only descends the leftmost `FROM`
 source; it stops on a `WITH`-prefixed subquery (a CTE reference or a
-pre-rendered subquery splice — the `&&` `SetIntersect` shape in
-`internal/chsql/set_op.go` is the current example) and, structurally via
+pre-rendered subquery splice — the union-gated `&&` `SetIntersect` fallback
+in `internal/chsql/set_op.go` is the current example, reached only by the
+arm shapes the single-pass window gate cannot fuse) and, structurally via
 `EXPLAIN`, on any `RECURSIVE` CTE step. Before #1519 those stages silently
 flattened to `fan_factor = 1.00` — the profiler reported "no fan-out" on
 exactly the constructs it exists to catch. `profile.Record.FanFactor` is

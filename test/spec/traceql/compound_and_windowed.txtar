@@ -10,16 +10,18 @@ and no Timestamp predicate was emitted at all.
 -- query.traceql --
 { resource.service.name = "a" } && { span.http.status_code = 500 }
 -- sql --
-WITH _setand_l_1 AS (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ResourceAttributes`[?] = ?)), _setand_r_1 AS (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (toFloat64OrNull(`SpanAttributes`[?]) = ?)) SELECT * FROM ((SELECT * FROM _setand_l_1) UNION ALL (SELECT * FROM _setand_r_1)) WHERE `TraceId` IN (SELECT `TraceId` FROM _setand_l_1) AND `TraceId` IN (SELECT `TraceId` FROM _setand_r_1) LIMIT 1 BY `TraceId`, `SpanId`
+SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND ((`ResourceAttributes`[?] = ?) OR (toFloat64OrNull(`SpanAttributes`[?]) = ?)) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) AND max((toFloat64OrNull(`SpanAttributes`[?]) = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`
 -- args --
 [0] int64 = 1782571392000000000
 [1] int64 = 1782573192000000000
 [2] string = "service.name"
 [3] string = "a"
-[4] int64 = 1782571392000000000
-[5] int64 = 1782573192000000000
-[6] string = "http.status_code"
-[7] int64 = 500
+[4] string = "http.status_code"
+[5] int64 = 500
+[6] string = "service.name"
+[7] string = "a"
+[8] string = "http.status_code"
+[9] int64 = 500
 -- chplan --
 SetOperation op=&&
   Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
