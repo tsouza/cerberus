@@ -21,7 +21,7 @@ func TestHistogramFromValue_PositiveBucketBoundaries(t *testing.T) {
 		Sum:                  10,
 		Scale:                0, // base = 2^(2^0) = 2
 		PositiveOffset:       1,
-		PositiveBucketCounts: []uint64{2, 3},
+		PositiveBucketCounts: []float64{2, 3},
 	}
 	h := histogramFromValue(hv)
 	if h == nil {
@@ -57,7 +57,7 @@ func TestHistogramFromValue_NegativeBucketBoundariesAscending(t *testing.T) {
 	hv := &chclient.HistogramValue{
 		Scale:                0, // base = 2
 		NegativeOffset:       0,
-		NegativeBucketCounts: []uint64{5, 7}, // i=0 -> [-2,-1); i=1 -> [-4,-2)
+		NegativeBucketCounts: []float64{5, 7}, // i=0 -> [-2,-1); i=1 -> [-4,-2)
 	}
 	h := histogramFromValue(hv)
 	if len(h.Buckets) != 2 {
@@ -82,8 +82,8 @@ func TestHistogramFromValue_ZeroBucketSymmetric(t *testing.T) {
 	hv := &chclient.HistogramValue{
 		ZeroThreshold:        0.5,
 		ZeroCount:            9,
-		PositiveBucketCounts: []uint64{1},
-		NegativeBucketCounts: []uint64{1},
+		PositiveBucketCounts: []float64{1},
+		NegativeBucketCounts: []float64{1},
 	}
 	h := histogramFromValue(hv)
 	var zero *HistogramBucket
@@ -113,7 +113,7 @@ func TestHistogramFromValue_ZeroBucketOneSidedClamp(t *testing.T) {
 		hv := &chclient.HistogramValue{
 			ZeroThreshold:        0.5,
 			ZeroCount:            4,
-			PositiveBucketCounts: []uint64{1},
+			PositiveBucketCounts: []float64{1},
 		}
 		h := histogramFromValue(hv)
 		zero := findBucketByCount(t, h.Buckets, "4")
@@ -126,7 +126,7 @@ func TestHistogramFromValue_ZeroBucketOneSidedClamp(t *testing.T) {
 		hv := &chclient.HistogramValue{
 			ZeroThreshold:        0.5,
 			ZeroCount:            4,
-			NegativeBucketCounts: []uint64{1},
+			NegativeBucketCounts: []float64{1},
 		}
 		h := histogramFromValue(hv)
 		zero := findBucketByCount(t, h.Buckets, "4")
@@ -156,8 +156,8 @@ func TestHistogramFromValue_SkipsZeroCountBuckets(t *testing.T) {
 	t.Parallel()
 
 	hv := &chclient.HistogramValue{
-		PositiveBucketCounts: []uint64{0, 5, 0},
-		NegativeBucketCounts: []uint64{0},
+		PositiveBucketCounts: []float64{0, 5, 0},
+		NegativeBucketCounts: []float64{0},
 		ZeroCount:            0,
 	}
 	h := histogramFromValue(hv)
@@ -298,7 +298,7 @@ func TestToVector_PopulatesHistogram(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Unix(1717171717, 0).UTC()
-	hv := &chclient.HistogramValue{Count: 3, Sum: 6, PositiveBucketCounts: []uint64{3}}
+	hv := &chclient.HistogramValue{Count: 3, Sum: 6, PositiveBucketCounts: []float64{3}}
 	samples := []chclient.Sample{
 		{MetricName: "h", Labels: map[string]string{"job": "api"}, Timestamp: ts, Histogram: hv},
 	}
@@ -327,7 +327,7 @@ func TestMatrixFromSamples_PopulatesHistogram(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Unix(1717171717, 0).UTC()
-	hv := &chclient.HistogramValue{Count: 1, PositiveBucketCounts: []uint64{1}}
+	hv := &chclient.HistogramValue{Count: 1, PositiveBucketCounts: []float64{1}}
 	samples := []chclient.Sample{
 		{MetricName: "h", Labels: map[string]string{"job": "api"}, Timestamp: ts, Histogram: hv},
 	}
@@ -351,7 +351,7 @@ func TestMatrixFromCursor_PopulatesHistogram(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Unix(1717171717, 0).UTC()
-	hv := &chclient.HistogramValue{Count: 1, PositiveBucketCounts: []uint64{1}}
+	hv := &chclient.HistogramValue{Count: 1, PositiveBucketCounts: []float64{1}}
 	samples := []chclient.Sample{
 		{MetricName: "h", Labels: map[string]string{"job": "api"}, Timestamp: ts, Histogram: hv},
 	}

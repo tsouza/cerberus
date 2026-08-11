@@ -80,14 +80,19 @@ const (
 	// Histogram*Column…)` — nine named histogram columns instead of a
 	// `Value`, and no `MetricName` of its own (a wrapping Project adds
 	// one, the same way HistogramQuantileNative's wrapping Project
-	// does). It answers false to every `shape != SampleRowShape` check
-	// the existing PromQL forwarders (projectValueOverInner,
-	// projectAttributesOverInner) make, which is correct: neither
-	// forwarder builds a column list a histogram-shaped row satisfies
-	// (both unconditionally reference `Value` by name), so a
-	// histogram-valued lowering that needs those forwarders to work
-	// over a HistogramProjection must teach them this shape first — see
-	// the doc comment on HistogramProjection.
+	// does). It answers TRUE to every `shape != SampleRowShape` check
+	// the PromQL forwarders (projectValueOverInner,
+	// projectAttributesOverInner) make, so it would take their WINDOWED
+	// branch — which is wrong, not merely unhandled: that branch
+	// forwards `Value`, and a HistogramProjection publishes `Value`
+	// only as the placeholder it binds alongside the nine real
+	// Histogram*Column outputs. The projection would therefore succeed
+	// in ClickHouse and answer 0, dropping the histogram. Neither
+	// forwarder builds a column list a histogram-shaped row satisfies,
+	// so a histogram-valued lowering that needs them must teach them
+	// this shape first; until then both assert against it on entry
+	// (internal/promql/histogram_shape_guard.go). See also the doc
+	// comment on HistogramProjection.
 	//
 	// Three lowerings build this node today (internal/promql's
 	// histogram_native_bare.go, histogram_native_sum.go and

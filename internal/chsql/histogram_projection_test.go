@@ -109,7 +109,7 @@ func TestEmit_HistogramProjection_NoZeroThresholdColumn(t *testing.T) {
 	if strings.Contains(sql, "ZeroThreshold") && !strings.Contains(sql, "HistogramZeroThreshold") {
 		t.Errorf("emitted SQL references a bare ZeroThreshold identifier despite the schema persisting none:\n%s", sql)
 	}
-	if !strings.Contains(sql, "0. AS `HistogramZeroThreshold`") {
+	if !strings.Contains(sql, "toFloat64(0.) AS `HistogramZeroThreshold`") {
 		t.Errorf("emitted SQL does not project the constant-0 HistogramZeroThreshold column:\n%s", sql)
 	}
 }
@@ -141,17 +141,23 @@ func TestEmit_HistogramProjection_ShapeSanity(t *testing.T) {
 		t.Fatalf("Emit(HistogramProjection): %v", err)
 	}
 
+	// Each source column is read through a CAST that pins the output
+	// type, not verbatim. The pin is what lets one set of decode-side
+	// destinations bind every histogram-valued shape: without it a bare
+	// selector answers UInt64 here and `rate()` answers Float64, and
+	// clickhouse-go/v2's Float64.ScanRow rejects the *uint64 destination
+	// the row cursor would have bound (issue #1967).
 	wantTokens := []string{
 		"`Attributes`",
-		"`Count` AS `HistogramCount`",
-		"`Sum` AS `HistogramSum`",
-		"`Scale` AS `HistogramScale`",
-		"`ZeroThreshold` AS `HistogramZeroThreshold`",
-		"`ZeroCount` AS `HistogramZeroCount`",
-		"`PositiveOffset` AS `HistogramPositiveOffset`",
-		"`PositiveBucketCounts` AS `HistogramPositiveBucketCounts`",
-		"`NegativeOffset` AS `HistogramNegativeOffset`",
-		"`NegativeBucketCounts` AS `HistogramNegativeBucketCounts`",
+		"toFloat64(`Count`) AS `HistogramCount`",
+		"toFloat64(`Sum`) AS `HistogramSum`",
+		"toInt32(`Scale`) AS `HistogramScale`",
+		"toFloat64(`ZeroThreshold`) AS `HistogramZeroThreshold`",
+		"toFloat64(`ZeroCount`) AS `HistogramZeroCount`",
+		"toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`",
+		"arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`",
+		"toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`",
+		"arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts`",
 		"otel_metrics_exponential_histogram",
 	}
 	for _, tok := range wantTokens {
