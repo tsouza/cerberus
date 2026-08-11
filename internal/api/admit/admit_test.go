@@ -596,6 +596,40 @@ func TestStreamInterceptorNilLimiterPassesThrough(t *testing.T) {
 	}
 }
 
+func TestNilLimiterHeadAndBudgetEmpty(t *testing.T) {
+	t.Parallel()
+	var l *admit.Limiter
+	if got := l.Head(); got != "" {
+		t.Fatalf("nil Head(): want empty string, got %q", got)
+	}
+	if got := l.Budget(); got != "" {
+		t.Fatalf("nil Budget(): want empty string, got %q", got)
+	}
+}
+
+func TestHeadToQLUnknownHead(t *testing.T) {
+	t.Parallel()
+	// An unrecognised head name must pass through as-is so future
+	// heads ("otlp", etc.) still produce a usable metric label.
+	reader := metric.NewManualReader()
+	mp := metric.NewMeterProvider(metric.WithReader(reader))
+
+	const unknown = "otlp"
+	l := admit.NewWithProvider(unknown, 1, mp)
+	// Force a rejection to populate the cerberus.ql metric attribute.
+	rel, _ := l.Acquire(t.Context())
+	defer rel()
+	if _, ok := l.Acquire(t.Context()); ok {
+		t.Fatal("acquire while saturated: want reject")
+	}
+
+	streams := rejectedStreams(t, reader)
+	key := unknown + "/" + admit.BudgetRequest + "/" + admit.ReasonCapExceeded
+	if _, ok := streams[key]; !ok {
+		t.Fatalf("headToQL default: want cerberus.ql=%q to pass through unchanged, streams=%v", unknown, streams)
+	}
+}
+
 func TestStreamInterceptorReleasesOnHandlerError(t *testing.T) {
 	t.Parallel()
 	// A handler error must still release the slot so subsequent
