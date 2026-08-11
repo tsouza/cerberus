@@ -208,9 +208,13 @@ Three lanes genuinely resist local reproduction, and only these justify a CI rou
   types production rejects, so a green chDB golden is not evidence for either.
 - **`e2e`, `compose-smoke`, and the crawl ratchet** — these need k3d or Docker Compose.
 
-The Compose lanes carry a concurrency hazard: there is no per-worktree Compose project-name
-isolation, so a compose run started from one worktree corrupts another's containers. Compose stays
-down while any other agent is live.
+`scripts/compose-project-suffix.sh` gives every linked worktree's compose stack a distinct project
+name (a hash of the worktree path), so container, network, volume and image names do not collide
+between agents — a compose run from one worktree does not adopt or corrupt another's containers
+(enforced by `test/regression/compose_project_isolation_test.go`). The residual hazard is published
+host ports: every stack still binds the same literal ports, so two worktrees cannot run the SAME
+stack concurrently — the second `up` fails loudly on a port bind rather than corrupting anything.
+Pick an unused port range before bringing one up alongside other live agents.
 
 ### Project subagents (`.claude/agents/`)
 
