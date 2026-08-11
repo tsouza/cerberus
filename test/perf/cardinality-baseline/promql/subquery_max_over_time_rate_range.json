@@ -1,8 +1,8 @@
 {
-  "fixture": "promql/subquery_nested",
+  "fixture": "promql/subquery_max_over_time_rate_range",
   "fan_factor": 1,
-  "scan_rows": 3,
-  "peak_intermediate": 3,
+  "scan_rows": 31,
+  "peak_intermediate": 31,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
