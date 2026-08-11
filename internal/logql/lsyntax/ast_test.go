@@ -228,6 +228,17 @@ func TestSelector_PropagatesTheStashedError(t *testing.T) {
 		{name: "vector()", expr: &VectorExpr{err: wantErr}},
 		{name: "variants", expr: &MultiVariantExpr{err: wantErr}},
 	}
+	// The table must cover every SampleExpr, and the set of SampleExprs
+	// is derived from the isSampleExpr() declarations rather than
+	// restated here: a new sample expression that stashes its
+	// constructor error and never gets a row would otherwise leave the
+	// only path the lowering learns about that error untested, silently.
+	covered := make([]SampleExpr, 0, len(cases))
+	for _, tc := range cases {
+		covered = append(covered, tc.expr)
+	}
+	assertCoversEverySampleExpr(t, sampleExprTypeNames(covered))
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sel, err := tc.expr.Selector()

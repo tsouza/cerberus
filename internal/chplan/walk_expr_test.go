@@ -12,37 +12,15 @@ import (
 // case would otherwise silently hide a ScalarSubquery nested inside it,
 // blinding the fan-out linter).
 //
-// The set below must list one zero-value instance of every type that
-// implements Expr. Discovery is manual-by-design: there is no registry of
-// Expr types, so the test pins the closed set explicitly.
+// The set under test is allExprKinds(), whose completeness against the
+// exprNode() implementer set is asserted below rather than pinned as a
+// number. `go vet` cannot flag the missing inspectExpr case — the switch
+// has no default-panic — so this derivation is the only thing standing
+// between a new Expr type and a silently unvisited subtree.
 func TestInspectExprExhaustive(t *testing.T) {
 	t.Parallel()
 
-	all := []Expr{
-		&ColumnRef{},
-		&LitString{},
-		&InlineString{},
-		&LitInt{},
-		&LitFloat{},
-		&LitBool{},
-		&BareIdent{},
-		&Binary{},
-		&FuncCall{},
-		&InList{},
-		&FieldAccess{},
-		&MapAccess{},
-		&Subscript{},
-		&LineContent{},
-		&LabelJoin{},
-		&LabelReplace{},
-		&Lambda{},
-		&MapWithoutKeys{},
-		&MapWithoutEmptyValues{},
-		&NestedArrayExists{},
-		&ScalarSubquery{},
-		&BoundedTraceScope{},
-		&InSubquery{},
-	}
+	all := allExprKinds()
 
 	// Each listed type must be reached as a root visit without panicking,
 	// and the set must be free of accidental duplicates.
@@ -66,59 +44,25 @@ func TestInspectExprExhaustive(t *testing.T) {
 		}
 	}
 
-	// The hardcoded count is the real guard: if a new Expr type is added,
-	// `go vet` / compilation won't flag the missing inspectExpr case (the
-	// switch has no default-panic), so this count forces the author to
-	// revisit both the switch AND this list. Keep it in lock-step with the
-	// number of exprNode() implementers under internal/chplan.
-	const wantExprTypes = 23
-	if len(all) != wantExprTypes {
-		t.Fatalf("expected %d Expr types in the exhaustiveness set, listed %d — "+
-			"a new Expr type was added: extend inspectExpr's switch in walk_expr.go AND this list",
-			wantExprTypes, len(all))
-	}
+	assertCoversEverySealedKind(t, exprMarkerMethod, sealedKindNames(all), "allExprKinds",
+		"add a zero-value instance to allExprKinds and an inspectExpr case in walk_expr.go")
 }
 
 // TestCloneExprExhaustive guards cloneExpr's exhaustive switch (which has a
 // default-panic) against a new Expr type silently aliasing into a re-anchored
 // shard plan. Every concrete Expr type must clone without panicking and the
-// clone must be Equal to the original. The hardcoded count is in lock-step
-// with TestInspectExprExhaustive's set — both mirror the exprNode()
-// implementers, so a new type forces the author to extend BOTH switches
+// clone must be Equal to the original. It shares allExprKinds() with
+// TestInspectExprExhaustive — one list, derived against the exprNode()
+// implementers — so a new type forces the author to extend BOTH switches
 // (inspectExpr AND cloneExpr).
 func TestCloneExprExhaustive(t *testing.T) {
 	t.Parallel()
 
-	all := []Expr{
-		&ColumnRef{},
-		&LitString{},
-		&InlineString{},
-		&LitInt{},
-		&LitFloat{},
-		&LitBool{},
-		&BareIdent{},
-		&Binary{},
-		&FuncCall{},
-		&InList{},
-		&FieldAccess{},
-		&MapAccess{},
-		&Subscript{},
-		&LineContent{},
-		&LabelJoin{},
-		&LabelReplace{},
-		&Lambda{},
-		&MapWithoutKeys{},
-		&MapWithoutEmptyValues{},
-		&NestedArrayExists{},
-		&ScalarSubquery{},
-		&BoundedTraceScope{},
-		&InSubquery{},
-	}
-	const wantExprTypes = 23
-	if len(all) != wantExprTypes {
-		t.Fatalf("expected %d Expr types, listed %d — a new Expr type was added: "+
-			"extend cloneExpr's switch in clone.go AND this list", wantExprTypes, len(all))
-	}
+	all := allExprKinds()
+
+	assertCoversEverySealedKind(t, exprMarkerMethod, sealedKindNames(all), "allExprKinds",
+		"add a zero-value instance to allExprKinds and a cloneExpr case in clone.go")
+
 	// Zero-value Exprs (nil children) are fine for this check: we only assert
 	// cloneExpr handles each concrete type (no default-panic) and returns the
 	// same concrete type — NOT structural equality, which would deref the nil
