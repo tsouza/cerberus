@@ -86,6 +86,10 @@ allow:
 # import graph.
 excludeFiles:
   - ".*_test\\.go$"
+  # Fixture packages under testdata are inputs to a test, not part of
+  # the architecture: `go build` never sees them, so they have no place
+  # in the dependency graph and no component to belong to.
+  - ".*/testdata/.*\\.go$"
 
 components:
   # Domain layers.
