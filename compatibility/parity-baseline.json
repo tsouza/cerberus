@@ -1133,8 +1133,8 @@
       ]
     },
     "tempo": {
-      "passed": 76,
-      "total": 76,
+      "passed": 78,
+      "total": 78,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -1157,10 +1157,12 @@
         "search | direct_parent_op_checkout_to_child",
         "search | dotted_attr_name_collision",
         "search | duration_gt_100ms",
+        "search | duration_gt_dynamic_attribute",
         "search | duration_lt_300ms",
         "search | kind_eq_server",
         "search | kind_not_nil",
         "search | kind_not_nil_unspecified_carrier",
+        "search | name_gt_int_rejected",
         "search | name_not_nil",
         "search | negated_kind_not_client",
         "search | resource_deployment_env_eq_compat_test",
@@ -1215,8 +1217,8 @@
       ]
     },
     "tempo-grpc": {
-      "passed": 74,
-      "total": 74,
+      "passed": 76,
+      "total": 76,
       "cases": [
         "metrics_instant | metrics_avg_over_time_instant",
         "metrics_instant | metrics_count_over_time_instant",
@@ -1239,10 +1241,12 @@
         "search | direct_parent_op_checkout_to_child",
         "search | dotted_attr_name_collision",
         "search | duration_gt_100ms",
+        "search | duration_gt_dynamic_attribute",
         "search | duration_lt_300ms",
         "search | kind_eq_server",
         "search | kind_not_nil",
         "search | kind_not_nil_unspecified_carrier",
+        "search | name_gt_int_rejected",
         "search | name_not_nil",
         "search | negated_kind_not_client",
         "search | resource_deployment_env_eq_compat_test",

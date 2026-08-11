@@ -36,12 +36,14 @@ const typeMismatchFormat = "binary operations must operate on the same type: %s"
 // accepted it and the tree is well formed; the tree is merely
 // ill-typed.
 //
-// Only the binary-operand rule is enforced today. The reference performs
-// several further static checks over the same tree (operator/operand
-// validity, span-filter and aggregate result types, regex compilability,
-// intrinsic-nil); cerberus deliberately accepts some of those shapes
-// because it answers queries the reference declines, so adopting them is
-// its own piece of work rather than a side effect of this one.
+// Only the binary-operand rule is enforced here. The reference performs
+// several further static checks over the same tree — operator/operand
+// validity, span-filter and aggregate result types, regex compilability —
+// each of which cerberus currently accepts and the reference rejects.
+// Issue #2035 tracks them with a per-rule repro; two more of the
+// reference's rules are deliberately NOT adopted, because cerberus answers
+// those queries (`{ kind != nil }`, `{ parent = "<hex>" }`) rather than
+// declining them.
 type ValidationError struct{ msg string }
 
 // Error renders the message with the reference backend's `invalid TraceQL
@@ -65,10 +67,13 @@ func newValidationError(format string, args ...any) *ValidationError {
 //   - The numeric family (int / float / duration) is inter-comparable.
 //   - nil compares against anything — `{ span.foo != nil }` is the
 //     existence idiom.
-//   - An array matches whatever its element type matches, which is how the
-//     `in` / `not in` and regex-set forms the array-fold rewrites produce
-//     type-check. `{ name = 1 || name = 2 }` folds to `name in [1, 2]`
-//     before the rule runs and is still rejected, on the element type.
+//
+// The array types need no case of their own. The grammar has no array
+// literal — the only producer is the OR-to-IN fold in rewrite.go, which
+// runs AFTER this rule (see Parse) and only ever merges literals of one
+// family. A chain that would fold into a mismatched array comparison
+// therefore always contains a mismatched SCALAR comparison, and is
+// rejected on that one first.
 func (t StaticType) isMatchingOperand(otherT StaticType) bool {
 	if t == TypeAttribute || otherT == TypeAttribute {
 		return true
@@ -79,40 +84,7 @@ func (t StaticType) isMatchingOperand(otherT StaticType) bool {
 	if t.isNumeric() && otherT.isNumeric() {
 		return true
 	}
-	if t == TypeNil || otherT == TypeNil {
-		return true
-	}
-	return t.isMatchingArrayElement(otherT)
-}
-
-// isMatchingArrayElement is isMatchingOperand for the array types: an
-// array operand matches whatever its ELEMENT type would match. It is
-// checked in both directions so the rule stays symmetric regardless of
-// which side the array literal was written on.
-func (t StaticType) isMatchingArrayElement(otherT StaticType) bool {
-	if elem, ok := t.arrayElement(); ok {
-		return elem.isMatchingOperand(otherT)
-	}
-	if elem, ok := otherT.arrayElement(); ok {
-		return elem.isMatchingOperand(t)
-	}
-	return false
-}
-
-// arrayElement returns the element type of an array StaticType; ok is
-// false for every non-array type.
-func (t StaticType) arrayElement() (StaticType, bool) {
-	switch t {
-	case TypeIntArray:
-		return TypeInt, true
-	case TypeFloatArray:
-		return TypeFloat, true
-	case TypeStringArray:
-		return TypeString, true
-	case TypeBooleanArray:
-		return TypeBoolean, true
-	}
-	return 0, false
+	return t == TypeNil || otherT == TypeNil
 }
 
 // validate reports the first static typing error in r, or nil when the

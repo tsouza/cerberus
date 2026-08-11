@@ -1407,16 +1407,22 @@ search
 -- name --
 duration_gt_dynamic_attribute
 # A scoped attribute is typed per span at query time, so a comparison
-# against one is ANSWERED, not rejected: a span whose `budget_ns` is
-# absent or non-numeric simply does not match. The seeder writes no
-# `budget_ns`, so both backends return zero traces — and, crucially,
-# both return 2xx. This is the half that must NOT become a 400.
+# against one is ANSWERED, not rejected. `child.index` is the seeder's
+# numeric-valued span attribute (seeder.go's per-child `child.index`),
+# written as a small integer on every child span and absent from every
+# root, so this returns a real, non-empty answer on both backends:
+# children match, roots do not. Deliberately NOT an empty-vs-empty
+# comparison — a lowering that dropped the numeric coercion entirely
+# would also return zero traces, and a case asserting emptiness would
+# grade that as agreement.
 -- query --
-{ duration > span.budget_ns }
+{ duration > span.child.index }
 -- endpoint --
 search
+-- expected_min_traces --
+1
 -- expected_max_traces --
-0
+500
 
 -- name --
 name_gt_int_rejected
@@ -1425,9 +1431,19 @@ name_gt_int_rejected
 # text, not a query with an empty answer. Both backends reject it at
 # validation with "binary operations must operate on the same type".
 # Status-parity axis rather than a body diff: there is no body.
--- expect_status --
-400
+#
+# Carries the gRPC sibling too, so the rejection is graded on both
+# transports rather than skipped on one (grpc_diff.go skips an
+# expect_status case with no expect_grpc_code). Grounded by reading
+# both implementations: cerberus's grpcCodeFor maps ErrClassParse to
+# codes.InvalidArgument (internal/api/tempo/grpc/errclass.go), and
+# reference Tempo's combiner maps its own HTTP 400 to the identical
+# code (modules/frontend/combiner/common.go's erroredResponse).
 -- query --
 { name > 3 }
 -- endpoint --
 search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument

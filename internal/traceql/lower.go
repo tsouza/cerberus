@@ -2119,11 +2119,14 @@ func coerceNumericFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr, numericP
 //
 // The question is deliberately asked of the SOURCE operands rather than of
 // the lowered plan: a numeric intrinsic and a string intrinsic both lower
-// to a bare ColumnRef, indistinguishable downstream. It is also asked of
-// the schema rather than of the language's own type system — the language
-// leaves the scoped intrinsic spellings (`span:duration`, `trace:duration`)
-// query-time typed, but cerberus still emits them against numeric columns
-// and so still has to coerce their dynamic peer.
+// to a bare ColumnRef, indistinguishable downstream.
+//
+// It is answered from the COLUMN each intrinsic resolves to rather than
+// from the language's static type, because the two answer different
+// questions — the type system says what the value means, the schema says
+// what ClickHouse will compare. They agree today over every intrinsic the
+// parser can produce, and this file is the one that has to be right when
+// they stop agreeing.
 func binaryHasNumericOperand(b *traceql.BinaryOperation) bool {
 	return numericIntrinsicOperand(b.LHS) || numericIntrinsicOperand(b.RHS)
 }
@@ -2142,10 +2145,14 @@ func numericIntrinsicOperand(e traceql.FieldExpression) bool {
 // intrinsic resolves to a String column, where a comparison against an
 // attribute needs no coercion because the attribute maps are String-valued
 // too.
+// The scoped spellings need no entries of their own: the parser
+// normalises `span:duration` onto IntrinsicDuration and `trace:duration`
+// onto IntrinsicTraceDuration (scopedIntrinsic in ast/parser.go), so the
+// ScopedIntrinsic* constants never reach lowering.
 func numericIntrinsicColumn(i traceql.Intrinsic) bool {
 	switch i {
-	case traceql.IntrinsicDuration, traceql.ScopedIntrinsicSpanDuration,
-		traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration,
+	case traceql.IntrinsicDuration,
+		traceql.IntrinsicTraceDuration,
 		traceql.IntrinsicEventTimeSinceStart,
 		traceql.IntrinsicChildCount,
 		traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight,

@@ -148,58 +148,31 @@ func TestParseRejectsFlippedTypeMismatch(t *testing.T) {
 	}
 }
 
-// TestIsMatchingOperandArrayElement pins each array type against the
-// ELEMENT type it stands for. The symmetry property above cannot tell
-// these apart — mapping TypeIntArray to the wrong element type is
-// symmetric — so the mapping needs naming per case.
-func TestIsMatchingOperandArrayElement(t *testing.T) {
-	cases := []struct {
-		a, b StaticType
-		want bool
-	}{
-		{TypeStringArray, TypeString, true},
-		{TypeStringArray, TypeInt, false},
-		{TypeStringArray, TypeBoolean, false},
-		{TypeIntArray, TypeInt, true},
-		// The element rule composes with the numeric-family rule.
-		{TypeIntArray, TypeFloat, true},
-		{TypeIntArray, TypeDuration, true},
-		{TypeIntArray, TypeString, false},
-		{TypeFloatArray, TypeFloat, true},
-		{TypeFloatArray, TypeString, false},
-		{TypeBooleanArray, TypeBoolean, true},
-		{TypeBooleanArray, TypeInt, false},
-		// Two arrays never meet: neither is the other's element.
-		{TypeIntArray, TypeStringArray, false},
-		{TypeStringArray, TypeStringArray, true}, // …except by identity.
-	}
-	for _, tc := range cases {
-		t.Run(tc.a.String()+"/"+tc.b.String(), func(t *testing.T) {
-			if got := tc.a.isMatchingOperand(tc.b); got != tc.want {
-				t.Errorf("%v.isMatchingOperand(%v) = %v, want %v", tc.a, tc.b, got, tc.want)
-			}
-			if got := tc.b.isMatchingOperand(tc.a); got != tc.want {
-				t.Errorf("%v.isMatchingOperand(%v) = %v, want %v", tc.b, tc.a, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestParseRejectsFoldedArrayMismatch pins that the array-fold rewrites
-// cannot smuggle an ill-typed chain past the rule. `{ name = 1 || name =
-// 2 }` folds to a single `name in [1, 2]` before the check runs, so the
-// check has to reach the array's element type to still reject it.
-func TestParseRejectsFoldedArrayMismatch(t *testing.T) {
+// TestParseRejectsChainBeforeItFolds pins the ordering that lets the rule
+// stay complete without an array case: `{ name = 1 || name = 2 }` would
+// fold to a single `name in [1, 2]`, but the rule runs first and rejects
+// the scalar comparison the client actually wrote — the same sentence the
+// reference produces, which validates through ParseNoOptimizations for
+// exactly this reason.
+func TestParseRejectsChainBeforeItFolds(t *testing.T) {
 	_, err := Parse(`{ name = 1 || name = 2 }`)
 	if err == nil {
 		t.Fatal("Parse(`{ name = 1 || name = 2 }`) = nil error, want a type mismatch")
 	}
-	if !strings.Contains(err.Error(), "name in [1, 2]") {
-		t.Errorf("message = %q, want it to name the folded expression", err)
+	if !strings.Contains(err.Error(), "name = 1") {
+		t.Errorf("message = %q, want it to name the unfolded comparison", err)
 	}
-	// The same fold over the matching element type stays accepted.
-	if _, err := Parse(`{ name = "a" || name = "b" }`); err != nil {
-		t.Errorf("Parse of a well-typed fold = %v, want it accepted", err)
+	if strings.Contains(err.Error(), "in [") {
+		t.Errorf("message = %q, want the pre-fold spelling, not the folded one", err)
+	}
+	// The same chain over the matching type stays accepted, and still
+	// folds — the rule must not cost the rewrite.
+	expr, err := Parse(`{ name = "a" || name = "b" }`)
+	if err != nil {
+		t.Fatalf("Parse of a well-typed chain = %v, want it accepted", err)
+	}
+	if got := expr.String(); !strings.Contains(got, "in [") {
+		t.Errorf("parsed to %q, want the array fold still applied", got)
 	}
 }
 
