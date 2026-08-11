@@ -70,6 +70,40 @@ export const STAGE_BODY = 1;
 export const STAGE_POST = 2;
 
 /**
+ * The env pair a fanned-out generator declares its corpus slice through, read by
+ * `spec.ShardFromEnv` (test/spec/shard.go). Deliberately NOT the perf lane's
+ * PERF_SHARD_* pair: the two partitions cover different corpora at different
+ * counts, and one shared pair would let either narrow the other.
+ */
+const SPEC_SHARD_INDEX_ENV = 'SPEC_SHARD_INDEX';
+const SPEC_SHARD_COUNT_ENV = 'SPEC_SHARD_COUNT';
+
+/**
+ * How many processes the PromQL round-trip generator fans out to.
+ *
+ * `TestRoundTripChDB` walks ~570 chDB-executing TXTAR fixtures in ONE process
+ * and was the single longest step of `just update-golden promql` at ~7 minutes,
+ * with the rest of the recipe an order of magnitude cheaper. It cannot be
+ * parallelised in-process — every subtest shares chdb-go's package-level session
+ * singleton, which the runner tears down and rebuilds between fixtures for
+ * cross-fixture isolation (#1987) — so the only lever is more PROCESSES, each
+ * with its own singleton and its own `os.MkdirTemp`-backed session directory.
+ *
+ * Four rather than the machine's eight cores, because the count was MEASURED
+ * rather than assumed. Regenerating the whole corpus from blanked
+ * `-- expected_rows --` on an 8-core box: 629s in one process, 231s at 4 legs,
+ * 252s at 8. The extra four legs buy nothing and cost a little, because chDB
+ * threads WITHIN a single query as well — a leg already uses more than one core,
+ * so eight of them oversubscribe rather than spread. The margin over the serial
+ * walk (2.7x) is where the win is; the margin between 4 and 8 is contention.
+ *
+ * Four also leaves room for the siblings: during `update-golden all` the five
+ * other STAGE_BODY shards (logql/traceql/chsql/optimizer/codegen) are running
+ * beside these legs, so the promql fan-out is not alone on the machine.
+ */
+const ROUNDTRIP_FANOUT = 4;
+
+/**
  * The shard table: one entry per independently-regenerable artefact group.
  *
  * Each entry declares only facts that are the shard's own definition — what it
@@ -82,7 +116,9 @@ export const STAGE_POST = 2;
  *   recipe     the existing `just` recipe that regenerates it, when it has one.
  *   generators `go test` invocations that regenerate it, and — for every shard,
  *              recipe-backed or not — the packages whose dep closure defines
- *              which source changes can move what it records.
+ *              which source changes can move what it records. A generator may
+ *              declare `fanOut: N` when its corpus walk is partitionable, which
+ *              expands it into N concurrent processes over disjoint slices.
  *   shardTree  a tree of one JSON shard per fixture, whose layout names the
  *              corpus it derives from. Mutually exclusive with `corpus`.
  *   corpus     data-input roots for a shard whose artefacts do not name them.
@@ -93,7 +129,12 @@ export const SHARDS = {
     goldens: ['test/spec/promql'],
     generators: [
       { pkgs: ['./internal/promql/'], run: '^TestLower$' },
-      { pkgs: ['./test/spec/promql/'], tags: ['chdb'], run: '^TestRoundTripChDB$' },
+      {
+        pkgs: ['./test/spec/promql/'],
+        tags: ['chdb'],
+        run: '^TestRoundTripChDB$',
+        fanOut: ROUNDTRIP_FANOUT,
+      },
     ],
   },
   logql: {
@@ -240,14 +281,23 @@ export function needsChdb(names) {
 }
 
 /**
- * The concrete commands that regenerate one shard, in order. A recipe-backed
- * shard delegates to its existing `just` recipe so the command stays defined in
+ * The concrete STEPS that regenerate one shard, in order. A recipe-backed shard
+ * delegates to its existing `just` recipe so the command stays defined in
  * exactly one place; everything else is a scoped `go test`.
  *
  * The scoping is the point of #1898's item 3: the pre-shard body ran
  * `GOLDEN_UPDATE=1 go test ./...`, compiling and running 74 packages to
  * regenerate goldens in five of them — and letting any unrelated failing test
  * abort the regeneration halfway through.
+ *
+ * A step is either a single `{argv, env}` command or an ARRAY of them. The array
+ * form is a fan-out: those commands partition one generator's corpus between
+ * them (`fanOut: N` on the generator), share no output fixture, and are meant to
+ * run concurrently — but still strictly between the step before and the step
+ * after, because a shard's generator ORDER is a real data dependency (promql's
+ * `TestLower` writes the `-- sql --` that `TestRoundTripChDB` then executes).
+ * Callers that cannot run anything concurrently flatten with [flattenSteps] and
+ * get the same total work, serially.
  */
 export function commandsFor(name, { justExecutable = 'just' } = {}) {
   const shard = SHARDS[name];
@@ -269,8 +319,36 @@ export function commandsFor(name, { justExecutable = 'just' } = {}) {
     if ((g.tags ?? []).length > 0) argv.push('-tags', g.tags.join(','));
     if (g.run) argv.push('-run', g.run);
     argv.push(...g.pkgs);
-    return { argv, env: { [GOLDEN_UPDATE_ENV]: '1' } };
+
+    const env = { [GOLDEN_UPDATE_ENV]: '1' };
+    if (!g.fanOut || g.fanOut <= 1) return { argv, env };
+
+    // One command per corpus slice. The INDEX is 1-based and the legs are
+    // contiguous 1..N, because that is what the partition on the Go side
+    // divides by: an index outside [1, N] names a slice that does not exist,
+    // so that leg regenerates nothing while the slice it should have owned is
+    // owned by nobody — and every leg still exits 0.
+    return Array.from({ length: g.fanOut }, (_, i) => ({
+      argv,
+      env: {
+        ...env,
+        [SPEC_SHARD_INDEX_ENV]: String(i + 1),
+        [SPEC_SHARD_COUNT_ENV]: String(g.fanOut),
+      },
+    }));
   });
+}
+
+/** Every command in a step list, fan-outs expanded, order preserved. */
+export function flattenSteps(steps) {
+  return steps.flatMap((step) => (Array.isArray(step) ? step : [step]));
+}
+
+/** A short name distinguishing one command of a fanned-out step: `promql[3/8]`. */
+export function stepLabel(name, env) {
+  const index = env[SPEC_SHARD_INDEX_ENV];
+  const count = env[SPEC_SHARD_COUNT_ENV];
+  return index && count ? `${name}[${index}/${count}]` : name;
 }
 
 // ---------------------------------------------------------------------------

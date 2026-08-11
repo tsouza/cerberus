@@ -33,6 +33,16 @@
 // freshly-written SQL to fill `-- expected_rows --`) still run sequentially,
 // in declaration order, because that ordering IS a real data dependency.
 //
+// One generator additionally fans OUT: promql's `TestRoundTripChDB` declares
+// `fanOut: N` (golden-shards.mjs) and arrives here as N commands over disjoint
+// slices of its own corpus, partitioned by test/spec/shard.go. They run
+// concurrently with each other and the next generator waits for all of them, so
+// the fan-out buys parallelism WITHIN one generator without weakening the order
+// between generators. It has to be processes rather than goroutines for the same
+// reason the shards do: chdb-go caches one session per process, and the spec
+// runner tears that singleton down between fixtures for cross-fixture isolation
+// (#1987), so in-process parallelism would race the teardown.
+//
 // Environment inputs:
 //
 //   GOLDEN_SHARDS                (required) space/comma separated shard names,
@@ -73,8 +83,10 @@ import {
   SHARDS,
   commandsFor,
   coverageViolations,
+  flattenSteps,
   needsChdb,
   resolveRequested,
+  stepLabel,
 } from './lib/golden-shards.mjs';
 
 const repoRoot = process.cwd();
@@ -170,14 +182,27 @@ function runTagged(name, argv, env, cwd) {
 
 /** Runs one shard's generators sequentially (declaration order is a real
  * data dependency — see the module comment). Resolves to `{ name, code }`;
- * `code` is the first non-zero exit, or 0 if every generator succeeded. */
+ * `code` is the first non-zero exit, or 0 if every generator succeeded.
+ *
+ * A STEP is one generator, and a step that declared `fanOut: N` arrives as an
+ * array of N commands over disjoint corpus slices. Those run concurrently with
+ * each other and the loop does not advance until every one of them has finished
+ * — the fan-out parallelises one generator, it does not weaken the ordering
+ * between generators. First non-zero exit in the group fails the shard, after
+ * letting its siblings finish, matching the cross-shard semantics above. */
 async function runShard(name, justExecutable, repoRoot) {
-  for (const { argv, env } of commandsFor(name, { justExecutable })) {
-    log(`==> ${name}: ${Object.entries(env)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(' ')} ${argv.join(' ')}`.replace(/\s+/g, ' '));
-    const code = await runTagged(name, argv, env, repoRoot);
-    if (code !== 0) return { name, code };
+  for (const step of commandsFor(name, { justExecutable })) {
+    const group = Array.isArray(step) ? step : [step];
+    for (const { argv, env } of group) {
+      log(`==> ${stepLabel(name, env)}: ${Object.entries(env)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ')} ${argv.join(' ')}`.replace(/\s+/g, ' '));
+    }
+    const codes = await Promise.all(
+      group.map(({ argv, env }) => runTagged(stepLabel(name, env), argv, env, repoRoot)),
+    );
+    const failed = codes.find((c) => c !== 0);
+    if (failed !== undefined) return { name, code: failed };
   }
   return { name, code: 0 };
 }
@@ -213,8 +238,11 @@ async function main() {
   const justExecutable = process.env.JUST_EXECUTABLE || 'just';
 
   if (process.env.GOLDEN_UPDATE_PRINT_PLAN === '1') {
+    // One line per COMMAND, fan-outs expanded: the plan is what the run will
+    // execute, and a fan-out that printed as a single line would hide both the
+    // partition it declares and the count it declares it at.
     for (const name of shards) {
-      for (const { argv, env } of commandsFor(name, { justExecutable })) {
+      for (const { argv, env } of flattenSteps(commandsFor(name, { justExecutable }))) {
         const prefix = Object.entries(env).map(([k, v]) => `${k}=${v}`);
         log(`${SHARDS[name].stage} ${name} ${[...prefix, ...argv].join(' ')}`);
       }

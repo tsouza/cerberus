@@ -20,6 +20,11 @@ import (
 // regeneration of the expected sections in TXTAR fixtures.
 const envGoldenUpdate = "GOLDEN_UPDATE"
 
+// fixtureExt is the suffix every spec fixture carries. A fixture's NAME — its
+// subtest name, and the id the corpus partition hashes (see shard.go) — is its
+// basename with this trimmed off.
+const fixtureExt = ".txtar"
+
 // Case is a single TXTAR fixture loaded from disk.
 type Case struct {
 	// Path is the absolute path of the fixture file.
@@ -58,32 +63,24 @@ func Load(path string) (*Case, error) {
 		return nil, err
 	}
 	a := txtar.Parse(data)
-	name := strings.TrimSuffix(filepath.Base(path), ".txtar")
-	return &Case{Path: path, Name: name, archive: a}, nil
+	return &Case{Path: path, Name: trimFixtureExt(filepath.Base(path)), archive: a}, nil
+}
+
+// trimFixtureExt turns a fixture filename into the fixture's name.
+func trimFixtureExt(base string) string {
+	return strings.TrimSuffix(base, fixtureExt)
 }
 
 // Walk loads every *.txtar fixture under dir (non-recursive) and calls fn
 // inside a t.Run subtest named after each fixture. Fixtures are visited in
 // sorted order for stable output.
+//
+// This is [WalkShard] over the whole corpus. A caller that wants to spread the
+// walk across several PROCESSES — the only parallelism a chdb-tagged walk can
+// take, see WalkShard — passes a partition there instead.
 func Walk(t *testing.T, dir string, fn func(t *testing.T, c *Case)) {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, "*.txtar"))
-	if err != nil {
-		t.Fatalf("spec.Walk: glob %q: %v", dir, err)
-	}
-	if len(matches) == 0 {
-		t.Fatalf("spec.Walk: no *.txtar fixtures in %s", dir)
-	}
-	sort.Strings(matches)
-	for _, m := range matches {
-		c, err := Load(m)
-		if err != nil {
-			t.Fatalf("spec.Walk: load %s: %v", m, err)
-		}
-		t.Run(c.Name, func(t *testing.T) {
-			fn(t, c)
-		})
-	}
+	WalkShard(t, dir, WholeCorpus, fn)
 }
 
 // Match asserts that each (section, actual) pair matches what's stored on

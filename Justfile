@@ -509,6 +509,17 @@ update-coverage-floor:
 #   is silently skipped (#1096 native_resample_offset, #1098
 #   increase_left_edge_scan_bound).
 #
+# Within a shard, generators still run in declaration order, because that order
+# IS a data dependency. One of them — promql's `TestRoundTripChDB`, which walks
+# ~570 fixtures through chDB and was the longest single step of the whole recipe
+# — additionally fans OUT across several processes over disjoint slices of its
+# own corpus, and the next generator waits for all of them. Processes rather than
+# goroutines because chdb-go caches one session per PROCESS and the runner tears
+# that singleton down between fixtures for isolation (#1987), so in-process
+# parallelism would race the teardown. `.github/scripts/lib/golden-shards.mjs`
+# declares the leg count; test/spec/shard.go partitions the corpus by a hash of
+# the fixture name, so enrolling fixtures does not re-shuffle the existing ones.
+#
 # Every chdb-tagged shard (promql, logql, traceql, cardinality) requires
 # libchdb.so (`just chdb-install`); the runner fails fast without it rather than
 # leaving stale `-- expected_rows --` behind (the PR #758 failure mode).
