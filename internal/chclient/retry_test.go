@@ -33,6 +33,8 @@ type staleConn struct {
 	calls       atomic.Int32
 }
 
+var _ driver.Conn = (*staleConn)(nil)
+
 func (c *staleConn) fail() error {
 	n := c.calls.Add(1)
 	if c.failForever {
@@ -65,6 +67,18 @@ func (c *staleConn) QueryRow(context.Context, string, ...any) driver.Row {
 func (c *staleConn) PrepareBatch(context.Context, string, ...driver.PrepareBatchOption) (driver.Batch, error) {
 	return nil, c.fail()
 }
+
+func (c *staleConn) QueryFormat(context.Context, string, string, ...any) (io.ReadCloser, error) {
+	if err := c.fail(); err != nil {
+		return nil, err
+	}
+	return emptyFormatStream(), nil
+}
+
+func (c *staleConn) InsertFormat(context.Context, string, string, io.Reader) error {
+	return c.fail()
+}
+
 func (c *staleConn) Exec(context.Context, string, ...any) error              { return c.fail() }
 func (c *staleConn) AsyncInsert(context.Context, string, bool, ...any) error { return c.fail() }
 func (c *staleConn) Stats() driver.Stats                                     { return driver.Stats{} }

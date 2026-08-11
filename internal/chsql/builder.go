@@ -117,14 +117,20 @@ func (b *Builder) Arg(v any) {
 // arithmetic literal and returns true; finite floats return false and
 // nothing is written. PromQL's `quantile()` helper returns ±Inf for phi
 // outside [0, 1] (see prometheus/promql/quantile.go) and the lowerer
-// post-Projects the Value column with such a literal — but clickhouse-go
-// and chdb-go both render Go's `math.Inf(±1)` / `math.NaN()` as the
-// mixed-case strings `+Inf` / `-Inf` / `NaN` when binding `?`, and real
-// CH 24.x parses only the lowercase forms (`inf` / `-inf` / `nan`),
-// surfacing on the wire as `Unknown identifier 'Inf'` → 502. The
-// division forms `1.0/0` / `-1.0/0` / `0.0/0` fold to the same IEEE
-// special values on the CH side and don't depend on the lexer's
-// case-sensitivity for the identifier path.
+// post-Projects the Value column with such a literal.
+//
+// A bound `?` cannot carry the value on every substrate cerberus emits
+// for. chdb-go interpolates args through huandu/go-sqlbuilder, whose
+// float path is `strconv.AppendFloat(…, 'g', …)`: it renders Go's
+// `math.Inf(±1)` / `math.NaN()` as the mixed-case strings `+Inf` /
+// `-Inf` / `NaN`, and CH parses only the lowercase forms (`inf` /
+// `-inf` / `nan`), surfacing on the wire as `Unknown identifier 'Inf'`
+// → 502. clickhouse-go/v2 binds all three correctly as of v2.48.0,
+// which quotes them lowercase inside a `cast(…, 'Float64')` — but one
+// emitted SQL text serves both binders, so the emitter holds to the
+// form that is safe under either. The division forms `1.0/0` /
+// `-1.0/0` / `0.0/0` fold to the same IEEE special values on the CH
+// side and never reach the lexer's case-sensitive identifier path.
 func writeInlineNonFinite(b *Builder, v float64) bool {
 	switch {
 	case math.IsNaN(v):
@@ -316,57 +322,42 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 		b.Arg(v.V)
 		return nil
 	case *chplan.LitFloat:
-		// LitFloat values are passed to b.Arg as `?` placeholders,
-		// and callers that project the bound value back as a
-		// `Float64` column wrap the placeholder in `toFloat64(?)`
-		// at the emission site (see internal/chsql/absent_over_time.go,
-		// internal/chsql/exemplars.go, internal/chsql/vector_join.go,
-		// and the `group(...)` / `count(...)` / `absent_over_time(...)`
-		// PromQL lowerings — #634, #644, #646). The wrap exists
-		// because clickhouse-go/v2's bind.go::format() has no
-		// `case float64:` branch: integer-valued `float64` values
-		// (e.g. `float64(1.0)`) fall through to `fmt.Sprint(v)`,
-		// which renders the bare SQL literal `1` (no decimal).
-		// ClickHouse then narrows the parameter to `UInt8`, and the
-		// chclient cursor's typed `*float64` scan path errors with
-		// `converting UInt8 to *float64 is unsupported`. Tracked
-		// upstream at https://github.com/ClickHouse/clickhouse-go/issues/1862;
-		// drop the toFloat64 wraps once that lands and we bump past
-		// the fixed clickhouse-go version.
+		// LitFloat values ride the positional `?` slot via b.Arg, and
+		// the placeholder is wrapped in `toFloat64(?)` here, centrally,
+		// so every LitFloat emission is wire-safe by construction. That
+		// replaced the per-callsite wraps each emission site used to
+		// carry (#634, #644, #646); `toFloat64(toFloat64(x))` is a
+		// CH-side no-op, so any that survive elsewhere stay harmless.
 		//
-		// Non-finite float64 values (±Inf / NaN) cannot ride the
-		// positional `?` parameter slot: clickhouse-go and chdb-go
-		// both render them via fmt.Sprint / strconv.AppendFloat,
-		// which emit the literal strings `+Inf` / `-Inf` / `NaN`
-		// (mixed case). Real CH 24.x parses the lowercase forms
-		// (`inf` / `-inf` / `nan`) but rejects mixed-case `Inf` /
-		// `NaN` as an unknown identifier, surfacing as the wire
-		// 502 cerberus sees on `quantile_over_time(-0.5, ...)`
-		// post-#322. Emit the value inline as a CH-portable
-		// division form (`1.0/0`, `-1.0/0`, `0.0/0`) so the
-		// driver never sees a non-finite arg and CH's parser
-		// never sees the case-sensitive identifier path.
+		// The wrap exists because a client-side binder that renders an
+		// integer-valued `float64` as the bare literal `1` (no decimal)
+		// lets CH narrow the parameter to `UInt8`; `UInt8 OP UInt8`
+		// then promotes to `UInt16`, and `chclient.Sample.Value`
+		// (declared `float64`) fails the Scan conversion with
+		// `converting UInt8 to *float64 is unsupported. try using
+		// *uint8` — the 502 Grafana shows on `vector(1)+vector(1)`
+		// health probes, `absent(<empty>)`, `group(...)`, the LogQL
+		// `1+1` reduce path, and friends. Wrapping pins the wire shape
+		// to Float64 from the start, so no downstream cast or narrow
+		// can chip it down.
+		//
+		// clickhouse-go/v2 fixed its half of that in v2.48.0
+		// (https://github.com/ClickHouse/clickhouse-go/issues/1862):
+		// its bind.go renders a bound float as `cast(1, 'Float64')`.
+		// The wrap stays regardless, because chsql emits ONE SQL text
+		// for both of cerberus's substrates and the other binder is
+		// unfixed — chdb-go interpolates through huandu/go-sqlbuilder,
+		// whose float path is `strconv.AppendFloat(…, 'g', …)` and
+		// still yields the bare `1`. Dropping the wrap would type the
+		// same query Float64 on production CH and UInt8 on chDB, which
+		// is the substrate divergence the spec lane exists to rule out.
+		//
+		// Non-finite values (±Inf / NaN) cannot ride the `?` slot at
+		// all under the same constraint — writeInlineNonFinite emits
+		// them as a CH-portable division form and explains why there.
 		if writeInlineNonFinite(b, v.V) {
 			return nil
 		}
-		// Finite floats are wrapped in `toFloat64(?)` unconditionally.
-		// The clickhouse-go/v2 driver renders Go `float64(N.0)` as the
-		// bare SQL literal `N` (no decimal: its `bind.go::format()` has
-		// no `case float64` and falls through to `fmt.Sprint`, which
-		// uses Go's `%v` for float64 and prints `1` for whole numbers).
-		// CH then narrows to `UInt8`, `UInt8 OP UInt8` promotes to
-		// `UInt16`, and `chclient.Sample.Value` (declared `float64`)
-		// fails the `UInt8/UInt16 -> *float64` Scan conversion with
-		// `converting UInt8 to *float64 is unsupported. try using
-		// *uint8` — surfaced as the 502 Grafana sees on
-		// `vector(1)+vector(1)` health-probes, `absent(<empty>)`,
-		// `group(...)`, the LogQL `1+1` reduce path, etc. Wrapping
-		// every LitFloat emission in `toFloat64(?)` pins the wire
-		// shape to Float64 from the start so no downstream cast or
-		// narrow can chip it down. `toFloat64(toFloat64(x))` is a
-		// CH-side no-op so the legacy per-callsite wraps that
-		// predated this central fix remain semantically harmless
-		// (they just emit `toFloat64(toFloat64(?))`).
 		b.sb.WriteString("toFloat64(")
 		b.Arg(v.V)
 		b.sb.WriteByte(')')

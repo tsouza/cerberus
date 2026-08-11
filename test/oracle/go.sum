@@ -108,8 +108,8 @@ github.com/facette/natsort v0.0.0-20181210072756-2cd4dd1e2dcb/go.mod h1:bH6Xx7IW
 github.com/fatih/color v1.13.0/go.mod h1:kLAiJbzzSOZDVNGyDpeOxJ47H46qBXwg5ILebYFFOfk=
 github.com/fatih/color v1.19.0 h1:Zp3PiM21/9Ld6FzSKyL5c/BULoe/ONr9KlbYVOfG8+w=
 github.com/fatih/color v1.19.0/go.mod h1:zNk67I0ZUT1bEGsSGyCZYZNrHuTkJJB+r6Q9VuMi0LE=
-github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
-github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
+github.com/felixge/httpsnoop v1.1.0 h1:3YtUj32ZZkqZtt3sZZsClsymw/QDuVfpNhoA31zeORc=
+github.com/felixge/httpsnoop v1.1.0/go.mod h1:Zqxgdd+1Rkcz8euOqdr7lqgCRJztwr5hp9vDSi5UZCE=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
@@ -458,12 +458,12 @@ go.opentelemetry.io/contrib/bridges/prometheus v0.70.0 h1:qU2CqTGdlstwoVhu1WfjJJ
 go.opentelemetry.io/contrib/bridges/prometheus v0.70.0/go.mod h1:Ekh3I2XXfhdWkqbRq4PrivJS4BS/se7Er9ZsbK6YEtQ=
 go.opentelemetry.io/contrib/exporters/autoexport v0.70.0 h1:wpCLEJ/4RHUadR11UOdznbmyyih5/OPYFcsehAh6PYI=
 go.opentelemetry.io/contrib/exporters/autoexport v0.70.0/go.mod h1:x7MbNOwoKV5Hj6uYMXQksHlQdTNOP3hoFPvqWISiu6s=
-go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0 h1:2yEATaop1/a1I4psnSLgWVPLWwCzkqWakgJy7xTDVy0=
-go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0/go.mod h1:D7J12YRapIekYyPWgGPlA/23pRmpSEZC5xJC/TTLI9U=
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 h1:oECp5f+hN7nkwjU/8BxQ/q23bGPb8FIrD839owX222E=
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0/go.mod h1:DqEFwLumhzMBDQv9PcWbyoDxHI/4lAk6CM4nJBH39sc=
 go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace v0.68.0 h1:cuXaPAfIoJKsYjBjPSb2nKZEmgM43zVr25l37IxhKME=
 go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace v0.68.0/go.mod h1:BuzhPofpCzlDi/Q/Xjg54M4/3oWqqyDe2Zeq7A2I0QE=
-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 h1:8tvICD4vSTOOsNrsI4Ljf6C+6UKvpTEH5XY3JMoyPoo=
-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0/go.mod h1:z9+yiacE0IHRqM4qFfkbt/JYlmYXgss8GY/jXoNuPJI=
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 h1:LMuyCAyfalSjDyjdC65nK6N0zoTT63+E/u95X0JovZI=
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0/go.mod h1:085m8qbm4hgc8rZWGDEa4vmyyo2c3nPxUslYUKUIU04=
 go.opentelemetry.io/contrib/propagators/jaeger v1.43.0 h1:peiLMz1+aqJE+3L4mOVtR9wlmv+yh/JVYXCBjqmzJJE=
 go.opentelemetry.io/contrib/propagators/jaeger v1.43.0/go.mod h1:Agvif+4A8p/3UtZzJ0MCcDEuQwgtrzM71DueU41DCs8=
 go.opentelemetry.io/contrib/samplers/jaegerremote v0.36.0 h1:h8kHGv9+VIiJbQ2Qx6BbORZwcvVnd0le/SFK8Vom0bA=
