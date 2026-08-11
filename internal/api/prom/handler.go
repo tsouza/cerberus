@@ -1647,6 +1647,6 @@ func writeError(w http.ResponseWriter, status int, kind string, err error) {
 	httperr.WriteJSON(w, status, Response{
 		Status:    "error",
 		ErrorType: kind,
-		Error:     err.Error(),
+		Error:     chclient.SafeMessage(err),
 	})
 }

@@ -31,7 +31,7 @@ func TestParserSmoke(t *testing.T) {
 		`{ duration < 50ms }`,
 		`{ name = "GET /home" }`,
 		`{ name =~ "GET /.*" }`,
-		`{ kind = "client" }`,
+		`{ kind = client }`,
 		`{ statusMessage = "internal error" }`,
 		`{ trace:id = "abcdef0123456789" }`,
 		`{ span:id = "0123456789abcdef" }`,

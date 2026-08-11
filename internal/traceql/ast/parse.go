@@ -42,7 +42,15 @@ func Parse(s string) (expr *RootExpr, err error) {
 		}
 	}()
 
-	return applyRewrites(c.parseRoot()), nil
+	root := c.parseRoot()
+	// Static typing runs on the tree the grammar produced, BEFORE the
+	// array-fold rewrites: a fold replaces a chain of scalar comparisons
+	// with one array comparison, and the message must name the
+	// sub-expression the client actually wrote.
+	if verr := root.validate(); verr != nil {
+		return nil, verr
+	}
+	return applyRewrites(root), nil
 }
 
 // ParseIdentifier parses a single attribute/intrinsic reference (e.g.

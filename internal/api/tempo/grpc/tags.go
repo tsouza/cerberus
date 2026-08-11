@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chclient"
 )
 
 // This file implements the four tag-list StreamingQuerier RPCs:
@@ -192,7 +193,7 @@ func (s *Service) lookupTagValues(ctx context.Context, name string, startSec, en
 			// would mask it as a server fault.
 			return nil, "", err
 		}
-		return nil, "", status.Error(codes.Internal, err.Error())
+		return nil, "", status.Error(codes.Internal, chclient.SafeMessage(err))
 	}
 	return vals, typ, nil
 }
