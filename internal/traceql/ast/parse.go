@@ -42,15 +42,16 @@ func Parse(s string) (expr *RootExpr, err error) {
 		}
 	}()
 
-	root := c.parseRoot()
-	// Static typing runs on the tree the grammar produced, BEFORE the
-	// array-fold rewrites: a fold replaces a chain of scalar comparisons
-	// with one array comparison, and the message must name the
-	// sub-expression the client actually wrote.
+	// Static typing runs on the REWRITTEN tree, so the array forms the
+	// folds produce (`.x in [a, b]`) go through the same rule as the
+	// scalar chain they replace rather than past it. A fold only merges
+	// same-family literals, so it never changes a verdict — only the
+	// expression a rejection message names.
+	root := applyRewrites(c.parseRoot())
 	if verr := root.validate(); verr != nil {
 		return nil, verr
 	}
-	return applyRewrites(root), nil
+	return root, nil
 }
 
 // ParseIdentifier parses a single attribute/intrinsic reference (e.g.

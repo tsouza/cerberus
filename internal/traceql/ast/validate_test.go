@@ -24,8 +24,10 @@ func TestParseRejectsTypeMismatch(t *testing.T) {
 		{`{ kind = "client" }`, "kind = " + "`client`"},
 		{`{ status = 3 }`, "status = 3"},
 		// The rule reaches inside a boolean tree, and names the offending
-		// sub-expression rather than the whole filter.
+		// sub-expression rather than the whole filter — on either side, so
+		// a walk that recursed into one operand only still fails here.
 		{`{ resource.service.name = "api" && name > 3 }`, "name > 3"},
+		{`{ name > 3 && resource.service.name = "api" }`, "name > 3"},
 		// …and through a structural operation's nested filters.
 		{`{ .a = 1 } >> { name > 3 }`, "name > 3"},
 		// …and a scalar filter's aggregate side.
@@ -88,10 +90,21 @@ func TestParseAcceptsCompatibleOperands(t *testing.T) {
 		// The array-fold shapes, which type-check element-wise.
 		`{ .x = "a" || .x = "b" }`,
 		`{ .x != 1 && .x != 2 }`,
-		// Scalar filters and aggregates.
+		// Unary operands are walked through to the expression beneath.
+		`{ !(kind = server) }`,
+		`{ -duration > 1s }`,
+		// Scalar filters and aggregates, including a bare aggregate stage
+		// with no comparison after it.
+		`{ } | count()`,
+		`{ } | avg(duration)`,
 		`{ } | count() > 2`,
 		`{ } | avg(duration) > 1s`,
 		`{ } | max(duration) + 1 > 2`,
+		`{ } | 1 + max(duration) > 2`,
+		// A parenthesised pipeline, both as a spanset operand and as a
+		// stage of an outer pipeline.
+		`({ .a = 1 } | count() > 1) >> { .b = 2 }`,
+		`({ .a = 1 } | count() > 1) | count() > 1`,
 		// Metrics pipelines.
 		`{ duration > 1s } | rate() by (resource.service.name)`,
 		`{ } | compare({ status = error })`,
@@ -132,5 +145,97 @@ func TestParseRejectsFlippedTypeMismatch(t *testing.T) {
 		if _, err := Parse(q); err == nil {
 			t.Errorf("Parse(%q) = nil error, want a type mismatch", q)
 		}
+	}
+}
+
+// TestIsMatchingOperandArrayElement pins each array type against the
+// ELEMENT type it stands for. The symmetry property above cannot tell
+// these apart — mapping TypeIntArray to the wrong element type is
+// symmetric — so the mapping needs naming per case.
+func TestIsMatchingOperandArrayElement(t *testing.T) {
+	cases := []struct {
+		a, b StaticType
+		want bool
+	}{
+		{TypeStringArray, TypeString, true},
+		{TypeStringArray, TypeInt, false},
+		{TypeStringArray, TypeBoolean, false},
+		{TypeIntArray, TypeInt, true},
+		// The element rule composes with the numeric-family rule.
+		{TypeIntArray, TypeFloat, true},
+		{TypeIntArray, TypeDuration, true},
+		{TypeIntArray, TypeString, false},
+		{TypeFloatArray, TypeFloat, true},
+		{TypeFloatArray, TypeString, false},
+		{TypeBooleanArray, TypeBoolean, true},
+		{TypeBooleanArray, TypeInt, false},
+		// Two arrays never meet: neither is the other's element.
+		{TypeIntArray, TypeStringArray, false},
+		{TypeStringArray, TypeStringArray, true}, // …except by identity.
+	}
+	for _, tc := range cases {
+		t.Run(tc.a.String()+"/"+tc.b.String(), func(t *testing.T) {
+			if got := tc.a.isMatchingOperand(tc.b); got != tc.want {
+				t.Errorf("%v.isMatchingOperand(%v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+			if got := tc.b.isMatchingOperand(tc.a); got != tc.want {
+				t.Errorf("%v.isMatchingOperand(%v) = %v, want %v", tc.b, tc.a, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseRejectsFoldedArrayMismatch pins that the array-fold rewrites
+// cannot smuggle an ill-typed chain past the rule. `{ name = 1 || name =
+// 2 }` folds to a single `name in [1, 2]` before the check runs, so the
+// check has to reach the array's element type to still reject it.
+func TestParseRejectsFoldedArrayMismatch(t *testing.T) {
+	_, err := Parse(`{ name = 1 || name = 2 }`)
+	if err == nil {
+		t.Fatal("Parse(`{ name = 1 || name = 2 }`) = nil error, want a type mismatch")
+	}
+	if !strings.Contains(err.Error(), "name in [1, 2]") {
+		t.Errorf("message = %q, want it to name the folded expression", err)
+	}
+	// The same fold over the matching element type stays accepted.
+	if _, err := Parse(`{ name = "a" || name = "b" }`); err != nil {
+		t.Errorf("Parse of a well-typed fold = %v, want it accepted", err)
+	}
+}
+
+// TestValidateReachesEveryPipelinePosition pins that the walk visits each
+// position a binary operation can occupy, by putting the SAME ill-typed
+// comparison in each one and requiring a rejection every time. A missing
+// arm is a silent false negative — the check simply does not run — which
+// no accept-path test can detect.
+func TestValidateReachesEveryPipelinePosition(t *testing.T) {
+	positions := map[string]string{
+		"spanset filter":             `{ name > 3 }`,
+		"nested spanset operand":     `{ .x = 1 } >> { name > 3 }`,
+		"grouping expression":        `{ } | by(name > 3)`,
+		"aggregate inner expression": `{ } | max(name > 3) > 1`,
+		"scalar filter":              `{ } | max(name) > 1s`,
+		"scalar operation operand":   `{ } | 1 + max(name > 3) > 2`,
+		"parenthesised pipeline":     `({ name > 3 } | count() > 1) && { .x = 1 }`,
+		"pipeline stage":             `({ name > 3 } | count() > 1) | count() > 1`,
+		"unary negation":             `{ !(name > 3) }`,
+		"metrics compare filter":     `{ } | compare({ name > 3 })`,
+	}
+	for position, query := range positions {
+		t.Run(position, func(t *testing.T) {
+			if _, err := Parse(query); err == nil {
+				t.Errorf("Parse(%q) = nil error — the walk does not reach the %s", query, position)
+			}
+		})
+	}
+}
+
+// TestValidateNilRoot pins the degenerate receiver rather than leaving it
+// to a nil dereference: RootExpr is reachable as a nil pointer through the
+// parser's own error path.
+func TestValidateNilRoot(t *testing.T) {
+	var r *RootExpr
+	if err := r.validate(); err != nil {
+		t.Errorf("(*RootExpr)(nil).validate() = %v, want nil", err)
 	}
 }

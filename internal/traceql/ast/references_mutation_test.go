@@ -64,14 +64,15 @@ func TestReferencesIntrinsic_NestedSpansetOperation(t *testing.T) {
 // token to parseScalarStage, and parseParenPipeline hands the result back
 // unwrapped because ScalarFilter satisfies SpansetExpression. So it lands on
 // one side of a structural operator with no enclosing Pipeline to walk
-// through. Note the parens must NOT contain a `|` chain: `({ } | max(name) >
-// 1s)` would parse to a Pipeline and exercise a different arm.
+// through. Note the parens must NOT contain a `|` chain: `({ } |
+// max(duration) > 1s)` would parse to a Pipeline and exercise a different
+// arm.
 func TestReferencesIntrinsic_ScalarFilterAsSpansetOperand(t *testing.T) {
-	expr := mustParse(t, `(max(name) > 1s) >> { .x = 1 }`)
+	expr := mustParse(t, `(max(duration) > 1s) >> { .x = 1 }`)
 	if _, ok := expr.Pipeline.Elements[0].(SpansetOperation); !ok {
 		t.Fatalf("expected a SpansetOperation, got %T — the query no longer exercises the intended arm", expr.Pipeline.Elements[0])
 	}
-	if !expr.ReferencesIntrinsic(IntrinsicName) {
+	if !expr.ReferencesIntrinsic(IntrinsicDuration) {
 		t.Errorf("a scalar filter on one side of a structural operator should be searched")
 	}
 }

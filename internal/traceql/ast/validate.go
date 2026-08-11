@@ -66,7 +66,9 @@ func newValidationError(format string, args ...any) *ValidationError {
 //   - nil compares against anything — `{ span.foo != nil }` is the
 //     existence idiom.
 //   - An array matches whatever its element type matches, which is how the
-//     `in` / `not in` and folded regex-set forms type-check.
+//     `in` / `not in` and regex-set forms the array-fold rewrites produce
+//     type-check. `{ name = 1 || name = 2 }` folds to `name in [1, 2]`
+//     before the rule runs and is still rejected, on the element type.
 func (t StaticType) isMatchingOperand(otherT StaticType) bool {
 	if t == TypeAttribute || otherT == TypeAttribute {
 		return true
@@ -114,10 +116,14 @@ func (t StaticType) arrayElement() (StaticType, bool) {
 }
 
 // validate reports the first static typing error in r, or nil when the
-// whole tree type-checks. Traversal mirrors applyRewrites: every
-// field-expression-bearing element of the pipeline, plus the nested
-// pipelines reachable through spanset operations, plus the spanset filter
-// a metrics `compare()` first stage carries.
+// whole tree type-checks.
+//
+// The traversal deliberately mirrors ReferencesIntrinsic's (references.go)
+// node for node, down to reusing spansetFilterExpression: both walks answer
+// a question about the WHOLE query, so a node one of them reaches and the
+// other does not is a bug in whichever is the shorter. The metrics second
+// stage is absent from both for the same reason — MetricsFilter,
+// TopKBottomK and ChainedSecondStage carry no expression to check.
 func (r *RootExpr) validate() error {
 	if r == nil {
 		return nil
@@ -125,8 +131,10 @@ func (r *RootExpr) validate() error {
 	if err := validatePipeline(r.Pipeline); err != nil {
 		return err
 	}
-	if cmp, ok := r.MetricsPipeline.(*MetricsCompare); ok && cmp.filter != nil {
-		return validateFieldExpr(cmp.filter.Expression)
+	// compare() is the one metrics first stage carrying a field
+	// expression; the aggregates carry bare Attributes, which are leaves.
+	if cmp, ok := r.MetricsPipeline.(*MetricsCompare); ok && cmp.Filter() != nil {
+		return validateFieldExpr(cmp.Filter().Expression)
 	}
 	return nil
 }
@@ -141,60 +149,63 @@ func validatePipeline(p Pipeline) error {
 }
 
 func validatePipelineElement(elem PipelineElement) error {
+	if expr, ok := spansetFilterExpression(elem); ok {
+		return validateFieldExpr(expr)
+	}
 	switch e := elem.(type) {
-	case *SpansetFilter:
-		return validateFieldExpr(e.Expression)
-	case SpansetFilter:
-		return validateFieldExpr(e.Expression)
+	case SpansetOperation:
+		return validateSpansetExpr(e)
+	case ScalarFilter:
+		return validateScalarFilter(e.LHS, e.RHS, e)
 	case GroupOperation:
 		return validateFieldExpr(e.Expression)
 	case Aggregate:
-		return validateFieldExpr(e.e)
-	case ScalarFilter:
-		if err := validateScalarExpr(e.LHS); err != nil {
-			return err
-		}
-		if err := validateScalarExpr(e.RHS); err != nil {
-			return err
-		}
-		return matchOperands(e.LHS, e.RHS, e)
-	case SpansetOperation:
-		return validateSpansetExpr(e)
+		return validateFieldExpr(e.InnerExpr())
 	case Pipeline:
 		return validatePipeline(e)
 	}
+	// SelectOperation and CoalesceOperation name attributes and nothing
+	// else: an attribute is a leaf, so there is no binary node to check.
 	return nil
 }
 
 func validateSpansetExpr(se SpansetExpression) error {
+	if expr, ok := spansetFilterExpression(se); ok {
+		return validateFieldExpr(expr)
+	}
 	switch s := se.(type) {
-	case *SpansetFilter:
-		return validateFieldExpr(s.Expression)
-	case SpansetFilter:
-		return validateFieldExpr(s.Expression)
 	case SpansetOperation:
 		if err := validateSpansetExpr(s.LHS); err != nil {
 			return err
 		}
 		return validateSpansetExpr(s.RHS)
+	case ScalarFilter:
+		return validateScalarFilter(s.LHS, s.RHS, s)
 	case Pipeline:
 		return validatePipeline(s)
 	}
 	return nil
 }
 
+// validateScalarFilter is the shared body of the two positions a
+// ScalarFilter occupies — a pipeline stage and a spanset operand — which
+// is also why references.go handles it in both walks.
+func validateScalarFilter(lhs, rhs ScalarExpression, node Element) error {
+	if err := validateScalarExpr(lhs); err != nil {
+		return err
+	}
+	if err := validateScalarExpr(rhs); err != nil {
+		return err
+	}
+	return matchOperands(lhs, rhs, node)
+}
+
 func validateScalarExpr(se ScalarExpression) error {
 	switch s := se.(type) {
 	case ScalarOperation:
-		if err := validateScalarExpr(s.LHS); err != nil {
-			return err
-		}
-		if err := validateScalarExpr(s.RHS); err != nil {
-			return err
-		}
-		return matchOperands(s.LHS, s.RHS, s)
+		return validateScalarFilter(s.LHS, s.RHS, s)
 	case Aggregate:
-		return validateFieldExpr(s.e)
+		return validateFieldExpr(s.InnerExpr())
 	case Pipeline:
 		return validatePipeline(s)
 	}
@@ -216,9 +227,8 @@ func validateFieldExpr(fe FieldExpression) error {
 		return matchOperands(e.LHS, e.RHS, e)
 	case UnaryOperation:
 		return validateFieldExpr(e.Expression)
-	case *UnaryOperation:
-		return validateFieldExpr(e.Expression)
 	}
+	// Attribute and Static are leaves.
 	return nil
 }
 
