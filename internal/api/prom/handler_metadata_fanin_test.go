@@ -66,20 +66,32 @@ type faninRecordingQuerier struct {
 
 	querySQLs   []string
 	stringsSQLs []string
+
+	// Bound args, recorded in lock-step with the SQL slices above. The size
+	// the redesign's guard bounds is the BOUND query (placeholder SQL with
+	// every `?` replaced by its inlined arg literal), not the placeholder
+	// text — the metric-name candidate payload rides this channel and is
+	// invisible to a `len(sql)` probe. Keeping the args lets the assertions
+	// measure the same string ClickHouse's parser counts; see boundWireBytes.
+	queryArgs   [][]any
+	stringsArgs [][]any
 }
 
 func (q *faninRecordingQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
 	q.querySQLs = append(q.querySQLs, sql)
+	q.queryArgs = append(q.queryArgs, args)
 	return q.samplesForArgs(args), nil
 }
 
 func (q *faninRecordingQuerier) QueryCursor(_ context.Context, sql string, args ...any) (chclient.Cursor, error) {
 	q.querySQLs = append(q.querySQLs, sql)
+	q.queryArgs = append(q.queryArgs, args)
 	return newSliceCursor(q.samplesForArgs(args)), nil
 }
 
-func (q *faninRecordingQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]string, error) {
+func (q *faninRecordingQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
 	q.stringsSQLs = append(q.stringsSQLs, sql)
+	q.stringsArgs = append(q.stringsArgs, args)
 	return nil, nil
 }
 
@@ -130,6 +142,8 @@ func (q *faninRecordingQuerier) samplesForArgs(args []any) []chclient.Sample {
 func (q *faninRecordingQuerier) reset() {
 	q.querySQLs = nil
 	q.stringsSQLs = nil
+	q.queryArgs = nil
+	q.stringsArgs = nil
 }
 
 func faninServer(q prom.Querier) *httptest.Server {
@@ -139,11 +153,24 @@ func faninServer(q prom.Querier) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func maxSQLLen(sqls []string) int {
+// maxBoundLen is the largest BOUND query in a recorded set — the size CH's
+// parser counts, and the size maxRenderedQueryBytes is a budget on. Every
+// assertion that compares against that budget, or that reasons about how much a
+// combined query packs, measures this rather than the placeholder length: the
+// per-arm metric-name candidate set is bound args, so two queries with
+// identical placeholder text can differ by tens of KB on the wire.
+// (boundWireBytes deliberately UNDER-estimates the inlined literal cost, so a
+// floor assertion built on it is conservative — it cannot pass on a query that
+// is actually too small.)
+func maxBoundLen(sqls []string, args [][]any) int {
 	m := 0
-	for _, s := range sqls {
-		if len(s) > m {
-			m = len(s)
+	for i, s := range sqls {
+		var a []any
+		if i < len(args) {
+			a = args[i]
+		}
+		if b := boundWireBytes(s, a); b > m {
+			m = b
 		}
 	}
 	return m
@@ -218,7 +245,7 @@ func TestHandleSeries_BroadProbeStaysBounded(t *testing.T) {
 	}
 
 	// (a) every combined query under the budget.
-	if mx := maxSQLLen(q.querySQLs); mx >= maxQuerySizeBytes {
+	if mx := maxBoundLen(q.querySQLs, q.queryArgs); mx >= maxQuerySizeBytes {
 		t.Fatalf("a combined /series query rendered %d bytes, at/over the %d budget — "+
 			"the rendered-size guard failed to keep queries under ClickHouse's "+
 			"max_query_size (the #790 502 class)", mx, maxQuerySizeBytes)
@@ -245,7 +272,7 @@ func TestHandleSeries_BroadProbeStaysBounded(t *testing.T) {
 	// guard may split a chunk further, raising it), no single query may
 	// exceed the K-arm cap, and the whole thing must collapse ≫1 arms per
 	// query (batching is real) — rt ≪ N.
-	assertBoundedFanout(t, "/series", n, q.querySQLs)
+	assertBoundedFanout(t, "/series", n, q.querySQLs, q.queryArgs)
 }
 
 // assertBoundedFanout pins the bounded-batch-or-fallback invariant on a set
@@ -259,7 +286,7 @@ func TestHandleSeries_BroadProbeStaysBounded(t *testing.T) {
 //     so the byte size of the largest query dwarfs a single arm. A
 //     per-arm-per-query fan-out (the un-batched path the win replaces)
 //     would render rt tiny single-arm queries; instead the queries are
-//     near-cap-sized, proving the V×H variant set folded into ⌈N/K⌉
+//     near-cap-sized, proving the variant set folded into ⌈N/K⌉
 //     bounded statements rather than N round-trips.
 //
 // We assert against byte size rather than a parsed arm count because the
@@ -267,7 +294,21 @@ func TestHandleSeries_BroadProbeStaysBounded(t *testing.T) {
 // scan vs 2-table union), making a robust string-based arm count brittle;
 // the byte budget IS the bound the redesign enforces, so asserting on it
 // directly is both robust and the most faithful pin of the #790 failure.
-func assertBoundedFanout(t *testing.T, endpoint string, n int, sqls []string) {
+//
+// The size measured is the BOUND query, not the placeholder text. Both
+// assertions below compare against maxRenderedQueryBytes, which is a budget on
+// the bound size, so the placeholder length was never the right operand — the
+// same mismatch that let #799 past the production guard. It became visible when
+// #1528 retired the metadata-side matcher-string candidate fan-out: that layer
+// produced many arms whose own candidate sets were small (a mostly-dotted name
+// re-expands to few candidates), so a chunk packed a lot of PLACEHOLDER text
+// per unit of bound payload. With it gone, every surviving arm carries the full
+// candidate set as args, the guard fits fewer arms per statement, and the
+// placeholder length of a fully-packed query fell below a floor calibrated on
+// the old arm mix — while the bound size, the thing that actually approaches
+// ClickHouse's ceiling, stayed near the budget. Measuring the bound size keeps
+// the floor meaning what it says: this query packs many arms.
+func assertBoundedFanout(t *testing.T, endpoint string, n int, sqls []string, args [][]any) {
 	t.Helper()
 	rt := len(sqls)
 	if rt <= 1 {
@@ -275,25 +316,25 @@ func assertBoundedFanout(t *testing.T, endpoint string, n int, sqls []string) {
 			"kick in past the cap; a single un-bounded statement is the #790 502 shape",
 			endpoint, n, rt)
 	}
-	mx := maxSQLLen(sqls)
+	mx := maxBoundLen(sqls, args)
 	if mx >= maxQuerySizeBytes {
-		t.Fatalf("broad %s probe rendered a %d-byte combined query, at/over the %d budget "+
-			"— the rendered-size guard failed to keep it under ClickHouse's max_query_size",
-			endpoint, mx, maxQuerySizeBytes)
+		t.Fatalf("broad %s probe rendered a %d-byte BOUND combined query, at/over the %d "+
+			"budget — the rendered-size guard failed to keep it under ClickHouse's "+
+			"max_query_size", endpoint, mx, maxQuerySizeBytes)
 	}
 	// Batching proof: the largest combined query must be far larger than a
 	// single arm — a per-arm fan-out would never pack a query this big.
-	// minBatchedQueryBytes (32KB) is a conservative floor: a full K=128-arm
-	// query renders ~110KB; even a size-guard-split chunk stays well above
-	// this, while a single-arm query is ~1KB.
+	// minBatchedQueryBytes (32KB) is a conservative floor against a single
+	// arm's bound size (a bare-name arm binds its candidate powerset, so it
+	// is a few KB), while a packed chunk runs to the budget.
 	const minBatchedQueryBytes = 32 * 1024
 	if mx < minBatchedQueryBytes {
-		t.Fatalf("broad %s probe's largest combined query is only %d bytes (< %d) — the "+
-			"variant set did not batch into near-cap-sized queries; the fan-in collapsed "+
+		t.Fatalf("broad %s probe's largest BOUND combined query is only %d bytes (< %d) — "+
+			"the variant set did not batch into near-cap-sized queries; the fan-in collapsed "+
 			"too little, leaving the per-arm round-trip count the win is meant to replace",
 			endpoint, mx, minBatchedQueryBytes)
 	}
-	t.Logf("broad %s: n=%d match[] → %d combined round-trips, largest query %d bytes "+
+	t.Logf("broad %s: n=%d match[] → %d combined round-trips, largest bound query %d bytes "+
 		"(batched, < %d budget)", endpoint, n, rt, mx, maxQuerySizeBytes)
 }
 
@@ -485,11 +526,11 @@ func TestHandleLabelsMatched_BroadProbeStaysBounded(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
-	if mx := maxSQLLen(q.stringsSQLs); mx >= maxQuerySizeBytes {
+	if mx := maxBoundLen(q.stringsSQLs, q.stringsArgs); mx >= maxQuerySizeBytes {
 		t.Fatalf("a combined /labels query rendered %d bytes, at/over the %d budget",
 			mx, maxQuerySizeBytes)
 	}
-	assertBoundedFanout(t, "/labels", n, q.stringsSQLs)
+	assertBoundedFanout(t, "/labels", n, q.stringsSQLs, q.stringsArgs)
 }
 
 // TestHandleLabelValuesMatched_BroadProbeStaysBounded exercises the bounded
@@ -512,11 +553,11 @@ func TestHandleLabelValuesMatched_BroadProbeStaysBounded(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
-	if mx := maxSQLLen(q.stringsSQLs); mx >= maxQuerySizeBytes {
+	if mx := maxBoundLen(q.stringsSQLs, q.stringsArgs); mx >= maxQuerySizeBytes {
 		t.Fatalf("a combined /label/values query rendered %d bytes, at/over the %d budget",
 			mx, maxQuerySizeBytes)
 	}
-	assertBoundedFanout(t, "/label/values", n, q.stringsSQLs)
+	assertBoundedFanout(t, "/label/values", n, q.stringsSQLs, q.stringsArgs)
 }
 
 // TestArmChunkCapInSync is a cheap guard that the test's ⌈N/K⌉ math tracks

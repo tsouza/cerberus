@@ -631,6 +631,26 @@ update-scale-wall-baseline:
     @echo "Diff of regenerated baseline:"
     @git --no-pager diff --stat test/perf/scale-wall-baseline.json || true
 
+# Regenerate the METADATA QUERY-SIZE budget — the perf guard for the rendered
+# SIZE of the combined /api/v1/series query, the axis the cardinality and
+# scale-wall ratchets do not measure at all (they profile what ClickHouse does
+# with a query; this measures how big the query text is before it is sent).
+# Drives a broad metrics-explorer-shaped probe through the real in-process Prom
+# handler over a recording Querier and records three bounds into
+# test/perf/metadata-query-size-baseline.json: the total bound SQL per match[]
+# selector, the largest single bound query, and the round-trip count. Bounds
+# carry 1.25x headroom over the measurement, which is deterministic (no engine,
+# no timing) — so this is pure Go and needs no chDB. Run this — and REVIEW THE
+# DIFF — only when a bound move is genuinely intended; the two incidents this
+# guards (PR #790, #799) both reached ClickHouse's 256KB max_query_size as a
+# hard 502, and a silent loosen spends the margin they bought. The gating
+# assertion is TestMetadataQuerySizeRatchet in the already-required `check` job.
+update-metadata-query-size-baseline:
+    UPDATE_METADATA_QUERY_SIZE_BASELINE=1 go test -count=1 -run TestMetadataQuerySizeRatchet ./test/perf/
+    @echo
+    @echo "Diff of regenerated baseline:"
+    @git --no-pager diff --stat test/perf/metadata-query-size-baseline.json || true
+
 # Regenerate the publishable benchmark document (docs/benchmarks.md) from
 # LIVE measurements: optimizer before/after wins, per-construct scaling
 # curves, per-stage Go micro-benchmarks, and end-to-end query latency on a

@@ -115,6 +115,7 @@ const parityBaselineSync = "compat-baseline-sync.mjs"
 // Every entry must be `-merge` gated and documented in `.gitattributes`.
 var generatedArtifacts = []generatedArtifact{
 	{"test/perf/scale-wall-baseline.json", "just update-scale-wall-baseline"},
+	{"test/perf/metadata-query-size-baseline.json", "just update-metadata-query-size-baseline"},
 	{"test/coverage-floor.json", "just update-coverage-floor"},
 
 	{"compatibility/parity-baseline.json", parityBaselineSync},

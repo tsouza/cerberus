@@ -26,14 +26,14 @@ import (
 // /api/v1/label/<name>/values) fold into a single combined ClickHouse
 // query (task #71).
 //
-// Why a cap: the fan-in batching collapses the V×H×matcher variant
+// Why a cap: the fan-in batching collapses the H×matcher variant
 // fan-out into ONE combined UNION-ALL query (N round-trips → 1). Each
 // variant lowers to a full Sample-projecting / matched-row SELECT — a
 // multi-line statement with its own PREWHERE / WHERE / window clauses.
 // The metrics-explorer "every published metric" probe (and the
 // home/drilldown bulk load) send hundreds-to-thousands of match[]
-// selectors at once; each fans out to up to ~192 variants. UNION-ALL'ing
-// that many full SELECTs blows the rendered SQL text past ClickHouse's
+// selectors at once; each fans out to its classic-histogram companions.
+// UNION-ALL'ing that many full SELECTs blows the rendered SQL text past ClickHouse's
 // `max_query_size` (256KB default) — the exact failure that 502'd the
 // first un-bounded fan-in attempt (PR #790) at byte position 262124.
 //
@@ -712,12 +712,16 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	nowAnchored := endT.IsZero()
 	startT, endT = h.boundMetadataWindow(startT, endT)
 
-	// Two-layer matcher fan-out — `expandUnderscoredMetricNameMatcher`
-	// (dotted-storage candidates) nested inside `expandBareHistogramMatcher`
-	// (classic-histogram companion variants). See the per-helper docstrings
-	// for the resolution semantics each layer covers.
+	// Matcher fan-out — `expandBareHistogramMatcher` (classic-histogram
+	// companion variants). The dotted-storage candidates a Prom-grammar
+	// name could be stored under are NOT expanded here: they are resolved
+	// one level down, inside the lowering, by the predicate-level
+	// `__name__` fan-out (internal/promql.metricNamePredicate), which
+	// renders the whole candidate set as a single flat `MetricName IN (?,…)`
+	// on each arm. See [expandSeriesMatchers] for why the matcher-string
+	// layer is the wrong place to spend it.
 	//
-	// Fan-in batching (task #71): the V×H (and matcher) variant set is
+	// Fan-in batching (task #71): the H (and matcher) variant set is
 	// collapsed into ONE combined CH round-trip instead of one round-trip
 	// per variant. Each variant lowers to a Sample-projecting SELECT; the
 	// arms are UNION-ALL'd into a single query whose row stream the Go
@@ -1229,24 +1233,67 @@ func (h *Handler) catalogMatcherSQL(
 	return sql, args, nil
 }
 
-// expandSeriesMatchers fans every input match[] selector out through the
-// two-layer variant expansion (`expandUnderscoredMetricNameMatcher` ⊃
-// `expandBareHistogramMatcher`) and flattens the result into one
+// expandSeriesMatchers fans every input match[] selector out through
+// [expandBareHistogramMatcher] and flattens the result into one
 // deduplicated list of matcher strings. The flattened list is the
 // candidate set the combined /api/v1/series query UNION-ALLs into a single
-// scan — collapsing the former V×H×matcher round-trip fan-out (task #71).
+// scan — collapsing the former H×matcher round-trip fan-out (task #71).
+//
+// Why there is no matcher-string fan-out over the dotted-storage
+// candidates here. A Prom-grammar name (`http_server_request_body_size`)
+// may be stored under any of its OTel-dotted re-expansions
+// (`http.server.request.body.size`), and the metadata surface must match
+// all of them — but that resolution belongs to the PREDICATE, not to the
+// matcher string. `internal/promql.metricNamePredicate` already renders
+// the full [format.PromLabelToOTelCandidates] set of one `__name__`
+// equality as a single flat `MetricName IN (?,…)` — one column reference
+// plus N placeholders, on every arm this function emits, including the
+// histogram companions (whose suffix the lowering strips before expanding
+// the base). Re-expanding the same candidate set into the matcher STRING
+// as well multiplied the arm count by the candidate count (a 4-underscore
+// histogram name: 104 arms instead of 4) while adding no reachable stored
+// name, and every one of those arms is a full Sample-projecting SELECT
+// UNION-ALL'd into the combined query. That is precisely the rendered-SQL
+// pressure that twice pushed the metadata query past ClickHouse's 256KB
+// `max_query_size` (code 62) — see the incident notes on
+// maxMetricCandidatesPerQuery and internal/promql.metricNamePredicateOn.
+//
+// What the retired layer reached and this one does not is exactly the set
+// of spellings that needed BOTH layers to compose — it dotted the name
+// first, so the second layer then expanded a name that was already partly
+// rewritten. Two families fall out of that:
+//
+//   - Non-contiguous separator mixes (`http.server/request.body.size`).
+//     The outer layer produced the zone form `http.server/request_body_size`
+//     and the predicate re-expanded its leftover underscores.
+//     [format.PromLabelToOTelCandidates] enumerates the dot powerset and the
+//     contiguous dot/slash/underscore zone forms, and documents arbitrary
+//     interleavings as unsupported.
+//   - Past `maxRewritableUnderscores`, contiguous zone forms of a COMPANION
+//     name. A base at the cap keeps its full expansion, but `<base>_count`
+//     is one underscore over and degenerates to `{self, all-dots,
+//     all-slashes}`, so the literal-name companion arm no longer reaches a
+//     stored `<dotted base>_count`. The retired layer reached it by dotting
+//     the base before appending the suffix. (The histogram arms are
+//     unaffected either way: they strip the companion suffix before
+//     expanding, so they expand the base and stay under the cap.)
+//
+// Neither family was ever reachable from the PromQL query path, which has
+// only ever had this single layer — so the string-level layer made /series
+// advertise series that no query could fetch. Retiring it makes the
+// metadata surface and the query path answer with exactly the same set.
+// Both families are pinned, in both directions, by
+// internal/api/prom/handler_chdb_series_storage_spelling_test.go.
 func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.Metrics) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, len(matchers))
 	for _, m := range matchers {
-		for _, nameVariant := range expandUnderscoredMetricNameMatcher(parser, m) {
-			for _, variant := range expandBareHistogramMatcher(parser, nameVariant, s) {
-				if _, dup := seen[variant]; dup {
-					continue
-				}
-				seen[variant] = struct{}{}
-				out = append(out, variant)
+		for _, variant := range expandBareHistogramMatcher(parser, m, s) {
+			if _, dup := seen[variant]; dup {
+				continue
 			}
+			seen[variant] = struct{}{}
+			out = append(out, variant)
 		}
 	}
 	return out
@@ -1254,8 +1301,8 @@ func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.
 
 // expandMetadataMatchers is the single matcher fan-out every matched metadata
 // surface (/series, /labels, /label/<name>/values) runs. It layers the
-// name-shape expansions that need no data (dotted-storage candidates ⊃
-// classic-histogram companions, see [expandSeriesMatchers]) with the one that
+// name-shape expansion that needs no data (the classic-histogram companions,
+// see [expandSeriesMatchers]) with the one that
 // does: a `__name__` matcher that is NOT pinned to an equality — a regex or a
 // negated regex — cannot be resolved against the stored MetricName column,
 // because the histogram-derived names it speaks about exist only as synthetic
@@ -1325,12 +1372,12 @@ func (h *Handler) expandMetadataMatchers(
 // single CH round-trip, and dedupes the resulting label sets.
 //
 // Fan-in batching: issuing one `Client.Query` per variant would be a
-// V×H fan-out (up to 32 sequential round-trips for a histogram-base
+// per-companion fan-out (sequential round-trips for a histogram-base
 // request, ~330ms on the demo dataset). Instead each variant's lowered
 // Sample-shape SELECT is a UNION-ALL arm of a single query; the Go dedup
 // below folds the combined row stream into distinct label sets, so the
 // returned series are identical to the per-arm result — at one
-// round-trip instead of V×H.
+// round-trip instead of one per variant.
 //
 // Bounded-batch-or-fallback: the variant set is arm-capped into ⌈N/K⌉
 // chunks (chunkMatcherVariants) and the rendered-size guard
