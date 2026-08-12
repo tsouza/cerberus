@@ -1572,6 +1572,30 @@ func lowerSubqueryOverAbsent(
 	if ctx.rangeMode() {
 		gridStart = ctx.start.Add(-sub.Range)
 	}
+	gridEnd := ctx.end
+
+	// The SUBQUERY's own `offset` shifts WHICH instants it evaluates, so
+	// the whole anchor grid moves back with it — and the emitted anchor
+	// timestamps move too, because a subquery's samples ARE its evaluation
+	// instants. This mirrors subqueryGridCtx, which shifts the grid the
+	// same way for every other subquery inner.
+	//
+	// It deliberately does NOT ride chplan.AbsentOverTime.Offset, even
+	// though the node has that field. That field carries the opposite
+	// output contract: its emitter shifts the internal grid but adds the
+	// offset back on the OUTPUT timestamp (chsql's absentGridAnchorFrag),
+	// so `absent_over_time(v[5m] offset 10m)` reports at the request's own
+	// anchors. That is right for a range-vector function over an
+	// offset-carrying selector and wrong here, where an enclosing reducer
+	// selects inner anchors BY their timestamps and already applies the
+	// same offset to its own window — using both applies the shift twice
+	// and the two anchor ranges come out disjoint (empty result).
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	gridStart = gridStart.Add(-anchor.Offset)
+	gridEnd = gridEnd.Add(-anchor.Offset)
 
 	matrixShape := func(inner chplan.Node) chplan.Node {
 		return &chplan.Project{
@@ -1602,7 +1626,7 @@ func lowerSubqueryOverAbsent(
 				SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
 				Range:            subqueryStalenessLookback,
 				Start:            gridStart.UTC(),
-				End:              ctx.end.UTC(),
+				End:              gridEnd.UTC(),
 				Step:             step,
 				TimestampColumn:  s.TimestampColumn,
 				ValueColumn:      s.ValueColumn,
@@ -1614,7 +1638,7 @@ func lowerSubqueryOverAbsent(
 
 	gridCtx := ctx
 	gridCtx.start = gridStart.UTC()
-	gridCtx.end = ctx.end.UTC()
+	gridCtx.end = gridEnd.UTC()
 	gridCtx.step = step
 	inner, err := lowerAbsent(call, s, gridCtx)
 	if err != nil {
@@ -2510,6 +2534,14 @@ func lowerSubqueryOverSubquery(
 		return nil, err
 	}
 
+	// The un-shifted `ctx` and the unset rw.Start below are the same
+	// deliberate division of labour lowerSubqueryOverCallSubquery documents
+	// at length: the re-anchoring pass owns both, and carries this node's
+	// Offset into the inner spine through RangeWindow.InputWindow. This
+	// branch is additionally unreachable through parsed PromQL — a
+	// SubqueryExpr's body must be an instant vector, pinned by
+	// TestParserShape_NestedSubqueryRejected — so it exists only to keep
+	// the lowering total over the AST node space.
 	widened := *innerSub
 	widened.Range = sub.Range + innerSub.Range
 	wideInner, err := lowerSubquery(&widened, s, ctx)
@@ -2575,6 +2607,24 @@ func lowerSubqueryOverCallSubquery(
 	// range so every outer anchor's lookback finds inner anchors. Each
 	// per-outer-anchor reduction then arrayFilters to the inner-range
 	// window — see emitWindowedArrayMatrix.
+	//
+	// `ctx` is deliberately NOT pre-shifted by THIS subquery's own Offset
+	// before gridding the inner, which reads locally like the defect-D2
+	// family and was audited as such (issue #1732 item 4). It is not: this
+	// lowering is never the last pass over the spine. Every reachable path
+	// re-anchors it afterwards, and the re-anchoring carries the Offset via
+	// chplan.RangeWindow.InputWindow — a bare top-level instant subquery
+	// through lower()'s SubqueryExpr arm, and a subquery under an outer
+	// range-vector reducer through lowerOuterRangeFnOverSubquery; both call
+	// widenSubquerySpine, whose RangeWindow arm overwrites the bounds set
+	// here and then recurses on `start - Offset - Range`. So the outer
+	// offset reaches the inner grid through the returned node's OWN Offset,
+	// one level down, rather than through the ctx used here — which is also
+	// why rw.Start is left unset below, exactly as the
+	// lowerSubqueryOverVectorSelector sibling leaves it.
+	// TestLowerNestedSubquery_OuterOffsetReachesInnerSpine pins the whole
+	// chain, including that the middle node's oldest EMITTED anchor finds
+	// its full window on the inner spine.
 	widened := *innerSub
 	widened.Range = sub.Range + innerSub.Range
 	wideInner, err := lowerSubquery(&widened, s, ctx)

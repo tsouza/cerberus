@@ -157,7 +157,11 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 	wantTokens := []string{
 		"pow(2, pow(2, -`Scale`))",
 		"arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)",
-		"arrayFirstIndex(c -> c >= (0.95",
+		// phi = 0.95 >= 0.5, so the rank walk runs BACKWARD from the top
+		// bucket (#2066) — rank = (1 - phi) * total, tested against the
+		// count at or above each bucket.
+		"arrayFirstIndex(c -> ",
+		"c < ((1 - 0.95) * ",
 		"length(`NegativeBucketCounts`)",
 		// phi == 0 / phi == 1 saturate to the lowest / highest POPULATED
 		// bucket, so each walks the concatenated counts for a non-zero
@@ -207,5 +211,109 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 	closes := strings.Count(sql, ")")
 	if opens != closes {
 		t.Errorf("parenthesis imbalance: %d open, %d close", opens, closes)
+	}
+}
+
+// hqNativePlan builds a well-formed native-quantile IR node over the
+// default OTel-CH exp-histogram column names, so the walk-direction
+// tests differ only in the phi they carry.
+func hqNativePlan(phi float64, phiExpr chplan.Expr) *chplan.HistogramQuantileNative {
+	return &chplan.HistogramQuantileNative{
+		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Phi:                        phi,
+		PhiExpr:                    phiExpr,
+		ScaleColumn:                "Scale",
+		ZeroCountColumn:            "ZeroCount",
+		ZeroThresholdColumn:        "ZeroThreshold",
+		PositiveOffsetColumn:       "PositiveOffset",
+		PositiveBucketCountsColumn: "PositiveBucketCounts",
+		NegativeOffsetColumn:       "NegativeOffset",
+		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		GroupByAliases:             []string{"Attributes"},
+		MetricNameColumn:           "MetricName",
+		AttributesColumn:           "Attributes",
+		TimestampColumn:            "TimeUnix",
+	}
+}
+
+// TestEmit_HistogramQuantileNative_WalkDirection pins the two-direction
+// rank walk (#2066). Reference Prometheus walks a native histogram's
+// buckets forward for phi < 0.5 and BACKWARD from the top bucket for
+// phi >= 0.5 (promql/quantile.go: `if math.IsNaN(h.Sum) || q < 0.5`).
+// The two agree everywhere except at an exact rank tie, where the
+// forward walk stops on the bucket whose cumulative count ends at the
+// target and the backward walk stops on the next POPULATED bucket — so
+// a histogram with equal mass either side of an empty zero bucket
+// answered phi = 0.5 with the wrong SIGN while only the forward arm
+// existed.
+//
+// A literal phi resolves the direction at emit time and must render
+// exactly ONE arm; a computed phi cannot, and must render a runtime
+// dispatch carrying both.
+func TestEmit_HistogramQuantileNative_WalkDirection(t *testing.T) {
+	t.Parallel()
+
+	const (
+		fwdRank = "c >= ("
+		revRank = "c < (("
+	)
+	cases := []struct {
+		name    string
+		phi     float64
+		phiExpr chplan.Expr
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "below-half-walks-forward",
+			phi:     0.25,
+			want:    []string{"arrayFirstIndex(c -> " + fwdRank + "0.25 * "},
+			notWant: []string{"1 - 0.25"},
+		},
+		{
+			// The exact boundary: reference flips AT 0.5, not above it.
+			name:    "at-half-walks-backward",
+			phi:     0.5,
+			want:    []string{"arrayFirstIndex(c -> ", revRank + "1 - 0.5) * "},
+			notWant: []string{"c >= (0.5 * "},
+		},
+		{
+			name:    "above-half-walks-backward",
+			phi:     0.95,
+			want:    []string{revRank + "1 - 0.95) * "},
+			notWant: []string{"c >= (0.95 * "},
+		},
+		{
+			// A computed phi is unknown until the row is evaluated, so
+			// both arms ride behind a runtime `phi < 0.5` dispatch.
+			name:    "computed-phi-dispatches-at-runtime",
+			phiExpr: &chplan.ColumnRef{Name: "PhiCol"},
+			want: []string{
+				"`PhiCol` < 0.5",
+				"1 - `PhiCol`",
+				"isNaN(`PhiCol`)",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sql, _, err := chsql.Emit(context.Background(), hqNativePlan(tc.phi, tc.phiExpr))
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			for _, tok := range tc.want {
+				if !strings.Contains(sql, tok) {
+					t.Errorf("SQL missing expected token %q\n--- sql ---\n%s", tok, sql)
+				}
+			}
+			for _, tok := range tc.notWant {
+				if strings.Contains(sql, tok) {
+					t.Errorf("SQL carries the wrong walk arm, token %q\n--- sql ---\n%s", tok, sql)
+				}
+			}
+		})
 	}
 }

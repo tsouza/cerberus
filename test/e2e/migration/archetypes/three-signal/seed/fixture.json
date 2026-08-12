@@ -11,5 +11,13 @@
   "spans_per_trace": [3, 4, 5],
   "restarts": {
     "payments|500": [60]
+  },
+  "scrape_health": {
+    "down": {
+      "payments": [44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
+    },
+    "stops": {
+      "search": 88
+    }
   }
 }

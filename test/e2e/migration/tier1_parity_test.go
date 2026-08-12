@@ -298,9 +298,26 @@ type metricParityCase struct {
 	carriesName bool
 }
 
+// seriesNamed selects the fixture series carrying one metric name. A metric
+// TABLE is not a metric FAMILY: the gauge table holds the declared gauge
+// metric, any churn dimension, and the scrape-health `up` series at once, so
+// an oracle for a query scoped to one of them has to be scoped the same way.
+// Aggregating the whole table instead produces groups the query never returns
+// — and, worse, groups the query's `by` clause has no label for.
+func seriesNamed(list []seed.MetricSeries, name string) []seed.MetricSeries {
+	out := make([]seed.MetricSeries, 0, len(list))
+	for _, s := range list {
+		if s.MetricName == name {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func metricParityCases(tc tier1Context) []metricParityCase {
-	counter := func(f seed.Fixture) []seed.MetricSeries { return f.Counter }
-	gauge := func(f seed.Fixture) []seed.MetricSeries { return f.Gauge }
+	d := tc.declaration
+	counter := func(f seed.Fixture) []seed.MetricSeries { return seriesNamed(f.Counter, d.CounterMetric) }
+	gauge := func(f seed.Fixture) []seed.MetricSeries { return seriesNamed(f.Gauge, d.GaugeMetric) }
 	histogramCount := func(f seed.Fixture) []seed.MetricSeries {
 		out := make([]seed.MetricSeries, 0, len(f.Histogram))
 		for _, h := range f.Histogram {
@@ -315,7 +332,6 @@ func metricParityCases(tc tier1Context) []metricParityCase {
 		}
 		return out
 	}
-	d := tc.declaration
 	return []metricParityCase{
 		{
 			// Raw series: proves the two sides carry the same SERIES IDENTITY,
@@ -814,7 +830,7 @@ func assertDriftIsObserved(t *testing.T, ctx context.Context, tc tier1Context) {
 	// the post-injection expectation is a declared value rather than whatever
 	// the backend happened to return a moment ago.
 	base := gaugeOracleForService(tc, service)
-	injected, err := seed.InjectGaugeDrift(ctx, conn, tc.fixture, service)
+	injected, err := seed.InjectGaugeDrift(ctx, conn, tc.fixture, tc.declaration.GaugeMetric, service)
 	if err != nil {
 		t.Fatalf("inject reference drift: %v", err)
 	}
@@ -892,7 +908,7 @@ func assertStepGridComplete(t *testing.T, side, service string, series promMatri
 func gaugeOracleForService(tc tier1Context, service string) map[int64]float64 {
 	out := map[int64]float64{}
 	for _, s := range tc.fixture.Gauge {
-		if s.Attributes["service_name"] != service {
+		if s.MetricName != tc.declaration.GaugeMetric || s.Attributes["service_name"] != service {
 			continue
 		}
 		for _, sample := range s.Samples {

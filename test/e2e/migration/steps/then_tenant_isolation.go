@@ -600,12 +600,18 @@ func (w *World) thenUnderBudgetReadComplete() error {
 	if !ok {
 		return fmt.Errorf("archetype %s's manifest was never loaded", w.tenant.archetype)
 	}
-	if manifest.Series.Gauge == 0 {
-		return fmt.Errorf("archetype %s's manifest declares no gauge series; the read would be vacuous", w.tenant.archetype)
+	// The in-budget read is scoped to GaugeMetric, so it is held to that
+	// metric's own cardinality. Series.Gauge counts the whole gauge table —
+	// the churn dimension and the scrape-health `up` family included — and
+	// holding a metric-scoped read to it fails by demanding series the read
+	// never selected.
+	if manifest.GaugeMetricSeries == 0 {
+		return fmt.Errorf("archetype %s's manifest declares no %s series; the read would be vacuous",
+			w.tenant.archetype, manifest.GaugeMetric)
 	}
-	if w.tenant.underBudgetSeries != manifest.Series.Gauge {
-		return fmt.Errorf("the in-budget read returned %d series, want the %d gauge series the manifest declares",
-			w.tenant.underBudgetSeries, manifest.Series.Gauge)
+	if w.tenant.underBudgetSeries != manifest.GaugeMetricSeries {
+		return fmt.Errorf("the in-budget read returned %d series, want the %d %s series the manifest declares",
+			w.tenant.underBudgetSeries, manifest.GaugeMetricSeries, manifest.GaugeMetric)
 	}
 	decl, err := w.tenantDeclaration()
 	if err != nil {

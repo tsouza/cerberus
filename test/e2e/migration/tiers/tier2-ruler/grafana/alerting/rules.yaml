@@ -148,6 +148,124 @@ groups:
   #                    in the dead-end receiver during MIG-09's own
   #                    notification-delta assertion, which runs earlier in the
   #                    same suite against the same receiver.
+  # === MIG-18's multi-window multi-burn-rate SLO fixture (shadow side) ===
+  #
+  # The shadow half of the pair whose incumbent half is
+  # ../../incumbent/incumbent-rules.yml's `migration.mwmbr` group. That file
+  # carries the full rationale for the fixture — what makes it genuinely
+  # multi-window and multi-burn-rate, why the windows are scaled to a CI
+  # budget, and why the seed drives one burning and one clean `slo` identity
+  # through it. Read it first; this file only wraps the same rules in
+  # Grafana's scheduling shape.
+  #
+  # What must stay byte-identical across the two files, because MIG-18 diffs
+  # the streams these rules produce and a difference in the RULE would read as
+  # a difference between the RULERS:
+  #
+  #   title      == the incumbent's `alert:` name. Both rulers stamp it as
+  #                `alertname`, which is the first component of the alert
+  #                identity the diff matches on.
+  #   expr       == the incumbent's `expr`, including both window arms and
+  #                both thresholds. The arithmetic lives in the PromQL on both
+  #                sides precisely so there is one copy of it per rule rather
+  #                than one in PromQL and one in a Grafana threshold.
+  #   for        == the incumbent's `for:`.
+  #   labels     == the incumbent's `labels:`. These are the routing keys the
+  #                diff compares on beyond the name.
+  #
+  # steps/tier2_alerting_test.go reads both files and fails offline on any
+  # drift, so a one-sided edit cannot reach a live run.
+  #
+  # `condition: C` is a `gt 0` threshold rather than the burn threshold
+  # itself: the expression above it already applies `> 0.0144`, so it returns
+  # a value only for an slo that is genuinely burning, and the threshold's
+  # only job is to turn "the query returned this series" into "this series is
+  # alerting". Putting the burn number here instead would give the shadow leg
+  # its own copy of the arithmetic to drift from.
+  #
+  # `noDataState: OK` for the same reason the probe below declares it: the
+  # clean `slo` identity returns NO series by design, and a rule that alerted
+  # on absence would put an edge in the shadow's stream that the incumbent —
+  # which simply does not fire a rule whose vector is empty — has no
+  # counterpart for. That would report as a false positive against cerberus
+  # when it is really a Grafana no-data policy.
+  - orgId: 1
+    name: migration.mwmbr
+    folder: migration-lane
+    interval: 10s
+    rules:
+      - uid: migration-slo-fast-burn
+        title: MigrationSLOFastBurn
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1800, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: |
+                (
+                  sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[1m]))
+                    / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[1m]))
+                  > 0.0144
+                )
+                and
+                (
+                  sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[5m]))
+                    / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[5m]))
+                  > 0.0144
+                )
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        for: 30s
+        labels: { severity: critical, burn_rate: fast }
+        annotations:
+          summary: "the {{ $labels.slo }} error budget is burning fast"
+        noDataState: OK
+        execErrState: Error
+
+      - uid: migration-slo-slow-burn
+        title: MigrationSLOSlowBurn
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1800, to: 0 }
+            datasourceUid: cerberus-prometheus
+            model:
+              expr: |
+                (
+                  sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[3m]))
+                    / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[3m]))
+                  > 0.006
+                )
+                and
+                (
+                  sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[15m]))
+                    / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[15m]))
+                  > 0.006
+                )
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        for: 30s
+        labels: { severity: warning, burn_rate: slow }
+        annotations:
+          summary: "the {{ $labels.slo }} error budget is burning slowly"
+        noDataState: OK
+        execErrState: Error
+
   - orgId: 1
     name: migration.probe
     folder: migration-lane

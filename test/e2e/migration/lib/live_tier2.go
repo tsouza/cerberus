@@ -25,6 +25,12 @@ const (
 	EnvTier2CerberusURL = "TIER2_CERBERUS_URL"
 	EnvTier2GrafanaURL  = "TIER2_GRAFANA_URL"
 	EnvTier2DeadEndURL  = "TIER2_DEADEND_URL"
+	// The incumbent leg MIG-18/MIG-19 diff the shadow against: its ruler
+	// (reference Prometheus, both the remote-write target the harness seeds
+	// and the query endpoint its engine answers on) and its own dead-end
+	// receiver, which is a DIFFERENT container from the shadow's.
+	EnvTier2IncumbentURL        = "TIER2_INCUMBENT_URL"
+	EnvTier2IncumbentDeadEndURL = "TIER2_INCUMBENT_DEADEND_URL"
 )
 
 // defaultTier2* mirror the published port map in
@@ -39,6 +45,9 @@ const (
 	defaultTier2CerberusURL = "http://127.0.0.1:27080"
 	defaultTier2GrafanaURL  = "http://127.0.0.1:27400"
 	defaultTier2DeadEndURL  = "http://127.0.0.1:27450"
+
+	defaultTier2IncumbentURL        = "http://127.0.0.1:27460"
+	defaultTier2IncumbentDeadEndURL = "http://127.0.0.1:27451"
 )
 
 // Tier2Endpoints is the live Tier-2 stack a scenario drives assertions
@@ -51,6 +60,17 @@ const (
 type Tier2Endpoints struct {
 	CHAddr, CHDatabase, CHUsername, CHPassword string
 	CerberusURL, GrafanaURL, DeadEndURL        string
+	// IncumbentURL is the incumbent ruler's Prometheus API: the remote-write
+	// target the harness seeds with the SAME samples it writes to ClickHouse,
+	// and the engine MIG-19 re-evaluates a rule expression against so that
+	// cerberus stands on exactly one side of that comparison.
+	//
+	// IncumbentDeadEndURL is the incumbent's own notification sink. It is a
+	// separate container from DeadEndURL on purpose: one receiver holding both
+	// rulers' streams would interleave them with nothing in the payload naming
+	// which ruler emitted an edge, and MIG-18's diff would then be a stream
+	// compared against itself.
+	IncumbentURL, IncumbentDeadEndURL string
 }
 
 // tier2Vars pairs every env var LoadTier2Endpoints reads with the struct
@@ -68,6 +88,11 @@ var tier2Vars = []struct {
 	{EnvTier2CerberusURL, defaultTier2CerberusURL, func(e *Tier2Endpoints) *string { return &e.CerberusURL }},
 	{EnvTier2GrafanaURL, defaultTier2GrafanaURL, func(e *Tier2Endpoints) *string { return &e.GrafanaURL }},
 	{EnvTier2DeadEndURL, defaultTier2DeadEndURL, func(e *Tier2Endpoints) *string { return &e.DeadEndURL }},
+	{EnvTier2IncumbentURL, defaultTier2IncumbentURL, func(e *Tier2Endpoints) *string { return &e.IncumbentURL }},
+	{
+		EnvTier2IncumbentDeadEndURL, defaultTier2IncumbentDeadEndURL,
+		func(e *Tier2Endpoints) *string { return &e.IncumbentDeadEndURL },
+	},
 }
 
 // LoadTier2Endpoints reads the Tier-2 env vars the harness needs, falling
@@ -96,6 +121,8 @@ func (e Tier2Endpoints) RequireLive(ctx context.Context) error {
 		{"cerberus", e.CerberusURL + "/readyz"},
 		{"grafana", e.GrafanaURL + "/api/health"},
 		{"dead-end receiver", e.DeadEndURL + "/healthz"},
+		{"incumbent ruler", e.IncumbentURL + "/-/ready"},
+		{"incumbent dead-end receiver", e.IncumbentDeadEndURL + "/healthz"},
 	}
 	for _, c := range checks {
 		if err := seed.WaitHTTPOK(ctx, c.url, tier2LiveProbeTimeout); err != nil {

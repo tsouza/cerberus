@@ -545,15 +545,32 @@ func fetchJSONInto(ctx context.Context, url string, out any) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, rulerErrBodyLimit))
+	// The SUCCESS path decodes the FULL body; only the error path below
+	// truncates. Reading through the error-message limit instead silently
+	// clipped the JSON once the response outgrew it, and `json.Unmarshal` then
+	// reported "unexpected end of JSON input" — a decode failure that reads as
+	// a broken ruler rather than as a harness limit. Grafana's rule listing
+	// grows with every provisioned rule and every live alert instance, so the
+	// limit was always going to be crossed; the Tier-2 MWMBR groups crossed it.
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("read %s body: %w", url, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, string(body))
+		return fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, truncateBody(body))
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode %s body %q: %w", url, string(body), err)
+		return fmt.Errorf("decode %s body %q: %w", url, truncateBody(body), err)
 	}
 	return nil
+}
+
+// truncateBody caps how much of a body an error message quotes, so a large
+// failing response does not flood a scenario failure. It is used ONLY in
+// failure messages — never on the path that decodes a successful response.
+func truncateBody(body []byte) string {
+	if len(body) <= rulerErrBodyLimit {
+		return string(body)
+	}
+	return string(body[:rulerErrBodyLimit]) + "…(truncated)"
 }

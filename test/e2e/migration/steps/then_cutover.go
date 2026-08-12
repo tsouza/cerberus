@@ -383,10 +383,14 @@ func (w *World) givenIngestStart() error {
 		if m.GaugeMetric == "" {
 			return fmt.Errorf("archetype %s: the seeder's manifest names no gauge metric; the scenario has nothing to probe", a)
 		}
-		if m.Series.Gauge <= 0 || m.SamplesPerSeries <= 0 {
-			return fmt.Errorf("archetype %s: the seeder declared %d gauge series over %d samples each; "+
+		// The probe below is SCOPED to GaugeMetric, so every count it is held
+		// to is that metric's own — never Series.Gauge, which counts the whole
+		// gauge table including the churn dimension and the scrape-health `up`
+		// family that this census's WHERE clause excludes.
+		if m.GaugeMetricSeries <= 0 || m.SamplesPerSeries <= 0 {
+			return fmt.Errorf("archetype %s: the seeder declared %d %s series over %d samples each; "+
 				"there is no positive cardinality for cerberus's answer to be held to",
-				a, m.Series.Gauge, m.SamplesPerSeries)
+				a, m.GaugeMetricSeries, m.GaugeMetric, m.SamplesPerSeries)
 		}
 		if m.PreIngestSeries <= 0 || m.PreIngestSamplesPerSeries <= 0 {
 			return fmt.Errorf("archetype %s: the seeder left the incumbent %d series of %d samples before ingest-start; "+
@@ -410,9 +414,12 @@ func (w *World) givenIngestStart() error {
 			// One ClickHouse row per declared series per declared sample; both
 			// factors are checked positive immediately above, so the widening
 			// carries no sign surprise.
-			wantRowsAtOrAfter: uint64(m.Series.Gauge) * uint64(m.SamplesPerSeries),
-			wantSeries:        m.Series.Gauge,
-			wantIncumbentPre:  m.PreIngestSeries,
+			wantRowsAtOrAfter: uint64(m.GaugeMetricSeries) * uint64(m.SamplesPerSeries),
+			wantSeries:        m.GaugeMetricSeries,
+			// The incumbent's pre-ingest history covers every gauge series,
+			// but this probe reads GaugeMetric alone, so it can only answer
+			// with that metric's share of it.
+			wantIncumbentPre: m.GaugeMetricSeries,
 		}
 	}
 	return nil
