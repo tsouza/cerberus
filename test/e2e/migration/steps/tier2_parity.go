@@ -227,7 +227,7 @@ func (w *World) givenMwmbrSeededBothSides() error {
 	ctx, cancel := context.WithTimeout(context.Background(), mwmbrSeedBudget)
 	defer cancel()
 
-	now := time.Now().UTC().Truncate(time.Second)
+	now := tier2DualSeedAnchor(time.Now())
 	start, end := now.Add(-mwmbrSeedHistory), now.Add(mwmbrSeedFuture)
 	fixture := mwmbrFixture(w.tier2SeedScope, start, end, now.Add(-mwmbrBurstStart))
 

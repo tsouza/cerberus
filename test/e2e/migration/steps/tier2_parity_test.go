@@ -406,3 +406,67 @@ func TestPromDurationRendersRuleWindows(t *testing.T) {
 		}
 	}
 }
+
+// === Dual-backend seeding precision ===
+//
+// Every Tier-2 parity fixture is written into ClickHouse (DateTime64(9)) AND
+// into the incumbent ruler over Prometheus remote write (`UnixMilli()`). If a
+// sample instant does not survive BOTH encodings unchanged, the two backends
+// hold the same sample at different instants and every comparison downstream
+// diffs two correct answers to two slightly different questions.
+//
+// This is pinned rather than left to review because the failure is not
+// deterministic: it depends on where a rate() window boundary falls relative to
+// a sample, so it passed locally three runs running and only surfaced on CI, as
+// a 2.24e-06 disagreement against a 1e-09 epsilon.
+
+// promWireRoundTrip is what a sample instant becomes after a trip through
+// Prometheus's remote-write encoding, which carries whole milliseconds.
+func promWireRoundTrip(t time.Time) time.Time {
+	return time.UnixMilli(t.UnixMilli()).UTC()
+}
+
+func TestDualSeedAnchorSurvivesTheRemoteWriteEncoding(t *testing.T) {
+	// A deliberately hostile instant: sub-millisecond digits in every place a
+	// truncation could miss.
+	raw := time.Date(2026, 8, 12, 8, 28, 20, 123456789, time.UTC)
+	anchor := tier2DualSeedAnchor(raw)
+
+	if got := promWireRoundTrip(anchor); !got.Equal(anchor) {
+		t.Fatalf("the dual-seed anchor %s does not survive Prometheus's millisecond wire encoding (came back %s); "+
+			"the two backends would hold the same sample at different instants", anchor, got)
+	}
+	if anchor.Nanosecond() != 0 {
+		t.Fatalf("the dual-seed anchor %s carries sub-second precision, so a fixture built from it can put "+
+			"sub-millisecond instants on the ClickHouse side that the remote-write side cannot represent", anchor)
+	}
+}
+
+// The anchor alone is not enough: the STEP each fixture walks its grid by must
+// also land on whole milliseconds, or later samples drift off the wire grid
+// even from a clean anchor.
+func TestDualSeededFixturesProduceWireRepresentableInstants(t *testing.T) {
+	anchor := tier2DualSeedAnchor(time.Date(2026, 8, 12, 8, 28, 20, 987654321, time.UTC))
+
+	check := func(label string, at time.Time) {
+		t.Helper()
+		if got := promWireRoundTrip(at); !got.Equal(at) {
+			t.Fatalf("%s produces the instant %s, which Prometheus's remote-write encoding renders as %s — "+
+				"ClickHouse would hold the sample at the former and the incumbent ruler at the latter",
+				label, at, got)
+		}
+	}
+
+	// MIG-19's recording-rule source series.
+	for _, s := range tier2SourceSamples(anchor.Add(-tier2SeedWindow)) {
+		check("the MIG-19 source-series seed", s.Time)
+	}
+
+	// MIG-18's MWMBR burn fixture.
+	fixture := mwmbrFixture("scope-under-test", anchor.Add(-mwmbrSeedHistory), anchor.Add(mwmbrSeedFuture), anchor.Add(-mwmbrBurstStart))
+	for _, series := range fixture.Counter {
+		for _, s := range series.Samples {
+			check("the MIG-18 MWMBR seed", s.Time)
+		}
+	}
+}

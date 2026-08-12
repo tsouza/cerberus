@@ -453,7 +453,25 @@ func (w *World) givenTier2SourceSeriesSeeded() error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	end := time.Now().UTC()
+	// Truncated to a whole second, and that is load-bearing rather than tidy.
+	// This fixture is written to BOTH backends, and the two encodings do not
+	// carry the same precision: ClickHouse stores TimeUnix as DateTime64(9),
+	// while Prometheus remote write puts a sample on the wire as
+	// `UnixMilli()` (seed/promwrite.go) — so an untruncated `now` leaves the
+	// two backends holding the SAME sample at instants up to a millisecond
+	// apart. A rate() over a ramped counter then answers slightly differently
+	// on each side, and MIG-19's incumbent diff reports it as a parity
+	// divergence when it is really a seeding artifact. Observed on CI as a
+	// 2.24e-06 disagreement against a 1e-09 epsilon, having passed locally
+	// three times running: whether it bites depends on where a window boundary
+	// happens to fall relative to a sample, which is exactly the kind of
+	// latent flake that must be removed rather than retried.
+	//
+	// A whole second is exactly representable in both encodings, so the two
+	// backends hold identical instants by construction. tier2_parity.go's
+	// MWMBR fixture truncates for the same reason, and measures agreement at
+	// 2.8e-17 as a result. tier2_writeback_test.go pins the property.
+	end := tier2DualSeedAnchor(time.Now())
 	start := end.Add(-tier2SeedWindow)
 	fixture := seed.Fixture{
 		Counter: []seed.MetricSeries{{
