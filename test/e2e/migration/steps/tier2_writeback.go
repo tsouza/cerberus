@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -104,6 +105,12 @@ const (
 	// tier2SeedStep, so the "not all one value" assertion has a source-sample
 	// boundary to have crossed.
 	tier2WritebackMinSamples = 3
+	// tier2IncumbentRecordWait bounds the poll for the INCUMBENT ruler's own
+	// recorded samples. It covers the remote write becoming visible to that
+	// ruler plus tier2WritebackMinSamples of its own evaluations, which is a
+	// different and later clock from the shadow's write-back landing — see
+	// thenIncumbentRecordedSeriesIsItsOwnEngineOutput.
+	tier2IncumbentRecordWait = 2 * time.Minute
 )
 
 // landedSample is ONE raw row the write-back leg wrote into the ClickHouse
@@ -155,6 +162,268 @@ func (w *World) registerTier2WritebackSteps(ctx *godog.ScenarioContext) {
 		`^every landed sample matches a live re-evaluation of the recording rule's source query within the exact-parity epsilon$`,
 		w.thenTier2LandedSamplesMatchLiveReEvaluation,
 	)
+	ctx.Step(
+		`^the incumbent ruler recorded the same rule over its own copy of the source data$`,
+		w.thenIncumbentRecordedSeriesIsItsOwnEngineOutput,
+	)
+	ctx.Step(
+		`^every landed sample matches what the incumbent ruler's engine computes at the same instant$`,
+		w.thenLandedSamplesMatchIncumbentEngine,
+	)
+}
+
+// === MIG-19's incumbent-versus-shadow recorded-series diff ===
+//
+// thenTier2LandedSamplesMatchLiveReEvaluation above proves the write-back
+// path: what the shadow ruler recorded is what cerberus says its source
+// expression evaluates to. What it cannot prove is PARITY, because cerberus is
+// on both sides of it — a cerberus evaluation bug moves the recorded value and
+// the re-evaluation identically and cancels out.
+//
+// The two steps below close that. The oracle is the INCUMBENT's engine:
+// reference Prometheus, evaluating the same expression over its own copy of
+// the same samples, which the harness remote-wrote from the one fixture that
+// produced the ClickHouse rows.
+//
+//   - thenLandedSamplesMatchIncumbentEngine compares the SHADOW's landed
+//     recorded samples against that oracle at the exact instants they were
+//     recorded at. cerberus stands on exactly one side, so a cerberus
+//     evaluation bug now has nothing to cancel against.
+//   - thenIncumbentRecordedSeriesIsItsOwnEngineOutput compares the
+//     INCUMBENT's own recorded series against the same oracle on the
+//     incumbent's own grid. Together the two mean: both rulers' recorded
+//     output is the same function of the same data, each checked on the grid
+//     it actually evaluates on.
+//
+// Why the incumbent's recorded series is not compared to the shadow's
+// point-for-point: the two rulers never record at the same instants and
+// cannot be made to. Prometheus offsets a group by hash(group, file) %
+// interval and Grafana ticks epoch-aligned, so their grids share a length and
+// not a phase, and the source series is a RAMP — its value genuinely differs
+// between two instants a few seconds apart. Comparing across grids would
+// therefore diff two correct answers to two different questions, and the only
+// way to make it pass would be a tolerance wide enough to swallow the ramp,
+// which would swallow real divergence with it. Routing both through one oracle
+// at each ruler's own instants keeps every comparison exact.
+
+// tier2IncumbentRecordedSelector is the recorded series as the INCUMBENT
+// stores it, narrowed to this scenario's seed scope exactly as the shadow-side
+// selector is.
+func tier2IncumbentRecordedSelector(scope string) string {
+	return tier2ScopedRecordedSelector(scope)
+}
+
+// thenLandedSamplesMatchIncumbentEngine is MIG-19's incumbent-versus-shadow
+// diff: every sample the shadow ruler's write-back landed in ClickHouse must
+// equal what the incumbent's engine computes for the same expression at the
+// same instant, under the same exact-parity epsilon (migrateverify.
+// DefaultTolerance) — not a new tolerance, the one `cerberus migrate verify`
+// already uses.
+func (w *World) thenLandedSamplesMatchIncumbentEngine() error {
+	if err := w.thenTier2RecordedSeriesHasSamples(); err != nil {
+		return err
+	}
+	landed := w.tier2Writeback.landed
+	if len(landed) == 0 {
+		return fmt.Errorf("no landed sample was read out of the landing zone; the scenario's verdict would prove nothing")
+	}
+	expr, err := tier2ScopedSourceExpr(w.tier2SeedScope)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tier2SampleCompareBudget)
+	defer cancel()
+
+	for _, sample := range landed {
+		want, err := tier2SingleValueAt(ctx, w.tier2.IncumbentURL, expr, sample.at)
+		if err != nil {
+			return fmt.Errorf(
+				"the incumbent ruler could not answer the recording rule's source query at %s, so the shadow's "+
+					"landed sample there has nothing independent to be checked against: %w",
+				sample.at, err,
+			)
+		}
+		if diff := math.Abs(sample.value - want); diff > migrateverify.DefaultTolerance {
+			return fmt.Errorf(
+				"the shadow ruler recorded %g at %s, but the incumbent's own engine computes %g for the same "+
+					"expression over the same samples at that instant (diff %g exceeds the exact-parity tolerance "+
+					"%g) — the two rulers do not agree, and cerberus is on exactly one side of this comparison",
+				sample.value, sample.at, want, diff, migrateverify.DefaultTolerance,
+			)
+		}
+	}
+	return nil
+}
+
+// thenIncumbentRecordedSeriesIsItsOwnEngineOutput asserts the incumbent leg is
+// a real RULER rather than a query endpoint the previous step happens to poll:
+// it recorded the rule under its own name, on its own evaluation grid, and
+// every sample it recorded is what its engine says the source expression
+// evaluates to at that instant.
+//
+// Without this the incumbent's `record:` rule could be deleted entirely and
+// MIG-19 would still pass — the diff above only ever asks the incumbent's
+// engine ad-hoc questions. That would leave "the incumbent records the same
+// rule set" as a claim about a config file nothing executes.
+func (w *World) thenIncumbentRecordedSeriesIsItsOwnEngineOutput() error {
+	if err := w.requireTier2Live(); err != nil {
+		return err
+	}
+	if w.tier2Writeback.seedEnd.IsZero() {
+		return fmt.Errorf("the recording rule's source series has not been seeded; the scenario must seed it first")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tier2SampleCompareBudget)
+	defer cancel()
+
+	// The window runs to NOW, not to the end of the seeded window. The
+	// incumbent's ruler only starts producing this series once the fixture is
+	// visible to it, so every sample it recorded lies AFTER the seed window
+	// closes — a range query bounded by the seed window asks about an interval
+	// in which the recorded series does not yet exist and comes back empty,
+	// which reads as "the incumbent never recorded the rule" rather than as
+	// "the question was asked about the wrong interval".
+	// A bounded POLL, not a single read. The two rulers start recording at
+	// different moments — the shadow's samples are already in hand because
+	// whenTier2WritebackLands polled for them through the whole write-back
+	// bridge, while the incumbent only begins recording once the remote write
+	// makes the fixture visible to it. Reading once would assert against
+	// however many ticks happened to have elapsed, which is a race rather than
+	// a check. The budget owns the verdict: it fails when it expires.
+	deadline := time.Now().Add(tier2IncumbentRecordWait)
+	var recorded []landedSample
+	for {
+		var err error
+		recorded, err = tier2IncumbentRecordedSamples(
+			ctx, w.tier2.IncumbentURL, tier2IncumbentRecordedSelector(w.tier2SeedScope),
+			w.tier2Writeback.seedStart, time.Now().UTC(),
+		)
+		if err != nil {
+			return err
+		}
+		if len(recorded) >= tier2WritebackMinSamples {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf(
+				"the incumbent ruler recorded only %d sample(s) of %q under seed scope %q within %s, want at "+
+					"least %d — its own `record:` rule "+
+					"(tiers/tier2-ruler/incumbent/incumbent-rules.yml) is not producing the series the shadow's "+
+					"output is supposed to be diffed against",
+				len(recorded), nodeCPURecordedMetricName, w.tier2SeedScope, tier2IncumbentRecordWait,
+				tier2WritebackMinSamples,
+			)
+		}
+		time.Sleep(tier2WritebackPollInterval)
+	}
+	expr, err := tier2ScopedSourceExpr(w.tier2SeedScope)
+	if err != nil {
+		return err
+	}
+	for _, sample := range recorded {
+		want, err := tier2SingleValueAt(ctx, w.tier2.IncumbentURL, expr, sample.at)
+		if err != nil {
+			return fmt.Errorf("re-evaluate %q on the incumbent at %s: %w", expr, sample.at, err)
+		}
+		if diff := math.Abs(sample.value - want); diff > migrateverify.DefaultTolerance {
+			return fmt.Errorf(
+				"the incumbent ruler recorded %g at %s but its own engine computes %g for the rule's expression "+
+					"there (diff %g exceeds %g) — the incumbent's recorded series is not its own rule's output, so "+
+					"it cannot serve as the oracle the shadow is diffed against",
+				sample.value, sample.at, want, diff, migrateverify.DefaultTolerance,
+			)
+		}
+	}
+	return nil
+}
+
+// tier2IncumbentRecordedSamples reads the incumbent's RECORDED samples at the
+// instants it actually recorded them.
+//
+// A plain range query cannot answer this. Prometheus carries a sample forward
+// across its staleness window, so a grid at the ruler's own interval reports a
+// value at every grid point whether or not an evaluation landed there — the
+// same trap the shadow side avoids by reading raw ClickHouse rows instead of a
+// query_range grid. `timestamp()` is the way out: it returns each grid point's
+// value's OWN timestamp, so pairing the two range queries and de-duplicating
+// by that timestamp recovers exactly the distinct samples the ruler wrote,
+// and a carried-forward repeat collapses into the one sample it is a repeat of.
+func tier2IncumbentRecordedSamples(
+	ctx context.Context, baseURL, selector string, start, end time.Time,
+) ([]landedSample, error) {
+	values, err := lib.QueryRange(ctx, baseURL, selector, start, end, tier2RecordingRuleInterval)
+	if err != nil {
+		return nil, fmt.Errorf("read the incumbent's recorded series %q: %w", selector, err)
+	}
+	stamps, err := lib.QueryRange(ctx, baseURL, "timestamp("+selector+")", start, end, tier2RecordingRuleInterval)
+	if err != nil {
+		return nil, fmt.Errorf("read the incumbent's recorded sample instants for %q: %w", selector, err)
+	}
+	if len(values) != 1 || len(stamps) != 1 {
+		return nil, fmt.Errorf(
+			"the incumbent's recorded series %q resolved to %d series (and %d timestamp series), want exactly one "+
+				"of each; the seed scope should make it unique",
+			selector, len(values), len(stamps),
+		)
+	}
+	if len(values[0].Samples) != len(stamps[0].Samples) {
+		return nil, fmt.Errorf(
+			"the incumbent answered %d value points and %d timestamp points for %q over one grid; the two range "+
+				"queries must align point for point for the instants to be attributable",
+			len(values[0].Samples), len(stamps[0].Samples), selector,
+		)
+	}
+
+	out := make([]landedSample, 0, len(values[0].Samples))
+	seen := make(map[int64]bool, len(values[0].Samples))
+	for i, v := range values[0].Samples {
+		// timestamp() yields the sample's instant as float SECONDS, and a
+		// float64 cannot hold a present-day Unix second to nanosecond
+		// precision — an instant recorded at .080 comes back as .079999923.
+		// Re-evaluating a rate() there is then a query at a DIFFERENT instant
+		// from the one the ruler evaluated at, and over a ramped source that
+		// shows up as a small but real value difference (observed: 2.7e-06,
+		// against a 1e-09 exact-parity epsilon).
+		//
+		// Rounding to the nearest millisecond is exact rather than a
+		// concession: Prometheus stores every sample timestamp as an int64
+		// count of milliseconds, so the ruler's evaluation instant IS a whole
+		// millisecond and rounding recovers it precisely. Anything finer is
+		// float noise from the wire encoding, never information.
+		recordedSeconds := stamps[0].Samples[i].Value
+		at := time.UnixMilli(int64(math.Round(recordedSeconds * millisPerSecond))).UTC()
+		if seen[at.UnixNano()] {
+			continue
+		}
+		seen[at.UnixNano()] = true
+		out = append(out, landedSample{at: at, value: v.Value})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].at.Before(out[j].at) })
+	return out, nil
+}
+
+// millisPerSecond converts the float-seconds instant `timestamp()` reports
+// into the integer milliseconds Prometheus actually stores a sample at.
+const millisPerSecond = 1000
+
+// tier2SingleValueAt evaluates expr at one instant against one backend,
+// requiring exactly one series carrying exactly one sample. An empty answer is
+// an error rather than a skipped comparison: skipping would silently shrink
+// the diff to whatever both sides happened to answer.
+func tier2SingleValueAt(ctx context.Context, baseURL, expr string, at time.Time) (float64, error) {
+	got, err := lib.QueryInstantSeries(ctx, baseURL, expr, at)
+	if err != nil {
+		return 0, fmt.Errorf("evaluate %q at %s: %w", expr, at, err)
+	}
+	if len(got) != 1 {
+		return 0, fmt.Errorf("evaluating %q at %s returned %d series, want exactly one", expr, at, len(got))
+	}
+	if len(got[0].Samples) != 1 {
+		return 0, fmt.Errorf(
+			"evaluating %q at %s returned a series with %d samples, want exactly one",
+			expr, at, len(got[0].Samples),
+		)
+	}
+	return got[0].Samples[0].Value, nil
 }
 
 // givenTier2SourceSeriesSeeded writes a fresh, cumulative-increasing
@@ -200,6 +469,19 @@ func (w *World) givenTier2SourceSeriesSeeded() error {
 	}
 	if err := seed.InsertFixture(ctx, conn, fixture); err != nil {
 		return fmt.Errorf("migration harness: seed %s: %w", nodeCPUMetricName, err)
+	}
+	// The SAME fixture, rendered into the incumbent ruler's wire shape. This is
+	// what puts cerberus on exactly one side of MIG-19's comparison: the
+	// incumbent's recording rule computes the same expression over its own copy
+	// of these samples, so its recorded output is an independent answer rather
+	// than an echo. Rendered from the one in-memory fixture rather than
+	// regenerated, so the two backends cannot hold different numbers at the
+	// same instant.
+	if err := seed.WriteSeries(ctx, w.tier2.IncumbentURL, fixture.PromSeries()); err != nil {
+		return fmt.Errorf(
+			"migration harness: remote-write %s to the incumbent ruler at %s: %w",
+			nodeCPUMetricName, w.tier2.IncumbentURL, err,
+		)
 	}
 
 	w.tier2Writeback.seedStart, w.tier2Writeback.seedEnd = start, end

@@ -133,6 +133,11 @@ type World struct {
 	// streams. See steps/tier2_alerting.go.
 	tier2Alerting tier2AlertingState
 
+	// tier2Parity carries MIG-18's incumbent-versus-shadow diff: the burn-rate
+	// fixture's seeded window and the firing edges each ruler's OWN dead-end
+	// receiver captured. See steps/tier2_parity.go.
+	tier2Parity tier2ParityState
+
 	// tier2Ruler carries the MIG-09 ruler scenario's state (rule groups
 	// polled, notification delta). See steps/then_ruler.go.
 	tier2Ruler tier2RulerState
@@ -253,6 +258,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 		w.tier2SeedScope = tier2SeedScopeFor(sc.Name)
 		w.tier2Writeback = tier2WritebackState{}
 		w.tier2Alerting = tier2AlertingState{}
+		w.tier2Parity = tier2ParityState{}
 		w.tier2Ruler = tier2RulerState{}
 		w.tier2ReadBack = recordedReadBack{}
 		w.live, w.liveSet = lib.LiveEndpoints{}, false
@@ -327,6 +333,7 @@ func (w *World) InitializeScenario(ctx *godog.ScenarioContext) {
 	w.registerTier2LiveSteps(ctx)
 	w.registerTier2WritebackSteps(ctx)
 	w.registerTier2AlertingSteps(ctx)
+	w.registerTier2ParitySteps(ctx)
 	w.registerCutoverGateSteps(ctx)
 	w.registerRulerSteps(ctx)
 	w.registerVerifySteps(ctx)

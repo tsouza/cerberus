@@ -82,6 +82,10 @@ export const mirroredImages = [
   // Prometheus the PromQL surface gate probes and the reference Mimir the
   // histogram bench measures against.
   'prom/prometheus:v3.11.3',
+  // The migration lane's Tier-2 INCUMBENT dispatcher: the Alertmanager the
+  // incumbent ruler notifies through, standing opposite Grafana's own
+  // notifier so MIG-18's stream diff has two legs that share no code.
+  'prom/alertmanager:v0.28.1',
   'grafana/loki:3.7.0',
   'grafana/tempo:main-2f74ea8',
   'grafana/mimir:2.14.0',

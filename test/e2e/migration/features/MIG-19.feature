@@ -1,10 +1,11 @@
 @MIG-19 @tier2
-Feature: MIG-19 — recording-rule output parity, sample-by-sample
+Feature: MIG-19 — recording-rule output parity against the incumbent, sample-by-sample
   As an operator I want every landed recorded-series sample compared
-  value-for-value against what its own source query says, under the same
-  exact-parity epsilon `cerberus migrate verify` uses, so a divergence in the
-  write-back path (rule translation, input parity, or write-back timing-lag)
-  is a blocker until reconciled rather than a shrug over an aggregate match.
+  value-for-value against what the incumbent ruler's own engine computes at
+  that same instant, under the same exact-parity epsilon `cerberus migrate
+  verify` uses, so a divergence in the write-back path (rule translation, input
+  parity, or write-back timing-lag) or in cerberus's own evaluation is a
+  blocker until reconciled rather than a shrug over an aggregate match.
 
   # Scope, stated honestly.
   #
@@ -15,16 +16,22 @@ Feature: MIG-19 — recording-rule output parity, sample-by-sample
   # transport fidelity and evaluation-timestamp alignment — every leg between
   # the ruler's output and the landing zone.
   #
-  # It does NOT cover what section 6's PASS cell ultimately wants: a diff
-  # against the INCUMBENT's own recorded series. cerberus is on both sides of
-  # this comparison, because the Tier-2 substrate stands up ONE ruler; a
-  # cerberus evaluation bug that affected the recording rule would affect the
-  # re-evaluation identically and cancel out. Closing that gap needs the same
-  # missing substrate MIG-18's note names — a second, genuinely independent
-  # incumbent ruler recording the same rule set against reference Prometheus —
-  # and the value comparator itself is already the one `cerberus migrate
-  # verify` uses, so it is substrate that is missing, not comparison logic.
-  # docs/migration-testing.md section 6's MIG-19 note records the split.
+  # That comparison alone would have cerberus on BOTH sides, so a cerberus
+  # evaluation bug would move the recorded value and the re-evaluation
+  # identically and cancel out. The last two steps close that: the oracle is
+  # the INCUMBENT ruler — reference Prometheus, evaluating the same expression
+  # over its own copy of the same samples, remote-written from the one fixture
+  # that produced the ClickHouse rows — so cerberus stands on exactly one side.
+  #
+  # The incumbent's OWN recorded series is checked against that same engine on
+  # the incumbent's own grid, which is what stops the incumbent leg degrading
+  # into a query endpoint: delete its `record:` rule and that step fails. The
+  # two recorded series are not compared point-for-point to each other because
+  # the two rulers never record at the same instants and cannot be made to
+  # (Prometheus offsets a group by hash(group, file) % interval, Grafana ticks
+  # epoch-aligned), and the source series is a ramp — so a cross-grid
+  # comparison would diff two correct answers to two different questions, and
+  # only a tolerance wide enough to swallow the ramp would let it pass.
   #
   # Two assertions guard against a verdict that holds by construction. The
   # cadence check is a count oracle: a value-only comparison cannot see an
@@ -41,3 +48,5 @@ Feature: MIG-19 — recording-rule output parity, sample-by-sample
     Then the landed sample count matches the ruler's evaluation cadence across the window they span
     And the landed samples do not all carry the same value
     And every landed sample matches a live re-evaluation of the recording rule's source query within the exact-parity epsilon
+    And the incumbent ruler recorded the same rule over its own copy of the source data
+    And every landed sample matches what the incumbent ruler's engine computes at the same instant
