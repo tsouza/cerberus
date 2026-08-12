@@ -48,10 +48,9 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	_ "github.com/chdb-io/chdb-go/chdb/driver"
-
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -66,7 +65,7 @@ import (
 // column-explicit, so the existing positional VALUES tuples keep working
 // and the merged label map collapses to Attributes alone — keeping the
 // native/fan-out parity assertion unchanged.
-var dualEmitSeed = metricsSeedDDL("otel_metrics_sum") + `
+var dualEmitSeed = chsqltest.MetricsSeedDDL("otel_metrics_sum") + `
 INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
@@ -103,14 +102,7 @@ type gridCell struct {
 }
 
 func TestNativeTSGridRate_DualEmitParity(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
+	db := chsqltest.OpenIsolatedChDB(t)
 	// Belt-and-braces: enable the experimental aggregate at the session
 	// level. chDB does not enforce the gate, but a future build might.
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {

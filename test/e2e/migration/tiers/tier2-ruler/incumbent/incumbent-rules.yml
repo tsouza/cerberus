@@ -1,0 +1,113 @@
+# The INCUMBENT ruler's rule set (Layer 14, Tier 2).
+#
+# Every rule here has a counterpart in ../grafana/alerting/rules.yaml that
+# computes the SAME PromQL over the SAME data. That pairing is the whole
+# fixture: MIG-18 diffs the two rulers' notification streams and MIG-19 diffs
+# their recorded output, and neither diff means anything if the two sides are
+# not evaluating the same rule. steps/tier2_alerting_test.go's fixture pins
+# read BOTH files and fail offline when an `expr`, a `for:`, a threshold, a
+# label or an alert name drifts on one side only.
+#
+# The one deliberate asymmetry is scheduling: this file's groups declare the
+# same `interval` the shadow's do, but Prometheus offsets each group by
+# hash(group, file) % interval and Grafana ticks epoch-aligned, so the two
+# grids share a length and not a phase. See prometheus.yml's own comment.
+
+groups:
+  # === MIG-19: the recorded series, on the incumbent's own grid ===
+  #
+  # Byte-identical `expr` to the shadow's `node:node_cpu_utilisation:avg1m`
+  # recording rule. The shadow records it by asking cerberus and landing the
+  # answer in ClickHouse through the write-back bridge; this side records it
+  # by asking its own engine over its own copy of the same samples. MIG-19
+  # compares the two, which is what puts cerberus on exactly ONE side of the
+  # comparison — the gap its scope note used to name.
+  #
+  # `seed_scope` needs no mention here: `avg without (cpu)` keeps every label
+  # except `cpu`, so each Tier-2 scenario's own scope comes out as its own
+  # recorded series exactly as it does on the shadow side.
+  - name: node.rules
+    interval: 10s
+    rules:
+      - record: "node:node_cpu_utilisation:avg1m"
+        expr: 1 - avg without (cpu) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+
+  # === MIG-18: the multi-window multi-burn-rate SLO fixture ===
+  #
+  # The fixture MIG-18's PASS cell has always named and the substrate never
+  # had. It is a real MWMBR pair, not a threshold alert wearing the name:
+  #
+  #   * MULTI-WINDOW — each alert requires its SHORT and its LONG window to
+  #     exceed the burn threshold at once. The long window is what stops a
+  #     one-off spike paging; the short window is what lets the alert clear
+  #     promptly once the burn stops. An alert that fired on either window
+  #     alone would be a different, weaker rule.
+  #   * MULTI-BURN-RATE — two severities off one error budget: a fast-burn
+  #     page and a slow-burn ticket, each with its own burn factor and its own
+  #     window pair. One burn rate is a threshold alert; two are what make the
+  #     rule an SLO policy, and what gives the diff more than one identity to
+  #     get wrong.
+  #
+  # Window lengths are scaled to a CI budget (5m/1m and 15m/3m rather than
+  # 1h/5m and 6h/30m), which changes how much history the seed must carry and
+  # nothing about the rule's shape. The burn factors and the 0.1% error budget
+  # are the standard ones, so the thresholds below are the real arithmetic:
+  # 14.4 * 0.001 = 0.0144 and 6 * 0.001 = 0.006.
+  #
+  # The seed drives TWO slo identities through these rules on both sides: one
+  # burning (both rulers must fire it) and one clean (neither may). That is
+  # what exercises both arms of DiffAlertStreams — a shadow that fired the
+  # clean identity is a false positive, one that missed the burning identity a
+  # false negative — instead of only proving that something, somewhere, fired.
+  #
+  # Both aggregations keep `seed_scope` alongside `slo` for the reason
+  # steps/tier2_seed_scope.go sets out at length: `migration-tier2-run` may be
+  # re-run against one long-lived stack, and a second run re-seeding the first
+  # run's series identity makes the stored counter go up, down, then up again —
+  # which `rate()` reads as a counter reset, so the burn rate stops meaning
+  # anything. Keeping the scope as a grouping key gives each run its own series
+  # AND its own alert identity, so runs cannot perturb each other. It is a
+  # grouping key rather than a matcher because these rules are provisioned
+  # statically and cannot know a scope the harness mints per run.
+  - name: migration.mwmbr
+    interval: 10s
+    rules:
+      - alert: MigrationSLOFastBurn
+        expr: |
+          (
+            sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[1m]))
+              / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[1m]))
+            > 0.0144
+          )
+          and
+          (
+            sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[5m]))
+              / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[5m]))
+            > 0.0144
+          )
+        for: 30s
+        labels:
+          severity: critical
+          burn_rate: fast
+        annotations:
+          summary: "the {{ $labels.slo }} error budget is burning fast"
+
+      - alert: MigrationSLOSlowBurn
+        expr: |
+          (
+            sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[3m]))
+              / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[3m]))
+            > 0.006
+          )
+          and
+          (
+            sum by (slo, seed_scope) (rate(cerberus_migration_slo_errors_total[15m]))
+              / sum by (slo, seed_scope) (rate(cerberus_migration_slo_requests_total[15m]))
+            > 0.006
+          )
+        for: 30s
+        labels:
+          severity: warning
+          burn_rate: slow
+        annotations:
+          summary: "the {{ $labels.slo }} error budget is burning slowly"

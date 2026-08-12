@@ -469,10 +469,12 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		for _, pr := range v.Recollapse {
 			p.walkExpr(pr.Expr, predStart, predEnd, v.Step, sig)
 		}
-		// Each anchor reduces the samples in its own `Range` window, so the
-		// inner spine reaches back that far — the same widening the RangeWindow
-		// arm above applies.
-		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, v.Step, depth+1, sig)
+		// Each anchor reduces the samples in `(anchor - Offset - Range,
+		// anchor - Offset]`, so the inner spine reaches back Offset+Range —
+		// the same widening RangeWindow.InputWindow owns for the arm above
+		// (#1464). Offset enters with its sign, so a forward (negative)
+		// offset widens by less.
+		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Range), predEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.RangeWindowResample:
@@ -489,8 +491,14 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		// absent_over_time's own grid. It carries no group-key or agg-arg
 		// exprs (only SynthLabels, which are literal label pairs), so the
 		// default child recursion below the record call is the whole sweep.
+		// Its per-anchor membership window is `(anchor - Offset - Range,
+		// anchor - Offset]` (see chplan.AbsentOverTime.Offset), so the inner
+		// spine widens by Offset+Range exactly as the RangeWindow arm does
+		// (#1464). The Input of an `absent_over_time(<sub>)` lowering is a
+		// Project over the subquery's OWN RangeWindow grid, so this walk
+		// really does reach a carrier whose predicted bounds it decides.
 		p.recordGridCarrier(v, depth, sig)
-		p.walkNode(v.Input, predStart.Add(-v.Range), predEnd, v.Step, depth+1, sig)
+		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Range), predEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.Aggregate:
@@ -620,6 +628,29 @@ type carrierGeometry struct {
 	// carrier, zero for a carrier that emits a bare anchor axis and reads no
 	// samples. It is what the corpus records as cumulative_d, and with Step
 	// it yields the fan-out.
+	//
+	// It is the window's SPAN, and deliberately EXCLUDES the carrier's
+	// `Offset`, even though every widening pass reaches back Offset+Range
+	// (chplan.RangeWindow.InputWindow). Issue #1732 proposed folding Offset
+	// in here for consistency with that arithmetic; the two answer different
+	// questions and conflating them is wrong in both features this feeds:
+	//
+	//   - F = lookback/Step is how many samples ONE anchor reduces. Shifting
+	//     a window does not change how many samples it holds, and F gates
+	//     routing under ModeAuto, so folding Offset in would route plans on
+	//     a sample count nobody reads.
+	//   - D = Σ lookback drives the high-D floor, which measures per-slice
+	//     REDUNDANCY: a slice narrower than D re-reads more than it computes,
+	//     because ADJACENT slices' input windows overlap by exactly the
+	//     window span. An `offset` shifts every slice's window back by the
+	//     same amount, so adjacent slices overlap no more than they did at
+	//     offset 0 and the redundancy is unchanged.
+	//
+	// TestPlan_RangeLWRSpineRoutes/positive_offset is the live pin on the
+	// second point: a 1h-offset spine over a 1h grid still routes, which
+	// folding Offset into D refuses as high-D despite costing no extra bytes.
+	// TestCarrierGeometry_OffsetChangesNeitherFanoutNorD pins it for every
+	// offset-bearing carrier kind at once.
 	lookback time.Duration
 
 	// reanchorable reports whether [chplan.ReanchorRange] re-grids this kind.

@@ -17,7 +17,32 @@
 //     observations collapse to the positive-only walk
 //     (`arrayConcat([ZeroCount], PositiveBucketCounts)`).
 //  3. total = cum[length(cum)]; target = phi * total.
-//  4. idx = arrayFirstIndex(c -> c >= target, cum) (1-based).
+//  4. idx = the 1-based position the rank walk stops on. Reference
+//     Prometheus walks the buckets in one of TWO directions depending
+//     on phi (quantile.go:243-262), so cerberus does too:
+//     - phi < reverseWalkPhi: forward, rank = phi * total, stopping at
+//     idx = arrayFirstIndex(c -> c >= target, cum).
+//     - phi >= reverseWalkPhi: backward from the top, rank =
+//     (1 - phi) * total. The count at or above the bucket at position
+//     i is `total - cum[i-1]`, so the walk stops at the smallest i
+//     with `total - cum[i-1] >= rank`, emitted as the first index at
+//     which the complementary test flips:
+//     idx = arrayFirstIndex(c -> total - c < rank, cum).
+//     The two directions agree everywhere except at an exact rank tie
+//     (target lands exactly on a cum boundary): forward stops on the
+//     bucket whose cumulative count ENDS at the target and reports its
+//     upper edge, backward stops on the next POPULATED bucket and
+//     reports its lower edge. Those are the same number unless an empty
+//     bucket — or a region boundary — separates the two, which is why a
+//     histogram with equal negative and positive mass either side of an
+//     empty zero bucket answered phi = 0.5 with the wrong SIGN before
+//     the backward arm existed.
+//     Both arms skip empty buckets for free: cum (and revCum) is
+//     non-decreasing, so an empty bucket repeats its predecessor's value
+//     and can never be the FIRST index to reach a strictly positive
+//     rank. Only rank = 0 could stop on one, and that is exactly the
+//     phi = 0 / phi = 1 pair the phiLow / phiHigh edges handle
+//     explicitly (step 6).
 //     Regions: idx ∈ [1, nlen] is the negative-side walk;
 //     idx = nlen+1 is the zero bucket; idx > nlen+1 is the positive
 //     walk. (nlen = length(NegativeBucketCounts).)
@@ -25,6 +50,13 @@
 //     ClickHouse returns the array element's default (0) for
 //     `cum[0]`, which matches the "no bucket consumed yet" semantics
 //     when idx = 1, so the formula needs no explicit guard.
+//     One formula serves both walk directions. Reference Prometheus
+//     rebases the remaining rank per direction (`rank -= count -
+//     bucket.Count` forward, `rank = count - rank` backward) and then
+//     divides by the bucket's own count; substituting count =
+//     total - cum[idx-1] for the backward arm reduces its expression to
+//     this same (target - cum[idx-1]) / bucketCount, so only the STOP
+//     INDEX differs between the arms, never the interpolation.
 //  6. Edge cases (Prometheus quantile.go:114-119):
 //     - total = 0 → NaN.
 //     - phi < 0 → -Inf (out of domain).
@@ -274,6 +306,24 @@ type hqNativeWriters struct {
 // CH-portable shape token, not data.
 func zeroBandOrigin() Frag { return verbatim("0.") }
 
+// reverseWalkPhi is the phi at which reference Prometheus's rank walk
+// flips from the forward bucket iterator to the reverse one
+// (promql/quantile.go:243-252, `if math.IsNaN(h.Sum) || q < 0.5`).
+// Walking in from the nearer end keeps the accumulated rank small, so
+// the subtraction that rebases it into the stop bucket loses fewer
+// significant digits.
+//
+// Reference also takes the forward arm whenever the histogram's Sum is
+// NaN, because NaN observations inflate h.Count without landing in any
+// bucket. cerberus derives `total` from the bucket arrays themselves
+// rather than from a stored count, so a NaN-observation histogram
+// differs from reference in the rank BASE and not merely in the walk
+// direction; switching direction alone would not make it agree.
+// Ranking against the stored count, and reference's NaN result when the
+// buckets run out below the rank, need the sum and count columns
+// plumbed through chplan — cerberus issue #2072.
+const reverseWalkPhi = 0.5
+
 func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	pbc := h.PositiveBucketCountsColumn
 	nbc := h.NegativeBucketCountsColumn
@@ -310,19 +360,58 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	w.total = func() Frag {
 		return Subscript(w.cum(), Call("length", w.cum()))
 	}
-	// idx = arrayFirstIndex(c -> c >= phi*total, cum). Computed phi:
-	// wrap the lambda predicate as `(if(<cmp>, 1, 0) = 1)` — CH 24.8
+	// rankWalk renders `arrayFirstIndex(c -> <cmp>, cum)`, the shape both
+	// walk arms share — only the per-element comparison differs. Computed
+	// phi: wrap the lambda predicate as `(if(<cmp>, 1, 0) = 1)` — CH 24.8
 	// rejects a scalar subquery anywhere in arrayFirstIndex's argument
 	// tree with ILLEGAL_COLUMN (see the classic emitter for the full
-	// rationale). The literal path keeps the bare comparison
-	// (byte-stable fixtures).
-	w.idx = func() Frag {
-		cmp := Gte(BareIdent("c"), Paren(Mul(w.phi(), w.total())))
+	// rationale). The literal path keeps the bare comparison (byte-stable
+	// fixtures).
+	rankWalk := func(cmp Frag) Frag {
 		pred := cmp
 		if h.PhiExpr != nil {
 			pred = Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
 		}
 		return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
+	}
+	// Forward arm: stop on the first bucket whose cumulative count from
+	// the BOTTOM reaches rank = phi * total.
+	fwdIdx := func() Frag {
+		return rankWalk(Gte(BareIdent("c"), Paren(Mul(w.phi(), w.total()))))
+	}
+	// Backward arm: reference accumulates from the TOP and stops on the
+	// first bucket at which that running count reaches
+	// rank = (1 - phi) * total. The count at or above the bucket sitting
+	// at forward position i is exactly `total - cum[i-1]`, so the walk
+	// stops at the SMALLEST i with `total - cum[i-1] >= rank` — and since
+	// `total - cum[i]` only shrinks as i grows, that is the first i at
+	// which the complementary test `total - cum[i] < rank` flips true.
+	// Expressing it that way keeps the arm a mirror image of the forward
+	// one: same arrayFirstIndex, same cum array, same walk coordinates,
+	// so every downstream region / interpolation branch reads one index
+	// with no remapping.
+	//
+	// Both cum and total are exact integer bucket sums (arrayCumSum over
+	// UInt64 counts), so `total - cum[i]` reproduces reference's running
+	// count bit-for-bit rather than merely algebraically.
+	revIdx := func() Frag {
+		return rankWalk(Lt(
+			Sub(w.total(), BareIdent("c")),
+			Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.total())),
+		))
+	}
+	// idx: the direction-selected stop index (see the file header,
+	// step 4). A literal phi resolves the direction at emit time, so the
+	// rendered SQL carries exactly one arm; a computed phi cannot, and
+	// branches on the value at runtime.
+	w.idx = func() Frag {
+		if h.PhiExpr == nil {
+			if h.Phi < reverseWalkPhi {
+				return fwdIdx()
+			}
+			return revIdx()
+		}
+		return If(Lt(w.phi(), InlineLit(reverseWalkPhi)), fwdIdx(), revIdx())
 	}
 	// cum[idx] (offsetMinusOne=false) / cum[idx - 1] (true). idx=1 with
 	// the `- 1` form indexes cum[0], which CH evaluates to the array

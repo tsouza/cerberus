@@ -80,3 +80,26 @@ func tier2Slug(s string) string {
 	}
 	return b.String()
 }
+
+// tier2DualSeedAnchor is the instant a fixture destined for BOTH Tier-2
+// backends may anchor its sample grid to.
+//
+// A Tier-2 parity fixture is written twice — into ClickHouse, whose TimeUnix is
+// a DateTime64(9), and into the incumbent ruler over Prometheus remote write,
+// which puts a sample on the wire as `UnixMilli()` (see seed/promwrite.go). The
+// two encodings do not carry the same precision, so an anchor with sub-
+// millisecond digits leaves the two backends holding the SAME sample at
+// DIFFERENT instants. Every later comparison then diffs two correct answers to
+// two slightly different questions, and over a ramped counter a rate() picks
+// that up as a parity divergence that is really a seeding artifact.
+//
+// Truncating to a whole second is exact in both encodings, so the two sides
+// hold identical instants by construction. This is a helper rather than a
+// `.Truncate(time.Second)` at each callsite so the requirement has a name and
+// a reason attached to it, and so tier2_seed_scope_test.go can pin it: the
+// failure it prevents cost a CI round trip after passing locally three times
+// running, because whether it bites depends on where a rate() window boundary
+// happens to fall relative to a sample.
+func tier2DualSeedAnchor(now time.Time) time.Time {
+	return now.UTC().Truncate(time.Second)
+}
