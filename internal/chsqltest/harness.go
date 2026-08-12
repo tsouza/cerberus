@@ -1,18 +1,6 @@
 //go:build chdb
 
-// Shared harness for this package's chDB round-trip tests: one isolated
-// database per test, and one definition of the metric-table seed shape.
-//
-// It lives in the INTERNAL `package chsql` test namespace, with exported
-// names, because the package's chDB tests straddle both test packages:
-// range_window_fused_chdb_test.go is `package chsql` (it drives the
-// unexported `emitter` directly), every other chDB test is `package
-// chsql_test`. An identifier declared here is visible unqualified to the
-// former and as `chsql.X` to the latter, which is the only arrangement that
-// gives BOTH a single shared definition. Nothing here reaches a non-test
-// build: `_test.go` files are never linked into the binary.
-
-package chsql
+package chsqltest
 
 import (
 	"database/sql"
@@ -24,31 +12,28 @@ import (
 	_ "github.com/chdb-io/chdb-go/chdb/driver" // registers the "chdb" sql driver
 )
 
-// isolatedDBSeq disambiguates two tests whose names sanitise to the same
-// identifier. Test names are already distinct, so this only guards the
-// sanitiser's lossy character folding.
+// isolatedDBSeq disambiguates two tests whose names fold to the same
+// identifier. Test names are already distinct, so this only guards
+// isolatedDBName's lossy character folding.
 var isolatedDBSeq atomic.Uint64
+
+// defaultChDBDatabase is the database the shared chDB session starts in, and
+// the one OpenIsolatedChDB returns it to on cleanup so no test ever leaves the
+// session pointing at a database that has been dropped.
+const defaultChDBDatabase = "default"
 
 // OpenIsolatedChDB opens the chDB session and switches it to a database
 // private to t, dropping that database when t finishes.
 //
-// The isolation is the point. chdb-go caches ONE session per process
-// (#1987), so every `sql.Open("chdb", "")` in this package's tests — whatever
-// handle it returns — lands in the same engine and, without this, the same
-// `default` database. Table DDL therefore leaked from each test into every
-// later one, and the metric read path is acutely sensitive to that: a
-// selector emits `merge(currentDatabase(), '^(otel_metrics_gauge|...)$')`,
-// and ClickHouse requires a referenced column to exist in EVERY table the
-// regex matches. One test seeding an `otel_metrics_*` table with a different
-// column set therefore broke an unrelated later test (#2074). Per-test
-// databases make that structurally impossible rather than a rule each new
-// seed has to remember, because `currentDatabase()` resolves to the caller's
-// own database and the regex can only ever match the caller's own tables.
+// The isolation is the point; see the package doc for why sharing `default`
+// coupled unrelated tests together. Callers get an ordinary *sql.DB whose
+// current database is their own, so emitted SQL that resolves tables through
+// currentDatabase() sees only what this test seeded.
 //
-// The switch is process-global, exactly as the session is, so this is safe
-// only while the chDB tests run serially — none of them calls t.Parallel, and
-// test/regression pins that they must not.
-func OpenIsolatedChDB(t *testing.T) *sql.DB {
+// The switch is process-global, exactly as chdb-go's cached session is, so
+// this is sound only while the chDB tests run serially. None of them calls
+// t.Parallel, and test/regression/chsql_chdb_isolation_test.go pins that.
+func OpenIsolatedChDB(t testing.TB) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("chdb", "")
 	if err != nil {
@@ -59,9 +44,8 @@ func OpenIsolatedChDB(t *testing.T) *sql.DB {
 	}
 
 	name := isolatedDBName(t.Name())
-	// A previous run that died before its cleanup leaves the database behind;
-	// the session outlives a single test binary only in a developer's reused
-	// chDB data directory, but recovering from it costs one statement.
+	// A run that died before its cleanup leaves the database behind in a
+	// reused chDB data directory; recovering costs one statement.
 	if _, err := db.Exec("DROP DATABASE IF EXISTS " + name); err != nil {
 		t.Fatalf("drop stale database %s: %v", name, err)
 	}
@@ -87,11 +71,6 @@ func OpenIsolatedChDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// defaultChDBDatabase is the database the shared chDB session starts in and
-// the one OpenIsolatedChDB returns it to, so no test ever leaves the session
-// pointing at a dropped database.
-const defaultChDBDatabase = "default"
-
 // isolatedDBName folds a test name into a ClickHouse identifier. Test names
 // carry `/` for subtests and may carry any rune a t.Run label contains, so
 // everything outside [A-Za-z0-9_] folds to `_`.
@@ -109,9 +88,9 @@ func isolatedDBName(testName string) string {
 	return fmt.Sprintf("%s_%d", b.String(), isolatedDBSeq.Add(1))
 }
 
-// MetricsSeedDDL renders the OTel-CH metric-table shape every chDB round-trip
-// test in this package seeds. It is ONE definition rather than a copy per test
-// file because the read path decides which columns a selector projects, and a
+// MetricsSeedDDL renders the OTel-CH metric-table shape internal/chsql's chDB
+// round-trip tests seed. It is ONE definition rather than a copy per test file
+// because the read path decides which columns a selector projects, and a
 // column added there has to reach every seed at once: `ServiceName` was added
 // to the selector's label projection and eight identical inline CREATEs each
 // had to learn about it, which is exactly the drift a shared renderer removes.

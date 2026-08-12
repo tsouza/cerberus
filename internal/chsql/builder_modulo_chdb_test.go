@@ -36,6 +36,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 )
 
 // TestEmitGoModulo_BitExactVsGo runs ~100 (x, y) pairs through the
@@ -54,7 +55,7 @@ import (
 //   - Special-value matrix (0, ±Inf, NaN on either side).
 //   - Random (x, y) sampled with mantissa + exponent variation.
 func TestEmitGoModulo_BitExactVsGo(t *testing.T) {
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 
 	type pair struct{ x, y float64 }
 	cases := []pair{

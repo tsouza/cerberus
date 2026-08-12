@@ -63,6 +63,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/testsql"
@@ -73,7 +74,7 @@ import (
 // inside (0s,300s]; under whole-second flooring it collapses to second 0 and
 // falls outside. The remaining samples are whole-second so the divergence is
 // attributable to exactly that one straddling point.
-var subSecondDerivSeed = chsql.MetricsSeedDDL("otel_metrics_gauge") + `
+var subSecondDerivSeed = chsqltest.MetricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00.5', 9), 5.0),
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 10.0),
@@ -97,7 +98,7 @@ const subSecondDerivQuery = `sum by(host) (deriv(load_state[5m]))`
 const subSecondFloatCloseEps = 1e-12
 
 func TestNativeTSGridDeriv_SubSecondMembershipPin(t *testing.T) {
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid: %v", err)
 	}
@@ -170,7 +171,7 @@ const subSecondPredictLinearQuery = `sum by(host) (predict_linear(load_state[5m]
 // SHIPPING paths is real; the fan-out (raw membership) is the more-correct
 // default, and the native path stays experimental/default-off.
 func TestNativeTSGridPredictLinear_SubSecondMembershipPin(t *testing.T) {
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid: %v", err)
 	}

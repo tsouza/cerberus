@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 )
 
 const fusedDiffTable = "otel_metrics_sum"
@@ -53,8 +54,8 @@ const fusedDiffTable = "otel_metrics_sum"
 // truncated arm makes that fan-out unresolvable.
 func fusedDiffOpenDB(t *testing.T, seedStart time.Time, scrape time.Duration, nSamples int) *sql.DB {
 	t.Helper()
-	db := OpenIsolatedChDB(t)
-	if _, err := db.Exec(MetricsSeedDDL(fusedDiffTable)); err != nil {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(chsqltest.MetricsSeedDDL(fusedDiffTable)); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	rows := make([]string, 0, nSamples*2)

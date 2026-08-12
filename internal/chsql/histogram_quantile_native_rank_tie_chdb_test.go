@@ -28,6 +28,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 )
 
 // rankTieHistogramRow is the reproduction from #2066: base-2 buckets
@@ -81,7 +82,7 @@ func TestEmitHistogramQuantileNative_RankTieMatchesReferenceWalk(t *testing.T) {
 		{phi: 0.99, want: 1.9724654089867184},
 	}
 
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 
 	for _, tc := range cases {
 		t.Run("phi="+strconv.FormatFloat(tc.phi, 'g', -1, 64), func(t *testing.T) {

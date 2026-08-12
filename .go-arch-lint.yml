@@ -34,6 +34,12 @@
 #     api-health      — readiness probe.
 #     schema-ddl      — OTel-CH DDL helpers (config consumes; isolated).
 #     chclienttest    — chclient test helpers.
+#     chsqltest       — the chDB harness internal/chsql's round-trip tests
+#                       share: an isolated database per test plus the metric
+#                       seed-DDL renderer. Depends on nothing; it sits outside
+#                       chsql because that suite straddles both the internal
+#                       `package chsql` and the external `package chsql_test`,
+#                       so a shared definition cannot live in either.
 #     testsql         — textual SQL/DDL rewrites the test substrates apply
 #                       around an already-emitted query. Depends on
 #                       nothing; both chclienttest and test/spec consume
@@ -145,6 +151,7 @@ components:
   # the CH driver. Declared explicitly with its own deps block instead.
   api-reqctx:     { in: api/reqctx }
   chclienttest:   { in: chclienttest }
+  chsqltest:      { in: chsqltest }
   sealedscan:     { in: sealedscan }
   testsql:        { in: testsql }
   qlcommon:       { in: qlcommon }
@@ -212,6 +219,7 @@ commonComponents:
   - api-health
   - api-info
   - chclienttest
+  - chsqltest
   - qlcommon
   - chopt
   # sealedscan derives a sealed interface's implementer set from Go

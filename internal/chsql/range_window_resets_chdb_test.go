@@ -40,6 +40,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -56,7 +57,7 @@ import (
 //   - job 'nan-mixed': NaN and finite samples alternate, including a genuine
 //     counter reset (8.0 -> 2.0) adjacent to a NaN run.
 //   - job 'single': exactly one sample lands inside the 5-minute seed span.
-var resetsSeed = chsql.MetricsSeedDDL("otel_metrics_sum") + `
+var resetsSeed = chsqltest.MetricsSeedDDL("otel_metrics_sum") + `
 INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
     ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
@@ -90,7 +91,7 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
 const resetsQuery = `sum by(job) (resets(http_requests_total[5m]))`
 
 func TestNativeTSGridResets_DualEmitParity(t *testing.T) {
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid: %v", err)
 	}

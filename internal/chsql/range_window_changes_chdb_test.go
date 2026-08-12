@@ -78,6 +78,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -100,7 +101,7 @@ import (
 //   - host 'e': exactly one sample lands inside the 5-minute seed span, so
 //     every anchor whose window contains it sees a single-sample window (the
 //     count=0, not-absent case the doc comment above already describes).
-var changesSeed = chsql.MetricsSeedDDL("otel_metrics_gauge") + `
+var changesSeed = chsqltest.MetricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 1.0),
@@ -179,7 +180,7 @@ var changesKnownNativeCarveoutGap = map[gridCell]int{
 }
 
 func TestNativeTSGridChanges_DualEmitParity(t *testing.T) {
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid: %v", err)
 	}

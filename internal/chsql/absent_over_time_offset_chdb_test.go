@@ -24,17 +24,18 @@ import (
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-var absentOffsetSeed = chsql.MetricsSeedDDL("otel_metrics_gauge") + `
+var absentOffsetSeed = chsqltest.MetricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('present', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 1.0);
 `
 
 func TestAbsentOverTime_OffsetOutputGrid(t *testing.T) {
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 	for _, stmt := range splitSeedStatements(absentOffsetSeed) {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("seed: %v\n--- stmt ---\n%s", err, stmt)

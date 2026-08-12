@@ -23,6 +23,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 )
 
 // keyOrderSplitRows is the two-row inline dataset: the SAME logical label set
@@ -51,7 +52,7 @@ func TestEmitAggregate_RawMapKeyDoesNotSplitSeries(t *testing.T) {
 		t.Fatalf("plan has no parameters, got args %v", args)
 	}
 
-	db := chsql.OpenIsolatedChDB(t)
+	db := chsqltest.OpenIsolatedChDB(t)
 
 	// Substitute the scan's table for the inline two-row dataset. Both orders
 	// carry the same labels, so a correct emit sees ONE series summing to 3.
