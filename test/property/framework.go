@@ -565,6 +565,16 @@ func dumpDataset(d Dataset) string {
 		fmt.Fprintf(&b, "series=%d\n", len(d.Metrics.Series))
 		for _, s := range d.Metrics.Series {
 			fmt.Fprintf(&b, "  %s%s points=%d\n", s.MetricName, labelKey(s.Labels), len(s.Points))
+			// A native-histogram point's whole payload is its bucket
+			// layout, so a count of points says nothing about what the
+			// shrinker minimised to. Spell each one out; float points
+			// stay summarised by the count above.
+			for _, p := range s.Points {
+				if p.Histogram == nil {
+					continue
+				}
+				fmt.Fprintf(&b, "    ts=%d %s\n", p.TimestampMs, dumpNativeHistogram(p.Histogram))
+			}
 		}
 		return b.String()
 	}
@@ -577,4 +587,16 @@ func dumpDataset(d Dataset) string {
 		return b.String()
 	}
 	return "(empty dataset)"
+}
+
+// dumpNativeHistogram renders one exponential-histogram payload on a
+// single line, in the same field order as
+// [NativeHistogram]'s declaration, so a failing property test's log is
+// enough to reconstruct the sample by hand and re-derive the expected
+// answer.
+func dumpNativeHistogram(h *NativeHistogram) string {
+	return fmt.Sprintf("count=%d sum=%g scale=%d zeroCount=%d pos=%+d%v neg=%+d%v",
+		h.Count, h.Sum, h.Scale, h.ZeroCount,
+		h.PositiveOffset, h.PositiveBucketCounts,
+		h.NegativeOffset, h.NegativeBucketCounts)
 }

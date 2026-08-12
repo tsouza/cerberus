@@ -660,6 +660,11 @@ test/property/
                          that do NOT import internal/{promql,logql,traceql}
                          so the oracle is not the SUT
   promql_test.go      — wires gen + oracle + chDB exec for PromQL
+  promql_exp_histogram_test.go
+                      — same for the native (exponential) histogram
+                         functions, which need their own dataset
+                         generator (histogram-valued samples in
+                         otel_metrics_exponential_histogram)
   logql_test.go       — same for LogQL
   traceql_test.go     — same for TraceQL
 ```
@@ -686,11 +691,12 @@ same query shape wearing different literal values. Issue #1471 caught
 exactly this for TraceQL. This table is the per-head ledger so a
 stalled leg is visible without diffing generator source:
 
-| Head    | Generator                         | Shape count | Shapes                                                                                                                                                                                                                                                                                                    |
-| ------- | --------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PromQL  | `gen/promql.go`'s `drawExpr`      | 5           | bare selector, `sum(...)`, `sum by(label)(...)`, `rate(...[range] offset d)`, `sum(rate(...))`                                                                                                                                                                                                            |
-| LogQL   | `gen/logql.go`'s `LogQLQuery`     | 6           | bare stream selector; line filter (contains / not-contains); `label_format` rename; IP line filter (contains / not-contains `ip(...)`); pattern line filter (contains / not-contains)                                                                                                                     |
-| TraceQL | `gen/traceql.go`'s `TraceQLQuery` | 14          | bare selector; `count()` filter; attribute matcher beyond service.name; span-attribute matcher; duration intrinsic; status intrinsic; name intrinsic; regex matcher; negated matcher; multi-condition (`&&`); structural child (`>`); structural descendant (`>>`); avg/min/max/sum(duration); `select()` |
+| Head                      | Generator                                              | Shape count | Shapes                                                                                                                                                                                                                                                                                                    |
+| ------------------------- | ------------------------------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PromQL                    | `gen/promql.go`'s `drawExpr`                           | 5           | bare selector, `sum(...)`, `sum by(label)(...)`, `rate(...[range] offset d)`, `sum(rate(...))`                                                                                                                                                                                                            |
+| PromQL (native histogram) | `gen/promql_exp_histogram.go`'s `drawExpHistogramExpr` | 7           | `histogram_count`, `histogram_sum`, `histogram_avg`, `histogram_stddev`, `histogram_stdvar`, `histogram_quantile(phi, ...)`, `histogram_fraction(lower, upper, ...)` — each over a bare selector, which is cerberus's own accept-set for them                                                             |
+| LogQL                     | `gen/logql.go`'s `LogQLQuery`                          | 6           | bare stream selector; line filter (contains / not-contains); `label_format` rename; IP line filter (contains / not-contains `ip(...)`); pattern line filter (contains / not-contains)                                                                                                                     |
+| TraceQL                   | `gen/traceql.go`'s `TraceQLQuery`                      | 14          | bare selector; `count()` filter; attribute matcher beyond service.name; span-attribute matcher; duration intrinsic; status intrinsic; name intrinsic; regex matcher; negated matcher; multi-condition (`&&`); structural child (`>`); structural descendant (`>>`); avg/min/max/sum(duration); `select()` |
 
 When a head's generator widens, update its row here in the same PR —
 the oracle under `test/property/oracle/<head>/` must already be able

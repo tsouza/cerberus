@@ -19,8 +19,10 @@ import (
 // handles rate()/sum by(...)-wrapped arguments via a scale-fold merge
 // algorithm. This oracle only covers the bare-selector shape (the
 // argument is a plain VectorSelector, one histogram sample per
-// series) — the merge path is a documented gap, not silently dropped
-// data.
+// series). Rows arriving without a Histogram payload — which is what
+// the oracle's aggregation path produces — route to the classic
+// le-bucket oracle and fail loudly there rather than being silently
+// dropped. Teaching the oracle the merge is tracked in #2063.
 func nativeHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) []VectorRow {
 	out := make([]VectorRow, 0, len(rows))
 	for _, r := range rows {
@@ -52,6 +54,16 @@ func nativeHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) []Ve
 // ZeroThreshold is always 0 in cerberus (the default OTel-CH DDL
 // doesn't persist it), so the zero-bucket region always evaluates to
 // exactly 0.
+//
+// phi == 0 and phi == 1 are in-domain and saturate to the LOWEST and
+// HIGHEST edge the histogram actually observed — the lower edge of the
+// lowest populated bucket and the upper edge of the highest populated
+// one. Populated, not outermost: reference Prometheus's rank walk
+// skips zero-count buckets outright (promql/quantile.go's
+// HistogramQuantile: `if bucket.Count == 0 { continue }`), and a bucket
+// array may carry zeros anywhere, since the offsets describe only the
+// leading gap. Answering from an array end would report the edge of an
+// interval no observation ever fell in.
 func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) float64 {
 	if phi < 0 {
 		return math.Inf(-1)
@@ -62,44 +74,43 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 
 	base := math.Pow(2, math.Pow(2, -float64(h.Scale)))
 	nlen := len(h.NegativeBucketCounts)
-	plen := len(h.PositiveBucketCounts)
 
-	if phi == 0 {
-		if nlen > 0 {
-			return -math.Pow(base, float64(h.NegativeOffset)+float64(nlen))
-		}
-		return 0
+	// counts[i] (Go 0-based) is the population of the 1-based spec
+	// bucket i+1, over reverse(negative) ++ [zero] ++ positive — the
+	// most-negative bucket first, matching the order reference
+	// Prometheus's AllBucketIterator walks.
+	counts := make([]float64, 0, nlen+1+len(h.PositiveBucketCounts))
+	for i := nlen - 1; i >= 0; i-- {
+		counts = append(counts, float64(h.NegativeBucketCounts[i]))
 	}
-	if phi == 1 {
-		if plen > 0 {
-			return math.Pow(base, float64(h.PositiveOffset)+float64(plen))
-		}
-		if h.ZeroCount > 0 {
-			return 0
-		}
-		return -math.Pow(base, float64(h.NegativeOffset))
+	counts = append(counts, float64(h.ZeroCount))
+	for _, c := range h.PositiveBucketCounts {
+		counts = append(counts, float64(c))
 	}
 
-	// cum[i] (Go 0-based) is the cumulative count over
-	// reverse(negative) ++ [zero] ++ positive, i.e. the 1-based spec
-	// index i+1. Spec's cum[0]=0 is the implicit "before the slice"
-	// value, never stored.
-	cum := make([]float64, nlen+1+plen)
+	// cum[i] is the running total through bucket i+1. Spec's cum[0]=0
+	// is the implicit "before the slice" value, never stored.
+	cum := make([]float64, len(counts))
 	var running float64
-	for i := 0; i < nlen; i++ {
-		running += float64(h.NegativeBucketCounts[nlen-1-i])
+	for i, c := range counts {
+		running += c
 		cum[i] = running
-	}
-	running += float64(h.ZeroCount)
-	cum[nlen] = running
-	for i := 0; i < plen; i++ {
-		running += float64(h.PositiveBucketCounts[i])
-		cum[nlen+1+i] = running
 	}
 	total := running
 	if total == 0 {
 		return math.NaN()
 	}
+
+	// Both edges are the region formulas below evaluated at fraction 0
+	// (lower edge) and fraction 1 (upper edge), so each bucket family's
+	// geometry is written down exactly once.
+	if phi == 0 {
+		return bucketEdge(h, base, nlen, firstPopulated(counts), 0)
+	}
+	if phi == 1 {
+		return bucketEdge(h, base, nlen, lastPopulated(counts), 1)
+	}
+
 	target := phi * total
 
 	idx := len(cum) // 1-based spec index; default to the last bucket
@@ -120,15 +131,56 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 		fraction = (target - prevCum) / (currCum - prevCum)
 	}
 
+	return bucketEdge(h, base, nlen, idx, fraction)
+}
+
+// bucketEdge maps a 1-based bucket index in the combined
+// reverse(negative) ++ [zero] ++ positive space, plus a fractional
+// position within that bucket, back to a sample value.
+//
+// fraction 0 is the bucket's lower edge and fraction 1 its upper edge;
+// interpolation is linear in bucket-INDEX space, which is logarithmic
+// in value space — the exponential-schema counterpart of the classic
+// histogram's linear interpolation between named `le` bounds.
+func bucketEdge(h *property.NativeHistogram, base float64, nlen, idx int, fraction float64) float64 {
 	switch {
 	case idx <= nlen:
+		// Negative buckets run outward from zero as the index falls, so
+		// a rising fraction moves the answer TOWARDS zero.
 		return -math.Pow(base, float64(h.NegativeOffset)+float64(nlen-idx)+1-fraction)
 	case idx == nlen+1:
+		// The zero bucket is a point at 0 (ZeroThreshold is not
+		// modelled), so both its edges — and everything between them —
+		// are 0.
 		return 0
 	default:
 		k := idx - nlen - 2
 		return math.Pow(base, float64(h.PositiveOffset)+float64(k)+fraction)
 	}
+}
+
+// firstPopulated returns the 1-based index of the first non-empty
+// bucket in counts. Callers guarantee a non-zero total, so the scan
+// always finds one.
+func firstPopulated(counts []float64) int {
+	for i, c := range counts {
+		if c > 0 {
+			return i + 1
+		}
+	}
+	return len(counts)
+}
+
+// lastPopulated returns the 1-based index of the last non-empty bucket
+// in counts. Callers guarantee a non-zero total, so the scan always
+// finds one.
+func lastPopulated(counts []float64) int {
+	for i := len(counts) - 1; i >= 0; i-- {
+		if counts[i] > 0 {
+			return i + 1
+		}
+	}
+	return 1
 }
 
 // nativeHistogramValue implements the scalar-per-sample native-

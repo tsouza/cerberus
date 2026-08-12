@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"math"
 	"testing"
 
 	"github.com/tsouza/cerberus/test/property"
@@ -85,6 +86,82 @@ func TestNativeHistogramQuantile_NegativeBuckets(t *testing.T) {
 	o := eval(d, `histogram_quantile(0.5, latency_exp_hist)`, 90)
 	assertRows(t, o, []property.OutcomeRow{
 		row(map[string]string{"service": "api"}, -4.0),
+	})
+}
+
+// The three tests below pin the phi == 0 / phi == 1 saturation edges
+// against EMPTY outer buckets. A bucket array's offsets describe only
+// its leading gap, so a zero can sit anywhere in the array — including
+// at the end. Reference Prometheus's rank walk skips zero-count
+// buckets (promql/quantile.go's HistogramQuantile:
+// `if bucket.Count == 0 { continue }`), so both edges must saturate to
+// the lowest / highest POPULATED bucket, never to the end of the array.
+//
+// Answering from the array end reports the edge of an interval no
+// observation fell in. TestPromQL_Property_NativeHistogram found this
+// against real cerberus, which walks to a populated bucket via
+// arrayFirstIndex / arrayLastIndex over a non-zero count
+// (internal/chsql/histogram_quantile_native.go's phiLow / phiHigh).
+// Expected values below are derived by hand from the bucket geometry,
+// not read back from either implementation.
+
+func TestNativeHistogramQuantile_Phi0SkipsEmptyNegativeBucket(t *testing.T) {
+	// scale 2 → base = 2^(2^-2) = 2^0.25. Negative buckets [3, 0] at
+	// offset 0: bucket 0 (spanning magnitudes (base^0, base^1]) holds
+	// 3 observations, bucket 1 is EMPTY. Walking from the most negative
+	// end inward, the first populated bucket is bucket 0, whose lower
+	// edge is -base^1 = -2^0.25.
+	//
+	// Saturating to the array end instead would answer -base^2 = -2^0.5
+	// — a magnitude larger than anything the histogram observed.
+	d := build(histSeries("latency_exp_hist", map[string]string{"service": "api"}, 60, property.NativeHistogram{
+		Count:                4,
+		Scale:                2,
+		ZeroCount:            1,
+		NegativeOffset:       0,
+		NegativeBucketCounts: []uint64{3, 0},
+	}))
+	o := eval(d, `histogram_quantile(0, latency_exp_hist)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"service": "api"}, -math.Pow(2, 0.25)),
+	})
+}
+
+func TestNativeHistogramQuantile_Phi1SkipsEmptyPositiveBucket(t *testing.T) {
+	// scale 0 → base 2. Positive buckets [2, 0] at offset 0: bucket 0
+	// (spanning (1, 2]) holds 2 observations, bucket 1 is EMPTY. The
+	// highest populated bucket is bucket 0, upper edge 2^1 = 2.
+	//
+	// Saturating to the array end would answer 2^2 = 4.
+	d := build(histSeries("latency_exp_hist", map[string]string{"service": "api"}, 60, property.NativeHistogram{
+		Count:                2,
+		Scale:                0,
+		PositiveOffset:       0,
+		PositiveBucketCounts: []uint64{2, 0},
+	}))
+	o := eval(d, `histogram_quantile(1, latency_exp_hist)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"service": "api"}, 2),
+	})
+}
+
+func TestNativeHistogramQuantile_Phi0PositiveOnlyStartsAtLowestPopulated(t *testing.T) {
+	// scale 0 → base 2. Positive buckets [0, 5] at offset 0: bucket 0
+	// is EMPTY, bucket 1 (spanning (2, 4]) holds all 5 observations.
+	// With no negative buckets and an empty zero bucket, the lowest
+	// populated bucket is positive bucket 1, lower edge 2^1 = 2.
+	//
+	// A histogram whose observations all sit above 2 must not answer 0
+	// for its minimum.
+	d := build(histSeries("latency_exp_hist", map[string]string{"service": "api"}, 60, property.NativeHistogram{
+		Count:                5,
+		Scale:                0,
+		PositiveOffset:       0,
+		PositiveBucketCounts: []uint64{0, 5},
+	}))
+	o := eval(d, `histogram_quantile(0, latency_exp_hist)`, 90)
+	assertRows(t, o, []property.OutcomeRow{
+		row(map[string]string{"service": "api"}, 2),
 	})
 }
 

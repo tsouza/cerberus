@@ -212,16 +212,28 @@ func renderRow(name string, labels map[string]string, p property.Point) string {
 	b.WriteByte('\'')
 	b.WriteString(", ")
 	b.WriteString(renderMap(labels))
-	b.WriteString(", toDateTime64('")
-	// chdb-go accepts 'YYYY-MM-DD HH:MM:SS.nnn' wall-clock literals
-	// with the toDateTime64(..., 9) cast. Use millisecond precision —
-	// the generator's 15s spacing is well above the resolution chDB
-	// stores at, so trailing-zero noise doesn't move the comparator.
-	ts := time.UnixMilli(p.TimestampMs).UTC().Format("2006-01-02 15:04:05.000")
-	b.WriteString(ts)
-	b.WriteString("', 9), ")
+	b.WriteString(", ")
+	b.WriteString(tsLiteral(p.TimestampMs))
+	b.WriteString(", ")
 	b.WriteString(formatFloat(p.Value))
 	b.WriteByte(')')
+	return b.String()
+}
+
+// tsLiteral renders a unix-millisecond timestamp as the CH
+// `toDateTime64('…', 9)` literal every generated INSERT stamps rows
+// with.
+//
+// chdb-go accepts 'YYYY-MM-DD HH:MM:SS.nnn' wall-clock literals with
+// the toDateTime64(..., 9) cast. Millisecond precision is enough: the
+// generators space samples at whole-second intervals, well above the
+// resolution chDB stores at, so trailing-zero noise never moves the
+// comparator.
+func tsLiteral(tsMs int64) string {
+	var b strings.Builder
+	b.WriteString("toDateTime64('")
+	b.WriteString(time.UnixMilli(tsMs).UTC().Format("2006-01-02 15:04:05.000"))
+	b.WriteString("', 9)")
 	return b.String()
 }
 
