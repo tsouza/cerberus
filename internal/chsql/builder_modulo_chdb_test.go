@@ -30,12 +30,9 @@
 package chsql_test
 
 import (
-	"database/sql"
 	"math"
 	"math/rand"
 	"testing"
-
-	_ "github.com/chdb-io/chdb-go/chdb/driver"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
@@ -57,14 +54,7 @@ import (
 //   - Special-value matrix (0, ±Inf, NaN on either side).
 //   - Random (x, y) sampled with mantissa + exponent variation.
 func TestEmitGoModulo_BitExactVsGo(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
+	db := chsql.OpenIsolatedChDB(t)
 
 	type pair struct{ x, y float64 }
 	cases := []pair{

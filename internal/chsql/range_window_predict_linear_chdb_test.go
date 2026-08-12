@@ -60,8 +60,6 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	_ "github.com/chdb-io/chdb-go/chdb/driver"
-
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
@@ -74,7 +72,7 @@ import (
 // deriv fixture's two distinct-slope host series (a rising, b falling) so the
 // forecast is non-trivial, non-constant, and differs per series — the same clean
 // 1-minute grid.
-var predictLinearSeed = metricsSeedDDL("otel_metrics_gauge") + `
+var predictLinearSeed = chsql.MetricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
     ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 10.0),
@@ -97,14 +95,7 @@ INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
 const predictLinearQuery = `sum by(host) (predict_linear(load_state[5m], 3600))`
 
 func TestNativeTSGridPredictLinear_DualEmitParity(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
+	db := chsql.OpenIsolatedChDB(t)
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid: %v", err)
 	}

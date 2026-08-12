@@ -41,8 +41,6 @@ import (
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
-	_ "github.com/chdb-io/chdb-go/chdb/driver"
-
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
@@ -55,7 +53,7 @@ import (
 // present, DEFAULT map(), column-explicit INSERT) — see the rate dual-emit seed
 // for the rationale. Two series (api, web) with off-boundary samples so the
 // closed-vs-half-open left-edge distinction never bites.
-var resampleSeed = metricsSeedDDL("otel_metrics_gauge") + `
+var resampleSeed = chsql.MetricsSeedDDL("otel_metrics_gauge") + `
 INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:30', 9), 1.0),
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:02:30', 9), 7.0),
@@ -77,14 +75,7 @@ type resampleCell struct {
 }
 
 func TestNativeTSGridResample_DualEmitParity(t *testing.T) {
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Ping(); err != nil {
-		t.Fatalf("ping chdb: %v", err)
-	}
+	db := chsql.OpenIsolatedChDB(t)
 	if _, err := db.Exec("SET " + chclient.SettingExperimentalTSGridAggregate + " = 1"); err != nil {
 		t.Fatalf("enable experimental ts-grid: %v", err)
 	}
