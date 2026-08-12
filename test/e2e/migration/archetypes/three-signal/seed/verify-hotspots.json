@@ -32,6 +32,24 @@
       "lang": "promql"
     },
     {
+      "expr": "up == 0",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/staleness scrape failed",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "up{service_name=\"search\"}",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/staleness target vanished",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
+      "expr": "absent_over_time(up{service_name=\"search\"}[5m])",
+      "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/staleness absent over time",
+      "kind": "panel",
+      "lang": "promql"
+    },
+    {
       "expr": "histogram_quantile(0.95, sum by (le) (rate(cerberus_migration_request_duration_seconds_bucket[5m])))",
       "source": "manual:test/e2e/migration/archetypes/three-signal/seed/verify-hotspots.json/histogram quantile",
       "kind": "panel",

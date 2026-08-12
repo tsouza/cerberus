@@ -219,6 +219,28 @@ rather than dependent on the exporter's start-time behaviour; the seeder then
 polls for all six `otel_*` tables against a hard deadline before it writes a
 single fixture row. Nothing in the seeder creates a table.
 
+**The semantic hotspots are declared, never incidental.** Three fields in the
+declaration exist purely so MIG-17's corpus has a real divergence to fail on.
+`restarts` zeroes a named counter series' running total mid-window, so
+`rate()` / `increase()` cross a genuine pod-restart reset rather than a
+monotonic climb. `scrape_health.down` makes a named service's `up` report 0 for
+a contiguous run of samples and then recover, which is the firing edge and the
+resolve edge `up == 0` selects. `scrape_health.stops` ends one service's `up`
+early, so that series has to disappear from BOTH backends exactly one instant
+lookback after its last sample — the TSDB stale-marker versus ClickHouse gap
+model section 5 requires cerberus to match rather than tolerate. Nothing
+synthesises `up`: on both sides it is an ordinary gauge that has to be written
+to be queryable, so an archetype that declares no `scrape_health` block has no
+`up` at all and a staleness query against it would compare two empty answers.
+
+Each shape is inert unless two files that cannot see each other agree — the
+declaration has to inject it inside the queried window, and the committed
+corpus has to select the very series it was injected into.
+`test/regression/migration_tier1_test.go` holds them together offline: it fails
+when a declared shape lands where no replayed step reads it (an outage between
+two steps, a disappearance edge off the step grid), and when the corpus stops
+naming the series a shape was injected into.
+
 The fixture carries exactly one deliberate asymmetry between the two sides:
 reference Prometheus additionally receives `seed.PreIngestWindow` of gauge
 history ending one sample step BELOW the first ClickHouse row, on the fixture's

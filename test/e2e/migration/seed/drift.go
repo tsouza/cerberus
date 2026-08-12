@@ -78,20 +78,29 @@ func DriftRowCount(ctx context.Context, conn driver.Conn) (uint64, error) {
 //
 // It returns the per-instant values it injected, so the caller can assert the
 // exact post-injection reading rather than merely "something changed".
-func InjectGaugeDrift(ctx context.Context, conn driver.Conn, f Fixture, service string) (map[int64]float64, error) {
+// The metric is named by the CALLER rather than read off whichever series the
+// scan happened to land on last. The gauge table carries more than one family
+// — the declared gauge metric, any churn dimension, and the scrape-health `up`
+// series — so inferring it would inject drift into an arbitrary one of them
+// while the caller's query, and its expectation, name another. The injection
+// would land, the query would not see it, and a negative control that cannot
+// see its own corruption reports the lane is blind when it is not.
+func InjectGaugeDrift(
+	ctx context.Context, conn driver.Conn, f Fixture, metricName, service string,
+) (map[int64]float64, error) {
 	base := map[int64]float64{}
-	var metricName string
+	var found bool
 	for _, s := range f.Gauge {
-		if s.Attributes[serviceNameLabel] != service {
+		if s.MetricName != metricName || s.Attributes[serviceNameLabel] != service {
 			continue
 		}
-		metricName = s.MetricName
+		found = true
 		for _, sample := range s.Samples {
 			base[sample.Time.UnixMilli()] += sample.Value
 		}
 	}
-	if metricName == "" {
-		return nil, fmt.Errorf("fixture holds no gauge series for service %q", service)
+	if !found {
+		return nil, fmt.Errorf("fixture holds no %s series for service %q", metricName, service)
 	}
 
 	injected := make(map[int64]float64, len(base))
