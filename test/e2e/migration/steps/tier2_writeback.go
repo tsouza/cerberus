@@ -873,10 +873,13 @@ func tier2ValuesVary(landed []landedSample) bool {
 // through relay-prom -> otel-collector-writeback -> ClickHouse, is the value
 // cerberus computes for that expression at that instant. It covers rule
 // translation, write-back transport fidelity and evaluation-timestamp
-// alignment. It is NOT a diff against an incumbent ruler's own recorded
-// series — the Tier-2 substrate stands up ONE ruler, and cerberus is on both
-// sides of this comparison. See MIG-19.feature's scope note and section 6 of
-// docs/migration-testing.md.
+// alignment. It is NOT by itself a parity check: cerberus is on both sides of
+// THIS comparison, so a cerberus evaluation bug would move the recorded value
+// and the re-evaluation identically and cancel out. That is what
+// thenLandedSamplesMatchIncumbentEngine adds, by re-asking the same question
+// of the incumbent's engine; the two steps are complements, and this one is
+// the leg that isolates the write-back TRANSPORT rather than the evaluation.
+// See MIG-19.feature's scope note and section 6 of docs/migration-testing.md.
 func (w *World) thenTier2LandedSamplesMatchLiveReEvaluation() error {
 	if err := w.thenTier2RecordedSeriesHasSamples(); err != nil {
 		return err
