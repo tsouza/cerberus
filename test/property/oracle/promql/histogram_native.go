@@ -37,17 +37,38 @@ func nativeHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) []Ve
 	return out
 }
 
+// reverseWalkPhi is the phi at which reference Prometheus's rank walk
+// flips from the forward bucket iterator to the reverse one
+// (promql/quantile.go: `if math.IsNaN(h.Sum) || q < 0.5`). cerberus's
+// emitter names the same constant.
+const reverseWalkPhi = 0.5
+
 // nativeHistogramQuantileValue walks the bucket layout of a single
-// native-histogram sample to compute the phi-th quantile, mirroring
-// the bucket-walk algorithm in internal/chsql/histogram_quantile_native.go:
+// native-histogram sample to compute the phi-th quantile, following
+// reference Prometheus's HistogramQuantile (promql/quantile.go) — which
+// is also what internal/chsql/histogram_quantile_native.go emits:
 //
 //  1. base = 2^(2^-Scale).
 //  2. Build the cumulative-count array over
 //     reverse(NegativeBucketCounts) ++ [ZeroCount] ++ PositiveBucketCounts.
-//  3. target = phi * total; find the first cumulative index >= target.
-//  4. Interpolate within that bucket via linear fraction, then map
-//     back to a value via the region (negative / zero / positive) the
-//     index falls in.
+//  3. Walk that array for the rank, in one of TWO directions:
+//     forward from the bottom for phi < reverseWalkPhi (stop at the
+//     first cumulative count >= phi * total), backward from the top
+//     otherwise (stop at the first bucket whose count-at-or-above,
+//     total - cum[i-1], reaches (1 - phi) * total). The directions
+//     agree except at an exact rank tie, where the forward walk stops
+//     on the bucket ENDING at the target and the backward walk on the
+//     next POPULATED one — a real divergence whenever an empty bucket
+//     or a region boundary separates them (#2066).
+//  4. Interpolate within the stop bucket via the fraction of it the
+//     rank consumed, then map back to a value via the region
+//     (negative / zero / positive) the index falls in.
+//
+// Both walk arms skip empty buckets for free, because a cumulative
+// count array is non-decreasing: an empty bucket repeats its
+// predecessor's value and so can never be the FIRST index to reach a
+// strictly positive rank. Only rank = 0 could stop on one, which is
+// exactly the phi = 0 / phi = 1 pair handled explicitly below.
 //
 // ZeroThreshold is always 0 in cerberus (the default OTel-CH DDL
 // doesn't persist it), so the zero-bucket region always evaluates to
@@ -60,74 +81,110 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 		return math.Inf(1)
 	}
 
-	base := math.Pow(2, math.Pow(2, -float64(h.Scale)))
 	nlen := len(h.NegativeBucketCounts)
 	plen := len(h.PositiveBucketCounts)
 
-	if phi == 0 {
-		if nlen > 0 {
-			return -math.Pow(base, float64(h.NegativeOffset)+float64(nlen))
-		}
-		return 0
+	// buckets is the single walk order every index below is expressed
+	// in: reverse(negative) ++ [zero] ++ positive, running from the
+	// most-negative observation toward the most-positive one.
+	buckets := make([]float64, 0, nlen+1+plen)
+	for i := nlen - 1; i >= 0; i-- {
+		buckets = append(buckets, float64(h.NegativeBucketCounts[i]))
 	}
-	if phi == 1 {
-		if plen > 0 {
-			return math.Pow(base, float64(h.PositiveOffset)+float64(plen))
-		}
-		if h.ZeroCount > 0 {
-			return 0
-		}
-		return -math.Pow(base, float64(h.NegativeOffset))
+	buckets = append(buckets, float64(h.ZeroCount))
+	for _, c := range h.PositiveBucketCounts {
+		buckets = append(buckets, float64(c))
 	}
 
-	// cum[i] (Go 0-based) is the cumulative count over
-	// reverse(negative) ++ [zero] ++ positive, i.e. the 1-based spec
-	// index i+1. Spec's cum[0]=0 is the implicit "before the slice"
-	// value, never stored.
-	cum := make([]float64, nlen+1+plen)
-	var running float64
-	for i := 0; i < nlen; i++ {
-		running += float64(h.NegativeBucketCounts[nlen-1-i])
-		cum[i] = running
+	// cum is 1-based to match the spec: cum[0] = 0 is the implicit "no
+	// bucket consumed yet" value the fraction formula needs at idx = 1.
+	cum := make([]float64, len(buckets)+1)
+	for i, b := range buckets {
+		cum[i+1] = cum[i] + b
 	}
-	running += float64(h.ZeroCount)
-	cum[nlen] = running
-	for i := 0; i < plen; i++ {
-		running += float64(h.PositiveBucketCounts[i])
-		cum[nlen+1+i] = running
-	}
-	total := running
+	total := cum[len(buckets)]
 	if total == 0 {
 		return math.NaN()
 	}
-	target := phi * total
 
-	idx := len(cum) // 1-based spec index; default to the last bucket
-	for i, c := range cum {
-		if c >= target {
-			idx = i + 1
-			break
+	// phi == 0 saturates to the lower edge of the lowest POPULATED
+	// bucket and phi == 1 to the upper edge of the highest populated
+	// one — each is the interpolation below evaluated at fraction 0 / 1.
+	// They walk to a populated bucket rather than to an array end
+	// because a bucket array may carry zeros anywhere (the offsets
+	// describe only the leading gap), and an array end can be an
+	// interval no observation fell in.
+	if phi == 0 {
+		return nativeHistogramBucketValue(h, populatedIndex(buckets, false), 0)
+	}
+	if phi == 1 {
+		return nativeHistogramBucketValue(h, populatedIndex(buckets, true), 1)
+	}
+
+	target := phi * total
+	idx := len(buckets) // 1-based; the walks below always reassign it
+	if phi < reverseWalkPhi {
+		for i := 1; i <= len(buckets); i++ {
+			if cum[i] >= target {
+				idx = i
+				break
+			}
+		}
+	} else {
+		rank := (1 - phi) * total
+		for i := 1; i <= len(buckets); i++ {
+			if total-cum[i] < rank {
+				idx = i
+				break
+			}
 		}
 	}
 
-	var prevCum float64
-	if idx > 1 {
-		prevCum = cum[idx-2]
-	}
-	currCum := cum[idx-1]
+	// One fraction formula serves both arms: reference rebases the
+	// remaining rank per direction, but substituting the backward arm's
+	// running count (total - cum[idx-1]) reduces its expression to this
+	// same one, so only the stop INDEX ever differs.
 	var fraction float64
-	if currCum > prevCum {
-		fraction = (target - prevCum) / (currCum - prevCum)
+	if cum[idx] > cum[idx-1] {
+		fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
 	}
+	return nativeHistogramBucketValue(h, idx, fraction)
+}
 
+// populatedIndex returns the 1-based position of the first (last = false)
+// or last (last = true) bucket carrying a non-zero count, in the same
+// concatenated walk order nativeHistogramQuantileValue builds.
+func populatedIndex(buckets []float64, last bool) int {
+	idx := 1
+	for i, b := range buckets {
+		if b == 0 {
+			continue
+		}
+		if !last {
+			return i + 1
+		}
+		idx = i + 1
+	}
+	return idx
+}
+
+// nativeHistogramBucketValue maps a 1-based walk index plus the
+// fraction of that bucket the rank consumed back to an observation
+// value, by the region the index falls in. fraction = 0 is the bucket's
+// low edge (nearest -Inf) and fraction = 1 its high edge.
+func nativeHistogramBucketValue(h *property.NativeHistogram, idx int, fraction float64) float64 {
+	base := math.Pow(2, math.Pow(2, -float64(h.Scale)))
+	nlen := len(h.NegativeBucketCounts)
 	switch {
 	case idx <= nlen:
+		// Negative region: the cum-sum enters from the more-negative
+		// edge, so a larger fraction means a value closer to zero.
 		return -math.Pow(base, float64(h.NegativeOffset)+float64(nlen-idx)+1-fraction)
 	case idx == nlen+1:
+		// Zero bucket, a point at 0 (ZeroThreshold is always 0 here).
 		return 0
 	default:
-		k := idx - nlen - 2
-		return math.Pow(base, float64(h.PositiveOffset)+float64(k)+fraction)
+		return math.Pow(base, float64(h.PositiveOffset)+float64(idx-nlen-2)+fraction)
 	}
 }
 
