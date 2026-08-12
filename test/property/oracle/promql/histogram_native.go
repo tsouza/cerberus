@@ -19,8 +19,10 @@ import (
 // handles rate()/sum by(...)-wrapped arguments via a scale-fold merge
 // algorithm. This oracle only covers the bare-selector shape (the
 // argument is a plain VectorSelector, one histogram sample per
-// series) — the merge path is a documented gap, not silently dropped
-// data.
+// series). Rows arriving without a Histogram payload — which is what
+// the oracle's aggregation path produces — route to the classic
+// le-bucket oracle and fail loudly there rather than being silently
+// dropped. Teaching the oracle the merge is tracked in #2063.
 func nativeHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) []VectorRow {
 	out := make([]VectorRow, 0, len(rows))
 	for _, r := range rows {
@@ -73,6 +75,16 @@ const reverseWalkPhi = 0.5
 // ZeroThreshold is always 0 in cerberus (the default OTel-CH DDL
 // doesn't persist it), so the zero-bucket region always evaluates to
 // exactly 0.
+//
+// phi == 0 and phi == 1 are in-domain and saturate to the LOWEST and
+// HIGHEST edge the histogram actually observed — the lower edge of the
+// lowest populated bucket and the upper edge of the highest populated
+// one. Populated, not outermost: reference Prometheus's rank walk
+// skips zero-count buckets outright (promql/quantile.go's
+// HistogramQuantile: `if bucket.Count == 0 { continue }`), and a bucket
+// array may carry zeros anywhere, since the offsets describe only the
+// leading gap. Answering from an array end would report the edge of an
+// interval no observation ever fell in.
 func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) float64 {
 	if phi < 0 {
 		return math.Inf(-1)
