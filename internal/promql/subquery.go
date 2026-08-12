@@ -1572,6 +1572,30 @@ func lowerSubqueryOverAbsent(
 	if ctx.rangeMode() {
 		gridStart = ctx.start.Add(-sub.Range)
 	}
+	gridEnd := ctx.end
+
+	// The SUBQUERY's own `offset` shifts WHICH instants it evaluates, so
+	// the whole anchor grid moves back with it — and the emitted anchor
+	// timestamps move too, because a subquery's samples ARE its evaluation
+	// instants. This mirrors subqueryGridCtx, which shifts the grid the
+	// same way for every other subquery inner.
+	//
+	// It deliberately does NOT ride chplan.AbsentOverTime.Offset, even
+	// though the node has that field. That field carries the opposite
+	// output contract: its emitter shifts the internal grid but adds the
+	// offset back on the OUTPUT timestamp (chsql's absentGridAnchorFrag),
+	// so `absent_over_time(v[5m] offset 10m)` reports at the request's own
+	// anchors. That is right for a range-vector function over an
+	// offset-carrying selector and wrong here, where an enclosing reducer
+	// selects inner anchors BY their timestamps and already applies the
+	// same offset to its own window — using both applies the shift twice
+	// and the two anchor ranges come out disjoint (empty result).
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	gridStart = gridStart.Add(-anchor.Offset)
+	gridEnd = gridEnd.Add(-anchor.Offset)
 
 	matrixShape := func(inner chplan.Node) chplan.Node {
 		return &chplan.Project{
@@ -1602,7 +1626,7 @@ func lowerSubqueryOverAbsent(
 				SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
 				Range:            subqueryStalenessLookback,
 				Start:            gridStart.UTC(),
-				End:              ctx.end.UTC(),
+				End:              gridEnd.UTC(),
 				Step:             step,
 				TimestampColumn:  s.TimestampColumn,
 				ValueColumn:      s.ValueColumn,
@@ -1614,7 +1638,7 @@ func lowerSubqueryOverAbsent(
 
 	gridCtx := ctx
 	gridCtx.start = gridStart.UTC()
-	gridCtx.end = ctx.end.UTC()
+	gridCtx.end = gridEnd.UTC()
 	gridCtx.step = step
 	inner, err := lowerAbsent(call, s, gridCtx)
 	if err != nil {
