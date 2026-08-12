@@ -195,9 +195,15 @@ spec-chdb:
 # query_log.type Enum8 resolution probe (querylogenum_chdb_test.go) actually
 # RUNS: the corpus reconciler's terminal-row predicate is only correct because
 # of how a real engine resolves a name against an Enum8, and no shape assertion
-# over the emitted SQL can prove that.
+# over the emitted SQL can prove that. Includes ./internal/chsql/... so the
+# emitter's OWN chDB round-trip suite runs on a PR: it had never executed in
+# CI at all — `chdb-build` is compile-only by design and the mutation lane
+# builds untagged — so a cross-test interaction that failed 100% of the time
+# on a developer's laptop sat on `main` unseen (#2074). The suite is the only
+# layer that executes emitted SQL against a real engine from inside the
+# emitter package, where the unexported emitter entry points are reachable.
 test-chdb:
-    go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle).
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's

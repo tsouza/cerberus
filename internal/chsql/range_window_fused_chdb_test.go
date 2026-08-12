@@ -34,34 +34,28 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/chdb-io/chdb-go/chdb/driver" // registers the "chdb" sql driver
-
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 )
 
 const fusedDiffTable = "otel_metrics_sum"
 
-const fusedDiffDDL = `CREATE TABLE ` + fusedDiffTable + ` (
-  Attributes Map(String, String),
-  TimeUnix DateTime64(9),
-  Value Float64
-) ENGINE = MergeTree ORDER BY (Attributes, TimeUnix);`
-
-// fusedDiffOpenDB returns a chDB session seeded with a monotone counter per
-// series. `scrape` deliberately does NOT divide the subquery step used by the
-// cases, so window edges land between samples and the extrapolation arithmetic
-// (durationToStart / durationToEnd clamps) is exercised rather than skipped.
+// fusedDiffOpenDB returns an isolated chDB database seeded with a monotone
+// counter per series. `scrape` deliberately does NOT divide the subquery step
+// used by the cases, so window edges land between samples and the
+// extrapolation arithmetic (durationToStart / durationToEnd clamps) is
+// exercised rather than skipped.
+//
+// The table carries the full MetricsSeedDDL column set even though this
+// differential drives chplan directly and reads only Attributes / TimeUnix /
+// Value. A hand-rolled three-column shape under a name in the schema's metric
+// family is what #2074 was: a selector elsewhere fans over
+// `merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')`, and a
+// truncated arm makes that fan-out unresolvable.
 func fusedDiffOpenDB(t *testing.T, seedStart time.Time, scrape time.Duration, nSamples int) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("chdb", "")
-	if err != nil {
-		t.Fatalf("open chdb: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("DROP TABLE IF EXISTS " + fusedDiffTable); err != nil {
-		t.Fatalf("drop table: %v", err)
-	}
-	if _, err := db.Exec(fusedDiffDDL); err != nil {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(chsqltest.MetricsSeedDDL(fusedDiffTable)); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	rows := make([]string, 0, nSamples*2)
@@ -79,7 +73,11 @@ func fusedDiffOpenDB(t *testing.T, seedStart time.Time, scrape time.Duration, nS
 			))
 		}
 	}
-	if _, err := db.Exec("INSERT INTO " + fusedDiffTable + " VALUES " + strings.Join(rows, ",")); err != nil {
+	// Explicit column list: the shared seed shape has columns this differential
+	// never reads, and MetricName / ResourceAttributes / ServiceName take their
+	// defaults.
+	insert := "INSERT INTO " + fusedDiffTable + " (Attributes, TimeUnix, Value) VALUES "
+	if _, err := db.Exec(insert + strings.Join(rows, ",")); err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}
 	return db
