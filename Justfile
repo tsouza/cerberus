@@ -1716,7 +1716,7 @@ MIGRATION_TIER1_ARCHETYPES := "three-signal kube-prometheus-stack"
 # quietly shorter one. 200 lines carries a boot failure's stack or a Grafana
 # provisioning rejection while keeping ten services readable in a job log.
 MIGRATION_TIER1_SERVICES := "clickhouse otel-collector prometheus loki tempo cerberus"
-MIGRATION_TIER2_SERVICES := MIGRATION_TIER1_SERVICES + " grafana relay-prom otel-collector-writeback dead-end-receiver"
+MIGRATION_TIER2_SERVICES := MIGRATION_TIER1_SERVICES + " grafana relay-prom otel-collector-writeback dead-end-receiver" + " incumbent-ruler incumbent-alertmanager incumbent-dead-end-receiver"
 MIGRATION_LOG_TAIL := "200"
 
 # Archetypes sharing one live stack are kept apart by their IDENTITIES, not by

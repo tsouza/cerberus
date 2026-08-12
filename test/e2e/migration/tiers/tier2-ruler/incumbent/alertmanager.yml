@@ -1,0 +1,28 @@
+# The INCUMBENT ruler's Alertmanager (Layer 14, Tier 2).
+#
+# One catch-all route into one webhook receiver — the incumbent's own dead-end
+# sink, never the shadow's. "Computes, never pages" holds on this leg exactly
+# as it does on the other: nothing here forwards anywhere real.
+#
+# The timers mirror the shadow's notification policy
+# (../grafana/alerting/notification-policies.yaml) value for value. That is
+# load-bearing rather than tidy: MIG-18 compares WHEN each ruler's edges
+# landed, and a dispatcher holding one stream back longer than the other would
+# inject a delivery difference into a comparison that is supposed to be about
+# the two rulers' evaluation. `repeat_interval` stays long for the same reason
+# it does there — a re-notification of an unchanged group would add edges to
+# one stream that the other has no counterpart for.
+route:
+  receiver: incumbent-dead-end
+  group_by: ["alertname"]
+  group_wait: 5s
+  group_interval: 10s
+  repeat_interval: 4h
+
+receivers:
+  - name: incumbent-dead-end
+    webhook_configs:
+      - url: http://incumbent-dead-end-receiver:8090/webhook
+        # Both legs must emit a resolve edge, or MIG-18's resolve half would
+        # diff a stream that has one against a stream that never sends one.
+        send_resolved: true

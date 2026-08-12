@@ -38,22 +38,15 @@ import (
 //     alert instance the firing edge opened, at an evaluation that could have
 //     seen the clearing.
 //
-// What it does NOT assert, and why: MIG-18's story ultimately wants alert
-// firing PARITY — the eval-interval-quantized diff of an INCUMBENT ruler's
-// notification stream against the shadow's, and an MWMBR SLO burn-rate delta
-// held at zero across a full bake window. Both need a second, genuinely
-// independent ruler with its own dead-end Alertmanager (the story's own
-// fixture line in docs/migration-testing.md section 6: "Tier-2 dual rulers +
-// dead-end Alertmanagers"), and an MWMBR rule fixture provisioned on both
-// sides. This substrate stands up ONE ruler and ONE receiver, so there is no
-// second stream to diff — one ruler diffed against itself is definitionally
-// clean and would prove nothing.
+// The incumbent-VERSUS-shadow diff those edges feed lives in tier2_parity.go:
+// the Tier-2 substrate now stands up a second, genuinely independent ruler
+// (reference Prometheus, its own Alertmanager, its own dead-end receiver) and
+// an MWMBR rule pair provisioned on both sides, so the comparator below is
+// driven against two real streams rather than being unit-tested in isolation.
 //
-// The comparator for that future diff is nonetheless real, pure and
-// unit-tested here and now — QuantizeToEvalInterval / DiffAlertStreams /
-// BakeWindowHoldsZero, pinned by tier2_alerting_test.go — so landing the
-// incumbent leg is a substrate change, not an algorithm change. Section 6's
-// MIG-18 row records exactly that split.
+// The pieces this file owns are the pure ones: QuantizeToEvalInterval,
+// DiffAlertStreams, ProjectAlertLabels, SkewBoundHolds and BakeWindowHoldsZero,
+// each pinned by tier2_alerting_test.go and tier2_parity_test.go.
 
 // AlertEvent is one fire or resolve edge from a ruler's notification stream.
 type AlertEvent struct {
@@ -203,6 +196,130 @@ func BakeWindowHoldsZero(samples []MWMBRSample, tolerance float64) error {
 		}
 	}
 	return nil
+}
+
+// ParityLabelKeys is the closed set of label keys two rulers' notification
+// streams are compared on: the alert's name plus the routing keys an
+// operator's existing Alertmanager silences and routes are actually written
+// against. MIG-18's fixture provisions every one of them on BOTH sides.
+//
+// This is a positive, closed list of what identity MEANS across two
+// implementations — not a list of differences to forgive. The distinction is
+// load-bearing, because the alternative reading would make it an allow-list:
+//
+//   - It cannot hide a divergence. ProjectAlertLabels FAILS on an event that
+//     is missing any key, so a ruler that dropped `severity` or `slo` breaks
+//     the run rather than quietly comparing a smaller identity. A wrong VALUE
+//     on any key changes the identity and lands as a false positive plus a
+//     false negative.
+//   - What it excludes is not a disagreement at all. Grafana stamps
+//     `grafana_folder` (and, on some rule shapes, `datasource_uid` /
+//     `ref_id`) onto every instance it emits; those name which ruler produced
+//     the notification, which is the one thing the two legs are GUARANTEED to
+//     differ on and the one thing the diff is not about. Comparing them would
+//     make every identity mismatch on both sides at once, so the diff would
+//     be uniformly dirty and could never report a real divergence — a check
+//     that always fails is as useless as one that always passes.
+var ParityLabelKeys = []string{"alertname", mig18SeverityKey, mwmbrBurnRateKey, mwmbrSLOKey}
+
+// ProjectAlertLabels narrows every event's label set to keys, so two rulers'
+// streams are compared on the identity they both declare rather than on the
+// substrate labels each adds about itself. See ParityLabelKeys.
+//
+// A missing key is an error rather than an empty value: an event that never
+// carried `severity` would otherwise project to the same identity as one that
+// carried it, and a ruler silently dropping a routing key — which is exactly
+// the breakage that re-routes somebody's page — would read as agreement.
+func ProjectAlertLabels(events []AlertEvent, keys []string) ([]AlertEvent, error) {
+	out := make([]AlertEvent, 0, len(events))
+	for _, e := range events {
+		projected := make(map[string]string, len(keys))
+		for _, k := range keys {
+			v, ok := e.Labels[k]
+			if !ok {
+				return nil, fmt.Errorf(
+					"the %s edge for %q carries no %q label, so it cannot be compared against the other ruler's "+
+						"stream on that key; it carries %v",
+					e.Status, e.RuleName, k, e.Labels,
+				)
+			}
+			projected[k] = v
+		}
+		e.Labels = projected
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// SkewBoundHolds asserts that every alert edge BOTH rulers emitted landed
+// within bound of its counterpart.
+//
+// This is the assertion QuantizeToEvalInterval cannot make on its own, and the
+// two are complements rather than alternatives. Quantization answers "did they
+// fire at the same evaluation", which is the right question but a lossy
+// measurement: two rulers firing 2s apart still straddle a bucket boundary
+// roughly as often as not, because Prometheus offsets a group's evaluation by
+// hash(group, file) % interval and Grafana ticks epoch-aligned — a phase
+// difference the substrate cannot remove (prom v3.11.3 has no
+// `align_evaluation_time_on_interval`). So DiffAlertStreams owns the verdict
+// that matters and cannot be blamed on scheduling — did each ruler fire the
+// same alerts at all — and this owns the magnitude, which quantization throws
+// away: a shadow ruler firing four minutes late is a real defect that
+// DiffAlertStreams would file indistinguishably from a 2s phase difference.
+//
+// Absence is deliberately NOT this function's verdict. An identity present on
+// one side only is a false positive or a false negative, which DiffAlertStreams
+// already counts; reporting it here too would double-count one defect. What
+// this refuses is a vacuous pass: if no identity appears on both sides there is
+// no skew to bound, and a silent success would claim a comparison that never
+// happened.
+func SkewBoundHolds(incumbent, shadow []AlertEvent, bound time.Duration) error {
+	incBy, shadowBy := earliestByKey(incumbent), earliestByKey(shadow)
+	var compared int
+	for key, incAt := range incBy {
+		shAt, ok := shadowBy[key]
+		if !ok {
+			continue
+		}
+		compared++
+		if skew := absDuration(incAt.Sub(shAt)); skew > bound {
+			return fmt.Errorf(
+				"the incumbent ruler emitted %s at %s and the shadow ruler at %s — %s apart, beyond the %s bound "+
+					"two rulers on one evaluation cadence can differ by; that is a real scheduling or evaluation "+
+					"divergence, not the sub-interval phase difference between two independent schedulers",
+				key, incAt, shAt, skew, bound,
+			)
+		}
+	}
+	if compared == 0 {
+		return errors.New(
+			"no alert edge was emitted by both rulers, so no skew was measured; a bound asserted over an empty " +
+				"set of pairs proves nothing about either ruler",
+		)
+	}
+	return nil
+}
+
+// earliestByKey reduces a stream to the FIRST instant each alert edge landed
+// at. A ruler re-notifies an unchanged alert, and Alertmanager re-delivers on
+// its own timer, so one identity can appear several times; the opening edge is
+// the one the two sides' schedules are comparable on.
+func earliestByKey(events []AlertEvent) map[string]time.Time {
+	out := make(map[string]time.Time, len(events))
+	for _, e := range events {
+		if at, ok := out[alertEventKey(e)]; !ok || e.At.Before(at) {
+			out[alertEventKey(e)] = e.At
+		}
+	}
+	return out
+}
+
+// absDuration is |d|.
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // grafanaWebhookAlert is the subset of Grafana's (Alertmanager-compatible)

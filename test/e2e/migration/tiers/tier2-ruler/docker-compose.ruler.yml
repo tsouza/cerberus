@@ -46,13 +46,74 @@
 #                            selectable through cerberus with no further
 #                            wiring.
 #
+# === The INCUMBENT leg (MIG-18 / MIG-19 parity) ===
+#
+# Everything above is the SHADOW: a ruler whose queries reach cerberus. A
+# migration-parity story is about two rulers, and a stream diffed against
+# itself is clean by construction, so the three services below stand up the
+# other half — the ruler an operator is migrating AWAY from, reading its own
+# storage, dispatching through its own Alertmanager, into its own sink:
+#
+#   incumbent-ruler          Reference Prometheus evaluating the SAME rule set
+#                            as the shadow (incumbent-rules.yml mirrors the
+#                            MWMBR groups in grafana/alerting/rules.yaml)
+#                            against its OWN TSDB. It scrapes nothing: the
+#                            harness remote-writes it the identical samples it
+#                            writes to ClickHouse, rendered from ONE in-memory
+#                            fixture, so the two rulers disagree only where an
+#                            engine disagrees — never because they read
+#                            different data.
+#   incumbent-alertmanager   The incumbent's own dispatcher. Deliberately a
+#                            REAL Alertmanager rather than more Grafana: the
+#                            point of the diff is that the two legs share no
+#                            code, so a systematic shadow-side defect cannot
+#                            cancel out.
+#   incumbent-dead-end-receiver
+#                            The incumbent's own sink — a second instance of
+#                            the SAME dead-end receiver image, never the same
+#                            container. One receiver holding both streams
+#                            would interleave them into a single capture list
+#                            with nothing in the payload naming which ruler
+#                            emitted an edge, and the diff would then compare a
+#                            stream against itself with extra steps.
+#
 # Port band: 27400-27500, the next contiguous unclaimed band after Tier-1's
 # own 27000-27400 (see docker-compose.dual.yml's port-band comment).
+# test/regression/migration_tier2_test.go's TestMigrationTier2PortBand pins
+# every published port here inside it, and pins it disjoint from Tier-1's.
 #
 # Usage:
 #   just migration-tier2-up
 #   just migration-tier2-run
 #   just migration-tier2-down
+
+# The dead-end receiver is instantiated TWICE — once per ruler — from one
+# definition, so the shadow's sink and the incumbent's sink cannot drift into
+# behaving differently and turn a real divergence into a substrate artifact.
+# Only the published port differs, and each instance names its own.
+x-dead-end-receiver: &dead-end-receiver
+  image: cerberus-migration-tier2:dead-end-receiver${COMPOSE_PROJECT_SUFFIX:-}
+  pull_policy: build
+  build:
+    # Also resolved against tier1-dual's directory (see the grafana
+    # volumes comment below), which is why this is five `../` rather than
+    # this file's own depth from the repo root — tier1-dual and
+    # tier2-ruler sit at the same depth under tiers/, so the count happens
+    # to be identical either way. Don't "simplify" this without re-checking
+    # docker inspect if tier2-ruler ever moves to a different depth.
+    context: ../../../../..
+    dockerfile: test/e2e/migration/tiers/tier2-ruler/receiver/Dockerfile
+    args:
+      # Mirror-first base image, default upstream. See lib/mirror.mjs.
+      GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
+  healthcheck:
+    # Distroless image: no shell, no wget. The binary's own -healthcheck
+    # mode is the liveness signal, same posture as cerberus's --version
+    # healthcheck in docker-compose.dual.yml.
+    test: ["CMD", "/dead-end-receiver", "-healthcheck"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
 
 services:
   grafana:
@@ -109,31 +170,11 @@ services:
       timeout: 2s
       retries: 24
 
+  # The SHADOW ruler's sink: Grafana's one contact point.
   dead-end-receiver:
-    image: cerberus-migration-tier2:dead-end-receiver${COMPOSE_PROJECT_SUFFIX:-}
-    pull_policy: build
-    build:
-      # Also resolved against tier1-dual's directory (see the grafana
-      # volumes comment above), which is why this is five `../` rather than
-      # this file's own depth from the repo root — tier1-dual and
-      # tier2-ruler sit at the same depth under tiers/, so the count happens
-      # to be identical either way. Don't "simplify" this without re-checking
-      # docker inspect if tier2-ruler ever moves to a different depth.
-      context: ../../../../..
-      dockerfile: test/e2e/migration/tiers/tier2-ruler/receiver/Dockerfile
-      args:
-        # Mirror-first base image, default upstream. See lib/mirror.mjs.
-        GO_IMAGE: "${GO_IMAGE:-golang:1.26}"
+    <<: *dead-end-receiver
     ports:
       - "27450:8090"
-    healthcheck:
-      # Distroless image: no shell, no wget. The binary's own -healthcheck
-      # mode is the liveness signal, same posture as cerberus's --version
-      # healthcheck in docker-compose.dual.yml.
-      test: ["CMD", "/dead-end-receiver", "-healthcheck"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
 
   # === MIG-09/MIG-13/MIG-19 write-back landing leg ===
   #
@@ -158,6 +199,75 @@ services:
       # (no shell, no wget, no nc).
       cerberus:
         condition: service_healthy
+
+  # === The incumbent leg (MIG-18 / MIG-19 parity) ===
+  #
+  # See this file's header for what each of the three is and why the diff
+  # needs them to share no code with the shadow leg.
+
+  # The incumbent's own sink. A second instance of the dead-end receiver, so
+  # the incumbent's notification stream is captured separately from the
+  # shadow's rather than interleaved with it.
+  incumbent-dead-end-receiver:
+    <<: *dead-end-receiver
+    ports:
+      - "27451:8090"
+
+  incumbent-alertmanager:
+    # Pinned alongside prom/prometheus above: Alertmanager's webhook payload
+    # is the shape steps/tier2_alerting.go's ParseGrafanaWebhookEvents already
+    # decodes (Grafana's notifier is Alertmanager-compatible by construction),
+    # so both streams parse through ONE decoder and a parse difference cannot
+    # masquerade as a parity difference.
+    image: prom/alertmanager:v0.28.1
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own — see the grafana service's volumes comment above for why.
+      - ../tier2-ruler/incumbent/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "27470:9093"
+    depends_on:
+      incumbent-dead-end-receiver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/ready || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  incumbent-ruler:
+    # The same reference-Prometheus tag tier1-dual's `prometheus` and this
+    # file's `relay-prom` run, held in lock-step with go.mod by
+    # test/regression/fork_version_skew_test.go — an incumbent on a different
+    # engine version would make every diff argue about which version was
+    # right rather than about cerberus.
+    image: prom/prometheus:v3.11.3
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # The harness writes this instance the SAME samples it writes to
+      # ClickHouse. Nothing scrapes: a scrape would give the two rulers
+      # different inputs and the diff would measure the seeder, not cerberus.
+      - "--web.enable-remote-write-receiver"
+      - "--web.listen-address=:9090"
+    volumes:
+      # Relative to tier1-dual/docker-compose.dual.yml's directory, NOT this
+      # file's own — see the grafana service's volumes comment above for why.
+      - ../tier2-ruler/incumbent/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../tier2-ruler/incumbent/incumbent-rules.yml:/etc/prometheus/incumbent-rules.yml:ro
+    ports:
+      - "27460:9090"
+    depends_on:
+      incumbent-alertmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
 
   relay-prom:
     image: prom/prometheus:v3.11.3

@@ -1,0 +1,51 @@
+# Reference-Prometheus config for the Tier-2 INCUMBENT ruler (Layer 14) — the
+# ruler an operator is migrating away from, standing opposite the Grafana
+# shadow ruler so MIG-18's notification-stream diff and MIG-19's recorded-
+# series diff have two independently scheduled legs to compare.
+#
+# This instance holds NO scrape config on purpose. The harness remote-writes
+# it the identical samples it writes to ClickHouse, both rendered from ONE
+# in-memory fixture (test/e2e/migration/seed's Fixture -> PromSeries), so the
+# only thing the two rulers can disagree about is how their engines evaluate
+# the same rule over the same data. A scrape job would give each side its own
+# sample timestamps and the diff would measure the seeder instead.
+global:
+  # The shared evaluation cadence both rulers run at: the shadow's rule groups
+  # declare `interval: 10s` (grafana/alerting/rules.yaml) and every group in
+  # incumbent-rules.yml declares the same. It is the quantum
+  # steps/tier2_alerting.go's QuantizeToEvalInterval floors fire/resolve edges
+  # to — "the same evaluation" is only a meaningful predicate when both rulers
+  # tick at one interval.
+  #
+  # The two grids are the same LENGTH but not the same PHASE, and cannot be
+  # made so: Prometheus offsets a group's evaluation by hash(group, file) %
+  # interval, and v3.11.3 has no `align_evaluation_time_on_interval` knob to
+  # turn that off (confirmed empirically — promtool rejects the field). That
+  # residual sub-interval phase difference is exactly the skew section 5 of
+  # docs/migration-testing.md calls "not a cerberus artifact", and it is why
+  # MIG-18 asserts a MEASURED skew bound rather than pretending two
+  # independent schedulers tick together.
+  evaluation_interval: 10s
+  # Nothing is scraped; this only stops Prometheus defaulting to a shorter
+  # timer it would never use.
+  scrape_interval: 1m
+
+storage:
+  tsdb:
+    # The harness seeds historical windows, and several Tier-2 scenarios seed
+    # against one long-lived stack in whatever order the suite runs them — so
+    # a later scenario's window can open before an earlier one's newest
+    # sample. Without an out-of-order window Prometheus would reject those
+    # appends and the incumbent leg would silently hold less data than
+    # ClickHouse, which reads as a parity divergence rather than as the
+    # ingestion refusal it is. The window comfortably exceeds the longest
+    # span any Tier-2 scenario seeds.
+    out_of_order_time_window: 1h
+
+rule_files:
+  - /etc/prometheus/incumbent-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["incumbent-alertmanager:9093"]
