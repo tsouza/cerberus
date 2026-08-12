@@ -2,28 +2,33 @@ package gen
 
 import (
 	"math"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"pgregory.net/rapid"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/property"
 )
 
 // TestExpHistogramMetricNamesRoute pins the generator's metric-name
-// pool to the routing rule that makes the whole native-histogram
-// property test mean anything.
+// pool to the routing rule the whole native-histogram property test
+// depends on.
 //
 // If a name stops matching [schema.Metrics.IsExpHistogramMetric],
-// cerberus reads the classic-histogram table instead and answers every
-// query with zero series — while the oracle, which reads the in-memory
-// mirror and never consults the suffix, also answers zero rows for a
-// histogram function over a metric it holds no histogram samples for.
-// Both sides would return nothing, the comparator would find no drift,
-// and TestPromQL_Property_NativeHistogram would pass while testing
-// nothing. This test fails loudly instead.
+// cerberus reads the classic-histogram table instead of the
+// exponential one. The differential does NOT go quiet on that — the
+// oracle reads the in-memory mirror and never consults the suffix, so
+// it still answers rows while cerberus answers none or fails on a
+// missing table, and the comparator reports the mismatch. This test
+// exists to turn that into a one-line diagnosis in the generator's own
+// package rather than a puzzling table-not-found error surfacing from
+// a shrunk property counterexample.
 func TestExpHistogramMetricNamesRoute(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	if len(ExpHistogramMetricNamePool) == 0 {
@@ -215,44 +220,93 @@ func TestRenderExpHistogramRowHandDerived(t *testing.T) {
 	}
 }
 
-// TestExpHistogramQueryShapes asserts every generated query is one of
-// the seven native-histogram functions over a bare selector, and that
-// the whole accept-set is reachable — a generator that could only ever
-// draw histogram_count would leave six functions unexercised while
-// still passing the differential.
-func TestExpHistogramQueryShapes(t *testing.T) {
-	wantFns := map[string]bool{
-		"histogram_count":    false,
-		"histogram_sum":      false,
-		"histogram_avg":      false,
-		"histogram_stddev":   false,
-		"histogram_stdvar":   false,
-		"histogram_quantile": false,
-		"histogram_fraction": false,
+// expHistogramAcceptSet is the seven native-histogram functions the
+// query generator may draw. Declared here rather than inferred from a
+// sweep so the accept-set assertions below are deterministic.
+var expHistogramAcceptSet = []string{
+	"histogram_count",
+	"histogram_sum",
+	"histogram_avg",
+	"histogram_stddev",
+	"histogram_stdvar",
+	"histogram_quantile",
+	"histogram_fraction",
+}
+
+// TestExpHistogramValueFnVocabulary pins the generator's function
+// vocabulary against the accept-set, deterministically.
+//
+// A generator that silently lost a function — a typo in the pool, or a
+// name PromQL does not define — would leave that function unexercised
+// while the differential still reported green. Asserting reachability
+// from a random sweep instead would make this test flaky: a specific
+// value function is drawn with probability 1/15 per query, so it is
+// missed across 100 draws roughly once in a thousand runs. The
+// vocabulary is checked exactly, and the three-way shape draw that
+// selects between the pools is left to the sweep below, where a miss
+// has probability (2/3)^100.
+func TestExpHistogramValueFnVocabulary(t *testing.T) {
+	for _, fn := range expHistogramValueFns {
+		if parser.Functions[fn] == nil {
+			t.Errorf("value-function pool names %q, which PromQL does not define", fn)
+		}
+	}
+	for _, fn := range []string{"histogram_quantile", "histogram_fraction"} {
+		if parser.Functions[fn] == nil {
+			t.Errorf("PromQL does not define %q", fn)
+		}
 	}
 
+	got := append(append([]string(nil), expHistogramValueFns...), "histogram_quantile", "histogram_fraction")
+	sort.Strings(got)
+	want := append([]string(nil), expHistogramAcceptSet...)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("generator vocabulary = %v, want %v", got, want)
+	}
+}
+
+// TestExpHistogramQueryShapes asserts every generated query is one of
+// the seven native-histogram functions applied to a bare selector, and
+// that all three call shapes are reachable.
+func TestExpHistogramQueryShapes(t *testing.T) {
+	accept := make(map[string]struct{}, len(expHistogramAcceptSet))
+	for _, fn := range expHistogramAcceptSet {
+		accept[fn] = struct{}{}
+	}
+
+	var sawValueFn, sawQuantile, sawFraction bool
 	rapid.Check(t, func(rt *rapid.T) {
 		d := ExpHistogramDataset().Draw(rt, "dataset")
 		q := ExpHistogramQuery(d).Draw(rt, "query")
 		if q.String == "" {
 			rt.Fatal("generated an empty query")
 		}
-		fn, _, ok := strings.Cut(q.String, "(")
+		fn, rest, ok := strings.Cut(q.String, "(")
 		if !ok {
 			rt.Fatalf("query %q is not a function call", q.String)
 		}
-		seen, known := wantFns[fn]
-		if !known {
+		if _, known := accept[fn]; !known {
 			rt.Fatalf("query %q uses function %q outside the accept-set", q.String, fn)
 		}
-		if !seen {
-			wantFns[fn] = true
+		// The histogram argument is always a bare selector, which is
+		// cerberus's own accept-set for these functions: no nested call
+		// may appear after the scalar arguments.
+		if strings.Contains(rest, "(") {
+			rt.Fatalf("query %q wraps its histogram argument in a call; only a bare selector is supported", q.String)
+		}
+		switch fn {
+		case "histogram_quantile":
+			sawQuantile = true
+		case "histogram_fraction":
+			sawFraction = true
+		default:
+			sawValueFn = true
 		}
 	})
 
-	for fn, seen := range wantFns {
-		if !seen {
-			t.Errorf("no generated query ever used %s: that function is unexercised by the differential", fn)
-		}
+	if !sawValueFn || !sawQuantile || !sawFraction {
+		t.Errorf("not every call shape was drawn: valueFn=%v quantile=%v fraction=%v",
+			sawValueFn, sawQuantile, sawFraction)
 	}
 }

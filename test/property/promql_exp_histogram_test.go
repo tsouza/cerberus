@@ -23,21 +23,37 @@
 //     → emit → execute, where the whole bucket walk is ClickHouse
 //     array arithmetic emitted by internal/chsql.
 //
-// The two implementations therefore share nothing but the seed rows and
-// the PromQL spec, which is what makes an agreement between them
-// evidence. The arithmetic is genuinely independent: a Go loop over
-// []uint64 on one side, an arrayCumSum / arrayFirstIndex expression
-// tree on the other.
+// The two implementations share no code: a Go loop over []uint64 on one
+// side, an arrayCumSum / arrayFirstIndex expression tree on the other.
+// Their INDEPENDENCE is real but not total, and the limit is worth
+// stating plainly. The oracle's bucket walk was written against the
+// same algorithm cerberus emits, so where both are wrong in the same
+// way this test agrees rather than reports. One such class is known and
+// tracked in #2066 (cerberus and this oracle both walk the cumulative
+// array forward for every phi; reference Prometheus walks backward for
+// phi >= 0.5, which differs at an exact rank tie). Agreement here is
+// therefore strong evidence against transcription and arithmetic
+// errors, and no evidence at all about a shared misreading of the spec
+// — that is the parity layer's job, below.
 //
 // What this catches that the layers around it do not:
 //
-//   - test/spec/promql/histogram_*_exp.txtar pins the emitted SQL and a
-//     chDB roundtrip for a handful of hand-written seeds. It cannot
-//     tell a wrong-but-stable answer from a right one, because the
-//     expected rows are regenerated from cerberus itself.
+//   - The `-- parity --` fixtures under test/spec/promql/ are checked
+//     against Prometheus's OWN engine (test/spec/parity_native_histogram_chdb.go),
+//     so they arbitrate the spec — but only on the handful of seeds
+//     someone thought to write down. Two of them,
+//     edge_hq_native_positive_only_p0 and edge_hq_native_trailing_empty_p1,
+//     are what established the empty-bucket saturation rule this
+//     oracle's phi == 0 / phi == 1 edges follow.
+//   - The non-parity txtar fixtures pin emitted SQL and a chDB
+//     roundtrip, with expected rows regenerated from cerberus, so they
+//     catch drift rather than a wrong-but-stable answer.
 //   - test/integration/promql's cat13 runs the same oracle over two
-//     FIXED seeds. It pins the algorithm at two points; this test
-//     sweeps the input space around them.
+//     FIXED seeds.
+//
+// This test's contribution is breadth: it sweeps the input space those
+// fixed points sit in, which is where transcription errors in the
+// bucket walk actually live.
 //
 // Reproduce a CI failure with the seed from the log:
 //

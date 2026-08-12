@@ -111,6 +111,16 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 		return bucketEdge(h, base, nlen, lastPopulated(counts), 1)
 	}
 
+	// Interior phi walks the cumulative array FORWARD, which is what
+	// cerberus emits (arrayFirstIndex over cum). Reference Prometheus
+	// instead walks BACKWARD for phi >= 0.5, taking rank as
+	// (1-phi)*total, and the two directions disagree at an exact rank
+	// tie whose boundary is followed by a skipped empty bucket — e.g.
+	// negative [2] / zero 0 / positive [2] at phi 0.5, where the
+	// reference answers +1 and a forward walk answers -1. This oracle
+	// deliberately mirrors cerberus's direction rather than the
+	// reference, so the differential does not report a divergence this
+	// layer cannot fix; correcting BOTH sides is tracked in #2066.
 	target := phi * total
 
 	idx := len(cum) // 1-based spec index; default to the last bucket

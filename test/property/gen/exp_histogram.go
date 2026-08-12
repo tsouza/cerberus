@@ -188,7 +188,7 @@ func drawNativeHistogram(t *rapid.T, id string) property.NativeHistogram {
 	negOffset := rapid.SampledFrom(ExpHistogramOffsetPool).Draw(t, id+"_negOffset")
 	pos := drawBucketCounts(t, id+"_pos", maxExpHistPositiveBuckets)
 	neg := drawBucketCounts(t, id+"_neg", maxExpHistNegativeBuckets)
-	zero := uint64(rapid.IntRange(0, maxExpHistZeroCount).Draw(t, id+"_zero"))
+	zero := rapid.Uint64Range(0, maxExpHistZeroCount).Draw(t, id+"_zero")
 
 	total := zero + sumBucketCounts(pos) + sumBucketCounts(neg)
 	if total == 0 {
@@ -222,7 +222,7 @@ func drawBucketCounts(t *rapid.T, id string, maxLen int) []uint64 {
 	}
 	out := make([]uint64, 0, n)
 	for i := 0; i < n; i++ {
-		out = append(out, uint64(rapid.IntRange(0, maxExpHistBucketCount).Draw(t, fmt.Sprintf("%s_%d", id, i))))
+		out = append(out, rapid.Uint64Range(0, maxExpHistBucketCount).Draw(t, fmt.Sprintf("%s_%d", id, i)))
 	}
 	return out
 }

@@ -17,14 +17,25 @@ import (
 // interpolate inside a bucket.
 var ExpHistogramPhiPool = []float64{-0.5, 0, 0.1, 0.5, 0.9, 0.99, 1, 1.5}
 
-// ExpHistogramFractionBoundPool is the pool each of
-// histogram_fraction's two bounds is drawn from. Bounds land below,
-// inside and above the bucket range the dataset generator populates,
-// on both sides of zero, so the rank walk is exercised in its
-// positive, zero and negative regions as well as its two saturation
-// clamps. Drawing both bounds from one pool also produces the
-// lower >= upper shape, which is specified to yield exactly 0.
+// ExpHistogramFractionBoundPool is the pool histogram_fraction's two
+// bounds are drawn from. Bounds land below, inside and above the bucket
+// range the dataset generator populates, on both sides of zero, so the
+// rank walk is exercised in its positive, zero and negative regions as
+// well as its two saturation clamps.
 var ExpHistogramFractionBoundPool = []float64{-8, -1.5, -0.25, 0, 0.25, 1.5, 8}
+
+// expHistogramDegenerateFractionRate is how often histogram_fraction's
+// bounds are left in the lower >= upper order, which is specified to
+// yield exactly 0 without consulting a single bucket.
+//
+// That shape needs covering, but it is a constant-answer query: both
+// sides return 0 for free, so it exercises none of the rank walk.
+// Drawing both bounds independently from a 7-value pool would leave
+// 28/49 of fraction queries degenerate — enough dilution to matter — so
+// the bounds are sorted into lower <= upper except one draw in this
+// many. Equal bounds survive the sort and stay degenerate, which keeps
+// the lower == upper boundary itself in the sweep.
+const expHistogramDegenerateFractionRate = 8
 
 // expHistogramValueFns are the native-histogram functions whose only
 // argument is the histogram vector. Each reduces a histogram sample to
@@ -109,6 +120,11 @@ func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher) p
 	default:
 		lower := rapid.SampledFrom(ExpHistogramFractionBoundPool).Draw(t, "expHistFractionLower")
 		upper := rapid.SampledFrom(ExpHistogramFractionBoundPool).Draw(t, "expHistFractionUpper")
+		degenerate := rapid.IntRange(0, expHistogramDegenerateFractionRate-1).
+			Draw(t, "expHistFractionDegenerate") == 0
+		if !degenerate && lower > upper {
+			lower, upper = upper, lower
+		}
 		return &parser.Call{
 			Func: parser.Functions["histogram_fraction"],
 			Args: []parser.Expr{
