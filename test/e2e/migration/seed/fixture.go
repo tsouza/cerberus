@@ -69,11 +69,50 @@ type Declaration struct {
 	// (service, status) counter series, the sample INDEX at which that
 	// series' running total resets to zero before continuing to climb — the
 	// shape rate()/increase() must survive across a real pod restart. The map
-	// key is "<service>|<status>" (restartKeySeparator joins them); a key
-	// naming a combination outside the declared cross join is simply never
-	// looked up. Absent or empty leaves buildCounter's counters purely
-	// monotonic — exactly today's behaviour.
+	// key is "<service>|<status>" (restartKeySeparator joins them). Absent or
+	// empty leaves buildCounter's counters purely monotonic.
+	//
+	// Every key must name a combination the declared cross join actually
+	// produces, and every index must address a real sample; both are rejected
+	// rather than silently ignored. A key that resolves to nothing declares a
+	// reset the fixture never injects, which leaves the corpus query written
+	// against it asserting reset handling over a series that never resets —
+	// coverage that reads as present and proves nothing.
 	Restarts map[string][]int `json:"restarts,omitempty"`
+
+	// ScrapeHealth optionally declares the fixture's `up` series: Prometheus's
+	// own per-target scrape-health gauge, and the handle every staleness query
+	// in a hotspot corpus is written against. Nothing synthesises `up` — on
+	// both sides of the diff it is an ordinary gauge that has to be written to
+	// be queryable — so an archetype that wants target-down semantics
+	// exercised has to declare them here. Absent, the fixture emits no `up` at
+	// all and every archetype that does not declare it is byte-for-byte
+	// unaffected.
+	ScrapeHealth *ScrapeHealth `json:"scrape_health,omitempty"`
+}
+
+// ScrapeHealth declares the two target-down shapes a migration has to survive.
+// They are NOT the same shape and they do not share an expected answer, which
+// is exactly why a corpus needs both:
+//
+//   - Down — the target is still there and still being scraped, but the scrape
+//     FAILED. `up` is present and reports 0. `up == 0` selects precisely those
+//     samples, and the return to 1 afterwards is the resolve edge.
+//   - Stops — the target is GONE. `up` carries no sample at all past that
+//     index, so neither backend holds a value and the expected answer is
+//     governed purely by the instant-selector lookback: the series stays
+//     visible for the lookback delta past its last sample and then disappears.
+//     That is the TSDB stale-marker versus ClickHouse gap model
+//     docs/migration-testing.md section 5 requires cerberus to MATCH rather
+//     than tolerate.
+type ScrapeHealth struct {
+	// Down maps a declared service to the sample indices at which its scrape
+	// failed. A service naming no entry is scraped successfully throughout.
+	Down map[string][]int `json:"down,omitempty"`
+	// Stops maps a declared service to the LAST sample index its target is
+	// scraped at; the series carries no sample after it. A service naming no
+	// entry is scraped for the whole window.
+	Stops map[string]int `json:"stops,omitempty"`
 }
 
 // LoadDeclaration reads and validates an archetype's fixture declaration. A
@@ -139,7 +178,79 @@ func (d Declaration) validate() error {
 	if d.ChurnCardinality < 0 {
 		return fmt.Errorf("churn_cardinality is %d, want a non-negative count", d.ChurnCardinality)
 	}
+	if err := d.validateRestartKeys(); err != nil {
+		return err
+	}
+	return d.validateScrapeHealthServices()
+}
+
+// contains reports whether a declared list holds a value. The lists are three
+// to six entries long, so a linear scan is the whole of it.
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// validateRestartKeys rejects a Restarts key that names a series the declared
+// cross join never produces. Ignoring such a key silently is what turns a
+// declared counter reset into no reset at all while the corpus query written
+// against it keeps passing, which is the failure mode this whole family of
+// declarations exists to make impossible.
+func (d Declaration) validateRestartKeys() error {
+	for key := range d.Restarts {
+		service, status, ok := strings.Cut(key, restartKeySeparator)
+		if !ok {
+			return fmt.Errorf("restarts key %q is not %q-joined; want \"<service>%s<http_status_code>\"",
+				key, restartKeySeparator, restartKeySeparator)
+		}
+		if !contains(d.Services, service) {
+			return fmt.Errorf("restarts key %q names service %q, which is not in services %v", key, service, d.Services)
+		}
+		if !contains(d.StatusCodes, status) {
+			return fmt.Errorf("restarts key %q names status code %q, which is not in http_status_codes %v",
+				key, status, d.StatusCodes)
+		}
+	}
 	return nil
+}
+
+// validateScrapeHealthServices rejects a scrape-health entry naming a service
+// the declaration does not carry, for the same reason: a typo would leave the
+// `up` series uniformly healthy and every staleness query in the corpus
+// comparing two empty answers.
+func (d Declaration) validateScrapeHealthServices() error {
+	if d.ScrapeHealth == nil {
+		return nil
+	}
+	for _, m := range []struct {
+		field    string
+		services []string
+	}{
+		{"scrape_health.down", mapKeys(d.ScrapeHealth.Down)},
+		{"scrape_health.stops", mapKeys(d.ScrapeHealth.Stops)},
+	} {
+		for _, service := range m.services {
+			if !contains(d.Services, service) {
+				return fmt.Errorf("%s names service %q, which is not in services %v", m.field, service, d.Services)
+			}
+		}
+	}
+	return nil
+}
+
+// mapKeys returns a map's keys in sorted order, so a validation failure names
+// the same offending entry on every run.
+func mapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Fixture-window geometry. The fixture's SHAPE is byte-identical on every run;
@@ -503,11 +614,17 @@ func Build(d Declaration, w Window) (Fixture, error) {
 
 	rng := rand.New(rand.NewSource(seedValue)) //nolint:gosec // fixture determinism, not cryptography
 	times := w.SampleTimes()
+	if err := d.validateSampleIndices(len(times)); err != nil {
+		return Fixture{}, err
+	}
 
 	traces := buildTraces(d, w, rng)
 	fixture := Fixture{
-		Window:     w,
-		Gauge:      append(buildGauge(d, times, rng), buildChurn(d, times)...),
+		Window: w,
+		// The scrape-health family lands in the gauge table because that is
+		// what `up` is; appending it last keeps every previously declared
+		// gauge series at the index it already had.
+		Gauge:      append(append(buildGauge(d, times, rng), buildChurn(d, times)...), buildScrapeHealth(d, times)...),
 		Counter:    buildCounter(d, times, rng),
 		Histogram:  buildHistogram(d, times),
 		LogStreams: buildLogStreams(d, times, traces),
@@ -590,11 +707,60 @@ func restartIndices(d Declaration, service, status string) map[int]bool {
 	if !ok {
 		return nil
 	}
+	return indexSet(indices)
+}
+
+// indexSet turns a declared list of sample indices into a membership set. A
+// nil or empty list yields a nil map, and indexing a nil map is safe and
+// always reports false, so an undeclared series stays exactly as it was.
+func indexSet(indices []int) map[int]bool {
+	if len(indices) == 0 {
+		return nil
+	}
 	set := make(map[int]bool, len(indices))
 	for _, idx := range indices {
 		set[idx] = true
 	}
 	return set
+}
+
+// validateSampleIndices rejects every declared sample index that does not
+// address a real sample of the built window. LoadDeclaration cannot do this —
+// how many samples a fixture holds is a property of the WINDOW, not of the
+// declaration — so it runs from Build, where both are in hand. An index past
+// the end would otherwise inject nothing at all, and an injection that does
+// nothing is indistinguishable from coverage right up until it is relied on.
+func (d Declaration) validateSampleIndices(sampleCount int) error {
+	inRange := func(field string, idx int) error {
+		if idx < 0 || idx >= sampleCount {
+			return fmt.Errorf("%s declares sample index %d, but the fixture window holds %d samples (0..%d)",
+				field, idx, sampleCount, sampleCount-1)
+		}
+		return nil
+	}
+	for _, key := range mapKeys(d.Restarts) {
+		for _, idx := range d.Restarts[key] {
+			if err := inRange(fmt.Sprintf("restarts[%q]", key), idx); err != nil {
+				return err
+			}
+		}
+	}
+	if d.ScrapeHealth == nil {
+		return nil
+	}
+	for _, service := range mapKeys(d.ScrapeHealth.Down) {
+		for _, idx := range d.ScrapeHealth.Down[service] {
+			if err := inRange(fmt.Sprintf("scrape_health.down[%q]", service), idx); err != nil {
+				return err
+			}
+		}
+	}
+	for _, service := range mapKeys(d.ScrapeHealth.Stops) {
+		if err := inRange(fmt.Sprintf("scrape_health.stops[%q]", service), d.ScrapeHealth.Stops[service]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // churnSeriesValue is the constant sample value every churn series carries.
@@ -627,6 +793,57 @@ func buildChurn(d Declaration, times []time.Time) []MetricSeries {
 				d.ChurnLabel:     fmt.Sprintf("%s-%03d", d.ChurnLabel, i),
 			},
 			Samples: samples,
+		})
+	}
+	return out
+}
+
+// The scrape-health family. `up` is Prometheus's own reserved per-target
+// health gauge, so its name is fixed rather than archetype-configurable, and
+// the two values below are the only two Prometheus itself ever writes into it.
+const (
+	// ScrapeHealthMetric is exported so a corpus-shape assertion names the
+	// series through the package that writes it rather than restating "up".
+	ScrapeHealthMetric = "up"
+	scrapeSucceeded    = 1.0
+	scrapeFailed       = 0.0
+)
+
+// buildScrapeHealth returns one `up` series per declared service, in declared
+// order, carrying only the service label — `up` is per-target, so crossing it
+// with the status codes would invent targets the fixture does not model.
+//
+// Like buildChurn it draws no random values and consumes no RNG state, so its
+// presence never perturbs buildCounter/buildHistogram/buildLogStreams/
+// buildTraces' draws, and adding it to an archetype leaves every other series
+// in that archetype byte-for-byte unchanged.
+func buildScrapeHealth(d Declaration, times []time.Time) []MetricSeries {
+	if d.ScrapeHealth == nil {
+		return nil
+	}
+	out := make([]MetricSeries, 0, len(d.Services))
+	for _, svc := range d.Services {
+		down := indexSet(d.ScrapeHealth.Down[svc])
+		last := len(times) - 1
+		if stop, ok := d.ScrapeHealth.Stops[svc]; ok {
+			last = stop
+		}
+		samples := make([]Sample, 0, last+1)
+		for i, t := range times {
+			if i > last {
+				break
+			}
+			value := scrapeSucceeded
+			if down[i] {
+				value = scrapeFailed
+			}
+			samples = append(samples, Sample{Time: t, Value: value})
+		}
+		out = append(out, MetricSeries{
+			MetricName:  ScrapeHealthMetric,
+			ServiceName: svc,
+			Attributes:  map[string]string{serviceNameLabel: svc},
+			Samples:     samples,
 		})
 	}
 	return out

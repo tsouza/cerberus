@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/qlcommon"
 
 	"github.com/tsouza/cerberus/test/e2e/migration/lib"
 	"github.com/tsouza/cerberus/test/e2e/migration/seed"
@@ -936,6 +938,19 @@ type tier1Declaration struct {
 	HistogramBounds  []float64 `json:"histogram_bounds"`
 	TracesPerService int       `json:"traces_per_service"`
 	SpansPerTrace    []int     `json:"spans_per_trace"`
+	// The three declarations that move a count off the service × status cross
+	// join, or that inject a shape a hotspot query is written against. The
+	// count pins and the corpus-shape pin below read them.
+	ChurnCardinality int                `json:"churn_cardinality"`
+	ScrapeHealth     *tier1ScrapeHealth `json:"scrape_health"`
+}
+
+// tier1ScrapeHealth is the archetype's declared `up` shape: which services
+// report a failed scrape at which sample indices, and which service's target
+// stops being scraped altogether.
+type tier1ScrapeHealth struct {
+	Down  map[string][]int `json:"down"`
+	Stops map[string]int   `json:"stops"`
 }
 
 // tier1Expected is the subset of the archetype's pinned expectations these pins
@@ -996,7 +1011,17 @@ func TestMigrationTier1ExpectationsFollowTheDeclaration(t *testing.T) {
 	// A classic-histogram series expands on the reference side into one
 	// cumulative bucket per explicit bound, a +Inf bucket, a _count and a _sum.
 	histogramPromSeries := metricSeries * (len(decl.HistogramBounds) + 3)
-	promSeries := metricSeries*2 + histogramPromSeries
+	// `up` is per-TARGET, so a declared scrape-health block adds exactly one
+	// gauge series per service — never a service × status cross. Declaring it
+	// is what moves the gauge count off the cross-join figure, and pinning the
+	// distinction here is what stops a future cross-joined `up` (three times
+	// the targets the fixture models) landing unnoticed.
+	scrapeHealthSeries := 0
+	if decl.ScrapeHealth != nil {
+		scrapeHealthSeries = len(decl.Services)
+	}
+	gaugeSeries := metricSeries + decl.ChurnCardinality + scrapeHealthSeries
+	promSeries := gaugeSeries + metricSeries + histogramPromSeries
 
 	// The window geometry has two definitions — the Go consts in seed/fixture.go
 	// and these pinned counts — and they are bound HERE. Without this, a change
@@ -1012,7 +1037,7 @@ func TestMigrationTier1ExpectationsFollowTheDeclaration(t *testing.T) {
 	}{
 		{"samples per series", expected.SamplesPerSeries, len(window.SampleTimes())},
 		{"verify steps", expected.VerifySteps, len(window.VerifySteps())},
-		{"gauge series", expected.Series.Gauge, metricSeries},
+		{"gauge series", expected.Series.Gauge, gaugeSeries},
 		{"sum series", expected.Series.Sum, metricSeries},
 		{"histogram series", expected.Series.Histogram, metricSeries},
 		{"log streams", expected.LogStreams, logStreams},
@@ -1160,6 +1185,305 @@ func TestMigrationTier1QueriesNameTheFixture(t *testing.T) {
 			t.Fatalf("%s query %q names no fixture metric (%v). A query that does not name one can "+
 				"reach the ClickHouse-only schema warm-up rows, which have no reference-side "+
 				"counterpart.", tier1ExpectedPath, q.Query, fixtureMetrics)
+		}
+	}
+}
+
+// The semantic-hotspot corpus MIG-17 replays, and the fixture shapes its PASS
+// cell claims it exercises.
+const tier1HotspotCorpusPath = tier1ArchetypeDir + "/seed/verify-hotspots.json"
+
+// Label keys the fixture writes its metric attributes under. They restate
+// seed's own unexported constants, and deliberately so: a rename there moves
+// the fixture AND the committed corpus, and this pin then fails by not finding
+// the series it went looking for rather than by silently matching nothing.
+const (
+	tier1ServiceLabel    = "service_name"
+	tier1StatusCodeLabel = "http_status_code"
+)
+
+// tier1Corpus is the committed verify-corpus shape.
+type tier1Corpus struct {
+	Queries []struct {
+		Expr string `json:"expr"`
+	} `json:"queries"`
+}
+
+// TestMigrationTier1HotspotCorpusSelectsItsSeededHotspots is the anti-hollow
+// pin for MIG-17's PASS cell (docs/migration-testing.md section 6), which
+// names counter-reset handling and `up==0` / stale-versus-gap staleness as
+// what the scenario proves.
+//
+// Both claims are only true if TWO independent files agree, and neither file
+// can see the other: the archetype's data declaration has to INJECT the shape
+// inside the queried window, and the committed hotspot corpus has to SELECT
+// the very series it was injected into. Break either half and MIG-17 still
+// goes green — a corpus query scoped to a series that never resets compares
+// two identical monotonic answers, and a staleness query against a metric
+// nothing seeds compares two empty ones. That is the exact failure #1542
+// records, so it is pinned here, offline, on the required lane rather than
+// left to a scheduled Docker run to notice.
+func TestMigrationTier1HotspotCorpusSelectsItsSeededHotspots(t *testing.T) {
+	t.Parallel()
+
+	decl, err := seed.LoadDeclaration(tier1DeclPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", tier1DeclPath, err)
+	}
+	window := seed.NewWindow(time.Now())
+	fixture, err := seed.Build(decl, window)
+	if err != nil {
+		t.Fatalf("build the fixture from %s: %v", tier1DeclPath, err)
+	}
+	exprs := readTier1HotspotExprs(t)
+
+	assertTier1CounterResetHotspot(t, decl, fixture, window, exprs)
+	assertTier1ScrapeFailureHotspot(t, decl, fixture, window, exprs)
+	assertTier1TargetVanishedHotspot(t, decl, fixture, window, exprs)
+}
+
+// readTier1HotspotExprs reads the committed hotspot corpus's expressions.
+func readTier1HotspotExprs(t *testing.T) []string {
+	t.Helper()
+	buf, err := os.ReadFile(tier1HotspotCorpusPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", tier1HotspotCorpusPath, err)
+	}
+	var corpus tier1Corpus
+	if err := json.Unmarshal(buf, &corpus); err != nil {
+		t.Fatalf("parse %s: %v", tier1HotspotCorpusPath, err)
+	}
+	if len(corpus.Queries) == 0 {
+		t.Fatalf("%s declares no query at all", tier1HotspotCorpusPath)
+	}
+	out := make([]string, 0, len(corpus.Queries))
+	for _, q := range corpus.Queries {
+		out = append(out, q.Expr)
+	}
+	return out
+}
+
+// tier1CorpusSelects reports whether any corpus expression carries every one
+// of the given fragments — the test's definition of "this corpus query is
+// scoped to that series".
+func tier1CorpusSelects(exprs []string, fragments ...string) bool {
+	for _, expr := range exprs {
+		all := true
+		for _, f := range fragments {
+			if !strings.Contains(expr, f) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// tier1FindSeries returns the fixture series carrying exactly the given metric
+// name and attribute values.
+func tier1FindSeries(list []seed.MetricSeries, metric string, attrs map[string]string) (seed.MetricSeries, bool) {
+	for _, s := range list {
+		if s.MetricName != metric {
+			continue
+		}
+		match := true
+		for k, v := range attrs {
+			if s.Attributes[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			return s, true
+		}
+	}
+	return seed.MetricSeries{}, false
+}
+
+// tier1VerifySteps returns the instants the parity lane actually queries, as a
+// set. A seeded shape that falls BETWEEN two steps is never read, so every
+// assertion below is stated against this set rather than against the sample
+// grid.
+func tier1VerifySteps(w seed.Window) map[time.Time]bool {
+	out := map[time.Time]bool{}
+	for _, t := range w.VerifySteps() {
+		out[t] = true
+	}
+	return out
+}
+
+// tier1SortedKeys returns a map's keys in sorted order so a failure names the
+// same entry on every run.
+func tier1SortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// assertTier1CounterResetHotspot pins the counter-reset half: the declared
+// restart lands on a real drop in a real series, at an instant the lane
+// queries, and the corpus carries a query scoped to that exact series.
+func assertTier1CounterResetHotspot(
+	t *testing.T, decl seed.Declaration, f seed.Fixture, w seed.Window, exprs []string,
+) {
+	t.Helper()
+	if len(decl.Restarts) == 0 {
+		t.Fatalf("%s declares no counter restart, so MIG-17's counter-reset claim rests on a fixture whose "+
+			"counters are purely monotonic and rate()/increase() never cross a reset", tier1DeclPath)
+	}
+	steps := tier1VerifySteps(w)
+	times := w.SampleTimes()
+	for _, key := range tier1SortedKeys(decl.Restarts) {
+		service, status, _ := strings.Cut(key, "|")
+		series, ok := tier1FindSeries(f.Counter, decl.CounterMetric, map[string]string{
+			tier1ServiceLabel: service, tier1StatusCodeLabel: status,
+		})
+		if !ok {
+			t.Fatalf("%s declares restart %q but the fixture carries no %s series for %s/%s",
+				tier1DeclPath, key, decl.CounterMetric, service, status)
+		}
+		for _, idx := range decl.Restarts[key] {
+			if idx == 0 {
+				t.Fatalf("%s restarts %q at sample 0; a reset at the very first sample has no preceding "+
+					"value to fall from, so no rate() window can observe it", tier1DeclPath, key)
+			}
+			if series.Samples[idx].Value >= series.Samples[idx-1].Value {
+				t.Fatalf("%s restarts %q at sample %d, but the series goes %g -> %g there; the counter "+
+					"never actually falls, so reset handling is not exercised",
+					tier1DeclPath, key, idx, series.Samples[idx-1].Value, series.Samples[idx].Value)
+			}
+			at := times[idx]
+			if !at.After(w.VerifyStart) || !at.Before(w.VerifyEnd) {
+				t.Fatalf("%s restarts %q at %s, outside the queried interval (%s, %s); no replayed step's "+
+					"range window spans it", tier1DeclPath, key, at, w.VerifyStart, w.VerifyEnd)
+			}
+			if !steps[at] {
+				t.Fatalf("%s restarts %q at %s, which is not one of the %d instants the lane queries",
+					tier1DeclPath, key, at, len(steps))
+			}
+		}
+		if !tier1CorpusSelects(exprs, decl.CounterMetric,
+			tier1ServiceLabel+`="`+service+`"`, tier1StatusCodeLabel+`="`+status+`"`) {
+			t.Fatalf("%s carries no query scoped to the restarting series %s{%s=%q,%s=%q}. Without one, the "+
+				"reset is only ever swept up by an unscoped aggregate, and any reset coverage is incidental "+
+				"— it would evaporate the moment the seed changed.",
+				tier1HotspotCorpusPath, decl.CounterMetric, tier1ServiceLabel, service, tier1StatusCodeLabel, status)
+		}
+	}
+}
+
+// assertTier1ScrapeFailureHotspot pins the `up==0` half: a declared scrape
+// failure is visible at instants the lane queries, it RESOLVES back to a
+// healthy scrape inside the same window, and the corpus carries the `up == 0`
+// query that selects it.
+func assertTier1ScrapeFailureHotspot(
+	t *testing.T, decl seed.Declaration, f seed.Fixture, w seed.Window, exprs []string,
+) {
+	t.Helper()
+	if decl.ScrapeHealth == nil || len(decl.ScrapeHealth.Down) == 0 {
+		t.Fatalf("%s declares no failed scrape, so MIG-17's `up==0` claim would compare two empty answers",
+			tier1DeclPath)
+	}
+	if !tier1CorpusSelects(exprs, seed.ScrapeHealthMetric, "== 0") {
+		t.Fatalf("%s carries no `%s == 0` query, which is the expression MIG-17's PASS cell names by hand",
+			tier1HotspotCorpusPath, seed.ScrapeHealthMetric)
+	}
+	steps := tier1VerifySteps(w)
+	for _, service := range tier1SortedKeys(decl.ScrapeHealth.Down) {
+		series, ok := tier1FindSeries(f.Gauge, seed.ScrapeHealthMetric, map[string]string{tier1ServiceLabel: service})
+		if !ok {
+			t.Fatalf("%s declares a failed scrape for %q but the fixture carries no %s series for it",
+				tier1DeclPath, service, seed.ScrapeHealthMetric)
+		}
+		var failedAt, resolvedAfter int
+		var lastFailure time.Time
+		for _, sample := range series.Samples {
+			if !steps[sample.Time] {
+				continue
+			}
+			if sample.Value == 0 {
+				failedAt++
+				lastFailure = sample.Time
+				resolvedAfter = 0
+				continue
+			}
+			if !lastFailure.IsZero() {
+				resolvedAfter++
+			}
+		}
+		if failedAt == 0 {
+			t.Fatalf("%s declares a failed scrape for %q, but no queried step reads a zero: the outage falls "+
+				"entirely between steps and `%s == 0` returns nothing on either side",
+				tier1DeclPath, service, seed.ScrapeHealthMetric)
+		}
+		if resolvedAfter == 0 {
+			t.Fatalf("%s leaves %q scrape-failed through the end of the queried window, so the resolve edge "+
+				"MIG-17's PASS cell names is never crossed", tier1DeclPath, service)
+		}
+	}
+}
+
+// assertTier1TargetVanishedHotspot pins the stale-versus-gap half: a declared
+// target really does stop being scraped, its disappearance edge — the last
+// sample plus the instant lookback, which is where BOTH backends must drop the
+// series — lands exactly on an instant the lane queries, and the corpus reads
+// that series both bare and through absent_over_time.
+//
+// The edge is pinned ON a step rather than merely inside the window on
+// purpose. The lookback interval is left-open on both sides, so a sample
+// exactly `lookback` old is already gone; a step landing anywhere else would
+// leave the boundary itself unread and the comparison would pass on either
+// convention.
+func assertTier1TargetVanishedHotspot(
+	t *testing.T, decl seed.Declaration, f seed.Fixture, w seed.Window, exprs []string,
+) {
+	t.Helper()
+	if decl.ScrapeHealth == nil || len(decl.ScrapeHealth.Stops) == 0 {
+		t.Fatalf("%s declares no vanishing target, so MIG-17's stale-marker-versus-gap claim rests on a "+
+			"fixture in which every series runs to the end of the window", tier1DeclPath)
+	}
+	steps := tier1VerifySteps(w)
+	for _, service := range tier1SortedKeys(decl.ScrapeHealth.Stops) {
+		series, ok := tier1FindSeries(f.Gauge, seed.ScrapeHealthMetric, map[string]string{tier1ServiceLabel: service})
+		if !ok {
+			t.Fatalf("%s stops scraping %q but the fixture carries no %s series for it",
+				tier1DeclPath, service, seed.ScrapeHealthMetric)
+		}
+		if len(series.Samples) == 0 {
+			t.Fatalf("%s leaves %q with no %s sample at all", tier1DeclPath, service, seed.ScrapeHealthMetric)
+		}
+		last := series.Samples[len(series.Samples)-1].Time
+		if !last.Before(w.VerifyEnd) {
+			t.Fatalf("%s stops scraping %q at %s, at or after the last queried instant %s; the series never "+
+				"disappears inside the compared window", tier1DeclPath, service, last, w.VerifyEnd)
+		}
+		vanishes := last.Add(qlcommon.InstantLookback)
+		if !steps[vanishes] {
+			t.Fatalf("%s stops scraping %q at %s, so the series disappears at %s — which is not one of the "+
+				"instants the lane queries. Move the stop index so the edge lands on a step; a boundary no "+
+				"step reads is a boundary neither backend is held to.",
+				tier1DeclPath, service, last, vanishes)
+		}
+		if !vanishes.Before(w.VerifyEnd) {
+			t.Fatalf("%s stops scraping %q so late that the disappearance at %s is the last queried instant "+
+				"%s or beyond; no step reads the series in its absence",
+				tier1DeclPath, service, vanishes, w.VerifyEnd)
+		}
+		scope := tier1ServiceLabel + `="` + service + `"`
+		for _, shape := range []struct{ what, fragment string }{
+			{"a bare selector, which reads the instant-lookback edge", seed.ScrapeHealthMetric + "{" + scope + "}"},
+			{"absent_over_time, which reads the same edge through a range window", "absent_over_time"},
+		} {
+			if !tier1CorpusSelects(exprs, seed.ScrapeHealthMetric, scope, shape.fragment) {
+				t.Fatalf("%s carries no query reading the vanished target %q through %s",
+					tier1HotspotCorpusPath, service, shape.what)
+			}
 		}
 	}
 }

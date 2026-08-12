@@ -1,14 +1,14 @@
 {
   "log_streams": 9,
   "log_records": 1089,
-  "prom_series": 48,
+  "prom_series": 51,
   "traces": 60,
   "traces_per_service": 20,
   "spans": 237,
   "samples_per_series": 121,
   "verify_steps": 21,
   "series": {
-    "gauge": 6,
+    "gauge": 9,
     "sum": 6,
     "histogram": 6
   },
