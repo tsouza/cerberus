@@ -2534,6 +2534,14 @@ func lowerSubqueryOverSubquery(
 		return nil, err
 	}
 
+	// The un-shifted `ctx` and the unset rw.Start below are the same
+	// deliberate division of labour lowerSubqueryOverCallSubquery documents
+	// at length: the re-anchoring pass owns both, and carries this node's
+	// Offset into the inner spine through RangeWindow.InputWindow. This
+	// branch is additionally unreachable through parsed PromQL — a
+	// SubqueryExpr's body must be an instant vector, pinned by
+	// TestParserShape_NestedSubqueryRejected — so it exists only to keep
+	// the lowering total over the AST node space.
 	widened := *innerSub
 	widened.Range = sub.Range + innerSub.Range
 	wideInner, err := lowerSubquery(&widened, s, ctx)
@@ -2599,6 +2607,24 @@ func lowerSubqueryOverCallSubquery(
 	// range so every outer anchor's lookback finds inner anchors. Each
 	// per-outer-anchor reduction then arrayFilters to the inner-range
 	// window — see emitWindowedArrayMatrix.
+	//
+	// `ctx` is deliberately NOT pre-shifted by THIS subquery's own Offset
+	// before gridding the inner, which reads locally like the defect-D2
+	// family and was audited as such (issue #1732 item 4). It is not: this
+	// lowering is never the last pass over the spine. Every reachable path
+	// re-anchors it afterwards, and the re-anchoring carries the Offset via
+	// chplan.RangeWindow.InputWindow — a bare top-level instant subquery
+	// through lower()'s SubqueryExpr arm, and a subquery under an outer
+	// range-vector reducer through lowerOuterRangeFnOverSubquery; both call
+	// widenSubquerySpine, whose RangeWindow arm overwrites the bounds set
+	// here and then recurses on `start - Offset - Range`. So the outer
+	// offset reaches the inner grid through the returned node's OWN Offset,
+	// one level down, rather than through the ctx used here — which is also
+	// why rw.Start is left unset below, exactly as the
+	// lowerSubqueryOverVectorSelector sibling leaves it.
+	// TestLowerNestedSubquery_OuterOffsetReachesInnerSpine pins the whole
+	// chain, including that the middle node's oldest EMITTED anchor finds
+	// its full window on the inner spine.
 	widened := *innerSub
 	widened.Range = sub.Range + innerSub.Range
 	wideInner, err := lowerSubquery(&widened, s, ctx)
