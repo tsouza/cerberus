@@ -29,14 +29,21 @@ type Manifest struct {
 	// rather than restated by hand. A parity assertion that compares a side
 	// against one of these is comparing against a declared value, not against
 	// the other side's length.
-	Streams          int         `json:"streams"`
-	LogRecords       int         `json:"log_records"`
-	Series           SeriesCount `json:"series"`
-	PromSeries       int         `json:"prom_series"`
-	Traces           int         `json:"traces"`
-	Spans            int         `json:"spans"`
-	SamplesPerSeries int         `json:"samples_per_series"`
-	VerifySteps      int         `json:"verify_steps"`
+	Streams    int         `json:"streams"`
+	LogRecords int         `json:"log_records"`
+	Series     SeriesCount `json:"series"`
+	// GaugeMetricSeries is how many series the DECLARED gauge metric alone
+	// carries. Series.Gauge counts the whole gauge TABLE, which also holds any
+	// churn dimension and the scrape-health `up` family, so it is the wrong
+	// number to hold a metric-SCOPED probe to: a scenario that reads
+	// `GaugeMetric` and then compares against Series.Gauge is counting series
+	// its own WHERE clause excluded. Every such probe reads this instead.
+	GaugeMetricSeries int `json:"gauge_metric_series"`
+	PromSeries        int `json:"prom_series"`
+	Traces            int `json:"traces"`
+	Spans             int `json:"spans"`
+	SamplesPerSeries  int `json:"samples_per_series"`
+	VerifySteps       int `json:"verify_steps"`
 
 	// The incumbent-only history: what reference Prometheus holds STRICTLY
 	// before SeedStart, which is where ClickHouse's own ingest starts. These
@@ -69,19 +76,20 @@ type SeriesCount struct {
 // the substrate does not hold.
 func NewManifest(d Declaration, f Fixture) Manifest {
 	return Manifest{
-		AnchorEnd:        f.Window.AnchorEnd,
-		SeedStart:        f.Window.SeedStart,
-		VerifyStart:      f.Window.VerifyStart,
-		VerifyEnd:        f.Window.VerifyEnd,
-		Step:             f.Window.Step.String(),
-		Streams:          len(f.LogStreams),
-		LogRecords:       f.LogRecordCount(),
-		Series:           SeriesCount{Gauge: len(f.Gauge), Sum: len(f.Counter), Histogram: len(f.Histogram)},
-		PromSeries:       f.PromSeriesCount(),
-		Traces:           len(f.Traces),
-		Spans:            f.SpanCount(),
-		SamplesPerSeries: len(f.Window.SampleTimes()),
-		VerifySteps:      len(f.Window.VerifySteps()),
+		AnchorEnd:         f.Window.AnchorEnd,
+		SeedStart:         f.Window.SeedStart,
+		VerifyStart:       f.Window.VerifyStart,
+		VerifyEnd:         f.Window.VerifyEnd,
+		Step:              f.Window.Step.String(),
+		Streams:           len(f.LogStreams),
+		LogRecords:        f.LogRecordCount(),
+		Series:            SeriesCount{Gauge: len(f.Gauge), Sum: len(f.Counter), Histogram: len(f.Histogram)},
+		GaugeMetricSeries: countSeriesNamed(f.Gauge, d.GaugeMetric),
+		PromSeries:        f.PromSeriesCount(),
+		Traces:            len(f.Traces),
+		Spans:             f.SpanCount(),
+		SamplesPerSeries:  len(f.Window.SampleTimes()),
+		VerifySteps:       len(f.Window.VerifySteps()),
 
 		PreIngestStart:            f.Window.PreIngestStart(),
 		PreIngestSeries:           len(f.PromPreIngestSeries()),
@@ -92,6 +100,17 @@ func NewManifest(d Declaration, f Fixture) Manifest {
 		HistogramMetric: d.HistogramMetric,
 		LogJob:          d.LogJob,
 	}
+}
+
+// countSeriesNamed counts the series carrying one metric name.
+func countSeriesNamed(list []MetricSeries, name string) int {
+	var n int
+	for _, s := range list {
+		if s.MetricName == name {
+			n++
+		}
+	}
+	return n
 }
 
 // manifestFileMode is the mode the manifest is written with: readable by the

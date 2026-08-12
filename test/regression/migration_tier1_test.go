@@ -1052,6 +1052,36 @@ func TestMigrationTier1ExpectationsFollowTheDeclaration(t *testing.T) {
 		}
 	}
 
+	// The gauge TABLE and the declared gauge FAMILY are two different counts
+	// the moment an archetype declares a churn dimension or a scrape-health
+	// block, and every metric-scoped probe (MIG-15's in-budget read, MIG-23's
+	// boundary census) is held to the family. Publishing them as one number is
+	// how those scenarios came to demand series their own WHERE clause
+	// excluded, so the split is pinned rather than left to a live run.
+	full, err := seed.LoadDeclaration(tier1DeclPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", tier1DeclPath, err)
+	}
+	fixture, err := seed.Build(full, window)
+	if err != nil {
+		t.Fatalf("build the fixture from %s: %v", tier1DeclPath, err)
+	}
+	m := seed.NewManifest(full, fixture)
+	if m.GaugeMetricSeries != metricSeries {
+		t.Fatalf("the manifest publishes %d %s series but the declaration implies %d",
+			m.GaugeMetricSeries, full.GaugeMetric, metricSeries)
+	}
+	if m.Series.Gauge != gaugeSeries {
+		t.Fatalf("the manifest publishes %d gauge-table series but the declaration implies %d",
+			m.Series.Gauge, gaugeSeries)
+	}
+	if full.ScrapeHealth != nil && m.GaugeMetricSeries >= m.Series.Gauge {
+		t.Fatalf("%s declares a scrape-health block, but the manifest's gauge-metric count (%d) does not "+
+			"sit strictly below the gauge-table count (%d); the two have collapsed back into one number "+
+			"and a metric-scoped probe held to the table count would demand series it never selected",
+			tier1DeclPath, m.GaugeMetricSeries, m.Series.Gauge)
+	}
+
 	if expected.Spans <= expected.Traces {
 		t.Fatalf("%s declares %d spans across %d traces; every trace holds at least %d spans, so the "+
 			"span count cannot be that low", tier1ExpectedPath, expected.Spans, expected.Traces,
