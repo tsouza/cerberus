@@ -121,6 +121,139 @@ func TestLowerOuterRangeFnOverSubquery_WidensInnerByOffsetPlusRange(t *testing.T
 	})
 }
 
+// TestLowerSubqueryOverAbsent_ShiftsGridForSubqueryOffset covers the sibling
+// gap #1464's audit catalogued and issue #1732 tracks: lowerSubqueryOverAbsent
+// lowers `absent(<selector>)[range:step]` and never read the subquery's
+// `OriginalOffset` at all, so the `offset` modifier had NO effect on the
+// emitted plan — the offset-carrying and un-offset forms lowered
+// byte-identically. That is a total omission rather than the wrong-arithmetic
+// variant #1464 fixed elsewhere.
+//
+// The fix shifts the anchor GRID and leaves chplan.AbsentOverTime.Offset at
+// zero, which is the half that is easy to get backwards. The node does have an
+// Offset field, but it carries the opposite OUTPUT contract: its emitter shifts
+// the internal grid and then adds the offset back on the output timestamp
+// (chsql's absentGridAnchorFrag), so `absent_over_time(v[5m] offset 10m)`
+// reports at the request's own anchors. That is right for a range-vector
+// function over an offset-carrying selector, and wrong for a SUBQUERY grid,
+// whose emitted timestamps ARE its evaluation instants and which an enclosing
+// reducer selects BY those timestamps while applying the same offset to its own
+// window. Setting both applies the shift twice and leaves the two anchor ranges
+// disjoint — an empty result, which the chDB round-trip in
+// test/spec/promql/subquery_absent_offset_shifts_window.txtar is what caught.
+//
+// Both fields are asserted, and the un-offset form alongside them, so neither a
+// lowering that shifts nothing nor one that shifts every absent subquery by a
+// constant can pass.
+func TestLowerSubqueryOverAbsent_ShiftsGridForSubqueryOffset(t *testing.T) {
+	t.Parallel()
+
+	const (
+		offsetQuery    = `max_over_time(absent(up)[5m:1m] offset 10m)`
+		unshiftedQuery = `max_over_time(absent(up)[5m:1m])`
+		// The subquery's own [5m:1m] range: grid Start is always this far
+		// behind grid End, offset or no offset.
+		subRange = 5 * time.Minute
+	)
+	offset := 10 * time.Minute
+	s := schema.DefaultOTelMetrics()
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantShift time.Duration
+	}{
+		{"offset 10m", offsetQuery, offset},
+		{"no offset", unshiftedQuery, 0},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			expr, err := parser.NewParser(parser.Options{}).ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+
+			// The grid a zero-offset query produces in each mode. Range mode
+			// reaches back a subquery range before the REQUEST start so the
+			// leading outer anchors have inner anchors to reduce; instant
+			// mode has no request start and reaches back from the eval
+			// timestamp. The offset case must land wantShift earlier on both
+			// ends, and on both ends only.
+			for _, mode := range []struct {
+				name                         string
+				unshiftedStart, unshiftedEnd time.Time
+				plan                         func() (chplan.Node, error)
+			}{
+				{
+					"range mode",
+					time.Unix(1_700_000_000, 0).UTC().Add(-subRange),
+					time.Unix(1_700_000_000, 0).UTC().Add(2 * time.Hour),
+					func() (chplan.Node, error) {
+						start := time.Unix(1_700_000_000, 0).UTC()
+						return LowerAtRange(context.Background(), expr, s, start, start.Add(2*time.Hour), time.Minute)
+					},
+				},
+				{
+					"instant mode",
+					time.Unix(1_700_010_000, 0).UTC().Add(-subRange),
+					time.Unix(1_700_010_000, 0).UTC(),
+					func() (chplan.Node, error) {
+						evalTS := time.Unix(1_700_010_000, 0).UTC()
+						return LowerAt(context.Background(), expr, s, evalTS, evalTS)
+					},
+				},
+			} {
+				mode := mode
+				t.Run(mode.name, func(t *testing.T) {
+					t.Parallel()
+
+					plan, err := mode.plan()
+					if err != nil {
+						t.Fatalf("lower(%q): %v", tc.query, err)
+					}
+					a := firstAbsentOverTime(plan)
+					if a == nil {
+						t.Fatalf("no chplan.AbsentOverTime under the lowered %q — this pin has no "+
+							"subject; the shape no longer routes through lowerSubqueryOverAbsent",
+							tc.query)
+					}
+					wantEnd := mode.unshiftedEnd.Add(-tc.wantShift)
+					if !a.End.Equal(wantEnd) {
+						t.Errorf("AbsentOverTime.End = %s, want %s — the subquery's `offset` shifts "+
+							"WHICH instants it evaluates, so the whole anchor grid moves back with it",
+							a.End, wantEnd)
+					}
+					if wantStart := mode.unshiftedStart.Add(-tc.wantShift); !a.Start.Equal(wantStart) {
+						t.Errorf("AbsentOverTime.Start = %s, want %s", a.Start, wantStart)
+					}
+					if a.Offset != 0 {
+						t.Errorf("AbsentOverTime.Offset = %s, want 0 — this node's emitter adds the "+
+							"offset back onto the OUTPUT timestamp, so carrying the shift here as "+
+							"well as on the grid applies it twice and the enclosing reducer's window "+
+							"comes out disjoint from the anchors", a.Offset)
+					}
+				})
+			}
+		})
+	}
+}
+
+// firstAbsentOverTime depth-first searches for the first
+// *chplan.AbsentOverTime reachable from n (n itself included).
+func firstAbsentOverTime(n chplan.Node) *chplan.AbsentOverTime {
+	if a, ok := n.(*chplan.AbsentOverTime); ok {
+		return a
+	}
+	for _, child := range n.Children() {
+		if a := firstAbsentOverTime(child); a != nil {
+			return a
+		}
+	}
+	return nil
+}
+
 // firstRangeWindow depth-first searches for the first *chplan.RangeWindow
 // reachable from n (n itself included).
 func firstRangeWindow(n chplan.Node) *chplan.RangeWindow {
