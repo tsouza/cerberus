@@ -3441,10 +3441,10 @@ func durationToEndRawFrag(rangeEnd Frag) Frag {
 	return secondsBetweenFrag(BareIdent("last_ts"), rangeEnd)
 }
 
-// extrapolatedValueFrag renders the per-window final value:
+// extrapolatedValueExpr renders Prom's per-window extrapolated value:
 //
 //	if(sampled_interval > 0,
-//	   <raw_result> * (sampled_interval + duration_to_start + duration_to_end) / sampled_interval [/ <range_seconds>],
+//	   <raw_result> * ((sampled_interval + duration_to_start + duration_to_end) / sampled_interval [/ <range_seconds>]),
 //	   nan)
 //
 // The `sampled_interval > 0` guard maps Prom's `len(samples.Floats) > 1`
@@ -3459,14 +3459,34 @@ func durationToEndRawFrag(rangeEnd Frag) Frag {
 //
 // The optional `/ <range_seconds>` only applies to rate (Prom's
 // `isRate` branch at functions.go:305-307).
-// extrapolatedValueExpr renders Prom's per-window extrapolated value over
-// operand Frags. Shared by the materialized path (operands = mid-layer column
-// aliases) and the fused path (operands = inline slice-derived exprs) — the
-// arithmetic shape (counter-reset raw delta, the counter zero-crossing clamp,
-// the `(sampled_interval + durStart + durEnd) / sampled_interval` factor, the
-// rate `/ range_seconds`, the `sampled_interval > 0 ? … : nan` guard) is
-// identical; the caller supplies aliased-or-inline operands so each path's SQL
-// is byte-identical. `lastVal` is consumed only by the delta raw result.
+//
+// The parenthesisation is load-bearing, not cosmetic. Reference builds the
+// whole FACTOR first and applies it in a single multiplication
+// (functions.go's `extrapolatedRate`):
+//
+//	factor := extrapolateToInterval / sampledInterval
+//	if isRate { factor /= ms.Range.Seconds() }
+//	resultFloat *= factor
+//
+// Multiplying by the undivided numerator and dividing the product
+// afterwards — `(raw * num) / sampled_interval / range` — is the same value
+// in exact arithmetic and a DIFFERENT float64, because (a*b)/c and a*(b/c)
+// disagree by an ulp on most inputs. The compat harness compares float
+// samples under an epsilon and the txtar goldens compare cerberus against
+// its own arithmetic, so neither can see the drift; the identical inversion
+// on the histogram-VALUED path (#2090), where bucket counts are compared
+// against reference with no epsilon at all, is what made it visible. An ulp
+// is observable wherever a rule compares a rate against a threshold, so the
+// division stays on the factor. See
+// TestExtrapolatedValueExpr_DividesFactorNotProduct.
+//
+// Shared by the materialized path (operands = mid-layer column aliases) and
+// the fused path (operands = inline slice-derived exprs) — the arithmetic
+// shape (counter-reset raw delta, the counter zero-crossing clamp, the
+// factor, the rate `/ range_seconds`, the `sampled_interval > 0 ? … : nan`
+// guard) is identical; the caller supplies aliased-or-inline operands so
+// each path's SQL is byte-identical. `lastVal` is consumed only by the delta
+// raw result.
 func extrapolatedValueExpr(
 	kind extrapolationKind, rangeSeconds float64,
 	counterDelta, sampledInterval, firstVal, lastVal, durToStart, durToEnd Frag,
@@ -3499,11 +3519,16 @@ func extrapolatedValueExpr(
 
 	// factor numerator: sampled_interval + <durStart> + duration_to_end
 	factorNum := Add(Add(sampledInterval, durStart), durToEnd)
-	// <rawResult> * (sampled_interval + … + duration_to_end) / sampled_interval
-	value := Div(Mul(rawResult, Paren(factorNum)), sampledInterval)
+	// The whole extrapolation factor, built and divided BEFORE it is applied
+	// so the emitted arithmetic is reference's `factor := extrapolateToInterval
+	// / sampledInterval; if isRate { factor /= range }` rather than a division
+	// of the product (see this function's doc — the two differ by an ulp).
+	factor := Div(Paren(factorNum), sampledInterval)
 	if kind.isRate() {
-		value = Div(value, InlineLit(rangeSeconds))
+		factor = Div(factor, InlineLit(rangeSeconds))
 	}
+	// <rawResult> * (<factor>) — reference's single `resultFloat *= factor`.
+	value := Mul(rawResult, Paren(factor))
 
 	return Call("if", Gt(sampledInterval, InlineLit(int64(0))), value, BareIdent("nan"))
 }
