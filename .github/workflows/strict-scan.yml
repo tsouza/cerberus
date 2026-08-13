@@ -114,27 +114,39 @@ jobs:
         with:
           tool: just
 
-      # The mirror below is reached for FIRST, but a mirror miss falls back to
+      # Cerberus's own copy of every upstream image this job pulls lives in a
+      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
+      # Docker Hub. That reach works only once this step has written ghcr.io
+      # credentials; without it the pull falls back to the shared anonymous
+      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
+      #
+      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
+      # acquisition path and that one is the fallback. Authenticating the
+      # fallback first is what let a Docker Hub outage kill this job before the
+      # mirror it exists to fall back TO was ever contacted (issue #1933).
+      - name: Log in to the image mirror (GHCR)
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      # The mirror above is reached for FIRST, but a mirror miss falls back to
       # Docker Hub — and that fallback spends the anonymous shared
       # per-runner-IP quota unless this step has run.
+      #
+      # An unreachable Docker Hub no longer takes this job down with it: the
+      # login exhausts its retries on a transport fault and downgrades the job
+      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
+      # mirror and one the mirror cannot serve fails the job naming itself
+      # rather than being pulled anonymously. A quota refusal or a rejected
+      # credential still fails here on the first attempt.
       - name: Log in to Docker Hub
         if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
         env:
           DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
           USERNAME: tsouza
           PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
-
-      # Cerberus's own copy of every upstream image this job pulls lives in a
-      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
-      # Docker Hub. That reach works only once this step has written ghcr.io
-      # credentials; without it the pull falls back to the shared anonymous
-      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/registry-login.mjs
 
       - name: Run strict-scan differential (real ClickHouse)

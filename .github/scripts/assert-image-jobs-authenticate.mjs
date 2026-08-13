@@ -23,6 +23,22 @@
 //       PRIVATE GHCR mirror before Docker Hub) has a ghcr.io login. Without it
 //       the mirror is unreadable and every acquisition silently degrades to the
 //       anonymous Docker Hub quota the mirror exists to stop spending.
+//   R5  A job with both logins runs the ghcr.io one FIRST. Presence is not
+//       order, and the order is what decides whether an outage is survivable:
+//       every login is a hard gate, so authenticating the FALLBACK registry
+//       ahead of the PRIMARY one means a Docker Hub outage kills the job before
+//       the mirror it exists to fall back TO has been contacted at all. That is
+//       exactly how `compatibility/promql-surface` went red without running a
+//       single query (run 31148765992, issue #1933) while every image it needed
+//       sat in the mirror.
+//   R6  A Docker Hub login carries `ON_TRANSPORT_FAULT: fail` exactly when its
+//       job holds registry WRITE permission. The mirror-only downgrade lets a
+//       CONSUMER carry on without Docker Hub because the mirror can serve it;
+//       for a PRODUCER — the job mirroring Docker Hub's inventory, the job
+//       publishing a release beside it — no mirror can substitute, and carrying
+//       on turns a clean early failure into work half-done. Asked in both
+//       directions, because a producer that lost the opt-out and a consumer
+//       that gained one are both silent.
 //
 // THERE IS NO ALLOW-LIST, and that is the substance of the module rather than a
 // stylistic preference. The obvious way to write this gate is a regex for
@@ -82,6 +98,19 @@ const dockerHubRegistries = new Set(['', 'docker.io', 'index.docker.io', 'regist
 // lib/mirror.mjs's default `mirrorRegistry` rather than restated, so a mirror
 // that moves cannot leave the gate asserting a login to the old host.
 const mirrorHost = 'ghcr.io';
+
+// The env var `registry-login.mjs` reads its transport-fault policy from, and
+// the value that opts a login OUT of the mirror-only downgrade. Spelled to match
+// that module; R6 below is the rule that keeps the two workflows which need the
+// opt-out from losing it silently.
+const onTransportFaultVar = 'ON_TRANSPORT_FAULT';
+const onTransportFaultFail = 'fail';
+
+// The registry permission that marks a job as a PRODUCER rather than a
+// consumer. A job granted write access to a package registry is there to put
+// artefacts INTO one — mirroring Docker Hub's inventory, or publishing a release
+// beside it — and a mirror cannot stand in for a registry a job is writing to.
+const producerPackagesPermission = 'write';
 
 // The two names a step uses for "this checkout". Both are the repository root
 // on a runner, so binding them to it is what lets
@@ -218,14 +247,16 @@ function splitSteps(stepsBlock) {
   return steps;
 }
 
-// parseWorkflow — { env, jobs: [{ name, env, steps }] }.
+// parseWorkflow — { env, permissions, jobs: [{ name, env, permissions, steps }] }.
 export function parseWorkflow(text) {
   const lines = text.split('\n');
   const jobsIdx = findKey(lines, 'jobs', 0);
-  if (jobsIdx === -1) return { env: {}, jobs: [] };
+  if (jobsIdx === -1) return { env: {}, permissions: {}, jobs: [] };
 
   const topEnvIdx = findKey(lines, 'env', 0);
   const workflowEnv = topEnvIdx === -1 ? {} : mappingAt(lines.slice(topEnvIdx), 'env');
+  const topPermIdx = findKey(lines, 'permissions', 0);
+  const workflowPermissions = topPermIdx === -1 ? {} : mappingAt(lines.slice(topPermIdx), 'permissions');
 
   const jobsBlock = blockUnder(lines, jobsIdx);
   const jobIndent = minIndent(jobsBlock);
@@ -246,10 +277,19 @@ export function parseWorkflow(text) {
 
   return {
     env: workflowEnv,
+    permissions: workflowPermissions,
     jobs: jobs.map((job) => {
       const stepsIdx = findKey(job.lines, 'steps', minIndent(job.lines));
       const steps = stepsIdx === -1 ? [] : splitSteps(blockUnder(job.lines, stepsIdx));
-      return { name: job.name, env: mappingAt(job.lines, 'env'), steps };
+      return {
+        name: job.name,
+        env: mappingAt(job.lines, 'env'),
+        // A job's own `permissions:` REPLACES the workflow's rather than
+        // merging with it, which is GitHub's rule and the reason this is
+        // resolved per job rather than unioned.
+        permissions: mappingAt(job.lines, 'permissions'),
+        steps,
+      };
     }),
   };
 }
@@ -629,6 +669,9 @@ function newFindings() {
     composePolicyFiles: new Set(),
     composeMaterialised: [],
     mirrorWrites: 0,
+    // R6's bookkeeping: does this job hold registry WRITE permission, i.e. is
+    // it a producer rather than a consumer of images?
+    producesPackages: false,
   };
 }
 
@@ -749,7 +792,13 @@ class Resolver {
     const rest = argv.slice(1).filter((t) => t !== '');
     const sub = rest.find((t) => !t.startsWith('-'));
     if (sub === 'login') {
-      findings.logins.push({ registry: loginRegistry(rest.slice(rest.indexOf('login') + 1), scope) });
+      // The transport-fault policy is read off the SCOPE rather than the argv,
+      // because `registry-login.mjs` takes it from the environment — which is
+      // the step's own `env:` block, already folded into the scope by `step`.
+      findings.logins.push({
+        registry: loginRegistry(rest.slice(rest.indexOf('login') + 1), scope),
+        onTransportFault: (scope[onTransportFaultVar] ?? '').trim(),
+      });
       return;
     }
     if (sub === 'pull') {
@@ -1060,6 +1109,61 @@ export function violationsFor(jobId, findings) {
     );
   }
 
+  // R5 — the ghcr.io login runs BEFORE the Docker Hub one.
+  //
+  // Read off the position in `logins`, which the resolver fills in step order,
+  // so the rule is about the workflow's actual sequence rather than about a
+  // field a step could set wrongly. Both must be present for the question to
+  // mean anything: a job with one login has no order to get wrong, and R2 / R3
+  // above are what decide whether the missing one was required.
+  const hubLogins = findings.logins.filter((l) => dockerHubRegistries.has(registryHost(l.registry)));
+
+  // R6 — a Docker Hub login opts out of the mirror-only downgrade exactly when
+  // its job PRODUCES into a registry.
+  //
+  // The downgrade lets a job carry on without Docker Hub because the mirror can
+  // serve it. That reasoning holds for a consumer and inverts for a producer:
+  // `mirror-images.yml` READS the inventory from Docker Hub to populate the
+  // mirror, and `release.yml` PUSHES half of an atomic dual-registry release to
+  // it. Neither can be served by a mirror, and letting either continue turns a
+  // clean early failure into work half-done — a release whose GHCR half is
+  // published and whose Docker Hub half is not.
+  //
+  // Keyed on the registry WRITE permission rather than on a job name, so it is a
+  // fact about what the job is allowed to do. Asked in BOTH directions: a
+  // producer that lost the opt-out fails here, and so does a consumer that
+  // acquired one — the second is how a lane quietly opts itself back out of the
+  // very resilience this change exists to give it.
+  for (const login of hubLogins) {
+    const optedOut = login.onTransportFault === onTransportFaultFail;
+    if (findings.producesPackages && !optedOut) {
+      out.push(
+        `${jobId}: writes to a package registry but its Docker Hub login omits ` +
+          `\`${onTransportFaultVar}: ${onTransportFaultFail}\` — a producer cannot be served by the mirror, ` +
+          'so downgrading it would let the job continue past a registry it must have and finish its work ' +
+          'half-done',
+      );
+    }
+    if (!findings.producesPackages && optedOut) {
+      out.push(
+        `${jobId}: only consumes images, yet its Docker Hub login sets ` +
+          `\`${onTransportFaultVar}: ${onTransportFaultFail}\` — that opts the job out of mirror-only mode, ` +
+          'so a Docker Hub outage kills it again even though the mirror holds every image it needs',
+      );
+    }
+  }
+
+  const mirrorAt = findings.logins.findIndex((l) => registryHost(l.registry) === mirrorHost);
+  const hubAt = findings.logins.findIndex((l) => dockerHubRegistries.has(registryHost(l.registry)));
+  if (mirrorAt !== -1 && hubAt !== -1 && hubAt < mirrorAt) {
+    out.push(
+      `${jobId}: logs in to Docker Hub before ${mirrorHost} — the FALLBACK registry is authenticated ahead ` +
+        'of the PRIMARY one. Every login is a hard gate, so in that order a Docker Hub outage fails the job ' +
+        'before the mirror it exists to fall back to has been contacted at all. Move the ' +
+        `${mirrorHost} login above the Docker Hub one.`,
+    );
+  }
+
   // R4 — the acquisitions must run ON the authenticated, mirror-first path, not
   // merely alongside a login step.
   //
@@ -1105,10 +1209,14 @@ export function scan({ root = process.cwd(), workflowDir = '.github/workflows' }
   const results = [];
   for (const file of readdirSync(dir).sort()) {
     if (!/\.ya?ml$/.test(file)) continue;
-    const { env, jobs } = parseWorkflow(readFileSync(join(dir, file), 'utf8'));
+    const { env, permissions, jobs } = parseWorkflow(readFileSync(join(dir, file), 'utf8'));
     for (const job of jobs) {
       const findings = newFindings();
       const scope = { ...repoRootVars, ...env, ...job.env };
+      // A job's own `permissions:` block replaces the workflow's; only when it
+      // declares none does the workflow-level grant apply.
+      const effective = Object.keys(job.permissions).length > 0 ? job.permissions : permissions;
+      findings.producesPackages = (effective.packages ?? '').trim() === producerPackagesPermission;
       for (const step of job.steps) resolver.step(step, scope, findings);
       results.push({ id: `${file}:${job.name}`, findings });
     }
@@ -1131,7 +1239,9 @@ function main() {
 
   log(`scanned ${results.length} jobs; ${acquiring.length} acquire at least one image`);
   for (const { id, findings } of acquiring) {
-    const logins = findings.logins.map((l) => l.registry || 'docker.io').sort().join(' + ') || 'NONE';
+    // In STEP order, not sorted: R5 is a rule about the sequence, so a log that
+    // sorted it would print the same line for a passing job and a failing one.
+    const logins = findings.logins.map((l) => l.registry || 'docker.io').join(' then ') || 'NONE';
     log(`  ${id} — ${[...new Set(findings.acquisitions)].join(', ')} | logins: ${logins}`);
   }
 

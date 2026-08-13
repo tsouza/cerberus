@@ -153,9 +153,17 @@ if (command.length === 0) {
 // `build.args` of each service, and the Justfile's direct builds pass
 // `--build-arg GO_IMAGE` with no value, which is docker's own "take it from the
 // environment" form. Neither needs this module to know which build sites exist.
+//
+// A null answer means mirror-only mode and a base image the mirror cannot
+// serve, i.e. there is no ref this build could resolve at all. The command is
+// not started: `buildBaseImageRef` has already said which image and why, and
+// running the build anyway would bury that under a BuildKit timeout against the
+// registry the job has already established it cannot reach.
 for (const [argName, upstreamRef] of Object.entries(buildBaseImageArgs)) {
   if ((process.env[argName] ?? '') !== '') continue;
-  process.env[argName] = buildBaseImageRef(upstreamRef);
+  const ref = buildBaseImageRef(upstreamRef);
+  if (ref === null) process.exit(1);
+  process.env[argName] = ref;
 }
 
 const backoffStepSeconds = readBackoffStepSeconds('IMAGE_BUILD_RETRY_BACKOFF_SECONDS', defaultBackoffStepSeconds);

@@ -101,6 +101,19 @@ function withoutStep(title) {
   };
 }
 
+// A job that pulls through the shared policy, so R3 is the rule under test and
+// the only variable is how its one login names a registry.
+const jobLoggingInTo = (registry) => ({
+  acquisitions: ['pullImageWithRetry'],
+  logins: [{ registry }],
+  viaSharedPolicy: true,
+  refs: new Set(),
+  unresolved: [],
+  composePolicyFiles: new Set(),
+  composeMaterialised: [],
+  mirrorWrites: 0,
+});
+
 // ---------------------------------------------------------------------------
 // The tree, as it stands.
 // ---------------------------------------------------------------------------
@@ -218,6 +231,106 @@ test('R3 fires when a job pulling through the mirror has no ghcr.io login', () =
   assert.match(violations[0], /no ghcr\.io login/);
 });
 
+// ---------------------------------------------------------------------------
+// R5 — presence is not order.
+//
+// `compatibility/promql-surface` went red on run 31148765992 without running a
+// single query: the Docker Hub login exhausted its retries on `context deadline
+// exceeded`, and because it sat AHEAD of the ghcr.io login the job died before
+// the mirror holding every image it needed was ever contacted. Both logins were
+// present the whole time, so R1–R3 passed on that job on that run — which is
+// what makes the order a separate rule rather than a stylistic one.
+// ---------------------------------------------------------------------------
+
+// swapLoginOrder — put the Docker Hub login back ahead of the mirror login, the
+// pre-#1933 shape, by moving the mirror step to just after the Hub step. Only
+// the pair in the specimen job is touched, so the rest of the file stays clean.
+function swapLoginOrder(text) {
+  const lines = text.split('\n');
+  const stepAt = (title, from) => {
+    const i = lines.findIndex((l, n) => n >= from && l.trim() === `- name: ${title}`);
+    assert.notEqual(i, -1, `no step titled "${title}" from line ${from}`);
+    const indent = lines[i].length - lines[i].trimStart().length;
+    let end = i + 1;
+    while (end < lines.length) {
+      const l = lines[end];
+      if (l.trim().startsWith('- ') && l.length - l.trimStart().length === indent) break;
+      end++;
+    }
+    while (end - 1 > i && lines[end - 1].trim() === '') end--;
+    return [i, end];
+  };
+  // The specimen's own pair: find the mirror login that precedes its Hub login.
+  const bench = lines.findIndex((l) => l.trim() === 'startup-bench:');
+  assert.notEqual(bench, -1, 'startup-bench did not appear in e2e.yml');
+  const [mTop, mEnd] = stepAt('Log in to the image mirror (GHCR)', bench);
+  const [hTop, hEnd] = stepAt('Log in to Docker Hub', mEnd);
+  const mirror = lines.slice(mTop, mEnd);
+  const hub = lines.slice(hTop, hEnd);
+  return [...lines.slice(0, mTop), ...hub, ...lines.slice(mEnd, hTop), ...mirror, ...lines.slice(hEnd)].join('\n');
+}
+
+test('R5 fires when the Docker Hub login runs before the ghcr.io one', () => {
+  const results = scanWith('e2e.yml', swapLoginOrder);
+  const findings = findingsFor(specimenJob, results);
+  const violations = violationsFor(specimenJob, findings);
+  assert.ok(
+    violations.some((m) => m.includes('logs in to Docker Hub before ghcr.io')),
+    `expected an R5 ordering violation, got ${JSON.stringify(violations)}`,
+  );
+  // And for the ORDER alone: both logins are still there, so no presence rule
+  // may fire. Without this the test would pass on a doctoring that deleted one.
+  assert.equal(findings.logins.length, 2, 'the doctored job must still have both logins');
+  assert.ok(
+    !violations.some((m) => m.includes('no Docker Hub login') || m.includes('no ghcr.io login')),
+    `only the ordering rule should fire, got ${JSON.stringify(violations)}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// R6 — the mirror-only downgrade is opted out of exactly where a mirror cannot
+// stand in for Docker Hub, and nowhere else.
+//
+// Both directions are negative controls because both are silent. A producer
+// that lost its opt-out carries on past a registry it must have and finishes
+// half its work — `release.yml` publishing its GHCR half and not its Docker Hub
+// half. A consumer that gained one is back to dying on an outage the mirror was
+// built to survive, which is issue #1933 reintroduced one line at a time.
+// ---------------------------------------------------------------------------
+
+test('R6 fires when a job that writes to a registry loses its opt-out', () => {
+  const results = scanWith('mirror-images.yml', (text) =>
+    text.replace(/^\s*ON_TRANSPORT_FAULT: fail\n/m, ''),
+  );
+  const id = 'mirror-images.yml:mirror';
+  const violations = violationsFor(id, findingsFor(id, results));
+  assert.ok(
+    violations.some((m) => m.includes('writes to a package registry but its Docker Hub login omits')),
+    `expected an R6 producer violation, got ${JSON.stringify(violations)}`,
+  );
+});
+
+test('R6 fires when a consuming job opts itself out of mirror-only mode', () => {
+  // The e2e specimen: adding the opt-out to its Docker Hub login is the exact
+  // one-line edit that would quietly undo this change for that lane.
+  const results = scanWith('e2e.yml', (text) =>
+    text.replace(/(\n(\s+)USERNAME: tsouza\n)/, `$1$2ON_TRANSPORT_FAULT: fail\n`),
+  );
+  const violations = results.flatMap((r) => violationsFor(r.id, r.findings));
+  assert.ok(
+    violations.some((m) => m.includes('only consumes images, yet its Docker Hub login sets')),
+    `expected an R6 consumer violation, got ${JSON.stringify(violations)}`,
+  );
+});
+
+test('R5 is silent when a job has only one login to order', () => {
+  // A job with one login has no order to get wrong, and R2 / R3 are what decide
+  // whether the absent one was required. A rule that fired here would report a
+  // second violation for every job the presence rules already caught.
+  const oneLogin = { ...jobLoggingInTo('ghcr.io'), refs: new Set() };
+  assert.deepEqual(violationsFor('some:job', oneLogin), []);
+});
+
 test('removing the acquisition removes the requirement, not the other way round', () => {
   // The rules key off acquiring, so a job that stops pulling stops being
   // judged — otherwise every login step in the repo would be load-bearing
@@ -309,19 +422,6 @@ test('the job that writes the mirror is not required to read through it', () => 
 // match misses spellings `docker login` itself accepts. Each case below goes red
 // on the pre-fix comparison, which is the only reason they are worth having.
 // ---------------------------------------------------------------------------
-
-// A job that pulls through the shared policy, so R3 is the rule under test and
-// the only variable is how its one login names a registry.
-const jobLoggingInTo = (registry) => ({
-  acquisitions: ['pullImageWithRetry'],
-  logins: [{ registry }],
-  viaSharedPolicy: true,
-  refs: new Set(),
-  unresolved: [],
-  composePolicyFiles: new Set(),
-  composeMaterialised: [],
-  mirrorWrites: 0,
-});
 
 test('a login to a host that merely starts with ghcr.io is not a mirror login', () => {
   // `startsWith` accepted this; a hostname compare does not. Somebody else owns

@@ -270,19 +270,6 @@ jobs:
         with:
           tool: just
 
-      # Anonymous Docker Hub pulls are rate-limited hard enough to fail a cold
-      # runner mid-`compose up` from a shared runner IP, and this stack pulls
-      # five upstream images; the other Docker-backed lanes log in first for
-      # exactly this reason. Gated on the secret being present so a fork PR
-      # degrades to anonymous rather than erroring on an empty password.
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
-
       # See migration-tier0's identical block: unconditional so the artifact
       # lane's GHCR pull can never silently degrade into a source build.
       - name: Log in to GHCR
@@ -290,6 +277,26 @@ jobs:
           REGISTRY: ghcr.io
           USERNAME: ${{ github.repository_owner }}
           PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      # Anonymous Docker Hub pulls are rate-limited hard enough to fail a cold
+      # runner mid-`compose up` from a shared runner IP, and this stack pulls
+      # five upstream images; the other Docker-backed lanes log in first for
+      # exactly this reason. Gated on the secret being present so a fork PR
+      # degrades to anonymous rather than erroring on an empty password.
+      #
+      # An unreachable Docker Hub no longer takes this job down with it: the
+      # login exhausts its retries on a transport fault and downgrades the job
+      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
+      # mirror and one the mirror cannot serve fails the job naming itself
+      # rather than being pulled anonymously. A quota refusal or a rejected
+      # credential still fails here on the first attempt.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
         run: node .github/scripts/registry-login.mjs
 
       # migration-tier1 runs on a separate runner with a fresh checkout, so
@@ -430,20 +437,26 @@ jobs:
         with:
           tool: just
 
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
-
       # See migration-tier0's identical block.
       - name: Log in to GHCR
         env:
           REGISTRY: ghcr.io
           USERNAME: ${{ github.repository_owner }}
           PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      # An unreachable Docker Hub no longer takes this job down with it: the
+      # login exhausts its retries on a transport fault and downgrades the job
+      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
+      # mirror and one the mirror cannot serve fails the job naming itself
+      # rather than being pulled anonymously. A quota refusal or a rejected
+      # credential still fails here on the first attempt.
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
         run: node .github/scripts/registry-login.mjs
 
       - name: download migration scenarios enumeration
