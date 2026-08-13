@@ -306,6 +306,49 @@ does round-trip, so the marker cannot decay into a blanket exemption. No
 fixture currently needs it — the pinned chDB substrate clears every floor
 the corpus exercises.
 
+#### The chdb lane and the race detector
+
+Every chdb-tagged test binary loads libchdb.so — an embedded ClickHouse —
+with `dlopen`, and chdb-go caches ONE process-wide session for the life of
+the process. Its driver's `(*conn).Close` is a no-op, so `db.Close()` does
+not shut the native engine down; nothing on the Go side ever does.
+
+That asymmetry is invisible to a plain `go test`, because Go's `os.Exit`
+reaches the `exit_group` syscall directly and libchdb's C++ static
+destructors never run. It is NOT invisible under `-race`: `os.Exit` first
+calls `runtime_beforeExit` → `runtime.racefini` → `__tsan_fini`, which — per
+the Go runtime's own comment on `racefini` — "will run C atexit functions
+and C++ destructors". Those destructors then tore libchdb down while its
+engine was still live, and the process died with
+
+```text
+SIGSEGV: segmentation violation
+runtime.racefini()
+os.runtime_beforeExit(0x0)
+os.Exit(0x0)
+```
+
+at a constant offset inside `libchdb.so`, **after** every test in the binary
+had already passed — turning a suite in which nothing failed into a failed
+lane. `os.Exit(0x0)` in that trace is the tell: the exit code was zero.
+
+`internal/chdbsession.CloseForExit` closes the cached session before the
+binary exits, so those destructors run against an already-shut-down engine.
+It is per-package by necessity — `TestMain` is the only process-exit seam Go
+offers and it is declared per package — so
+`test/regression/chdb_race_exit_test.go` is the ratchet: it walks the tree
+for chdb-tagged test files and fails any package whose `TestMain` does not
+call it. Without that gate a newly added chdb-tagged package would silently
+reintroduce the crash.
+
+The `chdb` CI job still runs without `-race`, for cost rather than
+correctness. Measured over the four `internal/api` packages, `-race` costs
+between 1.5x (`prom`, 131s → 201s — it is already the long pole) and 5x
+(`tempo/grpc`, 0.4s → 2.1s) in wall clock. The difference now is that a
+developer or agent CAN run
+`go test -race -tags chdb ./...` to chase a suspected data race in
+chdb-tagged code, which before was structurally impossible.
+
 ### Layer 6d — Function-surface parity ledger
 
 Layers 6a-c prove that an *accepted* query returns the right rows. Layer
