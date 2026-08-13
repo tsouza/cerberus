@@ -7,10 +7,22 @@
 //
 // This replaces the awk with the same table plus a floor comparison. Every
 // package carrying statements has a committed floor in test/coverage-floor.json;
-// a package below its floor, a package with no floor, and a floor with no
-// package are all failures. The two-directional check is deliberate — a
-// one-directional one degrades to an allow-list the moment a package stops
-// being measured.
+// a package below its floor, a package with no floor, a floor of ZERO, and a
+// floor with no package are all failures. The two-directional check is
+// deliberate — a one-directional one degrades to an allow-list the moment a
+// package stops being measured.
+//
+// A floor of zero is rejected in both directions — the gate refuses to pass one
+// and the updater refuses to write one — because it is a floor nothing can fall
+// through: a package could have every statement deleted, or every test removed,
+// and still clear it. It reads as "measured" while measuring nothing, which is
+// exactly the hole a floor exists to close.
+//
+// The profile is produced with `-coverpkg=./...` (see the `coverage` recipe), so
+// a package's coverage is the union of every test binary that executes it
+// rather than only its own. That is also why the same block arrives many times,
+// once per test binary that linked it: parseProfile folds duplicates by taking
+// the widest count, which is what `mode: set` means.
 //
 // The floors are a ratchet: `just update-coverage-floor` raises them to what
 // the tree actually achieves and REFUSES to lower one. Lowering a floor is a
@@ -81,8 +93,14 @@ export function packageOf(filePath) {
 // the leading `mode:` line and blank lines are skipped. A block counts as
 // covered when its execution count is non-zero, which is what `go tool cover`
 // reports and what the awk this replaces computed.
+//
+// A block may appear many times: `-coverpkg=./...` instruments a package into
+// every test binary that links it, and each binary emits its own row. Folding
+// them by the widest count per block is the `mode: set` union — the alternative,
+// counting each repeat, would inflate `total` by the number of test binaries and
+// turn the percentage into an artefact of the suite's shape.
 export function parseProfile(text) {
-  const packages = new Map();
+  const blocks = new Map();
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (line === '' || line.startsWith('mode:')) continue;
@@ -99,7 +117,18 @@ export function parseProfile(text) {
       return { err: `malformed profile line: ${line}` };
     }
 
-    const pkg = packageOf(block.slice(0, colon));
+    const seen = blocks.get(block);
+    if (seen === undefined) {
+      blocks.set(block, { file: block.slice(0, colon), stmts, count });
+    } else {
+      seen.stmts = Math.max(seen.stmts, stmts);
+      seen.count = Math.max(seen.count, count);
+    }
+  }
+
+  const packages = new Map();
+  for (const { file, stmts, count } of blocks.values()) {
+    const pkg = packageOf(file);
     const acc = packages.get(pkg) || { total: 0, covered: 0 };
     acc.total += stmts;
     if (count !== 0) acc.covered += stmts;
@@ -115,7 +144,9 @@ export function pct(covered, total) {
   return total > 0 ? (100 * covered) / total : 0;
 }
 
-// floorFor rounds a measurement down to the floor it justifies.
+// floorFor rounds a measurement down to the floor it justifies. A measurement
+// too thin to clear the slack justifies no floor at all, and says so with 0 —
+// callers must treat that as "this package needs a test", never as a floor.
 export function floorFor(measured) {
   const scale = 10 ** FLOOR_DECIMALS;
   return Math.max(0, Math.floor((measured - FLOOR_SLACK_PCT) * scale) / scale);
@@ -138,6 +169,7 @@ export function rows(packages) {
 export function compare(packages, floors) {
   const below = [];
   const unfloored = [];
+  const unfailable = [];
   const missing = [];
 
   for (const [pkg, { total, covered }] of packages) {
@@ -145,6 +177,13 @@ export function compare(packages, floors) {
     const floor = floors[pkg];
     if (floor === undefined) {
       unfloored.push(pkg);
+      continue;
+    }
+    // A non-positive floor is a recorded value that no measurement can fall
+    // through, so it belongs with "no floor at all" rather than with the
+    // comparisons below.
+    if (!(floor > 0)) {
+      unfailable.push(pkg);
       continue;
     }
     const value = pct(covered, total);
@@ -158,6 +197,7 @@ export function compare(packages, floors) {
   return {
     below: below.sort((a, b) => a.pkg.localeCompare(b.pkg)),
     unfloored: unfloored.sort(),
+    unfailable: unfailable.sort(),
     missing: missing.sort(),
   };
 }
@@ -166,9 +206,14 @@ export function compare(packages, floors) {
 // one: a package that no longer clears its floor is returned as a regression so
 // the caller can refuse, because a tool that rewrites the floor to match a drop
 // launders the drop into a green run.
+//
+// Nor does it record a zero. A package whose measurement cannot justify a floor
+// above 0 is returned as unfloorable rather than written out, so the ledger
+// never gains an entry that no future run can fail.
 export function nextFloors(packages, floors) {
   const next = {};
   const regressions = [];
+  const unfloorable = [];
 
   for (const [pkg, { total, covered }] of [...packages.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     if (total === 0) continue;
@@ -177,9 +222,18 @@ export function nextFloors(packages, floors) {
     if (existing !== undefined && value < existing) {
       regressions.push({ pkg, value, floor: existing });
     }
-    next[pkg] = Math.max(existing ?? 0, floorFor(value));
+    const floor = Math.max(existing ?? 0, floorFor(value));
+    if (!(floor > 0)) {
+      unfloorable.push({ pkg, value, total });
+      continue;
+    }
+    next[pkg] = floor;
   }
-  return { next, regressions: regressions.sort((a, b) => a.pkg.localeCompare(b.pkg)) };
+  return {
+    next,
+    regressions: regressions.sort((a, b) => a.pkg.localeCompare(b.pkg)),
+    unfloorable: unfloorable.sort((a, b) => a.pkg.localeCompare(b.pkg)),
+  };
 }
 
 function readFloors(path) {
@@ -265,7 +319,7 @@ function main() {
   const floors = readFloors(floorsPath);
 
   if (process.env.COVERAGE_UPDATE_FLOORS === '1') {
-    const { next, regressions } = nextFloors(packages, floors);
+    const { next, regressions, unfloorable } = nextFloors(packages, floors);
     if (regressions.length) {
       fail(
         `${regressions.length} package(s) sit below a committed floor, and raising the ledger ` +
@@ -273,6 +327,16 @@ function main() {
           `into a green run. Restore the tests, or lower the floor by hand so the drop is a ` +
           `reviewable line in the diff:\n` +
           regressions.map((r) => `  - ${r.pkg}: ${r.value.toFixed(2)}% < floor ${r.floor}%`).join('\n'),
+      );
+    }
+    if (unfloorable.length) {
+      fail(
+        `${unfloorable.length} package(s) carry statements but are not exercised enough to justify ` +
+          `any floor above 0, and 0 is not a floor — nothing can fall through it, so recording one ` +
+          `would leave the package unmeasured while looking measured. The profile is built with ` +
+          `\`-coverpkg=./...\`, so a test in ANY package counts: give each one a test that reaches ` +
+          `it, or delete the code that nothing reaches:\n` +
+          unfloorable.map((r) => `  - ${r.pkg}: ${r.value.toFixed(2)}% of ${r.total} statements`).join('\n'),
       );
     }
     writeFloors(floorsPath, next);
@@ -291,7 +355,7 @@ function main() {
     process.exit(0);
   }
 
-  const { below, unfloored, missing } = compare(packages, floors);
+  const { below, unfloored, unfailable, missing } = compare(packages, floors);
   const problems = [];
   if (below.length) {
     problems.push(
@@ -303,6 +367,15 @@ function main() {
     problems.push(
       `${unfloored.length} package(s) carry statements but no floor:\n` +
         unfloored.map((p) => `  - ${p}`).join('\n'),
+    );
+  }
+  if (unfailable.length) {
+    problems.push(
+      `${unfailable.length} package(s) carry statements but a floor of 0, which no measurement can ` +
+        `fall through — every test could be deleted and the gate would still pass. A package is ` +
+        `either exercised enough to hold a floor above 0 or it is untested; there is no third ` +
+        `state to record:\n` +
+        unfailable.map((p) => `  - ${p}`).join('\n'),
     );
   }
   if (missing.length) {

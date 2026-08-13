@@ -9,9 +9,10 @@ name: coverage
 # The floor is what makes this a gate. The lane used to print a table nothing
 # compared against, so coverage could rot one package at a time with every run
 # still green; the script fails on a package below its floor, a package with no
-# floor, and a floor with no package. Raise the floors with
-# `just update-coverage-floor` — it ratchets up only, so a drop has to be a
-# hand-edited, reviewable line in the diff.
+# floor, a package whose floor is 0 (which no measurement can fall through),
+# and a floor with no package. Raise the floors with
+# `just update-coverage-floor` — it ratchets up only and never records a 0, so
+# a drop has to be a hand-edited, reviewable line in the diff.
 #
 # Informational on push/nightly, but ALSO a parity lane on the
 # publish-on-merge release flow: it runs on EVERY pull_request so it can be a
