@@ -4,14 +4,17 @@
 package promql_spec_test
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // isolationSample names a handful of round-trip fixtures whose only path
-// to a green result, before #1987's per-fixture chDB session reset
-// (test/spec/runner_chdb.go's resetChDBSession), was reading a SIBLING
+// to a green result, before #1987's per-fixture chDB isolation
+// (test/spec/runner_chdb.go's OpenChDB), was reading a SIBLING
 // fixture's leftover table in the process-shared chDB session:
 //
 //   - regex_name_matcher_underscored_matches_dotted and
@@ -56,11 +59,12 @@ var isolationSample = []string{
 // invariant 5 mandates reproducing a red check — rather than just calling
 // spec.RunRoundTrip in-process, because the whole point is to prove each
 // fixture is self-sufficient in a process where NO sibling fixture has
-// run first and left tables behind. Once the chDB session is genuinely
-// isolated per fixture (this repo's fix), running a fixture alone and
-// running it as part of the full TestRoundTripChDB walk mean the same
-// thing; a regression that reintroduces cross-fixture leakage (dropping
-// resetChDBSession, or a fixture's seed drifting out of
+// run first and left tables behind. Once each fixture is genuinely
+// isolated (this repo's fix: spec.OpenChDB gives every fixture its own
+// DATABASE on the shared session), running a fixture alone and running it
+// as part of the full TestRoundTripChDB walk mean the same thing; a
+// regression that reintroduces cross-fixture leakage (dropping that
+// per-fixture database, or a fixture's seed drifting out of
 // self-sufficiency) breaks exactly the isolated invocation this test
 // drives, even though the whole-package walk would stay green.
 func TestFixtureIsolation_SampleRunsAlone(t *testing.T) {
@@ -69,6 +73,7 @@ func TestFixtureIsolation_SampleRunsAlone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pattern := "^TestRoundTripChDB$/^" + name + "$"
 			cmd := exec.Command("go", "test", "-tags", "chdb", "-count=1", "-v", "-run", pattern, ".")
+			cmd.Env = withoutCorpusShard(os.Environ())
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf(
@@ -88,5 +93,51 @@ func TestFixtureIsolation_SampleRunsAlone(t *testing.T) {
 				t.Fatalf("fixture %s: -run %q matched no subtest (typo'd name?), output:\n%s", name, pattern, out)
 			}
 		})
+	}
+}
+
+// withoutCorpusShard strips SPEC_SHARD_INDEX / SPEC_SHARD_COUNT from an
+// environment.
+//
+// The nested `go test` above names ONE fixture and needs the whole corpus
+// available to find it. Inherited unchanged, a parent that owns a corpus SLICE
+// — CI's fanned-out `roundtrip (promql)` leg
+// (.github/scripts/chdb-roundtrip.mjs) — hands the child its own partition,
+// spec.WalkShard filters the named fixture out for two legs in three, and the
+// child reports "matched no subtest" for a fixture that is not missing at all.
+// The partition belongs to the walk that declared it, not to a subprocess
+// asking a different question.
+func withoutCorpusShard(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, spec.ShardIndexEnv+"=") || strings.HasPrefix(kv, spec.ShardCountEnv+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// TestWithoutCorpusShard pins the strip itself, because its failure mode is
+// the quiet one: with the pair still in the child's environment the nested
+// run reports a MISSING FIXTURE, which reads as a corpus problem rather than
+// as an inherited partition, and the real message is lost.
+func TestWithoutCorpusShard(t *testing.T) {
+	t.Parallel()
+
+	got := withoutCorpusShard([]string{
+		"PATH=/usr/bin",
+		spec.ShardIndexEnv + "=2",
+		"GODEBUG=asyncpreemptoff=1",
+		spec.ShardCountEnv + "=3",
+	})
+	want := []string{"PATH=/usr/bin", "GODEBUG=asyncpreemptoff=1"}
+	if len(got) != len(want) {
+		t.Fatalf("withoutCorpusShard() = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("withoutCorpusShard() = %q, want %q", got, want)
+		}
 	}
 }

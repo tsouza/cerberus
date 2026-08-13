@@ -286,10 +286,10 @@ func isolatedChDBDatabaseName(testName string) string {
 // Idempotency within one fixture: a single fixture's seed can run
 // through this more than once in the same session — RunRoundTrip
 // (pre-optimizer) and RunRoundTripSQL/RunParity (post-optimizer /
-// reference-engine) all reseed the same `seed:` text against whatever
-// session OpenChDB most recently produced, and [resetChDBSession] only
-// tears that session down at the END of the fixture's subtest, not
-// between these calls. The applier promotes bare `CREATE TABLE` to
+// reference-engine) all reseed the same `seed:` text into the isolated
+// DATABASE [OpenChDB] created for the fixture, which it caches for the
+// whole subtest and drops only at the END of it, not between these
+// calls. The applier promotes bare `CREATE TABLE` to
 // `CREATE OR REPLACE TABLE` so a second pass over the same seed within
 // one fixture doesn't trip TABLE_ALREADY_EXISTS. Fixture authors who
 // want strict CH semantics can opt out by writing

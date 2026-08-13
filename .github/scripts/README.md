@@ -1332,6 +1332,37 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   - Exit: `0` when every shard passed or the lane was correctly
     short-circuited, `1` otherwise.
 
+- **`chdb-roundtrip.mjs`** — `chdb.yml`, the `roundtrip (<ql>)` matrix job. Runs
+  one head's chDB-executing TXTAR walk: `./test/spec/<ql>/` (pre-optimizer) and
+  `./internal/<ql>/` (post-optimizer plus the reference-engine parity). It
+  replaces a bare `go test` line for two reasons that line could not express.
+  First, an explicit per-process `-timeout`: without one every leg runs under
+  `go test`'s own DEFAULT 10-minute watchdog, which is applied per test BINARY
+  and is entirely independent of the job's `timeout-minutes`. The promql leg
+  had been finishing inside 550-600s of that 600s budget for weeks and then
+  crossed it, failing a PR on a walk that was still making forward progress —
+  the timeout panic named a subtest one second old, at fixture 475 of 582.
+  Second, a fan-out: the promql corpus is 582 fixtures against logql's 189 and
+  traceql's 222, so its leg takes ~700s where the other two heads' whole jobs
+  finish in under 180s, and that gap widens with every fixture merged. The walk
+  cannot be parallelised in-process (chdb-go caches ONE session per process and
+  the fixtures share it — #1987, #2096), so promql is split across three
+  processes over the SAME `SPEC_SHARD_INDEX` / `SPEC_SHARD_COUNT` partition
+  `just update-golden` already fans out on (`lib/golden-shards.mjs`,
+  `test/spec/shard.go`). Unlike `perf-guards`, the split is INSIDE the job, so
+  no context is renamed and branch protection is untouched. A build-only
+  `-run=^$` pass runs first, because Go's build cache dedupes stored output
+  rather than concurrent work and three legs would otherwise compile the same
+  two binaries at once on a cold runner. `chdb-roundtrip.test.mjs` is the
+  `node --test` guard (run on `ci.yml`'s scripts lane); its load-bearing
+  assertion reads `chdb.yml` and requires the per-process timeout to stay
+  strictly BELOW the job's `timeout-minutes`, because only `go test`'s own alarm
+  prints the goroutine dump that names a wedged libchdb frame — a runner kill
+  prints nothing.
+  - Env: `QL` (`promql` | `logql` | `traceql`), `TAGS` (the leg's build tags),
+    `GO` (test seam; default `go`).
+  - Exit: `0` when every leg passed, `1` on a failed leg or bad input.
+
 - **`migration-e2e.mjs`** — `ci.yml`'s `lint` job (`MODE=verify`) and
   `migration-e2e.yml` (all four modes). The Layer-14 migration lane's
   coverage ratchet, tier-matrix emitter, scenario runner and lane roll-up.
