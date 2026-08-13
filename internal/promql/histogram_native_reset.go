@@ -76,12 +76,13 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // coarsest any row in the window carries — rather than at each pair's own
 // current scale, because that is the scale every row has already been
 // rescaled onto and the only one they are all comparable at. The two
-// readings coincide whenever a series holds one scale across the window,
+// readings coincide whenever a series holds ONE scale across the window,
 // which is every series that never restarts and every restart that does
-// not change resolution; where they differ, the difference is a fine-scale
-// regression that survives coarsening only if the coarse bucket regresses
-// too, and a resolution CHANGE is already an unconditional reset by the
-// Schema condition above.
+// not change resolution. They part company when a LATER sample coarsens
+// the scale, since that pulls the merged scale below the earlier pairs'
+// own and a fine-bucket regression its coarse bucket absorbs stops being
+// visible — issue #2095 carries that residual, which the per-component
+// rule this mask replaced read exactly the same way.
 //
 // # Why it is a column and not an expression inlined into the fold
 //
