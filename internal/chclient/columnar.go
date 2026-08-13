@@ -89,6 +89,13 @@ var histogramMatrixColumns = [...]string{
 // string) is treated as "unknown, defer to the structural test" so this gate
 // can be adopted incrementally without silently disabling the columnar
 // decode for not-yet-migrated callers.
+//
+// Because it is a statement of caller INTENT rather than an observation of the
+// result, it is readable before the dial: queryCursorColumnar declines on a
+// declared non-matrix shape BEFORE acquirePool, so the fallback costs one
+// physical execution rather than two (#2043). bindColumns re-checks it on the
+// first result block, which is where a caller whose ctx never reached this
+// package still gets the structural test.
 const ResponseShapeMatrix = "prom-matrix"
 
 // responseShapeCtxKey is the context key WithResponseShape and
@@ -219,6 +226,22 @@ func chPoolOptions(cfg Config) chpool.Options {
 // with err nil. A non-nil err is a real failure already classified + recorded
 // against the breaker, exactly as the row path's QueryCursor open failure.
 func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql string, args ...any) (Cursor, bool, error) {
+	// A caller that has DECLARED a non-matrix ResponseShape has already told us
+	// this query is not the prom query_range matrix, and it said so on the ctx —
+	// before any dial. Decline here, where the verdict is free, rather than in
+	// bindColumns, where the identical verdict arrives only after pool.Do has
+	// run the query to its first result block: the row fallback then re-dispatches
+	// it in full under a fresh query_id, so a late decline costs TWO physical
+	// executions for every LogQL / Tempo query an operator who opted into
+	// columnar_result_decode runs (#2043). An absent shape ("") stays "unknown,
+	// defer to the structural test", exactly as bindColumns treats it, so a
+	// not-yet-threaded caller is unaffected. bindColumns keeps this same check as
+	// the defense-in-depth it was added as (#1429); this only stops the dispatch
+	// its verdict was always going to waste.
+	if shape := ResponseShapeFromContext(ctx); shape != "" && shape != ResponseShapeMatrix {
+		return nil, false, nil
+	}
+
 	// Bind the positional `?` args into the raw SQL body ch-go sends. An
 	// unbindable arg type (outside the matrix path's closed string/int/float
 	// set) defers to the row path BEFORE any dial or breaker touch — the
