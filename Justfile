@@ -418,17 +418,62 @@ bench:
 # comparison reports instead of failing. COVERAGE_LANES tells the script which
 # of the two it got; CI sets COVERAGE_REQUIRE_LANES so a chdb install that
 # quietly no-ops fails the job instead of disarming the gate.
+#
+# `-coverpkg` is what makes the number a fact about the tests rather than about
+# the file layout. Without it a package is measured only by its OWN test
+# binary, so a helper package with no _test.go of its own lands in the profile
+# fully instrumented and entirely unexecuted no matter how hard the rest of the
+# suite drives it — and the floor derived from that zero cannot fail. With it,
+# every test binary reports coverage for every listed package it links, so
+# extracting a helper into its own package no longer resets its measured
+# coverage to nothing. The cost is that each block is then reported once per
+# test binary that linked it; the awk below (and coverage-summary.mjs itself)
+# fold those duplicates by taking the widest count per block.
+#
+# The pattern is `go list`'s expansion rather than the literal `./...`, because
+# the two are NOT the same set here: go.mod `ignore`s the vendored upstream
+# Loki and Tempo trees, so `./...` skips them when choosing what to test — but
+# a literal `-coverpkg=./...` still instruments them, since they reach the
+# build graph as dependencies of the compliance harnesses. That would put
+# vendored third-party code into the coverage ledger and hold cerberus's gate
+# to the test coverage of somebody else's benchmark suite. Asking `go list` per
+# lane keeps the measured set identical to the tested set, with no exclusion
+# list to maintain or forget.
 coverage:
     @echo "==> default-tag coverage"
     # `|| true` tolerates partial failures (e.g. `main` packages that
     # require the `covdata` tool on toolchains that ship without it).
     # The cover.out profile is still written for every package that
     # compiled, which is all production code in internal/**.
-    go test -timeout 25m -coverprofile=cover.out ./... || true
+    # 40m, not the 25m this lane used before -coverpkg: the heaviest binary
+    # (test/perf) took 933s of that budget on CI while instrumenting only its
+    # own package, and instrumenting every package into it measured 1266s
+    # locally. A binary that overruns is swallowed by the `|| true` above and
+    # silently drops its whole contribution from the profile, which shows up
+    # later as an unexplained floor failure rather than as a timeout.
+    # The awk trims go test's echo of the -coverpkg list back to what the
+    # bare `./...` form used to print. An explicit list of every package is
+    # ~5 KiB, repeated on EVERY package's result line, which buries the
+    # ok/FAIL the line exists to report under a megabyte of restated flag.
+    # It rewrites only the tail of that one sentence; results, failures and
+    # everything on stderr pass through untouched. `fflush()` keeps the pipe
+    # line-buffered — a block-buffered filter would show nothing at all until
+    # a 4 KiB chunk fills, which on a lane this long reads as a hung job.
+    go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }' || true
     @test -s cover.out
+    # Fold each lane as soon as it is written. -coverpkg makes EVERY test
+    # binary emit a row for every block it linked, so a raw lane profile is
+    # ~200 MB of repeats where the useful content is ~2 MB. One row per block,
+    # keeping the widest count, is `mode: set`'s union and loses nothing — it
+    # is the same fold the merge below does, just applied a step earlier, so
+    # the on-disk file and the uploaded artifact stay the size they were.
+    @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out | sort; } > cover-folded.out && mv cover-folded.out cover.out
     @if [ -e /usr/local/lib/libchdb.so ]; then \
         echo "==> chdb-tagged coverage"; \
-        go test -timeout 25m -tags chdb -coverprofile=cover-chdb.out ./... || true; \
+        go test -timeout 40m -tags chdb -coverpkg="$(go list -tags chdb ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }' || true; \
+        { echo "mode: set"; \
+          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out | sort; \
+        } > cover-folded.out && mv cover-folded.out cover-chdb.out; \
         echo "==> merging profiles"; \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
@@ -448,6 +493,13 @@ coverage:
 # reported and the run fails, because a tool that rewrites a floor to match a
 # regression launders the regression into a green run. Restore the tests, or
 # lower the floor by hand so the drop is a reviewable line in the diff.
+#
+# It also never records a 0. A package too thinly exercised to justify any
+# floor above 0 fails the run instead: 0 is not a floor, it is an entry that
+# looks measured while nothing can fall through it — every statement in the
+# package could be deleted and the gate would stay green. Give the package a
+# test (the profile is built with `-coverpkg` over the whole module, so a test
+# in ANY package counts), or delete the code nothing reaches.
 update-coverage-floor:
     @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; floors recorded without the chdb lane would under-record every package that lane reaches" >&2; exit 1; }
     @test -s cover-merged.out || { echo "error: cover-merged.out not found — run 'just coverage' first; the floors are derived from the profile it writes" >&2; exit 1; }

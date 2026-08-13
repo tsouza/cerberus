@@ -81,6 +81,18 @@ test('blocks aggregate per package, counting a block covered when its count is n
   assert.deepEqual(packages.get('internal/b'), { total: 5, covered: 5 });
 });
 
+test('a block reported by several test binaries is folded, not counted once per binary', () => {
+  // The `-coverpkg=./...` shape: every test binary that links a package emits
+  // its own row for every block, and the same block arrives covered from one
+  // binary and uncovered from another. Summing the repeats would inflate
+  // `total` by the number of binaries and make the percentage a fact about the
+  // suite's shape rather than about the package.
+  const one = 'github.com/tsouza/cerberus/internal/a/one.go:1.1,2.2 4';
+  const { packages, err } = parseProfile(`mode: set\n${one} 0\n${one} 3\n${one} 0\n`);
+  assert.equal(err, undefined);
+  assert.deepEqual(packages.get('internal/a'), { total: 4, covered: 4 });
+});
+
 test('an empty or malformed profile is an error, not an empty report', () => {
   // A zero-package profile scoring 100% would be the purest hollow green
   // available: nothing measured, nothing to compare, job green.
@@ -129,6 +141,17 @@ test('comparison reports drops, unfloored packages and vanished floors', () => {
   assert.deepEqual(missing, ['internal/renamed']);
 });
 
+test('a floor of 0 is treated as no floor at all, not as a floor that always passes', () => {
+  // The hole this closes: a 0 floor satisfies the "carries statements but no
+  // floor" check while nothing can fall through it. Every statement in the
+  // package could be deleted and the comparison would still pass.
+  const { packages } = parseProfile(profile([['internal/zero/a.go', 10, 1]]));
+  const { below, unfloored, unfailable } = compare(packages, { 'internal/zero': 0 });
+  assert.deepEqual(unfailable, ['internal/zero']);
+  assert.deepEqual(below, [], 'a 0 floor is not reported as a drop — it is reported as no floor');
+  assert.deepEqual(unfloored, []);
+});
+
 test('the update ratchets floors up and refuses to lower one', () => {
   const { packages } = parseProfile(
     profile([
@@ -143,6 +166,25 @@ test('the update ratchets floors up and refuses to lower one', () => {
     regressions.map((r) => r.pkg),
     ['internal/down'],
   );
+});
+
+test('the update returns an unfloorable package instead of writing a 0 into the ledger', () => {
+  const { packages } = parseProfile(
+    profile([
+      ['internal/untested/a.go', 10, 0],
+      ['internal/thin/a.go', 1, 1],
+      ['internal/thin/b.go', 199, 0],
+      ['internal/real/a.go', 10, 1],
+    ]),
+  );
+  const { next, unfloorable } = nextFloors(packages, {});
+  assert.deepEqual(
+    unfloorable.map((r) => r.pkg),
+    // 0% justifies nothing; 0.5% is inside the slack, so it justifies nothing
+    // either — the slack is jitter absorption, not a floor of its own.
+    ['internal/thin', 'internal/untested'],
+  );
+  assert.deepEqual(Object.keys(next), ['internal/real'], 'only the floorable package is written');
 });
 
 test('a lane set narrower than the caller requires fails instead of disarming the gate', () => {
@@ -191,6 +233,35 @@ test('end to end: an update that would lower a floor exits 1 and leaves the ledg
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /reviewable line/);
     assert.equal(JSON.parse(readFileSync(floorsPath, 'utf8'))['internal/thin'], 80);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: a 0 floor on a statement-carrying package exits 1', () => {
+  // The negative control for the whole change. Before it, this exact ledger
+  // was green, and stayed green with every statement in the package deleted.
+  const { dir, profilePath, floorsPath } = fixture([['test/spec/promqlsweep/sweep.go', 61, 1]], {
+    'test/spec/promqlsweep': 0,
+  });
+  try {
+    const { status, out } = run(profilePath, floorsPath);
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /floor of 0/);
+    assert.match(out, /test\/spec\/promqlsweep/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: an update refuses to record a 0 floor and leaves the ledger alone', () => {
+  const { dir, profilePath, floorsPath } = fixture([['internal/untested/a.go', 10, 0]], {});
+  try {
+    const { status, out } = run(profilePath, floorsPath, { COVERAGE_UPDATE_FLOORS: '1' });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /0 is not a floor/);
+    assert.match(out, /internal\/untested: 0\.00% of 10 statements/);
+    assert.deepEqual(JSON.parse(readFileSync(floorsPath, 'utf8')), {}, 'the ledger gained no entry');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -154,7 +154,7 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 
 // histogramWindowInputs carries the per-series signals histogramWindowFold
 // threads into the folds it builds. They are grouped rather than passed
-// positionally because they are five expressions of one type, and a
+// positionally because they are six expressions of one type, and a
 // transposed pair of them would still compile and still emit valid SQL —
 // the reset mask read as a temporality signal, say, would answer every
 // query with the CUMULATIVE branch and go unnoticed everywhere the two
@@ -168,11 +168,15 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 //     result against the series' total-observation count.
 //   - temporality and resets at counterIncreaseFold, which decides how the
 //     window's raw values sum into an increase.
+//   - perSecond at histogramWindowFold itself, which is where `rate`'s
+//     division by the range lands — on the extrapolation factor, before the
+//     single multiplication that scales the whole histogram.
 //
 // The zero value is meaningful: a nil field is that signal's ABSENCE, and
 // each consumer documents what it falls back to (a nil countValues folds
 // the rung's own values, a nil temporality applies the CUMULATIVE reading,
-// a nil resets leaves each component deciding its own reset).
+// a nil resets leaves each component deciding its own reset, a nil
+// perSecond leaves the window's increase undivided).
 type histogramWindowInputs struct {
 	// rangeStart / rangeEnd are the requested window's own edges.
 	rangeStart, rangeEnd chplan.Expr
@@ -190,6 +194,18 @@ type histogramWindowInputs struct {
 	// (hqWindowResetsAlias), or nil where each component decides its own
 	// reset — see counterIncreaseFold.
 	resets chplan.Expr
+
+	// perSecond carries `rate`'s division by the range, and is nil on every
+	// caller that does not need it — the quantile callers, whose ratios the
+	// division cancels out of (see histogramWindowFold), and `increase`,
+	// which is `rate` WITHOUT it. When non-nil it divides the extrapolation
+	// FACTOR rather than the fold's product, because that is where reference
+	// puts it, and in float64 that is not the same number. Only a
+	// histogram-VALUED answer can see the difference: it reaches the wire as
+	// bucket counts compared against reference exactly, where a scalar answer
+	// is compared under an epsilon and a quantile reads ratios the factor
+	// cancels out of.
+	perSecond chplan.Expr
 }
 
 // histogramWindowFold maps a matched range-vector function to the
@@ -285,10 +301,24 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 					if in.countValues != nil {
 						cv = in.countValues
 					}
+					factor := histogramExtrapolationFactorExpr(ord, cv, in)
+					if in.perSecond != nil {
+						// Reference divides the FACTOR and then multiplies
+						// once (`factor /= ms.Range.Seconds()`, then one
+						// Mul over the whole histogram). Dividing the
+						// product instead would be the same value in exact
+						// arithmetic but not in float64: (a*b)/c and
+						// a*(b/c) differ by an ulp on most inputs, and a
+						// histogram-valued answer is compared against
+						// reference WITHOUT an epsilon, so the order is
+						// observable rather than cosmetic. See
+						// expHistogramValuedWindowFold.
+						factor = &chplan.Binary{Op: chplan.OpDiv, Left: factor, Right: in.perSecond}
+					}
 					return &chplan.Binary{
 						Op:    chplan.OpMul,
 						Left:  counterIncreaseFold(vals, ord, in.temporality, in.resets),
-						Right: histogramExtrapolationFactorExpr(ord, cv, in),
+						Right: factor,
 					}
 				})
 			})
