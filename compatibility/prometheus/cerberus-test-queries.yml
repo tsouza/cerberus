@@ -714,6 +714,38 @@ test_cases:
   - query: 'rate(demo_shifting_latency_exp_hist[5m])'
   - query: 'increase(demo_shifting_latency_exp_hist[1m])'
   - query: 'increase(demo_shifting_latency_exp_hist[5m])'
+  # The FLOAT-valued reductions over a native histogram: reference's
+  # funcResets, funcChanges and the `count` aggregation all publish a
+  # plain sample rather than a distribution, so unlike every case above
+  # these compare as ordinary floats.
+  #
+  # resets() and changes() ask DIFFERENT questions of the same samples —
+  # DetectReset is a directional regression test, Equals is structural
+  # whole-row equality — so a lowering that answered one with the other's
+  # kernel diverges here rather than agreeing by symmetry. Both fixtures
+  # are carried: demo_latency_exp_hist grows monotonically (so resets is
+  # 0 and changes is not, which is exactly the pair that catches the two
+  # kernels being swapped), while demo_shifting_latency_exp_hist's shape
+  # MOVES across the window and its third instance sits at a different
+  # scale, which is what exercises the bucket-regression and
+  # resolution-change conditions rather than the Count one alone.
+  - query: 'resets(demo_latency_exp_hist[5m])'
+  - query: 'changes(demo_latency_exp_hist[5m])'
+  - query: 'resets(demo_shifting_latency_exp_hist[1m])'
+  - query: 'resets(demo_shifting_latency_exp_hist[5m])'
+  - query: 'changes(demo_shifting_latency_exp_hist[1m])'
+  - query: 'changes(demo_shifting_latency_exp_hist[5m])'
+  # count() over native-histogram series. Reference's aggregation switch
+  # increments groupCount with no guard on the sample's value, so this
+  # counts the series and never reads a bucket — which is what separates
+  # it from the min/max/stddev/stdvar/quantile family that DROPS a
+  # histogram sample. The grouped form pins that the per-series collapse
+  # happens before the count: demo_latency_exp_hist's instances each
+  # carry many samples in the lookback, so a count over the stored rows
+  # rather than over the instant vector reports the scrape count.
+  - query: 'count(demo_latency_exp_hist)'
+  - query: 'count by (instance) (demo_latency_exp_hist)'
+  - query: 'count(demo_shifting_latency_exp_hist)'
   # Float inputs: the native-histogram value functions skip float samples
   # rather than erroring, so a float family and an absent family both
   # answer the empty vector on both backends. These pin that acceptance,

@@ -2739,24 +2739,31 @@ func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
 // this emitter implements), a float<->histogram type transition
 // (always a reset), and a histogram-histogram pair where
 // curr.H.DetectReset(prev.H) fires (bucket count or schema/count
-// regressing). Conditions 2 and 3 need a histogram-shaped sample to
-// ever occur, and no lowering path can produce one here:
-// expHistogramSelectorRouting (internal/promql/lower.go) rejects
-// `resets()` over an exponential-histogram selector at lowering time,
-// before a RangeWindow node exists to reach this emitter (pinned by
-// TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly/resets).
+// regressing). Conditions 2 and 3 need a histogram-shaped sample to ever
+// occur, and no lowering path can produce one HERE — which is a
+// statement about this emitter's INPUT, not about what cerberus answers.
+//
+// `resets()` over an exponential-histogram selector IS answered, by
+// internal/promql/histogram_native_resets.go. That lowering never builds
+// a chplan.RangeWindow: it reduces the window with an Aggregate whose
+// groupArrays feed the whole-histogram reset mask
+// (histogram_native_reset.go, reference's DetectReset transcribed) and
+// caps the result with a Project, so condition 3 is implemented in the
+// plan rather than in this emitter and no histogram-valued window ever
+// arrives at `window_vals`. Condition 2 stays unreachable everywhere:
+// floats and exponential histograms live in disjoint tables, so a single
+// series cannot mix the two sample kinds in cerberus's storage model.
+//
 // Classic-histogram `_bucket{le=...}` selectors don't need the extra
 // conditions either — wrapHistogramBucketFanout already fans each `le`
 // bucket into its own independent float series, so condition 1 alone
 // answers correctly. Every RangeWindow{Func: "resets"} this emitter (and
 // its native-grid counterpart, timeSeriesResetsToGrid in
 // range_window_native.go — itself a ClickHouse builtin with no
-// histogram-valued signature) ever receives is float-only by
-// construction. Tracked as a deliberate, documented divergence (cerberus
-// rejects what reference Prometheus answers) under #1772; extending
-// resets() to histogram input is scoped there alongside rate() (see
-// #1926/#1967) for whenever that lands — see #1493 (closed) for the
-// exact 3-condition kernel spec above.
+// histogram-valued signature) ever receives is therefore float-only by
+// construction. See #1493 (closed) for the exact 3-condition kernel spec
+// above, and #1772 (closed by the native lowering) for the shape that
+// used to be rejected here.
 func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 	value := Cast(
 		Call(
