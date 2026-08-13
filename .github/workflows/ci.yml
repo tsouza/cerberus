@@ -715,6 +715,17 @@ jobs:
       - name: Assert the perf-guards shard roll-up cannot report a hollow green
         run: node --test .github/scripts/perf-guards-aggregate.test.mjs
 
+      # The `roundtrip (<ql>)` leg runner. Two of its properties are invisible
+      # in the chDB lane itself until they fail 10-20 minutes in: that every leg
+      # declares an explicit `go test -timeout` (without one the leg runs under
+      # go test's own 10-minute default, which the promql corpus outgrew — the
+      # #2094 red lane), and that the bound stays strictly BELOW the job's
+      # `timeout-minutes`, so a genuine wedge is reported by go test's goroutine
+      # dump rather than by a runner kill that prints nothing. Pure in-process
+      # test over the module plus a read of chdb.yml, ~250ms.
+      - name: Assert the chDB round-trip legs are bounded and diagnosable
+        run: node --test .github/scripts/chdb-roundtrip.test.mjs
+
       # The subprocess helper every script above runs its commands through.
       # capture() names the spawnSync options it forwards rather than spreading
       # `opts`, so an unsupported key used to vanish without a word — and a

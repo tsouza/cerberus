@@ -60,7 +60,29 @@ func TestLower(t *testing.T) {
 	rangeStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	rangeEnd := rangeStart.Add(5 * time.Minute)
 
-	spec.Walk(t, fixtureDir, func(t *testing.T, c *spec.Case) {
+	// The slice of the corpus this PROCESS owns. With SPEC_SHARD_INDEX /
+	// SPEC_SHARD_COUNT unset — a hand-typed `go test ./internal/promql/`, or
+	// `just update-golden promql`, whose TestLower generator declares no
+	// fan-out because it writes the `-- sql --` that the round-trip generator
+	// then executes — that slice is the whole corpus and this walks exactly
+	// what it always did.
+	//
+	// CI's `roundtrip (promql)` leg DOES set the pair, because under the
+	// `chdb` tag this walk additionally executes every fixture's post-optimizer
+	// SQL (RunRoundTripSQL) and answers the parity-enrolled ones with a real
+	// Prometheus engine (RunParity) — the single longest chDB-executing walk
+	// in the repo, and one that grows with every fixture added. Spreading it
+	// over several PROCESSES is the only parallelism it can take: the subtests
+	// share chdb-go's package-level session singleton, which spec.OpenChDB
+	// isolates fixtures against by switching DATABASE rather than by tearing
+	// down, so a t.Parallel() here would race two goroutines against those
+	// CREATE/USE/DROP DATABASE statements. See spec.WalkShard's doc comment.
+	shard, err := spec.ShardFromEnv()
+	if err != nil {
+		t.Fatalf("lowering corpus shard: %v", err)
+	}
+
+	spec.WalkShard(t, fixtureDir, shard, func(t *testing.T, c *spec.Case) {
 		// Fixtures prefixed `exemplars_` are owned by the chsql
 		// exemplars emitter harness under
 		// internal/chsql/query_exemplars_spec_test.go — they record
