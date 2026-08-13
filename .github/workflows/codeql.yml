@@ -78,8 +78,11 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-          # Default query suite mirrors what default setup was running.
-          queries: security-and-quality
+          # config-file carries both the query suite (still security-and-quality,
+          # matching what default setup ran) and paths-ignore, which excludes
+          # standalone non-production Go binaries from extraction — see the
+          # config file's own header comment for why.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
