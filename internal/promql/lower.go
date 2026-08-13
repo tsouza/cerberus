@@ -2244,9 +2244,9 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	vsNoModifier.StartOrEnd = 0
 	rangeCtx := ctx
 	rangeCtx.inRangeVector = true
-	// rate() / increase() apply Prometheus's counter-reset rule, which
-	// assumes CUMULATIVE storage — reading a DELTA-temporality counter the
-	// same way silently inflates every window (see issue #1628). Decide
+	// rate() / increase() / irate() apply Prometheus's counter-reset rule,
+	// which assumes CUMULATIVE storage — reading a DELTA-temporality counter
+	// the same way silently inflates every window (see issue #1628). Decide
 	// UPFRONT, via the same routing resolveSelectorRouting is about to make
 	// inside lowerVectorSelector, whether this selector resolves to a
 	// single, unambiguous Sum- or Histogram-table scan: a Gauge-table scan
@@ -2262,7 +2262,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// Project — inspecting the already-built, already-narrowed output
 	// cannot recover a column that Project already dropped.
 	var temporalityCol string
-	if c.Func.Name == "rate" || c.Func.Name == "increase" {
+	if counterTemporalityRangeFn(c.Func.Name) {
 		temporalityCol = rangeVectorCounterTemporalityColumn(vs, s, rangeCtx)
 	}
 	rangeCtx.wantsTemporalityColumn = temporalityCol != ""
@@ -2628,14 +2628,36 @@ func isPlainScanFilter(n chplan.Node) bool {
 	}
 }
 
+// counterTemporalityRangeFn reports whether a range function reads its
+// window as a COUNTER — i.e. whether its per-window arithmetic differs
+// between a CUMULATIVE and a DELTA AggregationTemporality, and so needs
+// chplan.RangeWindow.TemporalityColumn threaded through to the emitter's
+// runtime branch (chsql.CounterOrDeltaSum for the whole-window sum
+// rate/increase reduce, chsql.CounterOrDeltaPairDelta for irate's
+// last-two-samples pair).
+//
+// The set is exactly PromQL's counter functions. `delta` and `idelta`
+// are deliberately absent: both are gauge functions that never applied
+// the counter-reset rule, so neither has a temporality-dependent branch
+// to make. `resets` / `changes` are absent for the same reason — they
+// count shape events in the raw sample series rather than reconstructing
+// an increase from it. See issues #1628 and #1963.
+func counterTemporalityRangeFn(name string) bool {
+	switch name {
+	case "rate", "increase", "irate":
+		return true
+	}
+	return false
+}
+
 // rangeVectorCounterTemporalityColumn reports which column
-// chplan.RangeWindow.TemporalityColumn should carry for a rate() /
-// increase() call over vs, or "" when none applies. It calls the SAME
-// resolveSelectorRouting the inner lowerVectorSelector is about to call
-// for this exact selector, so the two never disagree about which table(s)
-// the selector resolves to — see rangeCtx.wantsTemporalityColumn's doc for
-// why this has to run BEFORE lowerVectorSelector rather than inspect its
-// output.
+// chplan.RangeWindow.TemporalityColumn should carry for a
+// counterTemporalityRangeFn call over vs, or "" when none applies. It
+// calls the SAME resolveSelectorRouting the inner lowerVectorSelector is
+// about to call for this exact selector, so the two never disagree about
+// which table(s) the selector resolves to — see
+// rangeCtx.wantsTemporalityColumn's doc for why this has to run BEFORE
+// lowerVectorSelector rather than inspect its output.
 //
 // The column only applies when the selector resolves to EXACTLY ONE
 // table, and that table is the Sum or (classic) Histogram table: a

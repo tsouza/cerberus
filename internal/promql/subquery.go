@@ -380,6 +380,18 @@ func lowerSubqueryOverCall(
 	vsNoModifier.StartOrEnd = 0
 	rangeCtx := ctx
 	rangeCtx.inRangeVector = true
+	// A subquery's inner counter function reads the SAME stored samples the
+	// un-nested call does, so it owes the same DELTA-vs-CUMULATIVE runtime
+	// branch: `max_over_time(rate(m[5m])[1h:1m])` over a DELTA-temporality
+	// counter was reading every window through Prometheus's counter-reset
+	// rule, the exact bug #1628 fixed one level up (issue #1963, item 2).
+	// Resolved through the same helper — and BEFORE lowerVectorSelector, for
+	// the same narrowing-Project reason — as lowerRangeVectorCall's site.
+	var temporalityCol string
+	if counterTemporalityRangeFn(call.Func.Name) {
+		temporalityCol = rangeVectorCounterTemporalityColumn(vs, s, rangeCtx)
+	}
+	rangeCtx.wantsTemporalityColumn = temporalityCol != ""
 	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
@@ -391,17 +403,18 @@ func lowerSubqueryOverCall(
 	}
 
 	rw := &chplan.RangeWindow{
-		Input:           inner,
-		Func:            canonicalRangeWindowFunc(call.Func.Name),
-		Range:           ms.Range,
-		OuterRange:      sub.Range,
-		Step:            step,
-		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
-		Offset:          anchor.Offset,
-		TimestampColumn: s.TimestampColumn,
-		ValueColumn:     s.ValueColumn,
-		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		Input:             inner,
+		Func:              canonicalRangeWindowFunc(call.Func.Name),
+		Range:             ms.Range,
+		OuterRange:        sub.Range,
+		Step:              step,
+		StepAlign:         true, // epoch-align inner subquery sample grid (PromQL)
+		End:               anchor.End,
+		Offset:            anchor.Offset,
+		TimestampColumn:   s.TimestampColumn,
+		ValueColumn:       s.ValueColumn,
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		TemporalityColumn: temporalityCol,
 	}
 	// predict_linear / double_exponential_smoothing / quantile_over_time
 	// carry extra scalar arguments; bind them exactly as the outer-reducer

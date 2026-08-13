@@ -164,11 +164,17 @@ func (e *emitter) tryEmitFusedSubquery(r *chplan.RangeWindow) (handled bool, err
 // applies to the inner RangeWindow, resolved once so the instant and matrix
 // shapes cannot drift apart.
 type fusedSubqueryGrid struct {
-	inner        *chplan.RangeWindow
-	kind         extrapolationKind
-	groupFrags   []Frag
-	innerSub     Frag
-	endInner     Frag
+	inner      *chplan.RangeWindow
+	kind       extrapolationKind
+	groupFrags []Frag
+	innerSub   Frag
+	endInner   Frag
+	// temporality references the per-series AggregationTemporality read
+	// samplesQuery projects (windowTemporalityAlias), or is nil when the
+	// inner window carries no such column — the DELTA-vs-CUMULATIVE branch
+	// every per-anchor counter_delta routes through. See
+	// CounterOrDeltaSum and issue #1963.
+	temporality  Frag
 	stepNS       int64
 	rangeNS      int64
 	rangeSeconds float64
@@ -199,6 +205,7 @@ func (e *emitter) newFusedSubqueryGrid(
 		groupFrags:   groupFrags,
 		innerSub:     innerSub,
 		endInner:     endInner,
+		temporality:  windowTemporalityRef(inner),
 		stepNS:       stepNS,
 		rangeNS:      inner.Range.Nanoseconds(),
 		rangeSeconds: inner.Range.Seconds(),
@@ -211,10 +218,19 @@ func (e *emitter) newFusedSubqueryGrid(
 // materialized matrix fanout's pushdown so the array holds exactly the sample
 // universe that path's per-(series, anchor) regroup saw; the post-groupArray
 // arrayFilter stays the precise window gate.
+//
+// When the inner window carries a TemporalityColumn, the series' single
+// AggregationTemporality reading rides along under windowTemporalityAlias —
+// this ONE group is the fused shape's only GROUP BY, so it is also the only
+// place the any() read can happen, and every per-anchor counter_delta above
+// reads it back from here (see fusedExtrapolatedValueFrag).
 func (g *fusedSubqueryGrid) samplesQuery() *QueryBuilder {
 	q := NewQuery().From(g.innerSub)
 	q.Select(g.groupFrags...)
 	q.Select(As(groupArrayPairFrag(g.inner.TimestampColumn, g.inner.ValueColumn), "samples"))
+	if g.temporality != nil {
+		q.Select(As(Call("any", Col(g.inner.TemporalityColumn)), windowTemporalityAlias))
+	}
 	maybePushInnerScanTimeBounds(q, g.inner, g.inner.TimestampColumn, g.rangeNS)
 	q.GroupBy(g.groupFrags...)
 	return q
@@ -326,7 +342,7 @@ func (e *emitter) emitFusedInstantSubquery(
 	perAnchor := g.mapAnchors(func(a, s Frag) Frag {
 		return Tuple(
 			And(outerWindowPred(a), qualifiesFrag(s)),
-			e.fusedExtrapolatedValueFrag(s, a, g.kind, g.rangeNS, g.rangeSeconds),
+			e.fusedExtrapolatedValueFrag(s, a, g.kind, g.rangeNS, g.rangeSeconds, g.temporality),
 		)
 	})
 
@@ -402,7 +418,7 @@ func (e *emitter) emitFusedMatrixSubquery(
 			return Tuple(
 				a,
 				qualifiesFrag(s),
-				e.fusedExtrapolatedValueFrag(s, a, g.kind, g.rangeNS, g.rangeSeconds),
+				e.fusedExtrapolatedValueFrag(s, a, g.kind, g.rangeNS, g.rangeSeconds, g.temporality),
 			)
 		}),
 		fusedAnchorGridAlias,
@@ -501,15 +517,22 @@ func tupleElemFrag(t Frag, idx int64) Frag {
 // the two paths cannot drift. The inline operands are Paren-wrapped where the
 // materialized aliases are bare single tokens, so `… / sampled_interval` doesn't
 // re-associate a trailing `/ 1e9` once inlined.
+//
+// temporality is the per-series AggregationTemporality reference
+// samplesQuery projected (nil when the inner window carries no such
+// column), and routes the raw window total through the SAME
+// CounterOrDeltaSum branch the materialized path applies — without it a
+// subquery over a DELTA-temporality counter read every anchor's window
+// through Prometheus's counter-reset rule (issue #1963, item 2).
 func (e *emitter) fusedExtrapolatedValueFrag(
-	w, a Frag, kind extrapolationKind, rangeNS int64, rangeSeconds float64,
+	w, a Frag, kind extrapolationKind, rangeNS int64, rangeSeconds float64, temporality Frag,
 ) Frag {
 	lenW := Call("length", w)
 	firstTs := tupleElemFrag(Subscript(w, InlineLit(int64(1))), 1)
 	lastTs := tupleElemFrag(Subscript(w, lenW), 1)
 	firstVal := tupleElemFrag(Subscript(w, InlineLit(int64(1))), 2)
 	lastVal := tupleElemFrag(Subscript(w, lenW), 2)
-	counterDelta := Call("arraySum", CounterDelta(w))
+	counterDelta := CounterOrDeltaSum(w, temporality)
 
 	// sampled_interval and the duration-to-edge raws share secondsBetweenFrag
 	// with the materialized path (Paren-wrapped here because, unlike the

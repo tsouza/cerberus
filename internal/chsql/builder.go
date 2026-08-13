@@ -1801,6 +1801,45 @@ func CounterOrDeltaSum(pairs, temporality Frag) Frag {
 	return If(Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)), delta, cumulative)
 }
 
+// CounterOrDeltaPairDelta renders the increase between ONE adjacent pair
+// of counter samples — `prev` at the earlier timestamp, `curr` at the
+// later one — branching at RUNTIME on the same per-series
+// AggregationTemporality read CounterOrDeltaSum branches on:
+//
+//   - DELTA (schema.AggregationTemporalityDelta): `curr` is ALREADY the
+//     increase over the interval ending at its own timestamp, which for
+//     an adjacent pair is exactly `(prev_ts, curr_ts]` — so the pair's
+//     increase is the raw `curr` value, nothing subtracted. This is
+//     CounterOrDeltaSum's DELTA branch specialised to a two-element
+//     window: `sum(values) - values[first]` over `[prev, curr]` is
+//     `prev + curr - prev`, i.e. `curr`.
+//   - anything else (CUMULATIVE, or the legacy zero/UNSPECIFIED
+//     reading): Prometheus's counter-reset-aware pair delta,
+//     `if(curr < prev, curr, curr - prev)` — the historical,
+//     pre-#1628 behaviour irate applied unconditionally.
+//
+// temporality is nil for callers whose RangeWindow carries no
+// TemporalityColumn, and renders the CUMULATIVE branch alone —
+// byte-identical to every query emitted before this branch existed.
+//
+// This is the two-sample sibling of CounterOrDeltaSum: `irate` reads
+// only the window's last two samples, so it needs the pair form rather
+// than the whole-window sum. `idelta` deliberately does NOT call it —
+// it is a gauge function that never applied the counter-reset rule in
+// the first place, so it has no temporality-dependent branch. See
+// issue #1963.
+//
+// prev and curr are each rendered up to twice (once per branch), so
+// callers pass bare token Frags (a tupleElement over an aliased array),
+// never a Frag carrying `?` bindings.
+func CounterOrDeltaPairDelta(prev, curr func() Frag, temporality Frag) Frag {
+	cumulative := If(Lt(curr(), prev()), curr(), Sub(curr(), prev()))
+	if temporality == nil {
+		return cumulative
+	}
+	return If(Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)), curr(), cumulative)
+}
+
 // pairsValuesFrag renders `arrayMap(x -> tupleElement(x, 2), <pairs>)`
 // — the values-only projection out of an arbitrary Array(Tuple(ts,
 // value)) Frag. Distinct from range_window.go's windowValsFrag, which

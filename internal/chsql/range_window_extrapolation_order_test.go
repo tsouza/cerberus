@@ -157,7 +157,7 @@ func TestExtrapolatedValue_BothPathsMultiplyOnce(t *testing.T) {
 			name: "fused",
 			frag: func(kind extrapolationKind) Frag {
 				return e.fusedExtrapolatedValueFrag(
-					BareIdent("w"), BareIdent("a"), kind, fiveMinutesInNanos, fiveMinutesInSeconds,
+					BareIdent("w"), BareIdent("a"), kind, fiveMinutesInNanos, fiveMinutesInSeconds, nil,
 				)
 			},
 		},

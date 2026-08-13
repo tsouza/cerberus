@@ -182,6 +182,38 @@ const metricsMultiQuantilePhiLabel = "__phi__"
 // what turns a global topk into Tempo's per-anchor topk semantics.
 const RangeWindowAnchorAlias = chplan.RangeWindowAnchorColumn
 
+// windowTemporalityAlias is the SELECT-list alias every windowed-array
+// emitter gives the per-series-window `any(<TemporalityColumn>)` read —
+// the single AggregationTemporality value a series carries for its
+// lifetime (see chplan.RangeWindow.TemporalityColumn), which the
+// DELTA-vs-CUMULATIVE runtime branch (CounterOrDeltaSum,
+// CounterOrDeltaPairDelta) then reads back by name.
+const windowTemporalityAlias = "temporality"
+
+// windowTemporalityRef returns the Frag the per-window value expression
+// should branch on for r, or nil when r's Input carries no
+// AggregationTemporality column at all (a Gauge-table scan, a
+// Scan.UnionTables cross-table read, or any range function outside the
+// counter family — see internal/promql's counterTemporalityRangeFn). A
+// nil result makes every CounterOrDelta* constructor render its
+// CUMULATIVE branch alone, byte-identical to the pre-#1628 emitter.
+//
+// Pairing this with windowTemporalityProjected is what keeps the two
+// halves honest: the alias is only referenced where it was projected.
+func windowTemporalityRef(r *chplan.RangeWindow) Frag {
+	if !windowTemporalityProjected(r) {
+		return nil
+	}
+	return BareIdent(windowTemporalityAlias)
+}
+
+// windowTemporalityProjected reports whether the windowed-array emitters
+// should carry r's AggregationTemporality column down the layer stack as
+// windowTemporalityAlias.
+func windowTemporalityProjected(r *chplan.RangeWindow) bool {
+	return r.TemporalityColumn != ""
+}
+
 // metricsMultiQuantileFanoutFrag returns a Frag rendering the per-(group,
 // anchor) fanout from a `quantiles(p1, p2, ...)(...) AS qs_array` column
 // into N (phi, value) tuples via arrayJoin + arrayMap over a parallel
@@ -541,10 +573,21 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 		return err
 	}
 
-	// Innermost SELECT — groupArray of (ts, value), sorted.
+	// Innermost SELECT — groupArray of (ts, value), sorted. When the Input
+	// carries a TemporalityColumn, also read the series' single
+	// AggregationTemporality via any() — a series has ONE temporality for
+	// its lifetime (see chplan.RangeWindow.TemporalityColumn), so any()
+	// over the window's rows is exact, not a lossy pick. Only irate's value
+	// expression consults it on this path; every other pairs-shape caller
+	// (deriv / predict_linear / timestamp / LogQL log_rate) leaves
+	// TemporalityColumn empty and emits the unchanged column list.
+	hasTemporality := windowTemporalityProjected(r)
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
 	innermost.Select(RawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	if hasTemporality {
+		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+	}
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -567,6 +610,9 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 	// Inner SELECT — arrayFilter to the [end-range, end] window.
 	innerSb := NewQuery().From(innermost.Frag())
 	innerSb.Select(groupFrags...)
+	if hasTemporality {
+		innerSb.Select(Col(windowTemporalityAlias))
+	}
 	innerSb.Select(RawAs(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
 	// Outer SELECT — final value per series.
@@ -628,11 +674,16 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	}
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
+	hasTemporality := windowTemporalityProjected(r)
+
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
 	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
 	fanout.Select(Col(r.ValueColumn))
+	if hasTemporality {
+		fanout.Select(Col(r.TemporalityColumn))
+	}
 	fanout.Select(RawAs(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
 		"anchor_ts",
@@ -644,10 +695,15 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	// maybePushInnerScanTimeBounds.
 	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
-	// Regroup SELECT — rebuild the per-(series, anchor) window array.
+	// Regroup SELECT — rebuild the per-(series, anchor) window array. The
+	// per-series temporality read rides along exactly as it does on the
+	// extrapolated matrix path (see emitWindowedArrayExtrapolatedMatrix).
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
+	if hasTemporality {
+		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
+	}
 	regroup.Select(RawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
@@ -1910,7 +1966,7 @@ func dedupWindowPairsLayer(upstream Frag, groupFrags []Frag, withAnchor, withTem
 		q.Select(Col("anchor_ts"))
 	}
 	if withTemporality {
-		q.Select(Col("temporality"))
+		q.Select(Col(windowTemporalityAlias))
 	}
 	q.Select(As(dedupWindowPairsByTsFrag(BareIdent("window_pairs")), "window_pairs"))
 	return q.Frag()
@@ -2861,26 +2917,33 @@ func (e *emitter) emitRangeWindowIDelta(r *chplan.RangeWindow) error {
 // emitRangeWindowIRate emits SQL for `irate(v[range])`: per-second
 // instantaneous rate using ONLY the last two samples in the window.
 //
-//	irate = if(c >= p, c - p, c) / (last_ts - prev_ts)
+//	irate = <pair increase> / (last_ts - prev_ts)
 //
-// The numerator is counter-reset aware (`if(c < p, c, c - p)`) and
-// the denominator is the time between the two samples in seconds.
-// PromQL's `funcIrate` returns NaN if there are fewer than 2 samples
-// in the window.
+// The numerator is the pair's increase under the series' own
+// AggregationTemporality (CounterOrDeltaPairDelta: the counter-reset-aware
+// `if(c < p, c, c - p)` for a CUMULATIVE counter, the raw `c` for a DELTA
+// one) and the denominator is the time between the two samples in
+// seconds. PromQL's `funcIrate` returns NaN if there are fewer than 2
+// samples in the window.
 func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
 	// We need both the last two values and the last two timestamps,
 	// so reach for `window_pairs` (Array(Tuple(ts, value))) via
 	// emitWindowedArrayPairs rather than the values-only
 	// emitWindowedArray path. PromQL irate drops series whose window
 	// holds fewer than 2 samples (matches Prom's funcIrate).
-	return e.emitWindowedArrayPairs(r, irateValueFrag(), 2)
+	return e.emitWindowedArrayPairs(r, irateValueFrag(windowTemporalityRef(r)), 2)
 }
 
 // irateValueExpr renders the irate per-window value expression. Operates
 // on `window_pairs` (Array(Tuple(DateTime64(9), Float64))). The two
 // most recent samples are at positions length(window_pairs) - 1 and
-// length(window_pairs); the rate is the counter-reset-aware delta
-// divided by the per-sample interval in seconds.
+// length(window_pairs); the rate is that pair's temporality-aware
+// increase divided by the per-sample interval in seconds.
+//
+// temporality is the windowTemporalityAlias reference when the window's
+// Input carries an AggregationTemporality column, nil otherwise — see
+// CounterOrDeltaPairDelta for what each branch computes and why a DELTA
+// counter's numerator is the raw current sample.
 //
 // CH note: dateDiff('second', earlier, later) returns an Int32 that
 // loses sub-second precision. For sub-second sample intervals (rare
@@ -2889,7 +2952,7 @@ func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
 // nanoseconds; divide by 1e9 to get fractional seconds. We use the
 // nanosecond flavour so the result agrees with Prometheus's
 // nanosecond-precision arithmetic.
-func irateValueFrag() Frag {
+func irateValueFrag(temporality Frag) Frag {
 	wp := BareIdent("window_pairs")
 	n := Call("length", wp)
 	lastPair := func() Frag { return Subscript(wp, n) }
@@ -2900,9 +2963,11 @@ func irateValueFrag() Frag {
 	prevTs := Call("tupleElement", prevPair(), InlineLit(int64(1)))
 	// dateDiff('nanosecond', earlier, later) returns Int64.
 	dt := func() Frag { return Call("dateDiff", InlineLit("nanosecond"), prevTs, lastTs) }
-	// Counter-reset-aware delta: if the value dropped, treat it as a reset
-	// and take the raw last value; otherwise the difference.
-	delta := Call("if", Lt(lastVal(), prevVal()), lastVal(), Sub(lastVal(), prevVal()))
+	// The pair's increase under the series' own temporality: the
+	// counter-reset-aware difference for a CUMULATIVE counter (if the value
+	// dropped, treat it as a reset and take the raw last value), the raw
+	// last value for a DELTA one.
+	delta := CounterOrDeltaPairDelta(prevVal, lastVal, temporality)
 	// Guard against zero-second interval (two samples at the same
 	// nanosecond) — return NaN rather than divide-by-zero.
 	return Call(
@@ -3084,7 +3149,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 		return err
 	}
 
-	hasTemporality := r.TemporalityColumn != ""
+	hasTemporality := windowTemporalityProjected(r)
 
 	// Innermost SELECT — groupArray of (ts, value), sorted. When the
 	// Input carries a TemporalityColumn, also read the series' single
@@ -3095,7 +3160,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	innermost.Select(groupFrags...)
 	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
 	if hasTemporality {
-		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), "temporality"))
+		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
@@ -3120,7 +3185,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	innerMid := NewQuery().From(innermost.Frag())
 	innerMid.Select(groupFrags...)
 	if hasTemporality {
-		innerMid.Select(Col("temporality"))
+		innerMid.Select(Col(windowTemporalityAlias))
 	}
 	innerMid.Select(As(windowFilterPairsFrag(end, rangeNS), "window_pairs"))
 
@@ -3135,10 +3200,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// classic histogram, via its bucket-domain transcription) sums the
 	// window's raw samples instead of applying the counter-reset rule —
 	// see chplan.RangeWindow.TemporalityColumn and issue #1628.
-	var temporalityRef Frag
-	if hasTemporality {
-		temporalityRef = BareIdent("temporality")
-	}
+	temporalityRef := windowTemporalityRef(r)
 	mid := NewQuery().From(dedupWindowPairsLayer(innerMid.Frag(), groupFrags, false, hasTemporality))
 	mid.Select(groupFrags...)
 	mid.Select(As(windowValsFrag(), "window_vals"))
@@ -3205,7 +3267,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		return err
 	}
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
-	hasTemporality := r.TemporalityColumn != ""
+	hasTemporality := windowTemporalityProjected(r)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
@@ -3235,7 +3297,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	if hasTemporality {
-		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), "temporality"))
+		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
 	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
@@ -3249,10 +3311,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// corrupt the extrapolation (see dedupWindowPairsByTsFrag). counter_delta
 	// routes through CounterOrDeltaSum — see the instant-path emitter
 	// (emitWindowedArrayExtrapolated) and issue #1628.
-	var temporalityRef Frag
-	if hasTemporality {
-		temporalityRef = BareIdent("temporality")
-	}
+	temporalityRef := windowTemporalityRef(r)
 	mid := NewQuery().From(dedupWindowPairsLayer(regroup.Frag(), groupFrags, true, hasTemporality))
 	mid.Select(groupFrags...)
 	mid.Select(Col("anchor_ts"))
