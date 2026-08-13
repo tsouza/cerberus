@@ -512,6 +512,7 @@ func fetchGRPCTagsV2(ctx context.Context, client tempopb.StreamingQuerierClient,
 func fetchGRPCTagValuesV1(ctx context.Context, client tempopb.StreamingQuerierClient, tc CorpusCase, opts caseOpts) ([]byte, error) {
 	req := &tempopb.SearchTagValuesRequest{
 		TagName: tc.TagName,
+		Query:   tc.Query,
 		Start:   unixSeconds32(opts.startTS),
 		End:     unixSeconds32(opts.endTS),
 	}
@@ -538,6 +539,7 @@ func fetchGRPCTagValuesV1(ctx context.Context, client tempopb.StreamingQuerierCl
 func fetchGRPCTagValuesV2(ctx context.Context, client tempopb.StreamingQuerierClient, tc CorpusCase, opts caseOpts) ([]byte, error) {
 	req := &tempopb.SearchTagValuesRequest{
 		TagName: tc.TagName,
+		Query:   tc.Query,
 		Start:   unixSeconds32(opts.startTS),
 		End:     unixSeconds32(opts.endTS),
 	}

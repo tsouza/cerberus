@@ -693,6 +693,52 @@ search
 -- expected_absent_values --
 child.index
 `,
+		// The same four guards on the tag-VALUES pair (#1932). They are
+		// stated over the endpoint's `q` contract, not over endpoint
+		// names, so the value routes inherit them rather than being a
+		// second place the rules could rot.
+		"tag values v2 query without absent values": `-- name --
+q_values_no_absent
+-- endpoint --
+tag_values_v2
+-- tag_name --
+.service.name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_values --
+checkout
+`,
+		"tag values v1 query with absent values": `-- name --
+q_values_v1_absent
+-- endpoint --
+tag_values_v1
+-- tag_name --
+service.name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_values --
+checkout
+-- expected_absent_values --
+payments
+`,
+		"tag values v1 query without expected values": `-- name --
+q_values_v1_bare
+-- endpoint --
+tag_values_v1
+-- tag_name --
+service.name
+-- query --
+{ resource.service.name = "checkout" }
+`,
+		"absent values on a metrics endpoint": `-- name --
+absent_on_metrics
+-- endpoint --
+metrics_instant
+-- query --
+{ span.http.method = "GET" } | rate()
+-- expected_absent_values --
+child.index
+`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -754,6 +800,71 @@ child.index
 		t.Errorf("v1 expected_absent_values = %v", v1[0].ExpectedAbsentValues)
 	}
 	if !slices.Contains(v1[0].ExpectedValues, "child.index") {
+		t.Errorf("v1 expected_values = %v", v1[0].ExpectedValues)
+	}
+}
+
+// TestParseCorpus_TagValuesQueryShapes is the positive control on the
+// tag-VALUES pair: the two shapes the corpus uses parse, and the
+// strict-subset assertion the loader used to refuse outright on these
+// endpoints now lands on the case (#1932).
+//
+// That refusal is why the missing filter went unnoticed for as long as
+// it did — the value routes ignored `q` entirely, and the one assertion
+// that could have said so was a parse error, so no corpus case could
+// have been written to fail.
+func TestParseCorpus_TagValuesQueryShapes(t *testing.T) {
+	t.Parallel()
+	const v2Src = `-- name --
+q_scoped_values_v2
+-- endpoint --
+tag_values_v2
+-- tag_name --
+.service.name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_values --
+checkout
+-- expected_absent_values --
+payments
+`
+	const v1Src = `-- name --
+q_ignored_values_v1
+-- endpoint --
+tag_values_v1
+-- tag_name --
+service.name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_values --
+checkout
+payments
+`
+	v2, err := parseCorpus(strings.NewReader(v2Src), "t.txtar")
+	if err != nil {
+		t.Fatalf("parseCorpus v2: %v", err)
+	}
+	if len(v2) != 1 {
+		t.Fatalf("v2 case count: want 1, got %d", len(v2))
+	}
+	if v2[0].Query != `{ resource.service.name = "checkout" }` {
+		t.Errorf("v2 query = %q", v2[0].Query)
+	}
+	if len(v2[0].ExpectedAbsentValues) != 1 || v2[0].ExpectedAbsentValues[0] != "payments" {
+		t.Errorf("v2 expected_absent_values = %v", v2[0].ExpectedAbsentValues)
+	}
+
+	v1, err := parseCorpus(strings.NewReader(v1Src), "t.txtar")
+	if err != nil {
+		t.Fatalf("parseCorpus v1: %v", err)
+	}
+	if len(v1) != 1 {
+		t.Fatalf("v1 case count: want 1, got %d", len(v1))
+	}
+	if len(v1[0].ExpectedAbsentValues) != 0 {
+		t.Errorf("v1 expected_absent_values = %v", v1[0].ExpectedAbsentValues)
+	}
+	if !slices.Contains(v1[0].ExpectedValues, "payments") {
 		t.Errorf("v1 expected_values = %v", v1[0].ExpectedValues)
 	}
 }

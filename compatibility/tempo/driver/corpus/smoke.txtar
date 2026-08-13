@@ -1026,6 +1026,126 @@ tag_values_v2
 -- expected_max_values --
 0
 
+# --- `q` narrowing on the tag-VALUES routes (#1932) ---
+# The value half of the same autocomplete `q` the tags_v2 cases above
+# pin. Grafana's value dropdown is what these routes back, so the
+# unfiltered answer is both the widest set and the least relevant one:
+# every value the key takes anywhere in the window rather than the
+# values it takes on the spans the user's half-typed query selects.
+#
+# Every V2 case here carries an -- expected_absent_values -- because
+# that is the ONLY assertion that can tell a honoured `q` from an
+# ignored one: an expected_values-only case passes just as well against
+# the unfiltered list, since those values are in it too. The loader
+# enforces that (corpus.go's validateTagAssertions).
+#
+# The three V2 cases below are one per CH lookup shape, because the
+# narrowing conjunct lands in a different place in each: the resource
+# map and the span map both go through the dynamic-attribute
+# arrayJoin subquery (where the conjunct joins the INNER query, the
+# one that still has the span row in scope), while an intrinsic goes
+# through the flat DISTINCT-column projection.
+
+-- name --
+tag_values_v2_scoped_by_query
+-- endpoint --
+tag_values_v2
+# Auto-scope leading-dot form, resolving into ResourceAttributes where
+# the seeder writes service.name (same rationale as
+# tag_values_v2_service_name above). Unfiltered this key takes all four
+# seeded service names; under a query that selects one service's spans
+# it must take exactly one.
+-- tag_name --
+.service.name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+-- expected_values --
+checkout
+-- expected_absent_values --
+payments
+search
+shipping
+
+-- name --
+tag_values_v2_span_attr_scoped_by_query
+-- endpoint --
+tag_values_v2
+# The span-attribute map, one lookup shape over from the case above.
+# The seeder gives every trace 2..4 children carrying child.index
+# "0".."3", so the unfiltered value set is those four; a query pinning
+# the attribute to one of them must leave exactly that one.
+-- tag_name --
+.child.index
+-- query --
+{ span.child.index = "0" }
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+-- expected_values --
+0
+-- expected_absent_values --
+1
+2
+3
+
+-- name --
+tag_values_v2_intrinsic_scoped_by_query
+-- endpoint --
+tag_values_v2
+# The intrinsic branch: `name` reads the dedicated span-name column
+# rather than an attribute map, so it exercises the OTHER values-SQL
+# shape (a flat DISTINCT projection, no arrayJoin subquery to push the
+# conjunct into). The seeder names every root "GET /api/<svc>/<idx>"
+# and every child "<svc>.child.<n>", so a per-service query partitions
+# the span-name space cleanly.
+-- tag_name --
+name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+-- expected_values --
+GET /api/checkout/0
+checkout.child.0
+-- expected_absent_values --
+GET /api/payments/0
+payments.child.0
+
+-- name --
+tag_values_v1_query_ignored
+-- endpoint --
+tag_values_v1
+# The V1 half of the asymmetry, and the reason the loader refuses an
+# -- expected_absent_values -- here: upstream parses `q` on this route
+# and even re-emits it onto the sub-requests, but every V1 executor
+# reaches storage with a bare tag name and no slot for a filter
+# (modules/livestore/instance_search.go's SearchTagValues calls
+# block.SearchTagValues(ctx, tagName, ...); the backend-block leg gets
+# there via tempodb the same way). So V1 answers the whole window's
+# value set whatever `q` says, and the assertion IS that the values
+# only the spans this query does NOT select carry are still present.
+-- tag_name --
+service.name
+-- query --
+{ resource.service.name = "checkout" }
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+-- expected_values --
+checkout
+payments
+search
+shipping
+
+
 # --- Nil comparisons (Traces Drilldown breakdown shapes) ---
 # Grafana Traces Drilldown appends `&& <groupBy> != nil` to EVERY
 # breakdown query, so nil comparisons on intrinsics are a load-bearing

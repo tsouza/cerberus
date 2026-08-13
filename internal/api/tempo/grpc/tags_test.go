@@ -706,3 +706,142 @@ func assertTagsNarrowed(t *testing.T, got []string, unfiltered string) {
 		t.Errorf("narrowed answer dropped http.method: %v", got)
 	}
 }
+
+// The value-side narrowing fixture the three tests below share. The tag
+// is the leading-dot auto-scope form, so the lookup takes the
+// dynamic-attribute branch; the fake answers the lookup carrying the
+// extra attribute-map conjunct with a strictly smaller value set, so an
+// RPC that ignored Query surfaces the wider fallback and fails.
+const (
+	tagValuesTagName         = ".child.index"
+	tagValuesNarrowedValue   = "0"
+	tagValuesUnfilteredValue = "3"
+)
+
+func narrowedTagValuesBySQL() map[string][]string {
+	return map[string][]string{"`SpanAttributes`[?] = ?": {tagValuesNarrowedValue}}
+}
+
+// TestSearchTagValuesV2_QueryNarrows pins the gRPC half of #1932:
+// SearchTagValuesRequest.Query is the proto spelling of the HTTP `?q=`
+// parameter on the value routes, and the V2 values RPC must push it into
+// the same value lookup its HTTP twin does. Before this the field was
+// never read at all — the RPC answered the whole window's value set for
+// every Query, which is the widest and least useful answer Grafana's
+// value dropdown could get.
+func TestSearchTagValuesV2_QueryNarrows(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		strings:      []string{tagValuesNarrowedValue, tagValuesUnfilteredValue},
+		stringsBySQL: narrowedTagValuesBySQL(),
+	}
+	client := newTagsTestServer(t, q)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.SearchTagValuesV2(ctx, &tempopb.SearchTagValuesRequest{
+		TagName: tagValuesTagName,
+		Query:   tagsNarrowingQuery,
+	})
+	if err != nil {
+		t.Fatalf("open SearchTagValuesV2 stream: %v", err)
+	}
+	frames, err := recvAll[tempopb.SearchTagValuesV2Response](t, stream)
+	if err != nil {
+		t.Fatalf("recvAll: %v", err)
+	}
+	var got []string
+	for _, f := range frames {
+		for _, v := range f.GetTagValues() {
+			got = append(got, v.GetValue())
+		}
+	}
+	assertTagValuesNarrowed(t, got)
+}
+
+// TestSearchTagValuesV1_QueryIgnored is the V1 counterpart, and the fact
+// that keeps the gRPC surface in parity with reference Tempo: the V1
+// values RPC does not take a narrowing query. Upstream parses Query for
+// both value routes and even re-emits it onto the sub-requests, but every
+// V1 executor reaches storage with a bare tag name and no slot for a
+// filter, so a V1 caller gets the whole window's values back whatever
+// Query says — including a Query that would not parse, which is answered
+// rather than rejected. Both shapes are driven here because an RPC that
+// validated Query without applying it would pass the narrowing half
+// alone.
+func TestSearchTagValuesV1_QueryIgnored(t *testing.T) {
+	t.Parallel()
+
+	for name, query := range map[string]string{
+		"narrowing": tagsNarrowingQuery,
+		"malformed": "{{{",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			q := &fakeQuerier{
+				strings:      []string{tagValuesNarrowedValue, tagValuesUnfilteredValue},
+				stringsBySQL: narrowedTagValuesBySQL(),
+			}
+			client := newTagsTestServer(t, q)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			t.Cleanup(cancel)
+			stream, err := client.SearchTagValues(ctx, &tempopb.SearchTagValuesRequest{
+				TagName: tagValuesTagName,
+				Query:   query,
+			})
+			if err != nil {
+				t.Fatalf("open SearchTagValues stream: %v", err)
+			}
+			frames, err := recvAll[tempopb.SearchTagValuesResponse](t, stream)
+			if err != nil {
+				t.Fatalf("recvAll: %v", err)
+			}
+			var got []string
+			for _, f := range frames {
+				got = append(got, f.GetTagValues()...)
+			}
+			if !slices.Contains(got, tagValuesUnfilteredValue) {
+				t.Errorf("V1 narrowed its answer on Query=%q: %v", query, got)
+			}
+		})
+	}
+}
+
+// TestSearchTagValuesV2_MalformedQuery_GRPCStatus pins the rejection
+// code. An unparseable Query is caller error, and the shared
+// classification (tempo.ClassifyErr → grpcStatusFor) renders that as
+// InvalidArgument — the same fact the HTTP V2 values route answers 400
+// for. Before Query was read at all, every failure behind the values
+// lookup collapsed onto codes.Internal, which told Grafana the backend
+// had broken rather than that the query had.
+func TestSearchTagValuesV2_MalformedQuery_GRPCStatus(t *testing.T) {
+	t.Parallel()
+
+	client := newTagsTestServer(t, &fakeQuerier{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stream, err := client.SearchTagValuesV2(ctx, &tempopb.SearchTagValuesRequest{
+		TagName: tagValuesTagName,
+		Query:   "{{{",
+	})
+	if err != nil {
+		t.Fatalf("open SearchTagValuesV2 stream: %v", err)
+	}
+	_, err = stream.Recv()
+	assertCode(t, err, codes.InvalidArgument)
+}
+
+// assertTagValuesNarrowed asserts the narrowed value survived and the
+// value only the unfiltered lookup reports did not.
+func assertTagValuesNarrowed(t *testing.T, got []string) {
+	t.Helper()
+	if len(got) == 0 {
+		t.Fatal("no values returned")
+	}
+	if slices.Contains(got, tagValuesUnfilteredValue) {
+		t.Errorf("value %q the query does not select leaked into the answer: %v", tagValuesUnfilteredValue, got)
+	}
+	if !slices.Contains(got, tagValuesNarrowedValue) {
+		t.Errorf("narrowed answer dropped %q: %v", tagValuesNarrowedValue, got)
+	}
+}

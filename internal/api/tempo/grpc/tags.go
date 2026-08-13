@@ -10,7 +10,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
-	"github.com/tsouza/cerberus/internal/chclient"
 )
 
 // This file implements the four tag-list StreamingQuerier RPCs:
@@ -125,7 +124,11 @@ func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.St
 // scoped names (`resource.x` / `span.x`) route to one attribute
 // map; auto-scope names (`.x`, bare dotted) union both maps. Empty
 // values are filtered out (the arrayJoin([]) shape can synthesise
-// them for rows where only one map carries the key).
+// them for rows where only one map carries the key). The request
+// Query is ignored here, as it is on the HTTP twin and in upstream
+// Tempo: a narrowing query belongs to the V2 route, and every V1
+// executor upstream takes a bare tag name with nowhere to put a filter
+// (see TagsRoute in internal/api/tempo/search_tags_filter.go).
 func (s *Service) SearchTagValues(req *tempopb.SearchTagValuesRequest, stream tempopb.StreamingQuerier_SearchTagValuesServer) error {
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
@@ -134,7 +137,9 @@ func (s *Service) SearchTagValues(req *tempopb.SearchTagValuesRequest, stream te
 	if name == "" {
 		return status.Error(codes.InvalidArgument, "missing tag name")
 	}
-	values, _, err := s.lookupTagValues(stream.Context(), name, req.GetStart(), req.GetEnd())
+	values, _, err := s.lookupTagValues(
+		stream.Context(), name, tempo.TagValuesRouteV1, req.GetQuery(), req.GetStart(), req.GetEnd(),
+	)
 	if err != nil {
 		return err
 	}
@@ -148,6 +153,12 @@ func (s *Service) SearchTagValues(req *tempopb.SearchTagValuesRequest, stream te
 // ("duration" / "status" / "kind"), dynamic attributes report
 // "string" (cerberus stores SpanAttributes/ResourceAttributes as
 // CH Map(String, String)).
+//
+// This is the value-side route that honours a non-empty request
+// Query: it narrows the value set to the values the requested key
+// takes on the spans that TraceQL query selects — the gRPC spelling
+// of the HTTP `q` parameter, and the completion Grafana's value
+// dropdown actually wants.
 func (s *Service) SearchTagValuesV2(req *tempopb.SearchTagValuesRequest, stream tempopb.StreamingQuerier_SearchTagValuesV2Server) error {
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
@@ -156,7 +167,9 @@ func (s *Service) SearchTagValuesV2(req *tempopb.SearchTagValuesRequest, stream 
 	if name == "" {
 		return status.Error(codes.InvalidArgument, "missing tag name")
 	}
-	values, typ, err := s.lookupTagValues(stream.Context(), name, req.GetStart(), req.GetEnd())
+	values, typ, err := s.lookupTagValues(
+		stream.Context(), name, tempo.TagValuesRouteV2, req.GetQuery(), req.GetStart(), req.GetEnd(),
+	)
 	if err != nil {
 		return err
 	}
@@ -172,7 +185,16 @@ func (s *Service) SearchTagValuesV2(req *tempopb.SearchTagValuesRequest, stream 
 // SearchTagValues and SearchTagValuesV2. The returned error is
 // already a *grpc/status error (mapped to InvalidArgument /
 // Internal) so callers can return it as-is.
-func (s *Service) lookupTagValues(ctx context.Context, name string, startSec, endSec uint32) (values []string, valueType string, err error) {
+//
+// route + query carry the request's optional TraceQL narrowing filter
+// down to the CH lookup, which is where route decides whether the query
+// is honoured at all (tempo.TagsRoute in
+// internal/api/tempo/search_tags_filter.go). Threading them through here
+// rather than at the two call sites is what keeps the RPCs from drifting
+// apart on what a `q` means.
+func (s *Service) lookupTagValues(
+	ctx context.Context, name string, route tempo.TagsRoute, query string, startSec, endSec uint32,
+) (values []string, valueType string, err error) {
 	resolved, parseErr := s.Handler.ResolveTagName(name)
 	// resolveTagName returns a non-nil error only on a parser-
 	// rejected bare dotted form. V1 historically accepted that; the
@@ -185,7 +207,7 @@ func (s *Service) lookupTagValues(ctx context.Context, name string, startSec, en
 		return nil, "", status.Error(codes.InvalidArgument, "unresolved tag name")
 	}
 	start, end := tempoTagsBounds(startSec, endSec)
-	vals, typ, err := s.Handler.FetchTagValues(ctx, resolved, start, end)
+	vals, typ, err := s.Handler.FetchTagValues(ctx, resolved, route, query, start, end)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// Let the gRPC transport propagate the cancellation
@@ -193,7 +215,13 @@ func (s *Service) lookupTagValues(ctx context.Context, name string, startSec, en
 			// would mask it as a server fault.
 			return nil, "", err
 		}
-		return nil, "", status.Error(codes.Internal, chclient.SafeMessage(err))
+		// The shared classification, not a blanket Internal: with a
+		// narrowing query in the pipeline a caller can now be at fault
+		// here (an unparseable or non-row-shaped `q` is ErrClassParse /
+		// ErrClassLower → InvalidArgument), and collapsing that onto
+		// Internal would tell Grafana the backend broke rather than that
+		// the query did. A CH-side failure still classifies to Internal.
+		return nil, "", grpcStatusFor(err)
 	}
 	return vals, typ, nil
 }

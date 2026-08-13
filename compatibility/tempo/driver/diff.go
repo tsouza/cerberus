@@ -471,12 +471,19 @@ func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error)
 	}
 }
 
-// setTagQuery sends a tag-name case's optional TraceQL query as the `q`
-// narrowing parameter. Both backends accept it on /api/search/tags and
-// /api/v2/search/tags, where it restricts the answer to the keys carried
-// by the spans the query selects; a case with no -- query -- section
-// sends no `q` at all and gets the unfiltered key set, which is what
-// every tag case did before the parameter was wired.
+// setTagQuery sends a tag-discovery case's optional TraceQL query as the
+// `q` narrowing parameter. Both backends accept it on all four discovery
+// routes — /api/search/tags, /api/v2/search/tags, and the two
+// /api/[v2/]search/tag/{name}/values siblings — where it restricts the
+// answer to the keys (or values) carried by the spans the query selects;
+// a case with no -- query -- section sends no `q` at all and gets the
+// unfiltered set, which is what every tag case did before the parameter
+// was wired.
+//
+// Sending it is not the same as it being honoured: /api/search/tags
+// answers the unfiltered key set whatever `q` says (see
+// validateTagAssertions in corpus.go), and the corpus expresses that
+// asymmetry per case rather than by withholding the parameter.
 func setTagQuery(q url.Values, tc CorpusCase) {
 	if tc.Query != "" {
 		q.Set("q", tc.Query)
@@ -543,10 +550,12 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		u.Path += "/api/search/tag/" + tc.TagName + "/values"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+		setTagQuery(q, tc)
 	case "tag_values_v2":
 		u.Path += "/api/v2/search/tag/" + tc.TagName + "/values"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
+		setTagQuery(q, tc)
 	case "metrics_range":
 		u.Path += "/api/metrics/query_range"
 		q.Set("q", tc.Query)
