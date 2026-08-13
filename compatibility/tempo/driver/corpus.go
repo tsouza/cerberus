@@ -6,10 +6,13 @@
 //
 //	-- name --                  short identifier, used in the report
 //	-- query --                 the TraceQL expression (search / metrics
-//	                            endpoints). On tags_v1 / tags_v2 it is
-//	                            optional and rides as the `q` narrowing
-//	                            parameter, which restricts the answer to the
-//	                            keys the selected spans carry.
+//	                            endpoints). On all four tag-discovery
+//	                            endpoints it is optional and rides as the `q`
+//	                            narrowing parameter, which restricts the
+//	                            answer to the keys (tags_*) or values
+//	                            (tag_values_*) the selected spans carry.
+//	                            Only the V2 routes honour it — see
+//	                            validateTagAssertions.
 //	-- endpoint --              one of: search | search_recent | traces |
 //	                            traces_v2 | tags_v1 | tags_v2 |
 //	                            tag_values_v1 | tag_values_v2 |
@@ -43,8 +46,9 @@
 //	-- expected_values --       newline-separated subset that must appear in
 //	                            the response list (tag-names or tag-values)
 //	-- expected_absent_values --newline-separated set that must NOT appear in
-//	                            the tag-names list — the strict-subset half of
-//	                            a `q`-scoped tags_v2 case (tags_v1 ignores `q`,
+//	                            the tag-names / tag-values list — the
+//	                            strict-subset half of a `q`-scoped tags_v2 or
+//	                            tag_values_v2 case (the V1 routes ignore `q`,
 //	                            so a V1 case asserts the wide answer instead)
 //	-- expected_scopes --       newline-separated subset of scope names
 //	                            (resource / span / intrinsic) that must
@@ -211,14 +215,15 @@ type CorpusCase struct {
 	ExpectedValues []string
 
 	// ExpectedAbsentValues is the mirror of ExpectedValues: every entry
-	// must be MISSING from the tag-names list. It exists so a `q`-scoped
-	// tags_v2 case can assert the scoped key set is a STRICT subset of
-	// the unscoped one — an expected_values-only case passes just as well
-	// when `q` is ignored entirely, because the keys it names are in the
-	// unfiltered answer too. A tags_v1 case never carries one: V1 has no
-	// `q` to honour, so its scoped answer IS the unscoped one and the
-	// assertion that catches a regression there is the presence of the
-	// keys a narrowing route would have dropped. Empty disables.
+	// must be MISSING from the tag-names or tag-values list. It exists so
+	// a `q`-scoped tags_v2 / tag_values_v2 case can assert the scoped set
+	// is a STRICT subset of the unscoped one — an expected_values-only
+	// case passes just as well when `q` is ignored entirely, because the
+	// entries it names are in the unfiltered answer too. A V1 case never
+	// carries one: V1 has no `q` to honour, so its scoped answer IS the
+	// unscoped one and the assertion that catches a regression there is
+	// the presence of the entries a narrowing route would have dropped.
+	// Empty disables.
 	ExpectedAbsentValues []string
 
 	// ExpectedScopes is a subset-must-be-present assertion for the
@@ -549,7 +554,7 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
 		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
-	if err := validateTagNameAssertions(cur); err != nil {
+	if err := validateTagAssertions(cur); err != nil {
 		return cur, err
 	}
 	if cur.Spss != 0 && cur.Endpoint != "search" {
@@ -570,39 +575,63 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 	return cur, nil
 }
 
-// validateTagNameAssertions keeps a tag-names case honest about what it
+// narrowingTagEndpoint reports whether the endpoint is a tag-discovery
+// route that HONOURS the `q` narrowing parameter — the two V2 routes.
+// Both the name and the value pair split the same way, and upstream's
+// own code is why: only the V2 executors run ExtractConditionGroups over
+// the request query, while the V1 ones reach storage with a bare scope
+// (names) or a bare tag name (values) and no slot for a filter.
+func narrowingTagEndpoint(ep string) bool {
+	return ep == "tags_v2" || ep == "tag_values_v2"
+}
+
+// unfilteredTagEndpoint reports whether the endpoint is a tag-discovery
+// route that IGNORES `q` — the two V1 routes.
+func unfilteredTagEndpoint(ep string) bool {
+	return ep == "tags_v1" || ep == "tag_values_v1"
+}
+
+// validateTagAssertions keeps a tag-discovery case honest about what it
 // claims the route does with the assertions it carries. Every rule here is
 // about the same failure: a case that passes whether or not the behaviour
 // under test happened.
-func validateTagNameAssertions(cur CorpusCase) error {
-	// expected_absent_values is only read by assertTagsCase, so allowing
-	// it anywhere else would let a case carry an assertion that never
-	// runs — a green that proves nothing.
-	if len(cur.ExpectedAbsentValues) != 0 && cur.Endpoint != "tags_v1" && cur.Endpoint != "tags_v2" {
-		return fmt.Errorf("case %q: -- expected_absent_values -- is only valid for endpoint=tags_v1 / tags_v2 (got %s)", cur.Name, cur.Endpoint)
+//
+// The rules are stated over the endpoint's `q` CONTRACT rather than over
+// endpoint names one at a time, so the name and value pairs cannot drift
+// apart — the value routes were originally left out of the narrowing fix
+// entirely (#1932), and a per-name rule set is exactly what let that gap
+// sit undetected: the loader rejected the strict-subset assertion on the
+// value endpoints, so no case could have caught the missing filter.
+func validateTagAssertions(cur CorpusCase) error {
+	// expected_absent_values is only read by assertTagsCase /
+	// assertTagValuesCase, so allowing it anywhere else would let a case
+	// carry an assertion that never runs — a green that proves nothing.
+	if len(cur.ExpectedAbsentValues) != 0 && !isTagEndpoint(cur.Endpoint) {
+		return fmt.Errorf("case %q: -- expected_absent_values -- is only valid for endpoint=tags_v1 / tags_v2 / tag_values_v1 / tag_values_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
-	// `q` on a tag-names route means opposite things on the two versions,
-	// and a case that sends one has to say which it is testing.
+	// `q` on a tag-discovery route means opposite things on the two
+	// versions, and a case that sends one has to say which it is testing.
 	//
-	// On tags_v2 the parameter narrows, and the only reason to send one is
-	// to get a SMALLER key set back: without an expected_absent_values the
+	// On a V2 route the parameter narrows, and the only reason to send one
+	// is to get a SMALLER set back: without an expected_absent_values the
 	// case passes identically when `q` is dropped on the floor, which is
 	// the bug the parameter exists to fix.
-	if cur.Query != "" && cur.Endpoint == "tags_v2" && len(cur.ExpectedAbsentValues) == 0 {
-		return fmt.Errorf("case %q: endpoint=tags_v2 with a -- query -- requires -- expected_absent_values -- (a key the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name)
+	if cur.Query != "" && narrowingTagEndpoint(cur.Endpoint) && len(cur.ExpectedAbsentValues) == 0 {
+		return fmt.Errorf("case %q: endpoint=%s with a -- query -- requires -- expected_absent_values -- (an entry the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name, cur.Endpoint)
 	}
-	// tags_v1 does not take `q` — upstream's V1 route drops it and answers
-	// the whole window (LiveStore.SearchTags forwards only the scope into
-	// SearchTagsV2). So a V1 case sending one asserts the OPPOSITE: the
-	// keys the query does not select are still there. Requiring
-	// expected_values and refusing expected_absent_values keeps a case
-	// from re-encoding the narrowing premise on the route that has none.
-	if cur.Query != "" && cur.Endpoint == "tags_v1" {
+	// A V1 route does not take `q` — upstream drops it and answers the
+	// whole window (LiveStore.SearchTags forwards only the scope into
+	// SearchTagsV2; the V1 values executors take a bare tag name). So a V1
+	// case sending one asserts the OPPOSITE: the entries the query does not
+	// select are still there. Requiring expected_values and refusing
+	// expected_absent_values keeps a case from re-encoding the narrowing
+	// premise on the route that has none.
+	if cur.Query != "" && unfilteredTagEndpoint(cur.Endpoint) {
 		if len(cur.ExpectedAbsentValues) != 0 {
-			return fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- cannot carry -- expected_absent_values -- (V1 ignores `q` and answers the unscoped key set)", cur.Name)
+			return fmt.Errorf("case %q: endpoint=%s with a -- query -- cannot carry -- expected_absent_values -- (V1 ignores `q` and answers the unscoped set)", cur.Name, cur.Endpoint)
 		}
 		if len(cur.ExpectedValues) == 0 {
-			return fmt.Errorf("case %q: endpoint=tags_v1 with a -- query -- requires -- expected_values -- (a key only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name)
+			return fmt.Errorf("case %q: endpoint=%s with a -- query -- requires -- expected_values -- (an entry only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name, cur.Endpoint)
 		}
 	}
 	return nil
@@ -670,9 +699,9 @@ func hasBodyShapeAssertion(cur CorpusCase) bool {
 }
 
 // isTagEndpoint reports whether the given endpoint is one of the four
-// tag / tag-values endpoints. None of them REQUIRES a TraceQL query:
-// tag_values_v1 / tag_values_v2 have no query slot at all, and on
-// tags_v1 / tags_v2 the query is the optional `q` narrowing filter.
+// tag / tag-values endpoints. None of them REQUIRES a TraceQL query: on
+// all four the query is the optional `q` narrowing filter, honoured on
+// the V2 halves and ignored on the V1 halves.
 func isTagEndpoint(ep string) bool {
 	switch ep {
 	case "tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2":

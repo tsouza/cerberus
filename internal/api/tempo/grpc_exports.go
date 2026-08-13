@@ -133,16 +133,34 @@ func (h *Handler) ResolveTagName(name string) (ResolvedTagName, error) {
 // SpanAttributes / ResourceAttributes map(s). Returns the sorted,
 // de-duplicated value list plus the Tempo V2 type label (see
 // intrinsicType — "string" for dynamic attributes).
-func (h *Handler) FetchTagValues(ctx context.Context, r ResolvedTagName, start, end time.Time) (values []string, valueType string, err error) {
+//
+// query is the caller's optional TraceQL narrowing filter — the `q` URL
+// parameter on the HTTP routes, SearchTagValuesRequest.Query over gRPC —
+// and route says which tag-value route is asking, which is what decides
+// whether the query is honoured at all. Both go through the same
+// tagQueryFilter the tag-NAME routes use, so a `q` selects the same spans
+// on every discovery route and on both transports. An empty (or
+// route-discarded) query yields a nil filter, and a nil filter appends no
+// clause: the lookup renders exactly the SQL it did before `q` existed.
+// A `q` that cannot be parsed, lowered, or reduced to a span-row
+// predicate comes back as a classified error (ClassifyErr →
+// InvalidArgument).
+func (h *Handler) FetchTagValues(
+	ctx context.Context, r ResolvedTagName, route TagsRoute, query string, start, end time.Time,
+) (values []string, valueType string, err error) {
+	filter, err := h.tagQueryFilter(ctx, route, query, start, end)
+	if err != nil {
+		return nil, "", err
+	}
 	var (
 		sqlStr string
 		args   []any
 	)
 	if r.IsIntrinsic {
-		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, start, end)
+		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end)
 		valueType = intrinsicType(r.IntrinsicName)
 	} else {
-		sqlStr, args = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, start, end)
+		sqlStr, args = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end)
 		valueType = "string"
 	}
 	raw, err := h.Client.QueryStrings(ctx, sqlStr, args...)
