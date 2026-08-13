@@ -29,10 +29,16 @@
  * "Unable to fetch labels" failure-state string anywhere. That UI-level
  * assertion is the user-visible regression the brief pinned.
  *
- * At the end of the per-metric sweep we emit a JSON summary
- * (`metric → label_count → series_count → first_value`) and attach it
- * as a Playwright artifact. The CI run record shows the catalog the
- * sweep covered.
+ * The per-metric sweep is split across METRIC_PROBE_SHARDS test cases,
+ * each probing a deterministic stride of the catalog, because Playwright
+ * budgets its timeout PER TEST and one test covering a catalog that grows
+ * over time is a timeout flake waiting to happen (issue #1752). Every
+ * catalog name is still probed on both surfaces — the shards partition the
+ * catalog, they do not sample it.
+ *
+ * Each shard emits a JSON summary (`metric → label_count → series_count →
+ * first_value`) and attaches it as a Playwright artifact. Together the CI
+ * run record shows the whole catalog the sweep covered.
  *
  * Env:
  *   GRAFANA_URL       default http://localhost:3000
@@ -192,7 +198,57 @@ function stripHistogramSuffix(metric: string): string {
 // mirrors how Grafana fans panel queries out and keeps the sweep's wall
 // time well inside the test budget without overwhelming the single
 // compose-stack cerberus / ClickHouse.
+//
+// Measured against the quickstart compose stack (143-metric catalog, the
+// same shape CI probes) — total wall time for the whole catalog, and the
+// per-request p50 at each pool size:
+//
+//   pool=1   p50 series 23ms  range 21ms
+//   pool=8   p50 series 158ms range 65ms   whole catalog 3.9s
+//   pool=16  p50 series 206ms range 128ms  whole catalog 3.2s
+//
+// The sweep is THROUGHPUT-bound, not latency-bound: doubling the pool
+// 8 -> 16 buys 18% wall time while inflating per-request latency ~30%,
+// because the single compose-stack ClickHouse is already saturated. So
+// raising this number is not a way to buy budget headroom — it mostly
+// converts queueing-in-the-pool into queueing-in-ClickHouse. It also
+// walks toward cerberus's prom admission cap (64 concurrent, rejected
+// with HTTP 429 rather than queued), which would turn a slow sweep into
+// a hard failure. 8 is the measured knee; leave it there and shard the
+// catalog instead (see METRIC_PROBE_SHARDS).
 const METRIC_PROBE_CONCURRENCY = 8;
+
+// The every-published-metric sweep is split across this many test cases,
+// each probing a deterministic stride of the catalog.
+//
+// Playwright's timeout is a PER-TEST budget. A single test that probed the
+// whole catalog spent 33-55s of its fixed 60s against a catalog that grows
+// every time cerberus gains a self-telemetry metric, so the headroom shrank
+// silently until a contended runner tipped it over 60s ("Test timeout of
+// 60000ms exceeded" / "Request context disposed"). Because the sweep is
+// throughput-bound (see METRIC_PROBE_CONCURRENCY) the total server work is
+// irreducible without dropping coverage — but it does not have to sit under
+// ONE deadline. Striding the catalog across N tests divides the wall time
+// each budget must cover by N without probing one metric fewer: every
+// catalog name still gets its own dedicated /api/v1/series and
+// /api/v1/query_range round-trip. No sampling, no tolerance list, no
+// timeout bump.
+//
+// Stride (i % SHARDS) rather than contiguous blocks so the expensive names
+// — classic-histogram families, whose bare-name fan-out expands into an
+// 8-arm UNION over the gauge, sum and histogram tables — spread evenly
+// instead of piling into one shard.
+const METRIC_PROBE_SHARDS = 8;
+
+// Upper bound on how many metrics a single shard may carry before the
+// per-test budget is at risk again. The worst CI run recorded on issue
+// #1752 probed 143 metrics in 55s, i.e. ~0.4s per metric on a contended
+// runner, so 64 metrics is ~26s against the 60s budget — still better than
+// 2x headroom at the slowest rate ever observed. If the catalog grows past
+// SHARDS x this, the sweep fails loudly with an actionable message instead
+// of drifting back into intermittent timeouts — the silent-degradation mode
+// this constant exists to prevent.
+const MAX_METRICS_PER_SHARD = 64;
 
 // mapWithConcurrency runs `fn` over `items` with at most `limit` calls in
 // flight, preserving input order in the returned results. Pulled out so the
@@ -274,17 +330,56 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
     ).toBe(false);
   });
 
-  test('every published metric: label chip + range probe', async ({
-    request,
-  }, testInfo: TestInfo) => {
-    const names = await listMetricNames(request);
+  for (let shard = 0; shard < METRIC_PROBE_SHARDS; shard++) {
+    const shardLabel = `${shard + 1}/${METRIC_PROBE_SHARDS}`;
+    test(`every published metric: label chip + range probe (shard ${shardLabel})`, async ({
+      request,
+    }, testInfo: TestInfo) => {
+      await runMetricProbeShard(request, testInfo, shard);
+    });
+  }
+
+  /**
+   * Probe every catalog metric whose index falls in `shard`'s stride.
+   *
+   * Split out of the test body so all METRIC_PROBE_SHARDS cases share one
+   * implementation — the shard index is the ONLY thing that varies, and a
+   * per-shard copy of this logic would be the place a coverage gap hides.
+   */
+  async function runMetricProbeShard(
+    request: APIRequestContext,
+    testInfo: TestInfo,
+    shard: number,
+  ): Promise<void> {
+    const shardLabel = `${shard + 1}/${METRIC_PROBE_SHARDS}`;
+    const allNames = await listMetricNames(request);
     expect(
-      names.length,
+      allNames.length,
       'cerberus must publish at least one metric',
     ).toBeGreaterThan(0);
+
+    // Stride the catalog. Union of every shard's stride is the whole
+    // catalog with no overlap, so the suite as a whole probes exactly the
+    // same set the single-test sweep did.
+    const names = allNames.filter((_, i) => i % METRIC_PROBE_SHARDS === shard);
+
+    // Capacity guard — see MAX_METRICS_PER_SHARD. This fails the sweep with
+    // an instruction rather than letting the per-test budget erode back into
+    // intermittent "Test timeout of 60000ms exceeded" flake as the catalog
+    // grows.
+    expect(
+      names.length,
+      `shard ${shardLabel} carries ${names.length} metrics, over the ` +
+        `${MAX_METRICS_PER_SHARD} a single 60s test budget is sized for ` +
+        `(catalog is ${allNames.length}). Raise METRIC_PROBE_SHARDS in ` +
+        `this spec so each shard stays under the cap — do NOT raise the ` +
+        `Playwright timeout.`,
+    ).toBeLessThanOrEqual(MAX_METRICS_PER_SHARD);
+
     // eslint-disable-next-line no-console
     console.log(
-      `iterate-metrics-explorer: enumerated ${names.length} metric names`,
+      `iterate-metrics-explorer: shard ${shardLabel} probing ` +
+        `${names.length} of ${allNames.length} enumerated metric names`,
     );
 
     const summary: MetricSummary[] = [];
@@ -390,24 +485,26 @@ test.describe('iterate-metrics-explorer: Drilldown-Metrics + label chips', () =>
 
     // Attach the summary as a CI artifact. The Playwright HTML report
     // surfaces this on failure; the GitHub Actions artifact upload step
-    // picks it up too.
-    await testInfo.attach('metrics-summary.json', {
+    // picks it up too. One attachment per shard — together they cover the
+    // same catalog the single-test sweep reported in one file.
+    await testInfo.attach(`metrics-summary-shard-${shard + 1}.json`, {
       body: JSON.stringify(summary, null, 2),
       contentType: 'application/json',
     });
     // eslint-disable-next-line no-console
     console.log(
-      `iterate-metrics-explorer: summary attached — ` +
+      `iterate-metrics-explorer: shard ${shardLabel} summary attached — ` +
         `${summary.length} metrics, ` +
         `${summary.filter((s) => s.series_count > 0).length} non-empty series`,
     );
 
     // Hard fail if we collected any label-failures. We collect across
-    // every metric first (rather than throwing on the first one) so the
-    // report shows every regression in one run instead of one-at-a-time.
+    // every metric in the shard first (rather than throwing on the first
+    // one) so the report shows every regression in this shard in one run
+    // instead of one-at-a-time.
     expect(
       labelFailures,
-      `label-fetch / series-non-empty regressions:\n  - ${labelFailures.join('\n  - ')}`,
+      `shard ${shardLabel} label-fetch / series-non-empty regressions:\n  - ${labelFailures.join('\n  - ')}`,
     ).toEqual([]);
-  });
+  }
 });
