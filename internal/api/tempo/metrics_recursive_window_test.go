@@ -39,6 +39,12 @@ import (
 
 const metricsRecursiveWindowStep = time.Minute
 
+// recursiveWindowedArmsPerClosure is how many arms of one recursive closure
+// must carry the request-window bound: the ANCHOR (its seed derived table) and
+// the STEP (its physical `t` scan). Neither is reachable by a predicate from
+// outside the WITH RECURSIVE, so each needs its own.
+const recursiveWindowedArmsPerClosure = 2
+
 // lowerMetricsWithWindow lowers a TraceQL metrics-pipeline query with the request
 // window threaded through ctx (no /api/search limit — the metrics path), exactly
 // as the metrics handlers now do via WithSearchWindow before traceql.Lower.
@@ -141,9 +147,17 @@ func TestMetricsRecursiveArmWindowed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("windowed metrics emit: %v", err)
 			}
-			if !strings.Contains(sql, inlineWindowLo) {
-				t.Fatalf("metrics recursive arm not windowed — no inline %s "+
-					"(full-retention scan behind inert TraceId-IN):\n%s", inlineWindowLo, sql)
+			// BOTH arms of the recursive CTE, not just the step. Each arm is
+			// its own scope inside the WITH RECURSIVE — ClickHouse pushes no
+			// predicate in from outside the closure — so the anchor's seed scan
+			// reads full retention unless it carries its own bound (#1942). Two
+			// inline lower bounds is the witness that it does; the emitter's
+			// per-arm placement is pinned in
+			// internal/chsql/scan_window_emit_test.go.
+			if got := strings.Count(sql, inlineWindowLo); got < recursiveWindowedArmsPerClosure {
+				t.Fatalf("metrics recursive closure has %d inline %s bounds, want >= %d "+
+					"(anchor AND step arms) — an unbounded arm full-scans retention:\n%s",
+					got, inlineWindowLo, recursiveWindowedArmsPerClosure, sql)
 			}
 
 			if !tc.failClosed {
