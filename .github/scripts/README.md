@@ -81,15 +81,23 @@ on a `transient` verdict against **Docker Hub**, it exports
 failing the job — a Docker Hub outage is precisely what the mirror was built to
 survive, and killing the job there fails a lane whose every image is sitting in a
 registry nothing has contacted (issue #1933). In that mode `pullImageWithRetry`
-**removes** the Docker Hub fallback rather than deprioritising it: a mirror miss
-is a hard error naming the image, and `buildBaseImageRef` returns `null` so a
-build is never started against a `FROM` that cannot resolve. The alternative —
+**removes** the Docker Hub fallback rather than deprioritising it: a Docker Hub
+ref the mirror cannot serve is a hard error naming the image, and
+`buildBaseImageRef` returns `null` so a build is never started against a `FROM`
+that cannot resolve. The mode constrains **Docker Hub acquisitions only** — a
+ref on a registry Docker Hub does not meter (`ghcr.io/…/telemetrygen`, the
+released `ghcr.io/tsouza/cerberus` image, `gcr.io/distroless/*`) is reached over
+a path the outage cannot touch and is acquired exactly as always. Keying that
+refusal off `mirroredRef(...) === null` would conflate "the mirror has no copy
+of this" with "this never needed one" and take down the very e2e and migration
+lanes the mode exists to save. The alternative —
 `continue-on-error: true` on the login — is a regression rather than a fix,
 because an unauthenticated job does not fail, it degrades to the shared anonymous
 Docker Hub quota and reads as flake on the day that quota runs out. Two jobs opt
 out with `ON_TRANSPORT_FAULT: fail`: `mirror-images.yml` READS the inventory from
 Docker Hub and `release.yml` PUSHES to it, and a mirror cannot stand in for
-either. The mode is never entered on a `rate-limit` or `credential` verdict, and
+either — R6 pins that boundary in both directions, keyed on registry write
+permission rather than on a job name. The mode is never entered on a `rate-limit` or `credential` verdict, and
 never on a login to any registry but Docker Hub.
 
 Because every login is a hard gate, the ORDER of the two logins decides whether
@@ -1651,6 +1659,11 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     authenticating the fallback ahead of the primary path is what let a Docker
     Hub outage kill `compatibility/promql-surface` before the mirror holding
     every image it needed was contacted (run 31148765992, issue #1933).
+  - R6 requires `ON_TRANSPORT_FAULT: fail` on a Docker Hub login exactly when
+    the job holds registry **write** permission, and forbids it otherwise. The
+    permission is what separates a producer from a consumer: a job writing to a
+    registry cannot be served by a mirror, and one only reading from it must not
+    quietly opt itself back out of surviving an outage.
   - Env: `WORKFLOW_DIR` (optional; default `.github/workflows`), `REPO_ROOT`
     (optional; default the working directory).
   - Exit: `0` when every acquiring job is authenticated, `1` on a violation, on

@@ -101,6 +101,19 @@ function withoutStep(title) {
   };
 }
 
+// A job that pulls through the shared policy, so R3 is the rule under test and
+// the only variable is how its one login names a registry.
+const jobLoggingInTo = (registry) => ({
+  acquisitions: ['pullImageWithRetry'],
+  logins: [{ registry }],
+  viaSharedPolicy: true,
+  refs: new Set(),
+  unresolved: [],
+  composePolicyFiles: new Set(),
+  composeMaterialised: [],
+  mirrorWrites: 0,
+});
+
 // ---------------------------------------------------------------------------
 // The tree, as it stands.
 // ---------------------------------------------------------------------------
@@ -274,6 +287,42 @@ test('R5 fires when the Docker Hub login runs before the ghcr.io one', () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// R6 — the mirror-only downgrade is opted out of exactly where a mirror cannot
+// stand in for Docker Hub, and nowhere else.
+//
+// Both directions are negative controls because both are silent. A producer
+// that lost its opt-out carries on past a registry it must have and finishes
+// half its work — `release.yml` publishing its GHCR half and not its Docker Hub
+// half. A consumer that gained one is back to dying on an outage the mirror was
+// built to survive, which is issue #1933 reintroduced one line at a time.
+// ---------------------------------------------------------------------------
+
+test('R6 fires when a job that writes to a registry loses its opt-out', () => {
+  const results = scanWith('mirror-images.yml', (text) =>
+    text.replace(/^\s*ON_TRANSPORT_FAULT: fail\n/m, ''),
+  );
+  const id = 'mirror-images.yml:mirror';
+  const violations = violationsFor(id, findingsFor(id, results));
+  assert.ok(
+    violations.some((m) => m.includes('writes to a package registry but its Docker Hub login omits')),
+    `expected an R6 producer violation, got ${JSON.stringify(violations)}`,
+  );
+});
+
+test('R6 fires when a consuming job opts itself out of mirror-only mode', () => {
+  // The e2e specimen: adding the opt-out to its Docker Hub login is the exact
+  // one-line edit that would quietly undo this change for that lane.
+  const results = scanWith('e2e.yml', (text) =>
+    text.replace(/(\n(\s+)USERNAME: tsouza\n)/, `$1$2ON_TRANSPORT_FAULT: fail\n`),
+  );
+  const violations = results.flatMap((r) => violationsFor(r.id, r.findings));
+  assert.ok(
+    violations.some((m) => m.includes('only consumes images, yet its Docker Hub login sets')),
+    `expected an R6 consumer violation, got ${JSON.stringify(violations)}`,
+  );
+});
+
 test('R5 is silent when a job has only one login to order', () => {
   // A job with one login has no order to get wrong, and R2 / R3 are what decide
   // whether the absent one was required. A rule that fired here would report a
@@ -373,19 +422,6 @@ test('the job that writes the mirror is not required to read through it', () => 
 // match misses spellings `docker login` itself accepts. Each case below goes red
 // on the pre-fix comparison, which is the only reason they are worth having.
 // ---------------------------------------------------------------------------
-
-// A job that pulls through the shared policy, so R3 is the rule under test and
-// the only variable is how its one login names a registry.
-const jobLoggingInTo = (registry) => ({
-  acquisitions: ['pullImageWithRetry'],
-  logins: [{ registry }],
-  viaSharedPolicy: true,
-  refs: new Set(),
-  unresolved: [],
-  composePolicyFiles: new Set(),
-  composeMaterialised: [],
-  mirrorWrites: 0,
-});
 
 test('a login to a host that merely starts with ghcr.io is not a mirror login', () => {
   // `startsWith` accepted this; a hostname compare does not. Somebody else owns

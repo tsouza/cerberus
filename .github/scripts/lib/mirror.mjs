@@ -50,6 +50,7 @@
 //   mirrorRegistry         the GHCR namespace mirrored copies live under.
 //   mirroredImages         every upstream ref cerberus's CI pulls.
 //   mirroredRef(ref)       the mirrored ref for an inventoried image, else null.
+//   isDockerHubRef(ref)    is this ref metered by Docker Hub at all?
 
 import process from 'node:process';
 
@@ -152,7 +153,13 @@ const inventory = new Set(mirroredImages);
 // a port (`localhost:5000`). This is the same rule the docker CLI applies, and
 // it is why `minio/mc` resolves to Docker Hub while `gcr.io/distroless/static`
 // does not.
-function isDockerHubRef(ref) {
+//
+// Exported because "is this ref metered by Docker Hub" is a question with two
+// callers and one right answer. `mirroredRef` asks it to decide whether a copy
+// could exist; `pullImageWithRetry` asks it to decide whether a Docker Hub
+// outage is even relevant to an acquisition. Answering it twice is how those
+// two drift.
+export function isDockerHubRef(ref) {
   const slash = ref.indexOf('/');
   if (slash === -1) return true; // a bare name is a Docker Hub `library/` image
   const first = ref.slice(0, slash);

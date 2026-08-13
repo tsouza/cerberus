@@ -84,7 +84,7 @@
 import process from 'node:process';
 
 import { capture, error, log, notice } from './gh.mjs';
-import { mirroredRef } from './mirror.mjs';
+import { isDockerHubRef, mirroredRef } from './mirror.mjs';
 
 // Five attempts with a linear backoff: long enough to ride out a registry blip
 // or a transport fault, short enough that a genuinely unreachable registry
@@ -176,6 +176,27 @@ export const mirrorOnlyEnvValue = '1';
 // must not put a job into a degraded mode by accident.
 export function mirrorOnly(env = process.env) {
   return String(env[mirrorOnlyEnvVar] ?? '').trim() === mirrorOnlyEnvValue;
+}
+
+// blockedByMirrorOnly — is `image` an acquisition this mode must refuse?
+//
+// Mirror-only mode exists because DOCKER HUB is unreachable, so it may only
+// constrain acquisitions that would have gone to Docker Hub. A ref naming any
+// other registry — `ghcr.io/open-telemetry/…/telemetrygen`, the released
+// `ghcr.io/tsouza/cerberus` image the migration lanes extract a binary from,
+// `gcr.io/distroless/*` — is reached over a path the outage does not touch, on
+// credentials the job already holds. Refusing those would take down the very
+// e2e and migration lanes this mode is supposed to save, and it would do it
+// with a message prescribing an impossible fix: adding a `ghcr.io/…` ref to
+// `mirroredImages` cannot help, because `mirroredRef` declines a non-Docker-Hub
+// ref by design and lib/mirror.mjs deliberately keeps unmetered registries out
+// of the inventory.
+//
+// So the question is asked in two parts rather than read off `mirroredRef`
+// returning null, which conflates "the mirror has no copy of this" with "this
+// never needed one".
+function blockedByMirrorOnly(image) {
+  return isDockerHubRef(image);
 }
 
 // mirrorOnlyDiagnosis — the one explanation for "this job is mirror-only and
@@ -322,7 +343,11 @@ function acquireFromMirror(image) {
 export function buildBaseImageRef(image) {
   const mirror = mirroredRef(image);
   if (mirror === null) {
-    if (mirrorOnly()) {
+    // Same narrowing as the pull path: a base image on a registry Docker Hub
+    // does not meter (`gcr.io/distroless/*`) resolves exactly as it always did,
+    // because the outage this mode reacts to cannot touch it. Only an
+    // unmirrored DOCKER HUB base image leaves a build with no resolvable ref.
+    if (mirrorOnly() && blockedByMirrorOnly(image)) {
       error(mirrorOnlyDiagnosis(image, 'the build has no base image to resolve its `FROM` against'));
       return null;
     }
@@ -382,7 +407,7 @@ export function pullImageWithRetry(image, options = {}) {
 
   if (acquireFromMirror(image)) return true;
 
-  if (mirrorOnly()) {
+  if (mirrorOnly() && blockedByMirrorOnly(image)) {
     // Asked before the mode, exactly as it is inside the loop: a copy already
     // in the daemon satisfies this caller's postcondition no matter which
     // registry is reachable, and no pull is needed to honour it.

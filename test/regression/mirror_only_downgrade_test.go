@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -49,6 +50,17 @@ const (
 	// nothing to serve. Deliberately not a real image: the point is the
 	// decision, and a name nobody can mirror cannot drift into the inventory.
 	unmirroredRef = "cerberus-test/not-in-the-mirror:1"
+
+	// A ref on a registry Docker Hub does not meter, which the inventory also
+	// does not hold — and deliberately never will, because mirroring a registry
+	// that is not rate-limited would add a hop and a staleness window for no
+	// gain (see lib/mirror.mjs). `mirroredRef` returns null for it exactly as it
+	// does for `unmirroredRef`, which is why keying mirror-only mode off that
+	// null is wrong: the two refs need OPPOSITE answers.
+	//
+	// The real thing, not a placeholder: `E2E_EXTERNAL_IMAGES` in the Justfile
+	// names it, so the k3d lanes acquire it on every run.
+	unmeteredRef = "ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0"
 )
 
 // dockerCall is one line of the stub's log: the verb and what it was aimed at.
@@ -57,14 +69,17 @@ type dockerCall struct{ verb, target string }
 // writeStubDockerHubOutage drops a `docker` onto dir that behaves exactly as a
 // runner would during a Docker Hub outage with a healthy GHCR:
 //
-//	login <anything>   fails with the /v2/ handshake timeout, always.
-//	pull ghcr.io/...   succeeds — the mirror is up, which is the whole premise.
-//	pull <upstream>    fails the same way, and is RECORDED. Recording the
-//	                   attempt is the point: the property under test is that the
-//	                   attempt is never made, and an assertion about something
-//	                   not happening is worthless unless the harness would have
-//	                   seen it happen.
-//	tag / image        succeed / report nothing local.
+//	login <anything>     fails with the /v2/ handshake timeout, always.
+//	pull <mirror ns>/... succeeds — the mirror is up, which is the whole premise.
+//	pull <other ghcr>    succeeds, recorded as `direct`. A ref on a registry
+//	                     Docker Hub does not meter is reached over a path this
+//	                     outage cannot touch, so it must still be acquired.
+//	pull <docker hub>    fails the same way, and is recorded as `hub`. Recording
+//	                     the attempt is the point: the property under test is
+//	                     that the attempt is never made, and an assertion about
+//	                     something not happening is worthless unless the harness
+//	                     would have seen it happen.
+//	tag / image          succeed / report nothing local.
 func writeStubDockerHubOutage(t *testing.T, dir, callLog string) {
 	t.Helper()
 
@@ -86,8 +101,12 @@ func writeStubDockerHubOutage(t *testing.T, dir, callLog string) {
 		"    ;;",
 		"  pull)",
 		"    case \"$2\" in",
-		"      " + mirrorRegistryPrefix + "*)",
+		"      " + mirrorNamespace(t) + "/*)",
 		"        echo \"mirror $2\" >> \"$log\"",
+		"        exit 0",
+		"        ;;",
+		"      " + mirrorRegistryPrefix + "*)",
+		"        echo \"direct $2\" >> \"$log\"",
 		"        exit 0",
 		"        ;;",
 		"    esac",
@@ -204,6 +223,29 @@ func loginUnderOutage(t *testing.T, stubDir string, env ...string) (int, string,
 	return status, out, exported
 }
 
+// mirrorNamespaceLiteral isolates `mirrorRegistry`'s default in lib/mirror.mjs.
+var mirrorNamespaceLiteral = regexp.MustCompile(`\|\|\s*'(ghcr\.io/[^']+)'`)
+
+// mirrorNamespace is the GHCR namespace mirrored copies live under, read from
+// the module rather than restated here. The stub has to tell a pull of a
+// MIRRORED copy from a pull of some other ghcr.io image, and a hardcoded
+// namespace would silently stop distinguishing them if the mirror ever moved —
+// leaving the test green while measuring nothing.
+func mirrorNamespace(t *testing.T) string {
+	t.Helper()
+
+	src, err := os.ReadFile(mirrorModule)
+	if err != nil {
+		t.Fatalf("read %s: %v", mirrorModule, err)
+	}
+	m := mirrorNamespaceLiteral.FindStringSubmatch(string(src))
+	if m == nil {
+		t.Fatalf("%s no longer states a default `mirrorRegistry` — the stub cannot tell a mirrored pull "+
+			"from any other ghcr.io pull", mirrorModule)
+	}
+	return m[1]
+}
+
 // anyMirroredImage is one ref the mirror actually holds, read from the inventory
 // rather than named here so a bump cannot leave this test pinned to a ref the
 // mirror no longer carries.
@@ -225,6 +267,14 @@ func anyMirroredImage(t *testing.T) string {
 // Both steps are the real scripts and the flag travels between them through
 // $GITHUB_ENV, so this fails if either half stops honouring the mode OR if the
 // two halves stop agreeing on how it is spelled.
+//
+// What DISCRIMINATES here is the login half: without the downgrade it exits 1
+// and the job is over, which is issue #1933 exactly. The pull half is the
+// unchanged-behaviour leg on purpose — an inventoried image is served by
+// `acquireFromMirror` before the mode is ever consulted, so it must look
+// identical in both modes, and the assertions below say so rather than claiming
+// to exercise the mode. The pull-side behaviour that only mirror-only mode
+// produces is pinned by the two tests that follow.
 func TestMirrorOnlyJobCompletesWithDockerHubUnreachable(t *testing.T) {
 	t.Parallel()
 
@@ -293,6 +343,46 @@ func TestMirrorOnlyFailsLoudlyRatherThanPullingAnonymously(t *testing.T) {
 	if got := callsWithVerb(readStubCalls(t, callLog), "hub"); len(got) != 0 {
 		t.Errorf("mirror-only mode reached for Docker Hub anyway (%v) — the fallback must be REMOVED in this "+
 			"mode, not merely deprioritised.", got)
+	}
+}
+
+// TestMirrorOnlyStillAcquiresImagesDockerHubNeverServed is the boundary that
+// keeps the mode proportionate to the outage that caused it.
+//
+// Mirror-only mode exists because DOCKER HUB is unreachable. A ref naming any
+// other registry is fetched over a path the outage does not touch, on
+// credentials the job already holds, so it must be acquired exactly as always.
+// Refusing it would take down the lanes this mode is meant to save: the k3d e2e
+// jobs acquire `telemetrygen` from ghcr.io on every run, and the migration tiers
+// extract their binary from a `ghcr.io/tsouza/cerberus` release image.
+//
+// The bug this pins is a one-token one. `mirroredRef` returns null both for "the
+// mirror has no copy of this" and for "this never needed one", so keying the
+// refusal off that null reads the second as the first and fails an acquisition
+// that was never in danger — with a message prescribing a fix (add it to
+// `mirroredImages`) that cannot work for such a ref.
+func TestMirrorOnlyStillAcquiresImagesDockerHubNeverServed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	callLog := filepath.Join(dir, "calls")
+	writeStubDockerHubOutage(t, dir, callLog)
+
+	loginStatus, loginOut, exported := loginUnderOutage(t, dir)
+	if loginStatus != 0 || len(exported) != 1 {
+		t.Fatalf("the login exited %d exporting %v, so this test never reached mirror-only mode.\noutput:\n%s",
+			loginStatus, exported, loginOut)
+	}
+
+	status, out := runNode(t, pullImagesModule, dir, exported, unmeteredRef)
+	if status != 0 {
+		t.Fatalf("mirror-only mode refused %q (exit %d), a ref Docker Hub does not serve and its outage cannot "+
+			"reach. The mode must constrain Docker Hub acquisitions, not every acquisition.\noutput:\n%s",
+			unmeteredRef, status, out)
+	}
+	if got := callsWithVerb(readStubCalls(t, callLog), "direct"); len(got) != 1 || got[0] != unmeteredRef {
+		t.Errorf("the unmetered ref was acquired as %v, want exactly [%s] — it must be pulled from its own "+
+			"registry rather than looked for in the mirror", got, unmeteredRef)
 	}
 }
 
