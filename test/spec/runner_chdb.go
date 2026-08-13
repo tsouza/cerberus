@@ -25,12 +25,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/testsql"
 
-	"github.com/chdb-io/chdb-go/chdb"
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 )
 
@@ -41,20 +41,19 @@ import (
 // shared by every `sql.Open("chdb", "")` in the process — `chdb.NewSession`
 // (the chdb-go package the driver delegates to) caches ONE process-wide
 // `*chdb.Session` in a package-level variable and hands it back to every
-// caller, ignoring the DSN, until something explicitly tears it down (see
-// [resetChDBSession]). That engine is also NOT thread-safe for concurrent
-// in-process execution. The observed failure mode of racing it is an
-// intermittent
+// caller, ignoring the DSN, for the LIFE OF THE PROCESS — see [OpenChDB]'s
+// doc comment for why nothing tears it down anymore. That engine is also
+// NOT thread-safe for concurrent in-process execution. The observed
+// failure mode of racing it is an intermittent
 //
 //	SIGABRT: abort / signal arrived during cgo execution
 //
 // inside chdb-purego.(*result).Free, which fires when a *sql.Rows is
 // closed and when a *sql.DB is closed (driver teardown). To make this
 // safe, every chDB engine call — Open/Ping/Exec(SET), seed Exec, Query,
-// row iteration, rows.Close, the per-case db.Close, AND the session
-// teardown — runs under this mutex. Only the parse / lower / SQL-build
-// work of OTHER cases stays parallel; the engine span itself is
-// single-threaded.
+// row iteration, rows.Close, AND the per-case database create/use/drop —
+// runs under this mutex. Only the parse / lower / SQL-build work of
+// OTHER cases stays parallel; the engine span itself is single-threaded.
 var chdbEngineMu sync.Mutex
 
 // nowAnchorLiteral, substituteNow64, the seed-statement splitter, the
@@ -92,89 +91,192 @@ func CHNow64Literal(at time.Time) string {
 	)
 }
 
-// OpenChDB returns a fresh ephemeral chDB session, genuinely isolated
-// from every other fixture that has run in this process (issue #1987).
+// isolatedChDBSeq disambiguates two fixtures whose t.Name() folds to the
+// same ClickHouse identifier.
+var isolatedChDBSeq atomic.Uint64
+
+// defaultChDBDatabase is the database the shared chDB session starts in,
+// and the one each fixture's cleanup returns it to so no later caller ever
+// finds the session pointing at a database that was just dropped.
+const defaultChDBDatabase = "default"
+
+// chdbSessionSettingsApplied guards the one-time, process-lifetime session
+// settings below -- see the comment on the SET statement in OpenChDB for
+// what it does and why it only needs to run once. Read and written only
+// under chdbEngineMu (OpenChDB's own calling contract), so it needs no
+// separate synchronization of its own.
+var chdbSessionSettingsApplied bool
+
+// chdbActiveDatabases maps a fixture subtest's t.Name() to the isolated
+// database OpenChDB already created for it, so a fixture that calls
+// OpenChDB more than once (RunRoundTrip, then RunRoundTripSQL, then
+// RunParity -- test/spec/parity_chdb.go's RunParity opens its own chDB
+// session too) pays ONE CREATE DATABASE / DROP DATABASE cycle for the
+// whole fixture rather than one per call. Every call still re-issues USE,
+// which is a single, cheap statement, so a later call is never left
+// pointing at a database an earlier call's cleanup already dropped out
+// from under it. Read and written only under chdbEngineMu.
+var chdbActiveDatabases = map[string]string{}
+
+// OpenChDB returns a chDB session switched to a DATABASE private to this
+// fixture, genuinely isolated from every other fixture that has run in
+// this process (issue #1987) -- without ever tearing down and reopening
+// the underlying native chDB engine.
 //
-// The empty DSN routes through chdb-go's `chdb.NewSession()`, which
-// caches its result in a package-level variable and hands the SAME
-// session back to every subsequent caller regardless of DSN — see
-// [chdbEngineMu]'s doc comment. Left alone, that makes a fixture's
-// executability depend on which sibling fixtures happened to run before
-// it in the same test binary: a table one fixture creates (and rows it
-// inserts) silently survive for the next fixture to read, so a fixture
-// whose own `seed:` is NOT self-sufficient for its `sql:` can still pass
-// as part of a whole-package run while failing the narrowed
-// `go test -run '^TestName$/^subtest$'` reproduction invariant 5 calls
-// for. To make a fixture's result independent of what ran before it,
-// [resetChDBSession] tears the previous fixture's session down (native
-// engine teardown + temp-dir removal) in t.Cleanup, so the very next
-// OpenChDB call is forced through chdb-go's own "no session yet" branch
-// and gets a brand-new, empty-catalog session. Cost is real but small —
-// a synthetic benchmark measured ~48ms for a from-scratch session against
-// ~16ms reusing a warm one — and is paid once per fixture, not per query.
+// The empty DSN routes through chdb-go's `chdb.NewSession()`, which caches
+// its result in a package-level variable and hands the SAME session back
+// to every caller regardless of DSN -- see [chdbEngineMu]'s doc comment.
+// Left entirely alone, that makes a fixture's executability depend on
+// which sibling fixtures happened to run before it in the same test
+// binary: a table one fixture creates (and rows it inserts) silently
+// survive for the next fixture to read, so a fixture whose own `seed:` is
+// NOT self-sufficient for its `sql:` can still pass as part of a
+// whole-package run while failing the narrowed
+// `go test -run '^TestName$/^subtest$' ./internal/<pkg>/` reproduction
+// invariant 5 calls for.
+//
+// This used to be solved by tearing the whole native engine down and
+// rebuilding it fresh for every fixture (`resetChDBSession`, now removed).
+// That traded #1987's isolation bug for a WORSE one: every teardown+rebuild
+// is a `chdb_connect()` call, and `chdb_connect()` briefly resets the
+// kernel's SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGURG handlers to
+// libchdb's own -- even with chdb-go's issue #30 guard in place, which only
+// closes the window around the call, it does not eliminate it
+// (chdb-purego's own binding.go documents this: "chdb_connect -- even
+// after chdb_set_signal_handlers_enabled(0) -- still resets the kernel
+// sigaction table... on the first call"). POSIX signal handlers are
+// PROCESS-WIDE, not per-goroutine, so ANY goroutine in the whole binary
+// that needs SIGSEGV for stack growth during that window -- not just the
+// one calling chdb_connect -- can be misrouted into libchdb's own
+// crash-handling code, which is exactly the failure class chdb-purego's
+// own stress_test.go documents (issue #30's "rare std::mutex::unlock
+// crash"; on Linux the same race can manifest as a hang instead of a
+// crash, sitting forever in libchdb's own signal-adjacent locking rather
+// than terminating). Walking ~536 fixtures sequentially in one process
+// paid that ~500+ times per `roundtrip (promql)` run; see #2096 for the
+// reproduced hang this caused and why "just replace chdb_connect with a
+// database switch" (this function's first cut) was not enough on its
+// own: chdb-purego's Query() path has NO signal or panic protection at
+// all (unlike NewConnection, which wraps every call in
+// guardSignalHandlers()+recover()), so the SAME class of native-call
+// hazard can still be reached through an ordinary query or DDL statement,
+// not only through chdb_connect. Reducing the TOTAL VOLUME of native
+// calls -- not just connect() calls -- is what actually moves the needle:
+// caching the isolated database per FIXTURE rather than per OpenChDB call
+// keeps a parity-enrolled fixture (RunRoundTripSQL then RunParity, each
+// calling OpenChDB once) to ONE create/drop cycle instead of two.
+//
+// Isolating via a DATABASE -- CREATE DATABASE / USE / (on cleanup) DROP
+// DATABASE, dropping back to `default` first -- achieves the SAME
+// cross-fixture guarantee #1987 wanted (no leaked tables or rows: a
+// dropped database takes every table in it with it), the same technique
+// `internal/chsqltest.OpenIsolatedChDB` already uses for #2074. The
+// isolation is process-global, exactly as chdb-go's cached session is, so
+// it is sound only while these tests run serially -- none of them calls
+// t.Parallel; see [WalkShard]'s doc comment for why that must stay true.
 func OpenChDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("chdb", "")
 	if err != nil {
 		t.Fatalf("open chdb: %v", err)
 	}
-	// db.Close tears down the Go-level *sql.DB pool; resetChDBSession
-	// tears down the native chDB engine itself (chdb-purego result Free +
-	// temp-dir removal), so together they must not race another case's
-	// engine call. The cleanup runs AFTER the caller returns and has
-	// released chdbEngineMu, so it takes the lock itself here. (OpenChDB
-	// itself is always called with chdbEngineMu already held by the
-	// caller, hence no lock around the Open/Ping/Exec below.)
-	t.Cleanup(func() {
-		chdbEngineMu.Lock()
-		defer chdbEngineMu.Unlock()
-		_ = db.Close()
-		resetChDBSession(t)
-	})
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping chdb: %v", err)
 	}
 	// Enable the experimental timeSeries*ToGrid aggregate family at the
-	// session level so the native-rate fixtures (RangeWindowNative →
+	// session level so the native-rate fixtures (RangeWindowNative ->
 	// timeSeriesRateToGrid) run. The setting is harmless for every other
-	// fixture — it gates only those aggregates, which no other fixture
-	// emits — and chDB does not enforce the gate, so this is belt-and-
+	// fixture -- it gates only those aggregates, which no other fixture
+	// emits -- and chDB does not enforce the gate, so this is belt-and-
 	// braces for forward-compatibility if a future chDB starts to. The
 	// production chclient sends the same setting per-query (only on the
 	// native path); see internal/chclient.WithTSGridSetting. The spelling
 	// is the CANONICAL `allow_experimental_time_series_aggregate_functions`
 	// (ClickHouse PR #80590 renamed the gate before the v25.6 release; the
-	// old `..._ts_to_grid_aggregate_function` survives only as an alias —
+	// old `..._ts_to_grid_aggregate_function` survives only as an alias --
 	// see chclient.SettingExperimentalTSGridAggregate). A chDB build older
-	// than the family's introduction would reject the SET — the linked
+	// than the family's introduction would reject the SET -- the linked
 	// libchdb answers `SELECT version()` with 26.5.1.1, well past the
 	// v25.6 floor.
-	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
-		t.Fatalf("enable experimental ts-grid aggregate: %v", err)
+	//
+	// A SET applies to the whole session, which now lives for the entire
+	// process rather than one fixture, so it only needs to run once --
+	// re-running it on every call would be harmless but wasteful.
+	if !chdbSessionSettingsApplied {
+		if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+			t.Fatalf("enable experimental ts-grid aggregate: %v", err)
+		}
+		chdbSessionSettingsApplied = true
+	}
+
+	// Registered BEFORE the isolated-database cleanup below so it runs
+	// AFTER it: t.Cleanup is LIFO, and dropping the database needs this
+	// call's own *sql.DB handle to still be open.
+	t.Cleanup(func() {
+		chdbEngineMu.Lock()
+		defer chdbEngineMu.Unlock()
+		_ = db.Close()
+	})
+
+	name, ok := chdbActiveDatabases[t.Name()]
+	if !ok {
+		name = isolatedChDBDatabaseName(t.Name())
+		// A run that died before its cleanup leaves the database behind in
+		// a reused chDB data directory; recovering costs one statement.
+		if _, err := db.Exec("DROP DATABASE IF EXISTS " + name); err != nil {
+			t.Fatalf("drop stale database %s: %v", name, err)
+		}
+		if _, err := db.Exec("CREATE DATABASE " + name); err != nil {
+			t.Fatalf("create database %s: %v", name, err)
+		}
+		chdbActiveDatabases[t.Name()] = name
+
+		// Runs AFTER the caller returns and has released chdbEngineMu, so
+		// it takes the lock itself here. (OpenChDB itself is always called
+		// with chdbEngineMu already held by the caller, hence no lock
+		// around the Exec calls in this function otherwise.) Registered
+		// AFTER this call's own db.Close cleanup above, so LIFO runs this
+		// one FIRST -- dropping the database while this handle (the one
+		// that created it) is still open, before it gets closed.
+		t.Cleanup(func() {
+			chdbEngineMu.Lock()
+			defer chdbEngineMu.Unlock()
+			delete(chdbActiveDatabases, t.Name())
+			// Leave the isolated database before dropping it: dropping
+			// the CURRENT database leaves the shared session pointing at
+			// one that no longer exists, which breaks the NEXT caller
+			// rather than this one.
+			if _, err := db.Exec("USE " + defaultChDBDatabase); err != nil {
+				t.Errorf("restore %s database: %v", defaultChDBDatabase, err)
+			}
+			if _, err := db.Exec("DROP DATABASE IF EXISTS " + name); err != nil {
+				t.Errorf("drop database %s: %v", name, err)
+			}
+		})
+	}
+	if _, err := db.Exec("USE " + name); err != nil {
+		t.Fatalf("use database %s: %v", name, err)
 	}
 	return db
 }
 
-// resetChDBSession tears down the process-wide chDB engine so the NEXT
-// [OpenChDB] call is forced to build a brand-new one from scratch (see
-// [OpenChDB]'s doc comment for why). `chdb.NewSession()` with no
-// arguments hands back the currently-cached session — a cheap no-op
-// read when one is already open, which it always is here since this
-// runs from OpenChDB's own t.Cleanup — and `(*chdb.Session).Cleanup`
-// unconditionally closes the native connection and removes its temp
-// directory, regardless of whether the session considers itself
-// temporary, and nils the package-level cache so the next
-// `chdb.NewSession()` call (triggered by the next fixture's
-// `sql.Open("chdb", "")`) takes the "no session yet" branch and
-// allocates a fresh one. Must run under chdbEngineMu, same as every
-// other engine call.
-func resetChDBSession(t *testing.T) {
-	t.Helper()
-	sess, err := chdb.NewSession()
-	if err != nil {
-		t.Fatalf("chdb session teardown: %v", err)
+// isolatedChDBDatabaseName folds a fixture/test name into a ClickHouse
+// identifier, exactly as internal/chsqltest.isolatedDBName does for its
+// own, separate package-local database sequence. Test names carry `/` for
+// subtests and may carry any rune a t.Run label contains, so everything
+// outside [A-Za-z0-9_] folds to `_`.
+func isolatedChDBDatabaseName(testName string) string {
+	var b strings.Builder
+	b.WriteString("spec_chdb_")
+	for _, r := range testName {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
 	}
-	sess.Cleanup()
+	return fmt.Sprintf("%s_%d", b.String(), isolatedChDBSeq.Add(1))
 }
 
 // ApplySeed splits a multi-statement script on top-level semicolons
