@@ -259,6 +259,12 @@ func TestEmitStructuralRecursiveAnchorWindowed(t *testing.T) {
 			// The union form emits the canonical closure plus the inverse
 			// closure that walks back the other way — two anchor arms.
 			{"union_descendant", `{ .service.name = "a" } &>> { .http.status_code = 500 }`, 2},
+			// A left-associative chain nests a closure INSIDE the outer
+			// closure's seed, so the outer anchor's `Timestamp` conjunct
+			// resolves against the inner join's projection rather than a table
+			// scan — the shape that breaks if the seed stops exposing the
+			// timestamp column.
+			{"chain", `{ .service.name = "a" } >> { .http.status_code = 500 } >> { .kind = client }`, 2},
 		} {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
