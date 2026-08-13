@@ -1,0 +1,30 @@
+# CodeQL analysis scope for cerberus.
+#
+# paths-ignore removes files from EXTRACTION, not just from result reporting —
+# an ignored file can never appear as a source, sink, or intermediate step in
+# any query, in any language. This is deliberately narrower than "exclude
+# everything under test/" or "exclude everything under compatibility/": it
+# targets only the standalone Go binaries that never link into cmd/cerberus
+# (test-harness servers, differential-compliance testers, corpus seeders).
+# Table-driven _test.go files, Playwright specs, and .github/scripts/*.mjs
+# stay in scope — they are real CI-facing code, not synthetic fixtures.
+#
+# Why this exists: alerts #121/#122 (go/reflected-xss, dismissed 2026-08-13)
+# were a false flow between a standalone package-main test binary under
+# test/e2e/ and unrelated production middleware in cmd/cerberus's own build —
+# two binaries with no shared call graph, merged only because CodeQL's Go
+# whole-database analysis matches sources/sinks by interface satisfaction
+# (io.Writer) rather than real reachability across separate binaries. See
+# project memory project_codeql_xss_cross_binary_fp for the full trace.
+name: "cerberus CodeQL config"
+
+queries:
+  - uses: security-and-quality
+
+paths-ignore:
+  # Differential-compliance testers, corpus seeders, and other Go tooling
+  # under compatibility/ — CI-only, never built into cmd/cerberus.
+  - compatibility/**/*.go
+  # e2e/migration test-harness binaries (seeders, scenario drivers, the
+  # dead-end-receiver webhook sink) — CI-only, never built into cmd/cerberus.
+  - test/e2e/**/*.go
