@@ -13,6 +13,10 @@ import (
 // in histogram_native_bare.go) to cap a plan with a
 // [chplan.HistogramProjection].
 //
+// It also hosts the MERGE that `avg()` reuses: histogram_native_avg.go
+// adds one division on top of the row this file builds, and shares this
+// file's recognizer. Everything below about the merge applies to both.
+//
 // Reference Prometheus answers `sum()` over native-histogram samples
 // with a native histogram, not a float: promql's aggregation walks the
 // group calling `histogram.FloatHistogram.Add` on each member, so the
@@ -42,7 +46,7 @@ import (
 //	HistogramProjection [MetricName='', Attributes, now64(9), Value=0, <nine histogram columns>]
 //	  Project [Attributes (rebuilt from gkeys), merged Scale / ZeroCount /
 //	           ZeroThreshold / {Pos,Neg}{Offset,BucketCounts}, Count, Sum]
-//	    Aggregate groupBy=[<user by/without labels>] funcs=<expHistogramSumMergeAggs>
+//	    Aggregate groupBy=[<user by/without labels>] funcs=<expHistogramGroupMergeAggs>
 //	      Aggregate groupBy=[series identity] funcs=<nativeExpHistValuedLatestAggs>  ← per series
 //	        Filter <matchers> AND <staleness window>
 //	          Scan(otel_metrics_exponential_histogram)
@@ -55,8 +59,14 @@ import (
 // distributions ACROSS series. Collapsing them into one grouping would
 // add a series' own consecutive scrapes to each other.
 
-// sumOverExpHistogram reports whether expr is `sum [by/without] (<bare
-// exp-histogram selector>)` — the one shape this file answers.
+// sumOrAvgOverExpHistogram reports whether expr is `sum [by/without]
+// (<bare exp-histogram selector>)` or its `avg` twin — the two shapes
+// this file answers.
+//
+// The two share one recognizer because they share one merge: `avg()` is
+// this file's merge divided by the group's series count, and
+// histogram_native_avg.go adds only that division. Recognising them
+// apart would let the shapes they accept drift.
 //
 // Like [bareExpHistogramSelector] it is asked only of the ROOT of a
 // query (see [lowerRoot]), and for the same reason: the answer is a
@@ -68,15 +78,15 @@ import (
 // m_exp_hist[5m]))` does not: its aggregand is a range-vector function
 // with its own histogram-valued lowering to grow (issue #1967), and
 // admitting it here would silently drop the rate.
-func sumOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
+func sumOrAvgOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, nil, false
 	}
 	agg, ok := unwrapAggregateExpr(expr)
-	// Param is nil for every SUM the parser produces (only the topk /
-	// bottomk / quantile / count_values family carries one); the check
-	// states the assumption rather than relying on it.
-	if !ok || agg.Op != parser.SUM || agg.Param != nil {
+	// Param is nil for every SUM and AVG the parser produces (only the
+	// topk / bottomk / quantile / count_values family carries one); the
+	// check states the assumption rather than relying on it.
+	if !ok || !expHistogramAggOpIsMergeable(agg.Op) || agg.Param != nil {
 		return nil, nil, false
 	}
 	vs, ok := unwrapVectorSelector(agg.Expr)
@@ -108,15 +118,15 @@ func unwrapAggregateExpr(e parser.Expr) (*parser.AggregateExpr, bool) {
 	}
 }
 
-// lowerExpHistogramSum lowers the `sum()` shape across the three
+// lowerExpHistogramSumOrAvg lowers the `sum()` / `avg()` shape across the three
 // evaluation shapes [rangeGridShapeFor] distinguishes, the same three
 // the bare sibling handles — see [lowerExpHistogramBare] for what each
 // one means.
-func lowerExpHistogramSum(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerExpHistogramSumOrAvg(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if shape := rangeGridShapeFor(vs, ctx); shape == gridFanout {
-		return lowerExpHistogramSumRange(agg, vs, s, ctx), nil
+		return lowerExpHistogramSumOrAvgRange(agg, vs, s, ctx), nil
 	} else if shape == gridBroadcast {
-		merged, err := expHistogramSumMergedInstant(agg, vs, s, ctx)
+		merged, err := expHistogramGroupMergedInstant(agg, vs, s, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -132,19 +142,19 @@ func lowerExpHistogramSum(agg *parser.AggregateExpr, vs *parser.VectorSelector, 
 			s,
 		), nil
 	}
-	merged, err := expHistogramSumMergedInstant(agg, vs, s, ctx)
+	merged, err := expHistogramGroupMergedInstant(agg, vs, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 	return aggregatedHistogramProjection(merged, chplan.NowNano(), s), nil
 }
 
-// expHistogramSumMergedInstant builds the instant-mode subtree beneath
+// expHistogramGroupMergedInstant builds the instant-mode subtree beneath
 // the histogram projection: the filtered scan collapsed to the newest
 // in-window sample per series, then merged across series by the user's
 // grouping. Its output is one row per output series carrying the merged
 // distribution under the schema's own column names.
-func expHistogramSumMergedInstant(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func expHistogramGroupMergedInstant(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred, err := andInstantWindow(pred, vs, s.TimestampColumn, ctx)
@@ -156,10 +166,10 @@ func expHistogramSumMergedInstant(agg *parser.AggregateExpr, vs *parser.VectorSe
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	perSeries := latestSampleAgg(input, nativeExpHistValuedLatestAggs(s), s)
-	return expHistogramSumMerge(perSeries, nil, agg, s), nil
+	return expHistogramGroupMerge(perSeries, nil, agg, s), nil
 }
 
-// lowerExpHistogramSumRange is the query_range shape. Stage 1 is the
+// lowerExpHistogramSumOrAvgRange is the query_range shape. Stage 1 is the
 // per-anchor [chplan.RangeBucketFanout] the bare range path builds — one
 // staleness window per step anchor, keyed on SERIES identity — and stage
 // 2 is the across-series merge within each anchor, exactly as
@@ -170,7 +180,7 @@ func expHistogramSumMergedInstant(agg *parser.AggregateExpr, vs *parser.VectorSe
 // reference PromQL means: `sum by(service)` over three pods must take
 // each pod's own newest sample and add the three, not take one newest
 // sample per service.
-func lowerExpHistogramSumRange(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
+func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 	perSeries := buildHistogramBucketFanout(
@@ -179,10 +189,10 @@ func lowerExpHistogramSumRange(agg *parser.AggregateExpr, vs *parser.VectorSelec
 		nativeExpHistValuedLatestAggs(s), s, ctx,
 	)
 	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
-	return aggregatedHistogramProjection(expHistogramSumMerge(perSeries, anchor, agg, s), anchor, s)
+	return aggregatedHistogramProjection(expHistogramGroupMerge(perSeries, anchor, agg, s), anchor, s)
 }
 
-// expHistogramSumMerge is the across-SERIES stage: it adds the per-series
+// expHistogramGroupMerge is the across-SERIES stage: it adds the per-series
 // distributions perSeries hands up, grouped by the user's `by/without`
 // clause, and reshapes the result back into the exp-histogram row
 // contract under the schema's own column names.
@@ -197,7 +207,7 @@ func lowerExpHistogramSumRange(agg *parser.AggregateExpr, vs *parser.VectorSelec
 // in scope above stage 1 — the same binding [histogramAggGroupBy]'s doc
 // describes for the quantile paths, and the reason they must not be
 // re-wrapped in [canonicalGroupKeyExpr].
-func expHistogramSumMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics) chplan.Node {
+func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics) chplan.Node {
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
 		agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
 	)
@@ -211,15 +221,25 @@ func expHistogramSumMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *
 		Input:              perSeries,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
-		AggFuncs:           expHistogramSumMergeAggs(s),
+		AggFuncs:           expHistogramGroupMergeAggs(agg, s),
 		DropEmptyOnNoGroup: true,
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: s.AttributesColumn})
-	projs = append(projs, expHistogramSumMergeProjections(s)...)
+	fields := expHistogramGroupMergeProjections(s)
+	if expHistogramGroupIsAvg(agg) {
+		// The ONE place the two aggregations differ. Everything below this
+		// line — the scale fold, the offset alignment, the zero padding —
+		// is identical for `sum` and `avg`, which is why the division
+		// wraps the merged row here rather than reaching into the shared
+		// merge. See histogram_native_avg.go for which fields it touches
+		// and why the other four must not be touched.
+		fields = expHistogramAvgScaleProjections(fields, s)
+	}
+	projs = append(projs, fields...)
 	return &chplan.Project{Input: merged, Projections: projs}
 }
 
-// expHistogramSumMergeAggs is [expHistogramMergeAggs] — the shared
+// expHistogramGroupMergeAggs is [expHistogramMergeAggs] — the shared
 // scale-fold + offset-align + zero-pad collection, the arithmetic of
 // FloatHistogram.Add — widened by the two whole-histogram scalars a
 // histogram-VALUED answer must also publish.
@@ -228,21 +248,28 @@ func expHistogramSumMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *
 // count and total observed value, and neither depends on bucket
 // alignment. `sum(<col>) AS <col>` reuses the source column's own name,
 // the same aliasing expHistogramMergeAggs already applies to ZeroCount.
-func expHistogramSumMergeAggs(s schema.Metrics) []chplan.AggFunc {
-	return append(
-		[]chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
-		},
-		expHistogramMergeAggs(s)...,
-	)
+// `avg()` additionally collects the group's member count, the divisor it
+// scales the merged distribution by (see
+// [expHistogramGroupSeriesCountAgg]). `sum()` does NOT collect it: it
+// has no use for the column, and adding one to a shipped lowering's
+// emitted SQL would cost a counter per group and churn its goldens for
+// nothing.
+func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []chplan.AggFunc {
+	aggs := []chplan.AggFunc{
+		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
+		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
+	}
+	if expHistogramGroupIsAvg(agg) {
+		aggs = append(aggs, expHistogramGroupSeriesCountAgg())
+	}
+	return append(aggs, expHistogramMergeAggs(s)...)
 }
 
-// expHistogramSumMergeProjections is [expHistogramMergeProjections] plus
+// expHistogramGroupMergeProjections is [expHistogramMergeProjections] plus
 // the Count / Sum pass-through, so the reshaped row carries all nine
 // fields [chplan.HistogramProjection] reads by name rather than the
 // seven the quantile kernel needs.
-func expHistogramSumMergeProjections(s schema.Metrics) []chplan.Projection {
+func expHistogramGroupMergeProjections(s schema.Metrics) []chplan.Projection {
 	return append(
 		[]chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.CountColumn}, Alias: s.CountColumn},
