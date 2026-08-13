@@ -156,6 +156,12 @@ type columnarDecoder struct {
 // physical execution re-keys, so the corpus reconciler's join key still matches
 // the primary attempt's terminal query_log row, and cancellation (ctx-based)
 // is unaffected by the id string.
+//
+// When the columnar attempt declined BEFORE dispatching — the declared
+// non-matrix ResponseShape gate at the top of queryCursorColumnar (#2043) —
+// there is no in-flight query to collide with and the re-key is merely
+// redundant, never wrong: the row path is then this query's one and only
+// physical execution, under an id nothing else has used.
 func (d columnarDecoder) decode(c *Client, ctx context.Context, sql string, args ...any) (Cursor, error) {
 	cur, ok, err := d.queryCursorColumnar(c, ctx, sql, args...)
 	if err != nil {
