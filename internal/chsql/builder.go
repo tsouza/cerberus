@@ -1080,9 +1080,10 @@ func (b *Builder) labelReplaceSubstitution(l *chplan.LabelReplace, anchored stri
 // A segment carrying Fallbacks references a NAME that several capture
 // groups share. Go's ExpandString expands it to the first of those groups
 // that took part in the match, and the lowering only produces this shape
-// once it has proved none of the groups can match the empty string — so
-// "took part" is exactly "captured something non-empty", and the choice
-// becomes an ordinary array search:
+// once it has proved that no match can pair a first participant capturing
+// the EMPTY string with a later listed group capturing text — so over the
+// groups it listed, "took part" and "captured something non-empty" pick
+// the same one, and the choice becomes an ordinary array search:
 //
 //	arrayFirst(x -> x != '', [<subscript>, <subscript>, …])
 //

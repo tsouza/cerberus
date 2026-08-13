@@ -125,12 +125,12 @@ func TestNewCaptureGroupsIndicesSurviveAnchorWrap(t *testing.T) {
 	// (`(a)`) likewise. Both must be classified by index, not shifted by
 	// the anchor wrapper.
 	for _, idx := range []int{1, 2, 3} {
-		nullable, ok := g.nullable[idx]
+		shape, ok := g.shapes[idx]
 		if !ok {
-			t.Fatalf("newCaptureGroups: nullable[%d] missing; got %v", idx, g.nullable)
+			t.Fatalf("newCaptureGroups: shapes[%d] missing; got %v", idx, g.shapes)
 		}
-		if nullable {
-			t.Errorf("newCaptureGroups: nullable[%d] = true, want false — %q is a single-rune literal",
+		if shape.nullable {
+			t.Errorf("newCaptureGroups: shapes[%d].nullable = true, want false — %q is a single-rune literal",
 				idx, "(a)(b)|(c)")
 		}
 	}

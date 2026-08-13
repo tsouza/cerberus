@@ -152,25 +152,30 @@ func TestReplacementToCH(t *testing.T) {
 
 // TestReplacementToCHRejectsInexpressibleBackrefs pins the one shape that
 // Go's ExpandString resolves to a real capture but no ClickHouse
-// expression can reproduce: a name several capture groups share where at
-// least one of them can match the EMPTY STRING. ExpandString picks the
-// first carrier that TOOK PART in the row's match, and participation is
+// expression can reproduce: a name several capture groups share where the
+// first carrier to TAKE PART in a match can capture the EMPTY STRING while
+// a LATER carrier in that same match captures text. ExpandString stops at
+// the first participant and expands to its empty capture; the emitted
+// `arrayFirst(x -> x != ”, …)` search skips it and answers with the later
+// carrier instead. Participation is what would separate the two, and it is
 // not observable from SQL — `extractGroups` reports a group that did not
 // participate and a group that matched the empty string identically, as
-// `”`. A nullable carrier is exactly the case where those two states can
-// both occur, so the choice is unrecoverable.
+// `”`.
 //
-// Carriers that CANNOT match the empty string are a different matter, and
-// are translated rather than rejected — see
-// TestReplacementToCHSegmentsSharedCaptureName. That is why every case
-// here has a nullable carrier: without one the guard does not fire, so a
-// case whose carriers are all non-nullable would pass this test for the
-// wrong reason.
+// Nullability alone does NOT put a carrier in this position, which is why
+// every case below carries a concrete WITNESS: an input string on which
+// Go's answer and the first-non-empty search really do differ. A case
+// without one would be pinning an over-rejection rather than the
+// divergence — the trap the previous revision of this test fell into, when
+// all four of its regexes turned out to be expressible after all. The
+// shapes that are expressible are covered by
+// TestSharedCaptureNameSegmentsAgreeWithExpandString and
+// TestExpressibleCarriersAgreeWithExpandString.
 //
 // It used to be emitted as literal template text — a 200 carrying a label
 // whose value was the template rather than an expansion of it, which is
 // the silently-wrong output issue #1490 reported. Rejecting at lowering
-// makes the failure loud instead.
+// makes the failure loud instead. Issue #1956 tracks the residue.
 func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 	t.Parallel()
 
@@ -181,39 +186,48 @@ func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 		wantErrs []string
 	}{
 		{
-			// Carrier 1 is `a?`, which matches the empty string: it can
-			// take part AND report `''`, which is also what a carrier that
-			// took no part reports.
-			"nullable_first_carrier",
+			// Carrier 1 sits under a quest, so a match can skip it
+			// entirely, and it is nullable, so a match can also enter it
+			// and capture nothing. Witness "xb": Go answers "" (carrier 1
+			// took part, matching empty after the "x"), first-non-empty
+			// answers "b".
+			"nullable_carrier_a_match_can_skip",
 			"$dup",
-			`(?P<dup>a?)|(?P<dup>b)`,
+			`(?:x(?P<dup>a?))?(?P<dup>b)`,
 			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
 		},
 		{
-			// Nullability anywhere in the carrier set is disqualifying,
-			// not just at the front: Go picks the FIRST participant, so a
-			// later nullable carrier that matched empty must not be
-			// skipped over by a "first non-empty" search either.
-			"nullable_later_carrier",
+			// The alternation around carrier 1 is itself mandatory, so
+			// being in a branch of it excludes carrier 1 from nothing —
+			// carrier 2 sits outside the alternation and takes part
+			// alongside it. Witness "b": Go answers "", first-non-empty
+			// answers "b".
+			"nullable_carrier_in_a_co_occurring_branch",
 			"$dup",
-			`(?P<dup>a)|(?P<dup>b*)`,
-			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 2"},
+			`(?:(?P<dup>a?)|y)(?P<dup>b)`,
+			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
 		},
 		{
-			// Nullability is a property of the whole subpattern, not of
-			// its outermost operator: `x*y*` is a concat of two nullable
-			// parts and so is itself nullable.
-			"nullable_via_concatenation",
+			// The ambiguity is not always at the FIRST carrier. Carrier 1
+			// is non-nullable and therefore clear; carrier 2 is the one
+			// whose participation cannot be read back. Witness "xc": Go
+			// answers "", first-non-empty answers "c".
+			"ambiguity_after_a_clear_first_carrier",
 			"$dup",
-			`(?P<dup>x*y*)|(?P<dup>b)`,
-			[]string{`"dup"`, "2 capture groups", "empty string"},
+			`(?P<dup>a)|(?:x(?P<dup>b?))?(?P<dup>c)`,
+			[]string{`"dup"`, "3 capture groups", "empty string", "capture group 2"},
 		},
 		{
-			// One nullable branch makes the alternation nullable.
-			"nullable_via_alternation_branch",
+			// Two carriers in different branches of one alternation
+			// normally exclude each other, but a repetition AROUND the
+			// alternation re-enters it, so one match takes both branches.
+			// Witness "bbbx": the last pass takes the first branch and
+			// captures nothing while an earlier pass captured "b", so Go
+			// answers "" and first-non-empty answers "b".
+			"repetition_re_enters_the_alternation",
 			"$dup",
-			`(?P<dup>ab|)|(?P<dup>c)`,
-			[]string{`"dup"`, "2 capture groups", "empty string"},
+			`(?:x(?P<dup>a?)|(?P<dup>b))*`,
+			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
 		},
 	}
 	for _, tc := range cases {
