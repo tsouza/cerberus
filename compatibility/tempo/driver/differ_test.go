@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -791,6 +792,54 @@ func TestAssertCase_TagsAbsentValues(t *testing.T) {
 	}
 	if !strings.Contains(reasons[0].Detail, "child.index") {
 		t.Errorf("reason does not name the leaked key: %s", reasons[0].Detail)
+	}
+}
+
+// TestAssertCase_TagValuesAbsentValues is the same strict-subset test
+// one route over, on the tag-VALUES pair (#1932). It is a separate
+// assertion path — assertTagValuesCase decodes a flat value list (V1)
+// or typed {type,value} objects (V2), not the scope-partitioned
+// envelope assertTagsCase reads — so the tags test above does not cover
+// it, and until this landed the value routes had no graded way to say a
+// `q` was honoured.
+func TestAssertCase_TagValuesAbsentValues(t *testing.T) {
+	t.Parallel()
+	tc := CorpusCase{
+		Name:                 "x",
+		Endpoint:             "tag_values_v2",
+		TagName:              ".service.name",
+		Query:                `{ resource.service.name = "checkout" }`,
+		ExpectedValues:       []string{"checkout"},
+		ExpectedAbsentValues: []string{"payments", "shipping"},
+	}
+
+	scoped := []byte(`{"tagValues":[{"type":"string","value":"checkout"}]}`)
+	reasons, err := AssertCase(tc, scoped, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (scoped): %v", err)
+	}
+	if len(reasons) != 0 {
+		t.Fatalf("scoped answer should pass, got %+v", reasons)
+	}
+
+	// The same case against a backend that ignored `q` and answered the
+	// window-wide value set: both absent values are present, so it must
+	// fail once per leaked value.
+	unscoped := []byte(`{"tagValues":[` +
+		`{"type":"string","value":"checkout"},` +
+		`{"type":"string","value":"payments"},` +
+		`{"type":"string","value":"shipping"}]}`)
+	reasons, err = AssertCase(tc, unscoped, "tempo")
+	if err != nil {
+		t.Fatalf("AssertCase (unscoped): %v", err)
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("unscoped answer should fail on both leaked values, got %+v", reasons)
+	}
+	for _, want := range []string{"payments", "shipping"} {
+		if !slices.ContainsFunc(reasons, func(r DiffReason) bool { return strings.Contains(r.Detail, want) }) {
+			t.Errorf("no reason names the leaked value %q: %+v", want, reasons)
+		}
 	}
 }
 

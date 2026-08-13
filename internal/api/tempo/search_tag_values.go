@@ -63,15 +63,26 @@ func intrinsicColumn(name string, s schema.Traces) (string, bool) {
 // path; if it matches an intrinsic the handler queries the dedicated
 // column, otherwise it unions SpanAttributes[name] and
 // ResourceAttributes[name] (a key can live in either map).
+//
+// The `q` narrowing parameter is a V2 parameter and this route ignores
+// it, as upstream does — a V1 request answers the whole window's value
+// set whatever `q` says, including a malformed one (see the route
+// contract in search_tags_filter.go).
 func (h *Handler) handleSearchTagValues(w http.ResponseWriter, r *http.Request) {
-	h.respondTagValues(w, r, false)
+	h.respondTagValues(w, r, TagValuesRouteV1)
 }
 
 // handleSearchTagValuesV2 implements
 // `GET /api/v2/search/tag/{name}/values`. Same data as V1, wrapped per
 // Tempo V2's typed envelope.
+//
+// This is the value-side route that takes the optional `q` parameter: it
+// narrows the answer to the values the requested key takes on the spans a
+// TraceQL query selects, which is what backs Grafana's value-completion
+// dropdown. It contributes one more conjunct to the lookup's WHERE;
+// absent, the SQL is unchanged (see search_tags_filter.go).
 func (h *Handler) handleSearchTagValuesV2(w http.ResponseWriter, r *http.Request) {
-	h.respondTagValues(w, r, true)
+	h.respondTagValues(w, r, TagValuesRouteV2)
 }
 
 // respondTagValues is the shared core of V1 + V2.
@@ -96,7 +107,7 @@ func (h *Handler) handleSearchTagValuesV2(w http.ResponseWriter, r *http.Request
 // resolveTagName runs the parse once; callers downstream switch on
 // whether it landed on an intrinsic column or a map lookup, and which
 // scope the map lookup targets.
-func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bool) {
+func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route TagsRoute) {
 	name := r.PathValue("name")
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "", "", errors.New("missing tag name"))
@@ -112,6 +123,17 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 	// fact table (same map-explosion failure as /search/tags).
 	start, end = BoundDiscoveryWindow(start, end)
 
+	// The optional `?q=` narrowing filter — the same one the tag-NAME
+	// routes take, resolved through the same tagQueryFilter so a `q`
+	// selects the same spans wherever it is sent. It is read after the
+	// window so a request that gets both wrong reports the window first,
+	// matching upstream's parameter order.
+	filter, err := h.tagQueryFilter(r.Context(), route, r.URL.Query().Get("q"), start, end)
+	if err != nil {
+		writeError(w, tagsErrStatus(err), "", "", err)
+		return
+	}
+
 	resolved, _ := resolveTagName(name, h.Schema)
 	var (
 		sqlStr   string
@@ -119,10 +141,10 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 		valueTyp string
 	)
 	if resolved.IsIntrinsic {
-		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, start, end)
+		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end)
 		valueTyp = intrinsicType(resolved.IntrinsicName)
 	} else {
-		sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, start, end)
+		sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end)
 		valueTyp = "string"
 	}
 	h.Logger.Debug("cerberus tempo /search/tag/values",
@@ -141,7 +163,7 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 	}
 	values = sortedUnique(values)
 
-	if v2 {
+	if route == TagValuesRouteV2 {
 		out := make([]TagValueV2, 0, len(values))
 		for _, v := range values {
 			out = append(out, TagValueV2{Type: valueTyp, Value: v})
@@ -163,7 +185,11 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, v2 bo
 // (no-op) and numeric / enum columns (Duration, StatusCode) uniformly,
 // so the chclient.QueryStrings binder is happy regardless of the
 // underlying type.
-func buildIntrinsicValuesSQL(s schema.Traces, col string, start, end time.Time) (string, []any) {
+//
+// `filter` is the optional `?q=` span-row predicate (see
+// search_tags_filter.go); a nil filter appends no clause, so a request
+// without `q` renders exactly the SQL it always did.
+func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time) (string, []any) {
 	sb := chsql.NewQuery().
 		Select(distinctToStringFrag(col)).
 		From(chsql.Col(s.SpansTable))
@@ -172,6 +198,9 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, start, end time.Time) 
 	}
 	if !end.IsZero() {
 		sb.Where(tempoTimeLteFrag(s.TimestampColumn, end))
+	}
+	if filter != nil {
+		sb.Where(filter)
 	}
 	return sb.Build()
 }
@@ -204,7 +233,13 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, start, end time.Time) 
 //	    WHERE mapContains(`<col>`, ?) [AND time bounds]
 //	)
 //	WHERE v != ''
-func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, start, end time.Time) (string, []any) {
+//
+// `filter` is the optional `?q=` span-row predicate (see
+// search_tags_filter.go). It joins the INNER query's conjuncts, not the
+// outer one: it is a predicate over the span row, and the outer SELECT
+// sees only the exploded value column `v`. A nil filter appends no
+// clause, so a request without `q` renders exactly the SQL it always did.
+func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time) (string, []any) {
 	var (
 		selFrag   chsql.Frag
 		whereFrag chsql.Frag
@@ -229,6 +264,9 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, s
 	}
 	if !end.IsZero() {
 		inner.Where(tempoTimeLteFrag(s.TimestampColumn, end))
+	}
+	if filter != nil {
+		inner.Where(filter)
 	}
 
 	outer := chsql.NewQuery().
