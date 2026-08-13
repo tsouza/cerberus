@@ -317,10 +317,15 @@ func lowerHistogramQuantileClassicAggRange(
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, aggWindowFor(shape))
 	perSeries := classicBucketWindowReshape(
 		fanout,
-		// countValues=nil — see classicBucketWindowStage's identical call
-		// for why the classic caller reads durationToZero off each rung's
-		// own values rather than a separate count series.
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil, classicBucketWindowTemporalityExpr(s, shape.windowFn), nil),
+		// countValues=nil and resets=nil — see classicBucketWindowStage's
+		// identical call for why the classic caller reads durationToZero
+		// off each rung's own values rather than a separate count series,
+		// and detects each rung's reset on that rung alone.
+		histogramWindowFold(shape.windowFn, histogramWindowInputs{
+			rangeStart:  rangeStart,
+			rangeEnd:    rangeEnd,
+			temporality: classicBucketWindowTemporalityExpr(s, shape.windowFn),
+		}),
 		[]chplan.Projection{
 			{Expr: anchorRef, Alias: stepGridAnchorColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -656,6 +661,7 @@ func buildHistogramNativeRangeTreeMerge(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
+	resets := expHistogramResetMaskFor(shape.windowFn)
 
 	// Stage 1: per-(anchor, series) window reduction. The fan-out owns
 	// the sample floor natively through RangeBucketFanout.MinSamples,
@@ -668,18 +674,23 @@ func buildHistogramNativeRangeTreeMerge(
 			[]string{s.AttributesColumn},
 			expHistogramWindowAggs(s), s, ctx,
 		),
+		expHistogramWindowAggs(s),
+		[]string{stepGridAnchorColumn, s.AttributesColumn},
+		resets,
 		// countValues: the range-mode fanout collects the SAME
 		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
 		// for the instant path — see expHistogramWindowCountValuesExpr.
 		// nil temporality: the exponential/native-histogram path stays out
 		// of #1628's scope (expHistogramWindowAggs has no
 		// hqWindowTemporalityAlias aggregate), so this keeps applying the
-		// CUMULATIVE branch unconditionally, byte-identical to before.
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil, nil),
-		[]chplan.Projection{
-			{Expr: anchorRef, Alias: stepGridAnchorColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-		},
+		// CUMULATIVE branch unconditionally.
+		histogramWindowFold(shape.windowFn, histogramWindowInputs{
+			rangeStart:  rangeStart,
+			rangeEnd:    rangeEnd,
+			countValues: expHistogramWindowCountValuesExpr(),
+			resets:      resets,
+		}),
+		nil,
 		s,
 	)
 

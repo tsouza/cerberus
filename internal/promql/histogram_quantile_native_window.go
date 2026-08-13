@@ -200,18 +200,42 @@ func expHistogramWindowBucketsExpr(
 // BucketCounts}), so the across-series stage above consumes it exactly
 // as it consumes raw table rows.
 //
-// One Project layer suffices, unlike the classic reshape's two: the
-// classic path differences a cumulative ladder and so has to read the
-// ladder twice, whereas exponential buckets are already the per-bucket
-// quantity the contract wants.
+// A COUNTER window gets a second layer beneath it, which divides the
+// work the way the classic reshape's two layers do — a quantity every
+// projection above reads is computed once in a layer of its own rather
+// than re-rendered per reader. Here that quantity is the counter-reset
+// mask: [expHistogramResetMaskStage] projects it beside the grouping's
+// own columns, and every fold in the layer above reads it as a column.
+// See histogram_native_reset.go.
+//
+// `resets` is that mask's column reference — [expHistogramResetMaskFor]'s
+// answer for the same windowFn the caller built `fold` with — and a nil
+// one leaves the extra layer out entirely, which is what keeps a
+// `sum_over_time` or bare-selector window emitting exactly the SQL it
+// emitted before the mask existed. Passing the same value here and into
+// the fold is what makes the reader and the projector agree.
+//
+// keyAliases names the grouping's key columns (Attributes, preceded by
+// the step anchor in range mode); they are forwarded through both layers
+// unchanged. aggs is the aggregate list the grouping beneath was built
+// with, which is what the mask layer forwards by name. scalars are the
+// window-reduced whole-histogram scalars a histogram-VALUED answer
+// publishes and a quantile does not — see
+// [expHistogramValuedWindowScalars].
 func expHistogramWindowReshape(
 	group chplan.Node,
+	aggs []chplan.AggFunc,
+	keyAliases []string,
+	resets chplan.Expr,
 	fold histogramWindowTimeFold,
-	passthrough []chplan.Projection,
+	scalars []chplan.Projection,
 	s schema.Metrics,
 ) chplan.Node {
-	projs := make([]chplan.Projection, 0, len(passthrough)+7)
-	projs = append(projs, passthrough...)
+	projs := make([]chplan.Projection, 0, len(keyAliases)+len(scalars)+7)
+	for _, name := range keyAliases {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
+	}
+	projs = append(projs, scalars...)
 	projs = append(
 		projs,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
@@ -229,8 +253,12 @@ func expHistogramWindowReshape(
 			Alias: s.ZeroThresholdColumn,
 		})
 	}
+	input := group
+	if resets != nil {
+		input = expHistogramResetMaskStage(group, aggs, keyAliases)
+	}
 	return &chplan.Project{
-		Input: group,
+		Input: input,
 		Projections: append(
 			projs,
 			chplan.Projection{
@@ -274,16 +302,22 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		AggFuncs:           append(expHistogramWindowAggs(s), windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
+	resets := expHistogramResetMaskFor(shape.windowFn)
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
+		expHistogramWindowAggs(s),
+		[]string{s.AttributesColumn},
+		resets,
 		// nil temporality: the exponential/native-histogram path stays out
 		// of #1628's scope — see the analogous range-mode call site in
 		// histogram_quantile_range.go.
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil, nil),
-		[]chplan.Projection{{
-			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
-			Alias: s.AttributesColumn,
-		}},
+		histogramWindowFold(shape.windowFn, histogramWindowInputs{
+			rangeStart:  rangeStart,
+			rangeEnd:    rangeEnd,
+			countValues: expHistogramWindowCountValuesExpr(),
+			resets:      resets,
+		}),
+		nil,
 		s,
 	)
 }

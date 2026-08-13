@@ -18,51 +18,57 @@ CREATE TABLE otel_metrics_exponential_histogram (
     NegativeOffset Int32,
     NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
--- The boundary-extrapolation shape, which has caught real bugs twice
--- (#1958 for the whole correction, then for the durationToZero clamp
--- inside it). Two series with the SAME window increase but DIFFERENT
--- scrape cadences, so each computes its OWN factor — a per-query factor
--- would answer both alike and is exactly what this fixture refuses.
+-- A series whose RESOLUTION increases mid-window. Reference Prometheus
+-- treats `h.Schema > previous.Schema` as a counter reset unconditionally
+-- — a histogram cannot refine its own buckets while running, so a finer
+-- schema can only be a fresh start — and adds the whole previous
+-- distribution back. Reconciling the two scales instead, by folding
+-- every row down to the window's coarsest one, leaves every component
+-- looking monotonic and the reset invisible: the third of the three
+-- divergences #2017 records.
 --
--- The evaluation anchor is 00:00:01, so [5m] spans (23:55:01, 00:00:01].
--- Both series increase by Count 8 across their window; only the
--- extrapolation separates them.
+-- Three scrapes 60s apart, evaluated at 00:00:01, so [5m] spans
+-- (23:55:01, 00:00:01] and holds all three.
 --
--- `fast` — three scrapes 30s apart, the THRESHOLD clamp binds:
---   sampledInterval = 00:00:01 - 23:59:01           = 60s
---   averageDurationBetweenSamples = 60 / (3-1)      = 30s
---   extrapolationThreshold = 30 * 1.1               = 33s
---   durationToStart raw = 23:59:01 - 23:55:01 = 240s >= 33 -> 15s
---   durationToZero = 60 * (4/8) = 30s, not < 15 -> stays 15s
---   durationToEnd = 0s
---   factor = (60 + 15 + 0) / 60                     = 1.25
---   increase = Count 8*1.25 = 10, Sum 4.0*1.25 = 5,
---              buckets [2*1.25, 6*1.25] = [2.5, 7.5]
+--   TimeUnix   Scale   Count   Sum   positive buckets
+--   23:58:01     0        6    12.0   [4, 2]
+--   23:59:01     0       12    24.0   [8, 4]
+--   00:00:01     1       14    28.0   [5, 4, 3, 2]
 --
--- `slow` — two scrapes 240s apart, the ZERO-CROSSING clamp binds. Its
--- first sample sits well inside the window, so the threshold clamp never
--- fires (60 < 264) and durationToZero is what caps the extrapolation —
--- a counter cannot have been negative 60s before a window it entered at
--- a count of 1:
---   sampledInterval = 00:00:01 - 23:56:01           = 240s
---   averageDurationBetweenSamples = 240 / (2-1)     = 240s
---   extrapolationThreshold = 240 * 1.1              = 264s
---   durationToStart raw = 23:56:01 - 23:55:01 = 60s < 264 -> stays 60s
---   durationToZero = 240 * (1/8) = 30s, 30 < 60 -> durationToStart = 30s
---   durationToEnd = 0s
---   factor = (240 + 30 + 0) / 240                   = 1.125
---   increase = Count 8*1.125 = 9, Sum 4.0*1.125 = 4.5,
---              buckets [4*1.125, 4*1.125] = [4.5, 4.5]
+-- Scale 1 halves the bucket width, so its indices fold onto scale 0 in
+-- pairs: indices 0,1 -> 0 and 2,3 -> 1. The last row therefore reads
+-- [5+4, 3+2] = [9, 5] at the window's merged scale of 0, and against
+-- [8, 4] one scrape earlier every bucket has RISEN. Count rose too, and
+-- so did Sum. Nothing about the reconciled numbers says "restart".
+--
+-- Reference says restart anyway, on the schema alone:
+--
+--   Count      (14 - 6)   + 12   = 20
+--   Sum      (28.0 - 12.0) + 24.0 = 40.0
+--   buckets   [9-4, 5-2] + [8, 4] = [13, 7]
+--
+-- Boundary extrapolation:
+--   sampledInterval = 00:00:01 - 23:58:01           = 120s
+--   averageDurationBetweenSamples = 120 / (3-1)     = 60s
+--   extrapolationThreshold = 66s
+--   durationToStart raw = 23:58:01 - 23:55:01 = 180s >= 66 -> 30s
+--   durationToZero = 120 * (6/20) = 36s, not < 30 -> stays 30s
+--   durationToEnd  = 0s
+--   factor = (120 + 30 + 0) / 120                   = 1.25
+--
+--   Count 20*1.25 = 25, Sum 40.0*1.25 = 50,
+--   buckets [13*1.25, 7*1.25] = [16.25, 8.75]
+--
+-- Reading no reset from the scale change would answer Count 10, Sum 20
+-- and buckets [6.25, 3.75] — the plain `last - first` of the reconciled
+-- rows, missing the whole pre-restart distribution.
 INSERT INTO otel_metrics_exponential_histogram VALUES
-    ('latency_exp_hist', map('service', 'fast'), toDateTime64('2025-12-31 23:59:01', 9),  4, 2.0, 0, 0, 0, [1, 3], 0, []),
-    ('latency_exp_hist', map('service', 'fast'), toDateTime64('2025-12-31 23:59:31', 9),  8, 4.0, 0, 0, 0, [2, 6], 0, []),
-    ('latency_exp_hist', map('service', 'fast'), toDateTime64('2026-01-01 00:00:01', 9), 12, 6.0, 0, 0, 0, [3, 9], 0, []),
-    ('latency_exp_hist', map('service', 'slow'), toDateTime64('2025-12-31 23:56:01', 9),  1, 0.5, 0, 0, 0, [0, 1], 0, []),
-    ('latency_exp_hist', map('service', 'slow'), toDateTime64('2026-01-01 00:00:01', 9),  9, 4.5, 0, 0, 0, [4, 5], 0, []);
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:01', 9),  6, 12.0, 0, 0, 0, [4, 2],       0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:01', 9), 12, 24.0, 0, 0, 0, [8, 4],       0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:01', 9), 14, 28.0, 1, 0, 0, [5, 4, 3, 2], 0, []);
 -- expected_rows --
 [
-  ["", {"service": "fast"}, "2026-01-01T00:00:01Z", 0, 10, 5, 0, 0, 0, 0, [2.5,7.5], 0, []],
-  ["", {"service": "slow"}, "2026-01-01T00:00:01Z", 0, 9, 4.5, 0, 0, 0, 0, [4.5,4.5], 0, []]
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 0, 25, 50, 0, 0, 0, 0, [16.25,8.75], 0, []]
 ]
 -- args --
 [0] string = ""
