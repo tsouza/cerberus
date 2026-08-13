@@ -29,13 +29,6 @@ import (
 	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
 )
 
-// detectedFieldValuesPerService caps how many of a service's fields the
-// pass diffs. The seeded services carry a handful of fields each; the
-// cap bounds the request count if a future fixture grows a wide schema,
-// and the fields are taken in sorted order so the sampled set is stable
-// across runs rather than dependent on upstream's map iteration.
-const detectedFieldValuesPerService = 8
-
 // detectedFieldValuesWire is the BARE top-level response body. Upstream
 // reuses logproto.DetectedFieldsResponse for this route and populates
 // only `values` (pkg/querier/queryrange/detected_fields.go).
@@ -83,9 +76,15 @@ func compareDetectedFieldValuesAll(c *http.Client, f flags, metadata *bench.Data
 			})
 			continue
 		}
-		if len(names) > detectedFieldValuesPerService {
-			names = names[:detectedFieldValuesPerService]
-		}
+		// Every advertised field is diffed, in sorted order. Sampling a
+		// prefix here would make the roster read as the complete surface
+		// while the fields past the sample were never asked of either
+		// backend, so a wrong answer on a late-sorting field would report
+		// as parity — the same silently-shrunken denominator checkExpansion
+		// refuses for the corpus (main.go). The request count is bounded by
+		// the seeded fixture, whose field names are hard-coded per service
+		// in cmd/seed/main.go rather than generated, so "diff all of them"
+		// is a fixed, small number of calls.
 		for _, name := range names {
 			results = append(results, compareDetectedFieldValuesOne(c, f, svc, name, selector, start, end))
 		}

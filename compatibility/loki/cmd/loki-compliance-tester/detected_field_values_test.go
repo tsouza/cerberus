@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -348,23 +349,32 @@ func TestCompareDetectedFieldValuesAll_DrivenByTheReferenceInventory(t *testing.
 	}
 }
 
-// TestCompareDetectedFieldValuesAll_CapsFieldsPerService — the sampled
-// set is bounded, and the cap takes the SORTED prefix so the sample is
-// stable rather than whichever fields upstream's map happened to yield.
-func TestCompareDetectedFieldValuesAll_CapsFieldsPerService(t *testing.T) {
+// wideAdvertisedFieldCount is deliberately far wider than the seeded
+// fixture's widest service (web-server, 10 fields — cmd/seed/main.go) and
+// far wider than the 8-field prefix this pass used to sample, so any
+// re-introduced per-service bound of a plausible size fails the test
+// below instead of quietly shrinking the denominator again (#1948).
+const wideAdvertisedFieldCount = 24
+
+// TestCompareDetectedFieldValuesAll_DiffsEveryAdvertisedField — the pass
+// asks the reference for every field it advertises, with no per-service
+// sampling. A sampled prefix is invisible in the report: the roster would
+// record the sample as though it were the whole surface, so a wrong
+// answer on a late-sorting field ("ts", "ttl", "status" in the seeded
+// fixture) would read as parity. The order is still the SORTED one, so
+// the roster is stable across runs rather than dependent on upstream's
+// map iteration.
+func TestCompareDetectedFieldValuesAll_DiffsEveryAdvertisedField(t *testing.T) {
 	t.Parallel()
 	var b strings.Builder
 	b.WriteString(`{"fields":[`)
-	// Names are emitted in descending order so a cap applied before the
-	// sort would keep a different set than a cap applied after it.
-	const wideFieldCount = detectedFieldValuesPerService + 4
-	for i := wideFieldCount - 1; i >= 0; i-- {
-		if i != wideFieldCount-1 {
+	// Names are emitted in descending order, so a pass that returned the
+	// backend's own ordering rather than the sorted one is caught too.
+	for i := wideAdvertisedFieldCount - 1; i >= 0; i-- {
+		if i != wideAdvertisedFieldCount-1 {
 			b.WriteString(",")
 		}
-		b.WriteString(`{"label":"f`)
-		b.WriteByte(byte('0' + i))
-		b.WriteString(`","type":"string","cardinality":1}`)
+		fmt.Fprintf(&b, `{"label":%q,"type":"string","cardinality":1}`, wideFieldName(i))
 	}
 	b.WriteString(`],"limit":1000}`)
 
@@ -373,16 +383,24 @@ func TestCompareDetectedFieldValuesAll_CapsFieldsPerService(t *testing.T) {
 	f := flagsFor(newFieldValuesStub(t, ref), newFieldValuesStub(t, test))
 
 	results := compareDetectedFieldValuesAll(&http.Client{Timeout: 5 * time.Second}, f, fieldValuesMetadata())
-	if len(results) != detectedFieldValuesPerService {
-		t.Fatalf("results = %d, want the per-service cap of %d", len(results), detectedFieldValuesPerService)
+	if len(results) != wideAdvertisedFieldCount {
+		t.Fatalf("results = %d, want one per advertised field (%d) — a truncated pass reports a sample as the whole surface",
+			len(results), wideAdvertisedFieldCount)
+	}
+	if len(ref.requestedFields) != wideAdvertisedFieldCount {
+		t.Fatalf("reference was asked for %d fields, want all %d it advertised",
+			len(ref.requestedFields), wideAdvertisedFieldCount)
 	}
 	for i, name := range ref.requestedFields {
-		want := "f" + string(rune('0'+i))
-		if name != want {
-			t.Fatalf("sampled field %d = %q, want %q (the sorted prefix)", i, name, want)
+		if want := wideFieldName(i); name != want {
+			t.Fatalf("queried field %d = %q, want %q (sorted order)", i, name, want)
 		}
 	}
 }
+
+// wideFieldName zero-pads so the lexicographic order the pass sorts by
+// matches the numeric order this test indexes by.
+func wideFieldName(i int) string { return fmt.Sprintf("f%02d", i) }
 
 // TestCompareDetectedFieldValuesAll_EnumerationFailuresAreVisible — a
 // service whose fields cannot be enumerated, or for which the reference
