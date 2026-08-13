@@ -637,6 +637,83 @@ test_cases:
   # no cross-series merge, so this pins the per-series rate/delta step alone.
   - query: 'histogram_quantile({{.quantile}}, rate(demo_shifting_latency_exp_hist[1m]))'
     variant_args: ['quantile']
+  # Histogram-VALUED results. Every exp-histogram case above reduces its
+  # histogram to a float before the comparison — a count, a sum, a
+  # quantile — so none of them can see the histogram SAMPLE itself. The
+  # shapes below answer WITH one: a bare selector, sum() / avg() over
+  # one, and rate() / increase() over one each return a native histogram,
+  # which crosses the wire as the `histograms` array rather than a
+  # `values` float. The upstream comparer deep-diffs the decoded
+  # model.Value, so SampleStream.Histograms is compared per sample down
+  # to every bucket's boundary rule, lower edge, upper edge and count —
+  # it never names histograms, it just never collapses the value.
+  #
+  # This is the only layer that can see a bucket LAYOUT error. A wrong
+  # scale, an off-by-one offset, a bucket emitted where the reference
+  # omits it, or a merge that lands the right total in the wrong bucket
+  # all preserve the count, the sum, and often the quantile, so every
+  # case above scores green through them.
+  #
+  # The zero bucket is out of reach here, and that is a property of the
+  # OTel-CH schema rather than a gap in the corpus: the default physical
+  # schema has no ZeroThreshold column (internal/schema/otel.go — real
+  # OTel-CH tables do not carry the OTLP zero_threshold field, and every
+  # emitter guards on the column being named), while the reference
+  # receives these fixtures over remote-write with the OTLP translator's
+  # own default threshold (cmd/seed/prom_remote.go). Both fixtures seed
+  # ZeroCount = 0, and an empty bucket is never appended on either side
+  # — internal/api/prom/histogram.go mirrors upstream's own
+  # `if bucket.Count == 0 { continue }` — so no sample exists on which
+  # the two renderings of an empty zero band could differ.
+  #
+  # demo_latency_exp_hist carries the instant shapes: its two instances
+  # sit at different positive offsets with different bucket arrays, so a
+  # merge that drops or misplaces either one cannot answer correctly.
+  - query: 'demo_latency_exp_hist'
+  # One instance alone, so the answer pins that instance's own offset
+  # and array rather than either instance's or their union.
+  - query: 'demo_latency_exp_hist{instance="demo.promlabs.com:10001"}'
+  # The offset carrier over a histogram-valued selector: same buckets,
+  # evaluated an earlier step, so a lookup that ignored the offset
+  # returns buckets scaled by the wrong (step + 1) multiplier.
+  - query: 'demo_latency_exp_hist offset 5m'
+  # Cross-series bucket merge: the two instances have DIFFERENT bucket
+  # layouts, so the sum is element-wise addition over a union of bucket
+  # indices rather than a component-wise add of two aligned arrays.
+  - query: 'sum(demo_latency_exp_hist)'
+  # The same aggregation grouped so that each group holds exactly one
+  # series — no merge happens, which pins that the merge above is driven
+  # by the grouping and not applied unconditionally.
+  - query: 'sum by (instance) (demo_latency_exp_hist)'
+  # avg() is the merge above followed by a division of every bucket
+  # count, the sum and the count by the group size, so it discriminates
+  # a sum() that forgot to divide and a division applied to the totals
+  # but not to the buckets.
+  - query: 'avg(demo_latency_exp_hist)'
+  - query: 'avg by (instance) (demo_latency_exp_hist)'
+  # Cross-SCALE merge. demo_shifting_latency_exp_hist's third instance
+  # is seeded at scale -1 against the other two at scale 0, so summing
+  # the three coarsens the merged histogram's schema and folds bucket
+  # pairs from the finer instances into single buckets of the coarser
+  # one. No other histogram-valued shape reaches that path: the
+  # aggregated range-vector form that would (`sum(rate(...))`) is still
+  # rejected, and the quantile cases above read the coarsened result as
+  # a ratio rather than as buckets.
+  - query: 'sum(demo_shifting_latency_exp_hist)'
+  # rate() / increase() over a native histogram: Prometheus's
+  # extrapolatedRate applied to every bucket count as well as to the
+  # count and the sum, yielding fractional counts (a FloatHistogram on
+  # the reference). demo_shifting_latency_exp_hist's shape MOVES across
+  # the window, so a lowering that folded raw cumulative counts instead
+  # of taking a per-series rate lands in different buckets rather than
+  # differing by a positive scalar the way it would over
+  # demo_latency_exp_hist. [1m] excludes the sparse third instance;
+  # [5m] admits it and drags the schema to -1, so the pair pins the
+  # two-sample floor and the coarsening in the buckets themselves.
+  - query: 'rate(demo_shifting_latency_exp_hist[1m])'
+  - query: 'rate(demo_shifting_latency_exp_hist[5m])'
+  - query: 'increase(demo_shifting_latency_exp_hist[1m])'
+  - query: 'increase(demo_shifting_latency_exp_hist[5m])'
   # Float inputs: the native-histogram value functions skip float samples
   # rather than erroring, so a float family and an absent family both
   # answer the empty vector on both backends. These pin that acceptance,

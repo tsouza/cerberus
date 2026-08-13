@@ -631,6 +631,15 @@ func TestLower_ExpHistogram_RateReachesTheWindowFold(t *testing.T) {
 // invisible to every structural assertion and to `histogram_quantile`
 // itself, and shows up only as a result 300x too large.
 //
+// It also pins WHERE the division lands, which is a separate fact from
+// whether it happens. Reference divides the factor and then multiplies
+// once; dividing the product is the same value in exact arithmetic and a
+// different one in float64, and cerberus shipped the latter until the
+// histogram-valued compat cases compared bucket counts against reference
+// with no epsilon and caught the ulp. Asserting only "a division by 300
+// exists somewhere" would have passed on the wrong shape, so the
+// assertions below read the multiplication and its factor separately.
+//
 // The assertion reads the plan rather than the SQL because the divisor is
 // a numeric literal, and the emitter parameterises those — `/ ?` in the
 // SQL text tells a reader nothing about which number.
@@ -672,20 +681,63 @@ func TestLower_ExpHistogram_RateDividesByRangeAndIncreaseDoesNot(t *testing.T) {
 
 	const fiveMinutesInSeconds = 300.0
 
-	rateCount := countProjection(t, `rate(latency_exp_hist[5m])`)
-	div, ok := rateCount.(*chplan.Binary)
-	if !ok || div.Op != chplan.OpDiv {
-		t.Fatalf("rate's Count projection is %#v, want a division by the range — "+
-			"reference folds `factor /= ms.Range.Seconds()` into the same scalar it scales the histogram by", rateCount)
+	// dividesByRange reports whether e is a division whose divisor is the
+	// range literal.
+	dividesByRange := func(e chplan.Expr) bool {
+		div, ok := e.(*chplan.Binary)
+		if !ok || div.Op != chplan.OpDiv {
+			return false
+		}
+		secs, ok := div.Right.(*chplan.LitFloat)
+		return ok && secs.V == fiveMinutesInSeconds
 	}
-	secs, ok := div.Right.(*chplan.LitFloat)
-	if !ok || secs.V != fiveMinutesInSeconds {
-		t.Fatalf("rate over [5m] divides Count by %#v, want the literal %v", div.Right, fiveMinutesInSeconds)
+	// countShapes walks a Count projection and reports the two shapes that
+	// tell the correct placement from the one that shipped. The walk is
+	// needed because the fold binds its arrays through hqLet, so the
+	// arithmetic sits inside an arrayMap lambda rather than at the root.
+	countShapes := func(e chplan.Expr) (factorDivided, productDivided bool) {
+		chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+			b, ok := sub.(*chplan.Binary)
+			if !ok {
+				return true
+			}
+			// factor divided: Mul(increase, Div(factor, range)) — one
+			// multiplication by an already-divided scalar, as reference does.
+			if b.Op == chplan.OpMul && dividesByRange(b.Right) {
+				factorDivided = true
+			}
+			// product divided: Div(Mul(...), range) — the inverted order.
+			if dividesByRange(b) {
+				if _, isMul := b.Left.(*chplan.Binary); isMul && b.Left.(*chplan.Binary).Op == chplan.OpMul {
+					productDivided = true
+				}
+			}
+			return true
+		})
+		return factorDivided, productDivided
 	}
 
-	increaseCount := countProjection(t, `increase(latency_exp_hist[5m])`)
-	if b, ok := increaseCount.(*chplan.Binary); ok && b.Op == chplan.OpDiv {
-		t.Fatalf("increase's Count projection divides by %#v — increase is the window total, "+
-			"NOT a per-second figure", b.Right)
+	rateFactorDivided, rateProductDivided := countShapes(countProjection(t, `rate(latency_exp_hist[5m])`))
+	if !rateFactorDivided {
+		t.Fatalf("rate's Count projection never divides the extrapolation FACTOR by %v — "+
+			"reference computes `factor /= ms.Range.Seconds()` and then scales the histogram once",
+			fiveMinutesInSeconds)
+	}
+	// Dividing the product instead is the same value in exact arithmetic
+	// and a different one in float64 — (a*b)/c != a*(b/c) — which is not
+	// cosmetic here: a histogram-valued answer is compared against
+	// reference bucket by bucket with NO epsilon, and this exact inversion
+	// shipped a divergence the compat corpus caught on
+	// rate(demo_shifting_latency_exp_hist[1m]).
+	if rateProductDivided {
+		t.Fatal("rate's Count projection divides the PRODUCT of the increase and the factor — " +
+			"the per-second division belongs on the factor, or the answer drifts an ulp off reference")
+	}
+
+	increaseFactorDivided, increaseProductDivided := countShapes(countProjection(t, `increase(latency_exp_hist[5m])`))
+	if increaseFactorDivided || increaseProductDivided {
+		t.Fatalf("increase's Count projection divides by the range (factor=%v product=%v) — "+
+			"increase is the window total, NOT a per-second figure",
+			increaseFactorDivided, increaseProductDivided)
 	}
 }

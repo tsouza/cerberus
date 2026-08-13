@@ -227,7 +227,17 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // DELTA-temporality series' extrapolation factor is computed from its
 // own delta-sum reading rather than a reset-rule sum that reading
 // doesn't apply to.
-func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues, temporality chplan.Expr) histogramWindowTimeFold {
+//
+// perSecond carries `rate`'s division by the range, and is nil on every
+// caller that does not need it — the quantile callers, whose ratios the
+// division cancels out of (see above), and `increase`, which is `rate`
+// WITHOUT it. When non-nil it divides the extrapolation FACTOR rather
+// than the fold's product, because that is where reference puts it, and
+// in float64 that is not the same number. Only a histogram-VALUED answer
+// can see the difference: it reaches the wire as bucket counts compared
+// against reference exactly, where a scalar answer is compared under an
+// epsilon and a quantile reads ratios the factor cancels out of.
+func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues, temporality, perSecond chplan.Expr) histogramWindowTimeFold {
 	switch fn {
 	case "rate", "increase":
 		return func(values, order chplan.Expr) chplan.Expr {
@@ -241,10 +251,24 @@ func histogramWindowFold(fn string, rangeStart, rangeEnd, countValues, temporali
 					if countValues != nil {
 						cv = countValues
 					}
+					factor := histogramExtrapolationFactorExpr(ord, rangeStart, rangeEnd, cv, temporality)
+					if perSecond != nil {
+						// Reference divides the FACTOR and then multiplies
+						// once (`factor /= ms.Range.Seconds()`, then one
+						// Mul over the whole histogram). Dividing the
+						// product instead would be the same value in exact
+						// arithmetic but not in float64: (a*b)/c and
+						// a*(b/c) differ by an ulp on most inputs, and a
+						// histogram-valued answer is compared against
+						// reference WITHOUT an epsilon, so the order is
+						// observable rather than cosmetic. See
+						// expHistogramValuedWindowFold.
+						factor = &chplan.Binary{Op: chplan.OpDiv, Left: factor, Right: perSecond}
+					}
 					return &chplan.Binary{
 						Op:    chplan.OpMul,
 						Left:  counterIncreaseFold(vals, ord, temporality),
-						Right: histogramExtrapolationFactorExpr(ord, rangeStart, rangeEnd, cv, temporality),
+						Right: factor,
 					}
 				})
 			})
@@ -688,7 +712,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 		// durationToZero clamp reads THAT rung's own (values, order) —
 		// matching reference Prometheus's per-rung float-series
 		// extrapolatedRate exactly (see histogramWindowFold's doc).
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil, classicBucketWindowTemporalityExpr(s, shape.windowFn)),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, nil, classicBucketWindowTemporalityExpr(s, shape.windowFn), nil),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,

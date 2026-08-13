@@ -279,7 +279,7 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		// nil temporality: the exponential/native-histogram path stays out
 		// of #1628's scope — see the analogous range-mode call site in
 		// histogram_quantile_range.go.
-		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil),
+		histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil, nil),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
 			Alias: s.AttributesColumn,

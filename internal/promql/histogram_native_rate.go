@@ -278,19 +278,29 @@ func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, r
 // per-second division.
 //
 // Reference applies that division to the SAME scalar the extrapolation
-// produces (`factor /= ms.Range.Seconds()`, then one `Mul(factor)` over
-// the whole histogram), so dividing the fold's product is the same
-// arithmetic: every bucket, the zero bucket, Count and Sum all pass
-// through here and are scaled alike. `increase` returns the fold
-// unchanged — it is the same reduction WITHOUT the per-second division,
-// which is the entire difference between the two functions in reference
-// as well.
+// produces — `factor /= ms.Range.Seconds()`, then ONE `Mul(factor)` over
+// the whole histogram — so the divisor is handed to the fold and lands on
+// the factor, not on the fold's product. Every bucket, the zero bucket,
+// Count and Sum then pass through one multiplication and are scaled
+// alike. `increase` passes no divisor at all — it is the same reduction
+// WITHOUT the per-second division, which is the entire difference between
+// the two functions in reference as well.
 //
-// The division wraps the fold's OUTPUT rather than reaching inside it,
-// which is what keeps the durationToZero clamp reading the quantities
-// reference reads: that clamp weighs the first in-window Count against
-// the window's own total increase, both pre-factor and pre-division (see
-// [histogramExtrapolationFactorExpr]).
+// Dividing the product instead — which this path did until the
+// histogram-valued compat cases caught it — is the same value in exact
+// arithmetic and a different one in float64, because (a*b)/c and a*(b/c)
+// disagree by an ulp on most inputs. Nothing before those cases could
+// see it: a scalar answer is compared against reference under an epsilon,
+// a quantile reads ratios this divisor cancels out of, and the txtar
+// goldens compare cerberus against its own arithmetic. A histogram-VALUED
+// answer is compared bucket by bucket with no epsilon at all, because the
+// comparer's approximate-equality option binds float64 while histogram
+// counts decode as model.FloatString.
+//
+// Putting the divisor on the factor also leaves the durationToZero clamp
+// reading exactly the quantities reference reads: that clamp weighs the
+// first in-window Count against the window's own total increase, both
+// pre-factor and pre-division (see [histogramExtrapolationFactorExpr]).
 //
 // countValues is the whole-histogram Count series rather than any one
 // bucket's counts, and temporality is nil — the two arguments the shared
@@ -301,14 +311,11 @@ func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, r
 // reading every OTel exponential-histogram path in this package uses —
 // the branch issue #1963 covers for this table.
 func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr) histogramWindowTimeFold {
-	fold := histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil)
-	if shape.windowFn != rateWindowFn {
-		return fold
+	var perSecond chplan.Expr
+	if shape.windowFn == rateWindowFn {
+		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
 	}
-	rangeSeconds := &chplan.LitFloat{V: shape.windowRange.Seconds()}
-	return func(values, order chplan.Expr) chplan.Expr {
-		return &chplan.Binary{Op: chplan.OpDiv, Left: fold(values, order), Right: rangeSeconds}
-	}
+	return histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil, perSecond)
 }
 
 // expHistogramValuedWindowAggs is [expHistogramWindowAggs] widened by the
