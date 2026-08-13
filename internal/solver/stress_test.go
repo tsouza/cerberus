@@ -2,6 +2,8 @@ package solver
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chdbsession"
 )
 
 // TestMain wraps the package's tests in a goleak verifier so every producer
@@ -18,13 +21,27 @@ import (
 // shard-kill-mid-drain and timeout scenarios. A leaked producer (e.g. one
 // blocked forever on a channel send because it didn't select on gctx.Done)
 // fails the whole package here.
+//
+// This spells goleak.VerifyTestMain's body out rather than calling it,
+// because that helper calls os.Exit itself and so leaves no seam for the
+// chDB session shutdown that has to happen before the process exits — under
+// `-race`, os.Exit runs runtime.racefini, which runs libchdb's C++ static
+// destructors against a still-live embedded ClickHouse and segfaults AFTER
+// every test has already passed (#1971). goleak.Find carries the retry
+// backoff, so the leak check itself is unchanged.
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(
-		m,
+	code := m.Run()
+	if err := goleak.Find(
 		// The OTel global meter provider may keep background goroutines; the
 		// solver itself spawns none beyond its per-request producers.
 		goleak.IgnoreTopFunction("go.opentelemetry.io/otel/sdk/metric.(*PeriodicReader).run"),
-	)
+	); err != nil && code == 0 {
+		fmt.Fprintf(os.Stderr, "goleak: %v\n", err)
+		code = 1
+	}
+	// No-op in the default, non-chdb build.
+	chdbsession.CloseForExit()
+	os.Exit(code)
 }
 
 // TestDeadlockHammer is the required deadlock-hammer stress lane

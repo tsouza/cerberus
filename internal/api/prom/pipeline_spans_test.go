@@ -15,6 +15,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chdbsession"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -54,7 +55,13 @@ func TestMain(m *testing.M) {
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 	)
 	otel.SetTracerProvider(tp)
-	os.Exit(m.Run())
+	code := m.Run()
+	// Shut the process-wide chDB session down before os.Exit, or a -race
+	// build of this package's chdb-tagged tests segfaults inside libchdb
+	// during runtime.racefini once every test has already passed (#1971).
+	// No-op in the default, non-chdb build.
+	chdbsession.CloseForExit()
+	os.Exit(code)
 }
 
 // TestPipelineSpans_FiveStageChain asserts that a single /api/v1/query

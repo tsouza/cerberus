@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
+	"github.com/tsouza/cerberus/internal/chdbsession"
 )
 
 // executeSpanExporter is the package-wide in-memory exporter installed
@@ -26,7 +27,13 @@ func TestMain(m *testing.M) {
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 	)
 	otel.SetTracerProvider(tp)
-	os.Exit(m.Run())
+	code := m.Run()
+	// Shut the process-wide chDB session down before os.Exit, or a -race
+	// build of this package's chdb-tagged probe segfaults inside libchdb
+	// during runtime.racefini once every test has already passed (#1971).
+	// No-op in the default, non-chdb build.
+	chdbsession.CloseForExit()
+	os.Exit(code)
 }
 
 // TestStartExecuteSpan_Attributes pins the attribute contract on the

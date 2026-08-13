@@ -34,6 +34,13 @@
 #     api-health      — readiness probe.
 #     schema-ddl      — OTel-CH DDL helpers (config consumes; isolated).
 #     chclienttest    — chclient test helpers.
+#     chdbsession     — process-exit half of libchdb's session lifecycle for
+#                       chdb-tagged TEST binaries. A test package's TestMain
+#                       closes the cached chdb-go session before os.Exit so
+#                       the C++ destructors `-race`'s racefini runs do not
+#                       tear a live embedded ClickHouse down (#1971). Depends
+#                       on nothing but chdb-go, and is a no-op leaf in the
+#                       default (non-chdb) build.
 #     chsqltest       — the chDB harness internal/chsql's round-trip tests
 #                       share: an isolated database per test plus the metric
 #                       seed-DDL renderer. Depends on nothing; it sits outside
@@ -151,6 +158,7 @@ components:
   # the CH driver. Declared explicitly with its own deps block instead.
   api-reqctx:     { in: api/reqctx }
   chclienttest:   { in: chclienttest }
+  chdbsession:    { in: chdbsession }
   chsqltest:      { in: chsqltest }
   sealedscan:     { in: sealedscan }
   testsql:        { in: testsql }
@@ -219,6 +227,7 @@ commonComponents:
   - api-health
   - api-info
   - chclienttest
+  - chdbsession
   - chsqltest
   - qlcommon
   - chopt
