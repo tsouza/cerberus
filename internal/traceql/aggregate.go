@@ -111,13 +111,10 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 
 // scalarAggLeaf lowers a single TraceQL aggregate (`count()`,
 // `sum(...)`, `avg(...)`, `min(...)`, `max(...)`) into the AggFunc that
-// computes its value, under the caller-supplied alias. Factored out of
-// lowerAggregate so lowerArithmeticScalarFilter (lower.go) can fold
-// MULTIPLE aggregate leaves — one per operand of a `ScalarOperation`
-// arithmetic tree, e.g. `max(duration) - min(duration)` — into the
-// AggFuncs list of ONE shared chplan.Aggregate node instead of one
-// independently-grouped Aggregate node per leaf, which would have no
-// common row for the arithmetic to read both operands from.
+// computes its value, under the caller-supplied alias. Kept factored
+// out of lowerAggregate, its one caller, because the alias is a
+// parameter rather than a constant: the split is what keeps the
+// value-column naming decision at the call site.
 //
 // Reports whether the leaf reads a nested-set intrinsic
 // (`min(nestedSetLeft)`), which has no flat OTel-CH column: the caller
