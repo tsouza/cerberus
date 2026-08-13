@@ -414,6 +414,15 @@ func (sc *shardCursor) runShard(
 	if perShardMemoryBytes > 0 {
 		pctx = chclient.WithQuerySetting(pctx, "max_memory_usage", perShardMemoryBytes)
 	}
+	// The caller's declared response shape (chclient.WithResponseShape, stamped
+	// by the engine at every route-B dispatch) is deliberately NOT re-stamped
+	// here: unlike the progress recorder (one mutable recorder per ctx key —
+	// sharing corrupts the histograms) and the query_id (one per shard, a
+	// shared id is CH error 216), it is an immutable, request-scoped string
+	// every shard must present identically, so it rides gctx down here by
+	// ordinary ctx nesting. Rebuilding a shard ctx from a bare Background would
+	// silently drop it and hollow out chclient's columnar AND-gate on route B —
+	// response_shape_wiring_test.go pins that it arrives at every shard.
 
 	// This shard's own cancel handle. The cursor is opened on qctx and torn
 	// down by THIS goroutine, so chclient.CloseCursor can drain the remaining

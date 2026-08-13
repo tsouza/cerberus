@@ -20,6 +20,13 @@ import (
 
 // --- fixtures shared by every test in this file --------------------------
 
+// memoWiringResponseShape is the engine.Meta.ResponseShape every dispatch in
+// this file declares. The fixtures are matrix RangeWindow plans, so the
+// production value an adapter would declare for them is the prom matrix shape
+// — the value routeBExecCtx stamps onto the ctx the Executor receives, which
+// response_shape_wiring_test.go asserts on directly.
+const memoWiringResponseShape = chclient.ResponseShapeMatrix
+
 var (
 	memoWiringGridStart = time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
 	memoWiringGridStep  = 15 * time.Second
@@ -326,7 +333,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 		eng, _ := newMemoWiringEngine(t, cq)
 		seed := memoWiringNotRoutedDecision(t)
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNotEligible]
-		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringIneligiblePlan(), seed, nil); ok {
+		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringResponseShape, memoWiringIneligiblePlan(), seed, nil); ok {
 			t.Fatal("tryRouteMemoHit dispatched despite a structurally ineligible plan")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNotEligible]
@@ -361,7 +368,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 			GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		}
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNotFresh]
-		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", notFreshPlan, seed, nil); ok {
+		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringResponseShape, notFreshPlan, seed, nil); ok {
 			t.Fatal("tryRouteMemoHit dispatched on a request whose End has not aged past the live-edge margin")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNotFresh]
@@ -379,7 +386,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 		seed := memoWiringNotRoutedDecision(t)
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNoPreferB]
 		// Fresh memo: Lookup(k) reports Unknown, not PreferB.
-		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", plan, seed, nil); ok {
+		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil); ok {
 			t.Fatal("tryRouteMemoHit dispatched with no recorded verdict")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNoPreferB]
@@ -398,7 +405,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 		memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 		memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) }) // past re-validation midpoint
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineStale]
-		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", plan, seed, nil); ok {
+		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil); ok {
 			t.Fatal("tryRouteMemoHit dispatched on a STALE PreferB verdict")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineStale]
@@ -414,7 +421,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 		d := eng.deriveRouteMemoDispatch(plan, seed, memoWiringGridEnd.Add(2*memoWiringGridStep))
 		memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineBreakerOpen]
-		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", plan, seed, nil); ok {
+		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil); ok {
 			t.Fatal("tryRouteMemoHit dispatched with the breaker OPEN")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineBreakerOpen]
@@ -437,7 +444,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 			}
 		}
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNoDispatchToken]
-		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", plan, seed, nil); ok {
+		if _, _, _, _, ok := eng.tryRouteMemoHit(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil); ok {
 			t.Fatal("tryRouteMemoHit dispatched despite an exhausted admission semaphore")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineNoDispatchToken]
@@ -464,7 +471,7 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 		// First resource failure on a fresh Unknown key: corroboration=1,
 		// below minCorroboratingFailures — ObserveRouteAFailureAndMaybeBeginProbe
 		// itself refuses, for a reason OTHER than cluster-wide pressure.
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
 			t.Fatal("retried on the first route-A resource failure")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineProbeNotAdmitted]
@@ -495,7 +502,7 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 			t.Fatalf("fixture failed to establish UnderPressure()==true")
 		}
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineUnderPressure]
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
 			t.Fatal("retried while the memo is under cluster-wide pressure")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineUnderPressure]
@@ -526,7 +533,7 @@ func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	}
 
 	// corroboration=1: below threshold, no dispatch, no inflight movement.
-	if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+	if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
 		t.Fatal("retried on the first route-A resource failure")
 	}
 	if got := routedDispatchInflightValue(t, reader); got != 0 {
@@ -534,7 +541,7 @@ func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	}
 
 	// corroboration=2: probe admitted, dispatch begins.
-	_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
 	if !retried {
 		t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 	}
@@ -563,7 +570,7 @@ func TestRouteABSuccessTotal(t *testing.T) {
 		eng, _ := newMemoWiringEngine(t, cq)
 		seed := memoWiringNotRoutedDecision(t)
 		before := routeABSuccessByRoute(t, reader)[telemetry.RouteChoiceA]
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", plan, seed, nil, nil); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, nil); retried {
 			t.Fatal("a Success classification must never itself trigger a retry dispatch")
 		}
 		after := routeABSuccessByRoute(t, reader)[telemetry.RouteChoiceA]
@@ -577,10 +584,10 @@ func TestRouteABSuccessTotal(t *testing.T) {
 		eng, _ := newMemoWiringEngine(t, cq)
 		seed := memoWiringNotRoutedDecision(t)
 		ctx := t.Context()
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
 			t.Fatal("retried on the first route-A resource failure")
 		}
-		_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+		_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
 		if !retried {
 			t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 		}
@@ -656,7 +663,7 @@ func TestTryRouteMemoHit_DispatchesOnLivePreferBVerdict(t *testing.T) {
 	}
 	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 
-	cur, info, usedDecision, gotKey, ok := eng.tryRouteMemoHit(context.Background(), "promql", plan, seed, nil)
+	cur, info, usedDecision, gotKey, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil)
 	if !ok {
 		t.Fatal("tryRouteMemoHit did not dispatch on a live PreferB verdict")
 	}
@@ -686,7 +693,7 @@ func TestTryRouteMemoHit_UnknownKeyNeverDispatches(t *testing.T) {
 	plan := memoWiringEligiblePlan()
 	seed := memoWiringNotRoutedDecision(t)
 
-	_, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", plan, seed, nil)
+	_, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil)
 	if ok {
 		t.Fatal("tryRouteMemoHit dispatched for an Unknown key — must never memo-hit without a recorded verdict")
 	}
@@ -716,7 +723,7 @@ func TestTryRouteMemoHit_StaleVerdictFallsBackToCaller(t *testing.T) {
 	// crossing the TTL itself.
 	memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) })
 
-	_, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", plan, seed, nil)
+	_, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil)
 	if ok {
 		t.Fatal("tryRouteMemoHit dispatched on a STALE PreferB verdict — must fall through to route A instead")
 	}
@@ -761,7 +768,7 @@ func TestTryRouteMemoHit_PreFlightFailureFallsBackToRouteA(t *testing.T) {
 	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
 	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 
-	cur, info, usedDecision, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", plan, seed, nil)
+	cur, info, usedDecision, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil)
 	if ok {
 		t.Fatal("tryRouteMemoHit reported dispatched=true despite a pre-flight emit failure")
 	}
@@ -801,7 +808,7 @@ func TestTryRouteMemoHit_MidDrainResourceFailure_ObserveViaClassify(t *testing.T
 	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
 	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 
-	cur, _, _, gotKey, ok := eng.tryRouteMemoHit(context.Background(), "promql", plan, seed, nil)
+	cur, _, _, gotKey, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil)
 	if !ok {
 		t.Fatal("tryRouteMemoHit must dispatch (Execute's synchronous return has no visibility into a per-shard open error)")
 	}
@@ -837,7 +844,7 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 
 	// First resource failure: corroboration=1, below the threshold — must
 	// NOT retry.
-	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
 	if retried {
 		t.Fatal("retried on the FIRST route-A resource failure — corroboration requires more than one")
 	}
@@ -848,7 +855,7 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	// Second consecutive resource failure, same key, no intervening
 	// success: corroboration=2 (the default minCorroboratingFailures) —
 	// NOW a probe is admitted and route B dispatches.
-	cur, info, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	cur, info, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
 	if !retried {
 		t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 	}
@@ -891,7 +898,7 @@ func TestRetryOnRouteAResourceFailure_NonResourceErrorNeverRetried(t *testing.T)
 
 	timeoutErr := &solver.SolverTimeoutError{Timeout: "60s"}
 	for i := 0; i < 5; i++ {
-		_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, timeoutErr)
+		_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, timeoutErr)
 		if retried {
 			t.Fatalf("iteration %d: retried on a NoEvidence-class error (solver timeout)", i)
 		}
@@ -914,7 +921,7 @@ func TestRetryOnRouteAResourceFailure_ClientGoneNeverRetried(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
 	if retried {
 		t.Fatal("retried on a cancelled context — no client is there to receive the retry's answer")
 	}
@@ -936,10 +943,10 @@ func TestRouteMemoWiring_InactiveWhenRouteMemoNil(t *testing.T) {
 	plan := memoWiringEligiblePlan()
 	seed := memoWiringNotRoutedDecision(t)
 
-	if _, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", plan, seed, nil); ok {
+	if _, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil); ok {
 		t.Fatal("tryRouteMemoHit dispatched with RouteMemo nil")
 	}
-	if _, _, _, _, ok := eng.retryOnRouteAResourceFailure(context.Background(), "promql", plan, seed, nil, chclient.ErrMemoryLimitExceeded); ok {
+	if _, _, _, _, ok := eng.retryOnRouteAResourceFailure(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); ok {
 		t.Fatal("retryOnRouteAResourceFailure dispatched with RouteMemo nil")
 	}
 	if cq.opens.Load() != 0 {
