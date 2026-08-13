@@ -43,7 +43,7 @@ import (
 //     with everything else — `h.Sub(prev)` subtracts both, `h.Add(prev)`
 //     adds both back at a reset, and `h.Mul(factor)` scales both — so
 //     they go through the SAME fold as every bucket rather than a
-//     separate rule. See [expHistogramValuedWindowPassthrough].
+//     separate rule. See [expHistogramValuedWindowScalars].
 //   - `rate`'s per-second division. Reference folds it into the same
 //     scalar: `factor /= ms.Range.Seconds()` before the single
 //     `Mul(factor)`. The quantile path leaves it out deliberately (a
@@ -82,19 +82,14 @@ import (
 // stacks both — is a further shape and stays on
 // [expHistogramSelectorRouting]'s explicit rejection.
 //
-// Counter-reset detection is the one place this path is known to differ
-// from reference, and it differs there for the shared window fold's
-// existing reason rather than anything introduced here: reference
-// decides a reset for the WHOLE histogram (`FloatHistogram.DetectReset`
-// — any bucket, the zero bucket, or Count regressing condemns the whole
-// sample) and then adds the entire previous distribution, whereas
-// [counterIncreaseFold] decides per component and adds the previous
-// reading only of the components that themselves regressed. The two
-// agree exactly on a genuine restart, where every component drops
-// together, and drift only where a component recovers past its
-// pre-reset reading within one scrape. Issue #2017 carries the
-// whole-histogram detection for the shared fold, which the quantile path
-// reads through the same code.
+// Counter-reset detection follows reference's whole-histogram verdict
+// rather than each component's own: the shared window stage projects a
+// per-series reset mask (`FloatHistogram.DetectReset` transcribed in
+// histogram_native_reset.go) and every component this file publishes —
+// each bucket, the zero bucket, Count and Sum — folds under it. Sum
+// matters most here, since it is the one component reference explicitly
+// does NOT let vote on a reset and the one a histogram with negative
+// observations can drive downward without any restart at all.
 
 // hqWindowSumArrayAlias holds the group's groupArray of each row's Sum —
 // the total observed VALUE, positionally parallel to the counts / scales
@@ -238,11 +233,11 @@ func lowerExpHistogramRateRange(shape histogramAggShape, s schema.Metrics, ctx l
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 			expHistogramValuedWindowAggs(s), s, ctx,
 		),
+		expHistogramValuedWindowAggs(s),
+		[]string{stepGridAnchorColumn, s.AttributesColumn},
+		expHistogramResetMaskFor(shape.windowFn),
 		fold,
-		expHistogramValuedWindowPassthrough([]chplan.Projection{
-			{Expr: anchorRef, Alias: stepGridAnchorColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-		}, fold, s),
+		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
 	return aggregatedHistogramProjection(perSeries, anchorRef, s)
@@ -264,10 +259,11 @@ func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, r
 	}
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
+		expHistogramValuedWindowAggs(s),
+		[]string{s.AttributesColumn},
+		expHistogramResetMaskFor(shape.windowFn),
 		fold,
-		expHistogramValuedWindowPassthrough([]chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-		}, fold, s),
+		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
 }
@@ -301,7 +297,12 @@ func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, r
 // reading every OTel exponential-histogram path in this package uses —
 // the branch issue #1963 covers for this table.
 func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr) histogramWindowTimeFold {
-	fold := histogramWindowFold(shape.windowFn, rangeStart, rangeEnd, expHistogramWindowCountValuesExpr(), nil)
+	fold := histogramWindowFold(shape.windowFn, histogramWindowInputs{
+		rangeStart:  rangeStart,
+		rangeEnd:    rangeEnd,
+		countValues: expHistogramWindowCountValuesExpr(),
+		resets:      expHistogramResetMaskFor(shape.windowFn),
+	})
 	if shape.windowFn != rateWindowFn {
 		return fold
 	}
@@ -325,10 +326,9 @@ func expHistogramValuedWindowAggs(s schema.Metrics) []chplan.AggFunc {
 	})
 }
 
-// expHistogramValuedWindowPassthrough is the reshape passthrough for a
-// histogram-VALUED window: the caller's own key projections (Attributes,
-// preceded by the step anchor in range mode) followed by the window-
-// reduced Count and Sum.
+// expHistogramValuedWindowScalars is the pair of projections a
+// histogram-VALUED window adds to the reshape and a quantile does not:
+// the window-reduced Count and Sum.
 //
 // Both scalars go through the caller's own `fold` — the same one
 // [expHistogramWindowReshape] applies to the zero bucket and to both
@@ -343,19 +343,16 @@ func expHistogramValuedWindowAggs(s schema.Metrics) []chplan.AggFunc {
 // [expHistogramWindowFloatsExpr] documents: the fold differences
 // consecutive readings and a stored UInt64 Count would underflow a
 // legitimate negative difference into a colossal positive one.
-func expHistogramValuedWindowPassthrough(keys []chplan.Projection, fold histogramWindowTimeFold, s schema.Metrics) []chplan.Projection {
+func expHistogramValuedWindowScalars(fold histogramWindowTimeFold, s schema.Metrics) []chplan.Projection {
 	tsList := &chplan.ColumnRef{Name: hqWindowTsListAlias}
-	projs := make([]chplan.Projection, 0, len(keys)+2)
-	projs = append(projs, keys...)
-	return append(
-		projs,
-		chplan.Projection{
+	return []chplan.Projection{
+		{
 			Expr:  fold(expHistogramWindowCountValuesExpr(), tsList),
 			Alias: s.CountColumn,
 		},
-		chplan.Projection{
+		{
 			Expr:  fold(expHistogramWindowFloatsExpr(&chplan.ColumnRef{Name: hqWindowSumArrayAlias}), tsList),
 			Alias: s.SumColumn,
 		},
-	)
+	}
 }
