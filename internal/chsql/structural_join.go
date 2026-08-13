@@ -494,9 +494,10 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 // was redundant with the join. The step scan is instead bounded by the
 // stamped request window (a direct `Timestamp` partition-prune predicate; see
 // stampRecursiveScanWindow) and, on the two-phase phase-B path, by the top-N
-// trace-id literal set (TraceIDRestriction). The candidate prefilter and the
-// phase-B restriction may additionally scope the anchor seed (see
-// structuralAnchorWhere).
+// trace-id literal set (TraceIDRestriction). The ANCHOR arm takes the same
+// stamped window (structuralAnchorWindowFrags) — it is a CTE arm too, so nothing
+// outside the closure prunes its seed scan — plus, where the plan sets them, the
+// candidate prefilter and the phase-B restriction (see structuralAnchorWhere).
 //
 // Rendered shape (>> case, default cap, windowed search path):
 //
@@ -506,6 +507,7 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 //	      FROM (<L>) AS _seed
 //	      [WHERE `TraceId` IN (SELECT DISTINCT `TraceId` FROM (<R>) AS _cand)]  -- candidate prefilter
 //	      [AND/WHERE `TraceId` IN ('<id1>', … '<idN>')]                        -- phase B
+//	      [AND/WHERE `Timestamp` >= … AND `Timestamp` <= …]                    -- window prune
 //	    UNION ALL
 //	    SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1
 //	      FROM `otel_traces` AS t
@@ -600,12 +602,14 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 			verbatim("0 AS _depth"),
 		).
 		From(aliasedFrag(leftSub, "_seed"))
-	// Restrict the anchor seed when the plan opted into the candidate
-	// prefilter (both sides selective, sparse — the L-intersect-R set) and/or
-	// the two-phase trace-id restriction (phase B, the top-N traces). Both are
-	// pure pruning bounds keyed on the seed's TraceId; a plan that sets
-	// neither renders the anchor byte-identical to before. rightSub is the
-	// closure's OTHER side (R for the canonical closure).
+	// Restrict the anchor seed: the request window whenever the node was
+	// window-stamped (the seed sits INSIDE the CTE, so nothing outside the
+	// closure prunes its scan), plus the candidate prefilter when the plan
+	// opted in (both sides selective, sparse — the L-intersect-R set) and/or
+	// the two-phase trace-id restriction (phase B, the top-N traces). All are
+	// pure pruning bounds; a plan that sets none renders the anchor
+	// byte-identical to before. rightSub is the closure's OTHER side (R for
+	// the canonical closure).
 	if seedWhere := structuralAnchorWhere(j, rightSub); len(seedWhere) > 0 {
 		anchor = anchor.Where(seedWhere...)
 	}
@@ -754,6 +758,14 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, rightS
 
 	// DISTINCT on both arms — same duplicate-row containment as the
 	// canonical closure (see emitStructuralRecursive).
+	//
+	// The seed carries the request-window bound for the same reason the
+	// canonical closure's does: this anchor is a recursive-CTE arm, so nothing
+	// outside the CTE prunes its `(<R>) AS _seed` scan (#1942). The trace-id
+	// restriction is deliberately NOT folded here — the inverse closure projects
+	// only `_depth > 0` rows, which come from the step arm alone, and the step
+	// already restricts them (structuralStepWhere), so phase B stays a faithful
+	// top-N subset without it.
 	anchor := NewQuery().
 		Select(
 			Distinct(Col(j.TraceIDColumn)),
@@ -761,7 +773,8 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, rightS
 			Col(j.ParentSpanIDColumn),
 			verbatim("0 AS _depth"),
 		).
-		From(aliasedFrag(rightSub, "_seed"))
+		From(aliasedFrag(rightSub, "_seed")).
+		Where(structuralAnchorWindowFrags(j)...)
 
 	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
 	stepFrom, err := e.fromSpansScan(table, memoryStreamingBound())
@@ -826,10 +839,11 @@ func structuralStepWhere(j *chplan.StructuralJoin) []Frag {
 
 // structuralAnchorWhere builds the WHERE conjuncts for a recursive closure's
 // anchor seed: the candidate prefilter (both sides selective — restrict seeds
-// to traces present on the OTHER side too) and/or the two-phase trace-id
-// restriction (phase B — restrict seeds to the top-N traces). Both key on the
-// seed's TraceId and both are pure pruning bounds; a plan that sets neither
-// gets an empty slice and the anchor stays byte-identical. otherSideSub is the
+// to traces present on the OTHER side too), the two-phase trace-id restriction
+// (phase B — restrict seeds to the top-N traces), and the request-window
+// partition-prune bound (structuralAnchorWindowFrags). The first two key on the
+// seed's TraceId; all three are pure pruning bounds, and a plan that sets none
+// gets an empty slice so the anchor stays byte-identical. otherSideSub is the
 // closure's other-side subquery Frag (R for the canonical closure).
 func structuralAnchorWhere(j *chplan.StructuralJoin, otherSideSub Frag) []Frag {
 	var conds []Frag
@@ -842,7 +856,36 @@ func structuralAnchorWhere(j *chplan.StructuralJoin, otherSideSub Frag) []Frag {
 	if len(j.TraceIDRestriction) > 0 {
 		conds = append(conds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
 	}
-	return conds
+	return append(conds, structuralAnchorWindowFrags(j)...)
+}
+
+// structuralAnchorWindowFrags returns the request-window conjuncts for a
+// recursive closure's ANCHOR arm — the bound that makes the seed derived table
+// (`(<L>) AS _seed`) partition-prunable.
+//
+// Each arm of a `WITH RECURSIVE` is its own scope and ClickHouse cannot push a
+// predicate from OUTSIDE the CTE into one, so an enclosing window — the metrics
+// RangeWindow wrap's `Timestamp > toDateTime64(…)`, the outer search filter —
+// never reaches the seed. `otel_traces` is `PARTITION BY toDate(Timestamp)`, so
+// without a bound in the anchor's OWN scope the seed reads full retention: the
+// anchor-arm half of the whole-table read #1109 fixed on the step arm (#1942).
+// Inside the anchor the seed is a plain derived table, so this conjunct pushes
+// down into it and the partitions prune — the same shape that already prunes the
+// structural join's `(<R>) AS R` side under the enclosing window.
+//
+// Empty (no-op) when the node was not window-stamped (TimestampColumn / Window*
+// unset on the spec / direct-join / windowless paths), keeping that output
+// byte-identical. On the /api/search path the seed's own leaf scan ALSO carries
+// the same [start,end] fold (traceql.stampSearchWindow), so there the conjunct
+// is redundant and merely idempotent; every OTHER windowed caller — the metrics
+// range / instant handlers (HTTP and gRPC), the tag-filter lookup, explain —
+// threads a window with NO leaf fold, and for those this is the only bound the
+// anchor arm gets. Rendering it unconditionally is what keeps the arm
+// self-bounding rather than dependent on which caller happened to window the
+// leaves, exactly as the step arm's own bound is.
+func structuralAnchorWindowFrags(j *chplan.StructuralJoin) []Frag {
+	winLo, winHi := spansScanWindowFrags(j.TimestampColumn, j.WindowStartNano, j.WindowEndNano)
+	return appendNonNilFrags(nil, winLo, winHi)
 }
 
 // structuralCandidateTraceSubquery renders

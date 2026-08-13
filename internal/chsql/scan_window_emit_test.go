@@ -163,6 +163,156 @@ func TestEmitNestedSetAnchorStepWindowed(t *testing.T) {
 	}
 }
 
+// structuralClosureSeedMarker ends the anchor arm's seed derived table
+// (`(<L>) AS _seed`); everything between it and the closure's top-level
+// `UNION ALL` is the anchor arm's OWN scope — the only scope whose Timestamp
+// predicate prunes the seed's partitions.
+const structuralClosureSeedMarker = "AS _seed"
+
+// structuralAnchorArmScopes returns, for every recursive structural closure in
+// sql, the text of the anchor arm that follows its `_seed` derived table: the
+// arm's own WHERE, up to the closure's top-level `UNION ALL`. Parens are
+// tracked so a subquery inside that WHERE (the candidate prefilter) cannot end
+// the scan early, and the walk stops at the CTE's closing paren.
+//
+// Returns nil when sql has no closure at all, which the callers assert on so a
+// shape change cannot make the window assertion vacuous.
+func structuralAnchorArmScopes(sql string) []string {
+	var out []string
+	rest := sql
+	for {
+		i := strings.Index(rest, structuralClosureSeedMarker)
+		if i < 0 {
+			return out
+		}
+		rest = rest[i+len(structuralClosureSeedMarker):]
+		out = append(out, anchorArmScope(rest))
+	}
+}
+
+// anchorArmScope returns the prefix of s that belongs to the anchor arm: it
+// ends at the closure's top-level `UNION ALL` (the step arm starts there) or at
+// the paren that closes the CTE body, whichever comes first. Nested parens are
+// skipped so a subquery inside the arm's WHERE — the candidate prefilter — is
+// not mistaken for either terminator.
+func anchorArmScope(s string) string {
+	depth := 0
+	for j := 0; j < len(s); j++ {
+		switch {
+		case s[j] == '(':
+			depth++
+		case s[j] == ')':
+			if depth == 0 {
+				return s[:j]
+			}
+			depth--
+		case depth == 0 && strings.HasPrefix(s[j:], "UNION ALL"):
+			return s[:j]
+		}
+	}
+	return s
+}
+
+// assertAnchorArmsWindowed asserts every recursive structural closure in sql
+// bounds its anchor arm with the inline request window. The anchor arm is a
+// `WITH RECURSIVE` arm, so no enclosing predicate — not the outer search
+// filter, not the metrics RangeWindow wrap — reaches its `_seed` scan;
+// `otel_traces` is `PARTITION BY toDate(Timestamp)`, so without the arm's own
+// bound the seed reads full retention (#1942).
+func assertAnchorArmsWindowed(t *testing.T, sql string, wantClosures int) {
+	t.Helper()
+	arms := structuralAnchorArmScopes(sql)
+	if len(arms) != wantClosures {
+		t.Fatalf("found %d structural closure anchor arms, want %d — shape changed, assertion vacuous:\n%s",
+			len(arms), wantClosures, sql)
+	}
+	lo := fmt.Sprintf("%s(%d)", fromUnixNanoCall, scanWindowEmitStartNano)
+	hi := fmt.Sprintf("%s(%d)", fromUnixNanoCall, scanWindowEmitEndNano)
+	for i, arm := range arms {
+		if !strings.Contains(arm, lo) || !strings.Contains(arm, hi) {
+			t.Errorf("closure %d: anchor arm's `_seed` scope carries no request window (missing inline %s / %s) — the seed scan reads full retention:\narm: %s\nfull SQL:\n%s",
+				i, lo, hi, arm, sql)
+		}
+	}
+}
+
+// TestEmitStructuralRecursiveAnchorWindowed pins the structural closure's
+// ANCHOR arm — the half the step-arm window (#1109) left uncovered. The anchor
+// seeds from a derived table (`(<L>) AS _seed`) whose partitions are prunable
+// only from the arm's own scope, and a `WITH RECURSIVE` arm admits no predicate
+// from outside the CTE. Both the canonical closure and the `&>>` inverse
+// closure are asserted, on both the search path (where the seed's leaf scan
+// also carries the window) and the METRICS path (where it does not — the
+// anchor's own bound is the ONLY thing keeping the seed off full retention).
+func TestEmitStructuralRecursiveAnchorWindowed(t *testing.T) {
+	t.Parallel()
+	start, end := scanWindowEmitBounds()
+
+	t.Run("search", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name     string
+			q        string
+			closures int
+		}{
+			{"descendant", `{ .service.name = "a" } >> { .http.status_code = 500 }`, 1},
+			// The union form emits the canonical closure plus the inverse
+			// closure that walks back the other way — two anchor arms.
+			{"union_descendant", `{ .service.name = "a" } &>> { .http.status_code = 500 }`, 2},
+		} {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sql, err := emitSpansScoped(t, lowerWindowedSearch(t, tc.q, start, end))
+				if err != nil {
+					t.Fatalf("windowed structural emit: %v", err)
+				}
+				assertAnchorArmsWindowed(t, sql, tc.closures)
+			})
+		}
+	})
+
+	t.Run("metrics", func(t *testing.T) {
+		t.Parallel()
+		// The metrics path threads the request window but folds NO window onto
+		// the chplan leaves (the RangeWindow wrap bounds the metrics leaf, and
+		// it cannot reach below a WITH RECURSIVE), so the anchor arm's own
+		// bound is the whole fix here.
+		sql, err := emitStructuralMetricsRange(t, `{ } >> { } | rate()`, start, end)
+		if err != nil {
+			t.Fatalf("windowed metrics structural emit: %v", err)
+		}
+		assertAnchorArmsWindowed(t, sql, 1)
+	})
+}
+
+// emitStructuralMetricsRange lowers a metrics-over-structural pipeline with the
+// request window on the context (no /api/search limit — the metrics path) and
+// wraps it in the RangeWindow the /api/metrics/query_range handler builds,
+// exactly as emitCompareInRangeWindow does for compare().
+func emitStructuralMetricsRange(t *testing.T, q string, start, end time.Time) (string, error) {
+	t.Helper()
+	s := schema.DefaultOTelTraces()
+	expr, err := ast.Parse(q)
+	if err != nil {
+		t.Fatalf("parse %q: %v", q, err)
+	}
+	plan, err := tql.Lower(tql.WithSearchWindow(context.Background(), start, end), expr, s)
+	if err != nil {
+		t.Fatalf("lower %q: %v", q, err)
+	}
+	rw := &chplan.RangeWindow{
+		Input:           plan,
+		Range:           scanWindowEmitStep,
+		Step:            scanWindowEmitStep,
+		Start:           start,
+		End:             end,
+		TimestampColumn: s.TimestampColumn,
+	}
+	sql, _, err := chsql.Emit(chsql.WithSpansTable(context.Background(), s.SpansTable), chplan.Node(rw))
+	return sql, err
+}
+
 // emitCompareInRangeWindow lowers `{ } | compare(...)`, wraps it in the
 // RangeWindow the /api/metrics/query_range handler builds, and emits — with or
 // without the spans table on the context. start/end may be zero to exercise the
