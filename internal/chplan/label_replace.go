@@ -86,20 +86,23 @@ type LabelReplaceSegment struct {
 	// Literal is the text this segment contributes when Group is
 	// [NoCaptureGroup].
 	Literal string
-	// Fallbacks holds the further capture-group indices sharing the
-	// referenced name, in regex order, when a `$name` reference binds to
-	// several groups; it is empty for every other segment shape. The
-	// segment then contributes the first of Group followed by Fallbacks
-	// whose capture is non-empty, which the emitter renders as
+	// Fallbacks holds the further capture-group indices the search may
+	// look through when a `$name` reference binds to several groups; it is
+	// empty for every other segment shape. The segment contributes the
+	// first of Group followed by Fallbacks whose capture is non-empty,
+	// which the emitter renders as
 	//
 	//	arrayFirst(x -> x != '', [<group>, <fallback>, …])
 	//
 	// Go's `ExpandString` picks the first of the like-named groups that
 	// TOOK PART in the match, and ClickHouse cannot see participation
-	// directly — but for a group whose subpattern cannot match the empty
-	// string, "took part" and "captured something non-empty" coincide.
-	// The lowering only ever populates Fallbacks once it has established
-	// that of every carrier; see qlcommon's captureGroups.resolve.
+	// directly. Group plus Fallbacks is therefore a PREFIX of the groups
+	// carrying the name rather than all of them: the lowering truncates
+	// the list at the first carrier every match must pass through, since
+	// Go's own scan can never walk past that one either. It populates the
+	// list only once it has established that no match can pair a first
+	// participant capturing the empty string with a later listed group
+	// capturing text — see qlcommon's captureGroups.expressibleCarriers.
 	Fallbacks []int
 	// Group is the capture-group index to substitute, or [NoCaptureGroup]
 	// when this segment is literal text.

@@ -2,6 +2,7 @@ package qlcommon
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -224,12 +225,43 @@ func TestSharedCaptureNameSegmentsAgreeWithExpandString(t *testing.T) {
 		},
 		{
 			// Both carriers participate at once. Go takes the first, and
-			// so must the array search — here the two captures differ, so
-			// picking the wrong one is visible.
+			// so must the emitted form — here the two captures differ, so
+			// picking the wrong one is visible. Carrier 1 is on the
+			// regex's mandatory spine, so the resolution truncates the
+			// search to it alone and the result is an ordinary single-group
+			// reference rather than an array search; the oracle below
+			// evaluates whichever form came back.
 			name:  "both_carriers_participate",
 			regex: `(?P<dup>a)(?P<dup>b)`,
 			repl:  "$dup",
 			srcs:  []string{"ab"},
+		},
+		{
+			// A nullable FIRST carrier on the mandatory spine: Go always
+			// stops at it, even when it captured nothing and carrier 2
+			// captured text. Only the truncation makes this expressible.
+			name:  "nullable_carrier_on_the_mandatory_spine",
+			regex: `(?P<dup>a?)(?P<dup>b)`,
+			repl:  "$dup",
+			srcs:  []string{"b", "ab"},
+		},
+		{
+			// A nullable carrier in a DIFFERENT alternation branch from
+			// the later one: the two never take part in the same match, so
+			// an empty capture by carrier 1 means carrier 2 is empty too.
+			// This is the shape issue #1956 was filed over.
+			name:  "nullable_carrier_in_an_exclusive_branch",
+			regex: `(?P<dup>a?)|(?P<dup>b)`,
+			repl:  "$dup",
+			srcs:  []string{"", "a", "b"},
+		},
+		{
+			// The LAST carrier's nullability never matters: there is
+			// nothing after it for a non-empty search to skip ahead to.
+			name:  "nullable_last_carrier",
+			regex: `(?P<dup>a)|(?P<dup>b?)`,
+			repl:  "$dup",
+			srcs:  []string{"", "a", "b"},
 		},
 		{
 			// Prefixed branches: the carrier is not at the start of its
@@ -266,15 +298,51 @@ func TestSharedCaptureNameSegmentsAgreeWithExpandString(t *testing.T) {
 				want := string(re.ExpandString(nil, tc.repl, src, match))
 				groups := re.FindStringSubmatch(src)
 
-				evaluated := evaluateSegments(got.Segments, src, groups)
+				evaluated := evaluateReplacement(got, src, groups)
 				if evaluated != want {
-					t.Fatalf("regex %q repl %q src %q: segments %+v evaluate to %q; "+
+					t.Fatalf("regex %q repl %q src %q: %+v evaluates to %q; "+
 						"Go's ExpandString gives %q",
-						tc.regex, tc.repl, src, got.Segments, evaluated, want)
+						tc.regex, tc.repl, src, got, evaluated, want)
 				}
 			}
 		})
 	}
+}
+
+// evaluateReplacement renders whichever ClickHouse form ReplacementToCH
+// chose, so a differential stays honest when a template that used to need
+// the `extractGroups` decomposition collapses to a `replaceRegexpOne`
+// substitution string (or the other way round). Exactly one of the two
+// fields is ever populated — see [CHReplacement].
+func evaluateReplacement(repl CHReplacement, src string, groups []string) string {
+	if repl.Template == "" {
+		return evaluateSegments(repl.Segments, src, groups)
+	}
+	return evaluateCHTemplate(repl.Template, groups)
+}
+
+// evaluateCHTemplate renders a `replaceRegexpOne` substitution string the
+// way ClickHouse does: `\\` is a literal backslash and `\N` is capture
+// group N's text, with group 0 unreachable here because the emitter
+// renders the whole match off the source value instead.
+func evaluateCHTemplate(template string, groups []string) string {
+	var out strings.Builder
+	for i := 0; i < len(template); i++ {
+		if template[i] != '\\' || i+1 >= len(template) {
+			out.WriteByte(template[i])
+			continue
+		}
+		next := template[i+1]
+		i++
+		if next < '0' || next > '9' {
+			out.WriteByte(next)
+			continue
+		}
+		if idx := int(next - '0'); idx < len(groups) {
+			out.WriteString(groups[idx])
+		}
+	}
+	return out.String()
 }
 
 // evaluateSegments renders a decomposition the way the emitted SQL does:

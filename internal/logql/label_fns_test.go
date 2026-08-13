@@ -18,41 +18,68 @@ import (
 func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	t.Parallel()
 
-	// A capture-group NAME two capture groups share, one of which can
-	// match the empty string: Go's ExpandString picks whichever of them
-	// took part in the row's match, and `extractGroups` renders "took part
+	// A capture-group NAME two capture groups share, where the first
+	// carrier can take part in a match capturing NOTHING while the second
+	// captures text: Go's ExpandString stops at the first participant and
+	// expands to its empty capture, and `extractGroups` renders "took part
 	// matching empty" exactly like "took no part", so SQL cannot observe
-	// which.
+	// which. On `host="xb"` reference Loki answers `service=""` where a
+	// first-non-empty search would answer `service="b"`. Issue #1956
+	// tracks the residue.
 	const q = `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
-		`"service", "$dup", "host", "(?P<dup>a?)|(?P<dup>b)")`
+		`"service", "$dup", "host", "(?:x(?P<dup>a?))?(?P<dup>b)")`
 
 	expr, err := syntax.ParseExpr(q)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if _, err := Lower(context.Background(), expr, schema.DefaultOTelLogs()); err == nil {
-		t.Fatal("lowering accepted a nullable capture group sharing a name; want an error")
+		t.Fatal("lowering accepted a carrier whose participation is unobservable; want an error")
 	} else if !strings.Contains(err.Error(), "label_replace") {
 		t.Fatalf("error does not name the function that failed: %v", err)
 	}
 }
 
 // TestLowerLabelReplace_AcceptsSharedCaptureName is the LogQL twin of the
-// PromQL test with the same name: when every group sharing the name is
-// non-nullable, participation and a non-empty capture coincide, so the
-// reference is expressible and this head must lower it.
+// PromQL test with the same name, one row per fact the shared-name
+// resolution reasons from. Each lowers to an `extractGroups` search that
+// reproduces Go's expansion exactly, and each would have been refused by a
+// guard that keyed only on nullability.
 func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
 	t.Parallel()
 
-	const q = `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
-		`"service", "$dup", "host", "(?P<dup>a)|(?P<dup>b)")`
-
-	expr, err := syntax.ParseExpr(q)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+	cases := []struct {
+		name  string
+		regex string
+	}{
+		// Every carrier is non-nullable, so taking part in the match and
+		// capturing a non-empty string are the same event.
+		{"all_carriers_non_nullable", `(?P<dup>a)|(?P<dup>b)`},
+		// A nullable carrier in a different branch of one alternation from
+		// the other: the two never take part in the same match.
+		{"nullable_carrier_in_an_exclusive_branch", `(?P<dup>a?)|(?P<dup>b)`},
+		// A nullable LAST carrier: nothing after it to skip ahead to.
+		{"nullable_last_carrier", `(?P<dup>a)|(?P<dup>b?)`},
+		// A nullable carrier every match must pass through: Go always
+		// stops at it, so the search truncates there.
+		{"nullable_carrier_on_the_mandatory_spine", `(?P<dup>a?)(?P<dup>b)`},
 	}
-	if _, err := Lower(context.Background(), expr, schema.DefaultOTelLogs()); err != nil {
-		t.Fatalf("lowering rejected a shared capture-group name whose carriers are all non-nullable: %v", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
+				`"service", "$dup", "host", "` + tc.regex + `")`
+
+			expr, err := syntax.ParseExpr(q)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if _, err := Lower(context.Background(), expr, schema.DefaultOTelLogs()); err != nil {
+				t.Fatalf("lowering rejected an expressible shared capture-group name: %v", err)
+			}
+		})
 	}
 }
 

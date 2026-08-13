@@ -223,13 +223,16 @@ type captureGroups struct {
 	// slice rather than a single index. Empty when the regex did not
 	// compile, so every named reference then binds to nothing.
 	byName map[string][]int
-	// nullable reports, per capture-group index, whether that group's
-	// subpattern can match the empty string. It is what makes a
-	// shared-name reference expressible or not — see
-	// [captureGroups.resolve]. A group missing from the map is treated as
-	// nullable, so an unparseable or unclassifiable regex keeps the
-	// rejection rather than risking a wrong answer.
-	nullable map[int]bool
+	// shapes reports, per capture-group index, what that group's position
+	// in the regex's parse tree says about when it takes part in a match:
+	// whether its subpattern can match the empty string, whether every
+	// match must pass through it, and which alternation branches enclose
+	// it. Together those decide whether a shared-name reference is
+	// expressible — see [captureGroups.expressibleCarriers]. A group
+	// missing from the map reads as nullable and conditional, so an
+	// unparseable or unclassifiable regex keeps the rejection rather than
+	// risking a wrong answer.
+	shapes map[int]captureShape
 }
 
 // newCaptureGroups compiles regex for its capture-group metadata.
@@ -254,9 +257,9 @@ func newCaptureGroups(regex string) captureGroups {
 		return captureGroups{count: maxCHBackref}
 	}
 	g := captureGroups{
-		count:    compiled.NumSubexp(),
-		byName:   map[string][]int{},
-		nullable: nullableGroups(anchored),
+		count:  compiled.NumSubexp(),
+		byName: map[string][]int{},
+		shapes: captureShapes(anchored),
 	}
 	for i, name := range compiled.SubexpNames() {
 		if name == "" {
@@ -290,34 +293,6 @@ func newCaptureGroups(regex string) captureGroups {
 // (count, names, nullability) is still the unanchored regex's.
 func anchorRegex(regex string) string {
 	return "^(?s:" + regex + ")$"
-}
-
-// nullableGroups reports, per capture-group index, whether that group's
-// subpattern can match the empty string.
-//
-// It re-parses regex with the same syntax flags `regexp.Compile` uses, so
-// the `OpCapture.Cap` indices it walks are the very indices
-// `Regexp.SubexpNames` reports. An unparseable regex yields a nil map —
-// every group then reads as nullable, which is the conservative answer.
-func nullableGroups(regex string) map[int]bool {
-	parsed, err := syntax.Parse(regex, syntax.Perl)
-	if err != nil {
-		return nil
-	}
-	out := map[int]bool{}
-	collectNullableGroups(parsed, out)
-	return out
-}
-
-// collectNullableGroups walks re, recording each capture group's
-// nullability into out.
-func collectNullableGroups(re *syntax.Regexp, out map[int]bool) {
-	if re.Op == syntax.OpCapture {
-		out[re.Cap] = matchesEmpty(re.Sub[0])
-	}
-	for _, sub := range re.Sub {
-		collectNullableGroups(sub, out)
-	}
 }
 
 // matchesEmpty reports whether re's language contains the empty string.
@@ -386,12 +361,14 @@ type resolvedRef struct {
 	// group is the capture-group index the reference resolves to, or
 	// [unresolvedGroup] when it binds to nothing.
 	group int
-	// fallbacks holds the FURTHER capture-group indices that share the
-	// referenced name, in regex order, when several groups carry it. It
-	// is empty for every other reference shape. The value contributed is
-	// the first of `group` followed by `fallbacks` whose capture is
-	// non-empty — see [captureGroups.resolve] for why that reproduces
-	// Go's choice exactly.
+	// fallbacks holds the FURTHER capture-group indices the search may
+	// look through when several groups carry the referenced name. It is
+	// empty for every other reference shape. Together with `group` it is a
+	// PREFIX of the like-named groups in regex order, not necessarily all
+	// of them. The value contributed is the first of `group` followed by
+	// `fallbacks` whose capture is non-empty — see
+	// [captureGroups.expressibleCarriers] for why that reproduces Go's
+	// choice exactly.
 	fallbacks []int
 }
 
@@ -424,18 +401,25 @@ type resolvedRef struct {
 //     capture is non-empty;
 //   - a group that did not take part reports `”`.
 //
-// So when EVERY group sharing the name is non-nullable, "the first
+// So a non-nullable carrier can never be the one the two searches
+// disagree about, and when EVERY carrier is non-nullable "the first
 // carrier with a non-empty capture" is exactly Go's "the first carrier
-// that took part", and the reference is expressible — as
+// that took part". The reference is then expressible as
 // `arrayFirst(x -> x != ”, [g[i], g[j], …])` over the same
 // `extractGroups` decomposition the ceiling-free form already uses.
 // (`arrayFirst` yields `”` when no element qualifies, which is what
 // ExpandString substitutes when no carrier took part.)
 //
-// The condition is ALL carriers, not just the first: a nullable earlier
-// carrier that takes part matching the empty string is one Go picks (and
-// expands to `”`), while "first non-empty" would wrongly skip past it to
-// a later carrier. So a single nullable carrier keeps the rejection.
+// Nullability alone is not the boundary, though, because the two searches
+// disagree on one event only: the first carrier that takes part captures
+// the EMPTY string while a LATER carrier in the same match captures text.
+// [captureGroups.expressibleCarriers] rules that event out from the
+// carriers' positions in the parse tree as well as from their
+// nullability, and narrows the searched list accordingly; it is the
+// authority on which shapes survive, and its file documents the three
+// facts it reasons from. What stays rejected is a nullable carrier that a
+// match can skip while a later carrier that can co-occur with it captures
+// text — issue #1956 tracks that residue.
 func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 	out := resolvedRef{group: unresolvedGroup}
 	switch carriers := g.byName[ref.name]; {
@@ -446,34 +430,87 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 			out.group = ref.num
 		}
 	case len(carriers) > 1:
-		if nullable, ok := g.firstNullable(carriers); ok {
+		searched, ambiguous, ok := g.expressibleCarriers(carriers)
+		if !ok {
 			return resolvedRef{}, fmt.Errorf(
 				"references capture-group name %q, which %d capture groups share, "+
-					"and capture group %d among them can match the empty string — "+
-					"ClickHouse's extractGroups reports a group that matched empty and "+
-					"a group that took no part in the match identically, so which one "+
-					"Go's expansion would pick is not observable from SQL",
-				ref.name, len(carriers), nullable,
+					"and cerberus cannot rule out a match in which capture group %d "+
+					"takes part capturing the empty string while a later carrier "+
+					"captures text — ClickHouse's extractGroups reports a group that "+
+					"matched empty and a group that took no part in the match "+
+					"identically, so which one Go's expansion would pick would not be "+
+					"observable from SQL",
+				ref.name, len(carriers), ambiguous,
 			)
 		}
-		out.group, out.fallbacks = carriers[0], carriers[1:]
+		out.group, out.fallbacks = searched[0], searched[1:]
 	case len(carriers) == 1:
 		out.group = carriers[0]
 	}
 	return out, nil
 }
 
-// firstNullable returns the first of carriers whose subpattern can match
-// the empty string, and whether there was one. A carrier the nullability
-// walk could not classify counts as nullable, so an unrecognised regex
-// shape keeps the rejection.
-func (g captureGroups) firstNullable(carriers []int) (int, bool) {
-	for _, idx := range carriers {
-		if nullable, known := g.nullable[idx]; nullable || !known {
-			return idx, true
+// expressibleCarriers narrows carriers — every capture group sharing one
+// name, in regex order — to the prefix an `arrayFirst` non-empty search
+// may look through, or names the carrier whose participation no
+// ClickHouse expression can observe.
+//
+// Two steps, in this order:
+//
+//  1. TRUNCATE at the first carrier every match must pass through. Go's
+//     scan for the first participating carrier can never walk past such a
+//     group, so every carrier after it is unreachable and its nullability
+//     cannot matter. Truncating to a single element is the common case
+//     for a shape like `(?P<d>a?)x(?P<d>b)`, where the answer is simply
+//     group 1's capture.
+//  2. CLEAR each surviving carrier. A carrier is clear when it cannot
+//     match the empty string, or when it is mutually exclusive with every
+//     later surviving carrier — in which case an empty capture by it means
+//     none of them took part either, so both searches yield `”`. The last
+//     surviving carrier is cleared by the second test vacuously, there
+//     being nothing after it for the search to wrongly skip ahead to.
+//
+// The exclusivity test is over EVERY later surviving carrier, not just the
+// next one: with three carriers, an earlier one can be exclusive of the
+// second and still co-occur with the third, and it is the third that the
+// search would wrongly skip ahead to.
+//
+// A carrier the parse-tree walk could not classify has no shape recorded,
+// which reads as nullable and exclusive of nothing, so an unrecognised
+// regex keeps the rejection.
+func (g captureGroups) expressibleCarriers(carriers []int) ([]int, int, bool) {
+	end := len(carriers)
+	for i, idx := range carriers {
+		if g.shapes[idx].unconditional {
+			end = i + 1
+			break
 		}
 	}
-	return 0, false
+	searched := carriers[:end:end]
+	for i, idx := range searched {
+		shape, known := g.shapes[idx]
+		if known && !shape.nullable {
+			continue
+		}
+		if known && g.exclusiveOfAll(shape, searched[i+1:]) {
+			continue
+		}
+		return nil, idx, false
+	}
+	return searched, 0, true
+}
+
+// exclusiveOfAll reports whether shape's group can never take part in the
+// same match as any of the given later carriers. An empty `later` makes
+// this vacuously true, which is what clears the last surviving carrier.
+func (g captureGroups) exclusiveOfAll(shape captureShape, later []int) bool {
+	for _, idx := range later {
+		other, known := g.shapes[idx]
+		if !known || !mutuallyExclusive(shape, other) {
+			return false
+		}
+	}
+	return true
 }
 
 // replacementStep handles a single dispatch step of

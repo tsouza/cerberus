@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+// nullableGroups projects the nullability verdict out of the parse-tree
+// walk, so the operator-by-operator table below can be read as one map per
+// regex. [captureShapes] records nullability alongside the two positional
+// facts, and only this file cares about the one in isolation.
+//
+// A nil return means the regex did not parse — every group then reads as
+// nullable, which is the conservative answer.
+func nullableGroups(regex string) map[int]bool {
+	shapes := captureShapes(regex)
+	if shapes == nil {
+		return nil
+	}
+	out := make(map[int]bool, len(shapes))
+	for idx, shape := range shapes {
+		out[idx] = shape.nullable
+	}
+	return out
+}
+
 // TestNullableGroups pins the per-operator nullability verdict that
 // decides whether a shared capture-group name is expressible in SQL.
 //
