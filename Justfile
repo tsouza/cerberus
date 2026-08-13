@@ -419,27 +419,43 @@ bench:
 # of the two it got; CI sets COVERAGE_REQUIRE_LANES so a chdb install that
 # quietly no-ops fails the job instead of disarming the gate.
 #
-# `-coverpkg=./...` is what makes the number a fact about the tests rather than
-# about the file layout. Without it a package is measured only by its OWN test
+# `-coverpkg` is what makes the number a fact about the tests rather than about
+# the file layout. Without it a package is measured only by its OWN test
 # binary, so a helper package with no _test.go of its own lands in the profile
 # fully instrumented and entirely unexecuted no matter how hard the rest of the
 # suite drives it — and the floor derived from that zero cannot fail. With it,
-# every test binary reports coverage for every module package it links, so
+# every test binary reports coverage for every listed package it links, so
 # extracting a helper into its own package no longer resets its measured
 # coverage to nothing. The cost is that each block is then reported once per
 # test binary that linked it; the awk below (and coverage-summary.mjs itself)
 # fold those duplicates by taking the widest count per block.
+#
+# The pattern is `go list`'s expansion rather than the literal `./...`, because
+# the two are NOT the same set here: go.mod `ignore`s the vendored upstream
+# Loki and Tempo trees, so `./...` skips them when choosing what to test — but
+# a literal `-coverpkg=./...` still instruments them, since they reach the
+# build graph as dependencies of the compliance harnesses. That would put
+# vendored third-party code into the coverage ledger and hold cerberus's gate
+# to the test coverage of somebody else's benchmark suite. Asking `go list` per
+# lane keeps the measured set identical to the tested set, with no exclusion
+# list to maintain or forget.
 coverage:
     @echo "==> default-tag coverage"
     # `|| true` tolerates partial failures (e.g. `main` packages that
     # require the `covdata` tool on toolchains that ship without it).
     # The cover.out profile is still written for every package that
     # compiled, which is all production code in internal/**.
-    go test -timeout 25m -coverpkg=./... -coverprofile=cover.out ./... || true
+    # The sed trims go test's echo of the -coverpkg list back to what the
+    # bare `./...` form used to print. An explicit list of every package is
+    # ~5 KiB, repeated on EVERY package's result line, which buries the
+    # ok/FAIL the line exists to report under a megabyte of restated flag.
+    # It rewrites only the tail of that one sentence; results, failures and
+    # everything on stderr pass through untouched.
+    go test -timeout 25m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | sed 's|of statements in github.com/.*|of statements|' || true
     @test -s cover.out
     @if [ -e /usr/local/lib/libchdb.so ]; then \
         echo "==> chdb-tagged coverage"; \
-        go test -timeout 25m -tags chdb -coverpkg=./... -coverprofile=cover-chdb.out ./... || true; \
+        go test -timeout 25m -tags chdb -coverpkg="$(go list -tags chdb ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | sed 's|of statements in github.com/.*|of statements|' || true; \
         echo "==> merging profiles"; \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
