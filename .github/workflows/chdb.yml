@@ -303,9 +303,19 @@ jobs:
       # ./internal/<ql>/ additionally runs RunParity for every fixture
       # carrying a `parity:` section — the reference-engine comparison
       # that has no GOLDEN_UPDATE branch at all (test/spec/parity.go).
+      #
+      # The `go test` invocation lives in chdb-roundtrip.mjs, not here,
+      # because it needs two things a `run:` line cannot carry: an explicit
+      # per-process `-timeout` (without one every leg silently runs under
+      # go test's own 10-minute default, which the promql leg outgrew — see
+      # the script's header) and, for promql, a fan-out over the
+      # SPEC_SHARD_* partition with a failure-propagation contract.
       - name: Run TXTAR round-trip (${{ matrix.ql }})
         if: needs.changes.outputs.docs_only != 'true'
-        run: go test -tags ${{ matrix.tags }} -count=1 ./test/spec/${{ matrix.ql }}/... ./internal/${{ matrix.ql }}/...
+        env:
+          QL: ${{ matrix.ql }}
+          TAGS: ${{ matrix.tags }}
+        run: node .github/scripts/chdb-roundtrip.mjs
 
   # `perf-guards` runs the chDB-tagged deterministic perf-regression
   # ASSERTIONS under test/perf/ — the load-bearing fix for task #73.

@@ -23,16 +23,17 @@ import (
 // TestRoundTripChDB walks the slice of the PromQL corpus this process owns.
 //
 // With SPEC_SHARD_INDEX / SPEC_SHARD_COUNT unset — a hand-typed
-// `go test -tags chdb ./test/spec/promql/`, or CI's `roundtrip (promql)` job —
-// that slice is the whole corpus and this behaves exactly as it did before the
-// partition existed. `just update-golden promql` sets the pair and fans the
-// generator out across several processes instead
-// (.github/scripts/lib/golden-shards.mjs), because this walk is the single
-// longest step in that recipe and it cannot be parallelised in-process: the
-// subtests share chdb-go's package-level session singleton, which
-// spec.resetChDBSession deliberately tears down and rebuilds between fixtures
-// for cross-fixture isolation (#1987), so a t.Parallel() here would race two
-// goroutines against that teardown. A separate process has its own singleton.
+// `go test -tags chdb ./test/spec/promql/` — that slice is the whole corpus
+// and this behaves exactly as it did before the partition existed. Both
+// `just update-golden promql` (.github/scripts/lib/golden-shards.mjs) and CI's
+// `roundtrip (promql)` leg (.github/scripts/chdb-roundtrip.mjs) set the pair
+// and fan the walk out across several processes instead, because it is the
+// longest step of each and it cannot be parallelised in-process: the subtests
+// share chdb-go's package-level session singleton, which spec.OpenChDB
+// isolates fixtures against by switching DATABASE on that one session
+// (#1987, #2096), so a t.Parallel() here would race two goroutines against
+// those CREATE/USE/DROP DATABASE statements. A separate process has its own
+// singleton.
 func TestRoundTripChDB(t *testing.T) {
 	t.Parallel()
 
