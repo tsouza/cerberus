@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 )
 
@@ -32,12 +33,13 @@ import (
 // crossing 422s only an OOM-scale query, never a servable one.
 const maxTempoSpanDrainBytes = 256 << 20
 
-// ErrDrainBytesExceeded is the sentinel matched (via errors.Is) when a Tempo
-// span drain crosses its cumulative wide-projection byte budget. It maps to the
-// same resource-exhausted rejection (Tempo 422) as ErrTooManySamples — the
-// byte-axis sibling of the row-axis sample budget, and the Go-heap sibling of
-// the CH-side max_memory_usage cap.
-var ErrDrainBytesExceeded = errors.New("tempo span drain byte budget exceeded")
+// ErrDrainBytesExceeded is the sentinel matched (via errors.Is) when a drain
+// crosses its cumulative result-byte budget — the Tempo span search's
+// wide-projection maps, or the PromQL matrix drain's per-row native-histogram
+// payload. It maps to the same resource-exhausted rejection (Tempo 422, Prom
+// 422) as ErrTooManySamples — the byte-axis sibling of the row-axis sample
+// budget, and the Go-heap sibling of the CH-side max_memory_usage cap.
+var ErrDrainBytesExceeded = errors.New("query drain byte budget exceeded")
 
 // DrainByteBudgetError wraps ErrDrainBytesExceeded and names the configured
 // ceiling, mirroring *TooManySamplesError so the handler + gRPC error mappers
@@ -45,17 +47,19 @@ var ErrDrainBytesExceeded = errors.New("tempo span drain byte budget exceeded")
 type DrainByteBudgetError struct{ Limit int64 }
 
 func (e *DrainByteBudgetError) Error() string {
-	return fmt.Sprintf("tempo span drain exceeded the %d-byte wide-projection budget", e.Limit)
+	return fmt.Sprintf("query drain exceeded the %d-byte result budget", e.Limit)
 }
 
 func (e *DrainByteBudgetError) Unwrap() error { return ErrDrainBytesExceeded }
 
-// DrainByteBudget is a per-REQUEST cap on the cumulative wide-projection bytes a
-// Tempo span search may drain across all its cursors — the byte-axis sibling of
-// SampleBudget. It is attached to the request context by the Tempo read path
-// ONLY (WithDrainByteBudget), so the cursor charges bytes for span searches and
-// leaves every PromQL / LogQL drain untouched (no budget on the context → no
-// charge). Lifecycle: born and dies with one request, no cross-request state.
+// DrainByteBudget is a per-REQUEST cap on the cumulative result bytes a query
+// may drain across all its cursors — the byte-axis sibling of SampleBudget. It
+// is attached to the request context by the read path that wants it
+// (WithDrainByteBudget): the Tempo span search, which charges its
+// wide-projection attribute maps, and the PromQL sample drain, which charges
+// those plus each row's native-histogram payload. A drain whose context carries
+// no budget never charges. Lifecycle: born and dies with one request, no
+// cross-request state.
 type DrainByteBudget struct {
 	// remaining is the wide-projection bytes the request may still drain
 	// across all its cursors. Decremented atomically as each unique decoded
@@ -86,6 +90,46 @@ func NewDrainByteBudget(max int64) *DrainByteBudget {
 // to chclient (no exported knob, no per-request override — the fixed default-on
 // ratchet).
 func NewTempoSpanDrainBudget() *DrainByteBudget { return NewDrainByteBudget(maxTempoSpanDrainBytes) }
+
+// matrixDrainBytesPerSample is the Go-heap allowance the PromQL sample-drain
+// budget grants for each row the configured MaxQuerySamples already admits: the
+// width of ONE buffered float Sample — a 16-byte string header, the 8-byte
+// pointer to a label map interned once per series, a 24-byte time.Time, a
+// float64, a SeriesID and the two nil map/pointer slots — rounded up to a power
+// of two. So maxSamples × this const is (approximately) the Go heap a FLOAT
+// matrix drained to the row cap already occupies.
+//
+// Sizing the byte ceiling off the row cap is what makes the two axes agree. The
+// row budget admits the same NUMBER of rows whether each carries a float64 or a
+// native histogram, but a histogram row additionally owns a heap HistogramValue
+// and two []float64 bucket ladders, so the same maxSamples admits one to two
+// orders of magnitude more bytes for a histogram matrix than for a float one
+// (issue #2038). Because the charge is only the per-series label maps plus the
+// per-row histogram payload, a float matrix stays orders of magnitude under this
+// ceiling and behaves exactly as it did before it existed; a histogram matrix
+// trips at the point where its Go heap reaches what a float matrix of
+// maxSamples rows would have cost.
+const matrixDrainBytesPerSample = 128
+
+// NewMatrixDrainBudget returns the per-request Go-heap byte budget for a PromQL
+// sample drain (/api/v1/query and /api/v1/query_range), sized off the SAME
+// configured row cap the cursor enforces as maxSamples
+// (Config.MaxQuerySamples). A non-positive maxSamples — the -1 "sample budget
+// deliberately disabled" sentinel — yields an inert budget, so switching the row
+// cap off switches the byte cap off with it rather than silently substituting a
+// bound the operator did not ask for.
+func NewMatrixDrainBudget(maxSamples int64) *DrainByteBudget {
+	switch {
+	case maxSamples <= 0:
+		return NewDrainByteBudget(0)
+	case maxSamples > math.MaxInt64/matrixDrainBytesPerSample:
+		// A row cap this large is already "effectively unlimited"; clamp
+		// rather than wrap into a negative (inert-looking) ceiling.
+		return NewDrainByteBudget(math.MaxInt64)
+	default:
+		return NewDrainByteBudget(maxSamples * matrixDrainBytesPerSample)
+	}
+}
 
 // consume draws n wide-projection bytes against the shared budget. Returns true
 // when the draw fits and false when it would cross the ceiling — at which point
@@ -207,4 +251,33 @@ func labelMapBytes(m map[string]string) int64 {
 		content += int64(len(k)) + int64(len(v))
 	}
 	return content*2 + int64(len(m))*perMapEntryHeapBytes
+}
+
+// histogramValueFixedBytes approximates the heap one decoded *HistogramValue
+// retains independently of its bucket count: the heap-allocated struct itself
+// (four float64 scalars, three int32s and two slice headers, padded to 104
+// bytes on a 64-bit platform) plus the 8-byte Sample.Histogram pointer that
+// holds it.
+const histogramValueFixedBytes = 112
+
+// bucketCountBytes is the width of one native-histogram bucket-ladder element.
+// The ladders are []float64 rather than integer counts because a
+// histogram-VALUED rate() / increase() produces fractional counts — see
+// HistogramValue.Count.
+const bucketCountBytes = 8
+
+// histogramValueBytes returns the on-heap byte width a cursor RETAINS for one
+// decoded native-histogram sample: the fixed struct plus both bucket ladders.
+//
+// Unlike labelMapBytes this is charged per ROW, not per unique series. Both
+// decode paths copy each row's ladders into FRESH slices (ch-go's ColArr.Row
+// on the columnar path, clickhouse-go's Scan on the row path), so every
+// buffered row owns its own histogram — there is nothing shared to dedup the
+// way an interned label map is.
+func histogramValueBytes(h *HistogramValue) int64 {
+	if h == nil {
+		return 0
+	}
+	buckets := int64(len(h.PositiveBucketCounts)) + int64(len(h.NegativeBucketCounts))
+	return histogramValueFixedBytes + buckets*bucketCountBytes
 }

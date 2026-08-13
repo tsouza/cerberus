@@ -721,6 +721,28 @@ func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (con
 	return ctx, cancel, true
 }
 
+// withSampleDrainBudget attaches the per-request Go-heap byte budget every
+// PromQL sample drain runs under — /api/v1/query and /api/v1/query_range, the
+// two endpoints that buffer a whole vector or matrix before answering.
+//
+// It is the byte axis the sample budget structurally misses. MaxQuerySamples
+// caps how many ROWS a drain may buffer, which is a fair proxy for bytes only
+// while every row is a float sample sharing an interned label map. A
+// histogram-VALUED result is not: each row additionally owns a heap
+// HistogramValue and two []float64 bucket ladders sized by the histogram's
+// bucket count, so the same row cap admits one to two orders of magnitude more
+// bytes (issue #2038). chclient charges both the per-series label maps and the
+// per-row histogram payload against this budget as it decodes, so a drain
+// aborts fail-closed at the ceiling instead of buffering the full matrix first.
+//
+// The ceiling is derived from the SAME configured row cap
+// (chclient.Config.MaxQuerySamples, mirrored onto the engine as
+// MaxQuerySamples), so the two axes admit comparable heap and an operator has
+// one knob rather than two — including the -1 sentinel, which disables both.
+func (h *Handler) withSampleDrainBudget(ctx context.Context) context.Context {
+	return chclient.WithDrainByteBudget(ctx, chclient.NewMatrixDrainBudget(h.Engine.MaxQuerySamples))
+}
+
 // parseExpr wraps the prom parser in a `parse` pipeline-stage span. The
 // QL identifier and the (truncated) query string land on the span as
 // `cerberus.ql` + `cerberus.query`.
@@ -849,7 +871,7 @@ func (h *Handler) executeRangeStreaming(
 	// same wall-clock; this counter is the handler-side header
 	// surface, separate from the OTel span.
 	chStart := time.Now()
-	res, err := h.Engine.QueryCursor(ctx, l, query)
+	res, err := h.Engine.QueryCursor(h.withSampleDrainBudget(ctx), l, query)
 	if c := ctxCounter(ctx); c != nil {
 		c.add(time.Since(chStart))
 	}
@@ -867,7 +889,7 @@ func (h *Handler) executeRangeStreaming(
 // start == end == ts.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, map[string]string, error) {
 	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
-	res, err := h.Engine.Query(ctx, l, query)
+	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {
 		return nil, nil, classifyEngineError(err)
 	}
@@ -960,6 +982,33 @@ func memoryLimitAPIError(e *chclient.MemoryLimitError) *apiError {
 	}
 }
 
+// promDrainBytesMessage is the Go-heap sibling of promMaxSamplesMessage:
+// the wire message for a query whose decoded result crossed the
+// per-request drain byte budget (chclient.NewMatrixDrainBudget). Upstream
+// Prometheus has no byte axis to mirror verbatim — its engine counts
+// samples — so the message keeps upstream's phrasing and names the
+// ceiling that actually fired in a parenthetical, exactly as
+// promMemoryLimitMessage does for the ClickHouse-side cap.
+func promDrainBytesMessage(limit int64) string {
+	return fmt.Sprintf(
+		"%s (result drain exceeded the %d-byte budget)",
+		promMaxSamplesMessage, limit,
+	)
+}
+
+// drainBytesAPIError is the resource-exhausted rejection for a drain that
+// crossed its byte budget: HTTP 422, errorType "execution" — the same wire
+// shape as the sample-budget and ClickHouse memory-cap rejections, because
+// it is the same class (per-query resource cap, CH healthy,
+// breaker-neutral).
+func drainBytesAPIError(e *chclient.DrainByteBudgetError) *apiError {
+	return &apiError{
+		Kind:   ErrExecution,
+		Err:    errors.New(promDrainBytesMessage(e.Limit)),
+		Status: http.StatusUnprocessableEntity,
+	}
+}
+
 // queryTimeoutAPIError is the head-idiomatic rejection for a query that
 // exceeded its wall-clock budget — HTTP 503, errorType "timeout",
 // mirroring upstream Prometheus's web/api/v1 handling of a query that
@@ -1032,6 +1081,10 @@ func classifyDrainError(err error) error {
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		return tooManySamplesAPIError()
 	}
+	var byteBudget *chclient.DrainByteBudgetError
+	if errors.As(err, &byteBudget) {
+		return drainBytesAPIError(byteBudget)
+	}
 	var memLimit *chclient.MemoryLimitError
 	if errors.As(err, &memLimit) {
 		return memoryLimitAPIError(memLimit)
@@ -1078,6 +1131,13 @@ func classifyEngineError(err error) error {
 	// errorType=execution with the upstream wire message.
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		return tooManySamplesAPIError()
+	}
+	// Drain-byte-budget exceedance: the byte-axis sibling of the sample
+	// budget, crossed while the eager drain buffered a wide or
+	// histogram-valued result. Same 422 errorType=execution class.
+	var byteBudget *chclient.DrainByteBudgetError
+	if errors.As(err, &byteBudget) {
+		return drainBytesAPIError(byteBudget)
 	}
 	// ClickHouse memory-limit abort (code 241): the same
 	// resource-exhausted class as the sample budget, surfaced from the
@@ -1610,6 +1670,12 @@ func (h *Handler) respondError(w http.ResponseWriter, err error) {
 	// reclassifies the raw sentinels.
 	if errors.Is(err, chclient.ErrTooManySamples) {
 		ae := tooManySamplesAPIError()
+		writeError(w, ae.Status, ae.Kind, ae.Err)
+		return
+	}
+	var byteBudget *chclient.DrainByteBudgetError
+	if errors.As(err, &byteBudget) {
+		ae := drainBytesAPIError(byteBudget)
 		writeError(w, ae.Status, ae.Kind, ae.Err)
 		return
 	}

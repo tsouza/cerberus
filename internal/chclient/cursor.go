@@ -127,10 +127,12 @@ type rowsCursor struct {
 	// A crossing yields the IDENTICAL *TooManySamplesError (errors.Is
 	// ErrTooManySamples) the per-cursor limit produces.
 	budget *SampleBudget
-	// byteBudget is the wide-projection byte budget (nil off the Tempo
-	// span-search path, so PromQL/LogQL drains are untouched). Charged once
-	// per UNIQUE interned series — the true Go-heap cost, since aliased rows
-	// share one map. A crossing yields a *DrainByteBudgetError.
+	// byteBudget is the per-request drain byte budget (nil when the caller
+	// attached none — the LogQL drains, and any caller not threaded for it).
+	// Attribute maps are charged once per UNIQUE interned series (the true
+	// Go-heap cost, since aliased rows share one map); a native-histogram
+	// payload is charged per ROW, since each row owns its own. A crossing
+	// yields a *DrainByteBudgetError.
 	byteBudget *DrainByteBudget
 	// byteChargedSeq is the highest series ordinal already charged against
 	// byteBudget. A new series' SeriesID exceeds it (internSeq is monotonic);
@@ -433,6 +435,18 @@ func (c *rowsCursor) Next() bool {
 	if c.byteBudget != nil && s.SeriesID > c.byteChargedSeq {
 		c.byteChargedSeq = s.SeriesID
 		if !c.byteBudget.consume(labelMapBytes(s.Labels)) {
+			c.err = &DrainByteBudgetError{Limit: c.byteBudget.Limit()}
+			return false
+		}
+	}
+	// A native-histogram row is charged per ROW rather than per series: the
+	// decoded HistogramValue and both its bucket ladders are freshly scanned
+	// for every row, so nothing is shared the way the interned label map is.
+	// Without this the only bound on a buffered histogram matrix is the row
+	// count, and a histogram row is one to two orders of magnitude fatter than
+	// the float row maxSamples was sized against (#2038).
+	if c.byteBudget != nil && s.Histogram != nil {
+		if !c.byteBudget.consume(histogramValueBytes(s.Histogram)) {
 			c.err = &DrainByteBudgetError{Limit: c.byteBudget.Limit()}
 			return false
 		}
