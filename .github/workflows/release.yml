@@ -341,10 +341,17 @@ jobs:
       # failure aborts the whole release (atomic dual-registry push).
       # Both logins sit ahead of the builder setup so the BuildKit
       # bootstrap image is fetched under the same credentials.
+      #
+      # `ON_TRANSPORT_FAULT: fail` opts OUT of the mirror-only downgrade the
+      # image-consuming jobs take. Here Docker Hub is a PUBLISH target, not a
+      # source a mirror can substitute for: continuing without it would build
+      # the release and then fail to push half of the dual-registry pair, which
+      # is the one outcome an atomic push must not produce.
       - name: Log in to Docker Hub
         env:
           USERNAME: tsouza
           PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+          ON_TRANSPORT_FAULT: fail
         run: node .github/scripts/registry-login.mjs
 
       # `dockers_v2` builds linux/amd64 + linux/arm64 through buildx, which

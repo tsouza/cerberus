@@ -48,12 +48,38 @@
 //                                          runner can read it, else upstream.
 //                                          A `FROM` cannot be served from the
 //                                          daemon, so it needs the ref itself.
+//   mirrorOnlyEnvVar / mirrorOnlyEnvValue  the job-scoped flag saying Docker Hub
+//                                          is unreachable for this job.
+//   mirrorOnly(env)                        is this job in that mode?
 //
 // The best answer to a quota is not to draw on it. `pullImageWithRetry` reaches
 // for `lib/mirror.mjs`'s GHCR copy first and re-tags it to the upstream name,
 // so the retry policy below is what protects the FALLBACK rather than the
 // common case. See that module for why a mirror beats authenticating each pull
 // path in turn.
+//
+// MIRROR-ONLY MODE. There is a third thing a registry can do, distinct from
+// both refusing and answering: it can be UNREACHABLE. `registry-login.mjs`
+// exhausts its retries on a transport fault, and until #1933 that killed the
+// job — a Docker Hub outage taking down a lane whose every image sits in a GHCR
+// mirror that was never contacted. So a login that ends that way records
+// mirror-only mode for the rest of the job instead, and every acquisition below
+// reads it.
+//
+// What the mode changes is one thing only: the Docker Hub fallback is REMOVED,
+// not deprioritised. A mirror miss becomes a hard error naming the image. That
+// is the half worth stating twice, because the obvious cheap version of this
+// feature — letting the login be advisory — degrades a job to the shared
+// ANONYMOUS Docker Hub quota, which is the silent failure the login gate
+// (`assert-image-jobs-authenticate.mjs`, R2/R3) exists to make impossible. A
+// job that cannot be served by the mirror must fail loudly and say which image
+// it was.
+//
+// The mode is entered ONLY on a transport fault. A quota refusal
+// (`rate-limit`) or a rejected credential still fails on the first attempt: the
+// first is a counter that mirror-only mode cannot decrement and the second is a
+// secret that is simply wrong, and neither is a reason to run a job in a
+// degraded mode.
 
 import process from 'node:process';
 
@@ -130,6 +156,48 @@ export function rateLimitDiagnosis(subject) {
   );
 }
 
+// The environment variable carrying mirror-only mode from the login step that
+// decided it to every acquisition later in the same job, and the one value that
+// turns it on.
+//
+// $GITHUB_ENV is the channel because the decision has JOB scope: it is made
+// once, by one step, and every subsequent step has to honour it — including the
+// ones that reach an acquisition three hops down a Justfile recipe, which no
+// step-output plumbing would reach without an edit per lane. The name is
+// prefixed so it cannot collide with a variable a tool being tested reads.
+export const mirrorOnlyEnvVar = 'CERBERUS_REGISTRY_MIRROR_ONLY';
+export const mirrorOnlyEnvValue = '1';
+
+// mirrorOnly — is this process running under a job that lost Docker Hub?
+//
+// Read at call time rather than at module load, and against an environment the
+// caller may pass, so the mode is a property of the run rather than of the
+// import order. Any value other than the one above is off: a half-set variable
+// must not put a job into a degraded mode by accident.
+export function mirrorOnly(env = process.env) {
+  return String(env[mirrorOnlyEnvVar] ?? '').trim() === mirrorOnlyEnvValue;
+}
+
+// mirrorOnlyDiagnosis — the one explanation for "this job is mirror-only and
+// the mirror could not serve `subject`".
+//
+// It names the image because that is the only actionable fact: the fix is to
+// add that ref to `mirroredImages` in lib/mirror.mjs and let `mirror-images.yml`
+// copy it. It says what did NOT happen because the alternative — reaching for
+// Docker Hub anonymously — is the failure that would have been silent, and a
+// reader who does not know it was deliberately declined will go looking for the
+// pull that never happened.
+export function mirrorOnlyDiagnosis(image, consequence = '') {
+  const because = consequence === '' ? '' : ` — ${consequence}`;
+  return (
+    `${image} is not available from the GHCR mirror, and this job is running mirror-only because Docker Hub ` +
+    'was unreachable when it logged in. The upstream pull was NOT attempted: an anonymous Docker Hub pull is ' +
+    'the silent degradation the mirror and the login gate exist to remove, so this fails instead' +
+    `${because}. The fix is to add the image to \`mirroredImages\` in .github/scripts/lib/mirror.mjs so ` +
+    '`mirror-images.yml` copies it, and to check that this job logs in to ghcr.io before it acquires anything.'
+  );
+}
+
 // The failure signatures that mean "the registry / network said no", as
 // distinct from "the build said no" and from "the registry said not-so-fast".
 // Every entry is a fault in fetching bytes over the wire, never a compiler,
@@ -200,11 +268,17 @@ function acquireFromMirror(image) {
   const mirror = mirroredRef(image);
   if (mirror === null) return false;
 
+  // What a miss means depends on the mode, so the sentence is built from it
+  // rather than asserting a fallback that mirror-only mode has removed. A
+  // notice promising a Docker Hub pull that never happens is worse than no
+  // notice: it sends the next reader looking for a pull in the log.
+  const next = mirrorOnly() ? 'and this job is mirror-only, so the acquisition fails' : 'falling back to Docker Hub';
+
   log(`    docker pull ${mirror} (mirror of ${image})`);
   const pull = capture('docker', ['pull', mirror]);
   if (pull.status !== 0) {
     notice(
-      `${mirror} could not be pulled, falling back to ${image} on Docker Hub. The mirror is stale or the ` +
+      `${mirror} could not be pulled, ${next}. The mirror is stale or the ` +
         `package is not public; \`mirror-images.mjs\` is what fixes that.\n${pull.stderr.trim()}`,
     );
     return false;
@@ -212,9 +286,7 @@ function acquireFromMirror(image) {
 
   const tag = capture('docker', ['tag', mirror, image]);
   if (tag.status !== 0) {
-    notice(
-      `pulled ${mirror} but could not tag it as ${image}, falling back to Docker Hub.\n${tag.stderr.trim()}`,
-    );
+    notice(`pulled ${mirror} but could not tag it as ${image}, ${next}.\n${tag.stderr.trim()}`);
     return false;
   }
 
@@ -240,12 +312,33 @@ function acquireFromMirror(image) {
 // working — a fork's runner authenticates to ghcr.io as itself and cannot read
 // this repo's private packages, so it probes, misses, and builds from Docker
 // Hub exactly as it did before the mirror existed.
+//
+// Under mirror-only mode that reasoning inverts, because its premise is gone:
+// the upstream ref is NOT reachable. Returning it would hand BuildKit a `FROM`
+// against a registry this job has already established it cannot talk to, and
+// the failure would arrive minutes later as a build timeout naming neither the
+// mirror nor the outage. So the miss returns null — "there is no ref that can
+// serve this build" — and the caller reports it before spending the time.
 export function buildBaseImageRef(image) {
   const mirror = mirroredRef(image);
-  if (mirror === null) return image;
+  if (mirror === null) {
+    if (mirrorOnly()) {
+      error(mirrorOnlyDiagnosis(image, 'the build has no base image to resolve its `FROM` against'));
+      return null;
+    }
+    return image;
+  }
 
   const probe = capture('docker', ['buildx', 'imagetools', 'inspect', mirror]);
   if (probe.status !== 0) {
+    if (mirrorOnly()) {
+      error(
+        `${mirror} is not resolvable from this runner and this job is mirror-only because Docker Hub was ` +
+          `unreachable when it logged in, so there is no ref a build can resolve ${image} from. Check that ` +
+          `this job logs in to ghcr.io before it builds.\n${probe.stderr.trim()}`,
+      );
+      return null;
+    }
     notice(
       `${mirror} is not resolvable from this runner, so the build resolves ${image} from Docker Hub. ` +
         'That spends the anonymous quota this mirror exists to stop spending; `mirror-images.mjs` is ' +
@@ -274,6 +367,11 @@ export function buildBaseImageRef(image) {
 //   consequence         clause naming what breaks when the budget is spent,
 //                       appended to the exhaustion error.
 //
+// Under mirror-only mode the upstream loop below is not entered at all: the
+// mirror either serves the image or the acquisition fails naming it. See the
+// module header for why a fallback to an ANONYMOUS Docker Hub pull is the one
+// outcome that must not be available here.
+//
 // Returns true when the image is in the local daemon, false otherwise.
 export function pullImageWithRetry(image, options = {}) {
   const {
@@ -283,6 +381,21 @@ export function pullImageWithRetry(image, options = {}) {
   } = options;
 
   if (acquireFromMirror(image)) return true;
+
+  if (mirrorOnly()) {
+    // Asked before the mode, exactly as it is inside the loop: a copy already
+    // in the daemon satisfies this caller's postcondition no matter which
+    // registry is reachable, and no pull is needed to honour it.
+    if (acceptLocalCopy && presentLocally(image)) {
+      notice(
+        `${image} could not be acquired from the mirror, but it is already in the local daemon — ` +
+          'the caller accepts the local copy.',
+      );
+      return true;
+    }
+    error(mirrorOnlyDiagnosis(image, consequence));
+    return false;
+  }
 
   for (let attempt = 1; attempt <= registryAttempts; attempt++) {
     log(`    docker pull ${image} (attempt ${attempt}/${registryAttempts})`);

@@ -23,6 +23,14 @@
 //       PRIVATE GHCR mirror before Docker Hub) has a ghcr.io login. Without it
 //       the mirror is unreadable and every acquisition silently degrades to the
 //       anonymous Docker Hub quota the mirror exists to stop spending.
+//   R5  A job with both logins runs the ghcr.io one FIRST. Presence is not
+//       order, and the order is what decides whether an outage is survivable:
+//       every login is a hard gate, so authenticating the FALLBACK registry
+//       ahead of the PRIMARY one means a Docker Hub outage kills the job before
+//       the mirror it exists to fall back TO has been contacted at all. That is
+//       exactly how `compatibility/promql-surface` went red without running a
+//       single query (run 31148765992, issue #1933) while every image it needed
+//       sat in the mirror.
 //
 // THERE IS NO ALLOW-LIST, and that is the substance of the module rather than a
 // stylistic preference. The obvious way to write this gate is a regex for
@@ -1060,6 +1068,24 @@ export function violationsFor(jobId, findings) {
     );
   }
 
+  // R5 — the ghcr.io login runs BEFORE the Docker Hub one.
+  //
+  // Read off the position in `logins`, which the resolver fills in step order,
+  // so the rule is about the workflow's actual sequence rather than about a
+  // field a step could set wrongly. Both must be present for the question to
+  // mean anything: a job with one login has no order to get wrong, and R2 / R3
+  // above are what decide whether the missing one was required.
+  const mirrorAt = findings.logins.findIndex((l) => registryHost(l.registry) === mirrorHost);
+  const hubAt = findings.logins.findIndex((l) => dockerHubRegistries.has(registryHost(l.registry)));
+  if (mirrorAt !== -1 && hubAt !== -1 && hubAt < mirrorAt) {
+    out.push(
+      `${jobId}: logs in to Docker Hub before ${mirrorHost} — the FALLBACK registry is authenticated ahead ` +
+        'of the PRIMARY one. Every login is a hard gate, so in that order a Docker Hub outage fails the job ' +
+        'before the mirror it exists to fall back to has been contacted at all. Move the ' +
+        `${mirrorHost} login above the Docker Hub one.`,
+    );
+  }
+
   // R4 — the acquisitions must run ON the authenticated, mirror-first path, not
   // merely alongside a login step.
   //
@@ -1131,7 +1157,9 @@ function main() {
 
   log(`scanned ${results.length} jobs; ${acquiring.length} acquire at least one image`);
   for (const { id, findings } of acquiring) {
-    const logins = findings.logins.map((l) => l.registry || 'docker.io').sort().join(' + ') || 'NONE';
+    // In STEP order, not sorted: R5 is a rule about the sequence, so a log that
+    // sorted it would print the same line for a passing job and a failing one.
+    const logins = findings.logins.map((l) => l.registry || 'docker.io').join(' then ') || 'NONE';
     log(`  ${id} — ${[...new Set(findings.acquisitions)].join(', ')} | logins: ${logins}`);
   }
 

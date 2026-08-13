@@ -20,7 +20,10 @@ Each module:
 `lib/gh.mjs` is the shared helper library: workflow-command emitters
 (`error` / `notice` / `warning` / `group`), `capture` / `exec` / `git`
 wrappers around `node:child_process`, a `lsFiles` `git ls-files -z`
-wrapper, plus `appendStepSummary` / `setOutput` for the runner files.
+wrapper, plus `appendStepSummary` / `setOutput` / `exportEnv` for the runner
+files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
+output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
+decision that changes how the REST of the job behaves and has no single reader.
 
 `lib/shard-coverage.mjs` holds the Playwright spec-partition rules the two
 e2e shard-matrix modules share — `discoverSpecs()` (the tracked spec
@@ -69,6 +72,33 @@ Docker Hub failures was spending the anonymous per-IP quota (issue #1565).
 the mirrored copy and `docker tag`s it to the upstream name, so the caller asks
 for the upstream ref and the local daemon ends up holding something
 indistinguishable from an upstream pull. A miss is a fallback, not a failure.
+
+**Mirror-only mode** is the exception to that last sentence, and the one shape in
+which a mirror miss is fatal. A registry can also be UNREACHABLE, which is
+neither a refusal nor an answer: when `registry-login.mjs` exhausts its retries
+on a `transient` verdict against **Docker Hub**, it exports
+`CERBERUS_REGISTRY_MIRROR_ONLY=1` through `$GITHUB_ENV` and exits 0 instead of
+failing the job — a Docker Hub outage is precisely what the mirror was built to
+survive, and killing the job there fails a lane whose every image is sitting in a
+registry nothing has contacted (issue #1933). In that mode `pullImageWithRetry`
+**removes** the Docker Hub fallback rather than deprioritising it: a mirror miss
+is a hard error naming the image, and `buildBaseImageRef` returns `null` so a
+build is never started against a `FROM` that cannot resolve. The alternative —
+`continue-on-error: true` on the login — is a regression rather than a fix,
+because an unauthenticated job does not fail, it degrades to the shared anonymous
+Docker Hub quota and reads as flake on the day that quota runs out. Two jobs opt
+out with `ON_TRANSPORT_FAULT: fail`: `mirror-images.yml` READS the inventory from
+Docker Hub and `release.yml` PUSHES to it, and a mirror cannot stand in for
+either. The mode is never entered on a `rate-limit` or `credential` verdict, and
+never on a login to any registry but Docker Hub.
+
+Because every login is a hard gate, the ORDER of the two logins decides whether
+an outage is survivable, so the `ghcr.io` login runs FIRST in every job — the
+primary path authenticated ahead of the fallback. `assert-image-jobs-authenticate.mjs`'s
+R5 pins that, and `test/regression/mirror_only_downgrade_test.go` measures the
+property the whole mirror rests on: with Docker Hub unreachable, a job whose
+images are all mirrored runs to completion, and one whose image is not mirrored
+fails loudly rather than pulling anonymously.
 
 `lib/mirror.mjs` is that mirror's inventory and its upstream→mirror mapping —
 `mirrorRegistry`, `mirroredImages`, `mirroredRef(ref)`. It exists because
@@ -1616,6 +1646,11 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     that pulls images — is excluded because `node --test` imports a module and
     runs its tests rather than its CLI, which is a fact about the command and
     holds for every module.
+  - Presence is not order. R5 requires the `ghcr.io` login to run BEFORE the
+    Docker Hub one where a job has both: every login is a hard gate, so
+    authenticating the fallback ahead of the primary path is what let a Docker
+    Hub outage kill `compatibility/promql-surface` before the mirror holding
+    every image it needed was contacted (run 31148765992, issue #1933).
   - Env: `WORKFLOW_DIR` (optional; default `.github/workflows`), `REPO_ROOT`
     (optional; default the working directory).
   - Exit: `0` when every acquiring job is authenticated, `1` on a violation, on
@@ -1652,7 +1687,7 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     mirrored. "The copy command exited 0" and "a consumer can resolve this ref"
     are different claims, and the difference is invisible downstream: an
     unresolvable mirror is a miss, and a miss falls back to Docker Hub.
-- **`registry-login.mjs`** — `mirror-images.yml`, both login steps. `docker
+- **`registry-login.mjs`** — every login step in every workflow. `docker
   login` under the same retry policy every other registry interaction here has.
   It exists because `docker/login-action` has no retry input and the workflow
   died on its first real run (30724446834) with `context deadline exceeded` on
@@ -1665,16 +1700,33 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   immediately (wrong on attempt 1 is wrong on attempt 5), a transport fault
   retries, anything else is fatal rather than retried five times and read as
   flake.
+  - A spent TRANSPORT-fault budget on **Docker Hub** does not fail the job: it
+    exports `CERBERUS_REGISTRY_MIRROR_ONLY=1` through `$GITHUB_ENV` and exits 0,
+    downgrading the job to mirror-only (see the registry-policy section above).
+    That is a narrowing, not a tolerance — a quota refusal and a rejected
+    credential still fail on the first attempt, a login to any other registry
+    still fails outright, and every later acquisition either comes from the
+    mirror or fails loudly naming the image it wanted.
   - Env: `REGISTRY` (blank/unset means Docker Hub, matching `docker login`'s own
     default), `USERNAME` (required), `PASSWORD` (required; passed on stdin,
     never argv, so it cannot reach a process listing),
     `REGISTRY_LOGIN_BACKOFF_STEP_SECONDS` (optional; default `2` — attempt N
-    waits N × step).
-  - Exit: `0` on a successful login, `1` on any class that is not retried and on
-    a transport fault that outlived every attempt.
+    waits N × step), `ON_TRANSPORT_FAULT` (optional; `mirror-only` by default,
+    `fail` for the two jobs Docker Hub is not a fallback for — an unrecognised
+    value exits rather than silently taking the permissive branch), `GITHUB_ENV`
+    (runner-provided; the channel the mirror-only flag is exported through).
+  - Exit: `0` on a successful login and on a Docker Hub transport fault that
+    downgraded the job; `1` on any class that is not retried, on a transport
+    fault that outlived every attempt without downgrading, and on an
+    `ON_TRANSPORT_FAULT` value that is neither of the two.
   - Gated by `registry-login.test.mjs` on the required `check` lane, which pins
     the ORDER rather than the patterns: three of the four classes can match the
-    same output, and each wrong order fails silently in its own way.
+    same output, and each wrong order fails silently in its own way. It also
+    pins the downgrade by DENYING each of its three conditions in turn, because
+    the risk is a downgrade that happens where it must not. The end-to-end half
+    is `test/regression/mirror_only_downgrade_test.go`, which drives this script
+    and `pull-images.mjs` in sequence against a stub `docker` that answers every
+    Docker Hub call with the outage's own error text.
 
 - **`golden-update.mjs`** — no workflow. This one is invoked by
   `just update-golden <shard>...`, the local regeneration recipe, and it is

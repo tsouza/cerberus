@@ -44,11 +44,11 @@
 // build / pull / extraction, or a `--version` probe that does not report
 // exactly the expected stamp.
 
-import { appendFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
-import { capture, error, notice, log } from './lib/gh.mjs';
+import { capture, error, exportEnv, notice } from './lib/gh.mjs';
 import { pullImageWithRetry } from './lib/registry.mjs';
 
 // SOURCE_BUILD_VERSION is what `go build ./cmd/cerberus` with no ldflags
@@ -208,16 +208,6 @@ function probeVersion(binary, plan) {
     process.exit(1);
   }
   return lines[0];
-}
-
-function exportEnv(entries) {
-  const file = process.env.GITHUB_ENV;
-  const block = entries.map(([k, v]) => `${k}=${v}`).join('\n');
-  if (!file) {
-    log(`[no $GITHUB_ENV in env; resolved plan follows]\n${block}`);
-    return;
-  }
-  appendFileSync(file, `${block}\n`);
 }
 
 function main() {

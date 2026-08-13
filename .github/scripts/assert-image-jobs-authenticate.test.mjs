@@ -218,6 +218,70 @@ test('R3 fires when a job pulling through the mirror has no ghcr.io login', () =
   assert.match(violations[0], /no ghcr\.io login/);
 });
 
+// ---------------------------------------------------------------------------
+// R5 — presence is not order.
+//
+// `compatibility/promql-surface` went red on run 31148765992 without running a
+// single query: the Docker Hub login exhausted its retries on `context deadline
+// exceeded`, and because it sat AHEAD of the ghcr.io login the job died before
+// the mirror holding every image it needed was ever contacted. Both logins were
+// present the whole time, so R1–R3 passed on that job on that run — which is
+// what makes the order a separate rule rather than a stylistic one.
+// ---------------------------------------------------------------------------
+
+// swapLoginOrder — put the Docker Hub login back ahead of the mirror login, the
+// pre-#1933 shape, by moving the mirror step to just after the Hub step. Only
+// the pair in the specimen job is touched, so the rest of the file stays clean.
+function swapLoginOrder(text) {
+  const lines = text.split('\n');
+  const stepAt = (title, from) => {
+    const i = lines.findIndex((l, n) => n >= from && l.trim() === `- name: ${title}`);
+    assert.notEqual(i, -1, `no step titled "${title}" from line ${from}`);
+    const indent = lines[i].length - lines[i].trimStart().length;
+    let end = i + 1;
+    while (end < lines.length) {
+      const l = lines[end];
+      if (l.trim().startsWith('- ') && l.length - l.trimStart().length === indent) break;
+      end++;
+    }
+    while (end - 1 > i && lines[end - 1].trim() === '') end--;
+    return [i, end];
+  };
+  // The specimen's own pair: find the mirror login that precedes its Hub login.
+  const bench = lines.findIndex((l) => l.trim() === 'startup-bench:');
+  assert.notEqual(bench, -1, 'startup-bench did not appear in e2e.yml');
+  const [mTop, mEnd] = stepAt('Log in to the image mirror (GHCR)', bench);
+  const [hTop, hEnd] = stepAt('Log in to Docker Hub', mEnd);
+  const mirror = lines.slice(mTop, mEnd);
+  const hub = lines.slice(hTop, hEnd);
+  return [...lines.slice(0, mTop), ...hub, ...lines.slice(mEnd, hTop), ...mirror, ...lines.slice(hEnd)].join('\n');
+}
+
+test('R5 fires when the Docker Hub login runs before the ghcr.io one', () => {
+  const results = scanWith('e2e.yml', swapLoginOrder);
+  const findings = findingsFor(specimenJob, results);
+  const violations = violationsFor(specimenJob, findings);
+  assert.ok(
+    violations.some((m) => m.includes('logs in to Docker Hub before ghcr.io')),
+    `expected an R5 ordering violation, got ${JSON.stringify(violations)}`,
+  );
+  // And for the ORDER alone: both logins are still there, so no presence rule
+  // may fire. Without this the test would pass on a doctoring that deleted one.
+  assert.equal(findings.logins.length, 2, 'the doctored job must still have both logins');
+  assert.ok(
+    !violations.some((m) => m.includes('no Docker Hub login') || m.includes('no ghcr.io login')),
+    `only the ordering rule should fire, got ${JSON.stringify(violations)}`,
+  );
+});
+
+test('R5 is silent when a job has only one login to order', () => {
+  // A job with one login has no order to get wrong, and R2 / R3 are what decide
+  // whether the absent one was required. A rule that fired here would report a
+  // second violation for every job the presence rules already caught.
+  const oneLogin = { ...jobLoggingInTo('ghcr.io'), refs: new Set() };
+  assert.deepEqual(violationsFor('some:job', oneLogin), []);
+});
+
 test('removing the acquisition removes the requirement, not the other way round', () => {
   // The rules key off acquiring, so a job that stops pulling stops being
   // judged — otherwise every login step in the repo would be load-bearing

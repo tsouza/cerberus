@@ -14,6 +14,7 @@
 //     honouring include globs + `:!:`-style pathspec excludes.
 //   - appendStepSummary(): append markdown to $GITHUB_STEP_SUMMARY.
 //   - setOutput(): append `name=value` to $GITHUB_OUTPUT.
+//   - exportEnv(): append `NAME=value` to $GITHUB_ENV.
 
 import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -203,4 +204,26 @@ export function setOutput(name, value) {
     return;
   }
   appendFileSync(file, `${line}\n`);
+}
+
+// exportEnv() — append `NAME=value` pairs to $GITHUB_ENV, the runner's channel
+// for state that must reach EVERY later step of the same job.
+//
+// The distinction from setOutput() is the consumer, not the mechanism: a step
+// output has to be named by whoever reads it (`steps.<id>.outputs.<name>`), so
+// it fits a value one later step consumes deliberately. A decision that changes
+// how the REST of the job behaves — a resolved plan, a degraded registry mode —
+// has no such single reader, and threading it through every step's `env:` is
+// the per-leg shape that goes stale the moment a step is added.
+//
+// Logged rather than written when the variable is absent, so a local run says
+// what it would have exported instead of silently doing nothing.
+export function exportEnv(entries) {
+  const block = entries.map(([name, value]) => `${name}=${value}`).join('\n');
+  const file = process.env.GITHUB_ENV;
+  if (!file) {
+    log(`[no $GITHUB_ENV in env; the following would have been exported]\n${block}`);
+    return;
+  }
+  appendFileSync(file, `${block}\n`);
 }
