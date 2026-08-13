@@ -204,10 +204,12 @@ func FilterShardMap[V any](s Shard, m map[string]V) map[string]V {
 // This is the ONLY safe way to spread a chdb-tagged corpus walk over more CPUs.
 // The in-process route — `t.Parallel()` on the subtests — races two goroutines
 // against chdb-go's process-wide `globalSession` singleton (chdb/session.go),
-// which runner_chdb.go's resetChDBSession deliberately tears down and rebuilds
-// between fixtures for cross-fixture isolation (#1987). Sharding at the PROCESS
-// level sidesteps that entirely: each leg is a separate address space and so
-// gets its own singleton and its own `os.MkdirTemp`-backed session directory.
+// which runner_chdb.go's OpenChDB isolates fixtures against by switching
+// DATABASE on that one shared session (#1987), not by tearing it down — two
+// concurrent USE/CREATE DATABASE/DROP DATABASE calls against the SAME session
+// would still race each other exactly like two concurrent chdb_connect() calls
+// would have. Sharding at the PROCESS level sidesteps that entirely: each leg
+// is a separate address space and so gets its own singleton.
 //
 // The partition is over the fixture NAME (the basename without `.txtar`), which
 // is unique within one corpus directory, so a leg's membership does not move
