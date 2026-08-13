@@ -328,33 +328,62 @@ func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s sch
 }
 
 // lowerScalarFilter handles `| count() > 0`, `| sum(.duration) >= 1s`,
-// etc. The overwhelmingly common shape — a single aggregate compared
-// against a literal — takes the fast path (lowerSimpleScalarFilter),
-// which is byte-identical to the plan this function produced before
-// #1708: a Filter wrapping the lone Aggregate node. Anything else
-// (arithmetic between aggregates via ast.ScalarOperation on either
-// side, arbitrary nesting of that arithmetic, or an aggregate directly
-// on the RHS — `| max(duration) - min(duration) >= 0`,
-// `| (max(duration) - min(duration)) / avg(duration) > 0.5`,
-// `| max(duration) > avg(duration)`) takes the general path
-// (lowerArithmeticScalarFilter).
+// etc: a single aggregate on the left compared against a literal on
+// the right, lowered by lowerSimpleScalarFilter into a Filter wrapping
+// the lone Aggregate node.
+//
+// That one shape is deliberately the WHOLE accepted surface, because
+// it is the whole surface reference Tempo accepts. Tempo's
+// ScalarFilter.validate (pkg/traceql/ast_validate.go at the pinned
+// version) admits exactly one LHS type and exactly one RHS type:
+//
+//	switch f.LHS.(type) {
+//	case Aggregate:
+//	default:
+//		return newUnsupportedError("scalar filter lhs of type (%v)")
+//	}
+//	switch f.RHS.(type) {
+//	case Static:
+//	default:
+//		return newUnsupportedError("scalar filter rhs of type (%v)")
+//	}
+//
+// Cerberus briefly answered more than that (#1708 / #1981 lowered
+// arithmetic between aggregates, `| max(duration) - min(duration) >= 0`,
+// and an aggregate directly on the RHS, `| max(duration) > avg(duration)`),
+// which made it a strict super-set of the reference on a shape no
+// Tempo-targeting client can ever successfully send. #1984 reverted
+// that: cerberus is a DROP-IN Tempo replacement, so over-accepting
+// buys no migration value while costing a permanently-monitored
+// divergence. The two rejections below mirror Tempo's two switches
+// one-for-one, and the rejection-parity catalogue
+// (test/rejection-parity/) gates both against the live reference on
+// every compat run.
+//
+// The operand-shape checks come before mapBinaryOp so an unsupported
+// LHS/RHS is reported as such even when the operator is also
+// unmappable — matching Tempo, which type-checks the operands first.
 func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Traces) (chplan.Node, error) {
+	if !isBareAggregate(sf.LHS) {
+		return nil, fmt.Errorf("traceql: scalar filter lhs of type (%T) is not supported: the left-hand side of a scalar filter must be a single aggregate (count() / sum(...) / avg(...) / min(...) / max(...))", sf.LHS)
+	}
+	if !isBareStatic(sf.RHS) {
+		return nil, fmt.Errorf("traceql: scalar filter rhs of type (%T) is not supported: the right-hand side of a scalar filter must be a literal", sf.RHS)
+	}
 	op, err := mapBinaryOp(sf.Op)
 	if err != nil {
 		return nil, err
 	}
-	if isBareAggregate(sf.LHS) && isBareStatic(sf.RHS) {
-		return lowerSimpleScalarFilter(prev, sf, op, s)
-	}
-	return lowerArithmeticScalarFilter(prev, sf, op, s)
+	return lowerSimpleScalarFilter(prev, sf, op, s)
 }
 
-// lowerSimpleScalarFilter is the pre-#1708 lowering for the single-
-// aggregate-vs-literal shape: LHS lowers to the lone chplan.Aggregate
-// node and RHS lowers to a chplan.Expr literal; the Filter compares
-// the Aggregate's aggValueAlias ("Value") column against that literal
-// directly, no intermediate Project. Kept as its own function (rather
-// than folded into the general multi-aggregate path) so this shape's
+// lowerSimpleScalarFilter lowers the single-aggregate-vs-literal
+// shape — the only scalar-filter shape either backend accepts, see
+// lowerScalarFilter: LHS lowers to the lone chplan.Aggregate node and
+// RHS lowers to a chplan.Expr literal; the Filter compares the
+// Aggregate's aggValueAlias ("Value") column against that literal
+// directly, no intermediate Project. Kept as its own function so
+// lowerScalarFilter reads as validate-then-lower and so this shape's
 // plan — pinned by test/spec TXTAR goldens and
 // TestLowerSpansetAggregate_PerTraceShape's `Filter.Input =
 // *chplan.Aggregate` type assertion — never moves.
@@ -388,187 +417,6 @@ func lowerSimpleScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chpla
 		Input:     aggPlan,
 		Predicate: &chplan.Binary{Op: op, Left: &chplan.ColumnRef{Name: aggValueAlias}, Right: rhsExpr},
 	}, nil
-}
-
-// scalarFilterRHSAlias names the Project column
-// lowerArithmeticScalarFilter uses to carry the RHS operand's value
-// (which, like the LHS, may itself reference one or more aggregate
-// leaves) out of the shared Aggregate node. Reserved-name style
-// matches the `__cerberus_*` convention internal/api/tempo/handler.go
-// uses for its own synthesised columns.
-const scalarFilterRHSAlias = "__cerberus_scalar_rhs"
-
-// lowerArithmeticScalarFilter handles scalar-filter shapes beyond
-// lowerSimpleScalarFilter's single "aggregate compared to a literal"
-// fast path: arithmetic between aggregates
-// (`max(duration) - min(duration) >= 0`), arbitrary nesting of that
-// arithmetic via ast.ScalarOperation
-// (`(max(duration) - min(duration)) / avg(duration) > 0.5`), and an
-// aggregate directly on the RHS (`... > avg(duration)`).
-//
-// Two independently-grouped chplan.Aggregate nodes (the shape a naive
-// per-operand lowering would produce) have no shared row for a
-// chplan.Binary to read both operands from — GROUP BY TraceId on two
-// separate Aggregate nodes can put different trace's rows at different
-// output positions with nothing to join them on inline. So every
-// ast.Aggregate leaf found while walking LHS and RHS (lowerScalarOperand
-// recurses through ast.ScalarOperation, collecting leaves via
-// scalarAggLeaf) is folded into the AggFuncs list of ONE shared
-// chplan.Aggregate node — same TraceId grouping and envelope columns
-// lowerAggregate uses for the single-aggregate shape — so every leaf's
-// value lands as a column of the same per-trace row.
-//
-// A Project on top of that shared Aggregate evaluates the LHS/RHS
-// expression trees (chplan.Binary composed from the per-leaf AggFunc
-// aliases) and republishes LHS under aggValueAlias ("Value") and RHS
-// under scalarFilterRHSAlias, passing the envelope columns through
-// unchanged, so:
-//   - the outer Filter can compare two plain ColumnRefs instead of
-//     embedding arbitrarily-nested Binary trees in its Predicate, and
-//   - downstream shape-detection (isSpansetAggregateShape /
-//     aggregateCarriesSpansetEnvelope in internal/api/tempo/handler.go)
-//     keeps recognising the spanset-aggregate search-envelope shape
-//     through the extra Project layer — see the Project case added
-//     there.
-func lowerArithmeticScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chplan.BinaryOp, s schema.Traces) (chplan.Node, error) {
-	var aggFuncs []chplan.AggFunc
-	needsNestedSet := false
-	nextID := 0
-
-	lhsExpr, err := lowerScalarOperand(sf.LHS, s, &aggFuncs, &needsNestedSet, &nextID)
-	if err != nil {
-		return nil, err
-	}
-	rhsExpr, err := lowerScalarOperand(sf.RHS, s, &aggFuncs, &needsNestedSet, &nextID)
-	if err != nil {
-		return nil, err
-	}
-	if len(aggFuncs) == 0 {
-		// The Tempo parser happily accepts pathological forms like
-		// `{} | 0 > 0` (no aggregate on either side) — reject explicitly
-		// rather than emit an Aggregate with no value columns.
-		return nil, fmt.Errorf("traceql: scalar-filter must aggregate to a series on at least one side (count() / sum(...) / avg(...) / min(...) / max(...)), got LHS %T and RHS %T", sf.LHS, sf.RHS)
-	}
-
-	input := prev
-	if needsNestedSet {
-		input = annotateNestedSet(prev, s)
-	}
-
-	aggNode := &chplan.Aggregate{
-		Input:          input,
-		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
-		GroupByAliases: []string{aggTraceIDAlias},
-		AggFuncs: append(
-			aggFuncs,
-			anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
-			anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
-			anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),
-			minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
-			traceStartNsAggFunc(s.TimestampColumn),
-			traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
-		),
-	}
-
-	projected := &chplan.Project{
-		Input: aggNode,
-		Projections: []chplan.Projection{
-			{Expr: lhsExpr, Alias: aggValueAlias},
-			{Expr: rhsExpr, Alias: scalarFilterRHSAlias},
-			{Expr: &chplan.ColumnRef{Name: aggMetricNameAlias}, Alias: aggMetricNameAlias},
-			{Expr: &chplan.ColumnRef{Name: aggResourceAttrsAlias}, Alias: aggResourceAttrsAlias},
-			{Expr: &chplan.ColumnRef{Name: aggParentSpanIDAlias}, Alias: aggParentSpanIDAlias},
-			{Expr: &chplan.ColumnRef{Name: aggTimeUnixAlias}, Alias: aggTimeUnixAlias},
-			{Expr: &chplan.ColumnRef{Name: aggTraceStartNsAlias}, Alias: aggTraceStartNsAlias},
-			{Expr: &chplan.ColumnRef{Name: aggTraceEndNsAlias}, Alias: aggTraceEndNsAlias},
-			{Expr: &chplan.ColumnRef{Name: aggTraceIDAlias}, Alias: aggTraceIDAlias},
-		},
-	}
-
-	return &chplan.Filter{
-		Input: projected,
-		Predicate: &chplan.Binary{
-			Op:    op,
-			Left:  &chplan.ColumnRef{Name: aggValueAlias},
-			Right: &chplan.ColumnRef{Name: scalarFilterRHSAlias},
-		},
-	}, nil
-}
-
-// lowerScalarOperand lowers one operand of a scalar-filter comparison
-// (or of a nested ast.ScalarOperation) into a chplan.Expr. Aggregate
-// leaves append an AggFunc to aggFuncs (via scalarAggLeaf, under a
-// fresh numbered alias so multiple leaves never collide) and return a
-// ColumnRef to that alias; Static leaves lower straight to a literal;
-// ScalarOperation recurses on both sides and composes a chplan.Binary
-// — the recursion is what makes arbitrary nesting
-// (`(max(duration) - min(duration)) / avg(duration)`) fall out for
-// free, since a nested ScalarOperation's own composed Binary is just
-// another Expr operand to the outer one.
-func lowerScalarOperand(e traceql.ScalarExpression, s schema.Traces, aggFuncs *[]chplan.AggFunc, needsNestedSet *bool, nextID *int) (chplan.Expr, error) {
-	switch v := e.(type) {
-	case traceql.Aggregate:
-		return lowerScalarAggregateOperand(v, s, aggFuncs, needsNestedSet, nextID)
-	case *traceql.Aggregate:
-		return lowerScalarAggregateOperand(*v, s, aggFuncs, needsNestedSet, nextID)
-	case traceql.Static:
-		return lowerStatic(v)
-	case *traceql.Static:
-		return lowerStatic(*v)
-	case traceql.ScalarOperation:
-		return lowerScalarOperationOperand(v, s, aggFuncs, needsNestedSet, nextID)
-	case *traceql.ScalarOperation:
-		return lowerScalarOperationOperand(*v, s, aggFuncs, needsNestedSet, nextID)
-	}
-	return nil, fmt.Errorf("traceql: scalar expression %T is unsupported", e)
-}
-
-// lowerScalarAggregateOperand lowers a single ast.Aggregate leaf
-// within a scalar-filter expression tree: computes its AggFunc under a
-// fresh numbered alias (scalarLeafAliasPrefix + nextID), appends it to
-// aggFuncs, and returns a ColumnRef to that alias.
-func lowerScalarAggregateOperand(agg traceql.Aggregate, s schema.Traces, aggFuncs *[]chplan.AggFunc, needsNestedSet *bool, nextID *int) (chplan.Expr, error) {
-	alias := fmt.Sprintf("%s%d", scalarLeafAliasPrefix, *nextID)
-	*nextID++
-	fn, leafNeedsNestedSet, err := scalarAggLeaf(agg, s, alias)
-	if err != nil {
-		return nil, err
-	}
-	if leafNeedsNestedSet {
-		*needsNestedSet = true
-	}
-	*aggFuncs = append(*aggFuncs, fn)
-	return &chplan.ColumnRef{Name: alias}, nil
-}
-
-// scalarLeafAliasPrefix names the per-leaf AggFunc aliases
-// lowerScalarAggregateOperand assigns (scalarLeafAliasPrefix + an
-// incrementing index, e.g. "__cerberus_scalar_agg0"), keeping them out
-// of the aggValueAlias / envelope-alias namespace so multiple aggregate
-// leaves in one ScalarOperation tree never collide with each other or
-// with the envelope columns.
-const scalarLeafAliasPrefix = "__cerberus_scalar_agg"
-
-// lowerScalarOperationOperand lowers an ast.ScalarOperation node
-// (arithmetic or comparison between two nested scalar expressions) by
-// recursing on both operands and composing a chplan.Binary over
-// whatever each side resolved to (a literal, a ColumnRef to a freshly
-// collected aggregate leaf, or another Binary from a nested
-// ScalarOperation).
-func lowerScalarOperationOperand(op traceql.ScalarOperation, s schema.Traces, aggFuncs *[]chplan.AggFunc, needsNestedSet *bool, nextID *int) (chplan.Expr, error) {
-	lhs, err := lowerScalarOperand(op.LHS, s, aggFuncs, needsNestedSet, nextID)
-	if err != nil {
-		return nil, err
-	}
-	rhs, err := lowerScalarOperand(op.RHS, s, aggFuncs, needsNestedSet, nextID)
-	if err != nil {
-		return nil, err
-	}
-	binOp, err := mapBinaryOp(op.Op)
-	if err != nil {
-		return nil, fmt.Errorf("traceql: scalar operation operator %s: %w", op.Op, err)
-	}
-	return &chplan.Binary{Op: binOp, Left: lhs, Right: rhs}, nil
 }
 
 // isBareAggregate reports whether a ScalarExpression is a plain

@@ -28,8 +28,7 @@
           "if inner == nil"
         ],
         "callers": [
-          "lowerAggregate",
-          "lowerScalarAggregateOperand"
+          "lowerAggregate"
         ]
       }
     }
