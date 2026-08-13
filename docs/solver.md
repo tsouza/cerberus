@@ -667,7 +667,7 @@ To answer it the engine closes the loop the optimization corpus
   A fan-out where **no** shard reached query_log publishes nothing — a row with
   no observed cost would be a fabricated data point.
 - **Cerberus-side terminal outcomes.** `system.query_log` only reflects what
-  ClickHouse saw — it cannot show a request cerberus *itself* terminated. Three
+  ClickHouse saw — it cannot show a request cerberus *itself* terminated. Four
   cerberus-side outcomes are captured in-process and take precedence over (or
   complement) the query_log-derived `exit_status`:
   - **`sample_budget`** — the `query.maxSamples` 422. It fires during the
@@ -677,6 +677,13 @@ To answer it the engine closes the loop the optimization corpus
     = X, but cerberus rejected the client: too big." Stamped onto the existing
     dispatch record by `query_id` (eager path in the engine; cursor path via the
     handler's drain seam), so the in-process outcome wins over a query_log `ok`.
+  - **`byte_budget`** — the drain byte-budget 422, the byte-axis sibling of
+    `sample_budget` and stamped through the same seam for the same reason. It
+    bounds the cumulative *result bytes* a drain may charge — the Tempo span
+    search's wide-projection attribute maps, and the PromQL matrix drain's
+    per-row native-histogram payloads — an axis a row count does not measure.
+    Like `sample_budget` it fires *after* the CH query finished cleanly, so the
+    corpus keeps the real cost and overrides only the `exit_status`.
   - **`breaker`** — the chclient circuit-breaker 503. Cerberus fast-fails
     *before* dispatching, so there is no CH query and no query_log row. The
     corpus emits a **decision-only** row carrying the routing read-out known at

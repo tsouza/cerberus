@@ -40,7 +40,7 @@ func TestCorpusCreateTableSQL_Shape(t *testing.T) {
 		"`memory_usage` UInt64",
 		"`exit_status` Enum8('ok' = 0, 'oom' = 1, 'timeout' = 2, " +
 			"'sample_budget' = 3, 'breaker' = 4, 'rejected' = 5, " +
-			"'aborted' = 6, 'error' = 7)",
+			"'aborted' = 6, 'error' = 7, 'byte_budget' = 8)",
 		"`shards_observed` UInt8",
 		"`parallelism` UInt8",
 		"ENGINE = MergeTree",
@@ -334,6 +334,14 @@ func TestExitEnumValue(t *testing.T) {
 	if exitEnumValue("aborted") != 6 || exitEnumValue("error") != 7 {
 		t.Error("clickhouse-side exit enum mapping wrong")
 	}
+	// byte_budget was APPENDED to the iota rather than slotted beside its
+	// sample_budget sibling, so it takes the next free value and every status
+	// above keeps the value already deployed in the column. Pinning the literal
+	// here is what makes an accidental re-slotting — which would silently
+	// relabel every historical row from sample_budget upwards — a test failure.
+	if exitEnumValue("byte_budget") != 8 {
+		t.Error("byte_budget must append to the enum, not renumber its siblings")
+	}
 	// The enum value must round-trip from ExitStatus.String() through
 	// exitEnumValue for EVERY status, so a member added to the iota without a
 	// mapping cannot slip through.
@@ -342,8 +350,8 @@ func TestExitEnumValue(t *testing.T) {
 			t.Errorf("exitEnumValue(%q) = %d, want %d", status.String(), got, int8(status))
 		}
 	}
-	if len(exitStatuses) != 8 {
-		t.Fatalf("exitStatuses covers %d statuses; the round-trip above must cover all 8", len(exitStatuses))
+	if len(exitStatuses) != 9 {
+		t.Fatalf("exitStatuses covers %d statuses; the round-trip above must cover all 9", len(exitStatuses))
 	}
 }
 

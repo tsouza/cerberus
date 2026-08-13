@@ -301,11 +301,12 @@ func TestExitSeverityRanksEveryExitStatus(t *testing.T) {
 //   - ok < aborted: a shard cancelled by its sibling's failure did terminate
 //     abnormally, so it must outrank a clean finish — but only barely, since the
 //     abort is the CONSEQUENCE of another shard's cause and must never mask it.
-//   - aborted < every cerberus-side refusal (sample_budget, rejected, breaker):
-//     a real refusal must survive the fold against a cascade of cancellations.
-//     Their order among themselves is fixed here so a reshuffle is a decision
-//     rather than a drift; no fold outcome depends on which of the three wins,
-//     because a fan-out refused by one of them is refused as a whole request.
+//   - aborted < every cerberus-side refusal (sample_budget, byte_budget,
+//     rejected, breaker): a real refusal must survive the fold against a
+//     cascade of cancellations. Their order among themselves is fixed here so a
+//     reshuffle is a decision rather than a drift; no fold outcome depends on
+//     which of the four wins, because a fan-out refused by one of them is
+//     refused as a whole request.
 //   - every refusal < error < timeout < oom: the ClickHouse-side verdicts rank
 //     highest, and the two resource ones highest of all. They are what the
 //     calibration learns its watermarks from, so losing one to a sibling's
@@ -315,6 +316,7 @@ func TestExitSeverityOrderIsPinned(t *testing.T) {
 		ExitOK,
 		ExitAborted,
 		ExitSampleBudget,
+		ExitByteBudget,
 		ExitRejected,
 		ExitBreaker,
 		ExitError,

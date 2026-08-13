@@ -1,8 +1,12 @@
 # N3 — cerberus-side rejection cluster.
-# sample_budget / breaker / rejected are cerberus-side terminal outcomes
-# decided BEFORE the CH dispatch (read_rows/memory are meaningless for them) —
-# a distinct operator signal that neither route A nor route B addresses.
-# group_by exit_status separates the three sub-causes; the deployment-wide
+# sample_budget / byte_budget / breaker / rejected are the cerberus-side
+# terminal outcomes: a request cerberus itself refused, which the query_log can
+# never show. They split by WHEN they fire, and the split is what read_rows
+# means on the row: the two drain budgets fire AFTER the CH query finished
+# cleanly, so their cost columns are real; breaker / rejected fire BEFORE any
+# dispatch, so theirs are zero. Either way neither route A nor route B is the
+# remedy — a distinct operator signal.
+# group_by exit_status separates the sub-causes; the deployment-wide
 # rejection share is surfaced as MESSAGE context via {cerberus_reject_ratio}
 # (a corpus_count_ratio scalar, never a gate).
 rules:
@@ -16,8 +20,8 @@ rules:
       ref: min_class_support
     condition:
       all:
-        - { col: exit_status, op: in, enum: [sample_budget, breaker, rejected] }
+        - { col: exit_status, op: in, enum: [sample_budget, byte_budget, breaker, rejected] }
     evidence:
       report: [count, "max(read_rows)"]
-    finding: "cerberus-side rejection cluster in {shape_id}/{language} (exit={exit_status}); deployment-wide explicit-rejection share is {cerberus_reject_ratio}. sample_budget -> raise query.max_samples iff CH has headroom, else pre-aggregate; breaker -> investigate upstream CH health; rejected -> re-evaluate the hard cap. Route B never fixes a cerberus-side rejection"
+    finding: "cerberus-side rejection cluster in {shape_id}/{language} (exit={exit_status}); deployment-wide explicit-rejection share is {cerberus_reject_ratio}. sample_budget -> raise query.max_samples iff CH has headroom, else pre-aggregate; byte_budget -> the drained result is too large in BYTES (wide projections, native-histogram payloads), so narrow the projection or shorten the range; breaker -> investigate upstream CH health; rejected -> re-evaluate the hard cap. Route B never fixes a cerberus-side rejection"
     action: review_rejection_guardrail

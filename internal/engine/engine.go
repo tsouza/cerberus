@@ -309,6 +309,12 @@ func (e *Engine) observeRoutedQuery(info *solver.ExecInfo, plan chplan.Node, lan
 //   - sample-budget exceedance (chclient.ErrTooManySamples) → "sample_budget":
 //     the CH query finished cleanly but cerberus rejected the drain. Stamped
 //     onto the dispatched record (cost retained, exit overridden).
+//   - drain byte-budget exceedance (chclient.ErrDrainBytesExceeded) →
+//     "byte_budget": the byte-axis sibling of the above, with exactly the same
+//     shape — the CH query finished cleanly and cerberus rejected the drain
+//     afterwards, so the query_log join shows ok with real cost. Without this
+//     arm the corpus records the rejected query as a SUCCESSFUL one, which is
+//     the observability hole the sample-budget arm exists to close.
 //   - circuit-breaker open (chclient.ErrCircuitOpen) → "breaker": no CH query
 //     ran. Recorded as a decision-only rejection (no cost).
 //   - memory-cap rejection (chclient.ErrMemoryLimitExceeded, CH code 241) →
@@ -321,6 +327,8 @@ func outcomeTokenForErr(err error) string {
 	switch {
 	case errors.Is(err, chclient.ErrTooManySamples):
 		return optcorpusExitSampleBudget
+	case errors.Is(err, chclient.ErrDrainBytesExceeded):
+		return optcorpusExitByteBudget
 	case errors.Is(err, chclient.ErrCircuitOpen):
 		return optcorpusExitBreaker
 	case errors.Is(err, chclient.ErrMemoryLimitExceeded):
@@ -338,6 +346,7 @@ func outcomeTokenForErr(err error) string {
 // would simply be ignored by the corpus parser rather than mislabel a row.
 const (
 	optcorpusExitSampleBudget = "sample_budget"
+	optcorpusExitByteBudget   = "byte_budget"
 	optcorpusExitBreaker      = "breaker"
 	optcorpusExitRejected     = "rejected"
 	optcorpusExitOOM          = "oom"
@@ -358,10 +367,10 @@ func (e *Engine) observeOutcomeForErr(queryID, language string, plan chplan.Node
 	if e.QueryObserver == nil || err == nil {
 		return
 	}
-	switch outcomeTokenForErr(err) {
-	case optcorpusExitSampleBudget:
+	switch token := outcomeTokenForErr(err); token {
+	case optcorpusExitSampleBudget, optcorpusExitByteBudget:
 		if queryID != "" {
-			e.QueryObserver.ObserveOutcome(queryID, optcorpusExitSampleBudget)
+			e.QueryObserver.ObserveOutcome(queryID, token)
 		}
 	case optcorpusExitBreaker:
 		e.observeRejection(language, plan, decision, optcorpusExitBreaker)
@@ -1650,9 +1659,9 @@ func (e *Engine) ObserveDrainOutcome(queryID, language string, err error) {
 	if e.QueryObserver == nil || queryID == "" || err == nil {
 		return
 	}
-	switch outcomeTokenForErr(err) {
-	case optcorpusExitSampleBudget:
-		e.QueryObserver.ObserveOutcome(queryID, optcorpusExitSampleBudget)
+	switch token := outcomeTokenForErr(err); token {
+	case optcorpusExitSampleBudget, optcorpusExitByteBudget:
+		e.QueryObserver.ObserveOutcome(queryID, token)
 	case optcorpusExitOOM:
 		e.QueryObserver.ObserveDispatchedRejection(
 			queryID, "", nil, language, optcorpusExitOOM,

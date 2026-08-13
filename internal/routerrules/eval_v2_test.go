@@ -182,6 +182,10 @@ func TestN3FiresPerExitStatus(t *testing.T) {
 		{"exit_status=sample_budget,language=promql,shape_id=cerb:rate_wide", 1},
 		{"exit_status=breaker,language=traceql,shape_id=trc:breaker", 2},
 		{"exit_status=rejected,language=traceql,shape_id=trc:rejected", 2},
+		// The byte-axis drain rejection is the same operator signal on its own
+		// axis: it groups separately because the remedy differs (narrow the
+		// projection, not raise query.max_samples).
+		{"exit_status=byte_budget,language=traceql,shape_id=trc:bytes", 2},
 	} {
 		f, ok := findingFor(r, "cerberus_side_rejection_pressure", c.class)
 		if !ok {
@@ -192,7 +196,7 @@ func TestN3FiresPerExitStatus(t *testing.T) {
 			t.Errorf("N3 %q support = %d, want %d", c.class, f.Support, c.support)
 		}
 	}
-	const wantN3Count = 4
+	const wantN3Count = 5
 	if got := countFor(r, "cerberus_side_rejection_pressure"); got != wantN3Count {
 		t.Errorf("N3 fired %d times, want exactly %d", got, wantN3Count)
 	}

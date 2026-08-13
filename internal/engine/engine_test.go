@@ -690,6 +690,88 @@ func TestEngine_ObserveDrainOutcome(t *testing.T) {
 	}
 }
 
+// TestEngine_ObserveDrainOutcome_ByteBudget pins the byte-axis half of the
+// cursor-path drain seam. A drain rejected by the byte budget has the SAME
+// shape as the sample-budget 422 — the ClickHouse query finished cleanly and
+// cerberus refused the drain afterwards — so the query_log join the corpus
+// reconciler falls back to shows `ok` with real cost. Before this mapping
+// chclient.ErrDrainBytesExceeded fell through outcomeTokenForErr's default and
+// the corpus recorded the REJECTED query as a successful one.
+//
+// The assertion that matters is which seam it takes: ObserveOutcome (stamp the
+// exit status, KEEP the joined cost) and not ObserveDispatchedRejection, which
+// is the oom shape and writes the row terminally with zero cost.
+func TestEngine_ObserveDrainOutcome_ByteBudget(t *testing.T) {
+	t.Parallel()
+
+	// The handler sees the wrapped *DrainByteBudgetError, not the bare
+	// sentinel, so the mapping must go through errors.Is rather than equality.
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"bare sentinel", chclient.ErrDrainBytesExceeded},
+		{"wrapped budget error", &chclient.DrainByteBudgetError{Limit: 1 << 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			obs := &recordingObserver{}
+			eng := newEngine(&fakeQuerier{})
+			eng.QueryObserver = obs
+
+			eng.ObserveDrainOutcome("qid-bytes", "promql", tc.err)
+
+			if len(obs.outcomes) != 1 {
+				t.Fatalf("ObserveOutcome calls = %d; want exactly 1", len(obs.outcomes))
+			}
+			if id, token := obs.outcomes[0][0], obs.outcomes[0][1]; id != "qid-bytes" || token != "byte_budget" {
+				t.Errorf("drain outcome = (%q, %q); want (qid-bytes, byte_budget)", id, token)
+			}
+			// The cost-retained seam, not the zero-cost terminal one: a
+			// dispatched rejection here would discard the real CH cost of a
+			// query that actually finished.
+			if len(obs.dispatchedRej) != 0 {
+				t.Errorf("a byte-budget drain must not produce a dispatched rejection: %v", obs.dispatchedRej)
+			}
+			if len(obs.rejections) != 0 {
+				t.Errorf("a byte-budget drain must not produce a decision-only rejection: %v", obs.rejections)
+			}
+		})
+	}
+}
+
+// TestEngine_EagerByteBudget_StampsOutcome is the eager-path sibling: the same
+// sentinel surfacing from an in-engine drain stamps the same cost-retaining
+// outcome onto the record the dispatch already opened, keyed by its query_id.
+func TestEngine_EagerByteBudget_StampsOutcome(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{err: &chclient.DrainByteBudgetError{Limit: 1 << 20}}
+	obs := &recordingObserver{}
+	eng := newEngine(q)
+	eng.QueryObserver = obs
+
+	if _, err := eng.Query(tracedCtx(), &fakeLang{name: "promql"}, "up"); err == nil {
+		t.Fatal("expected byte-budget error")
+	}
+	if len(obs.outcomes) != 1 {
+		t.Fatalf("ObserveOutcome calls = %d; want exactly 1", len(obs.outcomes))
+	}
+	// The stamp must land on the SAME query_id the dispatch registered, or the
+	// reconciler has nothing to override and the query_log `ok` survives.
+	if len(obs.queryIDs) != 1 || obs.outcomes[0][0] != obs.queryIDs[0] || obs.outcomes[0][0] == "" {
+		t.Errorf("outcome id %q must equal dispatch id %v", obs.outcomes[0][0], obs.queryIDs)
+	}
+	if obs.outcomes[0][1] != "byte_budget" {
+		t.Errorf("outcome token = %q; want byte_budget", obs.outcomes[0][1])
+	}
+	if len(obs.dispatchedRej) != 0 || len(obs.rejections) != 0 {
+		t.Errorf("a byte-budget drain must use the outcome seam only: dispatched=%v rejections=%v",
+			obs.dispatchedRej, obs.rejections)
+	}
+}
+
 // TestEngine_NoObserver_OutcomeNoop pins that the cerberus-side seams are a
 // no-op when no observer is registered (the default hot path).
 func TestEngine_NoObserver_OutcomeNoop(t *testing.T) {

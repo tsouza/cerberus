@@ -114,6 +114,7 @@ func TestEvaluateEmbeddedCatalogFindings(t *testing.T) {
 		{"cerberus_side_rejection_pressure", "exit_status=sample_budget,language=promql,shape_id=cerb:rate_wide", 1},
 		{"cerberus_side_rejection_pressure", "exit_status=breaker,language=traceql,shape_id=trc:breaker", 2},
 		{"cerberus_side_rejection_pressure", "exit_status=rejected,language=traceql,shape_id=trc:rejected", 2},
+		{"cerberus_side_rejection_pressure", "exit_status=byte_budget,language=traceql,shape_id=trc:bytes", 2},
 		// --- N4 heavy_shape_geometry_failing --------------------------------
 		//
 		// N4 gates on cumulative_d >= d_high_watermark, a GEOMETRY percentile, so

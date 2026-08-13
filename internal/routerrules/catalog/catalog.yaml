@@ -23,7 +23,7 @@
 # other than their own corpus moving.
 
 apiVersion: routerrules.cerberus/v1
-catalogVersion: 4
+catalogVersion: 5
 
 # --------------------------------------------------------------------------
 # params: NAME + how to RESOLVE, never the value.

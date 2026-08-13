@@ -38,11 +38,16 @@
 --       sample_budget — the query.maxSamples 422. The CH query FINISHED (cost
 --                       columns are real) but cerberus rejected the drain: too
 --                       big. Authoritative over a query_log 'ok'.
+--       byte_budget   — the drain byte-budget 422, the BYTE-axis sibling of
+--                       sample_budget and identical in shape: the CH query
+--                       FINISHED (cost columns are real) and cerberus rejected
+--                       the drain on cumulative result bytes rather than row
+--                       count. Also authoritative over a query_log 'ok'.
 --       breaker       — circuit-breaker 503 fast-fail; no CH query ran (cost = 0).
 --       rejected      — resolution-cap / body-limit 400; no CH query ran (cost = 0).
--- All three cerberus-side values are MISROUTE signals on route A: a route-A
--- query that hit the sample budget, tripped the breaker, or was cap-rejected is
--- a query the heuristic kept single-path but that cerberus could not serve.
+-- All four cerberus-side values are MISROUTE signals on route A: a route-A
+-- query that blew either drain budget, tripped the breaker, or was cap-rejected
+-- is a query the heuristic kept single-path but that cerberus could not serve.
 -- The heuristic-failure predicate is therefore
 -- `exit_status NOT IN ('ok', 'aborted')` — every CH- and cerberus-side failure
 -- class, minus the client-abandonment rows, which say nothing about the route.
@@ -91,9 +96,11 @@ SELECT
     countIf(exit_status = 'aborted')                                        AS aborts,
     countIf(exit_status = 'error')                                          AS errors,
     -- Cerberus-side terminal outcomes (query_log cannot show these). On route A
-    -- each is a misroute signal; sample_budget rows carry real CH cost (the
-    -- query finished, cerberus rejected the drain), breaker/rejected are zero-cost.
+    -- each is a misroute signal; the two drain-budget rows carry real CH cost
+    -- (the query finished, cerberus rejected the drain — on rows and on bytes
+    -- respectively), breaker/rejected are zero-cost.
     countIf(exit_status = 'sample_budget')                                  AS sample_budget_rejects,
+    countIf(exit_status = 'byte_budget')                                    AS byte_budget_rejects,
     countIf(exit_status = 'breaker')                                        AS breaker_rejects,
     countIf(exit_status = 'rejected')                                       AS cap_rejects,
     -- Route-B fan-out shape. A route-B row folds K shard rows into ONE row, and
@@ -183,9 +190,9 @@ ORDER BY n_anchors, fanout, route;
 
 ----------------------------------------------------------------------------
 -- 4. The decisive misroute count: route-A queries that FAILED — CH-side
---    (oom / timeout / error) OR cerberus-side (sample_budget / breaker /
---    rejected). These are unambiguous heuristic failures — the query died, was
---    cap-rejected, or blew the sample budget on the single path the classifier
+--    (oom / timeout / error) OR cerberus-side (sample_budget / byte_budget /
+--    breaker / rejected). These are unambiguous heuristic failures — the query
+--    died, was cap-rejected, or blew a drain budget on the single path the classifier
 --    chose for it. Client-abandoned rows ('aborted') are excluded: the client
 --    walked away, which indicts nothing about the route. Any non-trivial count
 --    here is a standalone go signal for calibration, independent of the overlap
@@ -199,15 +206,16 @@ SELECT
     fanout,
     cumulative_d,
     count()                                                                 AS failed_route_a_queries,
-    -- The six classes below sum to failed_route_a_queries.
+    -- The seven classes below sum to failed_route_a_queries.
     countIf(exit_status = 'oom')                                            AS ooms,
     countIf(exit_status = 'timeout')                                        AS timeouts,
     countIf(exit_status = 'error')                                          AS errors,
     countIf(exit_status = 'sample_budget')                                  AS sample_budget_rejects,
+    countIf(exit_status = 'byte_budget')                                    AS byte_budget_rejects,
     countIf(exit_status = 'breaker')                                        AS breaker_rejects,
     countIf(exit_status = 'rejected')                                       AS cap_rejects,
     -- Read as cost ACCRUED BEFORE the failure, not as the query's cost: except
-    -- on sample_budget rows (where the CH query finished) the counter stopped
+    -- on the drain-budget rows (where the CH query finished) the counter stopped
     -- wherever ClickHouse gave up, and breaker/rejected rows never ran at all.
     round(quantile(0.99)(memory_usage) / 1e6, 1)                            AS p99_accrued_mem_mb
 FROM cerberus_router_corpus
