@@ -40,11 +40,19 @@ const (
 	maxCaptured = 10_000
 )
 
-var (
+// sink holds everything one receiver instance has captured. It is a type
+// rather than a set of package globals so the routes below can be exercised
+// against an instance that starts empty, instead of against whatever a
+// previous caller left behind.
+type sink struct {
 	mu       sync.Mutex
 	count    int
 	captured []capturedNotification
-)
+
+	// log receives every notification body, one per line. It is the file
+	// the substrate tails; nil is not a valid sink.
+	log io.Writer
+}
 
 // capturedNotification is one /webhook POST, as /notifications/list reports
 // it: the raw body (Grafana's webhook JSON — left un-decoded so this receiver
@@ -73,45 +81,50 @@ func main() {
 	}
 	defer func() { _ = logFile.Close() }()
 
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           (&sink{log: logFile}).routes(),
+		ReadHeaderTimeout: readHeaderTimeout,
+	}
+	log.Fatal(server.ListenAndServe())
+}
+
+// routes is the receiver's whole HTTP surface.
+func (s *sink) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		count++
+		s.mu.Lock()
+		s.count++
 		// A ring-buffer-by-truncation, not append-forever: drop the oldest
 		// entry once at capacity, so a long-running stack never grows this
 		// unbounded even though a single scenario run never gets close.
-		if len(captured) >= maxCaptured {
-			captured = captured[1:]
+		if len(s.captured) >= maxCaptured {
+			s.captured = s.captured[1:]
 		}
-		captured = append(captured, capturedNotification{ReceivedAt: time.Now().UTC(), Body: json.RawMessage(body)})
-		mu.Unlock()
-		if _, err := logFile.Write(append(body, '\n')); err != nil {
+		s.captured = append(s.captured, capturedNotification{ReceivedAt: time.Now().UTC(), Body: json.RawMessage(body)})
+		s.mu.Unlock()
+		if _, err := s.log.Write(append(body, '\n')); err != nil {
 			log.Printf("write notification to log: %v", err)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/notifications", func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]int{"count": count})
+		_ = json.NewEncoder(w).Encode(map[string]int{"count": s.count})
 	})
 	mux.HandleFunc("/notifications/list", func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		out := make([]capturedNotification, len(captured))
-		copy(out, captured)
-		mu.Unlock()
+		s.mu.Lock()
+		out := make([]capturedNotification, len(s.captured))
+		copy(out, s.captured)
+		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string][]capturedNotification{"notifications": out})
 	})
-	server := &http.Server{
-		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: readHeaderTimeout,
-	}
-	log.Fatal(server.ListenAndServe())
+	return mux
 }
 
 // probeSelf is the Docker exec-form HEALTHCHECK body: it hits the server's
