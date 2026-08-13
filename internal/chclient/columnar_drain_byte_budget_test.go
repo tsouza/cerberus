@@ -109,10 +109,10 @@ func TestColumnarCursor_DrainByteBudget_PerUniqueSeries(t *testing.T) {
 }
 
 // TestColumnarCursor_DrainByteBudget_Inert proves an inert (nil) byte
-// budget — the shape every non-Tempo columnar decode runs under, since
-// WithDrainByteBudget is only ever attached on the Tempo span-search path —
-// never charges and never trips, regardless of how fat the decoded maps
-// are.
+// budget — the shape a decode runs under whenever the caller attached none
+// (WithDrainByteBudget is threaded by the Tempo span search and the PromQL
+// sample drain, not universally) — never charges and never trips, regardless
+// of how fat the decoded maps are.
 func TestColumnarCursor_DrainByteBudget_Inert(t *testing.T) {
 	t.Parallel()
 	cols := mkMatrixCols([]map[string]string{fatLabels(1, 1<<20)})

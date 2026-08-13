@@ -299,10 +299,12 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		return nil, false, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, translateCHGoErr(runErr)))
 	}
 
-	// Stream is fully drained into dec.samples (bounded by the result set the
-	// SAME max-samples budget the row path enforces caps). A budget crossing
-	// leaves dec.err set so the cursor surfaces the identical
-	// *TooManySamplesError on the same Next() boundary the row path would.
+	// Stream is fully drained into dec.samples, bounded on BOTH axes: the same
+	// max-samples budget the row path enforces caps the row count, and the
+	// drain byte budget (when the caller attached one) caps the Go heap those
+	// rows retain. A crossing of either leaves dec.err set so the cursor
+	// surfaces the identical *TooManySamplesError / *DrainByteBudgetError on
+	// the same Next() boundary the row path would.
 	dec.span = span
 	return dec, true, nil
 }
@@ -310,8 +312,10 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 // columnarCursor is the Cursor returned by the columnar matrix path. It holds
 // the fully-decoded Samples for the result set and replays them via Next() /
 // Sample(), matching the rowsCursor surface. Memory stays bounded by the SAME
-// max-samples budget the row path enforces: a result set that would exceed it
-// stops decode early with the identical *TooManySamplesError.
+// two budgets the row path enforces: the max-samples row cap (a result set that
+// would exceed it stops decode early with the identical *TooManySamplesError)
+// and, when the caller attached one, the drain byte budget charged against the
+// per-series label maps and each row's native-histogram payload.
 type columnarCursor struct {
 	results chproto.Results
 
@@ -591,6 +595,17 @@ func (d *columnarCursor) decodeBlock(cols matrixCols, rows int) error {
 		}
 		if cols.hist != nil {
 			sample.Histogram = cols.hist.row(r)
+			// Charge the histogram payload per ROW, not per series: each row
+			// owns a fresh HistogramValue and a fresh copy of both bucket
+			// ladders, so nothing is shared the way the interned label map
+			// above is. Without this charge the ONLY bound on a buffered
+			// histogram matrix is the row count, which is a poor proxy for
+			// bytes here — a histogram row is one to two orders of magnitude
+			// fatter than the float row maxSamples was sized against (#2038).
+			if d.byteBudget != nil && !d.byteBudget.consume(histogramValueBytes(sample.Histogram)) {
+				d.err = &DrainByteBudgetError{Limit: d.byteBudget.Limit()}
+				return errBudgetExceeded
+			}
 		}
 		d.samples = append(d.samples, sample)
 	}
