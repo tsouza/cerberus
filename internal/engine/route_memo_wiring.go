@@ -128,9 +128,14 @@ func recordRouteMemoPressureActive(m *routememo.Memo) {
 // Major-2's symmetric fallback: on ANY route-B drain failure, Observe the
 // failure and fall back to route A, exactly as if this function had never
 // been called).
+// responseShape is the dispatching adapter's engine.Meta.ResponseShape,
+// threaded as a value (like langName) rather than read off ctx because this
+// is a route-B dispatch and routeBExecCtx owns stamping it — see that
+// function for why every Execute call site declares the shape itself.
 func (e *Engine) tryRouteMemoHit(
 	ctx context.Context,
 	langName string,
+	responseShape string,
 	plan chplan.Node,
 	seedDecision *solver.Decision,
 	budget *chclient.SampleBudget,
@@ -169,7 +174,9 @@ func (e *Engine) tryRouteMemoHit(
 	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
 	defer dispatchDone()
 
-	cur, execInfo, err := e.Solver.Executor.Execute(ctx, langName, d.decision, budget)
+	cur, execInfo, err := e.Solver.Executor.Execute(
+		routeBExecCtx(ctx, langName, responseShape), langName, d.decision, budget,
+	)
 	if err != nil {
 		// A pre-flight failure (breaker/emit/gate/now64) classifies
 		// NoEvidence by construction — Observe is a documented no-op for it,
@@ -200,9 +207,15 @@ func (e *Engine) tryRouteMemoHit(
 // true. Skipping it silently drops the one observation this probe exists to
 // make, leaving the Key permanently Unknown no matter how many times route A
 // goes on failing it.
+// responseShape is the dispatching adapter's engine.Meta.ResponseShape,
+// threaded for the same reason as on tryRouteMemoHit: this dispatch opens
+// route-B cursors, so it declares the shape through routeBExecCtx. It matters
+// most HERE — the retry runs on a ctx the handler supplies at drain time,
+// which carries nothing the original dispatch stamped.
 func (e *Engine) retryOnRouteAResourceFailure(
 	ctx context.Context,
 	langName string,
+	responseShape string,
 	plan chplan.Node,
 	seedDecision *solver.Decision,
 	budget *chclient.SampleBudget,
@@ -271,7 +284,9 @@ func (e *Engine) retryOnRouteAResourceFailure(
 	}
 	dispatchDone := telemetry.ObserveRoutedDispatchInflight(ctx)
 
-	cur, execInfo, dispatchErr := e.Solver.Executor.Execute(ctx, langName, d.decision, budget)
+	cur, execInfo, dispatchErr := e.Solver.Executor.Execute(
+		routeBExecCtx(ctx, langName, responseShape), langName, d.decision, budget,
+	)
 	if dispatchErr != nil {
 		// A pre-flight failure classifies NoEvidence by construction —
 		// Observe is a documented no-op for it. The probe token is released

@@ -1184,6 +1184,30 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 	return e.Solver.Classify(plan, rm)
 }
 
+// routeBExecCtx builds the ctx EVERY route-B dispatch hands to
+// solver.Executor.Execute — the four of them: executeRouted, its streaming
+// sibling executeRoutedCursor, the route-memo hit and the A->B retry. Two
+// values ride it, and both are per-dispatch facts rather than ctx lineage, so
+// this is derived from the arguments at the dispatch site rather than assumed
+// to be already present on the caller's ctx (the retry paths run on a ctx the
+// HANDLER supplies at drain time, which carries neither):
+//
+//   - the head's progress recorder, as route A's dispatch does; and
+//   - the adapter's declared response shape, so the shard cursors the Executor
+//     opens through internal/solver's own CursorQuerier get the SAME
+//     defense-in-depth AND-gate dispatchRouteACursor gives route A (#1429):
+//     chclient's columnar matrix decode confirms the caller INTENDS the matrix
+//     shape on top of its structural name/type test (#1753).
+//
+// The Executor takes no ResponseShape parameter — ctx is the only channel —
+// and stamping it here rather than inside internal/solver is what keeps the
+// declaration a property of the adapter's Meta, exactly as on route A. It
+// survives to each shard's QueryCursor by ordinary ctx nesting; internal/
+// solver's response_shape_wiring_test.go pins that arrival.
+func routeBExecCtx(ctx context.Context, langName, responseShape string) context.Context {
+	return chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
+}
+
 // executeRouted runs the dormant route-B path: it dispatches the K shard
 // cursors through the Solver's Executor and drains the composed cursor into
 // the eager Result slice. It is NEVER reached under Mode=single (classify
@@ -1203,7 +1227,7 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -1402,7 +1426,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// back to the ordinary route-A dispatch below exactly as if this had
 	// never run (Major-2's symmetric fallback).
 	budget := chclient.SampleBudgetFromContext(ctx)
-	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), plan, decision, budget); ok {
+	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget); ok {
 		result := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "memo-hit")
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
 			// The verdict already existed before this dispatch (that is
@@ -1436,8 +1460,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		// this returns a routed CursorResult from route B instead; on
 		// failure (including "retry does not apply here") the original
 		// route-A error is what surfaces, unchanged.
-		execCtx := chclient.WithProgressFor(ctx, lang.Name())
-		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(execCtx, lang.Name(), plan, decision, budget, err); retried {
+		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err); retried {
 			retryResult := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "retry")
 			retryResult.ObserveDrainOutcome = observeFn
 			return retryResult, nil
@@ -1457,7 +1480,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// declines).
 	if e.routeMemoActive() && decision != nil {
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
-			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(retryCtx, lang.Name(), plan, decision, budget, drainErr)
+			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr)
 			if !retried {
 				return CursorResult{}, false
 			}
@@ -1674,7 +1697,7 @@ func (e *Engine) executeRoutedCursor(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	cursor, info, err := e.Solver.Executor.Execute(
-		chclient.WithProgressFor(ctx, lang.Name()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {
