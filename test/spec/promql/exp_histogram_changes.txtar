@@ -1,0 +1,111 @@
+-- query.promql --
+changes(http_server_duration_exp_hist[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- ONE series, five in-window samples, so the answer is a count over the
+-- four consecutive PAIRS. Reference's funcChanges counts the pairs where
+-- `!curSample.H.Equals(prevSample.H)` — structural whole-row inequality,
+-- NOT the directional regression `resets()` tests.
+--
+-- Each pair isolates ONE field, so a verdict that forgot any single field
+-- would under-count by exactly one and a verdict that reused the reset
+-- kernel would get a different number entirely:
+--
+--   t1 vs t0: byte-for-byte IDENTICAL                     -> no change
+--   t2 vs t1: buckets [2,3,5] -> [2,4,4], Count and Sum   -> CHANGE (buckets alone)
+--             both UNCHANGED
+--   t3 vs t2: Sum 5.0 -> 6.0, everything else unchanged   -> CHANGE (Sum alone)
+--   t4 vs t3: ZeroCount 0 -> 1, everything else unchanged -> CHANGE (ZeroCount alone)
+--
+-- Answer: 3 of 4 pairs.
+--
+-- The identical pair is what pins the "any change" reading as EQUALITY
+-- rather than "a new sample arrived": a verdict that counted every pair
+-- would report 4. The Count-and-Sum-preserving bucket move is what pins
+-- that the ladder is compared at all — reference's Equals reads every
+-- bucket, and this pair is invisible to any reading that stops at the
+-- whole-histogram scalars.
+--
+-- Contrast with exp_histogram_resets.txtar deliberately: over THIS seed
+-- `resets()` would answer 1 (only t2's bucket[2] 5 -> 4 regresses; the
+-- Sum and ZeroCount pairs are not regressions at all, and DetectReset
+-- does not read Sum). Same samples, different question, different number.
+--
+-- `changes()` drops __name__ but KEEPS the series' own labels, so the
+-- output series is ["", {"service":"api"}] and the value is a plain
+-- float: 3.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:30', 9), 10, 5.0, 0, 0, 0, [2, 3, 5], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:30', 9), 10, 5.0, 0, 0, 0, [2, 3, 5], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:30', 9), 10, 5.0, 0, 0, 0, [2, 4, 4], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:30', 9), 10, 6.0, 0, 0, 0, [2, 4, 4], 0, []),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 6.0, 0, 1, 0, [2, 4, 4], 0, []);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 3]
+]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] int64 = 1
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "http_server_duration_exp_hist"
+[10] string = "http.server.duration.exp.hist"
+[11] string = "http.server.duration.exp/hist"
+[12] string = "http.server.duration.exp_hist"
+[13] string = "http.server.duration/exp/hist"
+[14] string = "http.server.duration/exp_hist"
+[15] string = "http.server.duration_exp.hist"
+[16] string = "http.server.duration_exp_hist"
+[17] string = "http.server/duration/exp/hist"
+[18] string = "http.server/duration/exp_hist"
+[19] string = "http.server/duration_exp_hist"
+[20] string = "http.server_duration.exp.hist"
+[21] string = "http.server_duration.exp_hist"
+[22] string = "http.server_duration_exp.hist"
+[23] string = "http.server_duration_exp_hist"
+[24] string = "http/server/duration/exp/hist"
+[25] string = "http/server/duration/exp_hist"
+[26] string = "http/server/duration_exp_hist"
+[27] string = "http/server_duration_exp_hist"
+[28] string = "http_server.duration.exp.hist"
+[29] string = "http_server.duration.exp_hist"
+[30] string = "http_server.duration_exp.hist"
+[31] string = "http_server.duration_exp_hist"
+[32] string = "http_server_duration.exp.hist"
+[33] string = "http_server_duration.exp_hist"
+[34] string = "http_server_duration_exp.hist"
+[35] string = "2026-01-01 00:00:01.000000000"
+[36] int64 = 9
+[37] string = "2026-01-01 00:00:01.000000000"
+[38] int64 = 9
+[39] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Project [Attributes AS Attributes, toFloat64(arraySum(arrayMap(wcp -> arrayMap((ca, cb) -> ((((((((_hq_scales[cb] != _hq_scales[ca]) OR (_hq_count_list[cb] != _hq_count_list[ca])) OR ((_hq_sum_list[cb] != _hq_sum_list[ca]) AND not((isNaN(_hq_sum_list[cb]) AND isNaN(_hq_sum_list[ca]))))) OR (_hq_zero_counts[cb] != _hq_zero_counts[ca])) OR (_hq_pos_offsets[cb] != _hq_pos_offsets[ca])) OR (_hq_pos_buckets[cb] != _hq_pos_buckets[ca])) OR (_hq_neg_offsets[cb] != _hq_neg_offsets[ca])) OR (_hq_neg_buckets[cb] != _hq_neg_buckets[ca])), arrayPopBack(wcp), arrayPopFront(wcp)), array(arraySort((cp, ct) -> ct, arrayEnumerate(_hq_ts_list), _hq_ts_list)))[1])) AS Value]
+    Aggregate groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[min(Scale) AS _hq_merged_scale, groupArray(Scale) AS _hq_scales, groupArray(ZeroCount) AS _hq_zero_counts, groupArray(Count) AS _hq_count_list, groupArray(PositiveOffset) AS _hq_pos_offsets, groupArray(PositiveBucketCounts) AS _hq_pos_buckets, groupArray(NegativeOffset) AS _hq_neg_offsets, groupArray(NegativeBucketCounts) AS _hq_neg_buckets, groupArray(TimeUnix) AS _hq_ts_list, groupArray(Sum) AS _hq_sum_list, uniqExact(TimeUnix) AS _hq_samples]
+      Filter predicate=(((MetricName IN ("http_server_duration_exp_hist", "http.server.duration.exp.hist", "http.server.duration.exp/hist", "http.server.duration.exp_hist", "http.server.duration/exp/hist", "http.server.duration/exp_hist", "http.server.duration_exp.hist", "http.server.duration_exp_hist", "http.server/duration/exp/hist", "http.server/duration/exp_hist", "http.server/duration_exp_hist", "http.server_duration.exp.hist", "http.server_duration.exp_hist", "http.server_duration_exp.hist", "http.server_duration_exp_hist", "http/server/duration/exp/hist", "http/server/duration/exp_hist", "http/server/duration_exp_hist", "http/server_duration_exp_hist", "http_server.duration.exp.hist", "http_server.duration.exp_hist", "http_server.duration_exp.hist", "http_server.duration_exp_hist", "http_server_duration.exp.hist", "http_server_duration.exp_hist", "http_server_duration_exp.hist")) AND (TimeUnix <= toDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (toDateTime64("2026-01-01 00:00:01.000000000", 9) - toIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, toFloat64(arraySum(arrayMap(wcp -> arrayMap((ca, cb) -> ((((((((`_hq_scales`[cb] != `_hq_scales`[ca]) OR (`_hq_count_list`[cb] != `_hq_count_list`[ca])) OR ((`_hq_sum_list`[cb] != `_hq_sum_list`[ca]) AND not((isNaN(`_hq_sum_list`[cb]) AND isNaN(`_hq_sum_list`[ca]))))) OR (`_hq_zero_counts`[cb] != `_hq_zero_counts`[ca])) OR (`_hq_pos_offsets`[cb] != `_hq_pos_offsets`[ca])) OR (`_hq_pos_buckets`[cb] != `_hq_pos_buckets`[ca])) OR (`_hq_neg_offsets`[cb] != `_hq_neg_offsets`[ca])) OR (`_hq_neg_buckets`[cb] != `_hq_neg_buckets`[ca])), arrayPopBack(wcp), arrayPopFront(wcp)), array(arraySort((cp, ct) -> ct, arrayEnumerate(`_hq_ts_list`), `_hq_ts_list`)))[?])) AS `Value` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, min(`Scale`) AS `_hq_merged_scale`, groupArray(`Scale`) AS `_hq_scales`, groupArray(`ZeroCount`) AS `_hq_zero_counts`, groupArray(`Count`) AS `_hq_count_list`, groupArray(`PositiveOffset`) AS `_hq_pos_offsets`, groupArray(`PositiveBucketCounts`) AS `_hq_pos_buckets`, groupArray(`NegativeOffset`) AS `_hq_neg_offsets`, groupArray(`NegativeBucketCounts`) AS `_hq_neg_buckets`, groupArray(`TimeUnix`) AS `_hq_ts_list`, groupArray(`Sum`) AS `_hq_sum_list`, uniqExact(`TimeUnix`) AS `_hq_samples` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))
