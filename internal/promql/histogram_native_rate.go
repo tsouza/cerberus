@@ -118,7 +118,7 @@ const (
 // selector>[range])` or the `increase` twin — the two shapes this file
 // answers — returning the matched [histogramAggShape].
 //
-// Like [bareExpHistogramSelector] and [sumOverExpHistogram] it is asked
+// Like [bareExpHistogramSelector] and [sumOrAvgOverExpHistogram] it is asked
 // only of the ROOT of a query (see [lowerRoot]), and for the same reason:
 // the answer is a histogram row, which only the wire can consume.
 // `rate(m_exp_hist[5m]) * 2` or `label_replace(rate(m_exp_hist[5m]), ...)`

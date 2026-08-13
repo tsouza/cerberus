@@ -21,7 +21,8 @@ import (
 // `_count` / `_sum` companion selectors, and the three top-level
 // histogram-VALUED shapes issue #1967 answers — a BARE selector
 // (TestLower_ExpHistogram_BareSelectorIsHistogramValued), `sum()` over
-// one (TestLower_ExpHistogram_SumIsHistogramValued) and `rate()` /
+// one and its `avg()` twin (TestLower_ExpHistogram_SumIsHistogramValued,
+// TestLower_ExpHistogram_AvgIsHistogramValued) and `rate()` /
 // `increase()` over one
 // (TestLower_ExpHistogram_RateIsHistogramValued) — must fail lowering
 // with a clear error, never silently resolve against the Gauge/Sum tables
@@ -36,6 +37,13 @@ import (
 // does read a `Value` column the histogram row shape never publishes, or
 // hands `sum()` an aggregand that is not a bare selector. They stay
 // rejected until each grows its own histogram-aware lowering.
+//
+// `min` / `max` / `count` / `topk` stay here for a DIFFERENT reason from
+// the rest, and it is not "nobody has written the lowering yet":
+// reference Prometheus DROPS native-histogram samples from those
+// aggregations with an annotation, so there is no merged distribution to
+// publish (see [expHistogramAggOpIsMergeable], which admits only `sum`
+// and `avg` for exactly this reason).
 func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 	t.Parallel()
 
@@ -52,7 +60,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "irate", query: `irate(latency_exp_hist[5m])`},
 		{name: "sum_over_time", query: `sum_over_time(latency_exp_hist[5m])`},
 		{name: "absent_over_time", query: `absent_over_time(latency_exp_hist[5m])`},
-		{name: "avg aggregation", query: `avg(latency_exp_hist)`},
 		{name: "min aggregation", query: `min(latency_exp_hist)`},
 		{name: "max aggregation", query: `max(latency_exp_hist)`},
 		{name: "count aggregation", query: `count(latency_exp_hist)`},
