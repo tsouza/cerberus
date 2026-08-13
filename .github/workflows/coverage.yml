@@ -49,7 +49,14 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was already tight: the last pre-`-coverpkg` run took 20m34s of it.
+    # `-coverpkg` over the whole package set links an instrumented copy of
+    # every package into every test binary and counts every one of them at
+    # run time, so both halves of that budget grow. This job only runs on
+    # push / nightly / dispatch / release PRs, so a wider ceiling costs
+    # nothing on the PR path — and a timeout here lands red on main, where
+    # nobody's PR was ever asked to catch it.
+    timeout-minutes: 60
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
     # a release PR (head branch release/*). On a regular PR every heavy step is
     # skipped and the job reports green without work — so `coverage` can be a

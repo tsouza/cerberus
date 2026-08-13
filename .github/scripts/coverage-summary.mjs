@@ -18,11 +18,12 @@
 // and still clear it. It reads as "measured" while measuring nothing, which is
 // exactly the hole a floor exists to close.
 //
-// The profile is produced with `-coverpkg=./...` (see the `coverage` recipe), so
-// a package's coverage is the union of every test binary that executes it
-// rather than only its own. That is also why the same block arrives many times,
-// once per test binary that linked it: parseProfile folds duplicates by taking
-// the widest count, which is what `mode: set` means.
+// The profile is produced with `-coverpkg` over the lane's whole package set
+// (see the `coverage` recipe), so a package's coverage is the union of every
+// test binary that executes it rather than only its own. That is also why the
+// same block arrives many times, once per test binary that linked it:
+// parseProfile folds duplicates by taking the widest count, which is what
+// `mode: set` means.
 //
 // The floors are a ratchet: `just update-coverage-floor` raises them to what
 // the tree actually achieves and REFUSES to lower one. Lowering a floor is a
@@ -94,8 +95,8 @@ export function packageOf(filePath) {
 // covered when its execution count is non-zero, which is what `go tool cover`
 // reports and what the awk this replaces computed.
 //
-// A block may appear many times: `-coverpkg=./...` instruments a package into
-// every test binary that links it, and each binary emits its own row. Folding
+// A block may appear many times: `-coverpkg` instruments a package into every
+// test binary that links it, and each binary emits its own row. Folding
 // them by the widest count per block is the `mode: set` union — the alternative,
 // counting each repeat, would inflate `total` by the number of test binaries and
 // turn the percentage into an artefact of the suite's shape.
@@ -334,8 +335,8 @@ function main() {
         `${unfloorable.length} package(s) carry statements but are not exercised enough to justify ` +
           `any floor above 0, and 0 is not a floor — nothing can fall through it, so recording one ` +
           `would leave the package unmeasured while looking measured. The profile is built with ` +
-          `\`-coverpkg=./...\`, so a test in ANY package counts: give each one a test that reaches ` +
-          `it, or delete the code that nothing reaches:\n` +
+          `\`-coverpkg\` over the whole module, so a test in ANY package counts: give each one a ` +
+          `test that reaches it, or delete the code that nothing reaches:\n` +
           unfloorable.map((r) => `  - ${r.pkg}: ${r.value.toFixed(2)}% of ${r.total} statements`).join('\n'),
       );
     }
