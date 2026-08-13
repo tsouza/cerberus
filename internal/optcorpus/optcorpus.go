@@ -128,6 +128,19 @@ const (
 	// states exactly what is known — the query failed — without inventing a
 	// cause, and it is the honest floor for any unrecognised exception code.
 	ExitError
+	// ExitByteBudget is a CERBERUS-side terminal outcome and the BYTE-axis
+	// sibling of ExitSampleBudget: the CH query FINISHED cleanly (query_log
+	// shows ok with real cost), but cerberus rejected the client with the
+	// drain byte-budget 422 (chclient.ErrDrainBytesExceeded) while draining the
+	// result on the Go side. It carries the same calibration signal — "CH cost
+	// = X, but cerberus rejected: too big" — so the cost columns are KEPT while
+	// the exit status records cerberus's authoritative outcome, and it takes
+	// precedence over the query_log-derived ExitOK for the same query_id.
+	//
+	// It sits LAST in the iota rather than beside ExitSampleBudget on purpose:
+	// the member's position IS its Enum8 value, so appending widens the
+	// deployed column while inserting would renumber every status after it.
+	ExitByteBudget
 )
 
 // exitStatuses enumerates every ExitStatus in iota order. It is the single
@@ -144,6 +157,7 @@ var exitStatuses = []ExitStatus{
 	ExitRejected,
 	ExitAborted,
 	ExitError,
+	ExitByteBudget,
 }
 
 // ExitStatusTokens returns every exit_status token the corpus can carry, in
@@ -171,6 +185,8 @@ func (e ExitStatus) String() string {
 		return "timeout"
 	case ExitSampleBudget:
 		return "sample_budget"
+	case ExitByteBudget:
+		return "byte_budget"
 	case ExitBreaker:
 		return "breaker"
 	case ExitRejected:
@@ -189,10 +205,16 @@ func (e ExitStatus) String() string {
 // through the QueryObserver seam). They MUST match ExitStatus.String().
 const (
 	ExitTokenSampleBudget = "sample_budget"
-	ExitTokenBreaker      = "breaker"
-	ExitTokenRejected     = "rejected"
+	// ExitTokenByteBudget is the drain byte-budget 422 — the byte-axis sibling
+	// of ExitTokenSampleBudget, and a cerberusSide() override token for the
+	// same reason: the CH query finished cleanly and cerberus rejected the
+	// drain afterwards, so query_log shows ok with real cost and the corpus
+	// must override the exit status while KEEPING that cost.
+	ExitTokenByteBudget = "byte_budget"
+	ExitTokenBreaker    = "breaker"
+	ExitTokenRejected   = "rejected"
 	// ExitTokenOOM is the dispatched memory-cap rejection token. Unlike the
-	// three above it is NOT a cerberusSide() override token (oom is also the
+	// four above it is NOT a cerberusSide() override token (oom is also the
 	// query_log-derived label for the same physical event); it rides the
 	// ObserveDispatchedRejection seam, which emits the row TERMINALLY at the
 	// rejection site (zero cost, route features) without waiting for a
@@ -210,6 +232,8 @@ func parseExitStatus(token string) (ExitStatus, bool) {
 	switch token {
 	case ExitTokenSampleBudget:
 		return ExitSampleBudget, true
+	case ExitTokenByteBudget:
+		return ExitByteBudget, true
 	case ExitTokenBreaker:
 		return ExitBreaker, true
 	case ExitTokenRejected:
@@ -220,13 +244,14 @@ func parseExitStatus(token string) (ExitStatus, bool) {
 }
 
 // cerberusSide reports whether the ExitStatus is a CERBERUS-side terminal
-// outcome that cerberus determined in-process (sample-budget / breaker /
-// rejected), as opposed to a CH-side outcome derived from system.query_log
-// (ok / oom / timeout). A cerberus-side outcome is authoritative: it takes
-// precedence over the query_log-derived status when both exist for one query.
+// outcome that cerberus determined in-process (sample-budget / byte-budget /
+// breaker / rejected), as opposed to a CH-side outcome derived from
+// system.query_log (ok / oom / timeout). A cerberus-side outcome is
+// authoritative: it takes precedence over the query_log-derived status when
+// both exist for one query.
 func (e ExitStatus) cerberusSide() bool {
 	switch e {
-	case ExitSampleBudget, ExitBreaker, ExitRejected:
+	case ExitSampleBudget, ExitByteBudget, ExitBreaker, ExitRejected:
 		return true
 	default:
 		return false
@@ -234,7 +259,7 @@ func (e ExitStatus) cerberusSide() bool {
 }
 
 // parseTerminalRejectionStatus maps a token to its ExitStatus for the
-// terminal-at-rejection seam (ObserveDispatchedRejection). It accepts the three
+// terminal-at-rejection seam (ObserveDispatchedRejection). It accepts the four
 // cerberus-side tokens PLUS oom: a dispatched memory-cap (CH code 241) abort the
 // engine knows in-process at the error site, recorded directly with zero cost
 // rather than waiting for a system.query_log row that may never be joined. An
@@ -285,9 +310,10 @@ type Record struct {
 	Route RouteFeatures
 
 	// Outcome is the CERBERUS-side terminal outcome cerberus determined
-	// in-process for this request (ExitSampleBudget / ExitBreaker /
-	// ExitRejected). It is the authoritative exit status query_log cannot
-	// reflect: the sample-budget 422 fires AFTER a clean CH finish, and the
+	// in-process for this request (ExitSampleBudget / ExitByteBudget /
+	// ExitBreaker / ExitRejected). It is the authoritative exit status
+	// query_log cannot reflect: the sample-budget and byte-budget 422s fire
+	// AFTER a clean CH finish, and the
 	// breaker / cap rejections fire BEFORE any CH dispatch. HasOutcome gates
 	// it so the zero value (ExitOK) is not mistaken for a real outcome. When
 	// set on a query_id that also joins a query_log row, the reconciler keeps
@@ -1492,6 +1518,7 @@ var exitSeverity = []ExitStatus{
 	ExitOK,
 	ExitAborted,
 	ExitSampleBudget,
+	ExitByteBudget,
 	ExitRejected,
 	ExitBreaker,
 	ExitError,
@@ -1512,7 +1539,7 @@ func exitSeverityOf(e ExitStatus) int {
 }
 
 // exitStatusToken resolves the exit_status token for a joined row, giving a
-// CERBERUS-side outcome (sample-budget / breaker / rejected) precedence over
+// CERBERUS-side outcome (sample-budget / byte-budget / breaker / rejected) precedence over
 // the query_log-derived CH-side status. The CH cost stays on the row either
 // way; only the discriminator changes.
 func exitStatusToken(chStatus ExitStatus, rec Record) string {

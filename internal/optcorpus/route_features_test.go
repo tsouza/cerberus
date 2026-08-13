@@ -232,6 +232,7 @@ func TestExitStatus_String(t *testing.T) {
 		ExitRejected:     "rejected",
 		ExitAborted:      "aborted",
 		ExitError:        "error",
+		ExitByteBudget:   "byte_budget",
 	}
 	if len(want) != len(exitStatuses) {
 		t.Fatalf("this test pins %d tokens; exitStatuses has %d", len(want), len(exitStatuses))

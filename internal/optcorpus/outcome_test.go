@@ -92,6 +92,50 @@ func TestObserveOutcome_SampleBudget_PrecedenceOverQueryLogOK(t *testing.T) {
 	}
 }
 
+// TestObserveOutcome_ByteBudget_PrecedenceOverQueryLogOK is the byte-axis half
+// of the same gap fix, and pins the whole engine→corpus path for the token the
+// engine's outcomeTokenForErr now emits for chclient.ErrDrainBytesExceeded.
+//
+// The failure it guards against is specifically NOT a crash: an unrecognised
+// token is silently ignored by parseExitStatus, so before byte_budget joined
+// the vocabulary this exact row reconciled to exit_status "ok" with real cost —
+// a query cerberus REJECTED, recorded in the calibration corpus as a successful
+// one. So the assertion is two-sided: the outcome must override the query_log
+// status, AND the cost must survive the override (the CH query did finish).
+func TestObserveOutcome_ByteBudget_PrecedenceOverQueryLogOK(t *testing.T) {
+	t.Parallel()
+
+	src := newFakeSource()
+	sink := &memSink{}
+	r := New(src, sink, Options{RingCapacity: 8})
+
+	r.ObserveQuery("qid-bytes", "cerb:agg;agg=2", []string{"x"}, "promql",
+		true, "A", 241, 20, 300, 3600, 15, 0, "below-threshold")
+	r.ObserveOutcome("qid-bytes", ExitTokenByteBudget)
+	r.drainIngest()
+
+	// query_log says the CH query finished cleanly with real cost — the shape
+	// that makes the byte-budget rejection invisible without this token.
+	src.seed(SourceRow{QueryID: "qid-bytes", ReadRows: 9_000_000, MemoryUsage: 4096, ExitStatus: ExitOK})
+
+	r.reconcileOnce(context.Background())
+
+	rows := sink.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("sink rows = %d; want 1", len(rows))
+	}
+	got := rows[0]
+	if got.ExitStatus != "byte_budget" {
+		t.Errorf("exit_status = %q; want byte_budget (cerberus outcome must win over query_log ok)", got.ExitStatus)
+	}
+	if got.ReadRows != 9_000_000 || got.MemoryUsage != 4096 {
+		t.Errorf("CH cost must be retained on a byte-budget row: %+v", got)
+	}
+	if got.Route != "A" || got.NAnchors != 241 || got.DecisionReason != "below-threshold" {
+		t.Errorf("routing read-out not joined: %+v", got)
+	}
+}
+
 // TestObserveOutcome_MergePreservesDispatchMetadata pins that an outcome-update
 // arriving after the dispatch record MERGES (keeps shape-id / route) rather than
 // clobbering the slot with an otherwise-empty record.
@@ -316,6 +360,7 @@ func TestParseTerminalRejectionStatus(t *testing.T) {
 	t.Parallel()
 	for token, want := range map[string]ExitStatus{
 		ExitTokenSampleBudget: ExitSampleBudget,
+		ExitTokenByteBudget:   ExitByteBudget,
 		ExitTokenBreaker:      ExitBreaker,
 		ExitTokenRejected:     ExitRejected,
 		ExitTokenOOM:          ExitOOM,

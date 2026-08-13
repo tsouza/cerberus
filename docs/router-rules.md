@@ -238,13 +238,13 @@ an operator their findings shifted for a reason other than their own corpus movi
 
 ### catalogVersion 2 — reason-attributed and shape-geometry detectors
 
-| id                                 | severity     | what it flags                                                                                                      |
-| ---------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `failure_cluster_by_reason`        | critical     | hard failures (OOM/timeout) on **any** route, grouped by `decision_reason` so the operator picks the right lever.  |
-| `route_b_still_failing`            | high         | route-B classes that **still** OOM/timeout — more sharding will not help; surfaces `max(k_shards)` as evidence.    |
-| `cerberus_side_rejection_pressure` | high         | `sample_budget` / `breaker` / `rejected` clusters — decided before CH dispatch; neither route addresses them.      |
-| `heavy_shape_geometry_failing`     | high         | failing classes whose `cumulative_d` sits in their own per-language tail (the geometry the solver uses to route).  |
-| `read_amplification_hot_shape`     | experimental | healthy scans reading above their own per-shape `read_rows` tail — a missing-PREWHERE / late-materialisation hint. |
+| id                                 | severity     | what it flags                                                                                                                          |
+| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `failure_cluster_by_reason`        | critical     | hard failures (OOM/timeout) on **any** route, grouped by `decision_reason` so the operator picks the right lever.                      |
+| `route_b_still_failing`            | high         | route-B classes that **still** OOM/timeout — more sharding will not help; surfaces `max(k_shards)` as evidence.                        |
+| `cerberus_side_rejection_pressure` | high         | `sample_budget` / `byte_budget` / `breaker` / `rejected` clusters — cerberus refused the request itself; neither route addresses them. |
+| `heavy_shape_geometry_failing`     | high         | failing classes whose `cumulative_d` sits in their own per-language tail (the geometry the solver uses to route).                      |
+| `read_amplification_hot_shape`     | experimental | healthy scans reading above their own per-shape `read_rows` tail — a missing-PREWHERE / late-materialisation hint.                     |
 
 The original analysis dropped a naive *wrong-rejection* rule (flagging
 `exit_status=rejected` against a parity oracle) because judging it needs a

@@ -204,7 +204,7 @@ func isGeometryColumn(name string) bool {
 // the unrouted population selects it by `language`.
 var enumDomains = map[string]map[string]struct{}{
 	"route":       setOf("A", "B"),
-	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "breaker", "rejected", "aborted", "error"),
+	"exit_status": setOf("ok", "oom", "timeout", "sample_budget", "byte_budget", "breaker", "rejected", "aborted", "error"),
 	"language":    setOf("promql", "logql", "traceql"),
 	"decision_reason": setOf(
 		// Eligible: the plan cleared every structural gate and the COST
