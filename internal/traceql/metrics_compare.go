@@ -176,21 +176,20 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 //
 //	SELECT <TraceId>, argMin(<SpanName>, <Timestamp>)    AS __root_name,
 //	       argMin(<ServiceName>, <Timestamp>)            AS __root_service_name
-//	FROM <spans> WHERE <ParentSpanId> IN ('', '00…0') GROUP BY <TraceId>
+//	FROM <spans> WHERE <ParentSpanId> = '' GROUP BY <TraceId>
 //
 // One row per trace; the compare emitter LEFT JOINs it on TraceId so
 // every span row carries its trace's rootName / rootServiceName —
 // mirroring vparquet's trace-level RootSpanName / RootServiceName
 // columns. Orphan traces (no root span in the scanned window) fall out
-// of the LEFT JOIN as empty strings.
+// of the LEFT JOIN as empty strings — which is also what reference
+// reports for a trace whose root was never ingested.
 //
-// The root test is traceScopedRootSpanCond — the same "empty OR all-zero
-// hex ParentSpanId" predicate the `{ rootName = … }` spanset filter
-// (lower.go's traceScopedValueNode) and the /api/search root-lookup
-// decoration (internal/api/tempo/root_lookup.go) use, so all three
-// resolvers agree on what a root span is; a trace whose exporter writes
-// the all-zero spelling used to resolve to an empty rootName here while
-// the other two resolved it correctly. argMin keyed on Timestamp picks
+// The root test is traceScopedRootSpanCond — the same empty-ParentSpanId
+// predicate the `{ rootName = … }` spanset filter (lower.go's
+// traceScopedValueNode) uses, so the two query-answering resolvers agree
+// on what a root span is, and both agree with upstream's Span.IsRoot().
+// argMin keyed on Timestamp picks
 // the EARLIEST root-flagged span rather than an arbitrary one, so a
 // trace carrying more than one root-flagged row (a partial/merged trace)
 // gets a stable answer instead of one that changes between runs of the

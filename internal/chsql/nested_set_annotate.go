@@ -264,7 +264,7 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 
 	anchorConds := appendNonNilFrags(
 		[]Frag{
-			Eq(Col(n.ParentSpanIDColumn), InlineLit("")),
+			Eq(Col(n.ParentSpanIDColumn), InlineLit(rootParentSpanID)),
 			// scope already carries its own parens; InSubquery adds none,
 			// giving `<TraceId> IN (SELECT …)` with a single paren pair.
 			anchorTraceIn,

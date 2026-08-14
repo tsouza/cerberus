@@ -171,6 +171,16 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// on-disk root marker (pre-strip empty form + canonical 16-char
 	// zero form). Reused inside both argMinIf aggregates so they pick
 	// the root span among each TraceId group.
+	//
+	// This decoration is deliberately WIDER than the rootness test that
+	// answers a query. `{ rootName = … }` (internal/traceql/lower.go's
+	// traceScopedRootSpanCond) accepts only the empty spelling, because
+	// upstream's Span.IsRoot() is `len(ParentSpanID) == 0` and a query
+	// must return the spans reference returns (issue #1990). This
+	// helper is not deciding what matches: it is labelling a summary
+	// that already falls back to the earliest span when a trace has no
+	// root row at all, so a wider marker only changes WHICH heuristic
+	// supplies the same best-effort name.
 	rootCond := inStringList(s.ParentSpanIDColumn, []string{"", "0000000000000000"})
 
 	// argMinIf(SpanName, Timestamp, rootCond) AS RootSpanName.
