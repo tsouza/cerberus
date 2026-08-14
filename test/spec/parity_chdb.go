@@ -564,25 +564,29 @@ func exactMetricNameSelectors(expr string) map[string]bool {
 }
 
 func (r metricNameRestorer) restore(results []oracle.Result) {
-	for i := range results {
-		name, ok := r.bySeries[labelKey(results[i].Labels)]
+	restored := make([]oracle.Result, 0, len(results))
+	for _, result := range results {
+		name, ok := r.bySeries[labelKey(result.Labels)]
 		if !ok {
-			normalizedName := results[i].Labels[promNameLabel]
+			normalizedName := result.Labels[promNameLabel]
 			name, ok = r.byNormalizedName[normalizedName]
 			if r.ambiguousNames[normalizedName] {
 				ok = false
 			}
 		}
 		if !ok {
+			restored = append(restored, result)
 			continue
 		}
-		labels := make(map[string]string, len(results[i].Labels))
-		for key, value := range results[i].Labels {
+		labels := make(map[string]string, len(result.Labels))
+		for key, value := range result.Labels {
 			labels[key] = value
 		}
 		labels[promNameLabel] = name
-		results[i].Labels = labels
+		result.Labels = labels
+		restored = append(restored, result)
 	}
+	copy(results, restored)
 }
 
 func (r metricNameRestorer) record(labels map[string]string, name string) error {
