@@ -213,7 +213,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		switch {
 		case isVectorAggregateSampleShape(plan):
 			tsExpr = &chplan.ColumnRef{Name: "TimeUnix"}
-		case isMatrixRangeWindow(plan):
+		case bottomsOutAtMatrixRangeWindow(plan):
 			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
 		case !l.End.IsZero():
 			tsExpr = timeLiteralExpr(l.End)

@@ -347,10 +347,6 @@ func parseMetricsStep(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-// unwrapMetricsAggregate returns the MetricsAggregate at the plan root
-// (or directly under a single Filter wrapper, kept for forward-compat
-// with a future scalar-filter stage). Returns ok=false for any other
-// shape — the trigger for the handler's "not a metrics query" 400.
 // peelMetricsSecondStages splits a lowered metrics plan into its
 // MetricsSecondStage chain (outermost first — the order the lowering
 // wrapped them, i.e. reverse source order) and the inner aggregate
@@ -384,18 +380,6 @@ func applyMetricsSecondStages(node chplan.Node, stages []*chplan.MetricsSecondSt
 		node = &ss
 	}
 	return node
-}
-
-func unwrapMetricsAggregate(plan chplan.Node) (*chplan.MetricsAggregate, bool) {
-	switch v := plan.(type) {
-	case *chplan.MetricsAggregate:
-		return v, true
-	case *chplan.Filter:
-		if inner, ok := v.Input.(*chplan.MetricsAggregate); ok {
-			return inner, true
-		}
-	}
-	return nil, false
 }
 
 // tempoMetricNameLabel mirrors the Prometheus-style `__name__` label

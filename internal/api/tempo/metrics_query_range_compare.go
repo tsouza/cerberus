@@ -64,21 +64,6 @@ const (
 	compareRowValLabel  = "__val"
 )
 
-// unwrapMetricsCompare returns the MetricsCompare at the plan root (or
-// directly under a single Filter wrapper — mirroring
-// unwrapMetricsAggregate's forward-compat posture).
-func unwrapMetricsCompare(plan chplan.Node) (*chplan.MetricsCompare, bool) {
-	switch v := plan.(type) {
-	case *chplan.MetricsCompare:
-		return v, true
-	case *chplan.Filter:
-		if inner, ok := v.Input.(*chplan.MetricsCompare); ok {
-			return inner, true
-		}
-	}
-	return nil, false
-}
-
 // wrapCompareForSample wraps the matrix-shape RangeWindow with the
 // Sample projection the engine's row decoder expects. The cohort flag,
 // attribute name and attribute value ride the Attributes map under the

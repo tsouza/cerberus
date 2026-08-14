@@ -74,7 +74,7 @@ func lowerVectorAggregation(e *syntax.VectorAggregationExpr, s schema.Logs, lc l
 	// (`max(avg by (level) (avg_over_time(...)))`) bucket correctly
 	// instead of collapsing the whole matrix into one row.
 	const bucketAlias = "bucket_ts"
-	rangeBucketed := lc.rangeMode() && isMatrixRangeWindow(input)
+	rangeBucketed := lc.rangeMode() && bottomsOutAtMatrixRangeWindow(input)
 	if rangeBucketed {
 		bucketCol := matrixBucketColumn(input)
 		groupBy = append(groupBy, &chplan.ColumnRef{Name: bucketCol})

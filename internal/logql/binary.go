@@ -438,7 +438,7 @@ func logSampleColumns(inner chplan.Node, s schema.Logs) logSampleShape {
 			hasNativeTime: true,
 		}
 	}
-	if isMatrixRangeWindow(inner) {
+	if bottomsOutAtMatrixRangeWindow(inner) {
 		return logSampleShape{
 			metricName:    &chplan.LitString{V: ""},
 			attrsCol:      s.ResourceAttributesColumn,
