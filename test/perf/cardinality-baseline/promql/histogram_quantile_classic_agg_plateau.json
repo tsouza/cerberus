@@ -1,10 +1,10 @@
 {
   "fixture": "promql/histogram_quantile_classic_agg_plateau",
-  "fan_factor": 1,
+  "fan_factor": 4,
   "scan_rows": 3,
-  "peak_intermediate": 3,
+  "peak_intermediate": 12,
   "has_cross_join": false,
-  "has_array_join": false,
+  "has_array_join": true,
   "has_recursive_cte": false,
   "max_recursion_depth": 0,
   "uncountable_levels": 0
