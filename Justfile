@@ -470,7 +470,7 @@ coverage:
     @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out | sort; } > cover-folded.out && mv cover-folded.out cover.out
     @if [ -e /usr/local/lib/libchdb.so ]; then \
         echo "==> chdb-tagged coverage"; \
-        go test -timeout 40m -tags chdb -coverpkg="$(go list -tags chdb ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }' || true; \
+        go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }' || true; \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out | sort; \
         } > cover-folded.out && mv cover-folded.out cover-chdb.out; \
