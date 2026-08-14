@@ -319,9 +319,15 @@ func TestBaselineShardsShardedWriteRefusesForeignRecords(t *testing.T) {
 //
 // Both trees start from a stale roster, so the comparison covers pruning as well
 // as writing — the half a "sharded regeneration" gets wrong is the half that
-// deletes. Running the legs as real goroutines rather than in sequence is what
-// puts the concurrent walk (a sibling unlinking its own file mid-walk) under the
-// race detector instead of leaving it to the first real regeneration.
+// deletes.
+//
+// The legs run as real goroutines rather than in sequence to exercise the
+// FILESYSTEM interleaving they meet in production: concurrent MkdirAll, WriteFile,
+// Remove and WalkDir against one tree. That is the part `-race` cannot speak to —
+// the legs share no mutable Go state (the store is a value with no field written,
+// and each leg owns its own index of errs), so the detector has nothing to
+// instrument here. Sequencing them would leave the interleaving untested until
+// the first real regeneration.
 func TestBaselineShardsShardedWriteMatchesTheWholeCorpusWrite(t *testing.T) {
 	t.Parallel()
 
@@ -370,6 +376,52 @@ func TestBaselineShardsShardedWriteMatchesTheWholeCorpusWrite(t *testing.T) {
 		if _, ok := want[path]; !ok {
 			t.Errorf("%s is in the sharded tree and not in the serial one — a leg failed to prune it", path)
 		}
+	}
+}
+
+// TestBaselineShardsShardedWriteOwnsFilesAtUnEXPECTEDDepths pins the totality
+// the fan-out's completeness rests on.
+//
+// A leg prunes a stale file only when it OWNS the file's key, so the argument
+// that N legs together clear every stale file needs the partition to be total
+// over whatever keys are on disk — not merely over the keys a generator would
+// produce. `spec.ShardOf` hashes an arbitrary string, so a file at the wrong
+// depth (a leftover from a tree whose shape changed, or a hand-dropped file) is
+// still owned by exactly one leg. Were it owned by NONE, it would survive every
+// sharded regeneration while a whole-corpus one removed it — a stale row the
+// ratchet keeps honouring, visible only when somebody happened to run unsharded.
+func TestBaselineShardsShardedWriteOwnsFilesAtUnexpectedDepths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	s := probeShards(dir, 2)
+	corpus := probeCorpus(8)
+	s.mustWrite(t, probes(corpus...))
+
+	// Depth 1 in a depth-2 tree: no key the generator emits maps here.
+	stray := filepath.Join(dir, "stray.json")
+	if err := os.WriteFile(stray, []byte("{}\n"), shardFilePerm); err != nil {
+		t.Fatalf("plant stray shard: %v", err)
+	}
+
+	removedBy := 0
+	for i := range probeShardCount {
+		leg := spec.Shard{Index: i + 1, Count: probeShardCount}
+		if err := s.writeShard(spec.FilterShardMap(leg, probes(corpus...)), leg); err != nil {
+			t.Fatalf("leg %d of %d failed: %v", i+1, probeShardCount, err)
+		}
+		if _, err := os.Stat(stray); os.IsNotExist(err) && removedBy == 0 {
+			removedBy = i + 1
+		}
+	}
+
+	if removedBy == 0 {
+		t.Errorf("a stray shard at an unexpected depth survived all %d legs — it is owned by no leg, "+
+			"so no sharded regeneration can ever remove it", probeShardCount)
+	}
+	if want := spec.ShardOf(keyFor("stray.json"), probeShardCount); removedBy != want {
+		t.Errorf("the stray was removed by leg %d, but its key is owned by leg %d — prune is not "+
+			"scoping by the same partition the corpus is split on", removedBy, want)
 	}
 }
 

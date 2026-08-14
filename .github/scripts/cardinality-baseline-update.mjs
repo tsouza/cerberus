@@ -79,6 +79,13 @@ import { runAllTagged } from './lib/spawn-tagged.mjs';
  * exactly one leg at any N, so N legs at count N always cover the tree, whatever
  * N the tree was last written at. Matching is what keeps the balance floor
  * measured at a split somebody actually runs.
+ *
+ * What this asks of the host is N concurrent in-process ClickHouse engines —
+ * each leg stands up its own chdb session, where the serial pass stood up one.
+ * A host too small for that loses a leg to the OOM killer, which fails loudly
+ * and is safe to recover from: a leg only ever rewrites its own slice, so
+ * re-running the recipe is idempotent. CARDINALITY_BASELINE_FANOUT is the lever
+ * for a smaller machine.
  */
 const BASELINE_FANOUT = 8;
 

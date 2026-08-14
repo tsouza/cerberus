@@ -220,20 +220,19 @@ func (s baselineShards[T]) write(entries map[string]T) error {
 // writer of. Legs therefore touch disjoint path sets and never race for a file,
 // and the union of N legs at count N is byte-for-byte the single whole-corpus
 // pass — every key on disk belongs to exactly one leg, so every stale file is
-// some leg's to remove.
+// some leg's to remove. "Every key" is literal rather than approximate:
+// [spec.ShardOf] is total over strings, so even a file at an unexpected depth,
+// whose key no generator would produce, is still owned by exactly one leg and
+// pruned by it. Nothing on disk can end up owned by nobody.
 //
 // Without that scoping a leg's prune walks the whole tree and deletes the other
 // N-1 legs' rows as "no longer in the corpus" — the hazard that made a sharded
 // regeneration impossible, and the reason the ratchet's update path used to
 // refuse a partial corpus outright.
 //
-// Two smaller concessions to running beside live siblings, both no-ops when the
-// shard is whole:
+// One concession to running beside live siblings, a no-op when the shard is
+// whole:
 //
-//   - the walk tolerates an entry that vanishes under it, because a sibling
-//     pruning ITS OWN stale file can remove a path between this leg's readdir
-//     and its lstat. A path that disappeared is by construction not this leg's
-//     to prune — only its owner deletes it — so skipping it loses nothing.
 //   - empty directories are left alone. Removing one races a sibling that is
 //     between MkdirAll and WriteFile inside it, and an empty directory is not
 //     part of the artefact anyway: git tracks files, so an empty directory left
@@ -301,15 +300,15 @@ func (s baselineShards[T]) prune(want map[string]struct{}, shard spec.Shard) err
 	var stale []string
 	var dirs []string
 
+	// A file a sibling leg unlinks mid-walk needs no tolerance here:
+	// [filepath.WalkDir] surfaces an error from exactly two places — the
+	// os.Lstat of the ROOT, and an os.ReadDir of a directory — and os.ReadDir
+	// already drops an entry that disappeared between the readdir and the stat.
+	// Swallowing fs.ErrNotExist at this callback would therefore not cover the
+	// concurrent case at all; the only thing it could reach is a missing tree
+	// root, which must fail loudly rather than prune nothing and exit 0.
 	err := filepath.WalkDir(s.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// A sibling leg pruning its own stale file can unlink a path
-			// between this walk's readdir and its lstat. Only the owning leg
-			// deletes a path, so one that vanished was never this leg's.
-			if !shard.IsWhole() && errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-
 			return err
 		}
 		if d.IsDir() {

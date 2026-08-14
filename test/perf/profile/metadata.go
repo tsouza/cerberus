@@ -283,10 +283,17 @@ type metadataFixture struct {
 	args  []any
 }
 
-// captureMetadataFixtures drives the three windowless metadata endpoints
-// named in issue #1530 and returns the dominant captured SQL statement for
-// each, paired with a fixture id under the "metadata/" namespace (parallel
-// to the "<head>/<name>" TXTAR ids ProfileCorpus uses).
+// metadataFixtureSpecs is the roster of the three windowless metadata endpoints
+// named in issue #1530: the fixture id each is recorded under — in the
+// "metadata/" namespace, parallel to the "<head>/<name>" TXTAR ids ProfileCorpus
+// uses — and the request that produces it.
+//
+// It is a package-level var rather than a local inside
+// [captureMetadataFixtures] so the ids can be read without standing an HTTP
+// handler up and profiling it ([MetadataFixtureIDs]). The baseline's
+// completeness check needs to know which rows the tree must hold, which is a
+// question about names — deriving those names by running the profiler would make
+// the cheap check as expensive as the thing it checks.
 //
 //   - metadata/series_no_bounds — GET /api/v1/series?match[]=up. Requires
 //     match[] (the endpoint 400s without one — internal/api/prom/metadata.go's
@@ -301,21 +308,6 @@ type metadataFixture struct {
 //   - metadata/label_values_no_bounds — GET /api/v1/label/job/values. No
 //     match[], no bounds: the catalog-wide label-value enumeration
 //     (unionLabelValuesSQL) for an ordinary Attributes-map key.
-//
-// Each capture takes the LAST recorded statement: the single-matcher /
-// single-arm fast paths these requests hit (metadataUpMetric has no
-// dotted/underscored form to expand, and the resource arm is disabled)
-// issue exactly one statement, so "last" is simply "the" statement; taking
-// the last rather than indexing [0] keeps this robust if a future matcher
-// expansion adds a leading catalog lookup ahead of the sample query.
-// metadataFixtureSpecs is the ROSTER half of the three fixtures above: the id
-// each one is recorded under and the request that produces it.
-//
-// It is a package-level var rather than a local so the ids can be read without
-// standing an HTTP handler up and profiling it ([MetadataFixtureIDs]). The
-// baseline's completeness check needs to know which rows the tree must hold,
-// which is a question about names — deriving those names by running the
-// profiler would make the cheap check as expensive as the thing it checks.
 var metadataFixtureSpecs = []struct {
 	id   string
 	path string
@@ -338,6 +330,16 @@ func MetadataFixtureIDs() []string {
 	return out
 }
 
+// captureMetadataFixtures drives every endpoint in [metadataFixtureSpecs] and
+// returns the dominant captured SQL statement for each, paired with its
+// fixture id.
+//
+// Each capture takes the LAST recorded statement: the single-matcher /
+// single-arm fast paths these requests hit (metadataUpMetric has no
+// dotted/underscored form to expand, and the resource arm is disabled)
+// issue exactly one statement, so "last" is simply "the" statement; taking
+// the last rather than indexing [0] keeps this robust if a future matcher
+// expansion adds a leading catalog lookup ahead of the sample query.
 func captureMetadataFixtures() []metadataFixture {
 	specs := metadataFixtureSpecs
 	out := make([]metadataFixture, 0, len(specs))

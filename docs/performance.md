@@ -228,7 +228,8 @@ other 7/8 as removed fixtures and leave a tree that still parses.
 `baselineShards.writeShard` scopes the prune to the leg's own slice — a leg
 deletes a stale file only when the file's key hashes to the leg's index — so leg
 `i` can only touch paths leg `i` is also the only writer of, and N legs at count
-N reproduce the serial pass byte for byte.
+N reproduce the serial pass byte for byte, modulo the empty directories a leg
+deliberately leaves behind (git tracks files, so those never reach the artefact).
 `just update-cardinality-baseline` therefore fans the profile pass out across the
 same 8 legs, through `.github/scripts/cardinality-baseline-update.mjs`, and
 closes with a step that re-derives the corpus roster from a TXTAR walk and
