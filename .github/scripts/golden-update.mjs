@@ -74,11 +74,12 @@
 // one invocation surfaces every failure in that stage rather than just the
 // first; a later stage never starts once its predecessor reports a failure.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import process from 'node:process';
 
 import { error, log } from './lib/gh.mjs';
+import { runTagged } from './lib/spawn-tagged.mjs';
 import {
   SHARDS,
   commandsFor,
@@ -143,43 +144,6 @@ function fail(message) {
   process.exit(1);
 }
 
-/**
- * Runs one child process, streaming its stdout/stderr to this process's own
- * streams line-by-line, each line tagged `[name] `. Line-buffering (rather
- * than piping the raw stream through) is what keeps concurrent children's
- * output from interleaving mid-line into unreadable garbage; a whole line is
- * still the smallest unit two children can race to print.
- *
- * Resolves to the exit code rather than rejecting, so a caller running
- * several of these concurrently can let every child finish (and print its
- * output) before deciding whether the group as a whole failed.
- */
-function runTagged(name, argv, env, cwd) {
-  return new Promise((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), {
-      cwd,
-      env: { ...process.env, ...env },
-    });
-
-    const tag = (stream, sink) => {
-      let carry = '';
-      stream.on('data', (chunk) => {
-        carry += chunk.toString();
-        const lines = carry.split('\n');
-        carry = lines.pop();
-        for (const l of lines) sink(`[${name}] ${l}`);
-      });
-      stream.on('end', () => {
-        if (carry) sink(`[${name}] ${carry}`);
-      });
-    };
-    tag(child.stdout, log);
-    tag(child.stderr, log);
-
-    child.on('close', (code) => resolve(code === null ? 1 : code));
-  });
-}
-
 /** Runs one shard's generators sequentially (declaration order is a real
  * data dependency — see the module comment). Resolves to `{ name, code }`;
  * `code` is the first non-zero exit, or 0 if every generator succeeded.
@@ -199,7 +163,7 @@ async function runShard(name, justExecutable, repoRoot) {
         .join(' ')} ${argv.join(' ')}`.replace(/\s+/g, ' '));
     }
     const codes = await Promise.all(
-      group.map(({ argv, env }) => runTagged(stepLabel(name, env), argv, env, repoRoot)),
+      group.map(({ argv, env }) => runTagged(stepLabel(name, env), argv, env, repoRoot, log)),
     );
     const failed = codes.find((c) => c !== 0);
     if (failed !== undefined) return { name, code: failed };

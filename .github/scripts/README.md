@@ -1800,6 +1800,32 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     `test/regression/golden_shard_coverage_test.go` pins that, along with the
     check firing in both directions.
 
+- **`cardinality-baseline-update.mjs`** — no workflow. The second script here a
+  contributor runs by hand, through `just update-cardinality-baseline`. It
+  regenerates `test/perf/cardinality-baseline/` by fanning the chDB profile pass
+  out across the same 8 legs `perf-guards-shard` uses for the gating pass, each
+  leg owning a disjoint slice of the corpus, then runs a closing step that
+  asserts the slices together covered it. The fan-out is only safe because
+  `baselineShards.writeShard` scopes each leg's prune to its own slice, so a leg
+  cannot delete a sibling's rows — before #2122 it could, which is why the
+  regeneration was a single serial pass over ~950 fixtures.
+  - Env: `CHDB_INSTALL_PATH`, `CARDINALITY_BASELINE_TIMEOUT` (per leg),
+    `CARDINALITY_BASELINE_FANOUT` (optional; for measuring the split on a
+    differently shaped machine — the plan printed WITHOUT it is what the
+    regression pin reads), `CARDINALITY_UPDATE_PRINT_PLAN`.
+  - Exit: `0` on a clean regeneration; `1` on a missing `libchdb.so`, any leg
+    failing, or the closing step reporting a tree that does not match the corpus.
+  - `test/regression/cardinality_baseline_fanout_test.go` pins the plan: a
+    fan-out that collapsed to one command, a leg list that is not the contiguous
+    `1..N` the partition divides by, a leg that lost its `UPDATE_*` marker (and
+    so asserts instead of rewriting), a missing closing step, and the leg count
+    drifting from the count `test/perf/profile/shard_test.go` asserts the
+    partition's cover and balance at.
+  - `lib/spawn-tagged.mjs` holds the one child-process runner both this and
+    `golden-update.mjs` fan out with: line-tagged output so concurrent legs stay
+    readable, and every leg allowed to finish before the group's verdict, so one
+    invocation surfaces every failure rather than just the first.
+
 ## Notes
 
 - **`forbid-skip.mjs` regexes are a contract.** They are kept

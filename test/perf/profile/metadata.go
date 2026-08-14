@@ -308,15 +308,38 @@ type metadataFixture struct {
 // issue exactly one statement, so "last" is simply "the" statement; taking
 // the last rather than indexing [0] keeps this robust if a future matcher
 // expansion adds a leading catalog lookup ahead of the sample query.
-func captureMetadataFixtures() []metadataFixture {
-	specs := []struct {
-		id   string
-		path string
-	}{
-		{"metadata/series_no_bounds", "/api/v1/series?match[]=" + metadataUpMetric},
-		{"metadata/labels_no_bounds", "/api/v1/labels"},
-		{"metadata/label_values_no_bounds", "/api/v1/label/job/values"},
+// metadataFixtureSpecs is the ROSTER half of the three fixtures above: the id
+// each one is recorded under and the request that produces it.
+//
+// It is a package-level var rather than a local so the ids can be read without
+// standing an HTTP handler up and profiling it ([MetadataFixtureIDs]). The
+// baseline's completeness check needs to know which rows the tree must hold,
+// which is a question about names — deriving those names by running the
+// profiler would make the cheap check as expensive as the thing it checks.
+var metadataFixtureSpecs = []struct {
+	id   string
+	path string
+}{
+	{"metadata/series_no_bounds", "/api/v1/series?match[]=" + metadataUpMetric},
+	{"metadata/labels_no_bounds", "/api/v1/labels"},
+	{"metadata/label_values_no_bounds", "/api/v1/label/job/values"},
+}
+
+// MetadataFixtureIDs is the id of every fixture [ProfileMetadataEndpoints]
+// records, in declaration order. These ids are part of the profiled corpus's
+// roster without being TXTAR fixtures, so anything reasoning about the full
+// expected fixture set has to add them to [FindExecutableFixtures]'s output.
+func MetadataFixtureIDs() []string {
+	out := make([]string, 0, len(metadataFixtureSpecs))
+	for _, s := range metadataFixtureSpecs {
+		out = append(out, s.id)
 	}
+
+	return out
+}
+
+func captureMetadataFixtures() []metadataFixture {
+	specs := metadataFixtureSpecs
 	out := make([]metadataFixture, 0, len(specs))
 	for _, s := range specs {
 		q := captureMetadataSQL(s.path)
