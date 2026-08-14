@@ -290,10 +290,17 @@ func insertProbes(src string, spans map[int]sourceSpan) (string, map[int]string,
 	// Walk the source once, opening every span that starts here and closing
 	// every one that ends here. The open spans form a stack because they
 	// nest, so the innermost — the one on top — is always the one to close.
+	//
+	// The walk visits POSITIONS, of which there is one more than there are
+	// bytes: a span ending at the very end of the source closes at the
+	// position after the last byte. Hence the break in the middle rather
+	// than a bound on the loop — a `for i := 0; i <= len(src)` header would
+	// be an index bound that deliberately disagrees with the indexing
+	// inside it, which is the shape a real off-by-one hides in.
 	var out strings.Builder
 	var open []sourceSpan
 	next := 0
-	for i := 0; i <= len(src); i++ {
+	for i := 0; ; i++ {
 		for len(open) > 0 && open[len(open)-1].end == i {
 			out.WriteString(")")
 			open = open[:len(open)-1]
@@ -305,9 +312,10 @@ func insertProbes(src string, spans map[int]sourceSpan) (string, map[int]string,
 			open = append(open, ordered[next])
 			next++
 		}
-		if i < len(src) {
-			out.WriteByte(src[i])
+		if i == len(src) {
+			break
 		}
+		out.WriteByte(src[i])
 	}
 	// Every span must have been both opened and closed by the walk. That
 	// single check is the whole validation: a span reaching outside the
