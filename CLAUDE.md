@@ -193,10 +193,10 @@ per-layer "catches X / misses Y" guidance.
 
 ## Workflow for a non-trivial change
 
-Plan first, code last. Plan mode → requirements interview → a spec at `docs/specs/<feature>.md` → a
-numbered task list for owner review → only then implementation. Trivial changes (a typo, a one-line
-fix with an obvious test) skip straight to the PR. `docs/agent-workflow.md` describes each stage and
-what a spec must contain.
+Plan first, code last. Plan mode → requirements interview → record the feature context in the issue
+body or PR description, with behaviour pinned in tests and code → implementation. Trivial changes
+(a typo, a one-line fix with an obvious test) skip straight to the PR. `docs/agent-workflow.md`
+describes each stage.
 
 ## Common workflows
 
