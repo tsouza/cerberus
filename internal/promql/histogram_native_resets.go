@@ -277,9 +277,9 @@ func lowerExpHistogramResetsRange(shape histogramAggShape, s schema.Metrics, ctx
 // nothing downstream reads; branching states which function reads what.
 func expHistogramPairCountAggs(windowFn string, s schema.Metrics) []chplan.AggFunc {
 	if windowFn == changesWindowFn {
-		return expHistogramValuedWindowAggs(s)
+		return expHistogramValuedWindowAggs(s, windowFn)
 	}
-	return expHistogramWindowAggs(s)
+	return expHistogramWindowAggs(s, windowFn)
 }
 
 // expHistogramPairCountStage projects the per-series pair count alongside

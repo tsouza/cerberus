@@ -74,14 +74,15 @@ const paramExpRowCount = "n"
 
 // expHistogramWindowAggs are the per-series stage's aggregates: every
 // in-window row's scale, offset, bucket array, zero count and
-// timestamp, plus the group's coarsest scale to downscale them onto.
+// timestamp, plus the group's coarsest scale to downscale them onto. A
+// rate/increase window also needs its one AggregationTemporality reading.
 //
 // min(Scale) is the merged scale for the same reason it is on the
 // across-series stage: an exponential histogram can be folded to a
 // COARSER scale exactly (adjacent bucket pairs merge) but never to a
 // finer one, so the coarsest scale present is the only one every row
 // can reach.
-func expHistogramWindowAggs(s schema.Metrics) []chplan.AggFunc {
+func expHistogramWindowAggs(s schema.Metrics, windowFn string) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
 		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
 	}
@@ -95,7 +96,7 @@ func expHistogramWindowAggs(s schema.Metrics) []chplan.AggFunc {
 			Alias: s.ZeroThresholdColumn,
 		})
 	}
-	return append(aggs, []chplan.AggFunc{
+	aggs = append(aggs, []chplan.AggFunc{
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: hqWindowZeroCountsArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqWindowCountArrayAlias},
@@ -105,6 +106,23 @@ func expHistogramWindowAggs(s schema.Metrics) []chplan.AggFunc {
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
 		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: hqWindowTsListAlias},
 	}...)
+	if needsTemporalityAgg(windowFn) && s.AggregationTemporalityColumn != "" {
+		aggs = append(aggs, chplan.AggFunc{
+			Name:  "any",
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.AggregationTemporalityColumn}},
+			Alias: hqWindowTemporalityAlias,
+		})
+	}
+	return aggs
+}
+
+// expHistogramWindowTemporalityExpr returns the per-series temporality reading
+// projected by expHistogramWindowAggs for a rate/increase window.
+func expHistogramWindowTemporalityExpr(s schema.Metrics, windowFn string) chplan.Expr {
+	if !needsTemporalityAgg(windowFn) || s.AggregationTemporalityColumn == "" {
+		return nil
+	}
+	return &chplan.ColumnRef{Name: hqWindowTemporalityAlias}
 }
 
 // expHistogramWindowFloatsExpr casts a per-row contribution array into
@@ -299,22 +317,20 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(expHistogramWindowAggs(s), windowSampleCountAgg(s)),
+		AggFuncs:           append(expHistogramWindowAggs(s, shape.windowFn), windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
 	resets := expHistogramResetMaskFor(shape.windowFn)
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		expHistogramWindowAggs(s),
+		expHistogramWindowAggs(s, shape.windowFn),
 		[]string{s.AttributesColumn},
 		resets,
-		// nil temporality: the exponential/native-histogram path stays out
-		// of #1628's scope — see the analogous range-mode call site in
-		// histogram_quantile_range.go.
 		histogramWindowFold(shape.windowFn, histogramWindowInputs{
 			rangeStart:  rangeStart,
 			rangeEnd:    rangeEnd,
 			countValues: expHistogramWindowCountValuesExpr(),
+			temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 			resets:      resets,
 		}),
 		nil,
