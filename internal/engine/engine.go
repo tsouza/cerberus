@@ -1213,8 +1213,45 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // declaration a property of the adapter's Meta, exactly as on route A. It
 // survives to each shard's QueryCursor by ordinary ctx nesting; internal/
 // solver's response_shape_wiring_test.go pins that arrival.
-func routeBExecCtx(ctx context.Context, langName, responseShape string) context.Context {
-	return chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
+//
+// It also carries route A's per-plan ts-grid rule across to route B: a shard
+// whose plan contains a node from the experimental timeSeries*ToGrid family
+// needs `allow_experimental_time_series_aggregate_functions=1` exactly as a
+// route-A statement does, and ClickHouse answers code 63 ("aggregate function
+// ... is experimental and disabled by default") on every shard without it. The
+// rule reads the DECISION's own shard plans rather than the pre-slice plan
+// because those are the trees the Executor emits; they are re-anchored copies
+// of the same spine, so the two agree, and reading what is emitted is what
+// keeps them agreeing.
+//
+// This became reachable when RangeWindowNative entered the routable spine
+// family (issue #2117). Before that every ts-grid-carrying plan was refused as
+// not-sliceable — by the slice-invariance registry on the main spine and by the
+// same registry inside walkScalarInterior for an Expr-embedded one — so no
+// route-B dispatch could carry the family at all.
+func routeBExecCtx(ctx context.Context, langName, responseShape string, decision *solver.Decision) context.Context {
+	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
+	if decisionHasTSGridNative(decision) {
+		ctx = chclient.WithTSGridSetting(ctx)
+	}
+	return ctx
+}
+
+// decisionHasTSGridNative reports whether ANY shard plan of decision carries a
+// node from the experimental timeSeries*ToGrid family. One shard is enough: the
+// setting rides the shared dispatch ctx, and every shard of a routed plan is a
+// re-anchored copy of the same spine, so the family is present in all of them or
+// in none.
+func decisionHasTSGridNative(decision *solver.Decision) bool {
+	if decision == nil {
+		return false
+	}
+	for _, s := range decision.Slices {
+		if planHasTSGridNative(s.Plan) {
+			return true
+		}
+	}
+	return false
 }
 
 // executeRouted runs the dormant route-B path: it dispatches the K shard
@@ -1236,7 +1273,7 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -1706,7 +1743,7 @@ func (e *Engine) executeRoutedCursor(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {

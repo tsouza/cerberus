@@ -134,9 +134,16 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 }
 
 // UnpinSpine returns a copy-on-write view of plan whose windowed-spine bounds
-// (RangeWindow / RangeLWR Start, End, and the matrix OuterRange) are zeroed,
-// so ReanchorRange treats every spine node as the unpinned subquery-inner
-// shape and fills each slice's grid in.
+// (RangeWindow / RangeWindowNative / RangeLWR Start, End, and the matrix
+// OuterRange) are zeroed, so ReanchorRange treats every spine node as the
+// unpinned subquery-inner shape and fills each slice's grid in.
+//
+// The set of kinds zeroed here is exactly the set chplan.ReanchorRange
+// re-grids, which is exactly the set carrierGeometryOf marks reanchorable.
+// The three must move together: a kind ReanchorRange learned but this function
+// did not stays pinned at the full request grid, and every slice then fails
+// ErrReanchorGridMismatch — which sliceAndDecide converts into a silent
+// fall back to route A, so the plan classifies as routable and never routes.
 //
 // The original plan is never mutated. UnpinSpine clones ONLY the spine-path
 // nodes it actually zeroes (and their ancestors back to the root, the
@@ -195,6 +202,22 @@ func unpinSpineCOW(n chplan.Node) (chplan.Node, bool) {
 		c := *v
 		c.Input = input
 		return &c, true
+	case *chplan.RangeWindowNative:
+		// The native timeSeries<fn>ToGrid spine node. It is pinned at the full
+		// request grid by construction (the lowering only builds it in range
+		// mode), and chplan.ReanchorRange re-grids it — so it must be zeroed
+		// here for the same reason the matrix RangeWindow is: ReanchorRange
+		// only fills a node that is unpinned or already on the target grid, and
+		// a slice's grid is a SUB-window of the one this node carries. Leaving
+		// it pinned makes every slice fail ErrReanchorGridMismatch, which
+		// sliceAndDecide turns into a silent fall back to route A — the plan
+		// would look routable and never actually route.
+		input, _ := unpinSpineCOW(v.Input)
+		c := *v
+		c.Start = time.Time{}
+		c.End = time.Time{}
+		c.Input = input
+		return &c, true
 	case *chplan.RangeLWR:
 		input, _ := unpinSpineCOW(v.Input)
 		c := *v
@@ -248,7 +271,15 @@ func descendOffSpine(n chplan.Node) (chplan.Node, bool) {
 // subtreeHasZeroableSpine reports whether the subtree rooted at n (descending
 // only through Node children, never through Expr-embedded ScalarSubquery
 // interiors -- which UnpinSpine never zeroed) contains a windowed node whose
-// grid UnpinSpine would zero: any RangeLWR, or a matrix RangeWindow (Step > 0).
+// grid UnpinSpine would zero: any RangeLWR, or a matrix RangeWindow /
+// RangeWindowNative (Step > 0).
+//
+// It must name exactly the kinds unpinSpineCOW zeroes. A kind zeroed there but
+// missing here is invisible to the off-spine probe, so a subtree carrying only
+// that kind is shared verbatim and reaches ReanchorRange still pinned at the
+// full grid -- the ErrReanchorGridMismatch / silent-route-A failure the arms
+// themselves describe. The mixed `UnionAll{RangeWindowNative, RangeWindow}`
+// spine is precisely a subtree reached this way.
 func subtreeHasZeroableSpine(n chplan.Node) bool {
 	found := false
 	chplan.Walk(n, func(node chplan.Node) bool {
@@ -256,6 +287,10 @@ func subtreeHasZeroableSpine(n chplan.Node) bool {
 		case *chplan.RangeLWR:
 			found = true
 		case *chplan.RangeWindow:
+			if v.Step > 0 {
+				found = true
+			}
+		case *chplan.RangeWindowNative:
 			if v.Step > 0 {
 				found = true
 			}
@@ -276,6 +311,13 @@ func zeroSpineInPlace(n chplan.Node) {
 			v.Start = time.Time{}
 			v.End = time.Time{}
 			v.OuterRange = 0
+		}
+		zeroSpineInPlace(v.Input)
+		return
+	case *chplan.RangeWindowNative:
+		if v.Step > 0 {
+			v.Start = time.Time{}
+			v.End = time.Time{}
 		}
 		zeroSpineInPlace(v.Input)
 		return
