@@ -88,6 +88,11 @@
 #    the tester's eval point; its sparse third instance further pins the
 #    two-sample rate() floor into the merged answer, via a schema
 #    coarsening a wrong floor would admit one window early.
+# 10. Three cerberus-owned extrapolating-subquery cases cover the direct
+#     max/min/count_over_time aggregate path. The upstream corpus covers
+#     neighbouring array and absent paths, but none of these reducers over a
+#     rate/increase inner, so it cannot exercise either the materialized
+#     direct aggregate or its fused equivalent (#2053).
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`
@@ -451,6 +456,12 @@ test_cases:
   # Subqueries.
   - query: 'max_over_time((time() - max(demo_batch_last_success_timestamp_seconds) < 1000)[5m:10s] offset 5m)'
   - query: 'avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])'
+  # #2053: min/max/count_over_time use the direct aggregate path. rate and
+  # increase make the inner subquery extrapolating; offset also keeps the
+  # grid/window carrier in the exercised shape.
+  - query: 'max_over_time(rate(demo_cpu_usage_seconds_total[1m])[5m:30s])'
+  - query: 'min_over_time(increase(demo_cpu_usage_seconds_total[1m])[5m:30s])'
+  - query: 'count_over_time(rate(demo_cpu_usage_seconds_total[1m])[5m:30s] offset 2m)'
 
   # Vector-vector binary op over range-vector (rate) operands. Before
   # the vector-join MetricName/TimeUnix fix these produced ClickHouse
