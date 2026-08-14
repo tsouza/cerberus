@@ -883,6 +883,7 @@ func readSeededClassicHistograms(
 	}
 	defer func() { _ = rows.Close() }()
 
+	countDeclared := hasColumn(seedCols, colCount)
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName, countsJSON, boundsJSON string
 		var tsMillis int64
@@ -917,6 +918,12 @@ func readSeededClassicHistograms(
 					"overflow bucket", name, len(counts), len(bounds),
 			)
 		}
+		if !countDeclared {
+			// Cerberus derives a classic histogram's total from its per-bucket
+			// counts when the physical Count column is absent. The seed DDL
+			// backfill is zero only to keep INSERT arity valid, not data.
+			count = totalClassicHistogramObservations(counts)
+		}
 
 		cumulative := 0.0
 		for i, bound := range bounds {
@@ -938,6 +945,14 @@ func readSeededClassicHistograms(
 		}
 	}
 	return rows.Err()
+}
+
+func totalClassicHistogramObservations(counts []float64) float64 {
+	total := 0.0
+	for _, count := range counts {
+		total += count
+	}
+	return total
 }
 
 // formatBucketBound renders a bucket boundary the way the `le` label
