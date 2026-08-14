@@ -668,12 +668,12 @@ func downscaleHistogramBuckets(offset int32, buckets []float64, shift int32) (in
 		return offset, nil
 	}
 	start := offset >> shift
-	end := (offset + int32(len(buckets)-1)) >> shift
-	downscaled := make([]float64, end-start+1)
+	end := (int64(offset) + int64(len(buckets)) - 1) >> shift
+	downscaled := make([]float64, len(buckets))
 	for i, value := range buckets {
-		downscaled[(offset+int32(i))>>shift-start] += value
+		downscaled[((int64(offset)+int64(i))>>shift)-int64(start)] += value
 	}
-	return start, downscaled
+	return start, downscaled[:end-int64(start)+1]
 }
 
 func cloneHistogram(h *oracle.Histogram) *oracle.Histogram {
@@ -692,15 +692,15 @@ func addHistogramBuckets(leftOffset int32, left []float64, rightOffset int32, ri
 		return leftOffset, append([]float64(nil), left...)
 	}
 	offset := min(leftOffset, rightOffset)
-	end := max(leftOffset+int32(len(left)), rightOffset+int32(len(right)))
-	buckets := make([]float64, end-offset)
+	end := max(int64(leftOffset)+int64(len(left)), int64(rightOffset)+int64(len(right)))
+	buckets := make([]float64, len(left)+len(right))
 	for i, value := range left {
 		buckets[leftOffset-offset+int32(i)] += value
 	}
 	for i, value := range right {
 		buckets[rightOffset-offset+int32(i)] += value
 	}
-	return offset, buckets
+	return offset, buckets[:end-int64(offset)]
 }
 
 // exactMetricNameSelectors returns the Prometheus-normalized names selected
