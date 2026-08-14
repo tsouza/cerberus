@@ -225,15 +225,15 @@ func lowerExpHistogramRateRange(shape histogramAggShape, s schema.Metrics, ctx l
 
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
-	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd)
+	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 
 	perSeries := expHistogramWindowReshape(
 		buildHistogramBucketFanout(
 			scan, pred, nil, win,
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
-			expHistogramValuedWindowAggs(s), s, ctx,
+			expHistogramValuedWindowAggs(s, shape.windowFn), s, ctx,
 		),
-		expHistogramValuedWindowAggs(s),
+		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
@@ -249,17 +249,17 @@ func lowerExpHistogramRateRange(shape histogramAggShape, s schema.Metrics, ctx l
 // fields the quantile path already collects, and Count / Sum folded into
 // the reshaped row.
 func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
-	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd)
+	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	group := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(expHistogramValuedWindowAggs(s), windowSampleCountAgg(s)),
+		AggFuncs:           append(expHistogramValuedWindowAggs(s, shape.windowFn), windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		expHistogramValuedWindowAggs(s),
+		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
@@ -298,15 +298,9 @@ func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, r
 // first in-window Count against the window's own total increase, both
 // pre-factor and pre-division (see [histogramExtrapolationFactorExpr]).
 //
-// countValues is the whole-histogram Count series rather than any one
-// bucket's counts, and temporality is nil — the two arguments the shared
-// fold takes that this path does not vary. Both match the exponential-
-// histogram window's other call sites exactly: the Count series is what
-// reference's native-histogram durationToZero reads, and a nil
-// temporality applies the CUMULATIVE counter-reset reading, which is the
-// reading every OTel exponential-histogram path in this package uses —
-// the branch issue #1963 covers for this table.
-func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr) histogramWindowTimeFold {
+// countValues is the whole-histogram Count series rather than any one bucket's
+// counts. Its per-series temporality selects the DELTA numerator when needed.
+func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) histogramWindowTimeFold {
 	var perSecond chplan.Expr
 	if shape.windowFn == rateWindowFn {
 		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
@@ -315,6 +309,7 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
 		countValues: expHistogramWindowCountValuesExpr(),
+		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      expHistogramResetMaskFor(shape.windowFn),
 		perSecond:   perSecond,
 	})
@@ -326,8 +321,8 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 // other groupArray so the fold can put them in time order. Count is
 // already there — the quantile path collects it for the durationToZero
 // clamp (see [hqWindowCountArrayAlias]).
-func expHistogramValuedWindowAggs(s schema.Metrics) []chplan.AggFunc {
-	return append(expHistogramWindowAggs(s), chplan.AggFunc{
+func expHistogramValuedWindowAggs(s schema.Metrics, windowFn string) []chplan.AggFunc {
+	return append(expHistogramWindowAggs(s, windowFn), chplan.AggFunc{
 		Name:  "groupArray",
 		Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}},
 		Alias: hqWindowSumArrayAlias,

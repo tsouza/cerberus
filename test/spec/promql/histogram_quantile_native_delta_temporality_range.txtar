@@ -1,0 +1,228 @@
+# Range-query counterpart of histogram_quantile_native_delta_temporality. The
+# fanout's per-(anchor, series) aggregate must carry the DELTA temporality into
+# the native histogram window fold.
+-- query.promql --
+histogram_quantile(0.5, rate(delta_quantile_range_exp_hist[1m]))
+-- range_step --
+1m
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    AggregationTemporality Int32,
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    (1, 'delta_quantile_range_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:02', 9), 10, 5.0, 0, 2, 0, [6, 2], 0, []),
+    (1, 'delta_quantile_range_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 40, 20.0, 0, 8, 0, [8, 24], 0, []);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:00Z", 2.2449240966187456]
+]
+-- args --
+[0] string = ""
+[1] int64 = 1
+[2] int64 = 0
+[3] int64 = 0
+[4] int64 = 1
+[5] int64 = 1
+[6] int64 = 1
+[7] int64 = 0
+[8] int64 = 0
+[9] int64 = 1
+[10] int64 = 1
+[11] int64 = 1
+[12] int64 = 1
+[13] int64 = 1
+[14] int64 = 0
+[15] int64 = 0
+[16] int64 = 1
+[17] int64 = 0
+[18] int64 = 1
+[19] string = "nanosecond"
+[20] float64 = 1e+09
+[21] float64 = 1.1
+[22] float64 = 2
+[23] string = "nanosecond"
+[24] float64 = 1e+09
+[25] float64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 1
+[29] int64 = 1
+[30] string = "nanosecond"
+[31] int64 = 60000000000
+[32] int64 = 1
+[33] float64 = 1e+09
+[34] float64 = 1.1
+[35] float64 = 2
+[36] string = "nanosecond"
+[37] int64 = 60000000000
+[38] int64 = 1
+[39] float64 = 1e+09
+[40] int64 = 1
+[41] int64 = 1
+[42] int64 = 1
+[43] string = "nanosecond"
+[44] int64 = 1
+[45] float64 = 1e+09
+[46] int64 = 1
+[47] int64 = 1
+[48] int64 = 1
+[49] int64 = 1
+[50] int64 = 1
+[51] int64 = 1
+[52] int64 = 1
+[53] int64 = 1
+[54] int64 = 0
+[55] int64 = 0
+[56] int64 = 1
+[57] int64 = 0
+[58] int64 = 1
+[59] string = "nanosecond"
+[60] float64 = 1e+09
+[61] float64 = 1.1
+[62] float64 = 2
+[63] string = "nanosecond"
+[64] float64 = 1e+09
+[65] float64 = 1
+[66] int64 = 1
+[67] int64 = 1
+[68] int64 = 1
+[69] int64 = 1
+[70] string = "nanosecond"
+[71] int64 = 60000000000
+[72] int64 = 1
+[73] float64 = 1e+09
+[74] float64 = 1.1
+[75] float64 = 2
+[76] string = "nanosecond"
+[77] int64 = 60000000000
+[78] int64 = 1
+[79] float64 = 1e+09
+[80] int64 = 1
+[81] int64 = 1
+[82] int64 = 1
+[83] string = "nanosecond"
+[84] int64 = 1
+[85] float64 = 1e+09
+[86] int64 = 1
+[87] int64 = 1
+[88] int64 = 1
+[89] int64 = 1
+[90] int64 = 1
+[91] int64 = 0
+[92] int64 = 1
+[93] int64 = 0
+[94] int64 = 1
+[95] int64 = 1
+[96] int64 = 1
+[97] int64 = 1
+[98] int64 = 1
+[99] int64 = 0
+[100] int64 = 0
+[101] int64 = 1
+[102] int64 = 0
+[103] int64 = 1
+[104] string = "nanosecond"
+[105] float64 = 1e+09
+[106] float64 = 1.1
+[107] float64 = 2
+[108] string = "nanosecond"
+[109] float64 = 1e+09
+[110] float64 = 1
+[111] int64 = 1
+[112] int64 = 1
+[113] int64 = 1
+[114] int64 = 1
+[115] string = "nanosecond"
+[116] int64 = 60000000000
+[117] int64 = 1
+[118] float64 = 1e+09
+[119] float64 = 1.1
+[120] float64 = 2
+[121] string = "nanosecond"
+[122] int64 = 60000000000
+[123] int64 = 1
+[124] float64 = 1e+09
+[125] int64 = 1
+[126] int64 = 1
+[127] int64 = 1
+[128] string = "nanosecond"
+[129] int64 = 1
+[130] float64 = 1e+09
+[131] int64 = 1
+[132] int64 = 1
+[133] int64 = 1
+[134] int64 = 1
+[135] int64 = 1
+[136] int64 = 0
+[137] int64 = 1
+[138] int64 = 0
+[139] int64 = 1
+[140] int64 = 1
+[141] int64 = 1
+[142] int64 = 0
+[143] int64 = 0
+[144] int64 = 1
+[145] int64 = 1
+[146] int64 = 1
+[147] int64 = 1
+[148] int64 = 0
+[149] int64 = 0
+[150] int64 = 1
+[151] int64 = 1
+[152] int64 = 1
+[153] int64 = 1
+[154] string = "service.name"
+[155] string = "service_name"
+[156] string = "service.name"
+[157] string = "service_name"
+[158] string = ""
+[159] string = "service_name"
+[160] string = "delta_quantile_range_exp_hist"
+[161] string = "delta.quantile.range.exp.hist"
+[162] string = "delta.quantile.range.exp/hist"
+[163] string = "delta.quantile.range.exp_hist"
+[164] string = "delta.quantile.range/exp/hist"
+[165] string = "delta.quantile.range/exp_hist"
+[166] string = "delta.quantile.range_exp.hist"
+[167] string = "delta.quantile.range_exp_hist"
+[168] string = "delta.quantile/range/exp/hist"
+[169] string = "delta.quantile/range/exp_hist"
+[170] string = "delta.quantile/range_exp_hist"
+[171] string = "delta.quantile_range.exp.hist"
+[172] string = "delta.quantile_range.exp_hist"
+[173] string = "delta.quantile_range_exp.hist"
+[174] string = "delta.quantile_range_exp_hist"
+[175] string = "delta/quantile/range/exp/hist"
+[176] string = "delta/quantile/range/exp_hist"
+[177] string = "delta/quantile/range_exp_hist"
+[178] string = "delta/quantile_range_exp_hist"
+[179] string = "delta_quantile.range.exp.hist"
+[180] string = "delta_quantile.range.exp_hist"
+[181] string = "delta_quantile.range_exp.hist"
+[182] string = "delta_quantile.range_exp_hist"
+[183] string = "delta_quantile_range.exp.hist"
+[184] string = "delta_quantile_range.exp_hist"
+[185] string = "delta_quantile_range_exp.hist"
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  HistogramQuantileNative phi=0.5 groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
+    Project [anchor_ts AS anchor_ts, gkey_0 AS Attributes, _hq_merged_scale AS Scale, ZeroCount AS ZeroCount, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) AS PositiveOffset, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) + t)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)), range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets))) + 1))))) AS PositiveBucketCounts, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) AS NegativeOffset, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) + t)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)), range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets))) + 1))))) AS NegativeBucketCounts]
+      Aggregate groupBy=[anchor_ts AS anchor_ts, Attributes AS gkey_0] funcs=[min(Scale) AS _hq_merged_scale, sum(ZeroCount) AS ZeroCount, groupArray(Scale) AS _hq_scales, groupArray(PositiveOffset) AS _hq_pos_offsets, groupArray(PositiveBucketCounts) AS _hq_pos_buckets, groupArray(NegativeOffset) AS _hq_neg_offsets, groupArray(NegativeBucketCounts) AS _hq_neg_buckets]
+        Project [anchor_ts AS anchor_ts, Attributes AS Attributes, _hq_merged_scale AS Scale, arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((_hq_temporality = 1), (arraySum(wv) - wsr[1]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), _hq_resets))), array(arraySort((c, t) -> t, wv, wo)))[1] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > 0), (((wsi + if((if((wrc > 0), (wsi * (arraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc) < wtc), if((wrc > 0), (wsi * (arraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff("nanosecond", wso[length(wso)], anchor_ts)) / 1e+09) >= (1.1 * wag)), (wag / 2), (toFloat64(dateDiff("nanosecond", wso[length(wso)], anchor_ts)) / 1e+09))) / wsi), 1), array(arrayMap(wsr -> if((_hq_temporality = 1), (arraySum(wcv) - wsr[1]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), _hq_resets))), array(arraySort((c, t) -> t, wcv, wo)))[1]))[1], array(if(((toFloat64(dateDiff("nanosecond", (anchor_ts - toIntervalNanosecond(60000000000)), wso[1])) / 1e+09) >= (1.1 * wag)), (wag / 2), (toFloat64(dateDiff("nanosecond", (anchor_ts - toIntervalNanosecond(60000000000)), wso[1])) / 1e+09))))[1], array((wsi / (length(wo) - 1))))[1], array((toFloat64(dateDiff("nanosecond", wso[1], wso[length(wso)])) / 1e+09)))[1], array(arraySort(wo)))[1], array(arrayMap(n -> toFloat64(n), _hq_count_list)))[1]), array(_hq_ts_list))[1], array(arrayMap(n -> toFloat64(n), _hq_zero_counts)))[1] AS ZeroCount, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) AS PositiveOffset, arrayMap(tb -> arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((_hq_temporality = 1), (arraySum(wv) - wsr[1]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), _hq_resets))), array(arraySort((c, t) -> t, wv, wo)))[1] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > 0), (((wsi + if((if((wrc > 0), (wsi * (arraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc) < wtc), if((wrc > 0), (wsi * (arraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff("nanosecond", wso[length(wso)], anchor_ts)) / 1e+09) >= (1.1 * wag)), (wag / 2), (toFloat64(dateDiff("nanosecond", wso[length(wso)], anchor_ts)) / 1e+09))) / wsi), 1), array(arrayMap(wsr -> if((_hq_temporality = 1), (arraySum(wcv) - wsr[1]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), _hq_resets))), array(arraySort((c, t) -> t, wcv, wo)))[1]))[1], array(if(((toFloat64(dateDiff("nanosecond", (anchor_ts - toIntervalNanosecond(60000000000)), wso[1])) / 1e+09) >= (1.1 * wag)), (wag / 2), (toFloat64(dateDiff("nanosecond", (anchor_ts - toIntervalNanosecond(60000000000)), wso[1])) / 1e+09))))[1], array((wsi / (length(wo) - 1))))[1], array((toFloat64(dateDiff("nanosecond", wso[1], wso[length(wso)])) / 1e+09)))[1], array(arraySort(wo)))[1], array(arrayMap(n -> toFloat64(n), _hq_count_list)))[1]), array(_hq_ts_list))[1], array(arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) + tb)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_pos_offsets, _hq_pos_buckets))))[1], range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets))) + 1))))) AS PositiveBucketCounts, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) AS NegativeOffset, arrayMap(tb -> arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((_hq_temporality = 1), (arraySum(wv) - wsr[1]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), _hq_resets))), array(arraySort((c, t) -> t, wv, wo)))[1] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > 0), (((wsi + if((if((wrc > 0), (wsi * (arraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc) < wtc), if((wrc > 0), (wsi * (arraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff("nanosecond", wso[length(wso)], anchor_ts)) / 1e+09) >= (1.1 * wag)), (wag / 2), (toFloat64(dateDiff("nanosecond", wso[length(wso)], anchor_ts)) / 1e+09))) / wsi), 1), array(arrayMap(wsr -> if((_hq_temporality = 1), (arraySum(wcv) - wsr[1]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), _hq_resets))), array(arraySort((c, t) -> t, wcv, wo)))[1]))[1], array(if(((toFloat64(dateDiff("nanosecond", (anchor_ts - toIntervalNanosecond(60000000000)), wso[1])) / 1e+09) >= (1.1 * wag)), (wag / 2), (toFloat64(dateDiff("nanosecond", (anchor_ts - toIntervalNanosecond(60000000000)), wso[1])) / 1e+09))))[1], array((wsi / (length(wo) - 1))))[1], array((toFloat64(dateDiff("nanosecond", wso[1], wso[length(wso)])) / 1e+09)))[1], array(arraySort(wo)))[1], array(arrayMap(n -> toFloat64(n), _hq_count_list)))[1]), array(_hq_ts_list))[1], array(arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) + tb)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_neg_offsets, _hq_neg_buckets))))[1], range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets))) + 1))))) AS NegativeBucketCounts]
+          Project [anchor_ts AS anchor_ts, Attributes AS Attributes, _hq_merged_scale AS _hq_merged_scale, _hq_scales AS _hq_scales, _hq_zero_counts AS _hq_zero_counts, _hq_count_list AS _hq_count_list, _hq_pos_offsets AS _hq_pos_offsets, _hq_pos_buckets AS _hq_pos_buckets, _hq_neg_offsets AS _hq_neg_offsets, _hq_neg_buckets AS _hq_neg_buckets, _hq_ts_list AS _hq_ts_list, _hq_temporality AS _hq_temporality, arrayMap(wrp -> arrayMap(wrq -> arrayMap(wrn -> arrayMap((ra, rb) -> (((((_hq_count_list[rb] < _hq_count_list[ra]) OR (_hq_zero_counts[rb] < _hq_zero_counts[ra])) OR (_hq_scales[rb] > _hq_scales[ra])) OR arrayExists(rz -> (rz[rb] < rz[ra]), wrq)) OR arrayExists(rz -> (rz[rb] < rz[ra]), wrn)), arrayPopBack(wrp), arrayPopFront(wrp)), array(arrayMap(rk -> arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) + rk)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_neg_offsets, _hq_neg_buckets), range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets))) + 1)))))))[1], array(arrayMap(rk -> arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - 1)), (s - _hq_merged_scale)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) + rk)), arr[j], 0), arrayEnumerate(arr))), _hq_scales, _hq_pos_offsets, _hq_pos_buckets), range(toUInt64(greatest(0, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets))) + 1)))))))[1], array(arraySort((rp, rt) -> rt, arrayEnumerate(_hq_ts_list), _hq_ts_list)))[1] AS _hq_resets]
+            RangeBucketFanout step=1m0s lookback=1m0s minSamples=2 groupBy=[mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapValues(mapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, "[^a-zA-Z0-9_]", "_"), mapKeys(Attributes)), mapValues(Attributes))), mapFilter((k, v) -> (v != ""), map("service_name", toString(ServiceName))))) AS Attributes] funcs=[min(Scale) AS _hq_merged_scale, groupArray(Scale) AS _hq_scales, groupArray(ZeroCount) AS _hq_zero_counts, groupArray(Count) AS _hq_count_list, groupArray(PositiveOffset) AS _hq_pos_offsets, groupArray(PositiveBucketCounts) AS _hq_pos_buckets, groupArray(NegativeOffset) AS _hq_neg_offsets, groupArray(NegativeBucketCounts) AS _hq_neg_buckets, groupArray(TimeUnix) AS _hq_ts_list, any(AggregationTemporality) AS _hq_temporality] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+              Filter predicate=(MetricName IN ("delta_quantile_range_exp_hist", "delta.quantile.range.exp.hist", "delta.quantile.range.exp/hist", "delta.quantile.range.exp_hist", "delta.quantile.range/exp/hist", "delta.quantile.range/exp_hist", "delta.quantile.range_exp.hist", "delta.quantile.range_exp_hist", "delta.quantile/range/exp/hist", "delta.quantile/range/exp_hist", "delta.quantile/range_exp_hist", "delta.quantile_range.exp.hist", "delta.quantile_range.exp_hist", "delta.quantile_range_exp.hist", "delta.quantile_range_exp_hist", "delta/quantile/range/exp/hist", "delta/quantile/range/exp_hist", "delta/quantile/range_exp_hist", "delta/quantile_range_exp_hist", "delta_quantile.range.exp.hist", "delta_quantile.range.exp_hist", "delta_quantile.range_exp.hist", "delta_quantile.range_exp_hist", "delta_quantile_range.exp.hist", "delta_quantile_range.exp_hist", "delta_quantile_range_exp.hist"))
+                Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, if(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] = 0, nan, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(0.5 = 0, if(arrayFirstIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - arrayFirstIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) + 1), if(arrayFirstIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)) = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (arrayFirstIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)) - length(`NegativeBucketCounts`) - 2)))), if(0.5 = 1, if(arrayLastIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - arrayLastIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))), if(arrayLastIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)) = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (arrayLastIndex(c -> c > 0, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)) - length(`NegativeBucketCounts`) - 1)))), if(arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))) + 1 - ((0.5 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]) - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]) / (arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1])), if(arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.) + (if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.) - if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.)) * ((0.5 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]) - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]) / (arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - length(`NegativeBucketCounts`) - 2) + ((0.5 * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]) - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]) / (arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[arrayFirstIndex(c -> arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))] - c < ((1 - 0.5) * arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))[length(arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)))]), arrayCumSum(arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`))) - 1]))))))))) AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `gkey_0` AS `Attributes`, `_hq_merged_scale` AS `Scale`, `ZeroCount` AS `ZeroCount`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) AS `PositiveOffset`, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) + t)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`))) + ?))))) AS `PositiveBucketCounts`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) AS `NegativeOffset`, arrayMap(t -> arraySum(arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) + t)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`))) + ?))))) AS `NegativeBucketCounts` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `gkey_0`, min(`Scale`) AS `_hq_merged_scale`, sum(`ZeroCount`) AS `ZeroCount`, groupArray(`Scale`) AS `_hq_scales`, groupArray(`PositiveOffset`) AS `_hq_pos_offsets`, groupArray(`PositiveBucketCounts`) AS `_hq_pos_buckets`, groupArray(`NegativeOffset`) AS `_hq_neg_offsets`, groupArray(`NegativeBucketCounts`) AS `_hq_neg_buckets` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, `_hq_merged_scale` AS `Scale`, arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wv) - wsr[?]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), `_hq_resets`))), array(arraySort((c, t) -> t, wv, wo)))[?] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > ?), (((wsi + if((if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc) < wtc), if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)))) / wsi), toFloat64(?)), array(arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wcv) - wsr[?]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), `_hq_resets`))), array(arraySort((c, t) -> t, wcv, wo)))[?]))[?], array(if(((toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)))))[?], array((wsi / (length(wo) - ?))))[?], array((toFloat64(dateDiff(?, wso[?], wso[length(wso)])) / toFloat64(?))))[?], array(arraySort(wo)))[?], array(arrayMap(n -> toFloat64(n), `_hq_count_list`)))[?]), array(`_hq_ts_list`))[?], array(arrayMap(n -> toFloat64(n), `_hq_zero_counts`)))[?] AS `ZeroCount`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) AS `PositiveOffset`, arrayMap(tb -> arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wv) - wsr[?]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), `_hq_resets`))), array(arraySort((c, t) -> t, wv, wo)))[?] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > ?), (((wsi + if((if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc) < wtc), if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)))) / wsi), toFloat64(?)), array(arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wcv) - wsr[?]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), `_hq_resets`))), array(arraySort((c, t) -> t, wcv, wo)))[?]))[?], array(if(((toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)))))[?], array((wsi / (length(wo) - ?))))[?], array((toFloat64(dateDiff(?, wso[?], wso[length(wso)])) / toFloat64(?))))[?], array(arraySort(wo)))[?], array(arrayMap(n -> toFloat64(n), `_hq_count_list`)))[?]), array(`_hq_ts_list`))[?], array(arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) + tb)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`))))[?], range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`))) + ?))))) AS `PositiveBucketCounts`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) AS `NegativeOffset`, arrayMap(tb -> arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wv) - wsr[?]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), `_hq_resets`))), array(arraySort((c, t) -> t, wv, wo)))[?] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > ?), (((wsi + if((if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc) < wtc), if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)))) / wsi), toFloat64(?)), array(arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wcv) - wsr[?]), arraySum(arrayMap((p, c, r) -> if(r, c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr), `_hq_resets`))), array(arraySort((c, t) -> t, wcv, wo)))[?]))[?], array(if(((toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)))))[?], array((wsi / (length(wo) - ?))))[?], array((toFloat64(dateDiff(?, wso[?], wso[length(wso)])) / toFloat64(?))))[?], array(arraySort(wo)))[?], array(arrayMap(n -> toFloat64(n), `_hq_count_list`)))[?]), array(`_hq_ts_list`))[?], array(arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) + tb)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`))))[?], range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`))) + ?))))) AS `NegativeBucketCounts` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, `_hq_merged_scale` AS `_hq_merged_scale`, `_hq_scales` AS `_hq_scales`, `_hq_zero_counts` AS `_hq_zero_counts`, `_hq_count_list` AS `_hq_count_list`, `_hq_pos_offsets` AS `_hq_pos_offsets`, `_hq_pos_buckets` AS `_hq_pos_buckets`, `_hq_neg_offsets` AS `_hq_neg_offsets`, `_hq_neg_buckets` AS `_hq_neg_buckets`, `_hq_ts_list` AS `_hq_ts_list`, `_hq_temporality` AS `_hq_temporality`, arrayMap(wrp -> arrayMap(wrq -> arrayMap(wrn -> arrayMap((ra, rb) -> (((((`_hq_count_list`[rb] < `_hq_count_list`[ra]) OR (`_hq_zero_counts`[rb] < `_hq_zero_counts`[ra])) OR (`_hq_scales`[rb] > `_hq_scales`[ra])) OR arrayExists(rz -> (rz[rb] < rz[ra]), wrq)) OR arrayExists(rz -> (rz[rb] < rz[ra]), wrn)), arrayPopBack(wrp), arrayPopFront(wrp)), array(arrayMap(rk -> arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) + rk)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`))) + ?)))))))[?], array(arrayMap(rk -> arrayMap((s, off, arr) -> arraySum(arrayMap(j -> if((bitShiftRight((off + (j - ?)), (s - `_hq_merged_scale`)) = (arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) + rk)), arr[j], ?), arrayEnumerate(arr))), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)) - arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`))) + ?)))))))[?], array(arraySort((rp, rt) -> rt, arrayEnumerate(`_hq_ts_list`), `_hq_ts_list`)))[?] AS `_hq_resets` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, min(`Scale`) AS `_hq_merged_scale`, groupArray(`Scale`) AS `_hq_scales`, groupArray(`ZeroCount`) AS `_hq_zero_counts`, groupArray(`Count`) AS `_hq_count_list`, groupArray(`PositiveOffset`) AS `_hq_pos_offsets`, groupArray(`PositiveBucketCounts`) AS `_hq_pos_buckets`, groupArray(`NegativeOffset`) AS `_hq_neg_offsets`, groupArray(`NegativeBucketCounts`) AS `_hq_neg_buckets`, groupArray(`TimeUnix`) AS `_hq_ts_list`, any(`AggregationTemporality`) AS `_hq_temporality` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(60000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY anchor_ts, `Attributes` HAVING uniqExact(`TimeUnix`) >= 2))) GROUP BY `anchor_ts`, `gkey_0`)))

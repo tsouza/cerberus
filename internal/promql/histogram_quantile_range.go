@@ -672,22 +672,19 @@ func buildHistogramNativeRangeTreeMerge(
 			scan, pred, nil, win,
 			[]chplan.Expr{histogramIdentityExpr(s)},
 			[]string{s.AttributesColumn},
-			expHistogramWindowAggs(s), s, ctx,
+			expHistogramWindowAggs(s, shape.windowFn), s, ctx,
 		),
-		expHistogramWindowAggs(s),
+		expHistogramWindowAggs(s, shape.windowFn),
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		resets,
 		// countValues: the range-mode fanout collects the SAME
 		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
 		// for the instant path — see expHistogramWindowCountValuesExpr.
-		// nil temporality: the exponential/native-histogram path stays out
-		// of #1628's scope (expHistogramWindowAggs has no
-		// hqWindowTemporalityAlias aggregate), so this keeps applying the
-		// CUMULATIVE branch unconditionally.
 		histogramWindowFold(shape.windowFn, histogramWindowInputs{
 			rangeStart:  rangeStart,
 			rangeEnd:    rangeEnd,
 			countValues: expHistogramWindowCountValuesExpr(),
+			temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 			resets:      resets,
 		}),
 		nil,
