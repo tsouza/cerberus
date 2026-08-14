@@ -1,6 +1,9 @@
 package chsql
 
-import "github.com/tsouza/cerberus/internal/chplan"
+import (
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
+)
 
 // This file implements the memory-bounded FUSED emitter for PromQL
 // subqueries of the shape `<reducer>(rate|increase|delta(m[range])[outer:step])`
@@ -461,6 +464,10 @@ func (e *emitter) emitFusedMatrixSubquery(
 	outQ.Select(As(tupleElemFrag(BareIdent(fusedOuterAnchorAlias), 1), RangeWindowAnchorAlias))
 	if r.TimestampColumn != "" && r.TimestampColumn != RangeWindowAnchorAlias {
 		outQ.Select(As(gridAnchorFrag(r), r.TimestampColumn))
+	} else if r.TimestampColumn == RangeWindowAnchorAlias {
+		// The outer reducer consumes anchor_ts, while the root matrix answer
+		// must also expose the request-grid timestamp to downstream consumers.
+		outQ.Select(As(gridAnchorFrag(r), "TimeUnix"))
 	}
 	outQ.Select(As(tupleElemFrag(BareIdent(fusedOuterAnchorAlias), 2), r.ValueColumn))
 
@@ -533,6 +540,17 @@ func (e *emitter) fusedExtrapolatedValueFrag(
 	firstVal := tupleElemFrag(Subscript(w, InlineLit(int64(1))), 2)
 	lastVal := tupleElemFrag(Subscript(w, lenW), 2)
 	counterDelta := CounterOrDeltaSum(w, temporality)
+	if temporality != nil {
+		// Prometheus sees the DELTA seed as a running total. Its first value
+		// is therefore the prefix through this window's first observation.
+		firstVal = If(
+			Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
+			Call("arraySum", Call("arrayMap", Lambda1("p", tupleElemFrag(BareIdent("p"), 2)), Call(
+				"arrayFilter", Lambda1("p", Lte(tupleElemFrag(BareIdent("p"), 1), firstTs)), BareIdent("samples"),
+			))),
+			firstVal,
+		)
+	}
 
 	// sampled_interval and the duration-to-edge raws share secondsBetweenFrag
 	// with the materialized path (Paren-wrapped here because, unlike the

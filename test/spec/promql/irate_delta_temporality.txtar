@@ -19,6 +19,10 @@
 # (40 - 10) / 30 = 1 — a directly comparable 3/4 of this one.
 -- query.promql --
 irate(http_requests_delta_total[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     AggregationTemporality Int32,
