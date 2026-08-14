@@ -38,16 +38,17 @@
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "internal",
-      "rationale": "unreachable: every PromQL function taking a range-vector argument is either a member of rangeVectorFn or is absent_over_time, which the arm above this guard routes to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it",
+      "rationale": "unreachable: a PromQL function that takes a range-vector argument is either a member of the shared range-window vocabulary (chplan.IsPromQLRangeWindowFunc, consulted through canonicalRangeWindowFunc so the double_exponential_smoothing source spelling resolves to its IR name) or absent_over_time, and the arm directly above this guard routes absent_over_time to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it",
       "evidence": {
         "guard": [
           "past returning if outer.Func.Name == \"absent_over_time\"",
-          "if _, ok := rangeVectorFn[outer.Func.Name]; !ok"
+          "if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))"
         ],
         "callers": [
           "lowerCall"
         ],
         "cited": [
+          "canonicalRangeWindowFunc",
           "lowerAbsentOverTimeOverSubquery"
         ]
       }
@@ -175,12 +176,12 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#9b8454a6",
       "message": "promql: subquery inner %s expects exactly %d argument(s), got %d",
       "class": "internal",
-      "rationale": "the rangeVectorFn membership gate above this check routes every non-reducer call to lowerSubqueryOverInstantCall, so only rangeVectorFn members reach it, and subqueryInnerRangeFnShape reports each of their true PromQL arities; none of them is variadic, so the upstream parser has already rejected any call whose argument count differs before lowering begins",
+      "rationale": "the range-window vocabulary gate above (chplan.IsPromQLRangeWindowFunc) routes a non-reducer call to lowerSubqueryOverInstantCall, so only vocabulary members reach this check, and subqueryInnerRangeFnShape reports each member's true PromQL arity; none of them is variadic, so the upstream parser has already rejected any call whose argument count differs before lowering begins",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
-          "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
           "if len(call.Args) != arity"
         ],
         "callers": [
@@ -198,12 +199,12 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
       "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
       "class": "internal",
-      "rationale": "matrixArgExpr is peelWrappers(call.Args[matrixArg]) (#1896); the parser only ever gives this argument position a Matrix-typed expression (a MatrixSelector or a SubqueryExpr, optionally wrapped in ParenExpr/StepInvariantExpr), and peeling strips every such wrapper, so after peeling matrixArgExpr can only be a MatrixSelector or a SubqueryExpr -- this assertion cannot fail on any parseable query.",
+      "rationale": "matrixArgExpr is peelWrappers(call.Args[matrixArg]) (#1896); the parser only ever gives this argument position a Matrix-typed expression (a MatrixSelector or a SubqueryExpr, optionally wrapped in ParenExpr/StepInvariantExpr), and peeling strips every such wrapper, so after peeling matrixArgExpr can only be a MatrixSelector or a SubqueryExpr -- this assertion cannot fail on any parseable query",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
-          "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
           "past returning if len(call.Args) != arity",
           "past returning if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok",
           "if !ok"
@@ -222,12 +223,12 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
       "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
       "class": "internal",
-      "rationale": "the parser only ever builds a MatrixSelector around a VectorSelector, so the inner assertion cannot fail on any parseable query.",
+      "rationale": "the parser only ever builds a MatrixSelector around a VectorSelector, so the inner assertion cannot fail on any parseable query",
       "evidence": {
         "guard": [
           "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
           "past returning if call.Func.Name == \"absent\"",
-          "past returning if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
           "past returning if len(call.Args) != arity",
           "past returning if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok",
           "past returning if !ok",
@@ -244,10 +245,10 @@
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "internal",
-      "rationale": "lowerSubqueryOverCall is the only caller and dispatches here only after its own rangeVectorFn membership gate has admitted the call, so the name is already in the map by the time this check runs",
+      "rationale": "lowerSubqueryOverCall is the only caller and dispatches here only after its own range-window vocabulary gate has admitted the call, so chplan.IsPromQLRangeWindowFunc has already answered true for the same canonicalised name by the time this check runs",
       "evidence": {
         "guard": [
-          "if _, ok := rangeVectorFn[call.Func.Name]; !ok"
+          "if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))"
         ],
         "callers": [
           "lowerSubqueryOverCall"

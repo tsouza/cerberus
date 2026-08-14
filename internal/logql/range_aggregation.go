@@ -540,7 +540,7 @@ func andFilter(inner chplan.Node, extra chplan.Expr) chplan.Node {
 // #310 and the e2e-failures it surfaced.
 const rangeAggSynthValueColumn = "Value"
 
-// isMatrixRangeWindow reports whether plan's root (walking past
+// bottomsOutAtMatrixRangeWindow reports whether plan's root (walking past
 // value-rewrite Projects / Filters / Aggregates that preserve the inner
 // matrix shape) bottoms out at a matrix-shape RangeWindow — one emitting
 // N rows per series across [Start, End] spaced by Step, exposing
@@ -551,18 +551,36 @@ const rangeAggSynthValueColumn = "Value"
 // nested aggregations (`max(avg by (level) (matrix))`) recognise the
 // matrix shape — the inner Aggregate carries its own per-anchor bucket
 // (re-aliased to TimeUnix by the wrap Project), and the outer
-// aggregation must re-bucket on it. Mirrors prom's isMatrixRangeWindow
-// in internal/api/prom/handler.go.
-func isMatrixRangeWindow(plan chplan.Node) bool {
+// aggregation must re-bucket on it.
+//
+// It is NOT the PromQL head's bottomsOutAtMatrixRangeWindow, which it used to claim
+// to mirror while answering a different question with a different arm
+// set. The two differ deliberately, in both directions:
+//
+//   - PromQL crosses an Aggregate only when it keys on an alias of
+//     `anchor_ts` (chplan.AggregatePreservesMatrixGrid), because its
+//     caller goes on to READ `anchor_ts` off the output scope and a
+//     grid-folding `sum by (…)` never exposes it. This one crosses any
+//     Aggregate, because its callers ask only whether a per-anchor bucket
+//     exists SOMEWHERE below and then resolve its name separately
+//     ([matrixBucketColumn]) — LogQL's nested shape re-aliases the bucket
+//     to `TimeUnix`, which is exactly the alias PromQL's guard rejects.
+//   - PromQL also answers true for a RangeWindowNative. Nothing here can
+//     see one: the native timeSeries*ToGrid nodes are built only by
+//     internal/promql, so an arm for them would be unreachable.
+//
+// Naming the two the same invited the copy that #2031 records: a reader
+// who assumes one question fixes one copy and leaves the other.
+func bottomsOutAtMatrixRangeWindow(plan chplan.Node) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
 		return v.OuterRange > 0
 	case *chplan.Project:
-		return isMatrixRangeWindow(v.Input)
+		return bottomsOutAtMatrixRangeWindow(v.Input)
 	case *chplan.Filter:
-		return isMatrixRangeWindow(v.Input)
+		return bottomsOutAtMatrixRangeWindow(v.Input)
 	case *chplan.Aggregate:
-		return isMatrixRangeWindow(v.Input)
+		return bottomsOutAtMatrixRangeWindow(v.Input)
 	}
 	return false
 }
@@ -583,7 +601,7 @@ func isMatrixRangeWindow(plan chplan.Node) bool {
 //     their bucket reference is `TimeUnix`, not `anchor_ts` (which is no
 //     longer in scope past the inner Aggregate's projection).
 //
-// Callers are expected to gate on [isMatrixRangeWindow] first.
+// Callers are expected to gate on [bottomsOutAtMatrixRangeWindow] first.
 func matrixBucketColumn(plan chplan.Node) string {
 	switch v := plan.(type) {
 	case *chplan.Aggregate:

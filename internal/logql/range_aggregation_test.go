@@ -196,8 +196,8 @@ func TestLowerRangeAggregationMatrixShapeUnwrap(t *testing.T) {
 			if !rw.End.Equal(end) {
 				t.Errorf("%q: End = %v, want %v", tc.query, rw.End, end)
 			}
-			if !isMatrixRangeWindow(rw) {
-				t.Errorf("%q: isMatrixRangeWindow(rw) = false, want true", tc.query)
+			if !bottomsOutAtMatrixRangeWindow(rw) {
+				t.Errorf("%q: bottomsOutAtMatrixRangeWindow(rw) = false, want true", tc.query)
 			}
 
 			// Emit the SQL and confirm the per-anchor matrix scaffold
@@ -339,7 +339,7 @@ func TestLowerRangeAggregationUnwrapStripsTargetFromIdentity(t *testing.T) {
 }
 
 // TestIsMatrixRangeWindowWalksNestedAggregation pins the
-// nested-aggregation traversal in [isMatrixRangeWindow]: the helper
+// nested-aggregation traversal in [bottomsOutAtMatrixRangeWindow]: the helper
 // MUST walk through `*chplan.Aggregate` so the outer
 // `lowerVectorAggregation` recognises `max(avg by (level)
 // (avg_over_time(...)))` and friends as matrix-shape inputs. The
@@ -365,14 +365,14 @@ func TestIsMatrixRangeWindowWalksNestedAggregation(t *testing.T) {
 	agg := &chplan.Aggregate{Input: rw, GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "anchor_ts"}}, GroupByAliases: []string{"bucket_ts"}}
 	proj := &chplan.Project{Input: agg, Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "bucket_ts"}, Alias: "TimeUnix"}}}
 
-	if !isMatrixRangeWindow(proj) {
-		t.Errorf("isMatrixRangeWindow(Project(Aggregate(RangeWindow))) = false, want true — nested-aggregation matrix shape lost")
+	if !bottomsOutAtMatrixRangeWindow(proj) {
+		t.Errorf("bottomsOutAtMatrixRangeWindow(Project(Aggregate(RangeWindow))) = false, want true — nested-aggregation matrix shape lost")
 	}
-	if !isMatrixRangeWindow(agg) {
-		t.Errorf("isMatrixRangeWindow(Aggregate(RangeWindow)) = false, want true — Aggregate case missing from helper")
+	if !bottomsOutAtMatrixRangeWindow(agg) {
+		t.Errorf("bottomsOutAtMatrixRangeWindow(Aggregate(RangeWindow)) = false, want true — Aggregate case missing from helper")
 	}
-	if !isMatrixRangeWindow(rw) {
-		t.Errorf("isMatrixRangeWindow(RangeWindow{OuterRange>0}) = false, want true — base case regressed")
+	if !bottomsOutAtMatrixRangeWindow(rw) {
+		t.Errorf("bottomsOutAtMatrixRangeWindow(RangeWindow{OuterRange>0}) = false, want true — base case regressed")
 	}
 
 	// matrixBucketColumn must dispatch on plan depth: a bare RangeWindow
@@ -391,7 +391,7 @@ func TestIsMatrixRangeWindowWalksNestedAggregation(t *testing.T) {
 }
 
 // TestLowerVectorAggregationNestedMatrixBucketsOnTimeUnix pins the
-// downstream effect of [isMatrixRangeWindow] + [matrixBucketColumn]:
+// downstream effect of [bottomsOutAtMatrixRangeWindow] + [matrixBucketColumn]:
 // when the outer aggregation lowers
 // `max(avg by (level) (avg_over_time(...)))` in range mode, the
 // emitted SQL MUST GROUP BY `TimeUnix` (not `anchor_ts`, which is no

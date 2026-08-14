@@ -11,7 +11,7 @@ import (
 )
 
 // TestLowerVectorAggregationRangeBucketedGate pins the
-// `lc.rangeMode() && isMatrixRangeWindow(input)` gate inside
+// `lc.rangeMode() && bottomsOutAtMatrixRangeWindow(input)` gate inside
 // [lowerVectorAggregation]. The flag controls whether the per-anchor
 // bucket column is added to the Aggregate's GROUP BY so per-step rows
 // survive the aggregation collapse.
@@ -29,7 +29,7 @@ import (
 // Pin the first case via `sum by (job) (vector(1))` lowered under
 // [LowerAtRange]. `vector(...)` lowers to a Project over `chplan.OneRow`
 // (see [lowerVector] / [syntheticLogScalar]) — a truly non-matrix
-// shape that `isMatrixRangeWindow` will reject regardless of how
+// shape that `bottomsOutAtMatrixRangeWindow` will reject regardless of how
 // many Aggregate / Project / Filter layers it walks through. The
 // original lowering keeps the outer Aggregate at one GroupBy
 // expression (the `by (job)` map-access); the mutant prepends the
@@ -46,7 +46,7 @@ func TestLowerVectorAggregationRangeBucketedGate(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 
 	// Non-matrix inner: `vector(1)` lowers to Project(OneRow), which
-	// bottoms out at a non-matrix node. `isMatrixRangeWindow` returns
+	// bottoms out at a non-matrix node. `bottomsOutAtMatrixRangeWindow` returns
 	// false; the original keeps rangeBucketed=false; the mutant turns
 	// it on.
 	query := `sum by (job) (vector(1))`

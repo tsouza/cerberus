@@ -28,21 +28,6 @@ import (
 // are placeholders"), so cerberus ships the empty `Exemplars: []`
 // envelope — the same shape every series gets before attachment.
 
-// unwrapMetricsHistogram returns the MetricsHistogramOverTime at the
-// plan root (or directly under a single Filter wrapper — mirroring
-// unwrapMetricsAggregate's forward-compat posture).
-func unwrapMetricsHistogram(plan chplan.Node) (*chplan.MetricsHistogramOverTime, bool) {
-	switch v := plan.(type) {
-	case *chplan.MetricsHistogramOverTime:
-		return v, true
-	case *chplan.Filter:
-		if inner, ok := v.Input.(*chplan.MetricsHistogramOverTime); ok {
-			return inner, true
-		}
-	}
-	return nil, false
-}
-
 // histogramLabelNames mirrors metricsLabelNames for the histogram node:
 // the user-facing group-by label names (display-name → alias →
 // "group_<i>" fallback chain) with `__bucket` appended — every

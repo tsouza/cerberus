@@ -70,7 +70,7 @@ func lowerMetricsWithWindow(t *testing.T, query string, start, end time.Time) ch
 func wrapMetricsMatrix(t *testing.T, plan chplan.Node, start, end time.Time) chplan.Node {
 	t.Helper()
 	stages, inner := peelMetricsSecondStages(plan)
-	metrics, ok := unwrapMetricsAggregate(inner)
+	metrics, ok := unwrapMetricsRoot[*chplan.MetricsAggregate](inner)
 	if !ok {
 		t.Fatalf("plan is not a metrics aggregate: %T", inner)
 	}

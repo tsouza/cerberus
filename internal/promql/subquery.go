@@ -333,7 +333,8 @@ func lowerSubqueryOverCall(
 	// instead (issue #1866).
 	//
 	// `absent_over_time` is the one range-vector function deliberately
-	// outside [rangeVectorFn] — it lowers to its own chplan.AbsentOverTime
+	// outside the range-window vocabulary ([chplan.IsPromQLRangeWindowFunc])
+	// — it lowers to its own chplan.AbsentOverTime
 	// node rather than a RangeWindow — and it takes the same exit: the
 	// reducer path used to build a RangeWindow the emitter has no case
 	// for, which failed at emit time with `unsupported: range function
@@ -341,7 +342,7 @@ func lowerSubqueryOverCall(
 	// "does not accept a subquery argument" for the nested subquery form
 	// (issue #1867). Routing through lowerCall reaches the dedicated
 	// absent lowerings for BOTH argument shapes.
-	if _, isReducer := rangeVectorFn[call.Func.Name]; !isReducer {
+	if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name)) {
 		return lowerSubqueryOverInstantCall(sub, call, step, s, ctx)
 	}
 	arity, matrixArg := subqueryInnerRangeFnShape(call.Func.Name)
@@ -686,7 +687,7 @@ func lowerOuterRangeFnOverSubquery(
 	if outer.Func.Name == "absent_over_time" {
 		return lowerAbsentOverTimeOverSubquery(outer, sub, s, ctx)
 	}
-	if _, ok := rangeVectorFn[outer.Func.Name]; !ok {
+	if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name)) {
 		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", outer.Func.Name)
 	}
 
@@ -1152,8 +1153,12 @@ func projectCarriesMetricName(p *chplan.Project, s schema.Metrics) bool {
 // holt_winters / double_exponential_smoothing need this: the upstream
 // parser only recognises the `double_exponential_smoothing` spelling
 // (the legacy `holt_winters` name was removed upstream and is rejected
-// at parse time), but the emitter's switch — and rangeVectorFn below —
-// key on the IR's "holt_winters" name regardless of source spelling.
+// at parse time), but the emitter's dispatch — and the shared vocabulary
+// [chplan.IsPromQLRangeWindowFunc] reads — key on the IR's "holt_winters"
+// name regardless of source spelling. Every gate that asks whether a
+// function is a range-vector reducer canonicalises through here first, so
+// the vocabulary carries one entry per reducer rather than one per
+// spelling.
 func canonicalRangeWindowFunc(name string) string {
 	if name == "double_exponential_smoothing" {
 		return "holt_winters"
@@ -1288,77 +1293,6 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 	case *chplan.Filter:
 		widenSubquerySpine(v.Input, start, end)
 	}
-}
-
-// rangeVectorFn is the set of PromQL functions cerberus's emitter
-// handles as range-vector reducers — i.e. every RangeWindow.Func the
-// windowed-array emitters support in both instant and matrix
-// (OuterRange > 0) modes. Subquery-argument lowering only fires for
-// these. predict_linear / holt_winters / quantile_over_time carry extra
-// scalar arguments beyond the subquery itself; threadOuterRangeFnScalars
-// (called from lowerOuterRangeFnOverSubquery for the outer reducer and
-// from lowerSubqueryOverRangeFnCall for the subquery inner) threads them
-// onto the RangeWindow the same way range_fns.go's non-subquery lowerers
-// do (#1456).
-// Both "holt_winters" and "double_exponential_smoothing" are listed even
-// though the upstream parser only ever produces the latter today — same
-// forward-compat rationale as lowerRangeVectorCall's two-spelling case.
-//
-// "first_over_time" sits here beside "last_over_time" because the two are
-// the `__name__`-preserving pair (rangeFnPreservesName): admitting one
-// over a subquery but not the other would make the name contract
-// unobservable for half of it. Both route through the emitter's shared
-// `emitRangeWindowOverTime` case, so the matrix and instant shapes are the
-// same code path `last_over_time` already exercises.
-//
-// "present_over_time" and "mad_over_time" are admitted on the same
-// grounds: both are plain reducers in the emitter's shared
-// `emitRangeWindowOverTime` case (internal/chsql/range_window.go), both
-// already lower over a bare matrix selector through
-// lowerRangeVectorCall's generic tail, and neither carries an extra
-// scalar argument. Withholding them here would reject
-// `mad_over_time(m[5m:1m])` while accepting `mad_over_time(m[5m])` — a
-// split reference Prometheus does not make. The generic "does not
-// accept a subquery argument" message stays for reducers with no
-// RangeWindow lowering at all (e.g. absent_over_time, which lowers to
-// its own node shape).
-// The four `ts_of_*_over_time` reducers sit here for the same reason:
-// they route through the emitter's `emitRangeWindowTsOfOverTime` case,
-// which — like `emitRangeWindowOverTime` — reduces the per-anchor window
-// array and is agnostic about whether the rows underneath came from a
-// matrix selector or from a subquery's anchor grid. They differ from
-// `first_over_time` / `last_over_time` only in projecting the winning
-// sample's timestamp instead of its value, and they drop `__name__`
-// (rangeFnPreservesName returns false for them), matching reference
-// Prometheus.
-var rangeVectorFn = map[string]struct{}{
-	"rate":                         {},
-	"irate":                        {},
-	"increase":                     {},
-	"delta":                        {},
-	"idelta":                       {},
-	"deriv":                        {},
-	"resets":                       {},
-	"changes":                      {},
-	"sum_over_time":                {},
-	"avg_over_time":                {},
-	"min_over_time":                {},
-	"max_over_time":                {},
-	"count_over_time":              {},
-	"first_over_time":              {},
-	"last_over_time":               {},
-	"stddev_over_time":             {},
-	"stdvar_over_time":             {},
-	"present_over_time":            {},
-	"mad_over_time":                {},
-	"ts_of_first_over_time":        {},
-	"ts_of_last_over_time":         {},
-	"ts_of_max_over_time":          {},
-	"ts_of_min_over_time":          {},
-	"predict_linear":               {},
-	"holt_winters":                 {},
-	"double_exponential_smoothing": {},
-	"quantile_over_time":           {},
 }
 
 // instantTransformFns is the set of sample-preserving instant-vector
@@ -2609,7 +2543,7 @@ func lowerSubqueryOverCallSubquery(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	if _, ok := rangeVectorFn[call.Func.Name]; !ok {
+	if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name)) {
 		return nil, fmt.Errorf("promql: %s does not accept a subquery argument", call.Func.Name)
 	}
 	if err := requirePositiveInnerRange(innerSub); err != nil {

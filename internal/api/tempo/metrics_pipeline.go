@@ -124,6 +124,36 @@ type metricsPipeline struct {
 	compare   *chplan.MetricsCompare
 }
 
+// unwrapMetricsRoot returns the T carried at the plan root, or directly
+// under a single Filter wrapper (kept for forward-compat with a future
+// scalar-filter stage). It reports ok=false for any other shape — the
+// trigger for classifyMetricsPipeline's "not a metrics pipeline"
+// rejection.
+//
+// This is the ONE unwrapper for that question. It was three — one per
+// pipeline kind, each a verbatim copy of the same two-arm switch with
+// only the target type changed, and each carrying a docstring asserting
+// it mirrored the other two's "forward-compat posture". Three copies of
+// one walk is three chances to peel a different set of wrappers: the
+// shape they walk is a property of the PLAN spine, not of the node at
+// the bottom of it, so a wrapper that becomes peelable becomes peelable
+// for every kind at once. Teaching that to one copy and not the others
+// is what left `| topk(N)` rejected as "not a metrics-pipeline
+// expression" until the handler learned to peel MetricsSecondStage
+// (see TestMetricsQueryRange_TopKSecondStage).
+func unwrapMetricsRoot[T chplan.Node](plan chplan.Node) (T, bool) {
+	if v, ok := plan.(T); ok {
+		return v, true
+	}
+	if f, ok := plan.(*chplan.Filter); ok {
+		if inner, ok := f.Input.(T); ok {
+			return inner, true
+		}
+	}
+	var zero T
+	return zero, false
+}
+
 // classifyMetricsPipeline peels the second-stage chain off a lowered plan
 // and identifies the metrics pipeline underneath it. surface and query only
 // shape the rejection: they name the endpoint the caller used and echo the
@@ -135,15 +165,15 @@ type metricsPipeline struct {
 func classifyMetricsPipeline(plan chplan.Node, surface metricsSurface, query string) (metricsPipeline, error) {
 	stages, inner := peelMetricsSecondStages(plan)
 	p := metricsPipeline{Inner: inner, Stages: stages}
-	if m, ok := unwrapMetricsAggregate(inner); ok {
+	if m, ok := unwrapMetricsRoot[*chplan.MetricsAggregate](inner); ok {
 		p.kind, p.scalar = metricsPipelineScalar, m
 		return p, nil
 	}
-	if m, ok := unwrapMetricsHistogram(inner); ok {
+	if m, ok := unwrapMetricsRoot[*chplan.MetricsHistogramOverTime](inner); ok {
 		p.kind, p.histogram = metricsPipelineHistogram, m
 		return p, nil
 	}
-	if m, ok := unwrapMetricsCompare(inner); ok {
+	if m, ok := unwrapMetricsRoot[*chplan.MetricsCompare](inner); ok {
 		p.kind, p.compare = metricsPipelineCompare, m
 		return p, nil
 	}

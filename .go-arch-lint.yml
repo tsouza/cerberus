@@ -161,6 +161,7 @@ components:
   chdbsession:    { in: chdbsession }
   chsqltest:      { in: chsqltest }
   sealedscan:     { in: sealedscan }
+  dispatchscan:   { in: dispatchscan }
   testsql:        { in: testsql }
   qlcommon:       { in: qlcommon }
   # Clean-room in-house Drain log-template miner (replaces the AGPL
@@ -237,6 +238,13 @@ commonComponents:
   # construction. It imports nothing but the standard library and knows
   # nothing about cerberus, which keeps it a true leaf.
   - sealedscan
+  # dispatchscan is sealedscan's production-side sibling: it derives, from
+  # Go source, the arm sets production code dispatches over the shared IR
+  # (the bool classifiers over a sealed interface, and the string
+  # vocabulary an emitter switch accepts). The mirrored-dispatch ratchet
+  # consumes it. Like sealedscan it imports nothing but the standard
+  # library and knows nothing about cerberus, so it is a true leaf.
+  - dispatchscan
 
 deps:
   # chplan is the foundation. No internal dependencies declared — entries

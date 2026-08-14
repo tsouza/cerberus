@@ -274,7 +274,7 @@ func TestWithMatcherWindowExtension(t *testing.T) {
 }
 
 // TestIsMatrixRangeWindowBoundary pins the `v.OuterRange > 0` boundary
-// in [isMatrixRangeWindow]. A CONDITIONALS_BOUNDARY mutant flips `> 0`
+// in [bottomsOutAtMatrixRangeWindow]. A CONDITIONALS_BOUNDARY mutant flips `> 0`
 // to `>= 0`, which would classify a zero-OuterRange instant RangeWindow
 // as a matrix node. The caller — vector-aggregation lowering — would
 // then add a non-existent `anchor_ts` column to the GROUP BY and the
@@ -304,8 +304,8 @@ func TestIsMatrixRangeWindowBoundary(t *testing.T) {
 			t.Parallel()
 
 			rw := &chplan.RangeWindow{OuterRange: tc.outerRange}
-			if got := isMatrixRangeWindow(rw); got != tc.want {
-				t.Fatalf("isMatrixRangeWindow(OuterRange=%v) = %v, want %v (%s)", tc.outerRange, got, tc.want, tc.description)
+			if got := bottomsOutAtMatrixRangeWindow(rw); got != tc.want {
+				t.Fatalf("bottomsOutAtMatrixRangeWindow(OuterRange=%v) = %v, want %v (%s)", tc.outerRange, got, tc.want, tc.description)
 			}
 		})
 	}
@@ -338,8 +338,8 @@ func TestIsMatrixRangeWindowWalksWrappers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := isMatrixRangeWindow(tc.node); got != tc.want {
-				t.Fatalf("isMatrixRangeWindow(%s) = %v, want %v", tc.name, got, tc.want)
+			if got := bottomsOutAtMatrixRangeWindow(tc.node); got != tc.want {
+				t.Fatalf("bottomsOutAtMatrixRangeWindow(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
