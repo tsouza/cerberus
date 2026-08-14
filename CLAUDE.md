@@ -190,6 +190,8 @@ per-layer "catches X / misses Y" guidance.
     worktree path, passed absolutely on every call. Never operate on another checkout of this
     repository — the object store is shared but the branch is not, so a stray `git commit` lands on
     somebody else's branch. `docs/agent-workflow.md` has the recovery procedure.
+18. **PR bodies use real newlines.** Never pass literal `\n` escapes through `gh pr create/edit
+    --body`; use a body file or equivalent newline-safe input.
 
 ## Workflow for a non-trivial change
 

@@ -31,6 +31,8 @@ branch off `origin/main`, so avoid the situation instead. Re-check the base befo
 The push and the `gh pr create` are a single step. A pushed branch with no PR appears in no
 `gh pr list`, gets no check runs, and reaches no reviewer; if the work it belongs to merges without
 it, its commits are stranded. A branch that is not ready for review is a draft PR, not an absent one.
+PR bodies must contain actual newline bytes: never pass literal `\n` escapes through `gh pr create/edit
+--body`; use a body file or equivalent newline-safe input.
 
 Verify the push landed by SHA rather than by the client's own report:
 
