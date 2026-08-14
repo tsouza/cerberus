@@ -3,11 +3,9 @@
 ## Problem
 
 `histogram_quantile_classic_duplicate_bounds` stores one OTel classic histogram
-with bounds `[1, 1, 5]` and per-bucket counts `[2, 3, 5, 0]`. Cerberus's existing
-emitter coalesces the empty repeated-bound interval while retaining the cumulative
-count at that boundary, returning `0.6` for phi `0.3`. The fixture was not
-enrolled in parity, so that production behaviour was not checked against real
-Prometheus.
+with bounds `[1, 1, 5]` and per-bucket counts `[2, 3, 5, 0]`. Cerberus retained
+the last cumulative rung in a repeated-bound run, returning `0.6` for phi `0.3`.
+Prometheus retains the first rung and returns `1.5`.
 
 ## Scope
 
@@ -18,9 +16,9 @@ Excluded: float tolerances, fixture exclusions, and native histogram behaviour.
 
 ## Design
 
-Keep the existing emitter coalescing implementation. Enrol the fixture in the
-full exact Prometheus parity contract so its `0.6` answer is evaluated against
-the upstream engine on every chDB run.
+Retain the first rung in each repeated-bound run before interpolation. Enrol the
+fixture in the full exact Prometheus parity contract so its `1.5` answer is
+evaluated against the upstream engine on every chDB run.
 
 ## Verification
 
@@ -36,7 +34,6 @@ merge distinct histogram series or relax comparison precision.
 
 ## Task List
 
-1. Complete: verify the existing emitter's duplicate-bound reconciliation against
-   the real Prometheus evaluator.
+1. Complete: match Prometheus's duplicate-bound reconciliation in the emitter.
 2. Complete: enrol the fixture with the full exact parity contract.
 3. Complete: raise the parity enrolment ratchet and run the chDB spec lane.
