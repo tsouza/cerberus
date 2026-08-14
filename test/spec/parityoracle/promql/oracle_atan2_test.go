@@ -104,6 +104,25 @@ func TestEqualValues_UnaffectedByAtan2Tolerance(t *testing.T) {
 	}
 }
 
+func TestEqualNativeHistogramQuantileValues_IssueValues(t *testing.T) {
+	t.Parallel()
+
+	const reference = 7.127189745122713
+	oneULP := math.Nextafter(reference, math.Inf(1))
+	twoULPs := math.Nextafter(oneULP, math.Inf(1))
+	threeULPs := math.Nextafter(twoULPs, math.Inf(1))
+
+	if d := ulpDistance(reference, twoULPs); d != nativeHistogramQuantileULPTolerance {
+		t.Fatalf("ulpDistance(reference, twoULPs) = %d, want %d", d, nativeHistogramQuantileULPTolerance)
+	}
+	if !EqualNativeHistogramQuantileValues(reference, twoULPs) {
+		t.Fatalf("EqualNativeHistogramQuantileValues(reference, twoULPs) = false, want true")
+	}
+	if EqualNativeHistogramQuantileValues(reference, threeULPs) {
+		t.Fatalf("EqualNativeHistogramQuantileValues(reference, threeULPs) = true, want false")
+	}
+}
+
 // TestUlpDistance_Zero asserts equal values (including the a==b fast path
 // and the +0/-0 case, which compare equal under Go's ==) have distance 0.
 func TestUlpDistance_Zero(t *testing.T) {

@@ -227,6 +227,11 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 // evaluated, and the regexp below matches nothing but that one operator.
 var atan2QueryPattern = regexp.MustCompile(`\batan2\b`)
 
+// histogramQuantileQueryPattern matches the PromQL histogram quantile
+// functions. It is paired with the native-histogram seed check below so the
+// ULP exception cannot apply to classic histogram queries.
+var histogramQuantileQueryPattern = regexp.MustCompile(`\bhistogram_quantiles?\b`)
+
 // atan2CompareValues resolves to [oracle.EqualAtan2Values] when query is
 // PROVEN — by containing the atan2 operator — to need it, and to the
 // ordinary exact [oracle.EqualValues] otherwise. See [atan2QueryPattern] for
@@ -236,6 +241,16 @@ func atan2CompareValues(query string) func(a, b float64) bool {
 		return oracle.EqualAtan2Values
 	}
 	return oracle.EqualValues
+}
+
+// parityCompareValues keeps native histogram quantile's implementation-level
+// rounding difference separate from the exact default. A query text alone is
+// insufficient because classic histogram quantiles use a different path.
+func parityCompareValues(query, seed string) func(a, b float64) bool {
+	if histogramQuantileQueryPattern.MatchString(query) && strings.Contains(seed, nativeHistogramTable) {
+		return oracle.EqualNativeHistogramQuantileValues
+	}
+	return atan2CompareValues(query)
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose
@@ -546,14 +561,12 @@ func compareAgainstReference(
 		)
 	}
 
-	// equalValues is oracle.EqualValues for every fixture except one whose
-	// query is proven to invoke atan2, where it is oracle.EqualAtan2Values.
-	// See atan2CompareValues for why that ULP-bounded relaxation is sound
-	// and narrow. It is resolved once for both heads on purpose: sample
-	// equality is one rule (plus this one named exception), not one per
-	// head, and duplicating it would let the two drift into disagreeing
-	// about what "equal" means.
-	equalValues := atan2CompareValues(query)
+	// equalValues is exact except for the named, query-and-seed-scoped
+	// implementation-level rounding differences selected by
+	// parityCompareValues. It is resolved once for both heads on purpose:
+	// sample equality is one rule, not one per head, and duplicating it would
+	// let the two drift into disagreeing about what "equal" means.
+	equalValues := parityCompareValues(query, rt.Seed)
 
 	for i := range got {
 		g, w := got[i], want[i]
