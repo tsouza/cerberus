@@ -5,6 +5,7 @@ package spec
 import (
 	"strings"
 	"testing"
+	"time"
 
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
@@ -132,6 +133,12 @@ func TestLabelsFromSeededRow(t *testing.T) {
 			want:   map[string]string{"job": "api", "__name__": "up"},
 		},
 		{
+			name:   "metric name is Prometheus normalized",
+			attrs:  `{"job":"api"}`,
+			metric: "container.cpu.usage",
+			want:   map[string]string{"job": "api", "__name__": "container_cpu_usage"},
+		},
+		{
 			// The ServiceName column is where the exporter puts
 			// service.name, and it is the label cerberus exposes it as.
 			name:    "service name comes from its dedicated column",
@@ -207,6 +214,29 @@ func TestLabelsFromSeededRow(t *testing.T) {
 	}
 }
 
+func TestNormalizeMetricName(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "already Prometheus", in: "up:total_1", want: "up:total_1"},
+		{name: "dotted OTel", in: "container.cpu.usage", want: "container_cpu_usage"},
+		{name: "leading digit", in: "9.cpu", want: "_9_cpu"},
+		{name: "multibyte bytes", in: "服务名", want: "_________"},
+		{name: "empty", in: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := normalizeMetricName(tc.in); got != tc.want {
+				t.Errorf("normalizeMetricName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResourceAttributesProjectionFallsBackWhenUnseeded asserts the reader
 // tolerates the corpus's minimal seeds. Most fixtures declare only the
 // columns their own query needs, so demanding ResourceAttributes and
@@ -258,7 +288,8 @@ INSERT INTO otel_metrics_histogram VALUES
 	ApplySeed(t, db, seed)
 
 	byKey := map[string]*oracle.Series{}
-	if err := readSeededClassicHistograms(db, &RoundTripSections{Seed: seed}, nil, byKey); err != nil {
+	nameRestorer := newMetricNameRestorer()
+	if err := readSeededClassicHistograms(db, &RoundTripSections{Seed: seed}, nil, byKey, &nameRestorer); err != nil {
 		t.Fatalf("readSeededClassicHistograms: %v", err)
 	}
 
@@ -290,6 +321,195 @@ INSERT INTO otel_metrics_histogram VALUES
 		if !oracle.EqualValues(s.Points[0].Value, wantValue) {
 			t.Errorf("series %s = %v, want %v", key, s.Points[0].Value, wantValue)
 		}
+	}
+}
+
+func TestMetricNameRestorer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("restores a unique name after labels transform", func(t *testing.T) {
+		restorer := newMetricNameRestorer()
+		input := map[string]string{promNameLabel: "container_cpu_usage", "job": "api"}
+		if err := restorer.record(input, "container.cpu.usage"); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		results := []oracle.Result{{Labels: map[string]string{promNameLabel: "container_cpu_usage", "service": "api"}}}
+		restorer.restore(results)
+		if got := results[0].Labels[promNameLabel]; got != "container.cpu.usage" {
+			t.Errorf("restored name = %q, want raw stored spelling", got)
+		}
+	})
+
+	t.Run("does not guess an ambiguous normalized name", func(t *testing.T) {
+		restorer := newMetricNameRestorer()
+		for labels, name := range map[string]string{
+			"job=api": "container.cpu.usage",
+			"job=web": "container/cpu/usage",
+		} {
+			labelSet := map[string]string{promNameLabel: "container_cpu_usage"}
+			for _, pair := range strings.Split(labels, ",") {
+				key, value, _ := strings.Cut(pair, "=")
+				labelSet[key] = value
+			}
+			if err := restorer.record(labelSet, name); err != nil {
+				t.Fatalf("record %q: %v", name, err)
+			}
+		}
+		results := []oracle.Result{{Labels: map[string]string{promNameLabel: "container_cpu_usage", "service": "api"}}}
+		restorer.restore(results)
+		if got := results[0].Labels[promNameLabel]; got != "container_cpu_usage" {
+			t.Errorf("ambiguous name restored as %q, want normalized spelling left intact", got)
+		}
+	})
+
+	t.Run("rejects a collision on one Prometheus series", func(t *testing.T) {
+		restorer := newMetricNameRestorer()
+		labels := map[string]string{promNameLabel: "container_cpu_usage", "job": "api"}
+		if err := restorer.record(labels, "container.cpu.usage"); err != nil {
+			t.Fatalf("record first spelling: %v", err)
+		}
+		if err := restorer.record(labels, "container/cpu/usage"); err == nil {
+			t.Error("record accepted two stored spellings for one Prometheus series")
+		}
+	})
+}
+
+func TestReadSeededNativeHistogramCompanions(t *testing.T) {
+	const (
+		firstTimestamp  = "2026-01-01 00:00:00"
+		secondTimestamp = "2026-01-01 00:01:00"
+	)
+	firstMillis := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	secondMillis := time.Date(2026, time.January, 1, 0, 1, 0, 0, time.UTC).UnixMilli()
+
+	for _, tc := range []struct {
+		name string
+		seed string
+		want map[string][]oracle.Point
+	}{
+		{
+			name: "declared columns group companion points by normalized name",
+			seed: `CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+				('latency.exp', map('service', 'api'), toDateTime64('` + firstTimestamp + `', 9), 7, 21.0, 0, 0, 0, [7], 0, []),
+				('latency.exp', map('service', 'api'), toDateTime64('` + secondTimestamp + `', 9), 9, 34.0, 0, 0, 0, [9], 0, []);`,
+			want: map[string][]oracle.Point{
+				"__name__=latency_exp_count,service=api": {
+					{TMillis: firstMillis, Value: 7}, {TMillis: secondMillis, Value: 9},
+				},
+				"__name__=latency_exp_sum,service=api": {
+					{TMillis: firstMillis, Value: 21}, {TMillis: secondMillis, Value: 34},
+				},
+			},
+		},
+		{
+			name: "absent sum produces only count companion",
+			seed: `CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency.exp', map('service', 'api'), toDateTime64('` + firstTimestamp + `', 9), 7, 0, 0, 0, [7], 0, []);`,
+			want: map[string][]oracle.Point{
+				"__name__=latency_exp_count,service=api": {{TMillis: firstMillis, Value: 7}},
+			},
+		},
+		{
+			name: "absent count produces only sum companion",
+			seed: `CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency.exp', map('service', 'api'), toDateTime64('` + firstTimestamp + `', 9), 21.0, 0, 0, 0, [7], 0, []);`,
+			want: map[string][]oracle.Point{
+				"__name__=latency_exp_sum,service=api": {{TMillis: firstMillis, Value: 21}},
+			},
+		},
+		{
+			name: "absent count and sum produce no companions",
+			seed: `CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency.exp', map('service', 'api'), toDateTime64('` + firstTimestamp + `', 9), 0, 0, 0, [7], 0, []);`,
+			want: map[string][]oracle.Point{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chdbEngineMu.Lock()
+			defer chdbEngineMu.Unlock()
+
+			db := OpenChDB(t)
+			ApplySeed(t, db, tc.seed)
+
+			byKey := map[string]*oracle.Series{}
+			nameRestorer := newMetricNameRestorer()
+			if err := readSeededNativeHistograms(
+				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer, nil,
+			); err != nil {
+				t.Fatalf("readSeededNativeHistograms: %v", err)
+			}
+
+			if _, ok := byKey["__name__=latency_exp,service=api"]; !ok {
+				t.Error("native histogram series was not reconstructed with its normalized metric name")
+			}
+			for key, want := range tc.want {
+				s, ok := byKey[key]
+				if !ok {
+					t.Errorf("companion series %s was not reconstructed", key)
+					continue
+				}
+				if len(s.Points) != len(want) {
+					t.Errorf("companion series %s has %d points, want %d", key, len(s.Points), len(want))
+					continue
+				}
+				for i, point := range s.Points {
+					if point.TMillis != want[i].TMillis || !oracle.EqualValues(point.Value, want[i].Value) {
+						t.Errorf("companion series %s point %d = %+v, want %+v", key, i, point, want[i])
+					}
+				}
+			}
+			if got, want := len(byKey), len(tc.want)+1; got != want {
+				t.Errorf("read %d series, want %d: %v", got, want, byKey)
+			}
+		})
 	}
 }
 

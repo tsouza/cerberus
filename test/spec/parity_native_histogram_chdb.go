@@ -53,6 +53,7 @@ const (
 // corpus seeds only the tables its own query needs.
 func readSeededNativeHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
+	nameRestorer *metricNameRestorer, exactNames map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]
 	if len(seedCols) == 0 {
@@ -74,6 +75,7 @@ func readSeededNativeHistograms(
 	defer func() { _ = rows.Close() }()
 
 	countDeclared := hasColumn(seedCols, colCount)
+	sumDeclared := hasColumn(seedCols, colSum)
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName string
 		var tsMillis int64
@@ -128,13 +130,32 @@ func readSeededNativeHistograms(
 			h.Count = totalObservations(h)
 		}
 
-		key := labelKey(lbls)
-		s, ok := byKey[key]
-		if !ok {
-			s = &oracle.Series{Labels: lbls}
-			byKey[key] = s
+		if exactNames == nil || exactNames[normalizeMetricName(name)] {
+			if err := nameRestorer.record(lbls, name); err != nil {
+				return err
+			}
+			key := labelKey(lbls)
+			s, ok := byKey[key]
+			if !ok {
+				s = &oracle.Series{Labels: lbls}
+				byKey[key] = s
+			}
+			s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Histogram: h})
 		}
-		s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Histogram: h})
+
+		// Cerberus exposes these documented float companions in addition to
+		// the native-histogram series. Only a physical source column earns a
+		// companion: a query cannot read a column a fixture did not seed.
+		if countDeclared {
+			if err := appendPoint(byKey, nameRestorer, lbls, name+countSuffix, nil, tsMillis, count); err != nil {
+				return err
+			}
+		}
+		if sumDeclared {
+			if err := appendPoint(byKey, nameRestorer, lbls, name+sumSuffix, nil, tsMillis, sum); err != nil {
+				return err
+			}
+		}
 	}
 	return rows.Err()
 }

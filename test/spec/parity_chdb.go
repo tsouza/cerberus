@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/testsql"
@@ -48,6 +49,31 @@ type referenceSample struct {
 	// see [oracle.Point] for why the distinction survives all the way to
 	// the assertion instead of collapsing into Value.
 	Histogram *oracle.Histogram
+}
+
+// seededSeries is the Prometheus-shaped input plus the stored metric spelling
+// each input label set came from. Prometheus evaluates normalized names, while
+// the internal fixture projection retains the stored MetricName spelling.
+type seededSeries struct {
+	series       []oracle.Series
+	nameRestorer metricNameRestorer
+}
+
+// metricNameRestorer retains the raw spelling behind each Prometheus input
+// name. A transformed result label set cannot use bySeries, so it falls back
+// only when a normalized name has exactly one stored spelling.
+type metricNameRestorer struct {
+	bySeries         map[string]string
+	byNormalizedName map[string]string
+	ambiguousNames   map[string]bool
+}
+
+func newMetricNameRestorer() metricNameRestorer {
+	return metricNameRestorer{
+		bySeries:         map[string]string{},
+		byNormalizedName: map[string]string{},
+		ambiguousNames:   map[string]bool{},
+	}
 }
 
 // lokiParityEvaluator is the seam onto the AGPL-licensed Loki oracle.
@@ -353,11 +379,11 @@ func evaluatePrometheusParity(
 ) ([]referenceSample, error) {
 	t.Helper()
 
-	series, err := readSeededSeries(db, rt, resourceLabelAllowlist(c))
+	seeded, err := readSeededSeries(db, rt, resourceLabelAllowlist(c), q.Expr)
 	if err != nil {
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
-	if len(series) == 0 {
+	if len(seeded.series) == 0 {
 		// A genuinely empty series set is only a vacuous check — and
 		// therefore an error — when the query reads one. `pi()`, `time()`,
 		// `vector(5)`, `year()` and friends are pure scalar/time functions
@@ -378,7 +404,7 @@ func evaluatePrometheusParity(
 		}
 	}
 
-	got, err := oracle.Evaluate(t, series, oracle.Query{
+	got, err := oracle.Evaluate(t, seeded.series, oracle.Query{
 		Expr:  q.Expr,
 		Start: q.Start,
 		End:   q.End,
@@ -387,6 +413,7 @@ func evaluatePrometheusParity(
 	if err != nil {
 		return nil, err
 	}
+	seeded.nameRestorer.restore(got)
 
 	out := make([]referenceSample, 0, len(got))
 	for _, r := range got {
@@ -417,9 +444,10 @@ var seededMetricsTables = []string{
 // disagreement about what the seed means would be invisible to exactly the
 // check meant to find disagreements.
 func readSeededSeries(
-	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist,
-) ([]oracle.Series, error) {
+	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, expr string,
+) (seededSeries, error) {
 	byKey := map[string]*oracle.Series{}
+	nameRestorer := newMetricNameRestorer()
 	seedCols := testsql.SeedTableColumns(rt.Seed)
 
 	for _, table := range seededMetricsTables {
@@ -436,20 +464,22 @@ func readSeededSeries(
 			// A fixture that never created this table is not an error.
 			continue
 		}
-		if err := scanSeriesRows(rows, byKey, allow); err != nil {
+		if err := scanSeriesRows(rows, byKey, &nameRestorer, allow); err != nil {
 			_ = rows.Close()
-			return nil, err
+			return seededSeries{}, err
 		}
 		if err := rows.Close(); err != nil {
-			return nil, err
+			return seededSeries{}, err
 		}
 	}
 
-	if err := readSeededClassicHistograms(db, rt, allow, byKey); err != nil {
-		return nil, err
+	if err := readSeededClassicHistograms(db, rt, allow, byKey, &nameRestorer); err != nil {
+		return seededSeries{}, err
 	}
-	if err := readSeededNativeHistograms(db, rt, allow, byKey); err != nil {
-		return nil, err
+	if err := readSeededNativeHistograms(
+		db, rt, allow, byKey, &nameRestorer, exactMetricNameSelectors(expr),
+	); err != nil {
+		return seededSeries{}, err
 	}
 
 	out := make([]oracle.Series, 0, len(byKey))
@@ -459,10 +489,12 @@ func readSeededSeries(
 	sort.Slice(out, func(i, j int) bool {
 		return labelKey(out[i].Labels) < labelKey(out[j].Labels)
 	})
-	return out, nil
+	return seededSeries{series: out, nameRestorer: nameRestorer}, nil
 }
 
-func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series, allow resourceAllowlist) error {
+func scanSeriesRows(
+	rows *sql.Rows, byKey map[string]*oracle.Series, nameRestorer *metricNameRestorer, allow resourceAllowlist,
+) error {
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName string
 		var tsMillis int64
@@ -476,6 +508,9 @@ func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series, allow resou
 		if err != nil {
 			return err
 		}
+		if err := nameRestorer.record(lbls, name); err != nil {
+			return err
+		}
 		key := labelKey(lbls)
 		s, ok := byKey[key]
 		if !ok {
@@ -485,6 +520,71 @@ func scanSeriesRows(rows *sql.Rows, byKey map[string]*oracle.Series, allow resou
 		s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
 	}
 	return rows.Err()
+}
+
+// exactMetricNameSelectors returns the Prometheus-normalized names selected
+// through an exact __name__ matcher. Cerberus exposes a native histogram as a
+// histogram value only on that direct path; regex-only selectors expose its
+// documented float companions instead.
+func exactMetricNameSelectors(expr string) map[string]bool {
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	e, err := p.ParseExpr(expr)
+	if err != nil {
+		return nil
+	}
+	selectors := map[string]bool{}
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		vs, ok := node.(*parser.VectorSelector)
+		if !ok {
+			return nil
+		}
+		for _, m := range vs.LabelMatchers {
+			if m.Name == promNameLabel && m.Type == labels.MatchEqual {
+				selectors[m.Value] = true
+			}
+		}
+		return nil
+	})
+	return selectors
+}
+
+func (r metricNameRestorer) restore(results []oracle.Result) {
+	for i := range results {
+		name, ok := r.bySeries[labelKey(results[i].Labels)]
+		if !ok {
+			normalizedName := results[i].Labels[promNameLabel]
+			name, ok = r.byNormalizedName[normalizedName]
+			if r.ambiguousNames[normalizedName] {
+				ok = false
+			}
+		}
+		if !ok {
+			continue
+		}
+		labels := make(map[string]string, len(results[i].Labels))
+		for key, value := range results[i].Labels {
+			labels[key] = value
+		}
+		labels[promNameLabel] = name
+		results[i].Labels = labels
+	}
+}
+
+func (r metricNameRestorer) record(labels map[string]string, name string) error {
+	key := labelKey(labels)
+	if existing, ok := r.bySeries[key]; ok && existing != name {
+		return fmt.Errorf(
+			"stored metric names %q and %q normalize to the same Prometheus series %s", existing, name, key,
+		)
+	}
+	r.bySeries[key] = name
+	normalizedName := labels[promNameLabel]
+	if existing, ok := r.byNormalizedName[normalizedName]; ok && existing != name {
+		r.ambiguousNames[normalizedName] = true
+	} else {
+		r.byNormalizedName[normalizedName] = name
+	}
+	return nil
 }
 
 // compareAgainstReference is the assertion itself. See
@@ -712,6 +812,7 @@ const (
 // corpus seeds only the tables its own query needs.
 func readSeededClassicHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
+	nameRestorer *metricNameRestorer,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[classicHistogramTable]
 	if len(seedCols) == 0 {
@@ -769,13 +870,21 @@ func readSeededClassicHistograms(
 		cumulative := 0.0
 		for i, bound := range bounds {
 			cumulative += counts[i]
-			appendPoint(byKey, base, name+bucketSuffix,
-				map[string]string{leLabel: formatBucketBound(bound)}, tsMillis, cumulative)
+			if err := appendPoint(byKey, nameRestorer, base, name+bucketSuffix,
+				map[string]string{leLabel: formatBucketBound(bound)}, tsMillis, cumulative); err != nil {
+				return err
+			}
 		}
-		appendPoint(byKey, base, name+bucketSuffix,
-			map[string]string{leLabel: positiveInfSTR}, tsMillis, count)
-		appendPoint(byKey, base, name+countSuffix, nil, tsMillis, count)
-		appendPoint(byKey, base, name+sumSuffix, nil, tsMillis, sum)
+		if err := appendPoint(byKey, nameRestorer, base, name+bucketSuffix,
+			map[string]string{leLabel: positiveInfSTR}, tsMillis, count); err != nil {
+			return err
+		}
+		if err := appendPoint(byKey, nameRestorer, base, name+countSuffix, nil, tsMillis, count); err != nil {
+			return err
+		}
+		if err := appendPoint(byKey, nameRestorer, base, name+sumSuffix, nil, tsMillis, sum); err != nil {
+			return err
+		}
 	}
 	return rows.Err()
 }
@@ -799,9 +908,9 @@ func formatBucketBound(bound float64) string {
 // sight. The base map is never mutated: several synthesised series share
 // one row's labels.
 func appendPoint(
-	byKey map[string]*oracle.Series, base map[string]string,
+	byKey map[string]*oracle.Series, nameRestorer *metricNameRestorer, base map[string]string,
 	name string, extra map[string]string, tsMillis int64, value float64,
-) {
+) error {
 	lbls := make(map[string]string, len(base)+len(extra)+1)
 	for k, v := range base {
 		lbls[k] = v
@@ -809,7 +918,10 @@ func appendPoint(
 	for k, v := range extra {
 		lbls[k] = v
 	}
-	lbls[promNameLabel] = name
+	lbls[promNameLabel] = normalizeMetricName(name)
+	if err := nameRestorer.record(lbls, name); err != nil {
+		return err
+	}
 
 	key := labelKey(lbls)
 	s, ok := byKey[key]
@@ -818,6 +930,7 @@ func appendPoint(
 		byKey[key] = s
 	}
 	s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
+	return nil
 }
 
 // The OTel-CH columns beyond Attributes that carry Prometheus labels, and
@@ -903,6 +1016,32 @@ func sanitizeLabelName(key string) string {
 	return b.String()
 }
 
+// normalizeMetricName expresses the OTel-to-Prometheus metric-name mapping
+// independently for the reference engine's input data. It deliberately does
+// not import internal/api/format: sharing the production implementation would
+// prevent the parity check from detecting a lowering that exposes a different
+// metric name.
+func normalizeMetricName(name string) string {
+	if name == "" {
+		return ""
+	}
+
+	out := make([]byte, 0, len(name)+1)
+	if name[0] >= '0' && name[0] <= '9' {
+		out = append(out, '_')
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == ':':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
 // labelsFromSeededRow builds the reference-engine label set for one seeded
 // row: the resource labels, overlaid by the metric attributes, plus
 // service_name and __name__.
@@ -969,7 +1108,7 @@ func labelsFromSeededRow(
 		out[serviceNameLabel] = serviceName
 	}
 	if metricName != "" {
-		out[promNameLabel] = metricName
+		out[promNameLabel] = normalizeMetricName(metricName)
 	}
 	return out, nil
 }
