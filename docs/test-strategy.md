@@ -957,18 +957,11 @@ the aggregator job literally named `compose-smoke` needs the matrix
 and gates on it so the required-check context still appears). Specs
 are **discovered** (`git ls-files`), so a newly added `*.spec.ts` is a
 hard CI failure until it is either assigned to a shard or named in the
-exclude list — never a silent no-run. `crawl/crawl` rides its own
-shard with only light companions because its single BFS `test()` is
-the ~50min `SWEEP_DEPTH=full` long pole and cannot be split — the
-nightly lane's wall-clock is therefore ≈ max(crawl shard) rather than
-the serial sum behind it. *Documented follow-up (tsouza/cerberus#2005):*
-the k3d `dashboard` job also runs the crawl (`CRAWL_STACK=k3d`)
-unfiltered + its own crawl trio, on its own dedicated shard mirroring
-this one — neither substrate splits the BFS frontier itself; splitting
-the `crawl/crawl` BFS `test()` (a `CRAWL_SHARD_INDEX`/`COUNT` contract
-partitioning the frontier, plus a merge-and-assert step against the
-pinned inventory) is the only path below the ~50min full-depth floor
-and is a crawl-engine change, not a workflow one.
+exclude list — never a silent no-run. `crawl/crawl` uses a
+`CRAWL_SHARD_INDEX`/`COUNT` contract: every crawl shard retains BFS
+discovery, audits its deterministic owned slice, and uploads that slice
+for one merge-and-ratchet step against the pinned inventory. The k3d
+`dashboard` job uses the same contract with `CRAWL_STACK=k3d`.
 
 **The surface-inventory ratchet.**
 `crawl/grafana-surface-inventory.<stack>.json` pins each stack's

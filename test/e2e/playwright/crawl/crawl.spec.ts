@@ -129,6 +129,8 @@ import {
   byCodepoint,
   canonicalTarget,
   canonicalizeURL,
+  belongsToCrawlShard,
+  crawlShard,
   collectVisibleAlertBanners,
   diffInventory,
   expandSiblingTabs,
@@ -382,6 +384,62 @@ test.describe('crawl: canonicalization pins', () => {
         `stack ${name}: committed inventory doc matches the config's inventoryDoc`,
       ).toBe(cfg.inventoryDoc);
     }
+  });
+
+  test('crawl shard contract is total, deterministic, and keeps interaction states with their page', () => {
+    expect(crawlShard({})).toEqual({ index: 0, count: 1 });
+    expect(crawlShard({ CRAWL_SHARD_INDEX: '2', CRAWL_SHARD_COUNT: '3' })).toEqual({
+      index: 2,
+      count: 3,
+    });
+    expect(() => crawlShard({ CRAWL_SHARD_INDEX: '0' })).toThrow(/requires both/);
+    expect(() => crawlShard({ CRAWL_SHARD_INDEX: '3', CRAWL_SHARD_COUNT: '3' })).toThrow(
+      /outside/,
+    );
+    for (const [index, count] of [
+      ['-1', '3'],
+      ['1.5', '3'],
+      ['1e2', '3'],
+      ['Infinity', '3'],
+      ['9007199254740992', '3'],
+      ['0', '0'],
+      ['0', '1.5'],
+      ['0', 'Infinity'],
+      ['0', '9007199254740992'],
+    ]) {
+      expect(() =>
+        crawlShard({ CRAWL_SHARD_INDEX: index, CRAWL_SHARD_COUNT: count }),
+      ).toThrow(/requires/);
+    }
+
+    const states = [
+      '/',
+      '/d/example',
+      '/d/example#radio[mode]=detail',
+      '/a/grafana-exploretraces-app/explore?var-groupBy={var-groupBy}',
+    ];
+    for (const state of states) {
+      const owners = [0, 1, 2].filter((index) =>
+        belongsToCrawlShard(state, { index, count: 3 }),
+      );
+      expect(owners, `${state} must have exactly one owner`).toHaveLength(1);
+    }
+    expect(
+      belongsToCrawlShard('/d/example', { index: 0, count: 3 }),
+    ).toBe(
+      belongsToCrawlShard('/d/example#radio[mode]=detail', {
+        index: 0,
+        count: 3,
+      }),
+    );
+    expect(
+      belongsToCrawlShard('/d/example', { index: 0, count: 3 }),
+    ).toBe(
+      belongsToCrawlShard('/d/example?var-mode=detail', {
+        index: 0,
+        count: 3,
+      }),
+    );
   });
 
   test('canonical keys are path-only — volatile and session-state params are stripped', () => {
@@ -1624,13 +1682,16 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 }, testInfo) => {
   const stack = activeStack();
   const depth = sweepDepth();
+  const shard = crawlShard();
   // Budget: lean ≈ 10 pages × ~6s + 30s seed + the representative
   // interaction sweep over the 3 drilldown roots (~3 min); full ≈
   // cap pages + the exhaustive interaction sweep (a fresh navigation
   // per planned gesture).
   testInfo.setTimeout(depth === 'full' ? 75 * 60_000 : 14 * 60_000);
   // eslint-disable-next-line no-console
-  console.log(`crawl stack: ${stack.name} — ${describeSweepDepth(depth)}`);
+  console.log(
+    `crawl stack: ${stack.name} — ${describeSweepDepth(depth)} (shard ${shard.index + 1}/${shard.count})`,
+  );
 
   const baseURL =
     process.env.GRAFANA_URL ??
@@ -1737,6 +1798,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 
   const pageCap = depth === 'full' ? stack.pageCapFull : stack.pageCapLean;
   const visited = new Map<string, string>(); // canonical → concrete navigated
+  const audited = new Map<string, string>(); // states owned by this shard
   // In-place interaction states (`<canonical>#<control>=<value>`) →
   // concrete URL the gesture ran against. Kept separate from
   // `visited` because they are gestures on an already-counted page,
@@ -1766,13 +1828,16 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 
       visited.set(entry.canonical, entry.concrete);
 
+      const ownsSurface = belongsToCrawlShard(entry.canonical, shard);
       const { harvested, pageFailures } = await visitAndAudit(
         lease,
         baseURL,
         entry,
         declaredNoData,
         declaredErrorExprs,
+        ownsSurface,
       );
+      if (ownsSurface) audited.set(entry.canonical, entry.concrete);
       failures.push(...pageFailures);
 
       // Lean visits the seed set + the nav links harvested from the
@@ -1816,7 +1881,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       // the pairwise bound: surfaces pinning ≥2 structural params are
       // terminal (planInteractions returns an empty plan for them).
       const isLeanRoot = stack.leanInteractionRoots.includes(entry.canonical);
-      if (depth === 'full' || isLeanRoot) {
+      if (ownsSurface && (depth === 'full' || isLeanRoot)) {
         const sweep = await sweepInteractions(
           lease,
           baseURL,
@@ -1829,6 +1894,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
         failures.push(...sweep.failures);
         for (const [stateKey, state] of sweep.inPlaceStates) {
           inPlaceVisited.set(stateKey, state.concrete);
+          audited.set(stateKey, state.concrete);
           if (isLeanRoot && state.leanRepresentative) leanSet.add(stateKey);
         }
         // Same fold as the link-harvest loop above: several driven
@@ -1873,7 +1939,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // interaction states (`<canonical>#<control>=<value>` notation) —
   // both pin into the same inventory ratchet.
   const auditedStates = new Map<string, string>([
-    ...visited,
+    ...audited,
     ...inPlaceVisited,
   ]);
 
@@ -1895,6 +1961,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // run still fails loudly on the failures right below.
   // -------------------------------------------------------------------------
   if (process.env.CERBERUS_UPDATE_INVENTORY) {
+    expect(shard.count, 'inventory regeneration must run unsharded').toBe(1);
     expect(
       depth,
       'inventory regeneration requires the exhaustive crawl: rerun with SWEEP_DEPTH=full',
@@ -1924,6 +1991,18 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   }
 
   if (process.env.CERBERUS_UPDATE_INVENTORY) return;
+
+  if (shard.count > 1) {
+    const slicePath = process.env.CRAWL_SLICE_PATH;
+    if (slicePath === undefined || slicePath === '') {
+      throw new Error('sharded crawl requires CRAWL_SLICE_PATH for the merge job');
+    }
+    writeFileSync(
+      slicePath,
+      `${JSON.stringify({ stack: stack.name, depth, shard, visited: [...auditedStates.keys()].sort(), discovered: [...visited.keys()].sort() }, null, 2)}\n`,
+    );
+    return;
+  }
 
   // Bootstrap guard before the diff: an EMPTY committed inventory
   // means the stack was registered but never crawled exhaustively —
@@ -2228,6 +2307,7 @@ async function visitAndAudit(
   entry: QueueEntry,
   declaredNoData: ReadonlyMap<string, Set<string>>,
   declaredErrorExprs: ReadonlyMap<string, Set<string>>,
+  audit: boolean,
 ): Promise<{ harvested: string[]; pageFailures: CrawlFailure[] }> {
   const pageFailures: CrawlFailure[] = [];
   const fail: FailFn = (rule, detail) =>
@@ -2241,27 +2321,31 @@ async function visitAndAudit(
   );
 
   const page = await lease.acquire();
-  const { messages: consoleErrors, stop: stopConsole } =
-    await captureConsoleErrors(page);
-  const wire = startWireCapture(page, baseURL);
+  const capture = audit ? await captureConsoleErrors(page) : undefined;
+  const wire = audit ? startWireCapture(page, baseURL) : undefined;
 
   let harvested: string[] = [];
   try {
     lease.noteNavigation();
     await gotoCold(page, `${baseURL}${entry.concrete}`);
-    await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
+    if (audit) {
+      await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
+    }
 
     harvested = await harvestLinks(page);
 
-    await evaluateDomOracles(page, contracts, entry.concrete, fail);
+    if (audit) {
+      await evaluateDomOracles(page, contracts, entry.concrete, fail);
+    }
   } catch (err) {
     fail(
       'navigation-threw',
       `goto(${entry.concrete}) threw: ${(err as Error).message}`,
     );
   } finally {
-    stopConsole();
+    capture?.stop();
   }
+  if (wire === undefined || capture === undefined) return { harvested, pageFailures };
   await wire.stop();
   const reconciledInitRace = evaluateWireOracles(wire.captured, contracts, fail);
 
@@ -2270,7 +2354,7 @@ async function visitAndAudit(
   // for the escalation path if a Grafana bump ever makes a real filter
   // unavoidable).
   const reportableErrors = resolveInitRaceConsoleTwins(
-    consoleErrors,
+    capture.messages,
     reconciledInitRace,
   );
   if (reportableErrors.length > 0) {

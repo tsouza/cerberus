@@ -20,6 +20,9 @@ import {
   collectViolations,
   shardSweepDepth,
   shardTimeoutMinutes,
+  CRAWL_FRONTIER_SHARD_COUNT,
+  crawlShardEntries,
+  SHARDS,
 } from './compose-smoke-matrix.mjs';
 import {
   CRAWL_SHARD_TIMEOUT_FULL_MIN,
@@ -117,4 +120,20 @@ test('every shard ceiling outlives the spec budget at its own depth', () => {
       `crawl ceiling must follow its own sweep depth (${depth})`,
     );
   }
+});
+
+test('the crawl frontier count is a positive matrix fan-out', () => {
+  assert.ok(Number.isInteger(CRAWL_FRONTIER_SHARD_COUNT));
+  assert.ok(CRAWL_FRONTIER_SHARD_COUNT > 1);
+});
+
+test('inventory regeneration emits one unsharded compose crawl writer', () => {
+  const crawl = SHARDS.find((shard) => shard.name === CRAWL_SHARD);
+  assert.ok(crawl, 'the crawl shard must exist');
+  assert.deepEqual(
+    crawlShardEntries(crawl, { isSchedule: false, regeneratesComposeInventory: true }).map(
+      (entry) => [entry.crawlShardIndex, entry.crawlShardCount],
+    ),
+    [[0, 1]],
+  );
 });
