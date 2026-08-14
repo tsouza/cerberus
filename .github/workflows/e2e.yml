@@ -805,7 +805,6 @@ jobs:
         with:
           pattern: crawl-slice-compose-*
           path: crawl-slices
-          merge-multiple: true
       - name: Merge compose crawl slices and assert inventory
         env:
           CRAWL_SLICE_DIR: crawl-slices
@@ -1432,7 +1431,6 @@ jobs:
         with:
           pattern: crawl-slice-k3d-*
           path: crawl-slices
-          merge-multiple: true
       - name: Merge k3d crawl slices and assert inventory
         env:
           CRAWL_SLICE_DIR: crawl-slices

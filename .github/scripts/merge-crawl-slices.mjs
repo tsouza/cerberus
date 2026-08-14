@@ -95,15 +95,21 @@ export function mergeSlices(slices, { stack, depth, inventory, exclusions, inven
   return { visited, discovered, violations };
 }
 
+export function loadSlices(dir) {
+  // Artifact downloads keep each shard in its own directory so identically
+  // named crawl-slice.json files cannot overwrite one another.
+  return readdirSync(dir, { recursive: true })
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
+}
+
 function main() {
   const dir = process.env.CRAWL_SLICE_DIR;
   const stack = process.env.CRAWL_STACK;
   if (!dir || !stack) {
     throw new Error('CRAWL_SLICE_DIR and CRAWL_STACK are required');
   }
-  const slices = readdirSync(dir)
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
+  const slices = loadSlices(dir);
   const depth = process.env.SWEEP_DEPTH ?? slices[0]?.depth;
   if (depth !== 'lean' && depth !== 'full') {
     throw new Error('crawl slices must declare SWEEP_DEPTH=lean|full');

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { mergeSlices, owner } from './merge-crawl-slices.mjs';
+import { loadSlices, mergeSlices, owner } from './merge-crawl-slices.mjs';
 
 const stack = 'compose';
 const shardCount = 2;
@@ -44,6 +47,23 @@ test('mergeSlices accepts a total, owned shard cover', () => {
     mergeSlices(slices, { stack, depth: 'full', inventory, exclusions: { exclusions: [] } }).violations,
     [],
   );
+});
+
+test('loadSlices preserves identically named files in artifact directories', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'merge-crawl-slices-'));
+  try {
+    for (const index of [0, 1]) {
+      const artifactDir = join(dir, `crawl-slice-compose-${index}`);
+      mkdirSync(artifactDir);
+      writeFileSync(join(artifactDir, 'crawl-slice.json'), JSON.stringify(shard(index, [])));
+    }
+    assert.deepEqual(
+      loadSlices(dir).map((slice) => slice.shard.index).sort(),
+      [0, 1],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('mergeSlices rejects missing owners and coverage growth', () => {
