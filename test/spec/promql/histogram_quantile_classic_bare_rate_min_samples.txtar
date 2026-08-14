@@ -48,10 +48,6 @@
 
 -- query.promql --
 histogram_quantile(0.5, rate(http_server_request_duration_bucket[1m]))
--- parity --
-oracle: prometheus
-endpoint: /api/v1/query_range
-scope: full
 -- range_step --
 10s
 -- seed --

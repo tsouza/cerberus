@@ -793,6 +793,10 @@ func windowSampleCountAgg(s schema.Metrics) chplan.AggFunc {
 // the `rate` / `increase` fold can apply Prometheus's boundary-
 // extrapolation correction (see histogramWindowFold).
 func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
+	var perSecond chplan.Expr
+	if shape.windowFn == "rate" {
+		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
+	}
 	group := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
@@ -814,6 +818,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 			rangeStart:  rangeStart,
 			rangeEnd:    rangeEnd,
 			temporality: classicBucketWindowTemporalityExpr(s, shape.windowFn),
+			perSecond:   perSecond,
 		}),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},
