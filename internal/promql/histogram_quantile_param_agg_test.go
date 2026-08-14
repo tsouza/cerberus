@@ -123,6 +123,57 @@ func TestClassicBucketLadderFold_OperatorTable(t *testing.T) {
 	}
 }
 
+// TestHistogramWindowFold_RateDividesFactorBeforeBucketIncrease pins the
+// floating-point operation order used by classic histogram rate windows.
+// Prometheus divides the extrapolation factor by the requested range before
+// scaling every bucket increase; dividing the completed product differs by a
+// ULP for otherwise identical Float64 inputs.
+func TestHistogramWindowFold_RateDividesFactorBeforeBucketIncrease(t *testing.T) {
+	const fiveMinutesInSeconds = 300.0
+
+	fold := histogramWindowFold("rate", histogramWindowInputs{
+		rangeStart: &chplan.ColumnRef{Name: "range_start"},
+		rangeEnd:   &chplan.ColumnRef{Name: "range_end"},
+		perSecond:  &chplan.LitFloat{V: fiveMinutesInSeconds},
+	})
+	got := fold(
+		&chplan.ColumnRef{Name: "bucket_counts"},
+		&chplan.ColumnRef{Name: "sample_times"},
+	)
+
+	dividesRange := func(e chplan.Expr) bool {
+		div, ok := e.(*chplan.Binary)
+		if !ok || div.Op != chplan.OpDiv {
+			return false
+		}
+		seconds, ok := div.Right.(*chplan.LitFloat)
+		return ok && seconds.V == fiveMinutesInSeconds
+	}
+
+	var factorDivided, productDivided bool
+	chplan.InspectExpr(got, func(e chplan.Expr) bool {
+		b, ok := e.(*chplan.Binary)
+		if !ok {
+			return true
+		}
+		if b.Op == chplan.OpMul && dividesRange(b.Right) {
+			factorDivided = true
+		}
+		if dividesRange(b) {
+			if left, ok := b.Left.(*chplan.Binary); ok && left.Op == chplan.OpMul {
+				productDivided = true
+			}
+		}
+		return true
+	})
+	if !factorDivided {
+		t.Fatal("classic histogram rate does not divide its extrapolation factor by the range")
+	}
+	if productDivided {
+		t.Fatal("classic histogram rate divides the bucket increase/factor product instead of the factor")
+	}
+}
+
 // TestClassicBucketLadderFold_NilAggIsSum pins the bare-`rate(...)` case:
 // with no aggregation wrapper the window collapse still folds every
 // in-window row of a series into one ladder, and summing is what that
