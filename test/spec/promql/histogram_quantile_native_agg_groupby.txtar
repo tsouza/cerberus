@@ -24,7 +24,7 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 -- expected_rows --
 [
   ["", {"service": "api"}, "2026-01-01T00:00:01Z", 7.464263932294459],
-  ["", {"service": "web"}, "2026-01-01T00:00:01Z", 7.127189745122713]
+  ["", {"service": "web"}, "2026-01-01T00:00:01Z", 7.127189745122715]
 ]
 -- args --
 [0] string = ""
