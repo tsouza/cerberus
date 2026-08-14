@@ -346,6 +346,38 @@ func TestLower_HistogramQuantile_OverAggregation_LeDropped(t *testing.T) {
 	}
 }
 
+func TestLower_HistogramQuantile_OverAggregationWithoutLeUsesFloatPath(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	expr, err := p.ParseExpr(`histogram_quantile(0.95, sum by(job) (rate(http_server_request_duration[5m])))`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+
+	var usesFloatBucketGrouping bool
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		agg, ok := n.(*chplan.Aggregate)
+		if !ok {
+			return true
+		}
+		for _, group := range agg.GroupBy {
+			if _, ok := group.(*chplan.MapWithoutKeys); ok {
+				usesFloatBucketGrouping = true
+			}
+		}
+		return true
+	})
+	if !usesFloatBucketGrouping {
+		t.Fatal("sum by(job) without le did not use the float-bucket histogram quantile path")
+	}
+}
+
 // TestLower_HistogramQuantile_OverAggregation_Native pins the chplan
 // shape for `histogram_quantile(phi, sum by(...) (rate(<sel>_exp_hist[r])))`.
 // The native lowering mirrors the classic aggregated-input path but
