@@ -3,6 +3,10 @@
 # numerator rather than the cumulative counter difference.
 -- query.promql --
 histogram_quantile(0.5, rate(delta_quantile_exp_hist[1m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_exponential_histogram (
     AggregationTemporality Int32,

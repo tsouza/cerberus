@@ -23,6 +23,10 @@
 irate(http_requests_delta_total[1m])
 -- range_step --
 1m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     AggregationTemporality Int32,
