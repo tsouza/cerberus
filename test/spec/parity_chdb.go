@@ -498,6 +498,7 @@ func readSeededSeries(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, expr string,
 ) (seededSeries, error) {
 	byKey := map[string]*oracle.Series{}
+	deltaSeries := map[string]bool{}
 	nameRestorer := newMetricNameRestorer()
 	seedCols := testsql.SeedTableColumns(rt.Seed)
 
@@ -508,14 +509,14 @@ func readSeededSeries(
 		q := "SELECT MetricName, toJSONString(Attributes), " +
 			resourceAttributesProjection(seedCols[table]) + ", " +
 			serviceNameProjection(seedCols[table]) + ", " +
-			"toUnixTimestamp64Milli(TimeUnix), Value " +
+			"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols[table]) + ", Value " +
 			"FROM " + table + " ORDER BY MetricName, TimeUnix"
 		rows, err := db.Query(q)
 		if err != nil {
 			// A fixture that never created this table is not an error.
 			continue
 		}
-		if err := scanSeriesRows(rows, byKey, &nameRestorer, allow); err != nil {
+		if err := scanSeriesRows(rows, byKey, &nameRestorer, allow, deltaSeries); err != nil {
 			_ = rows.Close()
 			return seededSeries{}, err
 		}
@@ -524,12 +525,15 @@ func readSeededSeries(
 		}
 	}
 
-	if err := readSeededClassicHistograms(db, rt, allow, byKey, &nameRestorer); err != nil {
+	if err := readSeededClassicHistograms(db, rt, allow, byKey, &nameRestorer, deltaSeries); err != nil {
 		return seededSeries{}, err
 	}
 	if err := readSeededNativeHistograms(
-		db, rt, allow, byKey, &nameRestorer, exactMetricNameSelectors(expr),
+		db, rt, allow, byKey, &nameRestorer, exactMetricNameSelectors(expr), deltaSeries,
 	); err != nil {
+		return seededSeries{}, err
+	}
+	if err := cumulativeDeltaSeries(byKey, deltaSeries); err != nil {
 		return seededSeries{}, err
 	}
 
@@ -545,13 +549,14 @@ func readSeededSeries(
 
 func scanSeriesRows(
 	rows *sql.Rows, byKey map[string]*oracle.Series, nameRestorer *metricNameRestorer, allow resourceAllowlist,
+	deltaSeries map[string]bool,
 ) error {
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName string
-		var tsMillis int64
+		var tsMillis, temporality int64
 		var value float64
 		if err := rows.Scan(
-			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &value,
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality, &value,
 		); err != nil {
 			return err
 		}
@@ -563,6 +568,7 @@ func scanSeriesRows(
 			return err
 		}
 		key := labelKey(lbls)
+		markDeltaSeries(deltaSeries, key, temporality)
 		s, ok := byKey[key]
 		if !ok {
 			s = &oracle.Series{Labels: lbls}
@@ -571,6 +577,130 @@ func scanSeriesRows(
 		s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
 	}
 	return rows.Err()
+}
+
+// cumulativeDeltaSeries adapts OTel DELTA observations to the cumulative
+// series upstream Prometheus accepts. It is intentionally a test-input
+// translation, not a call into Cerberus's lowering or temporality logic.
+func cumulativeDeltaSeries(byKey map[string]*oracle.Series, deltaSeries map[string]bool) error {
+	for key := range deltaSeries {
+		series := byKey[key]
+		if series == nil {
+			return fmt.Errorf("DELTA series %s was not read", key)
+		}
+		sort.Slice(series.Points, func(i, j int) bool {
+			return series.Points[i].TMillis < series.Points[j].TMillis
+		})
+
+		var cumulative *oracle.Histogram
+		for i := range series.Points {
+			point := &series.Points[i]
+			if point.Histogram == nil {
+				if cumulative != nil {
+					return fmt.Errorf("DELTA series %s mixes float and histogram samples", key)
+				}
+				if i > 0 {
+					point.Value += series.Points[i-1].Value
+				}
+				continue
+			}
+			if i > 0 && cumulative == nil {
+				return fmt.Errorf("DELTA series %s mixes float and histogram samples", key)
+			}
+			var err error
+			cumulative, err = addDeltaHistogram(cumulative, point.Histogram)
+			if err != nil {
+				return fmt.Errorf("DELTA series %s: %w", key, err)
+			}
+			point.Histogram = cumulative
+		}
+	}
+	return nil
+}
+
+func addDeltaHistogram(total, delta *oracle.Histogram) (*oracle.Histogram, error) {
+	if total == nil {
+		return cloneHistogram(delta), nil
+	}
+	// An exponential histogram may reduce resolution between observations.
+	// Downscaling both sides to the coarsest scale preserves every observation:
+	// a source bucket maps to the containing target bucket by arithmetic index
+	// division. This is stated here from the data model, not reused from the
+	// system under test.
+	targetScale := min(total.Scale, delta.Scale)
+	total = downscaleHistogram(total, targetScale)
+	delta = downscaleHistogram(delta, targetScale)
+	positiveOffset, positive := addHistogramBuckets(
+		total.PositiveOffset, total.PositiveBuckets, delta.PositiveOffset, delta.PositiveBuckets,
+	)
+	negativeOffset, negative := addHistogramBuckets(
+		total.NegativeOffset, total.NegativeBuckets, delta.NegativeOffset, delta.NegativeBuckets,
+	)
+	return &oracle.Histogram{
+		Count:           total.Count + delta.Count,
+		Sum:             total.Sum + delta.Sum,
+		Scale:           total.Scale,
+		ZeroThreshold:   total.ZeroThreshold,
+		ZeroCount:       total.ZeroCount + delta.ZeroCount,
+		PositiveOffset:  positiveOffset,
+		PositiveBuckets: positive,
+		NegativeOffset:  negativeOffset,
+		NegativeBuckets: negative,
+	}, nil
+}
+
+func downscaleHistogram(h *oracle.Histogram, targetScale int32) *oracle.Histogram {
+	if h.Scale == targetScale {
+		return cloneHistogram(h)
+	}
+	shift := h.Scale - targetScale
+	positiveOffset, positive := downscaleHistogramBuckets(h.PositiveOffset, h.PositiveBuckets, shift)
+	negativeOffset, negative := downscaleHistogramBuckets(h.NegativeOffset, h.NegativeBuckets, shift)
+	return &oracle.Histogram{
+		Count: h.Count, Sum: h.Sum, Scale: targetScale, ZeroThreshold: h.ZeroThreshold, ZeroCount: h.ZeroCount,
+		PositiveOffset: positiveOffset, PositiveBuckets: positive,
+		NegativeOffset: negativeOffset, NegativeBuckets: negative,
+	}
+}
+
+func downscaleHistogramBuckets(offset int32, buckets []float64, shift int32) (int32, []float64) {
+	if len(buckets) == 0 {
+		return offset, nil
+	}
+	start := offset >> shift
+	end := (int64(offset) + int64(len(buckets)) - 1) >> shift
+	downscaled := make([]float64, len(buckets))
+	for i, value := range buckets {
+		downscaled[((int64(offset)+int64(i))>>shift)-int64(start)] += value
+	}
+	return start, downscaled[:end-int64(start)+1]
+}
+
+func cloneHistogram(h *oracle.Histogram) *oracle.Histogram {
+	return &oracle.Histogram{
+		Count: h.Count, Sum: h.Sum, Scale: h.Scale, ZeroThreshold: h.ZeroThreshold, ZeroCount: h.ZeroCount,
+		PositiveOffset: h.PositiveOffset, PositiveBuckets: append([]float64(nil), h.PositiveBuckets...),
+		NegativeOffset: h.NegativeOffset, NegativeBuckets: append([]float64(nil), h.NegativeBuckets...),
+	}
+}
+
+func addHistogramBuckets(leftOffset int32, left []float64, rightOffset int32, right []float64) (int32, []float64) {
+	if len(left) == 0 {
+		return rightOffset, append([]float64(nil), right...)
+	}
+	if len(right) == 0 {
+		return leftOffset, append([]float64(nil), left...)
+	}
+	offset := min(leftOffset, rightOffset)
+	end := max(int64(leftOffset)+int64(len(left)), int64(rightOffset)+int64(len(right)))
+	buckets := make([]float64, len(left)+len(right))
+	for i, value := range left {
+		buckets[leftOffset-offset+int32(i)] += value
+	}
+	for i, value := range right {
+		buckets[rightOffset-offset+int32(i)] += value
+	}
+	return offset, buckets[:end-int64(offset)]
 }
 
 // exactMetricNameSelectors returns the Prometheus-normalized names selected
@@ -863,7 +993,7 @@ const (
 // corpus seeds only the tables its own query needs.
 func readSeededClassicHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
-	nameRestorer *metricNameRestorer,
+	nameRestorer *metricNameRestorer, deltaSeries map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[classicHistogramTable]
 	if len(seedCols) == 0 {
@@ -874,7 +1004,7 @@ func readSeededClassicHistograms(
 	// constants, keyed off the seed's declared columns.
 	q := "SELECT MetricName, toJSONString(Attributes), " +
 		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
-		"toUnixTimestamp64Milli(TimeUnix), Count, Sum, " +
+		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", Count, Sum, " +
 		"toJSONString(BucketCounts), toJSONString(ExplicitBounds) " +
 		"FROM " + classicHistogramTable + " ORDER BY MetricName, TimeUnix"
 	rows, err := db.Query(q)
@@ -886,10 +1016,10 @@ func readSeededClassicHistograms(
 	countDeclared := hasColumn(seedCols, colCount)
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName, countsJSON, boundsJSON string
-		var tsMillis int64
+		var tsMillis, temporality int64
 		var count, sum float64
 		if err := rows.Scan(
-			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis,
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality,
 			&count, &sum, &countsJSON, &boundsJSON,
 		); err != nil {
 			return err
@@ -932,17 +1062,23 @@ func readSeededClassicHistograms(
 				map[string]string{leLabel: formatBucketBound(bound)}, tsMillis, cumulative); err != nil {
 				return err
 			}
+			markDeltaSeries(deltaSeries, seriesKey(base, name+bucketSuffix,
+				map[string]string{leLabel: formatBucketBound(bound)}), temporality)
 		}
 		if err := appendPoint(byKey, nameRestorer, base, name+bucketSuffix,
 			map[string]string{leLabel: positiveInfSTR}, tsMillis, count); err != nil {
 			return err
 		}
+		markDeltaSeries(deltaSeries, seriesKey(base, name+bucketSuffix,
+			map[string]string{leLabel: positiveInfSTR}), temporality)
 		if err := appendPoint(byKey, nameRestorer, base, name+countSuffix, nil, tsMillis, count); err != nil {
 			return err
 		}
+		markDeltaSeries(deltaSeries, seriesKey(base, name+countSuffix, nil), temporality)
 		if err := appendPoint(byKey, nameRestorer, base, name+sumSuffix, nil, tsMillis, sum); err != nil {
 			return err
 		}
+		markDeltaSeries(deltaSeries, seriesKey(base, name+sumSuffix, nil), temporality)
 	}
 	return rows.Err()
 }
@@ -977,14 +1113,7 @@ func appendPoint(
 	byKey map[string]*oracle.Series, nameRestorer *metricNameRestorer, base map[string]string,
 	name string, extra map[string]string, tsMillis int64, value float64,
 ) error {
-	lbls := make(map[string]string, len(base)+len(extra)+1)
-	for k, v := range base {
-		lbls[k] = v
-	}
-	for k, v := range extra {
-		lbls[k] = v
-	}
-	lbls[promNameLabel] = normalizeMetricName(name)
+	lbls := seriesLabels(base, name, extra)
 	if err := nameRestorer.record(lbls, name); err != nil {
 		return err
 	}
@@ -997,6 +1126,22 @@ func appendPoint(
 	}
 	s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
 	return nil
+}
+
+func seriesKey(base map[string]string, name string, extra map[string]string) string {
+	return labelKey(seriesLabels(base, name, extra))
+}
+
+func seriesLabels(base map[string]string, name string, extra map[string]string) map[string]string {
+	lbls := make(map[string]string, len(base)+len(extra)+1)
+	for k, v := range base {
+		lbls[k] = v
+	}
+	for k, v := range extra {
+		lbls[k] = v
+	}
+	lbls[promNameLabel] = normalizeMetricName(name)
+	return lbls
 }
 
 // The OTel-CH columns beyond Attributes that carry Prometheus labels, and
@@ -1054,6 +1199,24 @@ func serviceNameProjection(seedCols []string) string {
 		return "''"
 	}
 	return "toString(" + colServiceName + ")"
+}
+
+const (
+	colAggregationTemporality         = "AggregationTemporality"
+	deltaAggregationTemporality int64 = 1
+)
+
+func temporalityProjection(seedCols []string) string {
+	if !hasColumn(seedCols, colAggregationTemporality) {
+		return "toInt64(0)"
+	}
+	return "toInt64(" + colAggregationTemporality + ")"
+}
+
+func markDeltaSeries(deltaSeries map[string]bool, key string, temporality int64) {
+	if temporality == deltaAggregationTemporality {
+		deltaSeries[key] = true
+	}
 }
 
 func hasColumn(cols []string, want string) bool {

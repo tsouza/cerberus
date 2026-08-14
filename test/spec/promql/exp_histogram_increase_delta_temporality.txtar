@@ -4,6 +4,10 @@
 # counter difference.
 -- query.promql --
 increase(delta_latency_exp_hist[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_exponential_histogram (
     AggregationTemporality Int32,
