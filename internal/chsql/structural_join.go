@@ -355,14 +355,14 @@ const siblingLeftAlias = "_sib_l"
 // numbering starts only at spans whose ParentSpanID is EMPTY. A span
 // naming a parent no row carries is never reached by that walk, so it
 // keeps nestedSetParent = 0 — "missing data, never a match". Cerberus
-// joined on the raw column and made two such spans siblings, answering
-// with spans reference returns none of (issue #1990).
+// joined on the raw column and made two such spans siblings, returning
+// spans reference returns none of (issue #1990).
 //
 // The empty-ParentSpanId disjunct is load-bearing, not a convenience: a
 // root's nestedSetParent is the -1 sentinel, not 0, so upstream DOES call
 // two roots of one trace siblings. A presence test alone would drop that
-// pair (no row ever carries SpanId ”), trading one divergence for
-// another.
+// pair, because no row ever carries an empty SpanId — trading one
+// divergence for another.
 //
 // The parent probe reads only (TraceId, SpanId) and is bounded three
 // ways: `TraceId IN (<traceScopeFrag(L)>)` — the same cheap plan-derived
