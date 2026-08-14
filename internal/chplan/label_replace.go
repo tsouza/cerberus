@@ -167,6 +167,7 @@ func (l *LabelReplace) Equal(other Expr) bool {
 		l.Replacement == o.Replacement &&
 		l.Src == o.Src &&
 		l.Regex == o.Regex &&
+		l.ProbedRegex == o.ProbedRegex &&
 		l.EmptyReplacement == o.EmptyReplacement &&
 		l.Map.Equal(o.Map)
 }

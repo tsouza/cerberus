@@ -179,12 +179,26 @@ func planCaptureProbes(regex string, need []int) (captureProbePlan, bool) {
 }
 
 // stripAnchors removes the wrapper [anchorRegex] added.
+//
+// The two halves are derived from [anchorRegex] rather than written out
+// again, because the emitter already carries its own copy of that
+// spelling and a third one would be a third thing to keep in step.
 func stripAnchors(anchored string) (string, bool) {
-	const prefix, suffix = "^(?s:", ")$"
+	prefix, suffix := anchorWrapper()
 	if !strings.HasPrefix(anchored, prefix) || !strings.HasSuffix(anchored, suffix) {
 		return "", false
 	}
 	return anchored[len(prefix) : len(anchored)-len(suffix)], true
+}
+
+// anchorWrapper returns the text [anchorRegex] puts before and after a
+// pattern, by asking it to wrap a marker no regex source can contain and
+// reading the halves off either side.
+func anchorWrapper() (prefix, suffix string) {
+	const marker = "\x00"
+	wrapped := anchorRegex(marker)
+	at := strings.Index(wrapped, marker)
+	return wrapped[:at], wrapped[at+len(marker):]
 }
 
 // readBackPlan verifies the rewrite against the compiler and derives the
@@ -256,6 +270,9 @@ func insertProbes(src string, spans map[int]sourceSpan) (string, map[int]string,
 	probeNames := map[int]string{}
 	var edits []edit
 	for _, carrier := range carriers {
+		if !nestsCleanly(spans[carrier], spans, carriers) {
+			return "", nil, false
+		}
 		span := spans[carrier]
 		name, seen := named[span]
 		if !seen {
@@ -302,6 +319,29 @@ func insertProbes(src string, spans map[int]sourceSpan) (string, map[int]string,
 	}
 	out.WriteString(src[prev:])
 	return out.String(), probeNames, true
+}
+
+// nestsCleanly reports whether span is either nested inside or disjoint
+// from every other span in the set.
+//
+// Parentheses can only bracket a set of ranges that nests — the edits are
+// applied in one forward pass, so a pair that merely OVERLAPS would emit
+// its four delimiters in an order that brackets two DIFFERENT ranges than
+// the ones asked for, and the result would still compile. Ancestor walks
+// only ever produce nesting sets, so this never fires in practice; it is
+// here because "wrapped a span nobody chose" is the one failure this file
+// cannot detect after the fact.
+func nestsCleanly(span sourceSpan, spans map[int]sourceSpan, carriers []int) bool {
+	for _, carrier := range carriers {
+		other := spans[carrier]
+		disjoint := span.end <= other.start || other.end <= span.start
+		nested := (span.start <= other.start && other.end <= span.end) ||
+			(other.start <= span.start && span.end <= other.end)
+		if !disjoint && !nested {
+			return false
+		}
+	}
+	return true
 }
 
 // probeSpanFor finds the span whose emptiness answers for the capture

@@ -1,0 +1,369 @@
+# A capture-group NAME two groups carry where the first carrier is
+# NULLABLE and a match can SKIP it entirely — the shape that was rejected
+# outright until cerberus learned to rewrite the regex.
+#
+# Go's ExpandString resolves `$dup` to the first carrier that TOOK PART in
+# the row's match, and ClickHouse's `extractGroups` cannot report
+# participation: a group that took no part and a group that took part
+# matching the empty string are both `''`. The other two fixtures for this
+# name escape that by never letting the ambiguity arise — every carrier
+# non-empty (label_replace_shared_capture_name.txtar), or the carriers in
+# exclusive alternation branches
+# (label_replace_nullable_shared_capture_name.txtar). Here it really does
+# arise, and is answered anyway.
+#
+# The two middle rows are the entire point, because their capture arrays
+# are IDENTICAL and their correct answers are not:
+#
+#   - `web--77` enters the optional group — "web-" and the trailing "-"
+#     both matched — and `dup` captured NOTHING between them. Group one
+#     TOOK PART, so ExpandString expands `$dup` to `""` and Prometheus
+#     answers `service="svc-"`.
+#   - `77` never enters the optional group at all, so group one took no
+#     part and `$dup` resolves to group two: `service="svc-77"`.
+#
+# `extractGroups` returns `['', '77']` for BOTH. No search over those two
+# values can answer `svc-` for one and `svc-77` for the other, which is
+# why a first-non-empty search gets `web--77` wrong.
+#
+# The rewrite makes the difference readable. `(?:web-(?P<dup>[a-z]*)-)?`
+# has a body that cannot match empty, so wrapping it in a synthetic group
+# gives a capture that is non-empty exactly when the optional group was
+# entered — which is exactly when carrier one took part. The emitted
+# search reads that group and answers with the carrier beside it, which is
+# what `probedRegex` and the `$2@$1` segment below record.
+#
+# `web-alpha-77` is the ordinary case, and `77` the skipped one, so all
+# three branches of the search are exercised. Issue #1956 tracks the
+# residue this does NOT reach: a carrier with no such body to wrap.
+
+-- query.logql --
+label_replace(sum by (host) (count_over_time({job="api"}[5m])), "service", "svc-$dup", "host", "(?:web-(?P<dup>[a-z]*)-)?(?P<dup>[0-9]+)")
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2026-01-01 00:00:00', 9), 'a', map('job', 'api', 'host', 'web-alpha-77')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'b', map('job', 'api', 'host', 'web--77')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'c', map('job', 'api', 'host', '77'));
+-- expected_rows --
+[
+  ["", {"host": "77", "service": "svc-77"}, "2026-01-01T00:00:01Z", 1],
+  ["", {"host": "web--77", "service": "svc-"}, "2026-01-01T00:00:01Z", 1],
+  ["", {"host": "web-alpha-77", "service": "svc-alpha"}, "2026-01-01T00:00:01Z", 1]
+]
+-- args --
+[0] string = "host"
+[1] string = "^(?s:(?:web-(?P<dup>[a-z]*)-)?(?P<dup>[0-9]+))$"
+[2] string = "service"
+[3] string = "host"
+[4] string = "svc-"
+[5] string = "svc-"
+[6] string = ""
+[7] string = "host"
+[8] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[9] int64 = 2
+[10] string = "host"
+[11] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[12] int64 = 3
+[13] string = "host"
+[14] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[15] int64 = 1
+[16] string = "host"
+[17] string = "^(?s:(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+))$"
+[18] int64 = 3
+[19] string = ""
+[20] string = "host"
+[21] int64 = 9
+[22] string = "host"
+[23] string = ""
+[24] string = "detected_level"
+[25] string = "detected_level"
+[26] string = ""
+[27] string = "detected_level"
+[28] string = "level"
+[29] string = ""
+[30] string = "level"
+[31] string = "log.level"
+[32] string = ""
+[33] string = "log.level"
+[34] string = "severity"
+[35] string = ""
+[36] string = "severity"
+[37] string = "severity_text"
+[38] string = ""
+[39] string = "severity_text"
+[40] string = ""
+[41] string = "unknown"
+[42] string = "detected_level"
+[43] string = ""
+[44] string = "detected_level"
+[45] string = "level"
+[46] string = ""
+[47] string = "level"
+[48] string = "log.level"
+[49] string = ""
+[50] string = "log.level"
+[51] string = "severity"
+[52] string = ""
+[53] string = "severity"
+[54] string = "severity_text"
+[55] string = ""
+[56] string = "severity_text"
+[57] string = "trace"
+[58] string = "detected_level"
+[59] string = ""
+[60] string = "detected_level"
+[61] string = "level"
+[62] string = ""
+[63] string = "level"
+[64] string = "log.level"
+[65] string = ""
+[66] string = "log.level"
+[67] string = "severity"
+[68] string = ""
+[69] string = "severity"
+[70] string = "severity_text"
+[71] string = ""
+[72] string = "severity_text"
+[73] string = "trc"
+[74] string = "trace"
+[75] string = "detected_level"
+[76] string = ""
+[77] string = "detected_level"
+[78] string = "level"
+[79] string = ""
+[80] string = "level"
+[81] string = "log.level"
+[82] string = ""
+[83] string = "log.level"
+[84] string = "severity"
+[85] string = ""
+[86] string = "severity"
+[87] string = "severity_text"
+[88] string = ""
+[89] string = "severity_text"
+[90] string = "debug"
+[91] string = "detected_level"
+[92] string = ""
+[93] string = "detected_level"
+[94] string = "level"
+[95] string = ""
+[96] string = "level"
+[97] string = "log.level"
+[98] string = ""
+[99] string = "log.level"
+[100] string = "severity"
+[101] string = ""
+[102] string = "severity"
+[103] string = "severity_text"
+[104] string = ""
+[105] string = "severity_text"
+[106] string = "dbg"
+[107] string = "debug"
+[108] string = "detected_level"
+[109] string = ""
+[110] string = "detected_level"
+[111] string = "level"
+[112] string = ""
+[113] string = "level"
+[114] string = "log.level"
+[115] string = ""
+[116] string = "log.level"
+[117] string = "severity"
+[118] string = ""
+[119] string = "severity"
+[120] string = "severity_text"
+[121] string = ""
+[122] string = "severity_text"
+[123] string = "info"
+[124] string = "detected_level"
+[125] string = ""
+[126] string = "detected_level"
+[127] string = "level"
+[128] string = ""
+[129] string = "level"
+[130] string = "log.level"
+[131] string = ""
+[132] string = "log.level"
+[133] string = "severity"
+[134] string = ""
+[135] string = "severity"
+[136] string = "severity_text"
+[137] string = ""
+[138] string = "severity_text"
+[139] string = "inf"
+[140] string = "detected_level"
+[141] string = ""
+[142] string = "detected_level"
+[143] string = "level"
+[144] string = ""
+[145] string = "level"
+[146] string = "log.level"
+[147] string = ""
+[148] string = "log.level"
+[149] string = "severity"
+[150] string = ""
+[151] string = "severity"
+[152] string = "severity_text"
+[153] string = ""
+[154] string = "severity_text"
+[155] string = "information"
+[156] string = "info"
+[157] string = "detected_level"
+[158] string = ""
+[159] string = "detected_level"
+[160] string = "level"
+[161] string = ""
+[162] string = "level"
+[163] string = "log.level"
+[164] string = ""
+[165] string = "log.level"
+[166] string = "severity"
+[167] string = ""
+[168] string = "severity"
+[169] string = "severity_text"
+[170] string = ""
+[171] string = "severity_text"
+[172] string = "warn"
+[173] string = "detected_level"
+[174] string = ""
+[175] string = "detected_level"
+[176] string = "level"
+[177] string = ""
+[178] string = "level"
+[179] string = "log.level"
+[180] string = ""
+[181] string = "log.level"
+[182] string = "severity"
+[183] string = ""
+[184] string = "severity"
+[185] string = "severity_text"
+[186] string = ""
+[187] string = "severity_text"
+[188] string = "wrn"
+[189] string = "detected_level"
+[190] string = ""
+[191] string = "detected_level"
+[192] string = "level"
+[193] string = ""
+[194] string = "level"
+[195] string = "log.level"
+[196] string = ""
+[197] string = "log.level"
+[198] string = "severity"
+[199] string = ""
+[200] string = "severity"
+[201] string = "severity_text"
+[202] string = ""
+[203] string = "severity_text"
+[204] string = "warning"
+[205] string = "warn"
+[206] string = "detected_level"
+[207] string = ""
+[208] string = "detected_level"
+[209] string = "level"
+[210] string = ""
+[211] string = "level"
+[212] string = "log.level"
+[213] string = ""
+[214] string = "log.level"
+[215] string = "severity"
+[216] string = ""
+[217] string = "severity"
+[218] string = "severity_text"
+[219] string = ""
+[220] string = "severity_text"
+[221] string = "error"
+[222] string = "detected_level"
+[223] string = ""
+[224] string = "detected_level"
+[225] string = "level"
+[226] string = ""
+[227] string = "level"
+[228] string = "log.level"
+[229] string = ""
+[230] string = "log.level"
+[231] string = "severity"
+[232] string = ""
+[233] string = "severity"
+[234] string = "severity_text"
+[235] string = ""
+[236] string = "severity_text"
+[237] string = "err"
+[238] string = "error"
+[239] string = "detected_level"
+[240] string = ""
+[241] string = "detected_level"
+[242] string = "level"
+[243] string = ""
+[244] string = "level"
+[245] string = "log.level"
+[246] string = ""
+[247] string = "log.level"
+[248] string = "severity"
+[249] string = ""
+[250] string = "severity"
+[251] string = "severity_text"
+[252] string = ""
+[253] string = "severity_text"
+[254] string = "critical"
+[255] string = "critical"
+[256] string = "detected_level"
+[257] string = ""
+[258] string = "detected_level"
+[259] string = "level"
+[260] string = ""
+[261] string = "level"
+[262] string = "log.level"
+[263] string = ""
+[264] string = "log.level"
+[265] string = "severity"
+[266] string = ""
+[267] string = "severity"
+[268] string = "severity_text"
+[269] string = ""
+[270] string = "severity_text"
+[271] string = "fatal"
+[272] string = "fatal"
+[273] string = "detected_level"
+[274] string = ""
+[275] string = "detected_level"
+[276] string = "level"
+[277] string = ""
+[278] string = "level"
+[279] string = "log.level"
+[280] string = ""
+[281] string = "log.level"
+[282] string = "severity"
+[283] string = ""
+[284] string = "severity"
+[285] string = "severity_text"
+[286] string = ""
+[287] string = "severity_text"
+[288] string = "host"
+[289] string = "host"
+[290] string = "host"
+[291] string = "host"
+[292] int64 = 1
+[293] string = "job"
+[294] string = "api"
+-- chplan --
+Project [MetricName AS MetricName, labelReplace(Attributes, dst="service", replacement="", src="host", regex="(?:web-(?P<dup>[a-z]*)-)?(?P<dup>[0-9]+)", emptyReplacement="svc-", probedRegex="(?:(?P<cerberusprobe0>web-(?P<dup>[a-z]*)-))?(?P<dup>[0-9]+)", segments=["svc-", $2@$1|$3]) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+  Project ["" AS MetricName, map("host", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+    Aggregate groupBy=[ResourceAttributes["host"] AS gkey_0] funcs=[sum(Value) AS Value]
+      RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+        Project [mapSort(mapConcat(ResourceAttributes, mapFilter((k, v) -> (v != ""), map("detected_level", multiIf((lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = ""), "unknown", ((lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "trace") OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "trc")), "trace", ((lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "debug") OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "dbg")), "debug", (((lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "info") OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "inf")) OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "information")), "info", (((lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "warn") OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "wrn")) OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "warning")), "warn", ((lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "error") OR (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "err")), "error", (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "critical"), "critical", (lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText)) = "fatal"), "fatal", lower(multiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], SeverityText))), "host", if(mapContains(LogAttributes, "host"), LogAttributes["host"], ResourceAttributes["host"]))))) AS ResourceAttributes, Timestamp, 1 AS Value]
+          Filter predicate=(ResourceAttributes["job"] = "api")
+            Scan(otel_logs)
+-- sql --
+SELECT `MetricName` AS `MetricName`, mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, concat(?, arrayFirst((x, p) -> p != ?, [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]], [extractGroups(`Attributes`[?], ?)[?], extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, map(?, `gkey_0`) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `ResourceAttributes`[?] AS `gkey_0`, sum(`Value`) AS `Value` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, multiIf((lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?), ?, ((lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)), ?, ((lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)), ?, (((lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)), ?, (((lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)), ?, ((lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?) OR (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?)), ?, (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?), ?, (lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`)) = ?), ?, lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], `SeverityText`))), ?, if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]))))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`) GROUP BY `gkey_0`))

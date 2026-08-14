@@ -99,24 +99,11 @@ const unresolvedGroup = -1
 // (very-much-reachable) cold path where the regex doesn't match
 // anything.
 func ReplacementToCH(repl, regex string) (CHReplacement, error) {
-	// Resolve WITHOUT a regex rewrite first. Everything that was already
-	// expressible then stays byte-for-byte what it was, and — more than a
-	// courtesy — no reference keeps its original numbering by accident:
-	// a rewrite renumbers every capture group, so a pattern that gains one
-	// it did not need would silently move what `$1` points at.
-	segments, err := replacementSegments(repl, regex, withoutCaptureProbes)
-	if err == nil {
-		return chReplacement(segments, ""), nil
+	segments, probed, err := ReplacementSegments(repl, regex)
+	if err != nil {
+		return CHReplacement{}, err
 	}
-	// Only the shared-carrier ambiguity is worth a second attempt, and
-	// only it can be cleared by one. Any other failure reproduces
-	// identically below, so the error the caller sees is the probed pass's
-	// — the one that names the carrier no probe could answer for.
-	probedSegments, probed, probedErr := replacementSegmentsProbed(repl, regex)
-	if probedErr != nil {
-		return CHReplacement{}, probedErr
-	}
-	return chReplacement(probedSegments, probed), nil
+	return chReplacement(segments, probed), nil
 }
 
 // chReplacement picks the output form a decomposition takes.
@@ -186,10 +173,20 @@ type CHReplacement struct {
 // count, a name no group carries — contribute nothing at all, exactly as
 // Go's `ExpandString` substitutes the empty string for them.
 func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, string, error) {
-	if segments, err := replacementSegments(repl, regex, withoutCaptureProbes); err == nil {
+	// Unrewritten first: everything already expressible stays exactly what
+	// it was, and no reference is renumbered by a rewrite it did not need.
+	// Only the shared-carrier ambiguity can be cleared by one, and any
+	// other failure reproduces identically on the second pass, so the
+	// error a caller sees is always the probed pass's.
+	if segments, err := resolveSegments(repl, newCaptureGroups(regex, withoutCaptureProbes)); err == nil {
 		return segments, "", nil
 	}
-	return replacementSegmentsProbed(repl, regex)
+	groups := newCaptureGroups(regex, withCaptureProbes)
+	segments, err := resolveSegments(repl, groups)
+	if err != nil {
+		return nil, "", err
+	}
+	return segments, groups.probe.regex, nil
 }
 
 // captureProbeUse says whether a resolution may rewrite the regex to
@@ -202,21 +199,6 @@ const (
 	withoutCaptureProbes captureProbeUse = false
 	withCaptureProbes    captureProbeUse = true
 )
-
-// replacementSegmentsProbed resolves with a rewrite permitted, returning
-// the rewritten regex alongside the decomposition.
-func replacementSegmentsProbed(repl, regex string) ([]chplan.LabelReplaceSegment, string, error) {
-	groups := newCaptureGroups(regex, withCaptureProbes)
-	segments, err := resolveSegments(repl, groups)
-	if err != nil {
-		return nil, "", err
-	}
-	return segments, groups.probe.regex, nil
-}
-
-func replacementSegments(repl, regex string, probes captureProbeUse) ([]chplan.LabelReplaceSegment, error) {
-	return resolveSegments(repl, newCaptureGroups(regex, probes))
-}
 
 func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSegment, error) {
 	var segments []chplan.LabelReplaceSegment
@@ -359,11 +341,20 @@ func newCaptureGroups(regex string, probes captureProbeUse) captureGroups {
 // planning is separate from deciding, because one rewrite serves every
 // shared name in the pattern at once.
 //
-// The result is sorted so a pattern always rewrites the same way, which
-// keeps the emitted SQL — and the goldens pinning it — stable.
+// The walk over names is ordered as well as the result. The accumulated
+// set already made the output order-independent, so this is defence
+// rather than a fix: it keeps the traversal itself reproducible, which is
+// what a reader stepping through a rewrite needs.
 func (g captureGroups) carriersNeedingProbes() []int {
+	names := make([]string, 0, len(g.byName))
+	for name := range g.byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	seen := map[int]bool{}
-	for _, carriers := range g.byName {
+	for _, name := range names {
+		carriers := g.byName[name]
 		if len(carriers) < 2 {
 			continue
 		}

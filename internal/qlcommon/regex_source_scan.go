@@ -66,6 +66,16 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 			if i+1 >= len(src) {
 				return nil, false
 			}
+			if src[i+1] == 'Q' {
+				// `\Q…\E` quotes everything up to the `\E`, or to the end
+				// of the pattern when there is none. Reading two bytes and
+				// carrying on would scan the QUOTED text as pattern, so a
+				// `(` inside it would be counted as a group — shifting every
+				// later capture index and pointing the rewrite at literal
+				// text.
+				i = endOfQuotedRun(src, i)
+				continue
+			}
 			i += 2
 		case '[':
 			end, ok := skipCharClass(src, i)
@@ -157,6 +167,16 @@ func skipCharClass(src string, i int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// endOfQuotedRun returns the offset just past the `\Q…\E` run starting at
+// src[i], which the caller has established is the `\` of a `\Q`. An
+// unterminated run quotes the rest of the pattern.
+func endOfQuotedRun(src string, i int) int {
+	if end := strings.Index(src[i+2:], `\E`); end >= 0 {
+		return i + 2 + end + 2
+	}
+	return len(src)
 }
 
 // groupFlagBytes are the inline-flag letters Go accepts between `(?` and

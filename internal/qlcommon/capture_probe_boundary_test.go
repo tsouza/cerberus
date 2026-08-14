@@ -1,0 +1,469 @@
+package qlcommon
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// scannerSyntaxCorpus is a regex source per branch of the source scanner:
+// each escape form, each character-class edge, each group spelling, each
+// quantifier, and nestings of them. It is the input to
+// [TestEveryScannedSpanSurvivesProbeInsertion], which is what turns these
+// from strings into assertions about byte offsets.
+var scannerSyntaxCorpus = []string{
+	`(a)`,
+	`(?:a)`,
+	`(?P<n>a)`,
+	`(?<n>a)`,
+	`x(a)y`,
+	`(a)(b)(c)`,
+	`((a)(b))`,
+	`(?:(a)|(b))`,
+	`(a|b)`,
+	`(a|b|c)`,
+	`((?:a|b)c)`,
+	`(?:x(a)|y(b)|z(c))`,
+
+	// Escapes: the next byte is covered whatever it is, so none of these
+	// parentheses or brackets open anything.
+	`(\(a\))`,
+	`(\[a\])`,
+	`(\\)`,
+	`(\\\\)`,
+	`(a\|b)`,
+	`(\p{L})`,
+	`(\pL)`,
+	`(\d\w\s)`,
+
+	// Character classes: a leading `]` is a member, `^` may precede it, a
+	// POSIX name carries its own `]`, and an escape inside covers a byte.
+	`([()])`,
+	`([]()])`,
+	`([^]()])`,
+	`([\]()])`,
+	`([[:alpha:]])`,
+	`([[:^alpha:]])`,
+	`([a[b])`,
+	`([-a])`,
+	`([a-])`,
+	`([a-z])`,
+	`([^a-z])`,
+	`x([|])y(a)`,
+
+	// Quantifiers after a group must not be swallowed into its span.
+	`(?:(a))?`,
+	`(?:(a))*`,
+	`(?:(a))+`,
+	`(?:(a)){2,3}`,
+	`(a+?)`,
+	`(a*?b)`,
+	`(a{2,3})`,
+
+	// `\Q…\E` quotes its contents, so parentheses inside it are literal
+	// text and must not be counted as groups — including an unterminated
+	// run, which quotes the rest of the pattern.
+	`\Q(x)\E(a)`,
+	`\Q(?P<n>q)\E(a)`,
+	`\Q(\E(a)`,
+	`\Q[\E(a)`,
+	`(a)\Q(y`,
+	`\Q\E(a)`,
+
+	// Scoped flag groups are self-contained and stay scannable.
+	`((?i:a))`,
+	`(?i:(a))`,
+	`(?is:(a)|b)`,
+	`(?i-s:(a))`,
+}
+
+// TestEveryScannedSpanSurvivesProbeInsertion is the scanner's real
+// assertion. Every other test of it checks a span against a substring the
+// test itself wrote down; this one checks the span against the Go regexp
+// COMPILER, by doing to it exactly what the rewrite does — inserting a
+// capture group at its two ends — and requiring the result to be a
+// pattern that still compiles, still matches the same strings, and still
+// captures the same text into every group the source wrote.
+//
+// That is what makes an off-by-one visible. A boundary that is one byte
+// out lands a parenthesis inside a character class, between a group and
+// its quantifier, or in the middle of an escape — and the pattern either
+// stops compiling or quietly changes meaning, both of which fail here.
+// Asserting the spans as substrings cannot catch the second.
+func TestEveryScannedSpanSurvivesProbeInsertion(t *testing.T) {
+	t.Parallel()
+
+	inputs := stringsUpTo("abxyz", 3)
+	spans := 0
+
+	for _, source := range scannerSyntaxCorpus {
+		original, err := regexp.Compile(source)
+		if err != nil {
+			t.Fatalf("corpus regex %q does not compile: %v", source, err)
+		}
+		groups, ok := scanSourceGroups(source)
+		if !ok {
+			t.Fatalf("scanSourceGroups(%q) declined; every corpus entry is meant to scan", source)
+		}
+		if got, want := countCapturing(groups), original.NumSubexp(); got != want {
+			t.Errorf("scanSourceGroups(%q) found %d capturing group(s), the compiler reports %d",
+				source, got, want)
+		}
+
+		for at, g := range groups {
+			if at == wholePatternGroup {
+				continue
+			}
+			spans++
+			probed := source[:g.bodyStart] + "(?P<" + probeNamePrefix + "0>" +
+				source[g.bodyStart:g.bodyEnd] + ")" + source[g.bodyEnd:]
+
+			rewritten, err := regexp.Compile(probed)
+			if err != nil {
+				t.Errorf("scanSourceGroups(%q) group %d spans [%d,%d); wrapping it gives %q, "+
+					"which does not compile: %v", source, at, g.bodyStart, g.bodyEnd, probed, err)
+				continue
+			}
+			assertSameLanguage(t, source, probed, original, rewritten, inputs)
+		}
+	}
+
+	if spans == 0 {
+		t.Fatal("no span was checked — this test would pass vacuously")
+	}
+	t.Logf("probe insertion validated %d scanned spans over %d sources",
+		spans, len(scannerSyntaxCorpus))
+}
+
+// assertSameLanguage requires two patterns to accept the same strings and
+// to capture the same text into every group of the first.
+func assertSameLanguage(t *testing.T, source, probed string, original, rewritten *regexp.Regexp, inputs []string) {
+	t.Helper()
+
+	var positions []int
+	for at, name := range rewritten.SubexpNames() {
+		if !strings.HasPrefix(name, probeNamePrefix) {
+			positions = append(positions, at)
+		}
+	}
+	if len(positions) != len(original.SubexpNames()) {
+		t.Errorf("wrapping %q into %q changed the capture-group count", source, probed)
+		return
+	}
+
+	for _, src := range inputs {
+		before := original.FindStringSubmatchIndex(src)
+		after := rewritten.FindStringSubmatchIndex(src)
+		if (before == nil) != (after == nil) {
+			t.Errorf("wrapping %q into %q changed whether %q matches", source, probed, src)
+			return
+		}
+		if before == nil {
+			continue
+		}
+		for group, mapped := range positions {
+			if before[2*group] != after[2*mapped] || before[2*group+1] != after[2*mapped+1] {
+				t.Errorf("wrapping %q into %q moved capture group %d on input %q",
+					source, probed, group, src)
+				return
+			}
+		}
+	}
+}
+
+func countCapturing(groups []sourceGroup) int {
+	n := 0
+	for _, g := range groups {
+		if g.capturing {
+			n++
+		}
+	}
+	return n
+}
+
+// TestScanSourceGroupsWholePatternGroup pins the virtual group standing
+// for the entire pattern. It is what gives a group at the top level a
+// parent to walk up to, so a walk that skipped it would silently stop
+// looking one level early.
+func TestScanSourceGroupsWholePatternGroup(t *testing.T) {
+	t.Parallel()
+
+	const source = `x(?P<dup>a?)y`
+	groups, ok := scanSourceGroups(source)
+	if !ok {
+		t.Fatalf("scanSourceGroups(%q) declined", source)
+	}
+	root := groups[wholePatternGroup]
+	if root.open != -1 {
+		t.Errorf("whole-pattern group opens at %d, want -1 — it stands for a group that is "+
+			"not written in the source", root.open)
+	}
+	if root.bodyStart != 0 || root.bodyEnd != len(source) {
+		t.Errorf("whole-pattern group spans [%d,%d), want [0,%d)",
+			root.bodyStart, root.bodyEnd, len(source))
+	}
+	if root.parent != -1 {
+		t.Errorf("whole-pattern group has parent %d, want -1", root.parent)
+	}
+	if root.capturing {
+		t.Error("whole-pattern group reports as capturing; it corresponds to no capture index")
+	}
+}
+
+// TestBranchContainingSplitsEveryBranch pins the branch boundaries a probe
+// is placed at. The first branch starts at the body, the last ends at it,
+// and a middle branch is bounded by the two bars around it — each of which
+// is an offset the rewrite inserts a parenthesis at.
+func TestBranchContainingSplitsEveryBranch(t *testing.T) {
+	t.Parallel()
+
+	const source = `(?:aa|bb|cc)`
+	groups, ok := scanSourceGroups(source)
+	if !ok {
+		t.Fatalf("scanSourceGroups(%q) declined", source)
+	}
+	g := groups[1]
+
+	cases := []struct {
+		name   string
+		offset int
+		want   string
+	}{
+		{"first_branch", strings.Index(source, "aa"), "aa"},
+		{"middle_branch", strings.Index(source, "bb"), "bb"},
+		{"last_branch", strings.Index(source, "cc"), "cc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			span, split := branchContaining(g, tc.offset)
+			if !split {
+				t.Fatalf("branchContaining reported no alternation for %q", source)
+			}
+			if got := source[span.start:span.end]; got != tc.want {
+				t.Errorf("branchContaining(offset %d) = %q, want %q", tc.offset, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("no_alternation", func(t *testing.T) {
+		t.Parallel()
+		plain, ok := scanSourceGroups(`(?:ab)`)
+		if !ok {
+			t.Fatal("scanSourceGroups declined")
+		}
+		if _, split := branchContaining(plain[1], 3); split {
+			t.Error("branchContaining reported an alternation in a body that has none, which " +
+				"would make the rewrite probe a branch boundary that does not exist")
+		}
+	})
+}
+
+// TestCandidateSpansReachTheWholePattern pins that the ladder walks all
+// the way to the virtual whole-pattern group. A walk that stopped at the
+// last WRITTEN group would never offer the outermost span, so a carrier
+// whose only non-nullable ancestor is the pattern itself would be refused.
+func TestCandidateSpansReachTheWholePattern(t *testing.T) {
+	t.Parallel()
+
+	const source = `x(?P<dup>a?)`
+	groups, ok := scanSourceGroups(source)
+	if !ok {
+		t.Fatalf("scanSourceGroups(%q) declined", source)
+	}
+	at := 0
+	for i, g := range groups {
+		if g.capturing {
+			at = i
+		}
+	}
+	spans := candidateSpans(groups, at)
+	if len(spans) == 0 {
+		t.Fatal("candidateSpans returned nothing for a top-level group; its parent is the " +
+			"whole-pattern group, which the walk must still visit")
+	}
+	last := spans[len(spans)-1]
+	if last.start != 0 || last.end != len(source) {
+		t.Errorf("outermost candidate spans [%d,%d), want the whole pattern [0,%d)",
+			last.start, last.end, len(source))
+	}
+}
+
+// TestProbedIndexTranslatesOnlyRealGroups pins the index translation's
+// edges. Index 0 is the whole match and must translate like any other;
+// anything past the table is not a group the rewrite knows about and must
+// come back untouched, which is what keeps an out-of-range reference
+// resolving to nothing rather than to a group it never named.
+func TestProbedIndexTranslatesOnlyRealGroups(t *testing.T) {
+	t.Parallel()
+
+	plan := captureProbePlan{toProbed: []int{0, 2, 3}}
+
+	cases := []struct {
+		name     string
+		original int
+		want     int
+	}{
+		{"whole_match", 0, 0},
+		{"first_group", 1, 2},
+		{"last_group", 2, 3},
+		{"one_past_the_table", 3, 3},
+		{"far_past_the_table", 99, 99},
+		{"negative", -1, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := plan.probedIndex(tc.original); got != tc.want {
+				t.Errorf("probedIndex(%d) = %d, want %d", tc.original, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("the_zero_plan_is_the_identity", func(t *testing.T) {
+		t.Parallel()
+		var none captureProbePlan
+		for _, original := range []int{0, 1, 9} {
+			if got := none.probedIndex(original); got != original {
+				t.Errorf("probedIndex(%d) on a plan with no rewrite = %d, want %d",
+					original, got, original)
+			}
+		}
+	})
+}
+
+// TestStripAnchorsRequiresBothEnds pins that the wrapper is only removed
+// when it is really there. A rewrite that lost its anchoring would be
+// handed back to the caller as an unanchored pattern and then anchored
+// again by the emitter, so the two halves are checked separately.
+func TestStripAnchorsRequiresBothEnds(t *testing.T) {
+	t.Parallel()
+
+	if body, ok := stripAnchors(anchorRegex(`a(b)`)); !ok || body != `a(b)` {
+		t.Errorf("stripAnchors(%q) = (%q, %v), want (%q, true)",
+			anchorRegex(`a(b)`), body, ok, `a(b)`)
+	}
+	for _, name := range []string{`^(?s:a(b)`, `a(b))$`, `a(b)`, ``} {
+		if _, ok := stripAnchors(name); ok {
+			t.Errorf("stripAnchors(%q) succeeded; want a decline, because the wrapper it is "+
+				"meant to remove is not present", name)
+		}
+	}
+}
+
+// TestInsertProbesRejectsSpansItCannotWrap pins the fail-closed arm of the
+// insertion. The edits are applied in one forward pass, so a span reaching
+// past the source, or one overlapping another without nesting inside it,
+// would splice parentheses into text already written — producing a pattern
+// that may still compile while bracketing something nobody chose.
+func TestInsertProbesRejectsSpansItCannotWrap(t *testing.T) {
+	t.Parallel()
+
+	const source = `(?:xa)(?:yb)`
+
+	t.Run("a_span_reaching_past_the_source", func(t *testing.T) {
+		t.Parallel()
+		if _, _, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: 3, end: len(source) + 1},
+		}); ok {
+			t.Error("insertProbes accepted a span reaching past the source")
+		}
+	})
+
+	t.Run("a_span_ending_exactly_at_the_source_end", func(t *testing.T) {
+		t.Parallel()
+		got, _, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: 0, end: len(source)},
+		})
+		if !ok {
+			t.Fatal("insertProbes declined a span covering the whole source, which is a " +
+				"perfectly wrappable one")
+		}
+		if _, err := regexp.Compile(got); err != nil {
+			t.Errorf("insertProbes produced %q, which does not compile: %v", got, err)
+		}
+	})
+
+	t.Run("overlapping_spans", func(t *testing.T) {
+		t.Parallel()
+		if _, _, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: 0, end: 8},
+			2: {start: 4, end: 12},
+		}); ok {
+			t.Error("insertProbes accepted two spans that overlap without nesting; the " +
+				"parentheses it would insert cannot bracket both")
+		}
+	})
+
+	t.Run("nested_spans_sharing_a_start", func(t *testing.T) {
+		t.Parallel()
+		got, names, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: 0, end: len(source)},
+			2: {start: 0, end: 6},
+		})
+		if !ok {
+			t.Fatal("insertProbes declined two properly nested spans that share a start; the " +
+				"wider one simply opens first")
+		}
+		if len(names) != 2 {
+			t.Errorf("insertProbes named %d probes, want 2", len(names))
+		}
+		compiled, err := regexp.Compile(got)
+		if err != nil {
+			t.Fatalf("insertProbes produced %q, which does not compile: %v", got, err)
+		}
+		if compiled.NumSubexp() != 2 {
+			t.Errorf("insertProbes produced %q with %d groups, want 2",
+				got, compiled.NumSubexp())
+		}
+	})
+}
+
+// TestPlanCaptureProbesSkipsUnknownCarriers pins that a carrier index the
+// scanner has no group for is stepped over rather than ending the plan.
+// The needy list is a union across every shared name, so one unusable
+// entry must not cost the others their rewrite.
+func TestPlanCaptureProbesSkipsUnknownCarriers(t *testing.T) {
+	t.Parallel()
+
+	const regex = `(?:x(?P<dup>a?))?(?P<dup>b)`
+	plan, ok := planCaptureProbes(regex, []int{99, 1})
+	if !ok {
+		t.Fatal("planCaptureProbes gave up after an index it could not place; the carriers " +
+			"it CAN place must still be planned")
+	}
+	if _, planned := plan.probeOf[1]; !planned {
+		t.Errorf("planCaptureProbes(%q) planned no probe for carrier 1: %+v", regex, plan)
+	}
+	if _, planned := plan.probeOf[99]; planned {
+		t.Error("planCaptureProbes planned a probe for a carrier index that names no group")
+	}
+}
+
+// TestCarriersNeedingProbesIgnoresUnsharedNames pins that a name only one
+// group carries contributes nothing to the plan, and — because the walk is
+// over every name in the pattern — that meeting such a name does not stop
+// the walk before it reaches a shared one that does need probes.
+func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
+	t.Parallel()
+
+	// `alone` sorts before `dup`, so a walk that stopped at the first
+	// unshared name would never reach the carriers that need probes.
+	const regex = `(?P<alone>q?)(?:x(?P<dup>a?))?(?P<dup>b)`
+	groups := newCaptureGroups(regex, withCaptureProbes)
+
+	needy := groups.carriersNeedingProbes()
+	if len(needy) == 0 {
+		t.Fatal("carriersNeedingProbes found nothing; the shared name in this pattern has a " +
+			"carrier no static fact clears")
+	}
+	for _, idx := range needy {
+		if idx == 1 {
+			t.Error("carriersNeedingProbes listed the group carrying the unshared name; a " +
+				"name only one group carries is never ambiguous")
+		}
+	}
+	if groups.probe.regex == "" {
+		t.Error("no rewrite was planned, so the unshared name ended the walk early")
+	}
+}

@@ -786,6 +786,17 @@ func formatGroupByEntry(expr, alias, display string) string {
 	}
 }
 
+// printLabelReplaceProbedRegex renders the rewritten pattern the emitter
+// reads capture groups out of, and nothing at all when there is none — so
+// every fixture whose regex needed no probe keeps its golden line
+// unchanged.
+func printLabelReplaceProbedRegex(probed string) string {
+	if probed == "" {
+		return ""
+	}
+	return fmt.Sprintf(", probedRegex=%q", probed)
+}
+
 // printLabelReplaceSegments renders the replacement decomposition a
 // label_replace carries when its template references a capture group
 // above ClickHouse's `\9` substitution ceiling, or a name several capture
@@ -798,17 +809,6 @@ func formatGroupByEntry(expr, alias, display string) string {
 // participation is read off a synthetic probe group instead of its own
 // capture prints that group after an `@` (`$2@$1`), so a golden pins WHICH
 // group answers for each carrier and not merely that some probe exists.
-// printLabelReplaceProbedRegex renders the rewritten pattern the emitter
-// reads capture groups out of, and nothing at all when there is none — so
-// every fixture whose regex needed no probe keeps its golden line
-// unchanged.
-func printLabelReplaceProbedRegex(probed string) string {
-	if probed == "" {
-		return ""
-	}
-	return fmt.Sprintf(", probedRegex=%q", probed)
-}
-
 func printLabelReplaceSegments(segments []chplan.LabelReplaceSegment) string {
 	if len(segments) == 0 {
 		return ""
