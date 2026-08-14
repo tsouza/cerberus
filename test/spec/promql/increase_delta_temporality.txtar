@@ -4,6 +4,10 @@
 # division). See issue #1628.
 -- query.promql --
 increase(http_requests_delta_total[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     AggregationTemporality Int32,

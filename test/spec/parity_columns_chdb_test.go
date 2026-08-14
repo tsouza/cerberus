@@ -309,7 +309,7 @@ INSERT INTO otel_metrics_histogram VALUES
 			byKey := map[string]*oracle.Series{}
 			nameRestorer := newMetricNameRestorer()
 			if err := readSeededClassicHistograms(
-				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer,
+				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer, map[string]bool{},
 			); err != nil {
 				t.Fatalf("readSeededClassicHistograms: %v", err)
 			}
@@ -504,7 +504,7 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 			byKey := map[string]*oracle.Series{}
 			nameRestorer := newMetricNameRestorer()
 			if err := readSeededNativeHistograms(
-				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer, nil,
+				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer, nil, map[string]bool{},
 			); err != nil {
 				t.Fatalf("readSeededNativeHistograms: %v", err)
 			}
@@ -556,5 +556,58 @@ func TestFormatBucketBound(t *testing.T) {
 		if got := formatBucketBound(tc.bound); got != tc.want {
 			t.Errorf("formatBucketBound(%v) = %q, want %q", tc.bound, got, tc.want)
 		}
+	}
+}
+
+func TestCumulativeDeltaSeries(t *testing.T) {
+	t.Parallel()
+
+	const (
+		scalarKey  = "__name__=requests_total"
+		classicKey = "__name__=latency_bucket,le=+Inf"
+		nativeKey  = "__name__=latency_exp"
+	)
+	series := map[string]*oracle.Series{
+		scalarKey: {
+			Points: []oracle.Point{{TMillis: 1, Value: 10}, {TMillis: 2, Value: 40}},
+		},
+		classicKey: {
+			Points: []oracle.Point{{TMillis: 1, Value: 2}, {TMillis: 2, Value: 4}},
+		},
+		nativeKey: {
+			Points: []oracle.Point{
+				{TMillis: 1, Histogram: &oracle.Histogram{
+					Count: 6, Sum: 3, Scale: 0, ZeroCount: 1,
+					PositiveOffset: 0, PositiveBuckets: []float64{1}, NegativeOffset: -1, NegativeBuckets: []float64{4},
+				}},
+				{TMillis: 2, Histogram: &oracle.Histogram{
+					Count: 12, Sum: 6, Scale: 1, ZeroCount: 2,
+					PositiveOffset: 1, PositiveBuckets: []float64{2}, NegativeOffset: -1, NegativeBuckets: []float64{8},
+				}},
+			},
+		},
+		"__name__=cumulative_total": {
+			Points: []oracle.Point{{TMillis: 1, Value: 10}, {TMillis: 2, Value: 40}},
+		},
+	}
+	if err := cumulativeDeltaSeries(series, map[string]bool{
+		scalarKey: true, classicKey: true, nativeKey: true,
+	}); err != nil {
+		t.Fatalf("cumulativeDeltaSeries: %v", err)
+	}
+
+	for _, key := range []string{scalarKey, classicKey} {
+		if got := series[key].Points[1].Value; got != map[string]float64{scalarKey: 50, classicKey: 6}[key] {
+			t.Errorf("%s cumulative value = %v", key, got)
+		}
+	}
+	native := series[nativeKey].Points[1].Histogram
+	if native.Count != 18 || native.Sum != 9 || native.Scale != 0 || native.ZeroCount != 3 ||
+		native.PositiveOffset != 0 || len(native.PositiveBuckets) != 1 || native.PositiveBuckets[0] != 3 ||
+		native.NegativeOffset != -1 || len(native.NegativeBuckets) != 1 || native.NegativeBuckets[0] != 12 {
+		t.Errorf("native cumulative histogram = %+v", native)
+	}
+	if got := series["__name__=cumulative_total"].Points[1].Value; got != 40 {
+		t.Errorf("cumulative control changed to %v", got)
 	}
 }
