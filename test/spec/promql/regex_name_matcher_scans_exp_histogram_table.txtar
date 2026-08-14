@@ -8,6 +8,10 @@
 
 -- query.promql --
 {__name__=~".*latency_exp_hist.*"}
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,
