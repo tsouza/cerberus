@@ -53,7 +53,7 @@ const (
 // corpus seeds only the tables its own query needs.
 func readSeededNativeHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
-	nameRestorer *metricNameRestorer, exactNames map[string]bool,
+	nameRestorer *metricNameRestorer, exactNames, deltaSeries map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]
 	if len(seedCols) == 0 {
@@ -65,7 +65,7 @@ func readSeededNativeHistograms(
 	// reaches the query.
 	q := "SELECT MetricName, toJSONString(Attributes), " +
 		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
-		"toUnixTimestamp64Milli(TimeUnix), " +
+		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", " +
 		strings.Join(nativeHistogramProjections(seedCols), ", ") +
 		" FROM " + nativeHistogramTable + " ORDER BY MetricName, TimeUnix"
 	rows, err := db.Query(q)
@@ -78,12 +78,12 @@ func readSeededNativeHistograms(
 	sumDeclared := hasColumn(seedCols, colSum)
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName string
-		var tsMillis int64
+		var tsMillis, temporality int64
 		var count, sum, zeroCount float64
 		var scale, positiveOffset, negativeOffset int64
 		var positiveJSON, negativeJSON string
 		if err := rows.Scan(
-			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis,
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality,
 			&count, &sum, &scale, &zeroCount,
 			&positiveOffset, &positiveJSON, &negativeOffset, &negativeJSON,
 		); err != nil {
@@ -141,6 +141,7 @@ func readSeededNativeHistograms(
 				byKey[key] = s
 			}
 			s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Histogram: h})
+			markDeltaSeries(deltaSeries, key, temporality)
 		}
 
 		// Cerberus exposes these documented float companions in addition to
@@ -150,11 +151,13 @@ func readSeededNativeHistograms(
 			if err := appendPoint(byKey, nameRestorer, lbls, name+countSuffix, nil, tsMillis, count); err != nil {
 				return err
 			}
+			markDeltaSeries(deltaSeries, seriesKey(lbls, name+countSuffix, nil), temporality)
 		}
 		if sumDeclared {
 			if err := appendPoint(byKey, nameRestorer, lbls, name+sumSuffix, nil, tsMillis, sum); err != nil {
 				return err
 			}
+			markDeltaSeries(deltaSeries, seriesKey(lbls, name+sumSuffix, nil), temporality)
 		}
 	}
 	return rows.Err()
