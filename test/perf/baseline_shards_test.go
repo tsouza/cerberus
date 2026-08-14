@@ -59,6 +59,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // shardExt is the suffix every shard file carries; a shard tree holds nothing
@@ -203,11 +205,64 @@ func (s baselineShards[T]) load() (map[string]T, error) {
 // record, plus a prune pass that deletes the shards of records that no longer
 // exist and the directories those leave empty.
 func (s baselineShards[T]) write(entries map[string]T) error {
+	return s.writeShard(entries, spec.WholeCorpus)
+}
+
+// writeShard is [baselineShards.write] restricted to one slice of a partitioned
+// corpus, so N processes can regenerate the tree concurrently instead of one
+// process regenerating it serially (#2122).
+//
+// The generator that cannot be parallelised in-process is parallelised as N OS
+// processes, each profiling the slice [spec.Shard] hands it. That works for the
+// WRITE half only because pruning is scoped to the same partition: a leg deletes
+// a stale file only when the file's own key belongs to the leg's slice, so the
+// blast radius of leg i is exactly the set of paths leg i is also the only
+// writer of. Legs therefore touch disjoint path sets and never race for a file,
+// and the union of N legs at count N is byte-for-byte the single whole-corpus
+// pass — every key on disk belongs to exactly one leg, so every stale file is
+// some leg's to remove.
+//
+// Without that scoping a leg's prune walks the whole tree and deletes the other
+// N-1 legs' rows as "no longer in the corpus" — the hazard that made a sharded
+// regeneration impossible, and the reason the ratchet's update path used to
+// refuse a partial corpus outright.
+//
+// Two smaller concessions to running beside live siblings, both no-ops when the
+// shard is whole:
+//
+//   - the walk tolerates an entry that vanishes under it, because a sibling
+//     pruning ITS OWN stale file can remove a path between this leg's readdir
+//     and its lstat. A path that disappeared is by construction not this leg's
+//     to prune — only its owner deletes it — so skipping it loses nothing.
+//   - empty directories are left alone. Removing one races a sibling that is
+//     between MkdirAll and WriteFile inside it, and an empty directory is not
+//     part of the artefact anyway: git tracks files, so an empty directory left
+//     behind cannot reach the committed tree.
+func (s baselineShards[T]) writeShard(entries map[string]T, shard spec.Shard) error {
 	keys := make([]string, 0, len(entries))
 	for key := range entries {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+
+	// A leg handed a record outside its own slice would write a file the leg
+	// that owns it is also writing, and prune decisions across the two would
+	// disagree. That can only come from the generator filtering its corpus by
+	// a different partition than the one it declares here, which is silent in
+	// the direction that matters: both legs exit 0 and the tree keeps whichever
+	// write landed last.
+	var foreign []string
+	for _, key := range keys {
+		if !shard.Holds(key) {
+			foreign = append(foreign, key)
+		}
+	}
+	if len(foreign) > 0 {
+		return fmt.Errorf("%s: %v was handed %d record(s) it does not own, e.g. %q. A leg must be "+
+			"given exactly the slice it declares, or two legs write the same file and prune it by "+
+			"different rules — regenerate with %q",
+			s.dir, shard, len(foreign), foreign[0], s.regen)
+	}
 
 	want := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
@@ -230,19 +285,31 @@ func (s baselineShards[T]) write(entries map[string]T) error {
 		}
 	}
 
-	return s.prune(want)
+	return s.prune(want, shard)
 }
 
 // prune deletes every shard the current generator output does not claim, then
 // removes the directories that leaves empty. A stale shard is not inert — load
 // would keep serving its record to the ratchet as if the fixture were still in
 // the corpus — so a regeneration that only ADDS files is not a regeneration.
-func (s baselineShards[T]) prune(want map[string]struct{}) error {
+//
+// "Does not claim" is read within the shard's own slice: a file whose key
+// belongs to a DIFFERENT leg is not this leg's to judge, because this leg never
+// profiled the fixture behind it and its absence from `want` says nothing about
+// whether the corpus still holds it. See [baselineShards.writeShard].
+func (s baselineShards[T]) prune(want map[string]struct{}, shard spec.Shard) error {
 	var stale []string
 	var dirs []string
 
 	err := filepath.WalkDir(s.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// A sibling leg pruning its own stale file can unlink a path
+			// between this walk's readdir and its lstat. Only the owning leg
+			// deletes a path, so one that vanished was never this leg's.
+			if !shard.IsWhole() && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+
 			return err
 		}
 		if d.IsDir() {
@@ -259,6 +326,13 @@ func (s baselineShards[T]) prune(want map[string]struct{}) error {
 			return fmt.Errorf("%s: refusing to prune %s — it is not a %s shard, so it was not written "+
 				"by %q and deleting it is not this generator's call", s.dir, path, shardExt, s.regen)
 		}
+		rel, rerr := filepath.Rel(s.dir, path)
+		if rerr != nil {
+			return rerr
+		}
+		if !shard.Holds(keyFor(rel)) {
+			return nil
+		}
 		stale = append(stale, path)
 
 		return nil
@@ -271,6 +345,15 @@ func (s baselineShards[T]) prune(want map[string]struct{}) error {
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("prune stale shard %s: %w", path, err)
 		}
+	}
+
+	// A leg running beside its siblings does not remove directories: the check
+	// and the removal cannot be made atomic against a sibling that is between
+	// MkdirAll and WriteFile in the same directory, and an empty directory is
+	// invisible in the artefact anyway — git tracks files, so one left behind
+	// cannot reach the committed tree. The next whole-corpus write clears it.
+	if !shard.IsWhole() {
+		return nil
 	}
 
 	// Deepest first, so a directory emptied by pruning its children is itself
@@ -309,7 +392,15 @@ func (s baselineShards[T]) mustLoad(t *testing.T) map[string]T {
 func (s baselineShards[T]) mustWrite(t *testing.T, entries map[string]T) {
 	t.Helper()
 
-	if err := s.write(entries); err != nil {
+	s.mustWriteShard(t, entries, spec.WholeCorpus)
+}
+
+// mustWriteShard is [baselineShards.writeShard] for the ratchets' UPDATE_* path
+// when the regeneration is fanned out across processes.
+func (s baselineShards[T]) mustWriteShard(t *testing.T, entries map[string]T, shard spec.Shard) {
+	t.Helper()
+
+	if err := s.writeShard(entries, shard); err != nil {
 		t.Fatalf("%v", err)
 	}
 }

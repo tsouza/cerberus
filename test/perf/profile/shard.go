@@ -34,12 +34,15 @@ type Shard = spec.Shard
 
 // WholeCorpus is the unpartitioned corpus: one shard holding everything. It is
 // the default whenever the environment declares no partition, so a local
-// `just perf-chdb`, `just update-cardinality-baseline` and the nightly
-// perf-profile lane all behave exactly as they did before sharding existed.
+// `just perf-chdb`, a hand-run `go test` and the nightly perf-profile lane all
+// behave exactly as they did before sharding existed.
 //
-// The baseline WRITER must refuse to run on anything else (`IsWhole`):
-// `mustWrite` prunes every shard file it was not handed, so regenerating from a
-// partial profile would silently delete the rows belonging to the other shards.
+// The baseline WRITER reads this partition too, not just the ratchet: `mustWrite`
+// prunes shard files the profile no longer produced, and pruning the whole tree
+// from a partial profile would delete the other legs' rows. `mustWriteShard`
+// narrows the prune to the leg's own slice instead, which is what lets
+// `just update-cardinality-baseline` fan the regeneration out (#2122). See
+// baselineShards.writeShard in test/perf/baseline_shards_test.go.
 var WholeCorpus = spec.WholeCorpus
 
 // ShardOf is the partition function: the 1-based shard a fixture id belongs to

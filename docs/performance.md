@@ -219,10 +219,24 @@ and a leg's wall-clock stays comparable run to run. Sharding a ratchet is not
 just sharding a loop: the added/removed check is a statement about a SET, so
 each leg narrows BOTH the corpus and the committed baseline through the same
 partition — union over the legs is exactly the unsharded assertion. With the
-variables unset (a local `just perf-chdb`, `just update-cardinality-baseline`,
-the nightly profiler) the shard is the whole corpus, and the baseline writer
-refuses to run on anything else, because writing prunes every row it was not
-handed.
+variables unset (a local `just perf-chdb`, the nightly profiler) the shard is the
+whole corpus.
+
+**The regeneration is sharded too.** Writing the baseline prunes the rows the
+profile no longer produced, so a leg holding 1/8 of the corpus would delete the
+other 7/8 as removed fixtures and leave a tree that still parses.
+`baselineShards.writeShard` scopes the prune to the leg's own slice — a leg
+deletes a stale file only when the file's key hashes to the leg's index — so leg
+`i` can only touch paths leg `i` is also the only writer of, and N legs at count
+N reproduce the serial pass byte for byte.
+`just update-cardinality-baseline` therefore fans the profile pass out across the
+same 8 legs, through `.github/scripts/cardinality-baseline-update.mjs`, and
+closes with a step that re-derives the corpus roster from a TXTAR walk and
+asserts the tree holds exactly one row per profilable fixture
+(`TestCardinalityBaselineCoversTheCorpus`). That closing step is what states the
+fact no individual leg can: a leg that was never dispatched leaves its slice
+stale without corrupting anything, so "every leg exited 0" is not the same
+claim as "the tree matches the corpus".
 Improvements are always allowed (a fan-factor *decrease* never blocks); the
 ceiling only tightens when a maintainer re-runs
 `just update-cardinality-baseline`.

@@ -155,12 +155,27 @@
 // it.
 //
 // With no partition declared (a local `just perf-chdb`, the nightly profile
-// lane, `just update-cardinality-baseline`) the shard is
-// [profile.WholeCorpus] and every path below behaves exactly as it did before
-// sharding existed. The baseline WRITER additionally refuses to run on a
-// partial shard, because writing prunes the tree of every row it was not handed
-// — a sharded regeneration would delete seven eighths of the baseline and
-// commit it.
+// lane, a hand-run `go test`) the shard is [profile.WholeCorpus] and every path
+// below behaves exactly as it did before sharding existed.
+//
+// # Sharding the WRITE too (#2122)
+//
+// The gating run was sharded first and the regeneration left serial, because
+// writing prunes the tree of every row it was not handed: a leg regenerating
+// 1/8 of the corpus would delete the other 7/8 as "no longer in the corpus" and
+// commit a tree that still parses. [baselineShards.writeShard] closes that by
+// scoping the prune to the leg's own slice — a leg deletes a stale file only
+// when the file's key hashes to the leg's index — so a partial write can no
+// longer reach another leg's rows at all, and N legs at count N reproduce the
+// serial pass byte for byte.
+//
+// What a single leg still cannot know is whether its N-1 siblings ran. A lone
+// partial regeneration is SAFE (it refreshes its slice and leaves the rest at
+// their committed values) but INCOMPLETE, and staleness it leaves behind is
+// exactly what the gating run already reports as an added/removed/drifted row.
+// TestCardinalityBaselineCoversTheCorpus turns that from "the next CI run will
+// notice" into a direct statement about the tree, which the regeneration recipe
+// runs as its closing step once every leg has joined.
 
 package perf
 
@@ -301,25 +316,23 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 
 	if os.Getenv(updateEnv) == "1" {
-		// Writing the baseline PRUNES every shard file it was not handed
-		// (see baselineShards.write), so regenerating from a partial
-		// profile would delete the rows of every fixture this leg does not
-		// own — and the result still parses, still passes its own leg, and
-		// lands in a diff as "removed 830 rows" that reads like corpus
-		// cleanup. Refuse rather than trust the operator to notice.
-		if !shard.IsWhole() {
-			t.Fatalf("refusing to regenerate the baseline from a partial corpus (%v). Writing prunes the "+
-				"tree of every fixture not in this profile, so a sharded regeneration silently deletes the "+
-				"other shards' rows. Unset %s/%s and re-run `%s`.",
-				shard, profile.ShardIndexEnv, profile.ShardCountEnv, cardinalityRegen)
-		}
+		// The write is scoped to the SAME slice this leg profiled, so a
+		// partial regeneration prunes only rows this leg owns and cannot
+		// touch another leg's (baselineShards.writeShard). That is what
+		// lets `just update-cardinality-baseline` fan the regeneration out
+		// across processes instead of paying for one serial pass (#2122).
+		//
+		// A leg refuses on ITS OWN unprofilable fixtures rather than on the
+		// corpus's, which is the same statement per slice: union over the
+		// legs is exactly the whole-corpus refusal, and a leg that cannot
+		// profile its slice fails without writing a partial one.
 		if len(profErrs) > 0 {
 			sort.Strings(profErrs)
 			t.Fatalf("refusing to write a baseline with %d unprofilable fixture(s):\n  %v",
 				len(profErrs), profErrs)
 		}
-		writeBaseline(t, current)
-		t.Logf("wrote %s with %d fixtures", baselinePath, len(current))
+		writeBaseline(t, current, shard)
+		t.Logf("wrote the %v slice of %s: %d fixtures", shard, baselinePath, len(current))
 		return
 	}
 
@@ -433,6 +446,68 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 }
 
+// TestCardinalityBaselineCoversTheCorpus asserts the committed tree holds one
+// row per profilable fixture and no others — the SET statement, made directly
+// about the artefact rather than as a by-product of profiling it.
+//
+// The ratchet above states the same thing, but only a slice of it per leg and
+// only after a full chDB profile pass. This states all of it, from the corpus
+// roster alone (a TXTAR walk, no chDB work), which is what makes it usable as
+// the closing step of a FANNED-OUT regeneration: N legs each write and prune
+// their own slice safely, but no leg can see whether its siblings ran, so
+// "every slice was covered" needs a check that looks at the whole tree once the
+// legs have joined. A leg that crashed, a leg that was never dispatched, or a
+// fan-out re-run at a different N than the tree was last written at all land
+// here as a concrete missing or orphaned id.
+//
+// It is not conditional on the update path: a tree that does not match the
+// corpus is wrong whether or not anyone is regenerating it, and pinning it in
+// the gating lane too is what keeps the check honest about the committed state.
+func TestCardinalityBaselineCoversTheCorpus(t *testing.T) {
+	paths, err := profile.FindExecutableFixtures(specDir)
+	if err != nil {
+		t.Fatalf("discover the executable fixture roster under %s: %v", specDir, err)
+	}
+
+	want := make(map[string]struct{}, len(paths)+len(profile.MetadataFixtureIDs()))
+	for _, p := range paths {
+		want[profile.FixtureID(specDir, p)] = struct{}{}
+	}
+	// The metadata-discovery endpoints are profiled rows without being TXTAR
+	// fixtures, so the roster is the corpus walk PLUS their ids — see the
+	// merge in TestCardinalityRatchet for why they ratchet as ordinary rows.
+	for _, id := range profile.MetadataFixtureIDs() {
+		want[id] = struct{}{}
+	}
+
+	got := loadBaseline(t)
+
+	var missing, orphaned []string
+	for id := range want {
+		if _, ok := got[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	for id := range got {
+		if _, ok := want[id]; !ok {
+			orphaned = append(orphaned, id)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(orphaned)
+
+	if len(missing) > 0 {
+		t.Errorf("%d profilable fixture(s) have no row in %s: %v — the tree was last written from a "+
+			"corpus that did not contain them, or a leg of a fanned-out `%s` did not run. Re-run `%s`.",
+			len(missing), baselinePath, missing, cardinalityRegen, cardinalityRegen)
+	}
+	if len(orphaned) > 0 {
+		t.Errorf("%d row(s) in %s name a fixture the corpus no longer holds: %v — a stale row is not "+
+			"inert, the ratchet keeps honouring it. Re-run `%s`.",
+			len(orphaned), baselinePath, orphaned, cardinalityRegen)
+	}
+}
+
 // cardinalityShards is the committed baseline's shard store: one file per
 // fixture, keyed by the fixture id, with the tree pruned on regeneration so a
 // removed fixture cannot leave a row behind that the ratchet keeps honouring.
@@ -443,10 +518,11 @@ var cardinalityShards = baselineShards[baselineEntry]{
 	regen: cardinalityRegen,
 }
 
-// writeBaseline rewrites the shard tree from the current profile.
-func writeBaseline(t *testing.T, entries map[string]baselineEntry) {
+// writeBaseline rewrites this leg's slice of the shard tree from the current
+// profile, pruning only within that slice.
+func writeBaseline(t *testing.T, entries map[string]baselineEntry, shard profile.Shard) {
 	t.Helper()
-	cardinalityShards.mustWrite(t, entries)
+	cardinalityShards.mustWriteShard(t, entries, shard)
 }
 
 // loadBaseline reads the committed shard tree into a fixture-keyed map.
