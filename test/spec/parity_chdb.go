@@ -253,30 +253,66 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 // evaluated, and the regexp below matches nothing but that one operator.
 var atan2QueryPattern = regexp.MustCompile(`\batan2\b`)
 
-// histogramQuantileQueryPattern matches the PromQL histogram quantile
-// functions. It is paired with the native-histogram seed check below so the
-// ULP exception cannot apply to classic histogram queries.
-var histogramQuantileQueryPattern = regexp.MustCompile(`\bhistogram_quantiles?\b`)
+const exponentialHistogramSeedTable = "otel_metrics_exponential_histogram"
 
-// atan2CompareValues resolves to [oracle.EqualAtan2Values] when query is
-// PROVEN — by containing the atan2 operator — to need it, and to the
-// ordinary exact [oracle.EqualValues] otherwise. See [atan2QueryPattern] for
-// why detection happens here instead of via fixture-level configuration.
-func atan2CompareValues(query string) func(a, b float64) bool {
+const exponentialHistogramMetricSuffix = "_exp_hist"
+
+// compareValues selects the one comparator appropriate to the expression and
+// its actual seeded storage shape. Native exponential-histogram interpolation
+// is the only class besides atan2 with measured cross-libm divergence.
+func compareValues(query, seed string) (func(a, b float64) bool, error) {
 	if atan2QueryPattern.MatchString(query) {
-		return oracle.EqualAtan2Values
+		return oracle.EqualAtan2Values, nil
 	}
-	return oracle.EqualValues
+	if !strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable) {
+		return oracle.EqualValues, nil
+	}
+
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		return nil, fmt.Errorf("parse comparator query: %w", err)
+	}
+	if isExponentialHistogramInterpolation(expr) {
+		return oracle.EqualExponentialHistogramInterpolationValues, nil
+	}
+	return oracle.EqualValues, nil
 }
 
-// parityCompareValues keeps native histogram quantile's implementation-level
-// rounding difference separate from the exact default. A query text alone is
-// insufficient because classic histogram quantiles use a different path.
-func parityCompareValues(query, seed string) func(a, b float64) bool {
-	if histogramQuantileQueryPattern.MatchString(query) && strings.Contains(seed, nativeHistogramTable) {
-		return oracle.EqualNativeHistogramQuantileValues
+// isExponentialHistogramInterpolation proves that a complete query result is
+// one native exponential-histogram interpolation. A comparator applies to the
+// whole result vector, so merely finding an interpolation below a binary or
+// aggregation expression would also relax unrelated output samples.
+func isExponentialHistogramInterpolation(expr parser.Expr) bool {
+	call, ok := expr.(*parser.Call)
+	if !ok {
+		return false
 	}
-	return atan2CompareValues(query)
+
+	var histogramArg parser.Expr
+	switch call.Func.Name {
+	case "histogram_fraction":
+		histogramArg = call.Args[2]
+	case "histogram_quantile":
+		histogramArg = call.Args[1]
+	default:
+		return false
+	}
+
+	var selectors int
+	allExponential := true
+	parser.Inspect(histogramArg, func(node parser.Node, _ []parser.Node) error {
+		selector, ok := node.(*parser.VectorSelector)
+		if !ok {
+			return nil
+		}
+		selectors++
+		if !strings.HasSuffix(selector.Name, exponentialHistogramMetricSuffix) {
+			allExponential = false
+		}
+		return nil
+	})
+	return selectors > 0 && allExponential
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose
@@ -665,12 +701,10 @@ func compareAgainstReference(
 		)
 	}
 
-	// equalValues is exact except for the named, query-and-seed-scoped
-	// implementation-level rounding differences selected by
-	// parityCompareValues. It is resolved once for both heads on purpose:
-	// sample equality is one rule, not one per head, and duplicating it would
-	// let the two drift into disagreeing about what "equal" means.
-	equalValues := parityCompareValues(query, rt.Seed)
+	equalValues, err := compareValues(query, rt.Seed)
+	if err != nil {
+		t.Fatalf("fixture %s: %v", c.Name, err)
+	}
 
 	for i := range got {
 		g, w := got[i], want[i]

@@ -380,6 +380,13 @@ func EqualValues(a, b float64) bool {
 // [EqualAtan2Values].
 const atan2ULPTolerance = 1
 
+// exponentialHistogramInterpolationULPTolerance is the maximum measured ULP
+// distance between Prometheus's Go-math exponential-histogram interpolation
+// and Cerberus's ClickHouse-libm interpolation. Issue #2024 measured the
+// seven enrolled seeds at one through five ULPs; six is deliberately rejected
+// by TestEqualExponentialHistogramInterpolationValues_Boundary.
+const exponentialHistogramInterpolationULPTolerance = 5
+
 // nativeHistogramQuantileULPTolerance is the maximum ULP distance between
 // Prometheus's and ClickHouse's exponential-histogram interpolation results.
 // The engines use separate floating-point implementations for that operation.
@@ -436,6 +443,26 @@ func EqualAtan2Values(a, b float64) bool {
 		return false
 	}
 	return ulpDistance(a, b) <= atan2ULPTolerance
+}
+
+// EqualExponentialHistogramInterpolationValues reports whether two float
+// samples produced by native exponential-histogram interpolation agree within
+// [exponentialHistogramInterpolationULPTolerance] ULPs.
+//
+// This is deliberately narrower than an epsilon comparison. It exists only
+// for histogram_fraction and native histogram_quantile evaluated through
+// ClickHouse's log2/pow implementation, where #2024 measured the documented
+// divergence from Prometheus's Go math implementation. The parity runner,
+// not fixture metadata, selects it only when that function class reads an
+// exponential-histogram seed table; all other values use EqualValues exactly.
+func EqualExponentialHistogramInterpolationValues(a, b float64) bool {
+	if math.IsNaN(a) && math.IsNaN(b) {
+		return true
+	}
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return false
+	}
+	return ulpDistance(a, b) <= exponentialHistogramInterpolationULPTolerance
 }
 
 // EqualNativeHistogramQuantileValues reports whether native histogram

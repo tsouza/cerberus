@@ -14,6 +14,10 @@
 histogram_quantile(0.95, http_server_duration_exp_hist{service="api"} offset 5m)
 -- range_step --
 60s
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,
