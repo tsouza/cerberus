@@ -121,24 +121,14 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	bcFloat := Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	lengthBC := Call("length", Col(bc))
 
-	// Coalesce buckets that share an upper bound, mirroring upstream's
-	// coalesceBuckets (promql/quantile.go), which runs before every
-	// interpolation. A repeated entry in ExplicitBounds describes a bucket
-	// whose interval is empty, so it carries no observation of its own; left
-	// in place it still splits the ladder, and arrayFirstIndex then stops at
-	// the FIRST rung of the flat run it creates. The lower edge read off
-	// that rung is the repeated bound rather than the true start of the
-	// bucket holding the rank, and the interpolation collapses onto the
-	// bound instead of interpolating across it — bounds [1, 1, 5] with
-	// counts [2, 3, 5, 0] answer phi=0.3 with 1 where the ladder
-	// (5 observations at or below 1) puts the rank at 0.6.
-	//
-	// Upstream merges by ADDING the duplicate rungs' counts because its
-	// input is one already-cumulative sample per `le`, and two entries with
-	// equal bounds are two independent series. Here the row is a single
-	// per-bucket array whose running total already absorbed the run, so the
-	// equivalent merge is to keep the LAST index of each run of equal
-	// bounds: its cumulative entry is exactly the total at that bound.
+	// Coalesce buckets that share an upper bound before interpolation. The
+	// classic OTel row is per-bucket while Prometheus observes a sequence of
+	// float bucket samples. Retaining the first rung of a duplicate run
+	// preserves that sequence's ordering: the duplicate interval's mass is
+	// carried into the next distinct rung. Retaining the last rung instead
+	// incorrectly puts that mass at the repeated bound; bounds [1, 1, 5]
+	// with counts [2, 3, 5, 0] then return 0.6 for phi=0.3 rather than the
+	// Prometheus result 1.5.
 	// The trailing +Inf rung is appended unconditionally — it has no
 	// ExplicitBounds entry to be duplicated, and its cumulative value is
 	// the total, which coalescing never changes.
@@ -152,7 +142,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	}
 	boundCount := Call("length", Col(eb))
 	cumCount := Call("length", bcFloat)
-	// Rungs the ladder keeps: the last index of every run of equal bounds,
+	// Rungs the ladder keeps: the first index of every run of equal bounds,
 	// then every cumulative entry past the bounds array untouched. That
 	// tail is the overflow rung the schema carries when BucketCounts runs
 	// one longer than ExplicitBounds; rebuilding it from arraySum instead
@@ -162,8 +152,8 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	keptBoundIdx := Call(
 		"arrayFilter",
 		Lambda1("i", Or(
-			Eq(BareIdent("i"), boundCount),
-			Neq(Subscript(Col(eb), BareIdent("i")), Subscript(Col(eb), Add(BareIdent("i"), InlineLit(1)))),
+			Eq(BareIdent("i"), InlineLit(1)),
+			Neq(Subscript(Col(eb), BareIdent("i")), Subscript(Col(eb), Sub(BareIdent("i"), InlineLit(1)))),
 		)),
 		Call("range", InlineLit(1), Add(boundCount, InlineLit(1))),
 	)
