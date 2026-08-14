@@ -155,7 +155,7 @@ func TestPlanCaptureProbesDeclines(t *testing.T) {
 		need  []int
 	}{
 		{"nothing_to_probe", `(?P<dup>a)|(?P<dup>b)`, nil},
-		{"carrier_with_no_probeable_ancestor", `(?:(?P<dup>a?)|y)(?P<dup>b)`, []int{1}},
+		{"carrier_with_no_probeable_ancestor", `(?:(?P<dup>a?)|y?)(?P<dup>b)`, []int{1}},
 		{"carrier_alone_under_a_quest", `(?:(?P<dup>a?))?(?P<dup>b)`, []int{1}},
 		{"unparseable_regex", `(?P<dup>a`, []int{1}},
 		{"index_past_the_group_count", `(?P<dup>a?)(?P<dup>b)`, []int{9}},
