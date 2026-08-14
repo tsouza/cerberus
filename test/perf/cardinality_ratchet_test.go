@@ -374,8 +374,8 @@ func TestCardinalityRatchet(t *testing.T) {
 	}
 	for _, id := range removed {
 		t.Errorf("baseline fixture %q no longer in the corpus (%v) — run `just update-cardinality-baseline` "+
-			"to drop the stale row. Regeneration is always whole-corpus, so run it without "+
-			"%s/%s set.", id, shard, profile.ShardIndexEnv, profile.ShardCountEnv)
+			"to drop the stale row. The recipe fans out and sets %s/%s itself, one value per leg; "+
+			"nothing needs setting by hand.", id, shard, profile.ShardIndexEnv, profile.ShardCountEnv)
 	}
 
 	// Per-fixture upward-regression ratchet over the matched set.

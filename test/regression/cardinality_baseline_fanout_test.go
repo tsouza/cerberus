@@ -46,6 +46,12 @@ const cardinalitySealTest = "TestCardinalityBaselineCoversTheCorpus"
 // cardinalityRatchetTest is the profiling step every leg runs.
 const cardinalityRatchetTest = "TestCardinalityRatchet"
 
+// cardinalityRatchetSourcePath holds both of those test functions. The plan
+// names them as `-run` REGEXES, and `go test -run '^NoSuchTest$'` prints "no
+// tests to run" and exits 0 — so the names have to be pinned against the source
+// that defines them, not only against the plan text that mentions them.
+const cardinalityRatchetSourcePath = "../perf/cardinality_ratchet_test.go"
+
 // cardinalityUpdatePlan asks the runner for the ordered regeneration plan it
 // would execute. One line per step: `<label> <ENV=v>... <command>`.
 //
@@ -57,7 +63,12 @@ func cardinalityUpdatePlan(t *testing.T) []string {
 
 	cmd := exec.Command("node", cardinalityUpdateModule)
 	cmd.Dir = repoRootFromRegression
-	cmd.Env = append(os.Environ(), "CARDINALITY_UPDATE_PRINT_PLAN=1")
+	// CARDINALITY_BASELINE_FANOUT is cleared, not merely left unset: it is a
+	// documented override, so a developer who exported it to measure the split
+	// on their own machine would otherwise see this pin fail against a leg count
+	// nobody committed. An empty value falls through the runner's `if (!raw)`
+	// back to the compiled-in default, which is the number under test.
+	cmd.Env = append(os.Environ(), "CARDINALITY_UPDATE_PRINT_PLAN=1", "CARDINALITY_BASELINE_FANOUT=")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -205,6 +216,36 @@ func TestCardinalityBaselinePlanSealsTheFanOut(t *testing.T) {
 	if len(legs) > 0 && sealAt < lastLegAt {
 		t.Errorf("the seal runs at plan step %d, before the last profiling leg at step %d. It would "+
 			"then assert the PREVIOUS regeneration's tree.\n%s", sealAt, lastLegAt, strings.Join(plan, "\n"))
+	}
+}
+
+// TestCardinalityPlanNamesTestsThatExist closes the gap between the plan's
+// `-run` regexes and the Go functions they are supposed to select.
+//
+// `go test -run '^NoSuchTest$' ./pkg/` prints "no tests to run" and exits **0**.
+// Every other assertion in this file matches those names against the plan TEXT,
+// which a rename satisfies on both sides at once, so on its own the pin cannot
+// see the failure it most needs to:
+//
+//   - rename the seal and the closing step passes vacuously — the fan-out keeps
+//     its only check that a leg never ran, in name only.
+//   - rename the ratchet and all N legs no-op, the seal then passes over the
+//     untouched (still-matching) tree, and `just update-cardinality-baseline`
+//     becomes a complete no-op that exits 0 and prints an empty diff — which
+//     reads exactly like "no drift".
+//
+// Both are the repo's hollow-green class: a lane that reports success while
+// measuring nothing.
+func TestCardinalityPlanNamesTestsThatExist(t *testing.T) {
+	t.Parallel()
+
+	src := readFileString(t, cardinalityRatchetSourcePath)
+	for _, name := range []string{cardinalityRatchetTest, cardinalitySealTest} {
+		if !strings.Contains(src, "func "+name+"(") {
+			t.Errorf("the regeneration plan selects %q with `go test -run`, but %s defines no such "+
+				"function. `-run` matching nothing exits 0 after running nothing, so this renames a "+
+				"step into a no-op that still reports success.", name, cardinalityRatchetSourcePath)
+		}
 	}
 }
 
