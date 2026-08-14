@@ -22,14 +22,21 @@ import (
 // and emit a plan whose destination label silently holds the wrong text.
 //
 // The regex below is the smallest shape that really is unobservable, and
-// it carries its own proof: on `host="xb"` the optional branch takes part
-// and `dup` captures nothing, so Prometheus answers `service=""`, while a
-// first-non-empty search over the two carriers answers `service="b"`.
-// Issue #1956 tracks the residue this pins.
+// it carries its own proof: on `host="b"` the alternation takes its empty
+// first branch, so `dup` takes part capturing nothing and Prometheus
+// answers `service=""`, while the emitted search answers `service="b"`.
+//
+// A carrier under a quest is NOT enough on its own any more — where the
+// carrier has an ancestor that cannot match empty, cerberus rewrites the
+// regex to probe it and lowers the query, which
+// TestLowerLabelReplace_AcceptsSharedCaptureName covers. What is left is a
+// carrier alone in a nullable branch, with nothing above it guaranteed to
+// be consumed. Issue #1956 tracks that residue, and
+// ClickHouse/ClickHouse#114733 tracks the upstream gap behind it.
 func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	t.Parallel()
 
-	const q = `label_replace(temperature, "service", "$dup", "host", "(?:x(?P<dup>a?))?(?P<dup>b)")`
+	const q = `label_replace(temperature, "service", "$dup", "host", "(?:(?P<dup>a?)|y)(?P<dup>b)")`
 
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(q)
 	if err != nil {
@@ -80,6 +87,15 @@ func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
 			// carrier is unreachable.
 			"nullable_carrier_on_the_mandatory_spine",
 			`label_replace(temperature, "service", "$dup", "host", "(?P<dup>a?)(?P<dup>b)")`,
+		},
+		{
+			// A nullable carrier a match CAN skip, which no static fact
+			// clears: the quest's body holds mandatory text, so cerberus
+			// rewrites the regex to capture that text and reads the
+			// carrier's participation off it. This shape was rejected
+			// until probes existed.
+			"nullable_skippable_carrier_with_a_probeable_ancestor",
+			`label_replace(temperature, "service", "$dup", "host", "(?:x(?P<dup>a?))?(?P<dup>b)")`,
 		},
 	}
 

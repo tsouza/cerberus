@@ -56,6 +56,7 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		Dst:              dst,
 		Replacement:      chRepl.Template,
 		Segments:         chRepl.Segments,
+		ProbedRegex:      chRepl.ProbedRegex,
 		Src:              src,
 		Regex:            regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),

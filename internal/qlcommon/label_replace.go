@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -98,21 +99,38 @@ const unresolvedGroup = -1
 // (very-much-reachable) cold path where the regex doesn't match
 // anything.
 func ReplacementToCH(repl, regex string) (CHReplacement, error) {
-	segments, err := ReplacementSegments(repl, regex)
+	segments, probed, err := ReplacementSegments(repl, regex)
 	if err != nil {
 		return CHReplacement{}, err
 	}
+	return chReplacement(segments, probed), nil
+}
+
+// chReplacement picks the output form a decomposition takes.
+//
+// A group above ClickHouse's `\9` ceiling has no `\N` spelling, and a
+// reference to a name several groups share is a SELECTION among indices
+// rather than one index — neither fits a `replaceRegexpOne` substitution
+// string, and both are expressible over the `extractGroups`
+// decomposition.
+//
+// A probe rewrite forces the same choice whatever the indices look like.
+// The substitution string is applied against the regex `match(...)` ran,
+// which is the ORIGINAL one, while every index in a rewritten
+// decomposition is numbered against the REWRITTEN pattern — so a template
+// built from those indices would point at the wrong groups. The
+// `extractGroups` form is the one that reads the rewritten pattern, so it
+// is the only form a rewrite may take.
+func chReplacement(segments []chplan.LabelReplaceSegment, probed string) CHReplacement {
+	if probed != "" {
+		return CHReplacement{Segments: segments, ProbedRegex: probed}
+	}
 	for _, seg := range segments {
-		// A group above CH's `\9` ceiling has no `\N` spelling, and a
-		// reference to a name several groups share is a SELECTION among
-		// indices rather than one index — neither fits a
-		// `replaceRegexpOne` substitution string, and both are expressible
-		// over the `extractGroups` decomposition.
 		if seg.Group > maxCHBackref || len(seg.Fallbacks) > 0 {
-			return CHReplacement{Segments: segments}, nil
+			return CHReplacement{Segments: segments}
 		}
 	}
-	return CHReplacement{Template: renderCHTemplate(segments)}, nil
+	return CHReplacement{Template: renderCHTemplate(segments)}
 }
 
 // CHReplacement is the ClickHouse-side form of a Go replacement template.
@@ -124,6 +142,15 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 type CHReplacement struct {
 	// Template is the `replaceRegexpOne` substitution string.
 	Template string
+	// ProbedRegex, when non-empty, is the regex the emitter must feed
+	// `extractGroups` in place of the one the query named: the same
+	// pattern with synthetic capture groups added so that a carrier whose
+	// own capture cannot report whether it took part in the match has one
+	// that can. It matches the same strings as the original — the added
+	// groups only observe — but it NUMBERS groups differently, so every
+	// index in Segments is already in its numbering and the two must be
+	// read together. See [planCaptureProbes].
+	ProbedRegex string
 	// Segments is the literal-run / capture-group decomposition the
 	// emitter renders as a `concat` over `extractGroups`. A segment's
 	// Literal is the DECODED text — `$$` has already collapsed to `$`,
@@ -145,9 +172,35 @@ type CHReplacement struct {
 // References that bind to nothing — an index past the regex's group
 // count, a name no group carries — contribute nothing at all, exactly as
 // Go's `ExpandString` substitutes the empty string for them.
-func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, error) {
-	groups := newCaptureGroups(regex)
+func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, string, error) {
+	// Unrewritten first: everything already expressible stays exactly what
+	// it was, and no reference is renumbered by a rewrite it did not need.
+	// Only the shared-carrier ambiguity can be cleared by one, and any
+	// other failure reproduces identically on the second pass, so the
+	// error a caller sees is always the probed pass's.
+	if segments, err := resolveSegments(repl, newCaptureGroups(regex, withoutCaptureProbes)); err == nil {
+		return segments, "", nil
+	}
+	groups := newCaptureGroups(regex, withCaptureProbes)
+	segments, err := resolveSegments(repl, groups)
+	if err != nil {
+		return nil, "", err
+	}
+	return segments, groups.probe.regex, nil
+}
 
+// captureProbeUse says whether a resolution may rewrite the regex to
+// expose capture participation. The two passes are separate because a
+// rewrite renumbers every group, so it must not happen where it buys
+// nothing.
+type captureProbeUse bool
+
+const (
+	withoutCaptureProbes captureProbeUse = false
+	withCaptureProbes    captureProbeUse = true
+)
+
+func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSegment, error) {
 	var segments []chplan.LabelReplaceSegment
 	var literal strings.Builder
 	flush := func() {
@@ -178,6 +231,7 @@ func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, erro
 			segments = append(segments, chplan.LabelReplaceSegment{
 				Group:     ref.group,
 				Fallbacks: ref.fallbacks,
+				Probes:    ref.probes,
 			})
 		}
 		i += step
@@ -233,6 +287,11 @@ type captureGroups struct {
 	// unparseable or unclassifiable regex keeps the rejection rather than
 	// risking a wrong answer.
 	shapes map[int]captureShape
+	// probe is the regex rewritten to expose the participation of
+	// carriers whose own capture cannot report it, together with the
+	// index translation that rewrite forces. Its `regex` is empty when no
+	// carrier needed a probe, which leaves every index below untouched.
+	probe captureProbePlan
 }
 
 // newCaptureGroups compiles regex for its capture-group metadata.
@@ -242,7 +301,7 @@ type captureGroups struct {
 // is allowed through and CH's own parse stage surfaces the regex error
 // to the client — the same fallback the pre-name-resolution version of
 // this file used.
-func newCaptureGroups(regex string) captureGroups {
+func newCaptureGroups(regex string, probes captureProbeUse) captureGroups {
 	// Anchored to mirror the SQL emitter and reference Prometheus
 	// (promql/functions.go: `"^(?s:" + regexStr + ")$"`), including the
 	// non-capturing `(?s:...)` wrapper: without it, `^...$` binds only to
@@ -267,7 +326,81 @@ func newCaptureGroups(regex string) captureGroups {
 		}
 		g.byName[name] = append(g.byName[name], i)
 	}
+	if probes == withCaptureProbes {
+		// A failed plan — including the empty request a pattern with no
+		// shared name makes — leaves the zero value, which reads as "no
+		// probes" everywhere below and keeps the rejection those carriers
+		// had.
+		g.probe, _ = planCaptureProbes(regex, g.carriersNeedingProbes())
+	}
 	return g
+}
+
+// carriersNeedingProbes lists every capture group that shares its name,
+// survives the truncation, and can neither be cleared by non-nullability
+// nor by exclusivity — the carriers for which the emitted search would
+// otherwise have to guess. The list is the input to the regex rewrite;
+// planning is separate from deciding, because one rewrite serves every
+// shared name in the pattern at once.
+//
+// The walk over names is ordered as well as the result. The accumulated
+// set already made the output order-independent, so this is defence
+// rather than a fix: it keeps the traversal itself reproducible, which is
+// what a reader stepping through a rewrite needs.
+func (g captureGroups) carriersNeedingProbes() []int {
+	names := make([]string, 0, len(g.byName))
+	for name := range g.byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	seen := map[int]bool{}
+	for _, name := range names {
+		carriers := g.byName[name]
+		if len(carriers) < 2 {
+			continue
+		}
+		for _, idx := range g.unclearedCarriers(carriers) {
+			seen[idx] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for idx := range seen {
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// unclearedCarriers reports which of one name's carriers the static facts
+// alone cannot clear, over the same truncated prefix
+// [captureGroups.expressibleCarriers] searches.
+func (g captureGroups) unclearedCarriers(carriers []int) []int {
+	searched := carriers[:g.searchableEnd(carriers):g.searchableEnd(carriers)]
+	var out []int
+	for i, idx := range searched {
+		shape, known := g.shapes[idx]
+		if !known {
+			continue
+		}
+		if !shape.nullable || g.exclusiveOfAll(shape, searched[i+1:]) {
+			continue
+		}
+		out = append(out, idx)
+	}
+	return out
+}
+
+// searchableEnd is how many of carriers the search may look through:
+// everything up to and including the first one every match must pass
+// through, since Go's own scan can never walk past that one either.
+func (g captureGroups) searchableEnd(carriers []int) int {
+	for i, idx := range carriers {
+		if g.shapes[idx].unconditional {
+			return i + 1
+		}
+	}
+	return len(carriers)
 }
 
 // anchorRegex anchors a `label_replace` regex to a full-string match, the
@@ -370,6 +503,13 @@ type resolvedRef struct {
 	// [captureGroups.expressibleCarriers] for why that reproduces Go's
 	// choice exactly.
 	fallbacks []int
+	// probes holds, for each searched carrier — `group` followed by
+	// `fallbacks`, so one element apiece and in that order — the capture
+	// group whose NON-EMPTINESS reports that carrier took part in the
+	// match. It is empty when no carrier needed one, in which case every
+	// carrier's own capture reports its participation and the search is
+	// the plain non-empty one. See [planCaptureProbes].
+	probes []int
 }
 
 // resolve maps one extracted reference to the capture group(s) it points
@@ -427,10 +567,10 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 		// A numbered reference past the regex's group count binds to
 		// nothing, which is the empty string — not an error.
 		if ref.num <= g.count {
-			out.group = ref.num
+			out.group = g.probe.probedIndex(ref.num)
 		}
 	case len(carriers) > 1:
-		searched, ambiguous, ok := g.expressibleCarriers(carriers)
+		searched, probes, ambiguous, ok := g.expressibleCarriers(carriers)
 		if !ok {
 			return resolvedRef{}, fmt.Errorf(
 				"references capture-group name %q, which %d capture groups share, "+
@@ -443,9 +583,9 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 				ref.name, len(carriers), ambiguous,
 			)
 		}
-		out.group, out.fallbacks = searched[0], searched[1:]
+		out.group, out.fallbacks, out.probes = searched[0], searched[1:], probes
 	case len(carriers) == 1:
-		out.group = carriers[0]
+		out.group = g.probe.probedIndex(carriers[0])
 	}
 	return out, nil
 }
@@ -478,26 +618,42 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 // A carrier the parse-tree walk could not classify has no shape recorded,
 // which reads as nullable and exclusive of nothing, so an unrecognised
 // regex keeps the rejection.
-func (g captureGroups) expressibleCarriers(carriers []int) ([]int, int, bool) {
-	end := len(carriers)
-	for i, idx := range carriers {
-		if g.shapes[idx].unconditional {
-			end = i + 1
-			break
-		}
-	}
+func (g captureGroups) expressibleCarriers(carriers []int) ([]int, []int, int, bool) {
+	end := g.searchableEnd(carriers)
 	searched := carriers[:end:end]
+
+	probes := make([]int, len(searched))
+	anyProbe := false
 	for i, idx := range searched {
 		shape, known := g.shapes[idx]
-		if known && !shape.nullable {
+		if !known {
+			return nil, nil, idx, false
+		}
+		// By default a carrier reports its own participation, which is
+		// what makes the emitted search the plain non-empty one.
+		probes[i] = g.probe.probedIndex(idx)
+		if !shape.nullable || g.exclusiveOfAll(shape, searched[i+1:]) {
 			continue
 		}
-		if known && g.exclusiveOfAll(shape, searched[i+1:]) {
-			continue
+		at, probed := g.probe.probeOf[idx]
+		if !probed {
+			return nil, nil, idx, false
 		}
-		return nil, idx, false
+		probes[i] = at
+		anyProbe = true
 	}
-	return searched, 0, true
+	if !anyProbe {
+		probes = nil
+	}
+
+	// Every index leaves in the rewritten regex's numbering, which is the
+	// one the emitter's `extractGroups` reads. Without a rewrite the
+	// translation is the identity.
+	out := make([]int, len(searched))
+	for i, idx := range searched {
+		out[i] = g.probe.probedIndex(idx)
+	}
+	return out, probes, 0, true
 }
 
 // exclusiveOfAll reports whether shape's group can never take part in the

@@ -289,16 +289,19 @@ func TestSharedCaptureNameSegmentsAgreeWithExpandString(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReplacementToCH(%q, %q): unexpected error: %v", tc.repl, tc.regex, err)
 			}
-			re := regexp.MustCompile("^" + tc.regex + "$")
+			// The oracle must anchor the way reference Prometheus and the
+			// emitter do. A bare `^…$` binds only to the outer arms of a
+			// top-level alternation, which makes a different set of
+			// carriers take part than the query would really see.
+			re := regexp.MustCompile(anchorRegex(tc.regex))
 			for _, src := range tc.srcs {
 				match := re.FindStringSubmatchIndex(src)
 				if match == nil {
 					t.Fatalf("regex %q does not match %q — the oracle needs a match", tc.regex, src)
 				}
 				want := string(re.ExpandString(nil, tc.repl, src, match))
-				groups := re.FindStringSubmatch(src)
 
-				evaluated := evaluateReplacement(got, src, groups)
+				evaluated := evaluateReplacement(got, tc.regex, src)
 				if evaluated != want {
 					t.Fatalf("regex %q repl %q src %q: %+v evaluates to %q; "+
 						"Go's ExpandString gives %q",
@@ -314,11 +317,24 @@ func TestSharedCaptureNameSegmentsAgreeWithExpandString(t *testing.T) {
 // the `extractGroups` decomposition collapses to a `replaceRegexpOne`
 // substitution string (or the other way round). Exactly one of the two
 // fields is ever populated — see [CHReplacement].
-func evaluateReplacement(repl CHReplacement, src string, groups []string) string {
-	if repl.Template == "" {
-		return evaluateSegments(repl.Segments, src, groups)
+func evaluateReplacement(repl CHReplacement, regex, src string) string {
+	if repl.Template != "" {
+		return evaluateCHTemplate(repl.Template, regexGroups(regex, src))
 	}
-	return evaluateCHTemplate(repl.Template, groups)
+	// A decomposition whose indices were renumbered by a probe rewrite is
+	// only meaningful against the rewritten pattern's own capture groups,
+	// so the evaluator reads the same regex the emitter would.
+	extract := regex
+	if repl.ProbedRegex != "" {
+		extract = repl.ProbedRegex
+	}
+	return evaluateSegments(repl.Segments, src, regexGroups(extract, src))
+}
+
+// regexGroups returns the capture-group texts an anchored match of regex
+// against src yields, which is what `extractGroups` returns in SQL.
+func regexGroups(regex, src string) []string {
+	return regexp.MustCompile(anchorRegex(regex)).FindStringSubmatch(src)
 }
 
 // evaluateCHTemplate renders a `replaceRegexpOne` substitution string the
@@ -367,10 +383,16 @@ func evaluateSegments(segments []chplan.LabelReplaceSegment, src string, groups 
 			out += groups[seg.Group]
 			continue
 		}
-		// arrayFirst(x -> x != '', [...]) — and the empty string when no
+		// arrayFirst over the carriers, testing each one's WITNESS — its
+		// own capture, or the probe group standing in for it — and
+		// answering with the carrier beside it. The empty string when no
 		// candidate qualifies, which adds nothing.
-		for _, idx := range append([]int{seg.Group}, seg.Fallbacks...) {
-			if groups[idx] != "" {
+		for i, idx := range append([]int{seg.Group}, seg.Fallbacks...) {
+			witness := idx
+			if i < len(seg.Probes) {
+				witness = seg.Probes[i]
+			}
+			if groups[witness] != "" {
 				out += groups[idx]
 				break
 			}

@@ -1108,21 +1108,52 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 			srcErr = err
 		}
 	})
+	extract := labelReplaceExtractRegex(l, anchored)
 	if len(seg.Fallbacks) == 0 {
-		captureGroupAt(src, anchored, seg.Group)(b)
+		captureGroupAt(src, extract, seg.Group)(b)
 		return srcErr
 	}
 	candidates := make([]Frag, 0, 1+len(seg.Fallbacks))
-	candidates = append(candidates, captureGroupAt(src, anchored, seg.Group))
+	candidates = append(candidates, captureGroupAt(src, extract, seg.Group))
 	for _, idx := range seg.Fallbacks {
-		candidates = append(candidates, captureGroupAt(src, anchored, idx))
+		candidates = append(candidates, captureGroupAt(src, extract, idx))
+	}
+	if len(seg.Probes) == 0 {
+		Call(
+			"arrayFirst",
+			Lambda1(labelReplaceCandidateParam, Neq(BareIdent(labelReplaceCandidateParam), Lit(""))),
+			Array(candidates...),
+		)(b)
+		return srcErr
+	}
+	// A probed carrier is one whose own capture cannot say whether it took
+	// part in the match, so the test and the answer read different groups.
+	// `arrayFirst` over TWO arrays is exactly that shape: the predicate
+	// runs over the participation array, and the element returned is the
+	// one at the same position of the value array.
+	witnesses := make([]Frag, 0, len(seg.Probes))
+	for _, idx := range seg.Probes {
+		witnesses = append(witnesses, captureGroupAt(src, extract, idx))
 	}
 	Call(
 		"arrayFirst",
-		Lambda1(labelReplaceCandidateParam, Neq(BareIdent(labelReplaceCandidateParam), Lit(""))),
+		Lambda2(labelReplaceCandidateParam, labelReplaceWitnessParam,
+			Neq(BareIdent(labelReplaceWitnessParam), Lit(""))),
 		Array(candidates...),
+		Array(witnesses...),
 	)(b)
 	return srcErr
+}
+
+// labelReplaceExtractRegex is the pattern the `extractGroups` calls read.
+// It is the plan's probed rewrite when it has one — whose synthetic
+// groups the segment indices are numbered against — and the plain
+// anchored regex otherwise.
+func labelReplaceExtractRegex(l *chplan.LabelReplace, anchored string) string {
+	if l.ProbedRegex == "" {
+		return anchored
+	}
+	return anchorLabelReplaceRegex(l.ProbedRegex)
 }
 
 // labelReplaceCandidateParam is the lambda parameter naming one
@@ -1130,6 +1161,13 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 // labelReplaceSegment emits. It is emitter-chosen and never collides with
 // a column: CH resolves a lambda parameter ahead of any outer name.
 const labelReplaceCandidateParam = "x"
+
+// labelReplaceWitnessParam is the second lambda parameter of the
+// two-array `arrayFirst` search, naming the capture whose non-emptiness
+// reports that the candidate beside it took part in the match. Like
+// labelReplaceCandidateParam it is emitter-chosen, and CH resolves a
+// lambda parameter ahead of any outer name.
+const labelReplaceWitnessParam = "p"
 
 // captureGroupAt returns a Frag for one capture group's value:
 // `extractGroups(<src>, <anchored>)[<group>]`.

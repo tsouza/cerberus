@@ -23,11 +23,15 @@ func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	// captures text: Go's ExpandString stops at the first participant and
 	// expands to its empty capture, and `extractGroups` renders "took part
 	// matching empty" exactly like "took no part", so SQL cannot observe
-	// which. On `host="xb"` reference Loki answers `service=""` where a
-	// first-non-empty search would answer `service="b"`. Issue #1956
-	// tracks the residue.
+	// which. On `host="b"` reference Loki answers `service=""` where the
+	// emitted search would answer `service="b"`.
+	//
+	// The carrier here is alone in a nullable alternation branch, so
+	// nothing above it is guaranteed to be consumed and no probe can stand
+	// in for its participation — the case a probe rewrite cannot reach.
+	// Issue #1956 tracks that residue.
 	const q = `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
-		`"service", "$dup", "host", "(?:x(?P<dup>a?))?(?P<dup>b)")`
+		`"service", "$dup", "host", "(?:(?P<dup>a?)|y)(?P<dup>b)")`
 
 	expr, err := syntax.ParseExpr(q)
 	if err != nil {
@@ -63,6 +67,9 @@ func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
 		// A nullable carrier every match must pass through: Go always
 		// stops at it, so the search truncates there.
 		{"nullable_carrier_on_the_mandatory_spine", `(?P<dup>a?)(?P<dup>b)`},
+		// A nullable carrier a match can skip, cleared by rewriting the
+		// regex to probe the mandatory text in the quest's body.
+		{"nullable_skippable_carrier_with_a_probeable_ancestor", `(?:x(?P<dup>a?))?(?P<dup>b)`},
 	}
 
 	for _, tc := range cases {
