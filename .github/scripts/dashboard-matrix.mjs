@@ -12,28 +12,11 @@
 // against the single k3d Grafana, followed — on schedule/dispatch only — by the
 // k3d crawl trio (crawl/crawl.spec.ts + dsquery + lints) at SWEEP_DEPTH=full.
 //
-// The dominant cost is crawl/crawl.spec.ts: a SINGLE async BFS `test()` that
-// walks every reachable Grafana surface — the ~50min long pole at
-// SWEEP_DEPTH=full. It is indivisible by Playwright's native `--shard` (which
-// splits at `test()` granularity, so a one-test spec stays whole) AND by
-// spec-file sharding (it is one file, one test). The only parallelism this PR
-// buys is LOGICAL and COARSE: split the non-crawl smoke specs across N k3d
-// clusters running concurrently, and put the crawl trio on its OWN dedicated
-// k3d cluster so the ~50min crawl runs CONCURRENTLY with the smoke shards
-// instead of serially after them. Wall-clock drops from
-// (smoke serial + crawl) toward max(crawl ~50min, slowest smoke shard).
-//
-// What this manifest does NOT do (the follow-up): it does not split the crawl
-// BFS frontier itself. Beating the ~50min floor needs the crawl engine to
-// PARTITION its discovered frontier across shards (a CRAWL_SHARD_INDEX /
-// CRAWL_SHARD_COUNT contract that deterministically assigns each discovered
-// surface to a shard, with each shard emitting its visited slice and a final
-// job merging + asserting the union against the pinned inventory). That is a
-// deep change to the 1383-line BFS + the inventory ratchet (lib.ts diffInventory
-// asserts the WHOLE visited set) — tracked as tsouza/cerberus#2005, unblocked
-// now that the k3d inventory is bootstrapped (grafana-surface-inventory.k3d.json,
-// tsouza/cerberus#1539) but not yet designed or built. This manifest is the
-// safe, coarse win that lands first.
+// The crawl remains one Playwright test, so native --shard cannot split it.
+// Its CRAWL_SHARD_INDEX / CRAWL_SHARD_COUNT contract instead fans the expensive
+// oracle and interaction work over isolated clusters. Every shard retains link
+// discovery, writes its owned visited slice, and dashboard-crawl-merge applies
+// the inventory ratchet once over their union.
 //
 // k3d cost/flake trade-off: a k3d cluster is heavy (~3-5min bring-up) and flaky
 // (telemetrygen / otel-collector-gateway readiness BackOff). A matrix of N
@@ -92,6 +75,7 @@ const CRAWL_STACK_NONE = '';
 // lane exists to do the exhaustive sweep). Named because the crawl shard's job
 // timeout is derived from the spec budget AT THIS DEPTH.
 const CRAWL_SHARD_SWEEP_DEPTH = 'full';
+export const CRAWL_FRONTIER_SHARD_COUNT = 3;
 
 // Chart deployment topologies the smoke lane exercises (E2E_MODE in `just
 // e2e-up`). The SAME Grafana/Playwright smoke runs against both: `monolith`
@@ -310,7 +294,7 @@ function verify() {
 //
 // Each entry's `name` encodes the mode (e.g. shard-smoke-a-monolith) so the
 // matrix keys, concurrency group, and artifact names stay unique.
-export function buildMatrix(includeCrawl, includeSplit) {
+export function buildMatrix(includeCrawl, includeSplit, regeneratesK3DInventory = false) {
   const include = [];
   // Split mode doubles the k3d boot count (the setup-bound long pole) for one
   // unique spec (split_isolation), so per-PR it's cost + flake with little
@@ -321,14 +305,19 @@ export function buildMatrix(includeCrawl, includeSplit) {
     if (s.crawlStack === CRAWL_STACK_K3D) {
       // Crawl: monolith-only, dispatched only when crawl is included.
       if (!includeCrawl) continue;
-      include.push({
-        name: `${s.name}-${MODE_MONOLITH}`,
-        mode: MODE_MONOLITH,
-        specs: s.specs.join(' '),
-        crawlStack: s.crawlStack,
-        runGoE2E: s.runGoE2E,
-        timeoutMinutes: shardTimeoutMinutes(s),
-      });
+      const crawlShardCount = regeneratesK3DInventory ? 1 : CRAWL_FRONTIER_SHARD_COUNT;
+      for (let crawlShardIndex = 0; crawlShardIndex < crawlShardCount; crawlShardIndex++) {
+        include.push({
+          name: `${s.name}-${crawlShardIndex}-${MODE_MONOLITH}`,
+          mode: MODE_MONOLITH,
+          specs: s.specs.join(' '),
+          crawlStack: s.crawlStack,
+          crawlShardIndex,
+          crawlShardCount,
+          runGoE2E: s.runGoE2E,
+          timeoutMinutes: shardTimeoutMinutes(s),
+        });
+      }
       continue;
     }
     // Smoke shard: one entry per enabled mode.
@@ -362,7 +351,9 @@ function emit() {
   // dispatched on those events.
   const includeCrawl = process.env.INCLUDE_CRAWL === 'true';
   const includeSplit = process.env.INCLUDE_SPLIT === 'true';
-  const include = buildMatrix(includeCrawl, includeSplit);
+  const regeneratesK3DInventory =
+    process.env.UPDATE_CRAWL_INVENTORY === 'k3d' || process.env.UPDATE_CRAWL_INVENTORY === 'both';
+  const include = buildMatrix(includeCrawl, includeSplit, regeneratesK3DInventory);
   setOutput('matrix', JSON.stringify({ include }));
   setOutput('shard_names', JSON.stringify(include.map((e) => e.name)));
   appendStepSummary(

@@ -706,6 +706,9 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           SWEEP_DEPTH: ${{ matrix.sweepDepth }}
           CRAWL_STACK: compose
+          CRAWL_SHARD_INDEX: ${{ matrix.crawlShardIndex }}
+          CRAWL_SHARD_COUNT: ${{ matrix.crawlShardCount }}
+          CRAWL_SLICE_PATH: crawl-slice.json
           # Regen path for grafana-surface-inventory.compose.json — the
           # compose-stack equivalent of the k3d dashboard-shard's
           # CERBERUS_UPDATE_INVENTORY (tsouza/cerberus#1826). Only this shard
@@ -718,6 +721,15 @@ jobs:
               '1' || ''
             }}
         run: npx playwright test ${{ matrix.specs }} --reporter=list,html
+
+      - name: Upload compose crawl slice
+        if: always() && matrix.crawlShardCount > 1
+        uses: actions/upload-artifact@v7
+        with:
+          name: crawl-slice-compose-${{ matrix.crawlShardIndex }}
+          path: test/e2e/playwright/crawl-slice.json
+          if-no-files-found: error
+          retention-days: 7
 
       # Bootstrap/regen path for
       # test/e2e/playwright/crawl/grafana-surface-inventory.compose.json —
@@ -778,6 +790,27 @@ jobs:
       - name: teardown
         if: always()
         run: docker compose down -v --remove-orphans
+
+  compose-crawl-merge:
+    name: compose-crawl-merge
+    needs: [compose-smoke-setup, compose-smoke-shard-info]
+    if: >-
+      needs.compose-smoke-setup.outputs.has_informational == 'true' &&
+      (github.event_name != 'workflow_dispatch' ||
+      (inputs.update_crawl_inventory != 'compose' && inputs.update_crawl_inventory != 'both'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: crawl-slice-compose-*
+          path: crawl-slices
+          merge-multiple: true
+      - name: Merge compose crawl slices and assert inventory
+        env:
+          CRAWL_SLICE_DIR: crawl-slices
+          CRAWL_STACK: compose
+        run: node .github/scripts/merge-crawl-slices.mjs
 
   # The AGGREGATOR — named EXACTLY `compose-smoke` because that is the name
   # release.yml's preflight looks for in RELEASE_REQUIRED_CHECKS. The matrix
@@ -897,13 +930,9 @@ jobs:
   # runs serially after the smoke set. Wall-clock drops from
   # (smoke serial + crawl) toward max(crawl ~50min, slowest smoke shard).
   #
-  # Beating the 50min floor itself needs the crawl ENGINE to partition its
-  # discovered BFS frontier across shards (a CRAWL_SHARD_INDEX/COUNT contract +
-  # a final union-merge-and-assert against the pinned inventory). That is a deep
-  # change to the 1383-line BFS + the inventory ratchet — tracked as
-  # tsouza/cerberus#2005, unblocked now that the k3d inventory is bootstrapped
-  # (tsouza/cerberus#1539) but not yet designed or built. This sharding is the
-  # safe coarse win that lands first.
+   # The crawl engine partitions its owned audit frontier with
+   # CRAWL_SHARD_INDEX/COUNT. Each shard uploads a slice and dashboard-crawl-merge
+   # asserts their union against the pinned inventory.
   #
   # k3d cost: a cluster is heavy (~3-5min bring-up), and a matrix of N clusters
   # multiplies that cost, so the shard count is kept at 3 — two smoke shards +
@@ -982,6 +1011,7 @@ jobs:
           # shipped in v1.4.0 precisely because the release commit's checks
           # never ran split; this closes that hole.)
           INCLUDE_SPLIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
+          UPDATE_CRAWL_INVENTORY: ${{ inputs.update_crawl_inventory }}
 
   dashboard-shard:
     name: dashboard-shard
@@ -1019,7 +1049,7 @@ jobs:
       # job. On push-to-main the crawl shard is a near-instant green no-op: every
       # expensive step below is gated on RUN_SHARD, which is false for the crawl
       # shard on a push event. The smoke shards always run.
-      RUN_SHARD: ${{ matrix.crawlStack != 'k3d' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      RUN_SHARD: ${{ matrix.crawlStack != 'k3d' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -1216,6 +1246,9 @@ jobs:
           CERBERUS_URL: http://localhost:8080
           CRAWL_STACK: ${{ matrix.crawlStack }}
           SWEEP_DEPTH: full
+          CRAWL_SHARD_INDEX: ${{ matrix.crawlShardIndex }}
+          CRAWL_SHARD_COUNT: ${{ matrix.crawlShardCount }}
+          CRAWL_SLICE_PATH: crawl-slice.json
           CERBERUS_UPDATE_INVENTORY: >-
             ${{
               github.event_name == 'workflow_dispatch' &&
@@ -1223,6 +1256,15 @@ jobs:
               '1' || ''
             }}
         run: npx playwright test ${{ matrix.specs }} --reporter=list,html
+
+      - name: Upload k3d crawl slice
+        if: always() && matrix.crawlStack == 'k3d' && matrix.crawlShardCount > 1
+        uses: actions/upload-artifact@v7
+        with:
+          name: crawl-slice-k3d-${{ matrix.crawlShardIndex }}
+          path: test/e2e/playwright/crawl-slice.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload regenerated k3d crawl inventory
         if: >-
@@ -1375,6 +1417,29 @@ jobs:
         if: always() && env.RUN_SHARD == 'true'
         run: just e2e-down
 
+  dashboard-crawl-merge:
+    name: dashboard-crawl-merge
+    needs: [dashboard-setup, dashboard-shard]
+    if: >-
+      always() && needs.dashboard-shard.result == 'success' &&
+      (github.event_name == 'schedule' || startsWith(github.head_ref, 'release/') ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.update_crawl_inventory != 'k3d' && inputs.update_crawl_inventory != 'both'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: crawl-slice-k3d-*
+          path: crawl-slices
+          merge-multiple: true
+      - name: Merge k3d crawl slices and assert inventory
+        env:
+          CRAWL_SLICE_DIR: crawl-slices
+          CRAWL_STACK: k3d
+          SWEEP_DEPTH: full
+        run: node .github/scripts/merge-crawl-slices.mjs
+
   # The AGGREGATOR — a single clean pass/fail over every dashboard shard. The
   # lane runs on a `release/*` PR (a smoke-only matrix; see dashboard-setup),
   # and `dashboard` is named in release.yml's RELEASE_REQUIRED_CHECKS, exactly
@@ -1388,7 +1453,7 @@ jobs:
   # where dashboard-setup does not run).
   dashboard:
     name: dashboard
-    needs: [dashboard-setup, dashboard-shard]
+    needs: [dashboard-setup, dashboard-shard, dashboard-crawl-merge]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1396,7 +1461,8 @@ jobs:
       - name: gate on every shard
         run: |
           echo "setup  = ${{ needs.dashboard-setup.result }}"
-          echo "shards = ${{ needs.dashboard-shard.result }}"
+           echo "shards = ${{ needs.dashboard-shard.result }}"
+           echo "crawl merge = ${{ needs.dashboard-crawl-merge.result }}"
           # If setup was skipped (docs-only PR, or a non-PR/push/schedule/
           # dispatch path), there is nothing to aggregate — report green
           # without work. On a code PR setup runs, so this branch does not fire
@@ -1415,11 +1481,21 @@ jobs:
             echo "::error::dashboard-setup did not succeed (${{ needs.dashboard-setup.result }})."
             exit 1
           fi
-          if [ "${{ needs.dashboard-shard.result }}" != "success" ]; then
+           if [ "${{ needs.dashboard-shard.result }}" != "success" ]; then
             echo "::error::one or more dashboard shards failed/cancelled (rolled-up: ${{ needs.dashboard-shard.result }})."
-            exit 1
-          fi
-          echo "all dashboard shards passed."
+             exit 1
+           fi
+           if [ "${{ github.event_name }}" = "schedule" ] || \
+              [ "${{ github.event_name }}" = "pull_request" ] || \
+              { [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+                [ "${{ inputs.update_crawl_inventory }}" != "k3d" ] && \
+                [ "${{ inputs.update_crawl_inventory }}" != "both" ]; }; then
+             if [ "${{ needs.dashboard-crawl-merge.result }}" != "success" ]; then
+               echo "::error::dashboard crawl slice merge did not succeed (${{ needs.dashboard-crawl-merge.result }})."
+               exit 1
+             fi
+           fi
+           echo "all dashboard shards passed."
 
   startup-bench:
     # Startup-speed benchmark: spawn cerberus and assert <2 s to /healthz.

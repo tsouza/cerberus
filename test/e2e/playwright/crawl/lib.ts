@@ -858,6 +858,70 @@ export function byCodepoint(a: string, b: string): number {
   return a > b ? 1 : 0;
 }
 
+/** A zero-based, total partition of a crawl's base surface keys. */
+export type CrawlShard = {
+  index: number;
+  count: number;
+};
+
+const UNSHARDED_CRAWL: CrawlShard = { index: 0, count: 1 };
+
+/**
+ * Read the crawl's optional matrix contract. Both variables are required when
+ * either is set: accepting one silently turns a typo into an incomplete crawl.
+ */
+export function crawlShard(env = process.env): CrawlShard {
+  const index = env.CRAWL_SHARD_INDEX;
+  const count = env.CRAWL_SHARD_COUNT;
+  if (index === undefined && count === undefined) return UNSHARDED_CRAWL;
+  if (index === undefined || count === undefined) {
+    throw new Error(
+      'crawl sharding requires both CRAWL_SHARD_INDEX and CRAWL_SHARD_COUNT',
+    );
+  }
+  if (!/^\d+$/.test(index) || !/^[1-9]\d*$/.test(count)) {
+    throw new Error(
+      `crawl sharding requires a non-negative integer index and positive integer count; got index=${JSON.stringify(index)} count=${JSON.stringify(count)}`,
+    );
+  }
+  const shard = { index: Number(index), count: Number(count) };
+  if (
+    !Number.isSafeInteger(shard.index) ||
+    !Number.isSafeInteger(shard.count) ||
+    shard.index < 0 ||
+    shard.count < 1
+  ) {
+    throw new Error(
+      `crawl sharding requires safe integers with a non-negative index and positive count; got index=${JSON.stringify(index)} count=${JSON.stringify(count)}`,
+    );
+  }
+  if (shard.index >= shard.count) {
+    throw new Error(
+      `crawl sharding index ${shard.index} is outside [0, ${shard.count})`,
+    );
+  }
+  return shard;
+}
+
+/**
+ * Interaction URLs change a page's query state, not its route. Hashing only
+ * the canonical path keeps every URL-encoded interaction with the source page
+ * that discovered it, so the same shard both drives the control and audits its
+ * navigable result. In-place states are covered by the same rule.
+ */
+export function crawlShardOwner(canonical: string, count: number): number {
+  const base = canonical.split('#', 1)[0]?.split('?', 1)[0] ?? canonical;
+  let hash = 0;
+  for (let i = 0; i < base.length; i++) {
+    hash = (hash * 31 + base.charCodeAt(i)) >>> 0;
+  }
+  return hash % count;
+}
+
+export function belongsToCrawlShard(canonical: string, shard: CrawlShard): boolean {
+  return crawlShardOwner(canonical, shard.count) === shard.index;
+}
+
 /**
  * Fold a batch of {canonical, concrete} candidates down to ONE
  * concrete representative per canonical — a PURE function of the

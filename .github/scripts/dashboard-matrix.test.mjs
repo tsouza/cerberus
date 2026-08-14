@@ -25,6 +25,7 @@ import {
   MODE_SPLIT,
   SPLIT_ONLY_SPECS,
   CRAWL_STACK_K3D,
+  CRAWL_FRONTIER_SHARD_COUNT,
 } from './dashboard-matrix.mjs';
 
 test('live tree: SHARDS ∪ EXCLUDED is a total, disjoint cover (no violations)', () => {
@@ -159,8 +160,20 @@ test('buildMatrix: the crawl shard runs once, monolith-only, and only when crawl
   );
   const withCrawl = buildMatrix(true);
   const crawlEntries = withCrawl.filter((e) => e.crawlStack === CRAWL_STACK_K3D);
-  assert.equal(crawlEntries.length, 1, 'crawl must be dispatched exactly once when included');
-  assert.equal(crawlEntries[0].mode, MODE_MONOLITH, 'the crawl shard is monolith-only');
+  assert.equal(crawlEntries.length, CRAWL_FRONTIER_SHARD_COUNT, 'crawl must dispatch every frontier shard');
+  assert.deepEqual(crawlEntries.map((entry) => entry.crawlShardIndex).sort(), [...Array(CRAWL_FRONTIER_SHARD_COUNT).keys()]);
+  assert.ok(crawlEntries.every((entry) => entry.mode === MODE_MONOLITH), 'crawl shards are monolith-only');
+});
+
+test('buildMatrix: inventory regeneration emits one unsharded crawl writer', () => {
+  const crawlEntries = buildMatrix(true, true, true).filter(
+    (entry) => entry.crawlStack === CRAWL_STACK_K3D,
+  );
+  assert.deepEqual(
+    crawlEntries.map((entry) => [entry.crawlShardIndex, entry.crawlShardCount]),
+    [[0, 1]],
+    'a regeneration must have one writer rather than slice artifacts to merge',
+  );
 });
 
 test('buildMatrix: every emitted entry has a non-empty spec list and a filename-safe name', () => {

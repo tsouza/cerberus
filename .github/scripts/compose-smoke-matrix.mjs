@@ -89,6 +89,7 @@ const NONCRAWL_SHARD_TIMEOUT_LEAN_MIN = 45;
 // decide which shard outcomes gate it. Emitted from a single source of truth so
 // the de-gate can't drift from the partition.
 const GATE_EXCLUDED_SHARDS = ['shard-crawl'];
+export const CRAWL_FRONTIER_SHARD_COUNT = 3;
 
 // ---------------------------------------------------------------------------
 // The wall-clock-balanced partition of the compose-smoke spec set.
@@ -260,6 +261,14 @@ const shardEntry = (s, opts) => ({
   timeoutMinutes: shardTimeoutMinutes(s.name, opts),
 });
 
+export const crawlShardEntries = (s, opts) =>
+  Array.from({ length: opts.regeneratesComposeInventory ? 1 : CRAWL_FRONTIER_SHARD_COUNT }, (_, crawlShardIndex) => ({
+    ...shardEntry(s, opts),
+    name: `${s.name}-${crawlShardIndex}`,
+    crawlShardIndex,
+    crawlShardCount: opts.regeneratesComposeInventory ? 1 : CRAWL_FRONTIER_SHARD_COUNT,
+  }));
+
 const isGateExcluded = (name) => GATE_EXCLUDED_SHARDS.includes(name);
 
 function emit() {
@@ -289,7 +298,7 @@ function emit() {
   const informational = SHARDS.filter((s) => isGateExcluded(s.name));
 
   setOutput('matrix', JSON.stringify({ include: required.map((s) => shardEntry(s, depthOpts)) }));
-  setOutput('matrix_informational', JSON.stringify({ include: informational.map((s) => shardEntry(s, depthOpts)) }));
+  setOutput('matrix_informational', JSON.stringify({ include: informational.flatMap((s) => crawlShardEntries(s, depthOpts)) }));
   setOutput('has_informational', informational.length > 0 ? 'true' : 'false');
   setOutput('shard_names', JSON.stringify(SHARDS.map((s) => s.name)));
   setOutput('gate_excluded', JSON.stringify(GATE_EXCLUDED_SHARDS));
