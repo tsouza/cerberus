@@ -1,10 +1,15 @@
 package solver
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // unionArmRange is the [range] both arms of the mixed-union fixture carry. With
@@ -163,6 +168,57 @@ func TestPlan_NativeUnionShardsMoveBothArms(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestPlan_ProductionTemporalitySplitReanchorsBothArms proves the lowering
+// introduced for #2114 reaches the Route-B shape exercised above. The synthetic
+// fixture pins solver mechanics; this one prevents a future eligibility change
+// from leaving that machinery disconnected from production lowering.
+func TestPlan_ProductionTemporalitySplitReanchorsBothArms(t *testing.T) {
+	t.Parallel()
+
+	plan := productionTemporalitySplitPlan(t)
+	d, routed := (&Planner{Cfg: autoCfg()}).Plan(plan, oomMeta())
+	if !routed {
+		t.Fatalf("production temporality split must route; got reason=%q", d.Reason)
+	}
+	for _, shard := range d.Slices {
+		var nativeCount, fanoutCount int
+		chplan.Walk(shard.Plan, func(n chplan.Node) bool {
+			switch arm := n.(type) {
+			case *chplan.RangeWindowNative:
+				nativeCount++
+				if !arm.Start.Equal(shard.Start) || !arm.End.Equal(shard.End) {
+					t.Errorf("shard %d native arm = [%v,%v], want [%v,%v]", shard.Index, arm.Start, arm.End, shard.Start, shard.End)
+				}
+			case *chplan.RangeWindow:
+				fanoutCount++
+				if !arm.Start.Equal(shard.Start) || !arm.End.Equal(shard.End) {
+					t.Errorf("shard %d fan-out arm = [%v,%v], want [%v,%v]", shard.Index, arm.Start, arm.End, shard.Start, shard.End)
+				}
+			}
+			return true
+		})
+		if nativeCount != 1 || fanoutCount != 1 {
+			t.Fatalf("shard %d has native=%d fan-out=%d arms, want one of each", shard.Index, nativeCount, fanoutCount)
+		}
+	}
+}
+
+func productionTemporalitySplitPlan(t *testing.T) chplan.Node {
+	t.Helper()
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr("rate(cerberus_queries_total[5m])")
+	if err != nil {
+		t.Fatalf("parse production rate: %v", err)
+	}
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(), gridStart, gridEnd, gridStep,
+		promql.LowerOpts{Lowerers: promql.RangeLowerers{Rate: promql.NativeRateLowerer{
+			Fallback: promql.FanoutRateLowerer{},
+		}}})
+	if err != nil {
+		t.Fatalf("lower production rate: %v", err)
+	}
+	return plan
 }
 
 // nativeSpinePlan builds `<wrap>(RangeWindowNative)` on the canonical grid —

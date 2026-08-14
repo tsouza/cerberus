@@ -11,6 +11,11 @@ import (
 // helper tables stay untouched.
 const metricsTablePrefix = "otel_metrics_"
 
+const (
+	classicHistogramTable = "otel_metrics_histogram"
+	expHistogramTable     = "otel_metrics_exponential_histogram"
+)
+
 // histogramCountSumTables are the OTel-CH metric tables that store the
 // scalar `Count` / `Sum` companion columns on the same row as the bucket
 // payload — the two tables a `<base>_count` / `<base>_sum` selector
@@ -19,8 +24,8 @@ const metricsTablePrefix = "otel_metrics_"
 // silently grew a `Count` column would mask a real bug where a query
 // projects a companion column off a table that cannot have one.
 var histogramCountSumTables = []string{
-	"otel_metrics_histogram",
-	"otel_metrics_exponential_histogram",
+	classicHistogramTable,
+	expHistogramTable,
 }
 
 // backfilledColumn pairs a column name with the definition the backfill
@@ -375,7 +380,7 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	missing := make([]string, 0, len(backfilledColumns))
 	for _, c := range backfilledColumns {
 		if !declared[c.name] && c.appliesTo(name) {
-			missing = append(missing, c.ddl)
+			missing = append(missing, backfilledColumnDDL(c, name, declared))
 		}
 	}
 	if !hasAttributes || len(missing) == 0 {
@@ -396,6 +401,33 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 	}
 	rewritten = prefix + trimmed[:open+1] + strings.Join(newDefs, ",") + trimmed[closeParen:]
 	return name, names, rewritten, true
+}
+
+// backfilledColumnDDL returns the physical definition to inject for c. An
+// exponential histogram's total Count is the sum of its stored bucket
+// populations, unlike a classic histogram's separate companion sample. A
+// minimal fixture can omit an exponential bucket component; that component is
+// the OTel zero value and must not be referenced by the default expression.
+func backfilledColumnDDL(c backfilledColumn, table string, declared map[string]bool) string {
+	if c.name != "Count" || table != expHistogramTable {
+		return c.ddl
+	}
+
+	terms := make([]string, 0, 3)
+	for _, col := range []string{"ZeroCount", "PositiveBucketCounts", "NegativeBucketCounts"} {
+		if !declared[col] {
+			continue
+		}
+		if strings.HasSuffix(col, "BucketCounts") {
+			terms = append(terms, "arraySum("+col+")")
+			continue
+		}
+		terms = append(terms, col)
+	}
+	if len(terms) == 0 {
+		return c.ddl
+	}
+	return "Count UInt64 DEFAULT " + strings.Join(terms, " + ")
 }
 
 // rewriteBackfilledInsert rewrites a positional `INSERT INTO <table> VALUES`

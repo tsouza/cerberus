@@ -1,8 +1,8 @@
 {
-  "fixture": "promql/native_rate_recollapse_collision_two_level",
+  "fixture": "promql/native_rate_temporality_mixed",
   "fan_factor": 1,
-  "scan_rows": 9,
-  "peak_intermediate": 9,
+  "scan_rows": 18,
+  "peak_intermediate": 18,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,

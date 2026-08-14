@@ -1,5 +1,5 @@
 {
-  "fixture": "promql/native_rate_recollapse_collision_two_level",
+  "fixture": "promql/native_rate_temporality_cumulative",
   "fan_factor": 1,
   "scan_rows": 9,
   "peak_intermediate": 9,
