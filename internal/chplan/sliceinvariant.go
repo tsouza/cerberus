@@ -48,6 +48,23 @@ func IsSliceInvariant(n Node) bool {
 //     bounded sample-fan-out families: each (series, anchor) value is the
 //     reduce of exactly that anchor's `(anchor - Offset - Range, anchor -
 //     Offset]` window membership, independent of the scan lower bound.
+//   - RangeWindowNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
+//     of the SAME window semantics. The aggregate is handed (start, end, step,
+//     window) and evaluates grid point i from exactly the samples inside
+//     `(anchor_i - Offset - Range, anchor_i - Offset]`, so its per-(series,
+//     anchor) value is scan-lower-bound-independent for the identical reason
+//     the fan-out arm's is — the criterion above, not a resemblance argument.
+//     Note what is NOT being claimed: the aggregate's INTERNAL evaluation is
+//     order-dependent (extrapolatedRate walks the window's samples in time
+//     order and reads the first/last pair), but that order is a property of
+//     the window's own membership, which slicing does not touch. The hazard
+//     this registry exists to police is a value seeded at the SCAN's first row
+//     (lagInFrame), and the aggregate reads no such seed: every shard hands it
+//     a scan widened by Offset+Range past that shard's oldest anchor, so each
+//     grid point sees the same sample multiset it saw unsliced. Measured
+//     against the fan-out arm on a 500k-row / 5000-series seed across three
+//     temporality mixes: identical cell key sets, zero missing and zero extra
+//     cells (issue #2117).
 //   - StepGrid — emits the anchor grid itself; a sub-grid is a subset.
 //   - UnionAll — slice-invariant iff every arm is (checked structurally by
 //     the whole-plan walk, since each arm is itself visited).
@@ -71,8 +88,9 @@ func IsSliceInvariant(n Node) bool {
 //     each is its own PR.
 //
 // Extension point. Phase-3 node families (TopK as per-anchor LIMIT K BY,
-// VectorSetOp, HistogramQuantile{,Native}, AbsentOverTime, the metrics_*
-// TraceQL family, nested spines under the lcm clamp) are DELIBERATELY ABSENT:
+// VectorSetOp, HistogramQuantile{,Native}, AbsentOverTime, RangeWindowResample,
+// the metrics_* TraceQL family, nested spines under the lcm clamp) are
+// DELIBERATELY ABSENT:
 // each enters this registry only with its own slice-invariance proof + the
 // reset-at-seam fixture family, one node family per PR. To register a kind,
 // argue its per-(series, anchor) output is scan-lower-bound-independent, add
@@ -85,6 +103,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&Project{},
 		&Aggregate{},
 		&RangeWindow{},
+		&RangeWindowNative{},
 		&RangeLWR{},
 		&RangeBucketFanout{},
 		&StepGrid{},

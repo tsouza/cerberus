@@ -40,7 +40,11 @@ type carrierCase struct {
 	plan func() chplan.Node
 	// wantD is the cumulative per-anchor lookback the extractor must record.
 	wantD time.Duration
-	// wantFanout is wantD / gridStep.
+	// wantFanout is the per-sample intermediate-row count the extractor must
+	// record: wantD / gridStep for a carrier that materialises the
+	// (sample, anchor) matrix, and singlePassFanout for the native
+	// timeSeries*ToGrid family, which reads each sample exactly once whatever
+	// its window width is (carrierGeometry.singlePass).
 	wantFanout int64
 	// reanchorable says whether chplan.ReanchorRange re-grids this kind. It is
 	// the ONLY thing that decides whether the plan may be sliced; every row
@@ -97,6 +101,14 @@ func carrierCases() []carrierCase {
 			// The regression this whole table exists for: a natively-lowered
 			// rate() is the plan's ONLY carrier, so an extractor blind to it
 			// records nothing at all.
+			//
+			// It is re-anchorable (chplan.ReanchorRange re-grids it, the
+			// slicer's UnpinSpine zeroes it) and single-pass: the aggregate
+			// materialises no (sample, anchor) matrix, so its fan-out is
+			// singlePassFanout, NOT geomNativeRange/gridStep. That pairing is
+			// the whole point — sliceable when the evidence says slice, and
+			// below MinFanout on its own so ModeAuto does not shard a
+			// flat-memory statement for a memory problem it does not have.
 			kind: "RangeWindowNative",
 			plan: func() chplan.Node {
 				return &chplan.RangeWindowNative{
@@ -112,10 +124,16 @@ func carrierCases() []carrierCase {
 				}
 			},
 			wantD:        geomNativeRange,
-			wantFanout:   int64(geomNativeRange / gridStep),
-			reanchorable: false,
+			wantFanout:   singlePassFanout,
+			reanchorable: true,
 		},
 		{
+			// The other member of the native timeSeries*ToGrid family, and the
+			// reason singlePass is a property of the EMITTER family rather than
+			// a per-kind special case: it builds no (sample, anchor) matrix
+			// either, so its fan-out is singlePassFanout for exactly the same
+			// reason. It is not re-anchored, so that answer is telemetry only —
+			// the row is refused by the reanchorable fail-close whatever its F.
 			kind: "RangeWindowResample",
 			plan: func() chplan.Node {
 				return &chplan.RangeWindowResample{
@@ -131,7 +149,7 @@ func carrierCases() []carrierCase {
 				}
 			},
 			wantD:        geomResampleLookback,
-			wantFanout:   int64(geomResampleLookback / gridStep),
+			wantFanout:   singlePassFanout,
 			reanchorable: false,
 		},
 		{
@@ -367,23 +385,13 @@ func TestCarrierGeometryOf_UnclassifiableCarrierFailsClosed(t *testing.T) {
 	}
 }
 
-// TestCarrierGeometry_NativeIsMeasuredButNeverSliceable is the correctness pin
-// for the exact hazard widening extraction creates: making the solver SEE a
-// carrier must not make the slicer TAKE it.
-//
-// The subject is the shape the whole defect was found on — a natively-lowered
-// rate() whose RangeWindowNative is the plan's only grid carrier. Before the
-// fix it extracted nothing; after it, the Decision carries a real cost grid.
-// Both halves are asserted together, because either one alone is satisfiable by
-// a wrong change: extracting nothing still "never slices", and registering the
-// node slice-invariant would extract features while shipping wrong answers
-// (ReanchorRange clones the node verbatim, so every shard would evaluate the
-// ORIGINAL full grid and the merged result would be the query repeated K times
-// rather than partitioned).
-func TestCarrierGeometry_NativeIsMeasuredButNeverSliceable(t *testing.T) {
-	t.Parallel()
+// nativeCarrierPlan builds the dominant natively-lowered shape —
+// `sum(rate(m[3m]))` with the rate on the timeSeriesRateToGrid path — whose
+// RangeWindowNative is the plan's ONLY grid carrier. It is the subject of the
+// three native pins below, built from the table row so the two cannot drift.
+func nativeCarrierPlan(t *testing.T) (plan, native chplan.Node) {
+	t.Helper()
 
-	var native chplan.Node
 	for _, tc := range carrierCases() {
 		if tc.kind == "RangeWindowNative" {
 			native = tc.plan()
@@ -392,40 +400,163 @@ func TestCarrierGeometry_NativeIsMeasuredButNeverSliceable(t *testing.T) {
 	if native == nil {
 		t.Fatal("carrierCases lost its RangeWindowNative row; this pin has no subject")
 	}
-
-	// The dominant real shape: sum(rate(...)) with the rate lowered natively.
-	plan := &chplan.Aggregate{
+	return &chplan.Aggregate{
 		Input:    native,
 		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
-	}
+	}, native
+}
+
+// TestCarrierGeometry_NativeIsMeasuredAndSliceable pins BOTH halves of the
+// natively-lowered spine's classification, which are independently wrong-able.
+//
+// Measurement half: the plan's only carrier is the RangeWindowNative, so an
+// extractor blind to it records an all-zero cost grid — the regression the
+// seven-kind table exists for, restated here on the real sum(rate(...)) shape.
+//
+// Slicing half: the node IS re-anchorable (issue #2117 — chplan.ReanchorRange
+// re-grids it, the slicer's UnpinSpine zeroes it, and it is registered
+// slice-invariant), so the threshold-free Eligible seam routes it. That seam is
+// the failure-driven route memo's, which fires on a REAL route-A resource
+// failure rather than on a cost proxy — precisely the evidence that justifies
+// paying K scans for a native plan.
+//
+// Both are asserted together because either alone is satisfiable by a wrong
+// change: a node that is never sliceable "passes" any measurement assertion,
+// and a node sliced without ReanchorRange knowing its grid would hand every
+// shard the ORIGINAL full-grid bounds and merge the query repeated K times.
+func TestCarrierGeometry_NativeIsMeasuredAndSliceable(t *testing.T) {
+	t.Parallel()
+
+	plan, native := nativeCarrierPlan(t)
 
 	start, end, step := GridOf(plan)
 	meta := RequestMeta{Lang: LangPromQL, Start: start, End: end, Step: step}
 
 	// Measurement half.
-	d, routed := (&Planner{Cfg: autoCfg()}).Plan(plan, meta)
+	d, _ := (&Planner{Cfg: autoCfg()}).Plan(plan, meta)
 	if d.NAnchors == 0 || d.OuterRange == 0 || d.CumulativeD == 0 || d.Fanout == 0 {
 		t.Errorf("natively-lowered rate() extracted N=%d OuterRange=%s D=%s F=%d — an all-zero "+
 			"cost grid is the extractor blindness this pin exists to catch",
 			d.NAnchors, d.OuterRange, d.CumulativeD, d.Fanout)
 	}
 
-	// Correctness half, at both public seams. Eligible deliberately bypasses
-	// the cost thresholds, so it is the stricter of the two.
-	if routed {
-		t.Errorf("Plan routed a RangeWindowNative spine (K=%d)", d.K)
+	// Slicing half, at the threshold-free seam.
+	ed, eligible := (&Planner{Cfg: autoCfg()}).Eligible(plan, meta)
+	if !eligible {
+		t.Fatalf("Eligible refused a RangeWindowNative spine (reason=%q) — ReanchorRange re-grids "+
+			"this kind, so a plan that carries nothing else must be sliceable", ed.Reason)
 	}
-	if ed, eligible := (&Planner{Cfg: autoCfg()}).Eligible(plan, meta); eligible {
-		t.Errorf("Eligible routed a RangeWindowNative spine (K=%d) — the threshold-free seam is "+
-			"where an over-wide extraction shows up first", ed.K)
+	if ed.K < 2 {
+		t.Errorf("Eligible routed with K=%d; a route is K >= 2 by definition", ed.K)
 	}
 
-	// And the structural backstop underneath both: the node is NOT registered
-	// slice-invariant, and must stay that way until ReanchorRange learns its
-	// grid. A change that "fixes" this test by registering it is the bug.
-	if chplan.IsSliceInvariant(native) {
-		t.Error("RangeWindowNative is registered slice-invariant, but chplan.ReanchorRange has no " +
-			"arm for it — every shard would emit the original full-grid bounds")
+	// And the structural backstop underneath both: the node IS registered
+	// slice-invariant. A change that drops the registration while keeping the
+	// ReanchorRange arm leaves the plan refused for a reason that reads like a
+	// cost judgement.
+	if !chplan.IsSliceInvariant(native) {
+		t.Error("RangeWindowNative is not registered slice-invariant, so gate (1) refuses every " +
+			"plan carrying one and the ReanchorRange arm is unreachable")
+	}
+}
+
+// TestCarrierGeometry_NativeShardsPartitionTheGrid is the semantic half of the
+// slicing pin above: being ALLOWED to slice is worthless unless the shards
+// actually tile the original anchor grid.
+//
+// It reads the re-anchored RangeWindowNative out of every produced shard and
+// asserts the shards' anchor sets are pairwise disjoint and union to the
+// unsliced grid exactly, and that each shard's node carries that shard's own
+// bounds. The failure this catches is the specific one UnpinSpine's missing arm
+// would have produced: a node left pinned at the full grid re-anchors to the
+// same [Start, End] in every shard, so the union is the whole grid K times over.
+func TestCarrierGeometry_NativeShardsPartitionTheGrid(t *testing.T) {
+	t.Parallel()
+
+	plan, _ := nativeCarrierPlan(t)
+	start, end, step := GridOf(plan)
+	meta := RequestMeta{Lang: LangPromQL, Start: start, End: end, Step: step}
+
+	d, eligible := (&Planner{Cfg: autoCfg()}).Eligible(plan, meta)
+	if !eligible {
+		t.Fatalf("Eligible refused the native spine (reason=%q); this pin has no shards to read",
+			d.Reason)
+	}
+
+	seen := map[int64]int{}
+	for _, s := range d.Slices {
+		var found *chplan.RangeWindowNative
+		chplan.Walk(s.Plan, func(n chplan.Node) bool {
+			if rw, ok := n.(*chplan.RangeWindowNative); ok {
+				found = rw
+				return false
+			}
+			return true
+		})
+		if found == nil {
+			t.Fatalf("shard %d carries no RangeWindowNative; the slicer lost the spine node", s.Index)
+		}
+		if !found.Start.Equal(s.Start) || !found.End.Equal(s.End) {
+			t.Fatalf("shard %d node bounds [%v,%v] != shard bounds [%v,%v] — the node was shared "+
+				"verbatim instead of re-anchored", s.Index, found.Start, found.End, s.Start, s.End)
+		}
+		for a := found.End; !a.Before(found.Start); a = a.Add(-step) {
+			seen[a.UnixNano()]++
+		}
+	}
+
+	orig := originalAnchors(start, end, step)
+	if len(seen) != len(orig) {
+		t.Fatalf("shard anchor union has %d anchors, original grid has %d", len(seen), len(orig))
+	}
+	for _, a := range orig {
+		switch seen[a.UnixNano()] {
+		case 1:
+		case 0:
+			t.Fatalf("original anchor %v is in no shard", a)
+		default:
+			t.Fatalf("anchor %v appears in %d shards (not disjoint)", a, seen[a.UnixNano()])
+		}
+	}
+}
+
+// TestCarrierGeometry_NativeDoesNotRouteOnCostAlone is the resolution of issue
+// #2117's open sub-question, pinned as behaviour.
+//
+// Making the native spine sliceable must NOT make ModeAuto shard it. The native
+// aggregate materialises no (sample, anchor) matrix — its state is one grid
+// array per SERIES — so sharding it K ways pays K scans of an Offset+Range
+// overlapping window for a memory problem the statement does not have. Its
+// fan-out is therefore singlePassFanout, which is below the default MinFanout,
+// so ModeAuto declines on COST (below-threshold) while every correctness gate
+// passes. Reporting Range/Step here — the answer before #2117 — flips this
+// query to routed and is exactly the regression the sub-question named.
+func TestCarrierGeometry_NativeDoesNotRouteOnCostAlone(t *testing.T) {
+	t.Parallel()
+
+	plan, _ := nativeCarrierPlan(t)
+	start, end, step := GridOf(plan)
+	meta := RequestMeta{Lang: LangPromQL, Start: start, End: end, Step: step}
+
+	cfg := autoCfg()
+	if cfg.MinFanout <= int(singlePassFanout) {
+		t.Fatalf("MinFanout=%d <= singlePassFanout=%d; a single-pass carrier would clear the gate "+
+			"on cost and this pin is vacuous", cfg.MinFanout, singlePassFanout)
+	}
+
+	d, routed := (&Planner{Cfg: cfg}).Plan(plan, meta)
+	if routed {
+		t.Fatalf("ModeAuto sharded a single-pass native spine (K=%d) — K scans bought for a "+
+			"matrix that is never built", d.K)
+	}
+	if d.Reason != ReasonBelowThreshold {
+		t.Errorf("reason = %q, want %q — the native spine is refused by the COST gate, not by a "+
+			"correctness gate; any other token means a structural refusal crept back in",
+			d.Reason, ReasonBelowThreshold)
+	}
+	if d.Fanout != singlePassFanout {
+		t.Errorf("Fanout = %d, want %d — a single-pass grid aggregate reads each sample once "+
+			"whatever its window width is", d.Fanout, singlePassFanout)
 	}
 }
 

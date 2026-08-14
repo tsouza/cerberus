@@ -617,6 +617,44 @@ func TestPlan_ScalarAnchorCompatibleRoutes(t *testing.T) {
 	}
 }
 
+// TestPlan_ScalarNativeAnchorCompatibleRoutes is the positive counterpart for
+// the native arm of the anchor-compatibility check: a native timeSeries*ToGrid
+// interior sitting EXACTLY on the grid AND cadence predicted where it is
+// embedded is bounded to one value per outer anchor, so it is admitted and the
+// plan routes.
+//
+// Without it the negative rows below would be satisfied by an arm that refuses
+// EVERY native interior, which is a different (and needlessly narrow) policy
+// than the one the fan-out family gets.
+func TestPlan_ScalarNativeAnchorCompatibleRoutes(t *testing.T) {
+	t.Parallel()
+	anchoredInner := &chplan.RangeWindowNative{
+		Input:           leafScan(),
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		Step:            gridStep,
+		Start:           gridStart,
+		End:             gridEnd,
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+	}
+	plan := &chplan.Filter{
+		Input: oomWindow().(*chplan.Aggregate),
+		Predicate: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  &chplan.ColumnRef{Name: "Value"},
+			Right: &chplan.ScalarSubquery{Input: anchoredInner},
+		},
+	}
+	d, routed := (&Planner{Cfg: autoCfg()}).Plan(plan, oomMeta())
+	if !routed {
+		t.Fatalf("an anchor-compatible native scalar interior must route; reason=%q", d.Reason)
+	}
+	if d.Reason != ReasonRouted {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
+	}
+}
+
 // TestPlan_ScalarAnchorIncompatibleRejected is the negative table for the
 // anchor-compatibility carve-out: each case builds a windowed interior that
 // resembles TestPlan_ScalarAnchorCompatibleRoutes's admitted shape in every
@@ -663,6 +701,40 @@ func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
 				AttributesCol: "Attributes",
 				TimestampCol:  "TimeUnix",
 				ValueCol:      "Value",
+			},
+		},
+		{
+			// A native timeSeries*ToGrid interior whose span is independent of
+			// the outer grid. It is registered slice-invariant (issue #2117), so
+			// walkScalarInterior's sweep no longer refuses it and
+			// scalarInteriorAnchorCompatible's own arm is the only thing between
+			// this and replicating a 30-day single-pass grid aggregate K times.
+			name: "RangeWindowNative, span diverges",
+			inner: &chplan.RangeWindowNative{
+				Input:           leafScan(),
+				Func:            "rate",
+				Range:           5 * time.Minute,
+				Step:            gridStep,
+				Start:           gridStart.Add(-30 * 24 * time.Hour),
+				End:             gridEnd.Add(-30 * 24 * time.Hour),
+				TimestampColumn: "TimeUnix",
+				ValueColumn:     "Value",
+			},
+		},
+		{
+			// The same native interior on the outer grid's exact span but at a
+			// coarser cadence: not provably one value per OUTER anchor, so it
+			// stays heavy for the same reason the fan-out row above does.
+			name: "RangeWindowNative, grid matches, step diverges",
+			inner: &chplan.RangeWindowNative{
+				Input:           leafScan(),
+				Func:            "rate",
+				Range:           5 * time.Minute,
+				Step:            time.Minute,
+				Start:           gridStart,
+				End:             gridEnd,
+				TimestampColumn: "TimeUnix",
+				ValueColumn:     "Value",
 			},
 		},
 		{

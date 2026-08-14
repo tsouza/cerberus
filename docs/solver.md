@@ -39,12 +39,26 @@ The signals, each gathered in the one pass:
    sends the whole plan to route A. A new node defaults to route A until its
    marker is proven.
 2. **Routable spine family.** Re-anchoring rewrites the grid carried by the
-   `RangeWindow` matrix family and the `RangeLWR` bare-selector
+   `RangeWindow` matrix family, the `RangeWindowNative` ClickHouse-native
+   `timeSeries*ToGrid` family, and the `RangeLWR` bare-selector
    last-with-respect-to family. Every other grid carrier —
-   `RangeWindowNative`, `RangeWindowResample`, `RangeBucketFanout`, `StepGrid`,
-   `AbsentOverTime` — carries its own eval grid that re-anchoring clones
-   verbatim, so a plan whose spine bound-carrier is one of those fails closed to
-   route A (every shard would otherwise emit stale bounds).
+   `RangeWindowResample`, `RangeBucketFanout`, `StepGrid`, `AbsentOverTime` —
+   carries its own eval grid that re-anchoring clones verbatim, so a plan whose
+   spine bound-carrier is one of those fails closed to route A (every shard
+   would otherwise emit stale bounds).
+
+   `UnionAll` carries no grid of its own and re-anchors every arm onto the same
+   sub-grid, so a mixed spine — `UnionAll{RangeWindowNative, RangeWindow}`, the
+   shape a cumulative/delta temporality split emits — slices as a unit. All arms
+   move together or none does: the arms are concatenated positionally, so a
+   shard that re-gridded one and shared another verbatim would compose the
+   shared arm's full-grid answer `K` times over.
+
+   The three re-anchorable kinds are exactly the kinds the slicer's `unpinSpine`
+   zeroes and exactly the kinds `carrierGeometryOf` marks re-anchorable. A kind
+   that re-anchoring learns but `unpinSpine` does not stays pinned at the full
+   request grid, so every slice aborts with a grid mismatch and the plan falls
+   back to route A while still classifying as routable.
 
    Measurement is separate from admissibility: the signal walk records the cost
    grid of **every** carrier kind, routable or not, because the corpus needs to
@@ -107,10 +121,22 @@ The signals, each gathered in the one pass:
 When every signal passes, the plan is **eligible**. The cost grid then decides
 whether slicing is worthwhile:
 
-- `F` = max `Range/Step` (or `Lookback/Step`) over windowed nodes.
+- `F` = max per-sample intermediate-row count over windowed nodes: `Range/Step`
+  (or `Lookback/Step`) for a carrier that materialises the `(sample, anchor)`
+  matrix, and `1` for the native `timeSeries*ToGrid` family, which reads each
+  sample exactly once into a per-series grid array whatever its window width is.
+  `F` is the memory proxy the auto gate reads, so reporting `Range/Step` for a
+  native carrier would shard a flat-memory single-pass statement `K` ways and
+  pay `K` scans for a matrix that is never built. A native carrier is still
+  fully sliceable — it simply does not clear `MinFanout` on its own, so it
+  routes when a fan-out sibling arm prices the plan or when the threshold-free
+  `Eligible` seam (the failure-driven route memo, which fires on a real route-A
+  resource failure) asks for it.
 - `N` = `OuterRange/Step + 1`, the outer anchor count.
 - `D` = cumulative spine lookback (Σ `Range` down nested matrix windows + leaf
-  `RangeLWR.Lookback`).
+  `RangeLWR.Lookback`). Unlike `F`, `D` is unaffected by which emitter reads the
+  window: it measures per-slice SCAN redundancy, and a native carrier's shard
+  widens its input by `Offset + Range` exactly as a fan-out carrier's does.
 - `K = clamp(floor(N / MinAnchorsPerSlice), 2, min(MaxK, floor(OuterRange /
   max(D, Step))))`.
 
@@ -209,8 +235,8 @@ emptied. `D` is the cumulative spine lookback recovered by walking the spine.
 request grid (the grid-prediction guard already verified it sits exactly
 there). To re-grid each slice onto a sub-window, the slicer first builds one
 spine-unpinned, copy-on-write view (`unpinSpine`): the windowed-spine bounds
-(`RangeWindow` / `RangeLWR` `Start`, `End`, and the matrix `OuterRange`) are
-zeroed. This is safe because signal 5 already proved every spine node sits on
+(`RangeWindow` / `RangeWindowNative` / `RangeLWR` `Start`, `End`, and the matrix
+`OuterRange`) are zeroed. This is safe because signal 5 already proved every spine node sits on
 the predicted grid, so the zeroed information is exactly what the re-anchor
 recomputes. `unpinSpine` clones ONLY the spine-path nodes it zeroes (and their
 ancestors back to the root, the `O(spine-depth)` chain) and SHARES every
@@ -241,7 +267,11 @@ returned to the handler:
 2. **Emit first.** All `K` shard SQLs are emitted before any cursor opens, so
    an emit failure aborts with zero CH work. A belt-and-braces assertion
    rejects any shard SQL string still containing a `now64(` call despite the
-   static gate.
+   static gate. The dispatch context carries the same plan-shape-gated
+   ClickHouse settings a route-A statement would get — notably
+   `allow_experimental_time_series_aggregate_functions=1` when a shard plan
+   carries a `timeSeries*ToGrid` node, without which every shard answers code
+   63 rather than degrading.
 3. **Two-stage weighted admission (degrade, don't reject).** The handler has
    already charged weight 1; the Executor asks for `(P-1)` additional admission
    units. On a partial or zero grant it clamps effective parallelism to

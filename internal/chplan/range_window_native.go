@@ -148,6 +148,27 @@ func (*RangeWindowNative) planNode() {}
 
 func (r *RangeWindowNative) Children() []Node { return []Node{r.Input} }
 
+// InputWindow returns the bounds the INPUT relation must cover for this node
+// to answer every anchor in [start, end]. Each anchor reduces the samples in
+// `(anchor - Offset - Range, anchor - Offset]`, so the oldest anchor reaches
+// back Offset+Range past start; Offset enters with its sign, so a forward
+// (negative) offset widens by less.
+//
+// It is the SINGLE owner of that arithmetic for this node kind — the twin of
+// [RangeWindow.InputWindow] — read by every pass that has to predict, widen or
+// re-anchor the inner spine (the solver's signal walk, [ReanchorRange]). Three
+// independent copies of `start.Add(-Offset-Range)` is exactly how the #1464
+// class of bug (one pass widening by Range and another by Offset+Range) gets
+// reintroduced: the two then disagree about the inner grid, the grid-prediction
+// guard reads a divergence that is not there, and a routable plan silently
+// falls back to route A.
+func (r *RangeWindowNative) InputWindow(start, end time.Time) (time.Time, time.Time) {
+	if r.Step <= 0 {
+		return start, end
+	}
+	return start.Add(-r.Offset - r.Range), end
+}
+
 func (r *RangeWindowNative) Equal(other Node) bool {
 	o, ok := other.(*RangeWindowNative)
 	if !ok {
