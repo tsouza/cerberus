@@ -637,8 +637,9 @@ func printExpr(e chplan.Expr) string {
 	case *chplan.MapWithoutEmptyValues:
 		return fmt.Sprintf("mapWithoutEmpty(%s)", printExpr(v.Map))
 	case *chplan.LabelReplace:
-		return fmt.Sprintf("labelReplace(%s, dst=%q, replacement=%q, src=%q, regex=%q, emptyReplacement=%q%s)",
+		return fmt.Sprintf("labelReplace(%s, dst=%q, replacement=%q, src=%q, regex=%q, emptyReplacement=%q%s%s)",
 			printExpr(v.Map), v.Dst, v.Replacement, v.Src, v.Regex, v.EmptyReplacement,
+			printLabelReplaceProbedRegex(v.ProbedRegex),
 			printLabelReplaceSegments(v.Segments))
 	case *chplan.LabelJoin:
 		return fmt.Sprintf("labelJoin(%s, dst=%q, separator=%q, srcs=[%s])",
@@ -793,7 +794,21 @@ func formatGroupByEntry(expr, alias, display string) string {
 //
 // A shared-name reference prints as its carrier indices joined by `|`
 // (`$1|$2`), the "first of these with a non-empty capture" selection
-// chplan.LabelReplaceSegment.Fallbacks describes.
+// chplan.LabelReplaceSegment.Fallbacks describes. A carrier whose
+// participation is read off a synthetic probe group instead of its own
+// capture prints that group after an `@` (`$2@$1`), so a golden pins WHICH
+// group answers for each carrier and not merely that some probe exists.
+// printLabelReplaceProbedRegex renders the rewritten pattern the emitter
+// reads capture groups out of, and nothing at all when there is none — so
+// every fixture whose regex needed no probe keeps its golden line
+// unchanged.
+func printLabelReplaceProbedRegex(probed string) string {
+	if probed == "" {
+		return ""
+	}
+	return fmt.Sprintf(", probedRegex=%q", probed)
+}
+
 func printLabelReplaceSegments(segments []chplan.LabelReplaceSegment) string {
 	if len(segments) == 0 {
 		return ""
@@ -804,9 +819,14 @@ func printLabelReplaceSegments(segments []chplan.LabelReplaceSegment) string {
 			parts = append(parts, fmt.Sprintf("%q", seg.Literal))
 			continue
 		}
-		indices := []string{fmt.Sprintf("$%d", seg.Group)}
-		for _, idx := range seg.Fallbacks {
-			indices = append(indices, fmt.Sprintf("$%d", idx))
+		carriers := append([]int{seg.Group}, seg.Fallbacks...)
+		indices := make([]string, 0, len(carriers))
+		for i, carrier := range carriers {
+			at := fmt.Sprintf("$%d", carrier)
+			if i < len(seg.Probes) && seg.Probes[i] != carrier {
+				at += fmt.Sprintf("@$%d", seg.Probes[i])
+			}
+			indices = append(indices, at)
 		}
 		parts = append(parts, strings.Join(indices, "|"))
 	}

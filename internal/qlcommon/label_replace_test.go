@@ -150,26 +150,38 @@ func TestReplacementToCH(t *testing.T) {
 	}
 }
 
-// TestReplacementToCHRejectsInexpressibleBackrefs pins the one shape that
-// Go's ExpandString resolves to a real capture but no ClickHouse
-// expression can reproduce: a name several capture groups share where the
-// first carrier to TAKE PART in a match can capture the EMPTY STRING while
-// a LATER carrier in that same match captures text. ExpandString stops at
-// the first participant and expands to its empty capture; the emitted
-// `arrayFirst(x -> x != ”, …)` search skips it and answers with the later
-// carrier instead. Participation is what would separate the two, and it is
-// not observable from SQL — `extractGroups` reports a group that did not
-// participate and a group that matched the empty string identically, as
-// `”`.
+// TestReplacementToCHRejectsInexpressibleBackrefs pins what is left of
+// the one shape Go's ExpandString resolves to a real capture but no
+// ClickHouse expression can reproduce: a name several capture groups share
+// where the first carrier to TAKE PART in a match can capture the EMPTY
+// STRING while a LATER carrier in that same match captures text.
+// ExpandString stops at the first participant and expands to its empty
+// capture; a search that tests each carrier's own capture for non-emptiness
+// skips it and answers with the later carrier instead.
+//
+// Participation is not observable from SQL — `extractGroups` reports a
+// group that did not participate and a group that matched the empty string
+// identically, as `”` (ClickHouse/ClickHouse#114733 tracks that upstream).
+// But it IS observable indirectly wherever the carrier has an ancestor that
+// cannot match empty and that no optional node separates from it: probing
+// that ancestor turns participation back into non-emptiness, and
+// [planCaptureProbes] rewrites the regex to read it. So a carrier under a
+// quest is no longer rejected merely for being under one — see
+// TestReplacementToCHProbesCarrierParticipation.
+//
+// What remains is a carrier with no such ancestor ANYWHERE above it: one
+// alone in a branch, or alone under a quest, where every enclosing span up
+// to the node that can skip it is itself nullable. Nothing in the pattern
+// is then guaranteed to be consumed when the carrier takes part, so no
+// group's emptiness can stand in for its participation.
 //
 // Nullability alone does NOT put a carrier in this position, which is why
 // every case below carries a concrete WITNESS: an input string on which
-// Go's answer and the first-non-empty search really do differ. A case
-// without one would be pinning an over-rejection rather than the
-// divergence — the trap the previous revision of this test fell into, when
-// all four of its regexes turned out to be expressible after all. The
-// shapes that are expressible are covered by
-// TestSharedCaptureNameSegmentsAgreeWithExpandString and
+// Go's answer and the emitted search really do differ. A case without one
+// would be pinning an over-rejection rather than the divergence — the trap
+// an earlier revision of this test fell into, when all four of its regexes
+// turned out to be expressible after all. The shapes that ARE expressible
+// are covered by TestSharedCaptureNameSegmentsAgreeWithExpandString and
 // TestExpressibleCarriersAgreeWithExpandString.
 //
 // It used to be emitted as literal template text — a 200 carrying a label
@@ -186,48 +198,38 @@ func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 		wantErrs []string
 	}{
 		{
-			// Carrier 1 sits under a quest, so a match can skip it
-			// entirely, and it is nullable, so a match can also enter it
-			// and capture nothing. Witness "xb": Go answers "" (carrier 1
-			// took part, matching empty after the "x"), first-non-empty
-			// answers "b".
-			"nullable_carrier_a_match_can_skip",
-			"$dup",
-			`(?:x(?P<dup>a?))?(?P<dup>b)`,
-			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
-		},
-		{
-			// The alternation around carrier 1 is itself mandatory, so
-			// being in a branch of it excludes carrier 1 from nothing —
-			// carrier 2 sits outside the alternation and takes part
-			// alongside it. Witness "b": Go answers "", first-non-empty
-			// answers "b".
-			"nullable_carrier_in_a_co_occurring_branch",
+			// Carrier 1 is alone in a branch of a mandatory alternation.
+			// The branch is nullable, so there is nothing in it to probe,
+			// and the alternation above it is exactly what lets a match
+			// skip the carrier — so no wider span can answer either.
+			// Witness "b": Go answers "" (the empty branch took part),
+			// the emitted search answers "b".
+			"nullable_carrier_alone_in_a_co_occurring_branch",
 			"$dup",
 			`(?:(?P<dup>a?)|y)(?P<dup>b)`,
 			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
 		},
 		{
-			// The ambiguity is not always at the FIRST carrier. Carrier 1
-			// is non-nullable and therefore clear; carrier 2 is the one
-			// whose participation cannot be read back. Witness "xc": Go
-			// answers "", first-non-empty answers "c".
-			"ambiguity_after_a_clear_first_carrier",
+			// The same hole under a quest rather than an alternation:
+			// carrier 1 is the entire body of the optional group, so the
+			// only span that could be probed is the carrier itself, and
+			// it is nullable. Witness "b": greedy matching enters the
+			// quest and captures nothing, so Go answers "" while the
+			// emitted search answers "b".
+			"nullable_carrier_alone_under_a_quest",
 			"$dup",
-			`(?P<dup>a)|(?:x(?P<dup>b?))?(?P<dup>c)`,
-			[]string{`"dup"`, "3 capture groups", "empty string", "capture group 2"},
+			`(?:(?P<dup>a?))?(?P<dup>b)`,
+			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
 		},
 		{
-			// Two carriers in different branches of one alternation
-			// normally exclude each other, but a repetition AROUND the
-			// alternation re-enters it, so one match takes both branches.
-			// Witness "bbbx": the last pass takes the first branch and
-			// captures nothing while an earlier pass captured "b", so Go
-			// answers "" and first-non-empty answers "b".
-			"repetition_re_enters_the_alternation",
+			// The ambiguity is not always at the FIRST carrier. Carrier 1
+			// is non-nullable and therefore clear; carrier 2 is the one
+			// with no probeable ancestor. Witness "x": Go answers "",
+			// the emitted search answers "x".
+			"unprobeable_carrier_after_a_clear_first_carrier",
 			"$dup",
-			`(?:x(?P<dup>a?)|(?P<dup>b))*`,
-			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
+			`(?P<dup>a)|(?:(?P<dup>b?)|y)(?P<dup>x)`,
+			[]string{`"dup"`, "3 capture groups", "empty string", "capture group 2"},
 		},
 	}
 	for _, tc := range cases {

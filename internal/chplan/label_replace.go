@@ -64,6 +64,15 @@ type LabelReplace struct {
 	Src              string
 	Regex            string
 	EmptyReplacement string
+	// ProbedRegex, when non-empty, is the pattern the emitter must feed
+	// `extractGroups` in place of Regex: the same pattern with synthetic
+	// capture groups added so that a group whose own capture cannot report
+	// whether it TOOK PART in the match has a neighbour that can. It
+	// matches exactly the strings Regex matches — the added groups only
+	// observe — but it numbers capture groups differently, so every index
+	// in Segments is in ITS numbering, not Regex's. Regex still drives the
+	// `match(...)` test, where the numbering is immaterial.
+	ProbedRegex string
 	// Segments, when non-empty, replaces Replacement as the description
 	// of the substituted value. See LabelReplaceSegment.
 	Segments []LabelReplaceSegment
@@ -104,6 +113,15 @@ type LabelReplaceSegment struct {
 	// participant capturing the empty string with a later listed group
 	// capturing text — see qlcommon's captureGroups.expressibleCarriers.
 	Fallbacks []int
+	// Probes holds, for each searched carrier — Group followed by
+	// Fallbacks, one element apiece and in that order — the capture group
+	// whose NON-EMPTINESS reports that the carrier took part in the match.
+	// It is empty when every carrier's own capture reports that, which is
+	// the case whenever no carrier is nullable-and-skippable; the emitter
+	// then searches the carriers themselves. When it is populated the
+	// indices refer to [LabelReplace.ProbedRegex], whose synthetic groups
+	// exist precisely to be read here.
+	Probes []int
 	// Group is the capture-group index to substitute, or [NoCaptureGroup]
 	// when this segment is literal text.
 	Group int
@@ -111,6 +129,14 @@ type LabelReplaceSegment struct {
 
 // Equal reports whether two segments describe the same contribution.
 func (s LabelReplaceSegment) Equal(o LabelReplaceSegment) bool {
+	if len(s.Probes) != len(o.Probes) {
+		return false
+	}
+	for i := range s.Probes {
+		if s.Probes[i] != o.Probes[i] {
+			return false
+		}
+	}
 	if len(s.Fallbacks) != len(o.Fallbacks) {
 		return false
 	}

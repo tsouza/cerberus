@@ -239,3 +239,55 @@ func TestMutation_ExprLabelJoin_MapErrorPropagates(t *testing.T) {
 		t.Fatalf("LabelJoin with an unrenderable Map must return ErrUnsupported, got %v", err)
 	}
 }
+
+// TestMutation_ExprLabelReplace_ProbedCarrierForm pins the shape a
+// selection takes when a carrier's own capture cannot report whether it
+// took part in the match: `arrayFirst` over TWO arrays, testing the
+// participation array and answering from the value array, over the
+// REWRITTEN regex whose synthetic groups the probes index.
+//
+// Both halves are assertions. Emitting the single-array form would test
+// the carrier's own capture and answer with a later carrier's text on
+// exactly the rows the rewrite exists for; emitting the original regex
+// would index groups that the rewrite renumbered, silently reading the
+// wrong ones.
+//
+// Kills labelReplaceSegment's `len(seg.Probes) == 0` guard and
+// labelReplaceExtractRegex's `l.ProbedRegex == ""` guard.
+func TestMutation_ExprLabelReplace_ProbedCarrierForm(t *testing.T) {
+	t.Parallel()
+
+	sql, args := renderExpr(t, &chplan.LabelReplace{
+		Map:              attrsMap(),
+		Dst:              "dst",
+		Src:              "src",
+		Regex:            `(?:x(?P<dup>a?))?(?P<dup>b)`,
+		ProbedRegex:      `(?:(?P<cerberusprobe0>x(?P<dup>a?)))?(?P<dup>b)`,
+		EmptyReplacement: "",
+		Segments: []chplan.LabelReplaceSegment{
+			{Group: 2, Fallbacks: []int{3}, Probes: []int{1, 3}},
+		},
+	})
+
+	const probed = `^(?s:(?:(?P<cerberusprobe0>x(?P<dup>a?)))?(?P<dup>b))$`
+	assertRender(
+		t, sql, args,
+		"mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), "+
+			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
+			"concat(arrayFirst((x, p) -> p != ?, ["+
+			"extractGroups(`Attributes`[?], ?)[?], "+
+			"extractGroups(`Attributes`[?], ?)[?]], ["+
+			"extractGroups(`Attributes`[?], ?)[?], "+
+			"extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`))",
+		[]any{
+			// The match() test keeps the ORIGINAL regex: it accepts the
+			// same strings, and no numbering is read off it.
+			"src", "^(?s:(?:x(?P<dup>a?))?(?P<dup>b))$", "dst", "src", "",
+			"",
+			"src", probed, int64(2),
+			"src", probed, int64(3),
+			"src", probed, int64(1),
+			"src", probed, int64(3),
+		},
+	)
+}

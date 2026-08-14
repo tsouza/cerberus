@@ -244,6 +244,19 @@ var participationArrangements = []participationArrangement{
 	{template: "(?:C1{2}|C2)", carriers: 2, alwaysExpressible: true},
 	{template: "(?:C1|C2){2}", carriers: 2},
 
+	// A branch with LITERAL text of its own is what gives a carrier
+	// inside it a non-nullable ancestor to probe, so these are the
+	// arrangements the probe rewrite actually turns on — and, under a
+	// repetition, the ones where one match can enter both branches and a
+	// probe has to keep answering for its own carrier only.
+	{template: "(?:xC1|C2)*", carriers: 2},
+	{template: "(?:xC1|C2)+", carriers: 2},
+	{template: "(?:xC1|C2)?", carriers: 2},
+	{template: "(?:xC1|yC2)*", carriers: 2},
+	{template: "(?:xC1)?(?:yC2)?", carriers: 2},
+	{template: "(?:xC1)*(?:yC2)*", carriers: 2},
+	{template: "(?:x(?:yC1))?C2", carriers: 2},
+
 	// Three carriers. The first four put a carrier in an alternation
 	// branch alongside a THIRD that sits outside it, which is the shape
 	// where clearing a carrier against only its immediate successor is not
@@ -258,6 +271,9 @@ var participationArrangements = []participationArrangement{
 	{template: "(?:C1)?C2(?:C3)?", carriers: 3},
 	{template: "(?:C1|C2|C3)*", carriers: 3},
 	{template: "(?:xC1)?(?:C2|C3)", carriers: 3},
+	{template: "(?:xC1|C2)*C3", carriers: 3},
+	{template: "(?:xC1)?(?:yC2)?C3", carriers: 3},
+	{template: "C1(?:xC2|yC3)?", carriers: 3},
 }
 
 // participationCorpus expands every arrangement against every combination
@@ -342,7 +358,7 @@ func TestExpressibleCarriersAgreeWithExpandString(t *testing.T) {
 	inputs := stringsUpTo("abxy", 3)
 
 	corpus := participationCorpus()
-	accepted := 0
+	accepted, probed := 0, 0
 	for _, regex := range corpus {
 		re, err := regexp.Compile(anchorRegex(regex))
 		if err != nil {
@@ -354,6 +370,9 @@ func TestExpressibleCarriersAgreeWithExpandString(t *testing.T) {
 			continue
 		}
 		accepted++
+		if got.ProbedRegex != "" {
+			probed++
+		}
 
 		for _, src := range inputs {
 			match := re.FindStringSubmatchIndex(src)
@@ -361,7 +380,7 @@ func TestExpressibleCarriersAgreeWithExpandString(t *testing.T) {
 				continue
 			}
 			want := string(re.ExpandString(nil, "$dup", src, match))
-			evaluated := evaluateReplacement(got, src, re.FindStringSubmatch(src))
+			evaluated := evaluateReplacement(got, regex, src)
 			if evaluated != want {
 				t.Fatalf("regex %q src %q: %+v evaluates to %q; "+
 					"Go's ExpandString gives %q",
@@ -381,8 +400,20 @@ func TestExpressibleCarriersAgreeWithExpandString(t *testing.T) {
 			"the differential proves nothing about a guard that rejects everything",
 			accepted, len(corpus), floor)
 	}
-	t.Logf("shared-capture-name corpus: %d regexes, %d accepted, %d inputs each",
-		len(corpus), accepted, len(inputs))
+	// The probe rewrite must actually FIRE. Every regex it turns on is one
+	// the static facts alone reject, so a change that silently stopped
+	// planning probes would leave the loop above passing on a strictly
+	// smaller set — green, and having quietly given the capability back.
+	// The two counts also report the narrowing itself: acceptance without
+	// a rewrite is exactly what the guard admitted before probes existed,
+	// because the rewrite only ever adds.
+	if probed == 0 {
+		t.Error("no corpus regex was accepted through a probe rewrite — the rewrite is inert, " +
+			"and the shapes it exists to express are being rejected again")
+	}
+	t.Logf("shared-capture-name corpus: %d regexes, %d accepted (%d without a probe rewrite, "+
+		"%d only because of one), %d inputs each",
+		len(corpus), accepted, accepted-probed, probed, len(inputs))
 }
 
 // stringsUpTo returns every string over alphabet with length 0..maxLen.

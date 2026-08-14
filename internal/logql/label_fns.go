@@ -63,6 +63,7 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 		Dst:              e.Dst,
 		Replacement:      chRepl.Template,
 		Segments:         chRepl.Segments,
+		ProbedRegex:      chRepl.ProbedRegex,
 		Src:              e.Src,
 		Regex:            e.Regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(e.Replacement),

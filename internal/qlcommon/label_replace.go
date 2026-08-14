@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -98,7 +99,7 @@ const unresolvedGroup = -1
 // (very-much-reachable) cold path where the regex doesn't match
 // anything.
 func ReplacementToCH(repl, regex string) (CHReplacement, error) {
-	segments, err := ReplacementSegments(repl, regex)
+	segments, probed, err := ReplacementSegments(repl, regex)
 	if err != nil {
 		return CHReplacement{}, err
 	}
@@ -109,7 +110,7 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 		// `replaceRegexpOne` substitution string, and both are expressible
 		// over the `extractGroups` decomposition.
 		if seg.Group > maxCHBackref || len(seg.Fallbacks) > 0 {
-			return CHReplacement{Segments: segments}, nil
+			return CHReplacement{Segments: segments, ProbedRegex: probed}, nil
 		}
 	}
 	return CHReplacement{Template: renderCHTemplate(segments)}, nil
@@ -124,6 +125,15 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 type CHReplacement struct {
 	// Template is the `replaceRegexpOne` substitution string.
 	Template string
+	// ProbedRegex, when non-empty, is the regex the emitter must feed
+	// `extractGroups` in place of the one the query named: the same
+	// pattern with synthetic capture groups added so that a carrier whose
+	// own capture cannot report whether it took part in the match has one
+	// that can. It matches the same strings as the original — the added
+	// groups only observe — but it NUMBERS groups differently, so every
+	// index in Segments is already in its numbering and the two must be
+	// read together. See [planCaptureProbes].
+	ProbedRegex string
 	// Segments is the literal-run / capture-group decomposition the
 	// emitter renders as a `concat` over `extractGroups`. A segment's
 	// Literal is the DECODED text — `$$` has already collapsed to `$`,
@@ -145,7 +155,7 @@ type CHReplacement struct {
 // References that bind to nothing — an index past the regex's group
 // count, a name no group carries — contribute nothing at all, exactly as
 // Go's `ExpandString` substitutes the empty string for them.
-func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, error) {
+func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, string, error) {
 	groups := newCaptureGroups(regex)
 
 	var segments []chplan.LabelReplaceSegment
@@ -171,19 +181,20 @@ func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, erro
 	for i := 0; i < len(repl); {
 		ref, step, err := replacementStep(&literal, repl, i, groups)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if ref.group != unresolvedGroup {
 			flush()
 			segments = append(segments, chplan.LabelReplaceSegment{
 				Group:     ref.group,
 				Fallbacks: ref.fallbacks,
+				Probes:    ref.probes,
 			})
 		}
 		i += step
 	}
 	flush()
-	return segments, nil
+	return segments, groups.probe.regex, nil
 }
 
 // renderCHTemplate folds a decomposition back into a `replaceRegexpOne`
@@ -233,6 +244,11 @@ type captureGroups struct {
 	// unparseable or unclassifiable regex keeps the rejection rather than
 	// risking a wrong answer.
 	shapes map[int]captureShape
+	// probe is the regex rewritten to expose the participation of
+	// carriers whose own capture cannot report it, together with the
+	// index translation that rewrite forces. Its `regex` is empty when no
+	// carrier needed a probe, which leaves every index below untouched.
+	probe captureProbePlan
 }
 
 // newCaptureGroups compiles regex for its capture-group metadata.
@@ -267,7 +283,70 @@ func newCaptureGroups(regex string) captureGroups {
 		}
 		g.byName[name] = append(g.byName[name], i)
 	}
+	if needy := g.carriersNeedingProbes(); len(needy) > 0 {
+		// A failed plan leaves the zero value, which reads as "no probes"
+		// everywhere below and keeps the rejection those carriers had.
+		g.probe, _ = planCaptureProbes(regex, needy)
+	}
 	return g
+}
+
+// carriersNeedingProbes lists every capture group that shares its name,
+// survives the truncation, and can neither be cleared by non-nullability
+// nor by exclusivity — the carriers for which the emitted search would
+// otherwise have to guess. The list is the input to the regex rewrite;
+// planning is separate from deciding, because one rewrite serves every
+// shared name in the pattern at once.
+//
+// The result is sorted so a pattern always rewrites the same way, which
+// keeps the emitted SQL — and the goldens pinning it — stable.
+func (g captureGroups) carriersNeedingProbes() []int {
+	seen := map[int]bool{}
+	for _, carriers := range g.byName {
+		if len(carriers) < 2 {
+			continue
+		}
+		for _, idx := range g.unclearedCarriers(carriers) {
+			seen[idx] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for idx := range seen {
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// unclearedCarriers reports which of one name's carriers the static facts
+// alone cannot clear, over the same truncated prefix
+// [captureGroups.expressibleCarriers] searches.
+func (g captureGroups) unclearedCarriers(carriers []int) []int {
+	searched := carriers[:g.searchableEnd(carriers):g.searchableEnd(carriers)]
+	var out []int
+	for i, idx := range searched {
+		shape, known := g.shapes[idx]
+		if !known {
+			continue
+		}
+		if !shape.nullable || g.exclusiveOfAll(shape, searched[i+1:]) {
+			continue
+		}
+		out = append(out, idx)
+	}
+	return out
+}
+
+// searchableEnd is how many of carriers the search may look through:
+// everything up to and including the first one every match must pass
+// through, since Go's own scan can never walk past that one either.
+func (g captureGroups) searchableEnd(carriers []int) int {
+	for i, idx := range carriers {
+		if g.shapes[idx].unconditional {
+			return i + 1
+		}
+	}
+	return len(carriers)
 }
 
 // anchorRegex anchors a `label_replace` regex to a full-string match, the
@@ -370,6 +449,13 @@ type resolvedRef struct {
 	// [captureGroups.expressibleCarriers] for why that reproduces Go's
 	// choice exactly.
 	fallbacks []int
+	// probes holds, for each searched carrier — `group` followed by
+	// `fallbacks`, so one element apiece and in that order — the capture
+	// group whose NON-EMPTINESS reports that carrier took part in the
+	// match. It is empty when no carrier needed one, in which case every
+	// carrier's own capture reports its participation and the search is
+	// the plain non-empty one. See [planCaptureProbes].
+	probes []int
 }
 
 // resolve maps one extracted reference to the capture group(s) it points
@@ -427,10 +513,10 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 		// A numbered reference past the regex's group count binds to
 		// nothing, which is the empty string — not an error.
 		if ref.num <= g.count {
-			out.group = ref.num
+			out.group = g.probe.probedIndex(ref.num)
 		}
 	case len(carriers) > 1:
-		searched, ambiguous, ok := g.expressibleCarriers(carriers)
+		searched, probes, ambiguous, ok := g.expressibleCarriers(carriers)
 		if !ok {
 			return resolvedRef{}, fmt.Errorf(
 				"references capture-group name %q, which %d capture groups share, "+
@@ -443,9 +529,9 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 				ref.name, len(carriers), ambiguous,
 			)
 		}
-		out.group, out.fallbacks = searched[0], searched[1:]
+		out.group, out.fallbacks, out.probes = searched[0], searched[1:], probes
 	case len(carriers) == 1:
-		out.group = carriers[0]
+		out.group = g.probe.probedIndex(carriers[0])
 	}
 	return out, nil
 }
@@ -478,26 +564,42 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 // A carrier the parse-tree walk could not classify has no shape recorded,
 // which reads as nullable and exclusive of nothing, so an unrecognised
 // regex keeps the rejection.
-func (g captureGroups) expressibleCarriers(carriers []int) ([]int, int, bool) {
-	end := len(carriers)
-	for i, idx := range carriers {
-		if g.shapes[idx].unconditional {
-			end = i + 1
-			break
-		}
-	}
+func (g captureGroups) expressibleCarriers(carriers []int) ([]int, []int, int, bool) {
+	end := g.searchableEnd(carriers)
 	searched := carriers[:end:end]
+
+	probes := make([]int, len(searched))
+	anyProbe := false
 	for i, idx := range searched {
 		shape, known := g.shapes[idx]
-		if known && !shape.nullable {
+		if !known {
+			return nil, nil, idx, false
+		}
+		// By default a carrier reports its own participation, which is
+		// what makes the emitted search the plain non-empty one.
+		probes[i] = g.probe.probedIndex(idx)
+		if !shape.nullable || g.exclusiveOfAll(shape, searched[i+1:]) {
 			continue
 		}
-		if known && g.exclusiveOfAll(shape, searched[i+1:]) {
-			continue
+		at, probed := g.probe.probeOf[idx]
+		if !probed {
+			return nil, nil, idx, false
 		}
-		return nil, idx, false
+		probes[i] = at
+		anyProbe = true
 	}
-	return searched, 0, true
+	if !anyProbe {
+		probes = nil
+	}
+
+	// Every index leaves in the rewritten regex's numbering, which is the
+	// one the emitter's `extractGroups` reads. Without a rewrite the
+	// translation is the identity.
+	out := make([]int, len(searched))
+	for i, idx := range searched {
+		out[i] = g.probe.probedIndex(idx)
+	}
+	return out, probes, 0, true
 }
 
 // exclusiveOfAll reports whether shape's group can never take part in the
