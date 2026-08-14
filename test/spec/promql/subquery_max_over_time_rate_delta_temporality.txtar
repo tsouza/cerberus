@@ -27,6 +27,10 @@
 # reset-free diff of 10 and the answer is 1/3.
 -- query.promql --
 max_over_time(rate(http_requests_delta_total[1m])[2m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     AggregationTemporality Int32,
