@@ -461,24 +461,7 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		return
 
 	case *chplan.RangeWindowNative:
-		// The ClickHouse-native `timeSeries<fn>ToGrid` lowering of
-		// rate(m[Range]) and its siblings. It owns a full eval grid, so on a
-		// purely natively-lowered plan it is the ONLY carrier and the sole
-		// source of that plan's n_anchors / outer_range / cumulative_d.
-		p.recordGridCarrier(v, depth, sig)
-		p.checkRangeWindowNativeGrid(v, predStart, predEnd, depth, sig)
-		for _, e := range v.GroupBy {
-			p.walkExpr(e, predStart, predEnd, v.Step, sig)
-		}
-		for _, pr := range v.Recollapse {
-			p.walkExpr(pr.Expr, predStart, predEnd, v.Step, sig)
-		}
-		// Recurse into the inner spine widened via the single shared owner of
-		// this arithmetic (mirrors ReanchorRange) so the grid this predicts for
-		// the child matches what re-anchoring actually produces — including the
-		// Offset term (#1464).
-		inStart, inEnd := v.InputWindow(predStart, predEnd)
-		p.walkNode(v.Input, inStart, inEnd, v.Step, depth+1, sig)
+		p.walkRangeWindowNative(v, predStart, predEnd, depth, sig)
 		return
 
 	case *chplan.RangeWindowResample:
@@ -609,6 +592,33 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 	for _, c := range n.Children() {
 		p.walkNode(c, predStart, predEnd, predStep, depth, sig)
 	}
+}
+
+// walkRangeWindowNative sweeps the ClickHouse-native `timeSeries<fn>ToGrid`
+// lowering of rate(m[Range]) and its siblings. The node owns a full eval grid,
+// so on a purely natively-lowered plan it is the ONLY carrier and the sole
+// source of that plan's n_anchors / outer_range / cumulative_d.
+//
+// Its GroupBy and Recollapse exprs are evaluated at THIS node's own level and
+// cadence, so an embedded ScalarSubquery / InSubquery is checked against
+// (predStart, predEnd, v.Step) rather than against the widened inner-spine
+// bounds the recursion below descends into — the same rule the fan-out
+// RangeWindow arm applies to its own exprs.
+func (p *Planner) walkRangeWindowNative(v *chplan.RangeWindowNative, predStart, predEnd time.Time, depth int, sig *signals) {
+	p.recordGridCarrier(v, depth, sig)
+	p.checkRangeWindowNativeGrid(v, predStart, predEnd, depth, sig)
+	for _, e := range v.GroupBy {
+		p.walkExpr(e, predStart, predEnd, v.Step, sig)
+	}
+	for _, pr := range v.Recollapse {
+		p.walkExpr(pr.Expr, predStart, predEnd, v.Step, sig)
+	}
+	// Recurse into the inner spine widened via the single shared owner of this
+	// arithmetic (mirrors chplan.ReanchorRange) so the grid this predicts for
+	// the child matches what re-anchoring actually produces — including the
+	// Offset term (#1464).
+	inStart, inEnd := v.InputWindow(predStart, predEnd)
+	p.walkNode(v.Input, inStart, inEnd, v.Step, depth+1, sig)
 }
 
 // carrierGeometry is the measurement-only projection of one

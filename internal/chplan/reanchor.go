@@ -99,150 +99,13 @@ func ReanchorRange(n Node, start, end time.Time) (Node, error) {
 func reanchor(n Node, start, end time.Time) (Node, error) {
 	switch v := n.(type) {
 	case *RangeWindow:
-		// Instant-shape RangeWindows resolve a single anchor themselves and
-		// terminate the walk (mirrors widenSubquerySpine's Step <= 0 guard).
-		if v.Step <= 0 {
-			// Instant-shape window: not re-gridded, share verbatim.
-			return v, nil
-		}
-		if err := checkPredictedGrid(v, start, end); err != nil {
-			return nil, err
-		}
-		// Clone only this spine node; GroupBy / Scalars / ScalarExprs are
-		// off-grid immutable, so share the original slice headers (the shard
-		// re-grids Start/End/OuterRange only — it never mutates these).
-		c := *v
-		c.Start = start
-		c.End = end
-		c.OuterRange = end.Sub(start)
-		// Each of this window's anchors looks back Offset+Range (the window
-		// is [End-Offset-Range, End-Offset], see the RangeWindow doc comment
-		// above); widen the input spine by that much via the single shared
-		// owner of this arithmetic so the inner grid covers every anchor's
-		// window.
-		inStart, inEnd := v.InputWindow(start, end)
-		input, err := reanchor(v.Input, inStart, inEnd)
-		if err != nil {
-			return nil, err
-		}
-		c.Input = input
-		return &c, nil
+		return reanchorRangeWindow(v, start, end)
 	case *RangeWindowNative:
-		// The ClickHouse-native timeSeries<fn>ToGrid lowering of the SAME
-		// window semantics the RangeWindow arm above re-grids: the aggregate
-		// is handed (Start, End, Step, Range) and evaluates grid point i from
-		// the samples in `(anchor_i - Offset - Range, anchor_i - Offset]`. So
-		// re-anchoring is the same two moves — re-grid (Start, End), widen the
-		// input spine by Offset+Range — and the same discipline applies: the
-		// grid is filled only when the node is either unpinned (the slicer's
-		// UnpinSpine shape) or already sits exactly on the predicted grid, and
-		// an @-pinned divergence routes A via ErrReanchorGridMismatch.
-		//
-		// The one structural difference from the RangeWindow arm is that this
-		// node carries no OuterRange field — its grid span IS End-Start — so
-		// the guard is checkPredictedGridNative, the RangeLWR-shaped two-bound
-		// form rather than the three-bound one.
-		if v.Step <= 0 {
-			// No anchor grid to re-grid. The lowering only builds this node in
-			// range mode, so this is unreachable from a real plan; keeping the
-			// arm symmetric with RangeWindow / RangeLWR means a hand-built or
-			// future instant shape terminates the walk instead of being
-			// re-gridded onto bounds it has no anchors for.
-			return v, nil
-		}
-		if err := checkPredictedGridNative(v, start, end); err != nil {
-			return nil, err
-		}
-		// Clone only this spine node; GroupBy / Recollapse / Scalars are
-		// off-grid immutable, so share the original slice headers.
-		c := *v
-		c.Start = start
-		c.End = end
-		inStart, inEnd := v.InputWindow(start, end)
-		input, err := reanchor(v.Input, inStart, inEnd)
-		if err != nil {
-			return nil, err
-		}
-		c.Input = input
-		return &c, nil
+		return reanchorRangeWindowNative(v, start, end)
 	case *UnionAll:
-		// A UNION ALL of independent windowed spines. It carries NO grid and
-		// NO lookback of its own: every arm already evaluates over the request
-		// grid and each does its own -Offset-Range widening, so re-anchor every
-		// arm onto the SAME [start, end] the union was asked for — exactly the
-		// VectorJoin arm's shape, generalised from two fixed sides to N.
-		//
-		// Re-anchoring EVERY arm is what makes the union re-anchorable at all:
-		// the arms are concatenated positionally, so a shard that re-gridded
-		// one arm and shared another verbatim would emit one sub-grid's rows
-		// beside the full grid's, and the K-way composition would double-count
-		// every anchor of the shared arm. An @-pinned or grid-divergent arm
-		// surfaces ErrReanchorGridMismatch from the recursion and aborts the
-		// whole re-anchor to route A.
-		//
-		// A union whose arms carry no grid at all (the classic-histogram
-		// companion-suffix routing, where the UnionAll sits BENEATH the
-		// windowed node) recurses into arms that all hit the share-verbatim
-		// default, so this arm allocates a new Inputs slice and returns an
-		// Equal tree — the same cost the Project / Filter arms already pay.
-		inputs := make([]Node, len(v.Inputs))
-		for i, in := range v.Inputs {
-			arm, err := reanchor(in, start, end)
-			if err != nil {
-				return nil, err
-			}
-			inputs[i] = arm
-		}
-		return &UnionAll{Inputs: inputs}, nil
+		return reanchorUnionAll(v, start, end)
 	case *RangeLWR:
-		// The bare-selector last-with-respect-to leaf. Its eval grid is
-		// [Start, End] spaced by Step; each anchor reduces the most-recent
-		// sample in its offset-aware staleness window
-		// `(anchor - Offset - Lookback, anchor - Offset]`. The per-(series,
-		// anchor) value depends only on that window's membership, not on the
-		// scan lower bound — it is registered slice-invariant — so re-anchoring
-		// to a sub-grid yields exactly the rows route A would have produced for
-		// those anchors. Same no-mutate + grid-prediction discipline as
-		// the RangeWindow arm: the grid is filled only when the node is either
-		// unpinned (the slicer's unpinSpine shape) or already sits exactly on
-		// the predicted grid; an @-pinned divergence routes A via
-		// ErrReanchorGridMismatch.
-		if v.Step <= 0 {
-			// No anchor grid to re-grid (an instant-shape LWR); share verbatim.
-			return v, nil
-		}
-		if err := checkPredictedGridLWR(v, start, end); err != nil {
-			return nil, err
-		}
-		c := *v
-		if v.StepAlign {
-			// Epoch-aligned subquery inner (see RangeLWR.StepAlign): the
-			// unsliced query would have evaluated this grid at absolute-epoch
-			// (phase 0) anchors, independent of [start, end]. epochFloor's
-			// residue from phase 0 does not depend on what offset produced
-			// its input, so re-deriving the floor directly from this shard's
-			// own predicted bounds reproduces the SAME phase every shard
-			// would use — keeping every shard commensurate with the others
-			// and with the unsliced grid.
-			c.End = epochFloor(end, v.Step)
-			c.Start = epochFloor(start, v.Step).Add(v.Step)
-			if c.Start.After(c.End) {
-				c.Start = c.End
-			}
-		} else {
-			c.Start = start
-			c.End = end
-		}
-		// The membership window looks back Offset+Lookback from each anchor;
-		// widen the input spine by that much so every anchor finds its samples.
-		// Offset enters with its sign (a negative offset shifts the window
-		// forward), mirroring the solver-owned sign-aware scan floor.
-		input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Lookback), c.End)
-		if err != nil {
-			return nil, err
-		}
-		c.Input = input
-		return &c, nil
+		return reanchorRangeLWR(v, start, end)
 	case *Project:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
@@ -278,34 +141,7 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		// Predicate is off-grid immutable: share.
 		return &Filter{Input: input, Predicate: v.Predicate}, nil
 	case *VectorJoin:
-		// A step-aligned vector-vector join carries NO own anchor grid and NO
-		// lookback: each arm is an independent windowed spine that already
-		// evaluates over the request grid, and the join step-aligns the two on
-		// the per-anchor TimestampColumn. Re-anchor BOTH arms onto the SAME
-		// [start, end] the join was asked for (no widening — the arms' own
-		// RangeWindow / RangeLWR nodes do their -Range / -Lookback widening),
-		// then copy-on-write the join node, re-filling the two arms and sharing
-		// the immutable modifier fields (Op / Match / Card / Include /
-		// ReturnBool / StepAligned) + the four column names verbatim. An
-		// @-pinned or grid-divergent arm surfaces ErrReanchorGridMismatch from
-		// the recursion, aborting the whole re-anchor to route A. The
-		// instant-mode (!StepAligned) join is kept off this path by the
-		// planner's sawInstantVectorJoin fail-closed guard (its emitter
-		// synthesizes the join-side timestamp with now64(9), a wall-clock that
-		// diverges across shards); registration is by node kind, so the guard —
-		// not this case — is what excludes it.
-		left, err := reanchor(v.Left, start, end)
-		if err != nil {
-			return nil, err
-		}
-		right, err := reanchor(v.Right, start, end)
-		if err != nil {
-			return nil, err
-		}
-		c := *v
-		c.Left = left
-		c.Right = right
-		return &c, nil
+		return reanchorVectorJoin(v, start, end)
 	default:
 		// Off the windowed spine: SHARE the immutable subtree verbatim. The
 		// off-spine subtree is byte-identical across all K shards (it does not
@@ -318,6 +154,193 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		// clone it first or it will corrupt sibling shards.
 		return n, nil
 	}
+}
+
+// reanchorRangeWindow re-grids the fan-out matrix window: fill (Start, End,
+// OuterRange) from the requested grid, then recurse into the input spine widened
+// by RangeWindow.InputWindow (Offset+Range of lookback) so every anchor finds
+// the samples its window covers.
+//
+// Instant-shape RangeWindows resolve a single anchor themselves and terminate
+// the walk (mirrors widenSubquerySpine's Step <= 0 guard).
+func reanchorRangeWindow(v *RangeWindow, start, end time.Time) (Node, error) {
+	if v.Step <= 0 {
+		// Instant-shape window: not re-gridded, share verbatim.
+		return v, nil
+	}
+	if err := checkPredictedGrid(v, start, end); err != nil {
+		return nil, err
+	}
+	// Clone only this spine node; GroupBy / Scalars / ScalarExprs are off-grid
+	// immutable, so share the original slice headers (the shard re-grids
+	// Start/End/OuterRange only — it never mutates these).
+	c := *v
+	c.Start = start
+	c.End = end
+	c.OuterRange = end.Sub(start)
+	// Each of this window's anchors looks back Offset+Range (the window is
+	// [End-Offset-Range, End-Offset], see the RangeWindow doc comment); widen
+	// the input spine by that much via the single shared owner of this
+	// arithmetic so the inner grid covers every anchor's window.
+	inStart, inEnd := v.InputWindow(start, end)
+	input, err := reanchor(v.Input, inStart, inEnd)
+	if err != nil {
+		return nil, err
+	}
+	c.Input = input
+	return &c, nil
+}
+
+// reanchorRangeWindowNative re-grids the ClickHouse-native timeSeries<fn>ToGrid
+// lowering of the SAME window semantics reanchorRangeWindow handles: the
+// aggregate is handed (Start, End, Step, Range) and evaluates grid point i from
+// the samples in `(anchor_i - Offset - Range, anchor_i - Offset]`. So
+// re-anchoring is the same two moves — re-grid (Start, End), widen the input
+// spine by Offset+Range — and the same discipline applies: the grid is filled
+// only when the node is either unpinned (the slicer's UnpinSpine shape) or
+// already sits exactly on the predicted grid, and an @-pinned divergence routes
+// A via ErrReanchorGridMismatch.
+//
+// The one structural difference from the fan-out arm is that this node carries
+// no OuterRange field — its grid span IS End-Start — so the guard is
+// checkPredictedGridNative, the RangeLWR-shaped two-bound form rather than the
+// three-bound one.
+func reanchorRangeWindowNative(v *RangeWindowNative, start, end time.Time) (Node, error) {
+	if v.Step <= 0 {
+		// No anchor grid to re-grid. The lowering only builds this node in range
+		// mode, so this is unreachable from a real plan; keeping the arm
+		// symmetric with RangeWindow / RangeLWR means a hand-built or later
+		// instant shape terminates the walk instead of being re-gridded onto
+		// bounds it has no anchors for.
+		return v, nil
+	}
+	if err := checkPredictedGridNative(v, start, end); err != nil {
+		return nil, err
+	}
+	// Clone only this spine node; GroupBy / Recollapse / Scalars are off-grid
+	// immutable, so share the original slice headers.
+	c := *v
+	c.Start = start
+	c.End = end
+	inStart, inEnd := v.InputWindow(start, end)
+	input, err := reanchor(v.Input, inStart, inEnd)
+	if err != nil {
+		return nil, err
+	}
+	c.Input = input
+	return &c, nil
+}
+
+// reanchorUnionAll re-anchors a UNION ALL of independent windowed spines. It
+// carries NO grid and NO lookback of its own: every arm already evaluates over
+// the request grid and each does its own -Offset-Range widening, so every arm
+// re-anchors onto the SAME [start, end] the union was asked for — exactly
+// reanchorVectorJoin's shape, generalised from two fixed sides to N.
+//
+// Re-anchoring EVERY arm is what makes the union re-anchorable at all: the arms
+// are concatenated positionally, so a shard that re-gridded one arm and shared
+// another verbatim would emit one sub-grid's rows beside the full grid's, and
+// the K-way composition would double-count every anchor of the shared arm. An
+// @-pinned or grid-divergent arm surfaces ErrReanchorGridMismatch from the
+// recursion and aborts the whole re-anchor to route A.
+//
+// A union whose arms carry no grid at all (the classic-histogram
+// companion-suffix routing, where the UnionAll sits BENEATH the windowed node)
+// recurses into arms that all hit the share-verbatim default, so this allocates
+// a new Inputs slice and returns an Equal tree — the same cost the Project /
+// Filter arms already pay.
+func reanchorUnionAll(v *UnionAll, start, end time.Time) (Node, error) {
+	inputs := make([]Node, len(v.Inputs))
+	for i, in := range v.Inputs {
+		arm, err := reanchor(in, start, end)
+		if err != nil {
+			return nil, err
+		}
+		inputs[i] = arm
+	}
+	return &UnionAll{Inputs: inputs}, nil
+}
+
+// reanchorRangeLWR re-grids the bare-selector last-with-respect-to leaf. Its
+// eval grid is [Start, End] spaced by Step; each anchor reduces the most-recent
+// sample in its offset-aware staleness window
+// `(anchor - Offset - Lookback, anchor - Offset]`. The per-(series, anchor)
+// value depends only on that window's membership, not on the scan lower bound —
+// it is registered slice-invariant — so re-anchoring to a sub-grid yields
+// exactly the rows route A would have produced for those anchors. Same
+// no-mutate + grid-prediction discipline as the RangeWindow arm: the grid is
+// filled only when the node is either unpinned (the slicer's UnpinSpine shape)
+// or already sits exactly on the predicted grid; an @-pinned divergence routes A
+// via ErrReanchorGridMismatch.
+func reanchorRangeLWR(v *RangeLWR, start, end time.Time) (Node, error) {
+	if v.Step <= 0 {
+		// No anchor grid to re-grid (an instant-shape LWR); share verbatim.
+		return v, nil
+	}
+	if err := checkPredictedGridLWR(v, start, end); err != nil {
+		return nil, err
+	}
+	c := *v
+	if v.StepAlign {
+		// Epoch-aligned subquery inner (see RangeLWR.StepAlign): the
+		// unsliced query would have evaluated this grid at absolute-epoch
+		// (phase 0) anchors, independent of [start, end]. epochFloor's
+		// residue from phase 0 does not depend on what offset produced
+		// its input, so re-deriving the floor directly from this shard's
+		// own predicted bounds reproduces the SAME phase every shard
+		// would use — keeping every shard commensurate with the others
+		// and with the unsliced grid.
+		c.End = epochFloor(end, v.Step)
+		c.Start = epochFloor(start, v.Step).Add(v.Step)
+		if c.Start.After(c.End) {
+			c.Start = c.End
+		}
+	} else {
+		c.Start = start
+		c.End = end
+	}
+	// The membership window looks back Offset+Lookback from each anchor;
+	// widen the input spine by that much so every anchor finds its samples.
+	// Offset enters with its sign (a negative offset shifts the window
+	// forward), mirroring the solver-owned sign-aware scan floor.
+	input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Lookback), c.End)
+	if err != nil {
+		return nil, err
+	}
+	c.Input = input
+	return &c, nil
+}
+
+// reanchorVectorJoin re-anchors a step-aligned vector-vector join. It carries
+// NO own anchor grid and NO lookback: each arm is an independent windowed spine
+// that already evaluates over the request grid, and the join step-aligns the two
+// on the per-anchor TimestampColumn. BOTH arms re-anchor onto the SAME
+// [start, end] the join was asked for (no widening — the arms' own RangeWindow /
+// RangeLWR nodes do their -Range / -Lookback widening), then the join node is
+// copy-on-written, re-filling the two arms and sharing the immutable modifier
+// fields (Op / Match / Card / Include / ReturnBool / StepAligned) + the four
+// column names verbatim. An @-pinned or grid-divergent arm surfaces
+// ErrReanchorGridMismatch from the recursion, aborting the whole re-anchor to
+// route A.
+//
+// The instant-mode (!StepAligned) join is kept off this path by the planner's
+// sawInstantVectorJoin fail-closed guard (its emitter synthesizes the join-side
+// timestamp with now64(9), a wall-clock that diverges across shards);
+// registration is by node kind, so that guard — not this function — is what
+// excludes it.
+func reanchorVectorJoin(v *VectorJoin, start, end time.Time) (Node, error) {
+	left, err := reanchor(v.Left, start, end)
+	if err != nil {
+		return nil, err
+	}
+	right, err := reanchor(v.Right, start, end)
+	if err != nil {
+		return nil, err
+	}
+	c := *v
+	c.Left = left
+	c.Right = right
+	return &c, nil
 }
 
 // checkPredictedGrid asserts a matrix RangeWindow's current bounds match
