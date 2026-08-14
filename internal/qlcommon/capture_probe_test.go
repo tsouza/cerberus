@@ -443,3 +443,75 @@ func TestProbeRewriteDeclinesInlineFlagSettings(t *testing.T) {
 		}
 	})
 }
+
+// TestReplacementToCHRewritesOnlyWhenTheRewriteIsTheReason pins that a
+// rewrite never happens where it buys nothing — which is a correctness
+// requirement, not tidiness.
+//
+// A rewrite renumbers every capture group. The `replaceRegexpOne`
+// substitution string is applied against the regex `match(...)` ran, which
+// is the ORIGINAL one, so a template built from rewritten indices points
+// at the wrong groups: for `(?:x(?P<dup>a?))?(?P<dup>b)` the reference
+// `$1` would render as `\2` and substitute the text of `(?P<dup>b)`. That
+// is a silently wrong label value on the wire — the failure mode issue
+// #1490 reported — rather than a loud one.
+//
+// Two guarantees keep it out of reach, and both are asserted here: a
+// template that resolves without a rewrite never gets one, and a
+// decomposition that DID get one never takes the substitution-string form.
+func TestReplacementToCHRewritesOnlyWhenTheRewriteIsTheReason(t *testing.T) {
+	t.Parallel()
+
+	// The regex carries a shared name whose carriers would need probes,
+	// so a resolution that planned them eagerly would rewrite for every
+	// template below — none of which reference that name.
+	const regex = `(?:x(?P<dup>a?))?(?P<dup>b)`
+
+	t.Run("a_reference_that_needs_no_probe_keeps_the_original_numbering", func(t *testing.T) {
+		t.Parallel()
+
+		inputs := []string{"xab", "b", "xb"}
+		oracle := regexp.MustCompile(anchorRegex(regex))
+
+		for _, repl := range []string{"$1", "$2", "v=$1", "$1-$2", "plain"} {
+			got, err := ReplacementToCH(repl, regex)
+			if err != nil {
+				t.Fatalf("ReplacementToCH(%q, %q): unexpected error: %v", repl, regex, err)
+			}
+			if got.ProbedRegex != "" {
+				t.Errorf("ReplacementToCH(%q, %q) rewrote the regex to %q; the template "+
+					"references no shared name, so the rewrite renumbers groups for nothing",
+					repl, regex, got.ProbedRegex)
+			}
+			for _, src := range inputs {
+				match := oracle.FindStringSubmatchIndex(src)
+				if match == nil {
+					continue
+				}
+				want := string(oracle.ExpandString(nil, repl, src, match))
+				if evaluated := evaluateReplacement(got, regex, src); evaluated != want {
+					t.Errorf("ReplacementToCH(%q, %q) on %q evaluates to %q; Go's "+
+						"ExpandString gives %q", repl, regex, src, evaluated, want)
+				}
+			}
+		}
+	})
+
+	t.Run("a_rewritten_decomposition_never_takes_the_template_form", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := ReplacementToCH("$dup", regex)
+		if err != nil {
+			t.Fatalf("ReplacementToCH(%q): unexpected error: %v", regex, err)
+		}
+		if got.ProbedRegex == "" {
+			t.Fatal("the shared-name reference did not produce a rewrite, so this test no " +
+				"longer covers what it claims to")
+		}
+		if got.Template != "" {
+			t.Errorf("ReplacementToCH(%q) returned the substitution-string form %q alongside a "+
+				"rewrite; that string is applied against the ORIGINAL regex, so its backrefs "+
+				"would point at the wrong groups", regex, got.Template)
+		}
+	})
+}

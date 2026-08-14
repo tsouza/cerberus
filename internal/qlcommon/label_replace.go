@@ -99,21 +99,51 @@ const unresolvedGroup = -1
 // (very-much-reachable) cold path where the regex doesn't match
 // anything.
 func ReplacementToCH(repl, regex string) (CHReplacement, error) {
-	segments, probed, err := ReplacementSegments(repl, regex)
-	if err != nil {
-		return CHReplacement{}, err
+	// Resolve WITHOUT a regex rewrite first. Everything that was already
+	// expressible then stays byte-for-byte what it was, and — more than a
+	// courtesy — no reference keeps its original numbering by accident:
+	// a rewrite renumbers every capture group, so a pattern that gains one
+	// it did not need would silently move what `$1` points at.
+	segments, err := replacementSegments(repl, regex, withoutCaptureProbes)
+	if err == nil {
+		return chReplacement(segments, ""), nil
+	}
+	// Only the shared-carrier ambiguity is worth a second attempt, and
+	// only it can be cleared by one. Any other failure reproduces
+	// identically below, so the error the caller sees is the probed pass's
+	// — the one that names the carrier no probe could answer for.
+	probedSegments, probed, probedErr := replacementSegmentsProbed(repl, regex)
+	if probedErr != nil {
+		return CHReplacement{}, probedErr
+	}
+	return chReplacement(probedSegments, probed), nil
+}
+
+// chReplacement picks the output form a decomposition takes.
+//
+// A group above ClickHouse's `\9` ceiling has no `\N` spelling, and a
+// reference to a name several groups share is a SELECTION among indices
+// rather than one index — neither fits a `replaceRegexpOne` substitution
+// string, and both are expressible over the `extractGroups`
+// decomposition.
+//
+// A probe rewrite forces the same choice whatever the indices look like.
+// The substitution string is applied against the regex `match(...)` ran,
+// which is the ORIGINAL one, while every index in a rewritten
+// decomposition is numbered against the REWRITTEN pattern — so a template
+// built from those indices would point at the wrong groups. The
+// `extractGroups` form is the one that reads the rewritten pattern, so it
+// is the only form a rewrite may take.
+func chReplacement(segments []chplan.LabelReplaceSegment, probed string) CHReplacement {
+	if probed != "" {
+		return CHReplacement{Segments: segments, ProbedRegex: probed}
 	}
 	for _, seg := range segments {
-		// A group above CH's `\9` ceiling has no `\N` spelling, and a
-		// reference to a name several groups share is a SELECTION among
-		// indices rather than one index — neither fits a
-		// `replaceRegexpOne` substitution string, and both are expressible
-		// over the `extractGroups` decomposition.
 		if seg.Group > maxCHBackref || len(seg.Fallbacks) > 0 {
-			return CHReplacement{Segments: segments, ProbedRegex: probed}, nil
+			return CHReplacement{Segments: segments}
 		}
 	}
-	return CHReplacement{Template: renderCHTemplate(segments)}, nil
+	return CHReplacement{Template: renderCHTemplate(segments)}
 }
 
 // CHReplacement is the ClickHouse-side form of a Go replacement template.
@@ -156,8 +186,39 @@ type CHReplacement struct {
 // count, a name no group carries — contribute nothing at all, exactly as
 // Go's `ExpandString` substitutes the empty string for them.
 func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, string, error) {
-	groups := newCaptureGroups(regex)
+	if segments, err := replacementSegments(repl, regex, withoutCaptureProbes); err == nil {
+		return segments, "", nil
+	}
+	return replacementSegmentsProbed(repl, regex)
+}
 
+// captureProbeUse says whether a resolution may rewrite the regex to
+// expose capture participation. The two passes are separate because a
+// rewrite renumbers every group, so it must not happen where it buys
+// nothing.
+type captureProbeUse bool
+
+const (
+	withoutCaptureProbes captureProbeUse = false
+	withCaptureProbes    captureProbeUse = true
+)
+
+// replacementSegmentsProbed resolves with a rewrite permitted, returning
+// the rewritten regex alongside the decomposition.
+func replacementSegmentsProbed(repl, regex string) ([]chplan.LabelReplaceSegment, string, error) {
+	groups := newCaptureGroups(regex, withCaptureProbes)
+	segments, err := resolveSegments(repl, groups)
+	if err != nil {
+		return nil, "", err
+	}
+	return segments, groups.probe.regex, nil
+}
+
+func replacementSegments(repl, regex string, probes captureProbeUse) ([]chplan.LabelReplaceSegment, error) {
+	return resolveSegments(repl, newCaptureGroups(regex, probes))
+}
+
+func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSegment, error) {
 	var segments []chplan.LabelReplaceSegment
 	var literal strings.Builder
 	flush := func() {
@@ -181,7 +242,7 @@ func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, stri
 	for i := 0; i < len(repl); {
 		ref, step, err := replacementStep(&literal, repl, i, groups)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		if ref.group != unresolvedGroup {
 			flush()
@@ -194,7 +255,7 @@ func ReplacementSegments(repl, regex string) ([]chplan.LabelReplaceSegment, stri
 		i += step
 	}
 	flush()
-	return segments, groups.probe.regex, nil
+	return segments, nil
 }
 
 // renderCHTemplate folds a decomposition back into a `replaceRegexpOne`
@@ -258,7 +319,7 @@ type captureGroups struct {
 // is allowed through and CH's own parse stage surfaces the regex error
 // to the client — the same fallback the pre-name-resolution version of
 // this file used.
-func newCaptureGroups(regex string) captureGroups {
+func newCaptureGroups(regex string, probes captureProbeUse) captureGroups {
 	// Anchored to mirror the SQL emitter and reference Prometheus
 	// (promql/functions.go: `"^(?s:" + regexStr + ")$"`), including the
 	// non-capturing `(?s:...)` wrapper: without it, `^...$` binds only to
@@ -283,7 +344,7 @@ func newCaptureGroups(regex string) captureGroups {
 		}
 		g.byName[name] = append(g.byName[name], i)
 	}
-	if needy := g.carriersNeedingProbes(); len(needy) > 0 {
+	if needy := g.carriersNeedingProbes(); probes == withCaptureProbes && len(needy) > 0 {
 		// A failed plan leaves the zero value, which reads as "no probes"
 		// everywhere below and keeps the rejection those carriers had.
 		g.probe, _ = planCaptureProbes(regex, needy)

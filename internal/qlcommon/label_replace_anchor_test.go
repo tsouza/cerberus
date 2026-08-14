@@ -106,7 +106,7 @@ func TestAnchorRegexIsNonCapturing(t *testing.T) {
 func TestNewCaptureGroupsIndicesSurviveAnchorWrap(t *testing.T) {
 	t.Parallel()
 
-	g := newCaptureGroups(`(a)(b)|(c)`)
+	g := newCaptureGroups(`(a)(b)|(c)`, withoutCaptureProbes)
 
 	const wantCount = 3
 	if g.count != wantCount {
