@@ -73,3 +73,28 @@ func TestBackfillMetricsColumns_DeclaredColumnsUntouched(t *testing.T) {
 		t.Errorf("Sum appears %d times, want 1\nddl=%s", n, got)
 	}
 }
+
+func TestBackfillMetricsColumns_ExpHistogramCountDefault(t *testing.T) {
+	ddl := "CREATE TABLE " + expHistogramTable + " (\n" +
+		"    MetricName String,\n" +
+		"    Attributes Map(String, String),\n" +
+		"    ZeroCount UInt64,\n" +
+		"    PositiveBucketCounts Array(UInt64),\n" +
+		"    NegativeBucketCounts Array(UInt64)\n" +
+		") ENGINE = MergeTree() ORDER BY MetricName"
+	got := strings.Join(BackfillMetricsColumns([]string{ddl}), "")
+
+	const want = "Count UInt64 DEFAULT ZeroCount + arraySum(PositiveBucketCounts) + arraySum(NegativeBucketCounts)"
+	if !strings.Contains(got, want) {
+		t.Errorf("derived exponential-histogram Count default missing\nddl=%s", got)
+	}
+	if strings.Contains(got, "Count UInt64 DEFAULT 0") {
+		t.Errorf("exponential histogram retained empty Count default\nddl=%s", got)
+	}
+
+	classicDDL := strings.Replace(ddl, expHistogramTable, classicHistogramTable, 1)
+	classicGot := strings.Join(BackfillMetricsColumns([]string{classicDDL}), "")
+	if !strings.Contains(classicGot, "Count UInt64 DEFAULT 0") {
+		t.Errorf("classic histogram Count default changed\nddl=%s", classicGot)
+	}
+}

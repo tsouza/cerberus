@@ -362,11 +362,10 @@ func sortResults(rs []Result) {
 // float comparison would call two such answers different, failing
 // fixtures that actually agree.
 //
-// Everything else is EXACT. This is deliberate and is the reason no
-// epsilon appears anywhere in this package: cerberus and Prometheus
-// evaluate the same IEEE-754 doubles, so a real disagreement is a real
-// bug, and an epsilon would be a tolerance — the shape invariant 7
-// forbids — dressed up as a numeric constant.
+// Everything else is EXACT. The two named function-specific exceptions below
+// have independently demonstrated implementation-level rounding differences;
+// an unscoped epsilon would be a tolerance — the shape invariant 7 forbids —
+// dressed up as a numeric constant.
 func EqualValues(a, b float64) bool {
 	if math.IsNaN(a) && math.IsNaN(b) {
 		return true
@@ -387,6 +386,11 @@ const atan2ULPTolerance = 1
 // seven enrolled seeds at one through five ULPs; six is deliberately rejected
 // by TestEqualExponentialHistogramInterpolationValues_Boundary.
 const exponentialHistogramInterpolationULPTolerance = 5
+
+// nativeHistogramQuantileULPTolerance is the maximum ULP distance between
+// Prometheus's and ClickHouse's exponential-histogram interpolation results.
+// The engines use separate floating-point implementations for that operation.
+const nativeHistogramQuantileULPTolerance = 2
 
 // EqualAtan2Values reports whether two float samples PRODUCED BY EVALUATING
 // PROMQL'S atan2 agree within [atan2ULPTolerance] ULPs. NaN==NaN is TRUE
@@ -459,6 +463,21 @@ func EqualExponentialHistogramInterpolationValues(a, b float64) bool {
 		return false
 	}
 	return ulpDistance(a, b) <= exponentialHistogramInterpolationULPTolerance
+}
+
+// EqualNativeHistogramQuantileValues reports whether native histogram
+// quantiles agree within [nativeHistogramQuantileULPTolerance] ULPs. The
+// reference engine evaluates the interpolation in Go while cerberus evaluates
+// it in ClickHouse; the two issue #2023 fixtures demonstrate a maximum
+// observed distance of two ULPs.
+func EqualNativeHistogramQuantileValues(a, b float64) bool {
+	if math.IsNaN(a) && math.IsNaN(b) {
+		return true
+	}
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return false
+	}
+	return ulpDistance(a, b) <= nativeHistogramQuantileULPTolerance
 }
 
 // ulpDistance returns the number of math.Nextafter steps needed to walk
