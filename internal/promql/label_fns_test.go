@@ -21,10 +21,10 @@ import (
 // Lowering must surface that as a query error rather than fall through
 // and emit a plan whose destination label silently holds the wrong text.
 //
-// The regex below is the smallest shape that really is unobservable, and
-// it carries its own proof: on `host="b"` the alternation takes its empty
-// first branch, so `dup` takes part capturing nothing and Prometheus
-// answers `service=""`, while the emitted search answers `service="b"`.
+// The regex below is the smallest shape that remains unobservable: on
+// `host="b"` its final optional carrier takes part empty after a prior
+// alternation pass selected another branch, so sibling probes retain no
+// per-pass participation bit.
 //
 // A carrier under a quest is NOT enough on its own any more — where the
 // carrier has an ancestor that cannot match empty, cerberus rewrites the
@@ -36,7 +36,7 @@ import (
 func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	t.Parallel()
 
-	const q = `label_replace(temperature, "service", "$dup", "host", "(?:(?P<dup>a?)|y)(?P<dup>b)")`
+	const q = `label_replace(temperature, "service", "$dup", "host", "(?:(?P<dup>a?)|y)*(?P<dup>b)")`
 
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(q)
 	if err != nil {
@@ -61,6 +61,13 @@ func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
 		name  string
 		query string
 	}{
+		{
+			// The nullable branch has no non-empty ancestor, but the
+			// mandatory, non-repeated alternation enters exactly one branch.
+			// An empty sibling probe therefore proves this branch took part.
+			"nullable_carrier_with_negative_sibling_probe",
+			`label_replace(temperature, "service", "$dup", "host", "(?:(?P<dup>a?)|(?P<dup>b))(?P<dup>c)")`,
+		},
 		{
 			// Every carrier is non-nullable, so taking part in the match
 			// and capturing a non-empty string are the same event.

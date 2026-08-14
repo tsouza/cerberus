@@ -37,6 +37,16 @@ func TestLabelReplaceProbedSelection_ChDB(t *testing.T) {
 		srcs    []string
 	}{
 		{
+			// The first carrier's branch is mandatory but its own capture is
+			// nullable. The sibling is non-empty, so its empty probe proves
+			// that the first branch was selected.
+			name:    "mandatory_alternation_negative_sibling_probe",
+			regex:   `(?:(?P<dup>a?)|(?P<dup>b))(?P<dup>c)`,
+			probed:  `(?:(?P<dup>a?)|(?P<cerberusprobe0>(?P<dup>b)))(?P<dup>c)`,
+			segment: chplan.LabelReplaceSegment{Group: 1, Fallbacks: []int{3, 4}, NegativeProbes: [][]int{{2}, nil, nil}},
+			srcs:    []string{"c", "ac", "bc"},
+		},
+		{
 			// The witness issue #1956 was narrowed to. On "xb" the
 			// optional branch takes part and captures nothing, so the
 			// answer is "" — which a search over the carriers' own

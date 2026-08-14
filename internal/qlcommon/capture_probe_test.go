@@ -26,6 +26,17 @@ func TestReplacementToCHProbesCarrierParticipation(t *testing.T) {
 		wantSegs   []chplan.LabelReplaceSegment
 	}{
 		{
+			// The first branch is nullable and has no positive probe. The
+			// alternation is mandatory and its only sibling is non-empty, so
+			// that sibling's empty probe proves this branch participated.
+			name:       "mandatory_alternation_negative_sibling_probe",
+			regex:      `(?:(?P<dup>a?)|(?P<dup>b))(?P<dup>c)`,
+			wantProbed: `(?:(?P<dup>a?)|(?P<cerberusprobe0>(?P<dup>b)))(?P<dup>c)`,
+			wantSegs: []chplan.LabelReplaceSegment{
+				{Group: 1, Fallbacks: []int{3, 4}, NegativeProbes: [][]int{{2}, nil, nil}},
+			},
+		},
+		{
 			// The witness issue #1956 was narrowed to. Carrier 1 is
 			// nullable and sits under a quest, but the quest's body holds
 			// a mandatory "x", so wrapping the body reports whether the
@@ -366,12 +377,12 @@ func weakenedProbeDisagreement(
 	if !ok {
 		return ""
 	}
-	plan, ok := readBackPlan(original, probed, probeNames)
+	plan, ok := readBackPlan(original, probed, probeNames, nil)
 	if !ok {
 		return ""
 	}
 	g.probe = plan
-	searched, probes, _, ok := g.expressibleCarriers(carriers)
+	searched, probes, _, _, ok := g.expressibleCarriers(carriers)
 	if !ok {
 		return ""
 	}

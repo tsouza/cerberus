@@ -92,6 +92,9 @@ type captureProbePlan struct {
 	// non-emptiness reports that carrier's participation. Keyed by the
 	// ORIGINAL index; the value is in the PROBED numbering.
 	probeOf map[int]int
+	// negativeOf maps an original carrier to sibling probes which must all
+	// be empty for that carrier to have participated.
+	negativeOf map[int][]int
 }
 
 // probedIndex translates a capture-group index from the original regex's
@@ -144,6 +147,8 @@ func planCaptureProbes(regex string, need []int) (captureProbePlan, bool) {
 	}
 
 	spans := map[int]sourceSpan{}
+	negativeRequests := map[int][]int{}
+	nextRequest := -1
 	for _, carrier := range need {
 		at, known := byCapture[carrier]
 		if !known {
@@ -151,6 +156,14 @@ func planCaptureProbes(regex string, need []int) (captureProbePlan, bool) {
 		}
 		if span, ok := probeSpanFor(anchored, groups, at); ok {
 			spans[carrier] = span
+			continue
+		}
+		if siblings, ok := negativeSiblingSpans(anchored, groups, at); ok {
+			for _, sibling := range siblings {
+				spans[nextRequest] = sibling
+				negativeRequests[carrier] = append(negativeRequests[carrier], nextRequest)
+				nextRequest--
+			}
 		}
 	}
 	if len(spans) == 0 {
@@ -161,7 +174,13 @@ func planCaptureProbes(regex string, need []int) (captureProbePlan, bool) {
 	if !ok {
 		return captureProbePlan{}, false
 	}
-	plan, ok := readBackPlan(original, probed, probeNames)
+	negativeNames := map[int][]string{}
+	for carrier, requests := range negativeRequests {
+		for _, request := range requests {
+			negativeNames[carrier] = append(negativeNames[carrier], probeNames[request])
+		}
+	}
+	plan, ok := readBackPlan(original, probed, probeNames, negativeNames)
 	if !ok {
 		return captureProbePlan{}, false
 	}
@@ -211,13 +230,13 @@ func anchorWrapper() (prefix, suffix string) {
 // vector exactly — same length, same names, same order. A probe inserted
 // at a boundary that does not bracket what it was meant to therefore
 // fails here instead of silently answering for the wrong span.
-func readBackPlan(original *regexp.Regexp, probed string, probeNames map[int]string) (captureProbePlan, bool) {
+func readBackPlan(original *regexp.Regexp, probed string, probeNames map[int]string, negativeNames map[int][]string) (captureProbePlan, bool) {
 	compiled, err := regexp.Compile(probed)
 	if err != nil {
 		return captureProbePlan{}, false
 	}
 	names := compiled.SubexpNames()
-	plan := captureProbePlan{regex: probed, probeOf: map[int]int{}}
+	plan := captureProbePlan{regex: probed, probeOf: map[int]int{}, negativeOf: map[int][]int{}}
 	probeIndex := map[string]int{}
 	for i, name := range names {
 		if strings.HasPrefix(name, probeNamePrefix) {
@@ -236,13 +255,85 @@ func readBackPlan(original *regexp.Regexp, probed string, probeNames map[int]str
 		}
 	}
 	for carrier, name := range probeNames {
+		if carrier < 0 {
+			continue
+		}
 		at, known := probeIndex[name]
 		if !known {
 			return captureProbePlan{}, false
 		}
 		plan.probeOf[carrier] = at
 	}
+	for carrier, names := range negativeNames {
+		for _, name := range names {
+			at, known := probeIndex[name]
+			if !known {
+				return captureProbePlan{}, false
+			}
+			plan.negativeOf[carrier] = append(plan.negativeOf[carrier], at)
+		}
+	}
 	return plan, true
+}
+
+// negativeSiblingSpans returns non-empty sibling branches whose absence
+// proves that the carrier's own mandatory branch was selected. The enclosing
+// alternation itself must be mandatory and non-repeated, otherwise all-empty
+// sibling probes could also mean that the alternation was skipped or entered
+// again on a later repetition.
+func negativeSiblingSpans(src string, groups []sourceGroup, at int) ([]sourceSpan, bool) {
+	shape, known := captureShapes(src)[groups[at].capIndex]
+	if !known {
+		return nil, false
+	}
+	fork := -1
+	for i := len(shape.spine) - 1; i >= 0; i-- {
+		if shape.spine[i].node.Op == syntax.OpAlternate {
+			fork = i
+			break
+		}
+	}
+	if fork < 0 {
+		return nil, false
+	}
+	for _, step := range shape.spine[:fork] {
+		if skippable(step.node) || reenterable(step.node) {
+			return nil, false
+		}
+	}
+	for _, step := range shape.spine[fork+1:] {
+		if skippable(step.node) {
+			return nil, false
+		}
+	}
+	parent := groups[at].parent
+	for parent >= 0 && len(groups[parent].alternations) == 0 {
+		parent = groups[parent].parent
+	}
+	if parent < 0 {
+		return nil, false
+	}
+	branch, _ := branchContaining(groups[parent], groups[at].open)
+	ordinal := captureOrdinalIn(groups, branch, groups[at].open)
+	branchShape, known := captureShapes(src[branch.start:branch.end])[ordinal]
+	if !known || !branchShape.unconditional {
+		return nil, false
+	}
+	var siblings []sourceSpan
+	start := groups[parent].bodyStart
+	for _, bar := range append(groups[parent].alternations, groups[parent].bodyEnd) {
+		span := sourceSpan{start: start, end: bar}
+		start = bar + 1
+		if span == branch {
+			continue
+		}
+		parsed, err := syntax.Parse(src[span.start:span.end], syntax.Perl)
+		if err != nil || matchesEmpty(parsed) {
+			return nil, false
+		}
+		siblings = append(siblings, span)
+	}
+	return siblings, len(siblings) > 0
 }
 
 // sourceSpan is a half-open byte range of a regex source.
