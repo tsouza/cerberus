@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -1050,6 +1051,12 @@ func histogramAggShapeLowerable(shape histogramAggShape, s schema.Metrics) bool 
 	if s.IsExpHistogramMetric(shape.selector.Name) {
 		return shape.agg == nil || expHistogramAggOpIsMergeable(shape.agg.Op)
 	}
+	if shape.agg != nil && !shape.agg.Without && !slices.Contains(shape.agg.Grouping, bucketBoundLabel) {
+		// A by() aggregation that omits le collapses the Prometheus bucket
+		// series into samples with no bucket-bound label. The float fallback
+		// filters those samples, matching histogram_quantile's empty result.
+		return false
+	}
 	return shape.classicFold != nil
 }
 
@@ -1160,11 +1167,12 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 // the Aggregate groups by the full Attributes map (preserving per-series
 // identity), and the inner Project re-surfaces Attributes as-is.
 //
-// The `le` label is silently dropped from any user-supplied `by(...)`
-// grouping because OTel-CH classic histograms never carry an `le`
-// label — the bucket distribution lives in the parallel arrays. So
-// `sum by(le)(...)` collapses to a single group, while
-// `sum by(le, job)(...)` groups by `job` alone.
+// The array-domain path applies only when a `by(...)` aggregation retains
+// `le`. OTel-CH stores that label in the parallel bucket arrays, so it is
+// omitted from the physical group key: `sum by(le)(...)` collapses to one
+// group, while `sum by(le, job)(...)` groups by `job` alone. When `by(...)`
+// omits `le`, the ordinary float-bucket path preserves Prometheus's empty
+// histogram_quantile result.
 //
 // For `sum without (k1, k2, ...)`, the standard MapWithoutKeys group
 // expression is used (le is not special; if the user lists it, the

@@ -27,6 +27,10 @@ Reassembled ladders and the reference answers at phi = 0.5:
 
 -- query.promql --
 histogram_quantile(0.5, topk by(le) (2, sum_over_time(http_server_request_duration_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 5m
 -- seed --
