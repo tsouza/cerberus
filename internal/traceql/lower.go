@@ -1655,16 +1655,43 @@ func isTraceScopedIntrinsic(i traceql.Intrinsic) bool {
 	return false
 }
 
-// traceScopedRootSpanCond is the OTel-CH root-span test the /api/search
-// root-lookup decoration (internal/api/tempo/root_lookup.go's rootCond)
-// and the `| compare()` root lookup (metrics_compare.go's
-// compareRootLookup) both build independently: a span with no parent
-// (empty, or the all-zero 16-hex-digit ParentSpanId some exporters
-// write instead of empty) is the trace's root.
+// rootParentSpanID is the ParentSpanId value that makes a span the ROOT
+// of its trace, and the ONLY one: reference Tempo's rootness test is
+// `Span.IsRoot()`, which is `len(ParentSpanID) == 0`
+// (tempodb/encoding/vparquet4/schema.go), and the OTel-CH exporter
+// writes exactly that empty string for a parentless span
+// (traceutil.SpanIDToHexOrEmptyString maps an all-zero span id to "").
+// Every other value NAMES a parent span — whether or not a row carrying
+// that SpanId is in the data.
+const rootParentSpanID = ""
+
+// traceScopedRootSpanCond is the root-span test behind the trace-scoped
+// root-identity intrinsics: `{ rootName = … }` / `{ rootServiceName = … }`
+// (traceScopedValueNode) and the `| compare()` root lookup
+// (metrics_compare.go's compareRootLookup).
+//
+// It is an equality against rootParentSpanID, not a membership that also
+// accepts the all-zero 16-hex-digit spelling. Upstream numbers a trace
+// from spans whose ParentSpanID is EMPTY and nothing else, so a span
+// naming an all-zero parent is an ordinary child whose parent row simply
+// is not in the data: reference leaves such a trace's RootSpanName /
+// RootServiceName empty, and `{ rootName = "…" }` therefore matches
+// nothing in it (issue #1990, confirmed against Tempo's own engine by
+// the TraceQL parity oracle). Accepting the all-zero spelling made
+// cerberus answer with that trace's spans where reference answered with
+// none.
+//
+// The /api/search root-span DECORATION (internal/api/tempo/root_lookup.go's
+// rootCond, and the summariser's observeRoot) deliberately keeps the wider
+// marker set: it is a best-effort label for the wire response — it already
+// falls back to the earliest span when a trace has no root at all, where
+// reference reports an empty name — not a predicate that decides which
+// spans a query matches.
 func traceScopedRootSpanCond(s schema.Traces) chplan.Expr {
-	return &chplan.InList{
-		Left: &chplan.ColumnRef{Name: s.ParentSpanIDColumn},
-		List: []chplan.Expr{&chplan.LitString{V: ""}, &chplan.LitString{V: "0000000000000000"}},
+	return &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: s.ParentSpanIDColumn},
+		Right: &chplan.LitString{V: rootParentSpanID},
 	}
 }
 
@@ -2194,7 +2221,9 @@ func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) 
 		return nil, false
 	}
 	parentCol := &chplan.ColumnRef{Name: s.ParentSpanIDColumn}
-	empty := &chplan.LitString{V: ""}
+	// Rootness is the empty ParentSpanId and nothing else — the same
+	// rule traceScopedRootSpanCond encodes; see rootParentSpanID.
+	empty := &chplan.LitString{V: rootParentSpanID}
 	switch {
 	case root && !nonRoot:
 		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true

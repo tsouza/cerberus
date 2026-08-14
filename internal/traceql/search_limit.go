@@ -457,7 +457,7 @@ func isRootSpanFilter(n chplan.Node, parentSpanIDCol string) bool {
 		return false
 	}
 	lit, ok := b.Right.(*chplan.LitString)
-	return ok && col.Name == parentSpanIDCol && lit.V == ""
+	return ok && col.Name == parentSpanIDCol && lit.V == rootParentSpanID
 }
 
 // searchWindowKey types the context value carrying /api/search's request
