@@ -15,6 +15,10 @@ INSERT INTO otel_metrics_histogram VALUES
 [
   ["", {"host": "a"}, "2026-01-01T00:00:01Z", 0.6]
 ]
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- args --
 [0] string = ""
 [1] int64 = 9
