@@ -326,10 +326,12 @@ func newCaptureGroups(regex string, probes captureProbeUse) captureGroups {
 		}
 		g.byName[name] = append(g.byName[name], i)
 	}
-	if needy := g.carriersNeedingProbes(); probes == withCaptureProbes && len(needy) > 0 {
-		// A failed plan leaves the zero value, which reads as "no probes"
-		// everywhere below and keeps the rejection those carriers had.
-		g.probe, _ = planCaptureProbes(regex, needy)
+	if probes == withCaptureProbes {
+		// A failed plan — including the empty request a pattern with no
+		// shared name makes — leaves the zero value, which reads as "no
+		// probes" everywhere below and keeps the rejection those carriers
+		// had.
+		g.probe, _ = planCaptureProbes(regex, g.carriersNeedingProbes())
 	}
 	return g
 }

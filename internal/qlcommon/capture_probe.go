@@ -251,8 +251,11 @@ type sourceSpan struct{ start, end int }
 // insertProbes wraps each distinct span in a named capture group,
 // returning the rewritten source and the probe name serving each carrier.
 //
-// Two carriers under one ancestor resolve to the same span and share a
-// single probe, which keeps the rewrite as small as the question needs.
+// The spans nest, so the rewrite is one walk of the source with a stack of
+// the spans currently open: a `)` is always owed to the innermost of them.
+// Emitting from the structure rather than from a sorted list of loose
+// delimiters is what makes "which probe wraps which span" a property of
+// the walk instead of of a comparator.
 func insertProbes(src string, spans map[int]sourceSpan) (string, map[int]string, bool) {
 	carriers := make([]int, 0, len(spans))
 	for carrier := range spans {
@@ -260,88 +263,63 @@ func insertProbes(src string, spans map[int]sourceSpan) (string, map[int]string,
 	}
 	sort.Ints(carriers)
 
-	type edit struct {
-		at   int
-		open bool
-		span sourceSpan
-		name string
-	}
+	// One probe per DISTINCT span: two carriers under one ancestor resolve
+	// to the same span and share a probe, which keeps the rewrite as small
+	// as the question needs.
 	named := map[sourceSpan]string{}
 	probeNames := map[int]string{}
-	var edits []edit
+	var ordered []sourceSpan
 	for _, carrier := range carriers {
-		if !nestsCleanly(spans[carrier], spans, carriers) {
-			return "", nil, false
-		}
 		span := spans[carrier]
-		name, seen := named[span]
-		if !seen {
-			name = probeNamePrefix + strconv.Itoa(len(named))
-			named[span] = name
-			edits = append(edits,
-				edit{at: span.start, open: true, span: span, name: name},
-				edit{at: span.end, open: false, span: span, name: name})
+		if _, seen := named[span]; !seen {
+			named[span] = probeNamePrefix + strconv.Itoa(len(named))
+			ordered = append(ordered, span)
 		}
-		probeNames[carrier] = name
+		probeNames[carrier] = named[span]
 	}
-	// Spans nest, so at a shared offset the wider one must open first and
-	// close last for the inserted parentheses to nest the same way.
-	sort.SliceStable(edits, func(i, j int) bool {
-		a, b := edits[i], edits[j]
-		if a.at != b.at {
-			return a.at < b.at
+
+	// Outermost first at a shared start, so nested spans open in the order
+	// their parentheses have to nest.
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].start != ordered[j].start {
+			return ordered[i].start < ordered[j].start
 		}
-		if a.open != b.open {
-			return !a.open
-		}
-		wa, wb := a.span.end-a.span.start, b.span.end-b.span.start
-		if a.open {
-			return wa > wb
-		}
-		return wa < wb
+		return ordered[i].end > ordered[j].end
 	})
 
+	// Walk the source once, opening every span that starts here and closing
+	// every one that ends here. The open spans form a stack because they
+	// nest, so the innermost — the one on top — is always the one to close.
 	var out strings.Builder
-	prev := 0
-	for _, e := range edits {
-		if e.at < prev || e.at > len(src) {
-			return "", nil, false
-		}
-		out.WriteString(src[prev:e.at])
-		if e.open {
-			out.WriteString("(?P<")
-			out.WriteString(e.name)
-			out.WriteString(">")
-		} else {
+	var open []sourceSpan
+	next := 0
+	for i := 0; i <= len(src); i++ {
+		for len(open) > 0 && open[len(open)-1].end == i {
 			out.WriteString(")")
+			open = open[:len(open)-1]
 		}
-		prev = e.at
+		for next < len(ordered) && ordered[next].start == i {
+			out.WriteString("(?P<")
+			out.WriteString(named[ordered[next]])
+			out.WriteString(">")
+			open = append(open, ordered[next])
+			next++
+		}
+		if i < len(src) {
+			out.WriteByte(src[i])
+		}
 	}
-	out.WriteString(src[prev:])
+	// Every span must have been both opened and closed by the walk. That
+	// single check is the whole validation: a span reaching outside the
+	// source never opens or never closes, and a pair that overlaps without
+	// nesting leaves the stack holding one of them when its partner
+	// closes. Checking the spans separately beforehand would restate the
+	// same conditions in a form that could drift from what the walk
+	// actually does.
+	if len(open) != 0 || next != len(ordered) {
+		return "", nil, false
+	}
 	return out.String(), probeNames, true
-}
-
-// nestsCleanly reports whether span is either nested inside or disjoint
-// from every other span in the set.
-//
-// Parentheses can only bracket a set of ranges that nests — the edits are
-// applied in one forward pass, so a pair that merely OVERLAPS would emit
-// its four delimiters in an order that brackets two DIFFERENT ranges than
-// the ones asked for, and the result would still compile. Ancestor walks
-// only ever produce nesting sets, so this never fires in practice; it is
-// here because "wrapped a span nobody chose" is the one failure this file
-// cannot detect after the fact.
-func nestsCleanly(span sourceSpan, spans map[int]sourceSpan, carriers []int) bool {
-	for _, carrier := range carriers {
-		other := spans[carrier]
-		disjoint := span.end <= other.start || other.end <= span.start
-		nested := (span.start <= other.start && other.end <= span.end) ||
-			(other.start <= span.start && span.end <= other.end)
-		if !disjoint && !nested {
-			return false
-		}
-	}
-	return true
 }
 
 // probeSpanFor finds the span whose emptiness answers for the capture

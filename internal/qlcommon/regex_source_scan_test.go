@@ -28,6 +28,11 @@ func TestScanSourceGroupsLocatesGroups(t *testing.T) {
 		{"non_capturing", `a(?:b)c`, []string{"b"}, []int{0}},
 		{"named", `a(?P<n>b)c`, []string{"b"}, []int{1}},
 		{"named_short_spelling", `a(?<n>b)c`, []string{"b"}, []int{1}},
+		// An empty name is still a group opening as far as offsets go —
+		// the `>` is found at distance zero, which is the boundary between
+		// "found it" and "there is none". Whether Go's own parser then
+		// accepts the name is its business, not the scanner's.
+		{"empty_group_name", `(?P<>a)`, []string{"a"}, []int{1}},
 		{"nested", `((a)(b))`, []string{"(a)(b)", "a", "b"}, []int{1, 2, 3}},
 		{"mixed_capturing_and_not", `(?:(a))`, []string{"(a)", "a"}, []int{0, 1}},
 
@@ -109,6 +114,20 @@ func TestScanSourceGroupsDeclines(t *testing.T) {
 		{"bare_flag_setting", `(?i)(a)`},
 		{"bare_flag_setting_with_minus", `(?i-s)(a)`},
 		{"bare_flag_setting_inside_a_group", `(?:(?i)a|b)`},
+
+		// Each of these ends exactly where a guard is about to read the
+		// next byte. They are the inputs that tell a bound that stops one
+		// short from one that reads past the end.
+		{"lone_open_paren", `(`},
+		{"lone_backslash", `\`},
+		{"lone_class_open", `[`},
+		{"class_open_then_negation", `[^`},
+		{"class_open_then_negated_bracket", `[^]`},
+		{"truncated_named_prefix", `(?P`},
+		{"class_ending_in_a_bracket", `[a[`},
+		{"truncated_posix_open", `[[:`},
+		{"truncated_posix_name", `[[:alpha`},
+		{"class_ending_in_an_escape", `[a\`},
 	}
 
 	for _, tc := range cases {

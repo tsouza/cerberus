@@ -88,14 +88,9 @@ func scanSourceGroups(src string) ([]sourceGroup, bool) {
 			groups[innermost].alternations = append(groups[innermost].alternations, i)
 			i++
 		case '(':
-			bodyStart, capturing, opens, ok := classifyGroupOpen(src, i)
+			bodyStart, capturing, ok := classifyGroupOpen(src, i)
 			if !ok {
 				return nil, false
-			}
-			if !opens {
-				// A `(?flags)` setting opens nothing; it just ends.
-				i = bodyStart
-				continue
 			}
 			g := sourceGroup{
 				open:      i,
@@ -200,42 +195,39 @@ const groupFlagBytes = "imsU-"
 // The scoped spelling `(?flags:…)` is a group of its own and carries its
 // setting with it wherever it is wrapped, so it stays allowed.
 //
-// opens=false is therefore reserved for nothing at present; the return
-// stays in the signature because the `)` arm is what recognises the
+// Every group this returns therefore opens one, which is why there is no
+// "opened nothing" outcome: the `)` arm exists only to recognise the
 // setting in order to refuse it.
-func classifyGroupOpen(src string, i int) (bodyStart int, capturing, opens, ok bool) {
+func classifyGroupOpen(src string, i int) (bodyStart int, capturing, ok bool) {
 	if i+1 >= len(src) || src[i+1] != '?' {
-		return i + 1, true, true, true
+		return i + 1, true, true
 	}
 	j := i + 2
 	if j >= len(src) {
-		return 0, false, false, false
+		return 0, false, false
 	}
 	// `(?P<name>…)` and its `(?<name>…)` spelling both capture.
 	if src[j] == 'P' || src[j] == '<' {
 		if src[j] == 'P' {
 			j++
 			if j >= len(src) || src[j] != '<' {
-				return 0, false, false, false
+				return 0, false, false
 			}
 		}
 		end := strings.IndexByte(src[j+1:], '>')
 		if end < 0 {
-			return 0, false, false, false
+			return 0, false, false
 		}
-		return j + 1 + end + 1, true, true, true
+		return j + 1 + end + 1, true, true
 	}
 	for j < len(src) && strings.IndexByte(groupFlagBytes, src[j]) >= 0 {
 		j++
 	}
 	if j >= len(src) {
-		return 0, false, false, false
+		return 0, false, false
 	}
-	switch src[j] {
-	case ':':
-		return j + 1, false, true, true
-	case ')':
-		return 0, false, false, false
+	if src[j] == ':' {
+		return j + 1, false, true
 	}
-	return 0, false, false, false
+	return 0, false, false
 }

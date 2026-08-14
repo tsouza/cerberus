@@ -44,6 +44,9 @@ var scannerSyntaxCorpus = []string{
 	`([\]()])`,
 	`([[:alpha:]])`,
 	`([[:^alpha:]])`,
+	`([[:alpha:]()])`,
+	`x[[:digit:]](a)`,
+	`[[:alpha:]][[:digit:]](a)`,
 	`([a[b])`,
 	`([-a])`,
 	`([a-])`,
@@ -297,14 +300,17 @@ func TestCandidateSpansReachTheWholePattern(t *testing.T) {
 func TestProbedIndexTranslatesOnlyRealGroups(t *testing.T) {
 	t.Parallel()
 
-	plan := captureProbePlan{toProbed: []int{0, 2, 3}}
+	// The whole-match entry is deliberately not 0: a table that mapped it
+	// to itself would make the range check's lower bound unobservable,
+	// since returning the argument and returning the entry would agree.
+	plan := captureProbePlan{toProbed: []int{5, 2, 3}}
 
 	cases := []struct {
 		name     string
 		original int
 		want     int
 	}{
-		{"whole_match", 0, 0},
+		{"whole_match", 0, 5},
 		{"first_group", 1, 2},
 		{"last_group", 2, 3},
 		{"one_past_the_table", 3, 3},
@@ -384,6 +390,49 @@ func TestInsertProbesRejectsSpansItCannotWrap(t *testing.T) {
 		}
 	})
 
+	t.Run("a_span_entirely_past_the_source", func(t *testing.T) {
+		t.Parallel()
+		// This one never opens at all, where the case above opens and
+		// never closes — the two halves of the walk's postcondition.
+		if _, _, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: len(source) + 4, end: len(source) + 8},
+		}); ok {
+			t.Error("insertProbes accepted a span lying entirely past the source")
+		}
+	})
+
+	t.Run("spans_that_touch_without_overlapping", func(t *testing.T) {
+		t.Parallel()
+		// One span ending exactly where the next begins is disjoint, not
+		// overlapping, and both can be wrapped. This is the input that
+		// separates "ends before the other starts" from "ends at or
+		// before" — the bound the nesting test turns on.
+		got, names, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: 0, end: 6},
+			2: {start: 6, end: 12},
+		})
+		if !ok {
+			t.Fatal("insertProbes declined two spans that merely touch; neither contains the " +
+				"other and neither overlaps it, so both are wrappable")
+		}
+		if len(names) != 2 {
+			t.Errorf("insertProbes named %d probes, want 2", len(names))
+		}
+		assertProbed(t, got, `(?P<`+probeNamePrefix+`0>(?:xa))(?P<`+probeNamePrefix+`1>(?:yb))`)
+	})
+
+	t.Run("a_span_nested_inside_another_sharing_an_end", func(t *testing.T) {
+		t.Parallel()
+		got, _, ok := insertProbes(source, map[int]sourceSpan{
+			1: {start: 0, end: 12},
+			2: {start: 6, end: 12},
+		})
+		if !ok {
+			t.Fatal("insertProbes declined a span nested inside another that shares its end")
+		}
+		assertProbed(t, got, `(?P<`+probeNamePrefix+`0>(?:xa)(?P<`+probeNamePrefix+`1>(?:yb)))`)
+	})
+
 	t.Run("overlapping_spans", func(t *testing.T) {
 		t.Parallel()
 		if _, _, ok := insertProbes(source, map[int]sourceSpan{
@@ -408,15 +457,27 @@ func TestInsertProbesRejectsSpansItCannotWrap(t *testing.T) {
 		if len(names) != 2 {
 			t.Errorf("insertProbes named %d probes, want 2", len(names))
 		}
-		compiled, err := regexp.Compile(got)
-		if err != nil {
-			t.Fatalf("insertProbes produced %q, which does not compile: %v", got, err)
-		}
-		if compiled.NumSubexp() != 2 {
-			t.Errorf("insertProbes produced %q with %d groups, want 2",
-				got, compiled.NumSubexp())
-		}
+		// The WIDER span must open first. Both open at the same offset, so
+		// only the delimiter order decides which probe wraps which span —
+		// and a swap still compiles, still has two groups, and answers for
+		// the wrong one.
+		assertProbed(t, got, `(?P<`+probeNamePrefix+`0>(?P<`+probeNamePrefix+`1>(?:xa))(?:yb))`)
 	})
+}
+
+// assertProbed compares a rewritten pattern against the exact expected
+// text and checks it still compiles. The exact text matters: several
+// orderings of the same delimiters produce a pattern that compiles and has
+// the right group count while bracketing the wrong spans.
+func assertProbed(t *testing.T, got, want string) {
+	t.Helper()
+
+	if got != want {
+		t.Errorf("insertProbes produced\n  %s\nwant\n  %s", got, want)
+	}
+	if _, err := regexp.Compile(got); err != nil {
+		t.Errorf("insertProbes produced %q, which does not compile: %v", got, err)
+	}
 }
 
 // TestPlanCaptureProbesSkipsUnknownCarriers pins that a carrier index the
