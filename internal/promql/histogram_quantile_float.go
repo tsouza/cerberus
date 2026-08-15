@@ -101,7 +101,7 @@ func lowerHistogramQuantileClassicFloat(
 	bucketed := &chplan.Filter{
 		Input: inner,
 		Predicate: &chplan.FuncCall{
-			Name: "isNotNull",
+			Fn:   chplan.FnIsNotNull,
 			Args: []chplan.Expr{classicBucketLeValueExpr(attrs)},
 		},
 	}
@@ -118,15 +118,15 @@ func lowerHistogramQuantileClassicFloat(
 		GroupByAliases: []string{hqFloatGroupKeyAlias, hqFloatTimeAlias},
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name: "groupArray",
+				Fn: chplan.FnGroupArray,
 				Args: []chplan.Expr{&chplan.FuncCall{
-					Name: "assumeNotNull",
+					Fn:   chplan.FnAssumeNotNull,
 					Args: []chplan.Expr{classicBucketLeValueExpr(attrs)},
 				}},
 				Alias: hqFloatBoundListAlias,
 			},
 			{
-				Name:  "groupArray",
+				Fn:    chplan.FnGroupArray,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 				Alias: hqFloatCountListAlias,
 			},
@@ -143,13 +143,13 @@ func lowerHistogramQuantileClassicFloat(
 			{Expr: &chplan.ColumnRef{Name: hqFloatGroupKeyAlias}, Alias: hqFloatGroupKeyAlias},
 			{Expr: &chplan.ColumnRef{Name: hqFloatTimeAlias}, Alias: hqFloatTimeAlias},
 			{
-				Expr: &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+				Expr: &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: hqFloatBoundListAlias},
 				}},
 				Alias: hqFloatSortedBoundAlias,
 			},
 			{
-				Expr: &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+				Expr: &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 					&chplan.Lambda{
 						Params: []string{paramBucketCount, paramBucketBound},
 						Body:   &chplan.BareIdent{Name: paramBucketBound},
@@ -212,12 +212,12 @@ func lowerHistogramQuantileClassicFloat(
 // the sorted array's last element so the empty group answers false instead
 // of subscripting an empty array.
 func hqFloatOverflowRungExpr() chplan.Expr {
-	return &chplan.FuncCall{Name: "arrayExists", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayExists, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramBucketBound},
 			Body: andExpr(
 				&chplan.FuncCall{
-					Name: "isInfinite",
+					Fn:   chplan.FnIsInfinite,
 					Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketBound}},
 				},
 				&chplan.Binary{
@@ -237,12 +237,12 @@ func hqFloatOverflowRungExpr() chplan.Expr {
 // runs one longer — so filtering it out is what restores that invariant
 // from a wire ladder where it is just another `le`.
 func hqFloatFiniteBoundsExpr() chplan.Expr {
-	return &chplan.FuncCall{Name: "arrayFilter", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramBucketBound},
-			Body: &chplan.FuncCall{Name: "not", Args: []chplan.Expr{
+			Body: &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "isInfinite",
+					Fn:   chplan.FnIsInfinite,
 					Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketBound}},
 				},
 			}},
@@ -273,17 +273,17 @@ func hqFloatGuardedLadderExpr() chplan.Expr {
 		hqFloatOverflowRungExpr(),
 		&chplan.Binary{
 			Op:    chplan.OpGe,
-			Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{ladder}},
+			Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{ladder}},
 			Right: &chplan.LitInt{V: hqFloatMinRungs},
 		},
 	)
-	return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 		interpolable,
 		classicBucketMonotonicExpr(ladder),
 		// arraySlice(_, 1, 0) empties the array while keeping its element
 		// type, so the branches need no type reconciliation — the same
 		// device classicBucketLeRestriction uses for the same guards.
-		&chplan.FuncCall{Name: "arraySlice", Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
 			ladder, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 0},
 		}},
 	}}

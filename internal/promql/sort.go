@@ -146,20 +146,20 @@ func naturalSortKeyExpr(value chplan.Expr) chplan.Expr {
 	const chunkClass = "[0-9]+|[^0-9]+"
 	const digitRunAnchor = "^[0-9]+$"
 	chunks := &chplan.FuncCall{
-		Name: "extractAll",
+		Fn:   chplan.FnRegexExtractAll,
 		Args: []chplan.Expr{value, &chplan.LitString{V: chunkClass}},
 	}
 	padDigitRun := &chplan.Lambda{
 		Params: []string{"c"},
 		Body: &chplan.FuncCall{
-			Name: "if",
+			Fn: chplan.FnIf,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "match",
+					Fn:   chplan.FnRegexMatch,
 					Args: []chplan.Expr{&chplan.BareIdent{Name: "c"}, &chplan.LitString{V: digitRunAnchor}},
 				},
 				&chplan.FuncCall{
-					Name: "leftPad",
+					Fn: chplan.FnLeftPad,
 					Args: []chplan.Expr{
 						&chplan.BareIdent{Name: "c"},
 						&chplan.LitInt{V: naturalSortKeyPadWidth},
@@ -171,9 +171,9 @@ func naturalSortKeyExpr(value chplan.Expr) chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "arrayStringConcat",
+		Fn: chplan.FnArrayStringConcat,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{padDigitRun, chunks}},
+			&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{padDigitRun, chunks}},
 		},
 	}
 }
@@ -199,10 +199,10 @@ func mergedLabelValueExpr(name string, s schema.Metrics) chplan.Expr {
 	mapLookup := attributeLookup(s.AttributesColumn, name)
 	if col := schemaTopLevelColumn(s, name); col != "" {
 		return &chplan.FuncCall{
-			Name: "coalesce",
+			Fn: chplan.FnCoalesce,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "nullIf",
+					Fn: chplan.FnNullIf,
 					Args: []chplan.Expr{
 						&chplan.ColumnRef{Name: col},
 						&chplan.LitString{V: ""},

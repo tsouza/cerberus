@@ -84,31 +84,31 @@ const paramExpRowCount = "n"
 // can reach.
 func expHistogramWindowAggs(s schema.Metrics, windowFn string) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
-		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
+		{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
 	}
 	// max(ZeroThreshold) only when the physical schema persists the OTLP
 	// zero_threshold field — the upstream OTel-CH DDL doesn't, and the
 	// emitter then renders a constant-0 zero-bucket width.
 	if s.ZeroThresholdColumn != "" {
 		aggs = append(aggs, chplan.AggFunc{
-			Name:  "max",
+			Fn:    chplan.FnMax,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroThresholdColumn}},
 			Alias: s.ZeroThresholdColumn,
 		})
 	}
 	aggs = append(aggs, []chplan.AggFunc{
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: hqWindowZeroCountsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqWindowCountArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: hqWindowTsListAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: hqWindowZeroCountsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqWindowCountArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: hqWindowTsListAlias},
 	}...)
 	if needsTemporalityAgg(windowFn) && s.AggregationTemporalityColumn != "" {
 		aggs = append(aggs, chplan.AggFunc{
-			Name:  "any",
+			Fn:    chplan.FnAny,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.AggregationTemporalityColumn}},
 			Alias: hqWindowTemporalityAlias,
 		})
@@ -139,7 +139,7 @@ func expHistogramWindowTemporalityExpr(s schema.Metrics, windowFn string) chplan
 // buckets are float counts anyway.
 func expHistogramWindowFloatsExpr(contribs chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramExpRowCount},
@@ -196,16 +196,16 @@ func expHistogramWindowBucketsExpr(
 	// exponential row does not store is a bucket it observed zero of, not
 	// a series it never reported.
 	return &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramExpTargetBucket},
 				Body:   fold(expHistogramWindowFloatsExpr(contribs), tsList),
 			},
 			&chplan.FuncCall{
-				Name: "range",
+				Fn: chplan.FnRange,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{mergedLength}},
+					&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
 				},
 			},
 		},
@@ -361,22 +361,22 @@ func expHistogramWindowCountValuesExpr() chplan.Expr {
 // RangeBucketFanout underneath it.
 func expHistogramMergeAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
-		{Name: "min", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
-		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},
+		{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
+		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},
 	}
 	if s.ZeroThresholdColumn != "" {
 		aggs = append(aggs, chplan.AggFunc{
-			Name:  "max",
+			Fn:    chplan.FnMax,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroThresholdColumn}},
 			Alias: s.ZeroThresholdColumn,
 		})
 	}
 	return append(aggs, []chplan.AggFunc{
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
-		{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggScalesArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveOffsetColumn}}, Alias: hqAggPosOffsetsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
 	}...)
 }
 

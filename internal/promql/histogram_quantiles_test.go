@@ -100,7 +100,7 @@ func TestLower_HistogramQuantiles_SinglePhi(t *testing.T) {
 		if pr.Alias != s.AttributesColumn {
 			continue
 		}
-		if fc, ok := pr.Expr.(*chplan.FuncCall); ok && fc.Name == "mapConcat" {
+		if fc, ok := pr.Expr.(*chplan.FuncCall); ok && fc.Fn == chplan.FnMapMerge {
 			foundInjection = true
 		}
 	}

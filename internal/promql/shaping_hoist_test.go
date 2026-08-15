@@ -142,7 +142,7 @@ func TestHoistableShapingProject_Rejections(t *testing.T) {
 	// relation does not have.
 	histogramCompanion := canonicalShapingProject(s, raw)
 	histogramCompanion.Projections[3] = chplan.Projection{
-		Expr:  &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Count"}}},
+		Expr:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Count"}}},
 		Alias: s.ValueColumn,
 	}
 
@@ -163,9 +163,9 @@ func TestHoistableShapingProject_Rejections(t *testing.T) {
 	// an output identity key at the same time would silently drop it.
 	nameOverlay := canonicalShapingProject(s, raw)
 	nameOverlay.Projections[1].Expr = &chplan.FuncCall{
-		Name: chplan.CanonicalMapFunc,
+		Fn: chplan.FnMapSort,
 		Args: []chplan.Expr{&chplan.FuncCall{
-			Name: "mapUpdate",
+			Fn: chplan.FnMapUpdate,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: s.AttributesColumn},
 				&chplan.ColumnRef{Name: s.MetricNameColumn},
@@ -174,7 +174,7 @@ func TestHoistableShapingProject_Rejections(t *testing.T) {
 	}
 
 	constantShaping := canonicalShapingProject(s, raw)
-	constantShaping.Projections[1].Expr = &chplan.FuncCall{Name: "map", Args: nil}
+	constantShaping.Projections[1].Expr = &chplan.FuncCall{Fn: chplan.FnMap, Args: nil}
 
 	allIdentity := canonicalShapingProject(s, raw)
 	allIdentity.Projections[1].Expr = &chplan.ColumnRef{Name: s.AttributesColumn}

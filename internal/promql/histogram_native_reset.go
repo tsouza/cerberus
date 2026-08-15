@@ -186,23 +186,23 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 // its own time-sorted values.
 func expHistogramResetMaskExpr() chplan.Expr {
 	tsList := chplan.Expr(&chplan.ColumnRef{Name: hqWindowTsListAlias})
-	orderedRows := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+	orderedRows := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramResetRowPos, paramResetRowTime},
 			Body:   &chplan.BareIdent{Name: paramResetRowTime},
 		},
-		&chplan.FuncCall{Name: "arrayEnumerate", Args: []chplan.Expr{tsList}},
+		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{tsList}},
 		tsList,
 	}}
 
 	return hqLet(paramResetOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramResetPrevRow, paramResetCurrRow},
 				Body:   expHistogramResetVerdictExpr(),
 			},
-			&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{rows}},
-			&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{rows}},
+			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
+			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
 		}}
 	})
 }
@@ -290,7 +290,7 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 	prevBuc, currBuc := at(bucArr, prev), at(bucArr, curr)
 
 	pairArray := func(a, b chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "array", Args: []chplan.Expr{a, b}}
+		return &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{a, b}}
 	}
 	start, length := expHistogramMergeBucketsBoundsExpr(
 		pairArray(prevScale, currScale), pairArray(prevOff, currOff), pairArray(prevBuc, currBuc),
@@ -314,7 +314,7 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 		})
 	}
 
-	return &chplan.FuncCall{Name: "arrayExists", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayExists, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramResetTargetBucket},
 			Body: &chplan.Binary{
@@ -323,8 +323,8 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 				Right: contribAt(prevScale, prevOff, prevBuc),
 			},
 		},
-		&chplan.FuncCall{Name: "range", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{length}},
+		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{length}},
 		}},
 	}}
 }

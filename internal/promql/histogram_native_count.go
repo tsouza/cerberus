@@ -188,7 +188,7 @@ func expHistogramGroupCount(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 		GroupBy:        groupBy,
 		GroupByAliases: groupByAliases,
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "count",
+			Fn:    chplan.FnCount,
 			Alias: s.ValueColumn,
 		}},
 		DropEmptyOnNoGroup: true,

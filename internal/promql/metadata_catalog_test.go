@@ -82,11 +82,11 @@ func TestSanitizeResourceKeysExpr_FallsBackToRegexWhenUnconfigured(t *testing.T)
 	arrayMapLambdaBody := func(t *testing.T, expr chplan.Expr) *chplan.FuncCall {
 		t.Helper()
 		outer, ok := expr.(*chplan.FuncCall)
-		if !ok || outer.Name != "mapFromArrays" || len(outer.Args) != 2 {
+		if !ok || outer.Fn != chplan.FnMapFromArrays || len(outer.Args) != 2 {
 			t.Fatalf("got %#v, want mapFromArrays(...)", expr)
 		}
 		arrayMap, ok := outer.Args[0].(*chplan.FuncCall)
-		if !ok || arrayMap.Name != "arrayMap" || len(arrayMap.Args) != 2 {
+		if !ok || arrayMap.Fn != chplan.FnArrayMap || len(arrayMap.Args) != 2 {
 			t.Fatalf("mapFromArrays arg0 = %#v, want arrayMap(...)", outer.Args[0])
 		}
 		lambda, ok := arrayMap.Args[0].(*chplan.Lambda)
@@ -104,8 +104,8 @@ func TestSanitizeResourceKeysExpr_FallsBackToRegexWhenUnconfigured(t *testing.T)
 	// be the per-row regex, not the lookup table.
 	sOpen := schema.DefaultOTelMetrics()
 	openBody := arrayMapLambdaBody(t, sanitizeResourceKeysExpr(sOpen))
-	if openBody.Name != "replaceRegexpAll" {
-		t.Errorf("zero-configured-key rewrite = %q, want %q (regex fallback)", openBody.Name, "replaceRegexpAll")
+	if openBody.Fn != chplan.FnRegexReplaceAll {
+		t.Errorf("zero-configured-key rewrite = %q, want %q (regex fallback)", openBody.Fn, chplan.FnRegexReplaceAll)
 	}
 
 	// A configured allowlist closes the key set: the rewrite becomes the
@@ -113,8 +113,8 @@ func TestSanitizeResourceKeysExpr_FallsBackToRegexWhenUnconfigured(t *testing.T)
 	sClosed := schema.DefaultOTelMetrics()
 	sClosed.PromResourceLabels = []string{"k8s.namespace.name"}
 	closedBody := arrayMapLambdaBody(t, sanitizeResourceKeysExpr(sClosed))
-	if closedBody.Name != "transform" {
-		t.Errorf("configured-allowlist rewrite = %q, want %q (lookup table)", closedBody.Name, "transform")
+	if closedBody.Fn != chplan.FnTransform {
+		t.Errorf("configured-allowlist rewrite = %q, want %q (lookup table)", closedBody.Fn, chplan.FnTransform)
 	}
 }
 

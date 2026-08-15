@@ -1856,7 +1856,7 @@ func lowerSubqueryOverAggregate(
 			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: s.TimestampColumn},
 			{
 				Expr: &chplan.FuncCall{
-					Name: "toFloat64",
+					Fn:   chplan.FnToFloat64,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 				},
 				Alias: s.ValueColumn,
@@ -2216,7 +2216,7 @@ func lowerSubqueryOverCountValues(
 		}
 	}
 	groupBy = append(groupBy, &chplan.FuncCall{
-		Name: "toString",
+		Fn:   chplan.FnToString,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 	})
 	aliases = append(aliases, valueKeyAlias)
@@ -2233,7 +2233,7 @@ func lowerSubqueryOverCountValues(
 		// `Aggregate function count() AS Value is found in GROUP BY`.
 		// The outer Project re-aliases cv_count back to Value.
 		AggFuncs: []chplan.AggFunc{
-			{Name: "count", Args: []chplan.Expr{}, Alias: countAlias},
+			{Fn: chplan.FnCount, Args: []chplan.Expr{}, Alias: countAlias},
 		},
 		// count_values returns one row per distinct value per anchor;
 		// empty input naturally produces no rows.
@@ -2250,11 +2250,11 @@ func lowerSubqueryOverCountValues(
 	switch {
 	case agg.Without:
 		attrs = &chplan.FuncCall{
-			Name: "mapConcat",
+			Fn: chplan.FnMapMerge,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: "gkey_0"},
 				&chplan.FuncCall{
-					Name: "map",
+					Fn: chplan.FnMap,
 					Args: []chplan.Expr{
 						&chplan.LitString{V: label},
 						&chplan.ColumnRef{Name: valueKeyAlias},
@@ -2277,7 +2277,7 @@ func lowerSubqueryOverCountValues(
 			&chplan.ColumnRef{Name: valueKeyAlias},
 		)
 		attrs = &chplan.MapWithoutEmptyValues{
-			Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+			Map: &chplan.FuncCall{Fn: chplan.FnMap, Args: mapArgs},
 		}
 	}
 
@@ -2288,7 +2288,7 @@ func lowerSubqueryOverCountValues(
 			{Expr: &chplan.ColumnRef{Name: anchorAlias}, Alias: anchorAlias},
 			{
 				Expr: &chplan.FuncCall{
-					Name: "toFloat64",
+					Fn:   chplan.FnToFloat64,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: countAlias}},
 				},
 				Alias: s.ValueColumn,
@@ -2348,30 +2348,30 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string, s schema.Metri
 	valueArg := &chplan.ColumnRef{Name: valCol}
 	switch a.Op {
 	case parser.SUM:
-		return chplan.AggFunc{Name: "sum", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnSum, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.COUNT:
-		return chplan.AggFunc{Name: "count", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnCount, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.AVG:
-		return chplan.AggFunc{Name: "avg", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnAvg, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.MIN:
-		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnMin, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.MAX:
-		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnMax, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.STDDEV:
 		// Population stddev (divides by N) — matches Prometheus's
 		// stddev aggregator; mirrors lower.go's plainAggCH.
-		return chplan.AggFunc{Name: "stddevPop", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnStddevPop, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.STDVAR:
-		return chplan.AggFunc{Name: "varPop", Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
+		return chplan.AggFunc{Fn: chplan.FnVarPop, Args: []chplan.Expr{valueArg}, Alias: valCol}, nil
 	case parser.GROUP:
 		// `group(...)` is the constant 1 per group; the toFloat64 wrap
 		// keeps the wire shape Float64 (see lower.go's GROUP arm for
 		// the UInt8-narrowing rationale).
 		return chplan.AggFunc{
-			Name: "any",
+			Fn: chplan.FnAny,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "toFloat64",
+					Fn:   chplan.FnToFloat64,
 					Args: []chplan.Expr{&chplan.LitInt{V: 1}},
 				},
 			},
@@ -2389,7 +2389,7 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string, s schema.Metri
 				emitPhi = 0.5
 			}
 			return chplan.AggFunc{
-				Name:   "quantile",
+				Fn:     chplan.FnQuantile,
 				Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
 				Args:   []chplan.Expr{valueArg},
 				Alias:  valCol,
@@ -2408,7 +2408,7 @@ func buildSubqueryAggFunc(a *parser.AggregateExpr, valCol string, s schema.Metri
 			return chplan.AggFunc{}, err
 		}
 		return chplan.AggFunc{
-			Name:   "quantile",
+			Fn:     chplan.FnQuantile,
 			Params: []chplan.Expr{sanitizedPhiParamExpr(phiE)},
 			Args:   []chplan.Expr{valueArg},
 			Alias:  valCol,
@@ -2435,9 +2435,9 @@ func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []strin
 	}
 	if len(agg.Grouping) == 0 {
 		return &chplan.FuncCall{
-			Name: "CAST",
+			Fn: chplan.FnCast,
 			Args: []chplan.Expr{
-				&chplan.FuncCall{Name: "map", Args: nil},
+				&chplan.FuncCall{Fn: chplan.FnMap, Args: nil},
 				&chplan.LitString{V: "Map(String,String)"},
 			},
 		}
@@ -2450,7 +2450,7 @@ func buildAttributesFromAggregate(agg *parser.AggregateExpr, gkeyAliases []strin
 			&chplan.ColumnRef{Name: gkeyAliases[i]},
 		)
 	}
-	return &chplan.FuncCall{Name: "map", Args: args}
+	return &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 }
 
 // lowerSubqueryOverSubquery handles `<inner-sub>[<outer-range>:<step>]` —

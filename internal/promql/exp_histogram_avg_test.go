@@ -170,7 +170,7 @@ func TestLower_ExpHistogram_AvgDividesOnlyTheCountFields(t *testing.T) {
 	// member count, looking through the per-bucket arrayMap the two
 	// ladders are scaled through.
 	dividesBySeriesCount := func(e chplan.Expr) bool {
-		if call, ok := e.(*chplan.FuncCall); ok && call.Name == "arrayMap" && len(call.Args) == 2 {
+		if call, ok := e.(*chplan.FuncCall); ok && call.Fn == chplan.FnArrayMap && len(call.Args) == 2 {
 			lambda, ok := call.Args[0].(*chplan.Lambda)
 			if !ok {
 				return false

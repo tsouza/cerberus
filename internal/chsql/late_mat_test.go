@@ -8,6 +8,26 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// TestQualifyExprPreservesFuncCallFn pins the sealed function identity while
+// late materialisation qualifies nested column references. A rebuilt Fn-only
+// call must not fall back to the empty legacy Name field.
+func TestQualifyExprPreservesFuncCallFn(t *testing.T) {
+	t.Parallel()
+
+	qualified := qualifyExpr(&chplan.FuncCall{
+		Fn:   chplan.FnLength,
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
+	}, map[string]struct{}{"Body": {}})
+	call := qualified.(*chplan.FuncCall)
+	if call.Fn != chplan.FnLength || call.Name != "" {
+		t.Fatalf("FuncCall identity changed during qualification: Fn=%q Name=%q", call.Fn, call.Name)
+	}
+	ref := call.Args[0].(*chplan.ColumnRef)
+	if ref.Qualifier != "w" {
+		t.Fatalf("wide column qualifier = %q, want w", ref.Qualifier)
+	}
+}
+
 // TestIsLateMatCandidateConditions walks each of the four guard
 // conditions in turn, asserting the gate rejects on a miss and accepts
 // on a full match. The conditions (in isLateMatCandidate's order):

@@ -122,15 +122,15 @@ func TestLowerSortByLabel_MetricNameKey(t *testing.T) {
 func unwrapNaturalSortKey(t *testing.T, e chplan.Expr) chplan.Expr {
 	t.Helper()
 	concat, ok := e.(*chplan.FuncCall)
-	if !ok || concat.Name != "arrayStringConcat" || len(concat.Args) != 1 {
+	if !ok || concat.Fn != chplan.FnArrayStringConcat || len(concat.Args) != 1 {
 		t.Fatalf("key expr = %T (%v), want arrayStringConcat(...)", e, e)
 	}
 	mapFn, ok := concat.Args[0].(*chplan.FuncCall)
-	if !ok || mapFn.Name != "arrayMap" || len(mapFn.Args) != 2 {
+	if !ok || mapFn.Fn != chplan.FnArrayMap || len(mapFn.Args) != 2 {
 		t.Fatalf("arrayStringConcat arg = %T, want arrayMap(lambda, extractAll(...))", concat.Args[0])
 	}
 	extract, ok := mapFn.Args[1].(*chplan.FuncCall)
-	if !ok || extract.Name != "extractAll" || len(extract.Args) != 2 {
+	if !ok || extract.Fn != chplan.FnRegexExtractAll || len(extract.Args) != 2 {
 		t.Fatalf("arrayMap arg[1] = %T, want extractAll(<value>, pattern)", mapFn.Args[1])
 	}
 	return extract.Args[0]

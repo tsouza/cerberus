@@ -15,39 +15,39 @@ import (
 //
 // Each entry is a 1-arg function over a vector; we wrap the lowered vector
 // with a Project that replaces ValueColumn with `<chFn>(Value)`.
-var instantFnCH = map[string]string{
-	"abs":   "abs",
-	"ceil":  "ceil",
-	"floor": "floor",
-	"round": "round",
-	"sqrt":  "sqrt",
-	"exp":   "exp",
-	"ln":    "log",
-	"log2":  "log2",
-	"log10": "log10",
-	"sgn":   "sign",
+var instantFnCH = map[string]chplan.Fn{
+	"abs":   chplan.FnAbs,
+	"ceil":  chplan.FnCeil,
+	"floor": chplan.FnFloor,
+	"round": chplan.FnRound,
+	"sqrt":  chplan.FnSqrt,
+	"exp":   chplan.FnExp,
+	"ln":    chplan.FnLn,
+	"log2":  chplan.FnLog2,
+	"log10": chplan.FnLog10,
+	"sgn":   chplan.FnSign,
 
 	// Trigonometric family. PromQL's trig functions operate per-row on
 	// `Value` and interpret/return angles in RADIANS — exactly CH's
 	// convention — so each maps 1:1 to the same-named CH builtin. All are
 	// Float64-in/Float64-out (unlike `sgn`, which needs a toFloat64 wrap).
-	"acos":  "acos",
-	"acosh": "acosh",
-	"asin":  "asin",
-	"asinh": "asinh",
-	"atan":  "atan",
-	"atanh": "atanh",
-	"cos":   "cos",
-	"cosh":  "cosh",
-	"sin":   "sin",
-	"sinh":  "sinh",
-	"tan":   "tan",
-	"tanh":  "tanh",
+	"acos":  chplan.FnAcos,
+	"acosh": chplan.FnAcosh,
+	"asin":  chplan.FnAsin,
+	"asinh": chplan.FnAsinh,
+	"atan":  chplan.FnAtan,
+	"atanh": chplan.FnAtanh,
+	"cos":   chplan.FnCos,
+	"cosh":  chplan.FnCosh,
+	"sin":   chplan.FnSin,
+	"sinh":  chplan.FnSinh,
+	"tan":   chplan.FnTan,
+	"tanh":  chplan.FnTanh,
 
 	// Degrees ↔ radians conversion. PromQL `deg(x)` = `x * 180/π` and
 	// `rad(x)` = `x * π/180`; CH spells these `degrees(x)` / `radians(x)`.
-	"deg": "degrees",
-	"rad": "radians",
+	"deg": chplan.FnDegrees,
+	"rad": chplan.FnRadians,
 }
 
 // lowerInstantFn handles single-arg math functions like abs / sqrt / ln. The
@@ -55,7 +55,7 @@ var instantFnCH = map[string]string{
 // wrap with a Project that maps the Value column through the CH function.
 //
 // Multi-arg variants of round and the clamp family are handled separately.
-func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx) (chplan.Node, error) {
+func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerCtx) (chplan.Node, error) {
 	switch c.Func.Name {
 	case "round":
 		if len(c.Args) == 2 {
@@ -74,16 +74,16 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn string, ctx lowerCtx)
 	}
 
 	var newValue chplan.Expr = &chplan.FuncCall{
-		Name: chFn,
+		Fn:   chFn,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 	}
-	if chFn == "sign" {
+	if chFn == chplan.FnSign {
 		// CH's sign() returns Int8; every other function in
 		// instantFnCH is Float64-in/Float64-out. The wire scanner
 		// reads Value as *float64, so an unwrapped sign() 502s with
 		// "converting Int8 to *float64 is unsupported" — surfaced by
 		// the showcase-promql sgn() panel.
-		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{newValue}}
+		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{newValue}}
 	}
 	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
 }
@@ -120,7 +120,7 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
 
 	rounded := &chplan.FuncCall{
-		Name: "round",
+		Fn:   chplan.FnRound,
 		Args: []chplan.Expr{&chplan.Binary{Op: chplan.OpDiv, Left: valueRef, Right: tn}},
 	}
 	newValue := &chplan.Binary{Op: chplan.OpMul, Left: rounded, Right: tn}
@@ -154,9 +154,9 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		if len(c.Args) != 2 {
 			return nil, fmt.Errorf("promql: %s expects 2 arguments, got %d", c.Func.Name, len(c.Args))
 		}
-		fnName := "least"
+		fnName := chplan.FnLeast
 		if c.Func.Name == "clamp_min" {
-			fnName = "greatest"
+			fnName = chplan.FnGreatest
 		}
 		if bound, ok := tryScalarLiteral(c.Args[1]); ok {
 			inner, err := lower(c.Args[0], s, ctx)
@@ -164,7 +164,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				return nil, err
 			}
 			newValue := &chplan.FuncCall{
-				Name: fnName,
+				Fn: fnName,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.ValueColumn},
 					&chplan.LitFloat{V: bound},
@@ -181,7 +181,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 			return nil, err
 		}
 		newValue := nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
-			Name: fnName,
+			Fn: fnName,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: s.ValueColumn},
 				boundE,
@@ -217,11 +217,11 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 			}
 			valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
 			newValue := &chplan.FuncCall{
-				Name: "greatest",
+				Fn: chplan.FnGreatest,
 				Args: []chplan.Expr{
 					&chplan.LitFloat{V: minB},
 					&chplan.FuncCall{
-						Name: "least",
+						Fn:   chplan.FnLeast,
 						Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
 					},
 				},
@@ -251,7 +251,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		filtered := &chplan.Filter{
 			Input: inner,
 			Predicate: &chplan.FuncCall{
-				Name: "not",
+				Fn: chplan.FnNot,
 				Args: []chplan.Expr{
 					&chplan.Binary{Op: chplan.OpLt, Left: maxE, Right: minE},
 				},
@@ -261,11 +261,11 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 		newValue := nanIfExpr(
 			&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
 			&chplan.FuncCall{
-				Name: "greatest",
+				Fn: chplan.FnGreatest,
 				Args: []chplan.Expr{
 					minE,
 					&chplan.FuncCall{
-						Name: "least",
+						Fn:   chplan.FnLeast,
 						Args: []chplan.Expr{maxE, valueRef},
 					},
 				},

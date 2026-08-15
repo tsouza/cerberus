@@ -324,7 +324,7 @@ func TestSubqueryPreservedNameExpr_UnknownNodeRejected(t *testing.T) {
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases: []string{s.AttributesColumn},
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "sum",
+			Fn:    chplan.FnSum,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			Alias: s.ValueColumn,
 		}},

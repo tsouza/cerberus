@@ -166,7 +166,7 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		// group that held more than one name, and the selector seam emits
 		// one row per (name, label set[, step]), so a surviving group
 		// holds exactly one row.
-		{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
+		{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
 	}
 	// The metric-name column is deliberately NOT re-exposed. Every caller
 	// runs through guardedValueProjection, whose projectValueOverInner
@@ -187,7 +187,7 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		// label set alone is the whole key and the timestamp rides through
 		// as a carried value.
 		aggs = append(aggs, chplan.AggFunc{
-			Name:  "any",
+			Fn:    chplan.FnAny,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			Alias: s.TimestampColumn,
 		})
@@ -198,7 +198,7 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	// every group fed by more than one row.
 	for _, name := range carry {
 		aggs = append(aggs, chplan.AggFunc{
-			Name:  "any",
+			Fn:    chplan.FnAny,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
 			Alias: name,
 		})
@@ -297,7 +297,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
 	aliases := []string{s.AttributesColumn}
 	aggs := []chplan.AggFunc{
-		{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
+		{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
 	}
 
 	// Which columns the guard has to carry is DERIVED from the rewrite's
@@ -331,7 +331,7 @@ func guardLabelRewriteCollision(rewritten *chplan.Project, s schema.Metrics) chp
 				continue
 			}
 			aggs = append(aggs, chplan.AggFunc{
-				Name:  "any",
+				Fn:    chplan.FnAny,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
 				Alias: name,
 			})
@@ -383,11 +383,11 @@ func duplicateLabelsetRowCountGuardExpr() chplan.Expr {
 	return &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
-			Name: "throwIf",
+			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
 				&chplan.Binary{
 					Op:    chplan.OpGt,
-					Left:  &chplan.FuncCall{Name: "count"},
+					Left:  &chplan.FuncCall{Fn: chplan.FnCount},
 					Right: &chplan.LitInt{V: 1},
 				},
 				&chplan.InlineString{V: chplan.DuplicateLabelsetMessage},

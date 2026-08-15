@@ -322,7 +322,7 @@ func expHistogramPairCountExpr(windowFn string, s schema.Metrics) chplan.Expr {
 	if windowFn == changesWindowFn {
 		mask = expHistogramChangeMaskExpr(s)
 	}
-	return toFloat64Expr(&chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{mask}})
+	return toFloat64Expr(&chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{mask}})
 }
 
 // expHistogramPairCountProjection caps the reduced subtree with the
@@ -361,23 +361,23 @@ func expHistogramPairCountProjection(input chplan.Node, tsExpr chplan.Expr, s sc
 // whenever the downscale happened to erase the difference).
 func expHistogramChangeMaskExpr(s schema.Metrics) chplan.Expr {
 	tsList := chplan.Expr(&chplan.ColumnRef{Name: hqWindowTsListAlias})
-	orderedRows := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+	orderedRows := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramChangeRowPos, paramChangeRowTime},
 			Body:   &chplan.BareIdent{Name: paramChangeRowTime},
 		},
-		&chplan.FuncCall{Name: "arrayEnumerate", Args: []chplan.Expr{tsList}},
+		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{tsList}},
 		tsList,
 	}}
 
 	return hqLet(paramChangeOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramChangePrevRow, paramChangeCurrRow},
 				Body:   expHistogramChangeVerdictExpr(s),
 			},
-			&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{rows}},
-			&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{rows}},
+			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
+			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
 		}}
 	})
 }
@@ -451,12 +451,12 @@ func expHistogramSumDiffersExpr() chplan.Expr {
 	curr := &chplan.Subscript{Container: list, Key: &chplan.BareIdent{Name: paramChangeCurrRow}}
 	prev := &chplan.Subscript{Container: list, Key: &chplan.BareIdent{Name: paramChangePrevRow}}
 	isNaN := func(e chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "isNaN", Args: []chplan.Expr{e}}
+		return &chplan.FuncCall{Fn: chplan.FnIsNaN, Args: []chplan.Expr{e}}
 	}
 	bothNaN := &chplan.Binary{Op: chplan.OpAnd, Left: isNaN(curr), Right: isNaN(prev)}
 	return &chplan.Binary{
 		Op:    chplan.OpAnd,
 		Left:  &chplan.Binary{Op: chplan.OpNe, Left: curr, Right: prev},
-		Right: &chplan.FuncCall{Name: "not", Args: []chplan.Expr{bothNaN}},
+		Right: &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{bothNaN}},
 	}
 }
