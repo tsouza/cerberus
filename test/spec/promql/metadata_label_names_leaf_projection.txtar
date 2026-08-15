@@ -10,6 +10,9 @@ a rewrite Go does once per distinct name.
 requests_total{job="api"}
 -- metadata_label_names --
 yes
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: The answer is a /api/v1/labels-shaped list of label NAMES, not a (Attributes, ts, Value) Sample stream. RunParity's endpoint vocabulary (/api/v1/query, /api/v1/query_range, /api/search) has no label-name-list comparator, so there is nothing for locateSampleColumns/compareAgainstReference to compare this projection against.
 -- sql --
 SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`)))) AS `name` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
 -- args --

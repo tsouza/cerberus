@@ -123,6 +123,79 @@ func TestEqualNativeHistogramQuantileValues_IssueValues(t *testing.T) {
 	}
 }
 
+// TestEqualClassicHistogramRateQuantileValues_IssueValues pins the exact
+// pairs measured by histogram_quantile_classic_{agg,bare}_rate_min_samples:
+// reference 0.29999999999999993 vs cerberus 0.30000000000000004 (two ULPs
+// apart) and reference 0.06666666666666668 vs cerberus 0.06666666666666667
+// (one ULP apart). Both must compare equal under
+// [EqualClassicHistogramRateQuantileValues], and a value one ULP beyond the
+// tolerance must not.
+func TestEqualClassicHistogramRateQuantileValues_IssueValues(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		reference float64
+		cerberus  float64
+	}{
+		{"api", 0.29999999999999993, 0.30000000000000004},
+		{"web", 0.06666666666666668, 0.06666666666666667},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			if !EqualClassicHistogramRateQuantileValues(c.reference, c.cerberus) {
+				t.Fatalf(
+					"EqualClassicHistogramRateQuantileValues(%v, %v) = false, want true (%d ULPs apart)",
+					c.reference, c.cerberus, ulpDistance(c.reference, c.cerberus),
+				)
+			}
+			if !EqualClassicHistogramRateQuantileValues(c.cerberus, c.reference) {
+				t.Fatalf("EqualClassicHistogramRateQuantileValues is not symmetric for %v, %v", c.cerberus, c.reference)
+			}
+		})
+	}
+}
+
+// TestEqualClassicHistogramRateQuantileValues_RejectsBeyondTolerance
+// constructs a value classicHistogramRateQuantileULPTolerance+1 ULPs away
+// from a base and asserts it is rejected, so the tolerance cannot silently
+// widen into a general epsilon.
+func TestEqualClassicHistogramRateQuantileValues_RejectsBeyondTolerance(t *testing.T) {
+	t.Parallel()
+
+	base := 0.3
+	v := base
+	for i := 0; i < classicHistogramRateQuantileULPTolerance; i++ {
+		v = math.Nextafter(v, math.Inf(1))
+	}
+	if !EqualClassicHistogramRateQuantileValues(base, v) {
+		t.Fatalf("EqualClassicHistogramRateQuantileValues(base, %d ULPs) = false, want true", classicHistogramRateQuantileULPTolerance)
+	}
+	v = math.Nextafter(v, math.Inf(1))
+	if EqualClassicHistogramRateQuantileValues(base, v) {
+		t.Fatalf(
+			"EqualClassicHistogramRateQuantileValues(base, %d ULPs) = true, want false — exceeds the tolerance",
+			classicHistogramRateQuantileULPTolerance+1,
+		)
+	}
+}
+
+// TestEqualClassicHistogramRateQuantileValues_NaN pins the same NaN==NaN
+// carve-out EqualValues and the other named tolerances make.
+func TestEqualClassicHistogramRateQuantileValues_NaN(t *testing.T) {
+	t.Parallel()
+
+	nan := math.NaN()
+	if !EqualClassicHistogramRateQuantileValues(nan, nan) {
+		t.Fatalf("EqualClassicHistogramRateQuantileValues(NaN, NaN) = false, want true")
+	}
+	if EqualClassicHistogramRateQuantileValues(nan, 1.0) || EqualClassicHistogramRateQuantileValues(1.0, nan) {
+		t.Fatalf("EqualClassicHistogramRateQuantileValues must not treat NaN as equal to a real number")
+	}
+}
+
 // TestUlpDistance_Zero asserts equal values (including the a==b fast path
 // and the +0/-0 case, which compare equal under Go's ==) have distance 0.
 func TestUlpDistance_Zero(t *testing.T) {

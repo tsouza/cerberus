@@ -1,5 +1,9 @@
 -- query.promql --
 count_over_time(increase(http_requests_total[2m])[3m:1m] offset 90s)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

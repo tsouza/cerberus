@@ -1,5 +1,9 @@
 -- query.promql --
 max_over_time(rate(http_requests_total[2m])[3m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- seed --

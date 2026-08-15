@@ -127,6 +127,7 @@ func PrepareRoundTrip(c *Case) (*PreparedRoundTrip, bool, error) {
 	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
 	query = testsql.RewriteMapProjections(query)
 	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
 	colCount := testsql.ProjectionCount(query)
 
 	// Mirror ApplySeed's exact backfill ordering (runner_chdb.go): metrics

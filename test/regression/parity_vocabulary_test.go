@@ -29,3 +29,19 @@ func TestParityVocabulariesAreClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestParityExemptVocabulariesAreClosed pins the exemption reason vocabulary
+// as non-empty with no blank members.
+func TestParityExemptVocabulariesAreClosed(t *testing.T) {
+	t.Parallel()
+
+	reasons := spec.ParityExemptReasons()
+	if len(reasons) == 0 {
+		t.Fatal("parity_exempt reason vocabulary is empty; LoadParityExempt would accept any reason")
+	}
+	for _, reason := range reasons {
+		if strings.TrimSpace(reason) == "" {
+			t.Error("parity_exempt reason vocabulary accepts an empty value")
+		}
+	}
+}

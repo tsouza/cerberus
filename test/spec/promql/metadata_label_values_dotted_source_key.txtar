@@ -13,6 +13,9 @@ requests_total
 k8s.namespace.name
 -- metadata_label_values --
 k8s_namespace_name
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: The answer is a /api/v1/label/k8s_namespace_name/values-shaped list of label VALUES, not a (Attributes, ts, Value) Sample stream. RunParity's endpoint vocabulary has no label-value-list comparator to compare this projection against.
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),

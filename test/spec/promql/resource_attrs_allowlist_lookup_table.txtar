@@ -9,9 +9,28 @@ default arm is unreachable.
 
 -- query.promql --
 requests_total
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- resource_labels --
 k8s.namespace.name
 service.version
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    ResourceAttributes Map(String, String),
+    ServiceName String,
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('requests.total', map('http.method', 'GET'), map('k8s.namespace.name', 'prod', 'service.version', '1.2.3', 'cloud.region', 'eu-west-1'), 'checkout', toDateTime64('2026-01-01 00:00:00', 9), 7.0);
+-- expected_rows --
+[
+  ["requests.total", {"http_method": "GET", "k8s_namespace_name": "prod", "service_name": "checkout", "service_version": "1.2.3"}, "2026-01-01T00:00:00Z", 7]
+]
 -- sql --
 SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> transform(k, array(?, ?), array(?, ?), k), mapKeys(mapFilter((k, v) -> ((k NOT IN (?, ?)) AND (k IN (?, ?))), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> ((k NOT IN (?, ?)) AND (k IN (?, ?))), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)
 -- args --

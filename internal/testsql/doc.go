@@ -9,9 +9,9 @@
 //     of an already-emitted statement is textually wrapped in
 //     `toJSONString(...)` ([RewriteMapProjections]), the star projections
 //     that would hide such a column from that wrap are expanded first
-//     ([ExpandStarProjection]), and an `ORDER BY <Map>[k]` that the wrap
-//     would re-bind to the wrapped String alias is nested one level down
-//     ([NestMapOrderBy]).
+//     ([ExpandStarProjection]), and an `ORDER BY <Map>[k]` or `WHERE`
+//     predicate that the wrap would re-bind to the wrapped String alias
+//     is nested one level down ([NestMapOrderBy], [NestMapWhere]).
 //   - The fixture-seed DDL backfills. A test's simplified
 //     `CREATE TABLE otel_metrics_*` / `otel_traces` declares only the
 //     columns its own query names, while the read path projects several

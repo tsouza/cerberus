@@ -31,3 +31,22 @@ func TestParitySectionsParse(t *testing.T) {
 		}
 	}
 }
+
+// TestParityExemptSectionsParse mirrors TestParitySectionsParse for the
+// `parity_exempt:` section: every fixture carrying one must have a
+// well-formed one in the fast untagged lane.
+func TestParityExemptSectionsParse(t *testing.T) {
+	t.Parallel()
+
+	for _, dir := range parityFixtureDirs(t) {
+		for _, path := range txtarFilesForParity(t, dir) {
+			c, err := spec.Load(path)
+			if err != nil {
+				t.Fatalf("load %s: %v", path, err)
+			}
+			if _, _, err := spec.LoadParityExempt(c); err != nil {
+				t.Errorf("%s: %v", filepath.Base(path), err)
+			}
+		}
+	}
+}

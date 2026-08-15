@@ -7,6 +7,10 @@
 # MatrixSelector, got *parser.ParenExpr".
 -- query.promql --
 max_over_time(rate((http_requests_total[5m]))[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

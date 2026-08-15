@@ -1,5 +1,8 @@
 -- query.promql --
 max_over_time(limitk(2, rate(http_requests_total[1m]))[1h:30s])
+-- parity_exempt --
+reason: nondeterministic-selection
+detail: The inner limitk survivor set follows implementation-defined input iteration order independently at each subquery step, so the outer max_over_time has no portable reference series set to compare.
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,

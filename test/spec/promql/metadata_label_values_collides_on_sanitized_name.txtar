@@ -17,6 +17,9 @@ deployment.environment
 deployment-environment
 -- metadata_label_values --
 deployment_environment
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: The answer is a /api/v1/label/deployment_environment/values-shaped list of label VALUES, not a (Attributes, ts, Value) Sample stream. RunParity's endpoint vocabulary has no label-value-list comparator to compare this projection against.
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),

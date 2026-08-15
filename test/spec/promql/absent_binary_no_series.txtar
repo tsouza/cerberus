@@ -1,5 +1,8 @@
 -- query.promql --
 absent(up + up)
+-- parity_exempt --
+reason: vacuous-empty-input
+detail: up + up reads the "up" selector twice, but this fixture's seed provisions the otel_metrics_gauge table with zero rows for it (that is the whole point of the fixture, per its own name) — evaluatePrometheusParity's own guard in test/spec/parity_chdb.go already refuses to enrol a fixture in this shape ("seed produced no readable series, so the reference engine would trivially agree with any answer"), because a reference engine handed no data agrees with any candidate answer cerberus produces. See ReasonVacuousEmptyInput's doc comment for why this differs from absent_no_matchers.txtar, which seeds an unrelated series to keep the same check non-vacuous.
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

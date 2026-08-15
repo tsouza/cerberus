@@ -192,6 +192,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.ValueColumn != "" {
 			fmt.Fprintf(b, " value=%s", v.ValueColumn)
 		}
+		if v.PredictLinearSlopeColumn != "" {
+			fmt.Fprintf(b, " predictSlope=%s", v.PredictLinearSlopeColumn)
+		}
 		if v.TemporalityColumn != "" {
 			fmt.Fprintf(b, " temporality=%s", v.TemporalityColumn)
 		}

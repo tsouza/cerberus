@@ -6,6 +6,9 @@
 # window ORDER BY — limitk's survivors are arbitrary, not ranked.
 -- query.promql --
 limitk(scalar(metric_k), up)
+-- parity_exempt --
+reason: nondeterministic-selection
+detail: Same arbitrary-survivor contract as limitk_by_job_truncates.txtar, plus a computed K; the reference engine's own LIMITK case keeps whichever series arrive first in its unspecified input iteration order, which cerberus's ORDER-BY-less row_number() has no reason to match.
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

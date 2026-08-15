@@ -259,9 +259,25 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 		),
 	)
 
-	// if(idx = length(cum), highest_bound, <interp>) — the +Inf bucket
-	// (only the trailing bucket crosses target) returns the highest
-	// explicit bound.
+	// if(idx = length(cum) AND hasOverflowRung, highest_bound, <interp>) —
+	// the +Inf bucket (only the trailing bucket crosses target) returns
+	// the highest explicit bound.
+	//
+	// hasOverflowRung guards this against a row whose BucketCounts is the
+	// SAME length as ExplicitBounds — the OTel-canonical shape always
+	// carries one more count than bound (the overflow rung above the
+	// highest boundary, folded in unconditionally by
+	// classicBucketMergedLadderExpr on the cumulative path too), but the
+	// corpus also seeds the equal-length shape that simply omits it (see
+	// readSeededClassicHistograms). There idx landing on the LAST rung is
+	// the highest FINITE bucket, not an overflow one beyond it — its
+	// upper bound still has a real predecessor to interpolate from, and
+	// short-circuiting to highestBound skips that interpolation and
+	// answers with the raw bound instead of Prometheus's own
+	// bucketQuantile result. cumCount != boundCount is exactly the
+	// "genuine overflow rung present" test: the merged/cumulative path
+	// always appends one (cumCount = boundCount + 1, unaffected by this
+	// change) and so does any canonical per-bucket row.
 	//
 	// Nested inside the else: upstream's `b == 0 && buckets[0].UpperBound
 	// <= 0` short-circuit. The interpolation below assumes the first
@@ -276,8 +292,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	// upstream resolves it as the trailing bucket.
 	lowestBound := Subscript(coalescedEB, InlineLit(1))
 	firstBucketNonPositive := And(Eq(idx(), InlineLit(1)), Lte(lowestBound, InlineLit(0)))
+	hasOverflowRung := Neq(cumCount, boundCount)
 	idxBranch := If(
-		Eq(idx(), Call("length", arrayCumSumBC)),
+		And(Eq(idx(), Call("length", arrayCumSumBC)), hasOverflowRung),
 		highestBound,
 		If(firstBucketNonPositive, lowestBound, interp),
 	)

@@ -230,35 +230,39 @@ func (c *Client) Seed(t testing.TB, ddl string) {
 	}
 }
 
-// prepareQuery runs the SAME three-pass rewrite pipeline test/spec's
+// prepareQuery runs the SAME four-pass rewrite pipeline test/spec's
 // round-trip runner and perf profiler use (see internal/testsql's doc
 // comment: "there is exactly one rewrite pipeline, consumed twice
 // there and a third time by the handler-level chDB fake in
 // internal/chclienttest") — [testsql.ExpandStarProjection] so a
 // hoisted `SELECT * FROM (<named-projection subquery>)` exposes its
 // Map columns by name, [testsql.RewriteMapProjections] to wrap them in
-// `toJSONString(...)`, then [testsql.NestMapOrderBy] to push an outer
-// ORDER BY that still references the now-wrapped Map column (bare,
-// subscripted, or passed to a function like `mapSort(...)`) one level
-// below the wrap, back onto the still-raw Map.
+// `toJSONString(...)`, then [testsql.NestMapOrderBy] and
+// [testsql.NestMapWhere] to push an outer ORDER BY or WHERE that still
+// references the now-wrapped Map column (bare, subscripted, or passed
+// to a function like `mapSort(...)` / `mapConcat(...)`) one level below
+// the wrap, back onto the still-raw Map.
 //
 // Every Querier method routes its SQL through this single choke point
 // rather than calling testsql.RewriteMapProjections alone: skipping the
-// other two passes left a real gap — the route-A streaming-matrix
-// ordering hook (engine.rangeSeriesOrderer / prom.lang.RangeSeriesOrder)
-// emits `SELECT * FROM (<sub>) ORDER BY mapSort(Attributes), TimeUnix`,
-// which RewriteMapProjections alone cannot rewrite (its own
+// other passes left real gaps — the route-A streaming-matrix ordering
+// hook (engine.rangeSeriesOrderer / prom.lang.RangeSeriesOrder) emits
+// `SELECT * FROM (<sub>) ORDER BY mapSort(Attributes), TimeUnix`, which
+// RewriteMapProjections alone cannot rewrite (its own
 // `SELECT * FROM (<subquery>)` fast path requires an exact match with
 // nothing trailing the closing paren, so a trailing ORDER BY falls
 // through to the generic path, which sees a literal `*` projection and
 // never learns the Map column's name to wrap) — so the Map column
 // reached chdb-go's parquet driver raw, surfacing as "could not cast to
 // type: MAP" or "converting NULL to string is unsupported" depending on
-// row shape, not as a genuine handler regression.
+// row shape, not as a genuine handler regression. A `limit_ratio`
+// predicate fused directly atop the final projection is the same gap
+// for a trailing WHERE instead of ORDER BY — see [testsql.NestMapWhere].
 func (c *Client) prepareQuery(query string) string {
 	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(c.seedDDL))
 	query = testsql.RewriteMapProjections(query)
 	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
 	return query
 }
 

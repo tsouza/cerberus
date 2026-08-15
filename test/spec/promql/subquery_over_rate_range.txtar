@@ -1,5 +1,9 @@
 -- query.promql --
 avg_over_time(rate(http_requests_total[1m])[2m:10s])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- parity --

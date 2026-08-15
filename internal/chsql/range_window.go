@@ -387,7 +387,15 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 			BareIdent("nan"),
 		)
 	}
-	return e.emitWindowedArrayPairsAnchored(r, writer, 2)
+	if r.PredictLinearSlopeColumn == "" {
+		return e.emitWindowedArrayPairsAnchored(r, writer, 2)
+	}
+	slopeWriter := func(anchor Frag) Frag {
+		return Call("tupleElement", windowPairsSLRFrag(anchor), InlineLit(int64(1)))
+	}
+	return e.emitWindowedArrayPairsAnchoredWithExtra(
+		r, writer, 2, r.PredictLinearSlopeColumn, slopeWriter,
+	)
 }
 
 // emitRangeWindowHoltWinters emits SQL for `holt_winters(v[range], sf, tf)`.
@@ -553,6 +561,16 @@ func (e *emitter) emitWindowedArrayPairs(r *chplan.RangeWindow, valueWriter Frag
 // route through emitWindowedArrayPairs and the factory returns the
 // pre-built writer unchanged.
 func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWriterFor func(anchor Frag) Frag, minWindowSize int) error {
+	return e.emitWindowedArrayPairsAnchoredWithExtra(r, valueWriterFor, minWindowSize, "", nil)
+}
+
+func (e *emitter) emitWindowedArrayPairsAnchoredWithExtra(
+	r *chplan.RangeWindow,
+	valueWriterFor func(anchor Frag) Frag,
+	minWindowSize int,
+	extraColumn string,
+	extraWriterFor func(anchor Frag) Frag,
+) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -560,6 +578,9 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 		return fmt.Errorf("%w: RangeWindow.ValueColumn unset", ErrUnsupported)
 	}
 	if r.OuterRange > 0 {
+		if extraColumn != "" {
+			return fmt.Errorf("%w: extra range-window projection %q requires an instant window", ErrUnsupported, extraColumn)
+		}
 		if r.Step <= 0 {
 			return fmt.Errorf("%w: RangeWindow.OuterRange > 0 requires Step > 0", ErrUnsupported)
 		}
@@ -619,6 +640,12 @@ func (e *emitter) emitWindowedArrayPairsAnchored(r *chplan.RangeWindow, valueWri
 	outerSb := NewQuery().From(innerSb.Frag())
 	outerSb.Select(groupFrags...)
 	outerSb.Select(RawAs(valueWriterFor(end), r.ValueColumn))
+	if extraColumn != "" {
+		if extraWriterFor == nil {
+			return fmt.Errorf("%w: extra range-window projection %q has no value writer", ErrUnsupported, extraColumn)
+		}
+		outerSb.Select(RawAs(extraWriterFor(end), extraColumn))
+	}
 	if minWindowSize > 0 {
 		outerSb.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}

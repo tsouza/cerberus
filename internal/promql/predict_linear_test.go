@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -146,5 +147,52 @@ func TestLower_PredictLinear_ComputedHorizon(t *testing.T) {
 	}
 	if !strings.Contains(sql, "simpleLinearRegression") {
 		t.Fatalf("emitted SQL missing simpleLinearRegression:\n%s", sql)
+	}
+}
+
+func TestLower_PredictLinear_PinnedRangeUsesGridEvalAnchor(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+	expr, err := p.ParseExpr(`predict_linear(http_requests_total[5m] @ 1767225600, 600)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
+	if err != nil {
+		t.Fatalf("LowerAtRange: %v", err)
+	}
+
+	project, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Project", plan)
+	}
+	joined, ok := project.Input.(*chplan.CrossJoin)
+	if !ok {
+		t.Fatalf("project input = %T, want *chplan.CrossJoin", project.Input)
+	}
+	if _, ok := joined.Left.(*chplan.StepGrid); !ok {
+		t.Fatalf("cross-join left = %T, want *chplan.StepGrid", joined.Left)
+	}
+	rw, ok := joined.Right.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("cross-join right = %T, want *chplan.RangeWindow", joined.Right)
+	}
+	if rw.PredictLinearSlopeColumn == "" {
+		t.Fatal("pinned predict_linear window does not expose its fitted slope")
+	}
+	var value chplan.Expr
+	for _, projection := range project.Projections {
+		if projection.Alias == s.ValueColumn {
+			value = projection.Expr
+			break
+		}
+	}
+	if value == nil || !exprReadsColumn(value, chplan.RangeWindowAnchorColumn) ||
+		!exprReadsColumn(value, rw.PredictLinearSlopeColumn) {
+		t.Fatalf("broadcast value does not combine %q with %q", chplan.RangeWindowAnchorColumn, rw.PredictLinearSlopeColumn)
 	}
 }

@@ -177,6 +177,7 @@ func runInstant(t *testing.T, db *sql.DB, sqlText string, args []any, T time.Tim
 	query = testsql.ExpandStarProjection(query, nil)
 	query = testsql.RewriteMapProjections(query)
 	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
 
 	rows, err := db.Query(query, queryArgs...)
 	if err != nil {

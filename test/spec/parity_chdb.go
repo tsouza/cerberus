@@ -258,13 +258,17 @@ const exponentialHistogramSeedTable = "otel_metrics_exponential_histogram"
 const exponentialHistogramMetricSuffix = "_exp_hist"
 
 // compareValues selects the one comparator appropriate to the expression and
-// its actual seeded storage shape. Native exponential-histogram interpolation
-// is the only class besides atan2 with measured cross-libm divergence.
+// its actual seeded storage shape. Native exponential-histogram
+// interpolation and histogram_quantile over a rate()/increase()'d classic
+// bucket selector are the only classes besides atan2 with measured
+// cross-implementation divergence.
 func compareValues(query, seed string) (func(a, b float64) bool, error) {
 	if atan2QueryPattern.MatchString(query) {
 		return oracle.EqualAtan2Values, nil
 	}
-	if !strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable) {
+	hasExponential := strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable)
+	hasClassic := strings.Contains(seed, "CREATE TABLE "+classicHistogramTable)
+	if !hasExponential && !hasClassic {
 		return oracle.EqualValues, nil
 	}
 
@@ -273,8 +277,11 @@ func compareValues(query, seed string) (func(a, b float64) bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse comparator query: %w", err)
 	}
-	if isExponentialHistogramInterpolation(expr) {
+	if hasExponential && isExponentialHistogramInterpolation(expr) {
 		return oracle.EqualExponentialHistogramInterpolationValues, nil
+	}
+	if hasClassic && isClassicHistogramRateQuantile(expr) {
+		return oracle.EqualClassicHistogramRateQuantileValues, nil
 	}
 	return oracle.EqualValues, nil
 }
@@ -313,6 +320,46 @@ func isExponentialHistogramInterpolation(expr parser.Expr) bool {
 		return nil
 	})
 	return selectors > 0 && allExponential
+}
+
+// isClassicHistogramRateQuantile proves that a complete query result is a
+// histogram_quantile whose bucket argument passes through rate() or
+// increase() — the shape [oracle.EqualClassicHistogramRateQuantileValues]
+// documents the measured divergence for. As with
+// isExponentialHistogramInterpolation, this only inspects the OUTERMOST
+// call: a comparator applies to the whole result vector, so finding a
+// rate()'d histogram_quantile nested under a binary or another aggregation
+// would relax unrelated output samples too.
+func isClassicHistogramRateQuantile(expr parser.Expr) bool {
+	call, ok := expr.(*parser.Call)
+	if !ok || call.Func.Name != "histogram_quantile" {
+		return false
+	}
+
+	found := false
+	parser.Inspect(call.Args[1], func(node parser.Node, _ []parser.Node) error {
+		c, ok := node.(*parser.Call)
+		if !ok || (c.Func.Name != "rate" && c.Func.Name != "increase") {
+			return nil
+		}
+
+		selectors := 0
+		allClassicBuckets := true
+		parser.Inspect(c.Args[0], func(node parser.Node, _ []parser.Node) error {
+			selector, ok := node.(*parser.VectorSelector)
+			if !ok {
+				return nil
+			}
+			selectors++
+			if !strings.HasSuffix(selector.Name, bucketSuffix) {
+				allClassicBuckets = false
+			}
+			return nil
+		})
+		found = found || selectors > 0 && allClassicBuckets
+		return nil
+	})
+	return found
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose
@@ -793,6 +840,7 @@ func parityProjectionColumns(db *sql.DB, rt *RoundTripSections) ([]string, error
 	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
 	query = testsql.RewriteMapProjections(query)
 	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -1362,6 +1410,7 @@ const promNameLabel = "__name__"
 const (
 	colMetricName = "MetricName"
 	colAttributes = "Attributes"
+	colAnchorTS   = "anchor_ts"
 	colTimeUnix   = "TimeUnix"
 	colValue      = "Value"
 )
@@ -1404,22 +1453,29 @@ type sampleColumns struct {
 // is nothing to compare. MetricName and TimeUnix are optional — a function
 // that drops `__name__` projects no MetricName, and an instant query's
 // timestamps do not participate in the comparison at all (see
-// [comparesTimestamps]). Any other column, `anchor_ts` among them, is a
-// scaffolding column of the emitted query rather than a field of the
-// answer, and is ignored.
+// [comparesTimestamps]). When TimeUnix is absent, anchor_ts is the range
+// answer's timestamp before the HTTP handler's Sample projection renames it
+// to TimeUnix. If both are present, TimeUnix remains authoritative and
+// anchor_ts is only subquery scaffolding.
 func locateSampleColumns(cols []string) (sampleColumns, error) {
 	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1}
+	anchorTS := -1
 	for i, col := range cols {
 		switch col {
 		case colMetricName:
 			sc.name = i
 		case colAttributes:
 			sc.attrs = i
+		case colAnchorTS:
+			anchorTS = i
 		case colTimeUnix:
 			sc.ts = i
 		case colValue:
 			sc.value = i
 		}
+	}
+	if sc.ts < 0 {
+		sc.ts = anchorTS
 	}
 	if sc.attrs < 0 || sc.value < 0 {
 		return sc, fmt.Errorf(

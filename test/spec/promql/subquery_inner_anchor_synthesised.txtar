@@ -10,12 +10,34 @@
 #
 # Reference Prometheus answers both — each anchor of the [5m:1m] grid is
 # an instant evaluation that synthesises its own row — so they lower
-# through the per-anchor grid path. `vector(1)` reads no table at all,
-# which is why this fixture pins the emitted SQL and plan shape rather
-# than a chDB roundtrip.
+# through the per-anchor grid path. `vector(1)` reads no table at all, but
+# it also has no VectorSelector/MatrixSelector for RunParity's
+# exprReadsSeries to find, so the seed's series count being zero is not
+# the vacuous-agreement case that guard exists to catch (see
+# hour_default.txtar and month_default.txtar for the same reasoning over
+# a zero-arg date function outside a subquery) — a real Prometheus engine
+# genuinely evaluates `vector(1)` at each of the grid's anchors with no
+# stored data to disagree over, exactly as it does with `pi()` or
+# `time()`. Enrolled against the reference engine below; the seed table
+# is declared but empty because the query never scans it.
 
 -- query.promql --
 max_over_time(vector(1)[5m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- expected_rows --
+[
+  [{}, 1]
+]
 -- args --
 [0] string = ""
 [1] string = "Map(String,String)"
