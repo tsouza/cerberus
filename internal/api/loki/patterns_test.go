@@ -2,6 +2,7 @@ package loki_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,6 +11,62 @@ import (
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/chclient"
 )
+
+// TestPatterns_CompactJSONCollapsesBySchema pins #2080 at the HTTP boundary:
+// distinct compact-JSON lines with one schema must produce one useful pattern,
+// not one response row per input line.
+func TestPatterns_CompactJSONCollapsesBySchema(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
+	const lineCount = 32
+	lines := make([]chclient.TimestampedLine, 0, lineCount)
+	for i := 0; i < lineCount; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: ts,
+			Body: fmt.Sprintf(
+				`{"level":"info","ts":%q,"msg":"HTTP request","method":"GET","path":"/api/users/%d","status":200,"latency_ms":%d}`,
+				ts.Format(time.RFC3339), i, 10+i,
+			),
+			Severity: "INFO",
+		})
+	}
+
+	srv := newServer(&stubQuerier{tsLines: lines})
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/patterns?query=%7Bservice_name%3D%22web-server%22%7D&start=1778457600&end=1778544000`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var out patternsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("compact JSON produced %d patterns for %d schema-identical lines, want 1: %+v", len(out.Data), lineCount, out.Data)
+	}
+	if got := patternSampleTotal(out.Data[0]); got != lineCount {
+		t.Fatalf("pattern sample total = %d, want %d", got, lineCount)
+	}
+	if !strings.Contains(out.Data[0].Pattern, `"method"`) || !strings.Contains(out.Data[0].Pattern, `"GET"`) || !strings.Contains(out.Data[0].Pattern, "<_>") {
+		t.Fatalf("pattern does not preserve JSON schema/literals and variables: %q", out.Data[0].Pattern)
+	}
+}
+
+func patternSampleTotal(pattern loki.Pattern) int64 {
+	var total int64
+	for _, sample := range pattern.Samples {
+		total += sample[1]
+	}
+	return total
+}
 
 type patternsResponse struct {
 	Status string         `json:"status"`

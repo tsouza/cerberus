@@ -12,8 +12,8 @@
 //
 // Algorithm recap (paper §3):
 //
-//   - Preprocessing: each log message is split into tokens on
-//     whitespace.
+//   - Preprocessing: structured JSON/logfmt messages are split into
+//     field-level tokens; ordinary text is split on whitespace.
 //   - Step 1 — search by length: the first tree layer buckets messages
 //     by their token count, on the premise that messages from the same
 //     template usually share a length.
@@ -32,6 +32,7 @@
 package drain
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
@@ -181,7 +182,7 @@ func New(cfg Config) *Miner {
 // epoch) into the tree, creating or updating a cluster. Empty lines are
 // ignored.
 func (m *Miner) Train(line string, tsNano int64) {
-	tokens := strings.Fields(line)
+	tokens := tokenize(line)
 	if len(tokens) == 0 {
 		return
 	}
@@ -194,6 +195,140 @@ func (m *Miner) Train(line string, tsNano int64) {
 	m.addCluster(cl)
 	cl.observe(tsNano)
 	m.all = append(m.all, cl)
+}
+
+// tokenize selects a field-aware tokenisation for structured log lines and
+// falls back to Drain's whitespace tokenisation for ordinary text. Keeping
+// keys, separators, and values in separate positions gives the similarity
+// stage stable schema tokens while allowing values to generalise.
+func tokenize(line string) []string {
+	if tokens, ok := tokenizeJSON(line); ok {
+		return tokens
+	}
+	if tokens, ok := tokenizeLogfmt(line); ok {
+		return tokens
+	}
+	return strings.Fields(line)
+}
+
+// tokenizeJSON lexes a valid JSON object or array without interpreting its
+// values. Raw string and number spellings stay intact, while structural
+// punctuation becomes its own token. This preserves field order in the
+// rendered pattern and, critically, prevents a compact document from becoming
+// one indivisible token.
+func tokenizeJSON(line string) ([]string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid([]byte(trimmed)) {
+		return nil, false
+	}
+
+	tokens := make([]string, 0)
+	for i := 0; i < len(trimmed); {
+		switch trimmed[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		case '{', '}', '[', ']', ':', ',':
+			tokens = append(tokens, trimmed[i:i+1])
+			i++
+		case '"':
+			start := i
+			i++
+			for i < len(trimmed) {
+				if trimmed[i] == '\\' {
+					i += 2
+					continue
+				}
+				i++
+				if trimmed[i-1] == '"' {
+					break
+				}
+			}
+			tokens = append(tokens, trimmed[start:i])
+		default:
+			start := i
+			for i < len(trimmed) && !isJSONDelimiter(trimmed[i]) {
+				i++
+			}
+			tokens = append(tokens, trimmed[start:i])
+		}
+	}
+	return tokens, true
+}
+
+func isJSONDelimiter(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n', '{', '}', '[', ']', ':', ',':
+		return true
+	default:
+		return false
+	}
+}
+
+// tokenizeLogfmt splits a line made entirely of key=value fields, respecting
+// whitespace and escaped quotes inside quoted values. A line with any bare
+// field is ordinary text and falls back to strings.Fields, so messages such as
+// "GET /path status=200" keep their existing Drain behavior.
+func tokenizeLogfmt(line string) ([]string, bool) {
+	var tokens []string
+	for i := 0; i < len(line); {
+		for i < len(line) && isLogfmtSpace(line[i]) {
+			i++
+		}
+		if i == len(line) {
+			break
+		}
+
+		start := i
+		quoted := false
+		for i < len(line) {
+			switch line[i] {
+			case '\\':
+				if quoted && i+1 < len(line) {
+					i += 2
+					continue
+				}
+			case '"':
+				quoted = !quoted
+			case ' ', '\t', '\r', '\n':
+				if !quoted {
+					goto fieldDone
+				}
+			}
+			i++
+		}
+
+	fieldDone:
+		if quoted {
+			return nil, false
+		}
+		field := line[start:i]
+		eq := strings.IndexByte(field, '=')
+		if eq <= 0 || !validLogfmtKey(field[:eq]) {
+			return nil, false
+		}
+		tokens = append(tokens, field[:eq], "=", field[eq+1:])
+	}
+	return tokens, len(tokens) != 0
+}
+
+func isLogfmtSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func validLogfmtKey(key string) bool {
+	for i := 0; i < len(key); i++ {
+		b := key[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || b == '.' || b == '-' || (i > 0 && b >= '0' && b <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Clusters returns every discovered cluster in creation order. The

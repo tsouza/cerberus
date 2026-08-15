@@ -146,12 +146,12 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 // encodes that as `data:[]`, matching upstream Loki.
 //
 // The miner is the in-house clean-room Drain implementation
-// (internal/drain), which tokenises on whitespace and treats
-// digit-bearing tokens as variables — generic enough for arbitrary log
-// lines without a per-format tokeniser gate. Each level bucket gets its
-// own drain.Miner instance (confirmed independent — a Miner owns its own
-// token tree and cluster slice, no shared state), so lines never mix
-// templates across levels.
+// (internal/drain), which tokenises JSON/logfmt at field boundaries,
+// falls back to whitespace for ordinary text, and treats digit-bearing
+// tokens as variables. Each level bucket gets its own drain.Miner
+// instance (confirmed independent — a Miner owns its own token tree and
+// cluster slice, no shared state), so lines never mix templates across
+// levels.
 func minePatterns(lines []chclient.TimestampedLine) []Pattern {
 	miners := make(map[string]*drain.Miner)
 	levels := make([]string, 0)
