@@ -339,6 +339,17 @@ export function buildMatrix(includeCrawl, includeSplit, regeneratesK3DInventory 
   return include;
 }
 
+// buildMatrices keeps the required smoke topology checks and the slow crawl
+// coverage sweep in distinct GitHub matrices. A matrix has one aggregate result,
+// so this split is what lets the dashboard release gate ignore crawl failures.
+export function buildMatrices(includeCrawl, includeSplit, regeneratesK3DInventory = false) {
+  const include = buildMatrix(includeCrawl, includeSplit, regeneratesK3DInventory);
+  return {
+    required: include.filter((entry) => entry.crawlStack !== CRAWL_STACK_K3D),
+    informational: include.filter((entry) => entry.crawlStack === CRAWL_STACK_K3D),
+  };
+}
+
 function emit() {
   const discovered = discover();
   assertCoverageOrExit(discovered);
@@ -353,23 +364,25 @@ function emit() {
   const includeSplit = process.env.INCLUDE_SPLIT === 'true';
   const regeneratesK3DInventory =
     process.env.UPDATE_CRAWL_INVENTORY === 'k3d' || process.env.UPDATE_CRAWL_INVENTORY === 'both';
-  const include = buildMatrix(includeCrawl, includeSplit, regeneratesK3DInventory);
-  setOutput('matrix', JSON.stringify({ include }));
-  setOutput('shard_names', JSON.stringify(include.map((e) => e.name)));
+  const { required, informational } = buildMatrices(includeCrawl, includeSplit, regeneratesK3DInventory);
+  setOutput('matrix', JSON.stringify({ include: required }));
+  setOutput('matrix_informational', JSON.stringify({ include: informational }));
+  setOutput('has_informational', informational.length > 0 ? 'true' : 'false');
+  setOutput('shard_names', JSON.stringify(required.map((e) => e.name)));
   appendStepSummary(
     [
       '### dashboard (k3d) shard matrix',
       '',
       '| shard | mode | specs | CRAWL_STACK | Go e2e | timeout (min) |',
       '| --- | --- | --- | --- | --- | --- |',
-      ...include.map(
+      ...[...required, ...informational].map(
         (e) =>
           `| \`${e.name}\` | ${e.mode} | ${e.specs.split(' ').filter(Boolean).length} | ${e.crawlStack || '(none)'} | ${e.runGoE2E ? 'yes' : 'no'} | ${e.timeoutMinutes} |`,
       ),
     ].join('\n'),
   );
   log(
-    `dashboard-matrix: emitted ${include.length}-entry matrix` +
+    `dashboard-matrix: emitted ${required.length}-entry required matrix and ${informational.length}-entry informational matrix` +
       (includeCrawl ? '.' : ' (smoke-only; crawl shard runs on schedule/dispatch).'),
   );
   process.exit(0);
