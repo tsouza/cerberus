@@ -58,6 +58,18 @@ test('a planner that stopped emitting a crawl matrix at all fails', () => {
   assert.match(verdict.message, /silently stopped existing/);
 });
 
+test('an event without a scheduled crawl short-circuits cleanly', () => {
+  const verdict = classifyCrawlOutcome({
+    scopeResult: 'success',
+    setupResult: 'success',
+    hasInformational: 'false',
+    crawlResult: 'skipped',
+    depth: 'lean',
+    crawlExpected: 'false',
+  });
+  assert.equal(verdict.ok, true);
+});
+
 test('an out-of-scope change short-circuits cleanly — but only on a scope job that decided', () => {
   const outOfScope = classifyCrawlOutcome({
     scopeResult: 'success',

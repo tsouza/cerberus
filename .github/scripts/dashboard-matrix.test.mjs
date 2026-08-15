@@ -21,6 +21,7 @@ import {
   collectViolations,
   SHARDS,
   buildMatrix,
+  buildMatrices,
   MODE_MONOLITH,
   MODE_SPLIT,
   SPLIT_ONLY_SPECS,
@@ -174,6 +175,14 @@ test('buildMatrix: inventory regeneration emits one unsharded crawl writer', () 
     [[0, 1]],
     'a regeneration must have one writer rather than slice artifacts to merge',
   );
+});
+
+test('buildMatrices: crawl is informational while every smoke entry remains required', () => {
+  const { required, informational } = buildMatrices(true, true);
+  assert.ok(required.length > 0, 'the required matrix must retain smoke coverage');
+  assert.equal(informational.length, CRAWL_FRONTIER_SHARD_COUNT);
+  assert.ok(required.every((entry) => entry.crawlStack !== CRAWL_STACK_K3D));
+  assert.ok(informational.every((entry) => entry.crawlStack === CRAWL_STACK_K3D));
 });
 
 test('buildMatrix: every emitted entry has a non-empty spec list and a filename-safe name', () => {

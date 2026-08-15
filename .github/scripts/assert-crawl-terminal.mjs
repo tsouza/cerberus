@@ -64,6 +64,7 @@ export function classifyCrawlOutcome({
   hasInformational,
   crawlResult,
   depth,
+  crawlExpected = 'true',
 }) {
   // The lane short-circuits on a change the compose stack cannot see. That is
   // benign ONLY on the same two facts the required aggregate checks: the scope
@@ -89,6 +90,13 @@ export function classifyCrawlOutcome({
     return {
       ok: false,
       message: `compose-smoke-setup did not succeed (${setupResult}) — the crawl matrix was never planned.`,
+    };
+  }
+
+  if (crawlExpected !== 'true') {
+    return {
+      ok: true,
+      message: 'this event does not dispatch the crawl coverage matrix.',
     };
   }
 
@@ -147,6 +155,7 @@ function main() {
     hasInformational: process.env.HAS_INFORMATIONAL ?? '',
     crawlResult: process.env.CRAWL_SHARD_RESULT ?? '',
     depth: process.env.SWEEP_DEPTH ?? 'lean',
+    crawlExpected: process.env.CRAWL_EXPECTED ?? 'true',
   });
   if (verdict.ok) {
     notice(`crawl-terminal: ${verdict.message}`);
