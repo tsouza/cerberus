@@ -1,7 +1,7 @@
 {
   "fixture": "promql/regex_name_matcher_scans_exp_histogram_table",
-  "fan_factor": 1,
-  "scan_rows": 6,
+  "fan_factor": 1.2,
+  "scan_rows": 5,
   "peak_intermediate": 6,
   "has_cross_join": false,
   "has_array_join": true,

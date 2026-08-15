@@ -1,7 +1,7 @@
 {
   "fixture": "traceql/structure_tab_signal_kind_server_select_parent",
   "fan_factor": null,
-  "scan_rows": 8,
+  "scan_rows": 9,
   "peak_intermediate": 8,
   "has_cross_join": false,
   "has_array_join": true,

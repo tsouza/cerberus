@@ -1,7 +1,7 @@
 {
   "fixture": "promql/info_ignore_split_unpinned_base",
-  "fan_factor": 1,
-  "scan_rows": 2,
+  "fan_factor": 0.5,
+  "scan_rows": 4,
   "peak_intermediate": 2,
   "has_cross_join": false,
   "has_array_join": true,

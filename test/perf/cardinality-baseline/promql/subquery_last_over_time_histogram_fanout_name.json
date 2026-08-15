@@ -1,7 +1,7 @@
 {
   "fixture": "promql/subquery_last_over_time_histogram_fanout_name",
-  "fan_factor": 3,
-  "scan_rows": 8,
+  "fan_factor": 4,
+  "scan_rows": 6,
   "peak_intermediate": 24,
   "has_cross_join": false,
   "has_array_join": true,

@@ -1,8 +1,8 @@
 {
   "fixture": "metadata/series_no_bounds",
-  "fan_factor": 1,
-  "scan_rows": 12,
-  "peak_intermediate": 12,
+  "fan_factor": 0.4,
+  "scan_rows": 600,
+  "peak_intermediate": 240,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,

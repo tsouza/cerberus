@@ -97,6 +97,17 @@ func TestFromSourceLevels(t *testing.T) {
 			query: "SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)",
 			want:  []string{"SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)"},
 		},
+		{
+			name:  "descends every UNION ALL arm",
+			query: "SELECT x FROM (SELECT a AS x FROM (SELECT a FROM left_t) UNION ALL SELECT b AS x FROM right_t)",
+			want: []string{
+				"SELECT x FROM (SELECT a AS x FROM (SELECT a FROM left_t) UNION ALL SELECT b AS x FROM right_t)",
+				"SELECT a AS x FROM (SELECT a FROM left_t) UNION ALL SELECT b AS x FROM right_t",
+				"SELECT a AS x FROM (SELECT a FROM left_t)",
+				"SELECT a FROM left_t",
+				"SELECT b AS x FROM right_t",
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +116,29 @@ func TestFromSourceLevels(t *testing.T) {
 				t.Errorf("fromSourceLevels mismatch\n got = %#v\nwant = %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDecomposeQueryMarksEveryUnionLeafAsScanSource(t *testing.T) {
+	query := "SELECT x FROM (SELECT a AS x FROM (SELECT a FROM left_t) UNION ALL SELECT b AS x FROM right_t)"
+	got := decomposeQuery(query, 0)
+	var scanSources []string
+	for _, level := range got.levels {
+		if level.scanSource {
+			scanSources = append(scanSources, level.query)
+		}
+	}
+	want := []string{"SELECT a FROM left_t", "SELECT b AS x FROM right_t"}
+	if !reflect.DeepEqual(scanSources, want) {
+		t.Errorf("scan sources mismatch\n got = %#v\nwant = %#v", scanSources, want)
+	}
+}
+
+func TestSplitTopLevelUnionAllShieldsNestedAndQuotedTokens(t *testing.T) {
+	query := "SELECT 'UNION ALL' AS s FROM (SELECT 1 UNION ALL SELECT 2) UNION ALL SELECT 3"
+	want := []string{"SELECT 'UNION ALL' AS s FROM (SELECT 1 UNION ALL SELECT 2)", "SELECT 3"}
+	if got := splitTopLevelUnionAll(query); !reflect.DeepEqual(got, want) {
+		t.Errorf("splitTopLevelUnionAll mismatch\n got = %#v\nwant = %#v", got, want)
 	}
 }
 

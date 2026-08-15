@@ -1,7 +1,7 @@
 {
   "fixture": "promql/no_name_matcher_reaches_histogram_tables",
-  "fan_factor": 1,
-  "scan_rows": 5,
+  "fan_factor": 1.25,
+  "scan_rows": 4,
   "peak_intermediate": 5,
   "has_cross_join": false,
   "has_array_join": true,
