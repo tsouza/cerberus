@@ -502,7 +502,7 @@ func tsScanBound(tsCol string, op chplan.BinaryOp, t time.Time) chplan.Expr {
 		Op:   op,
 		Left: &chplan.ColumnRef{Name: tsCol},
 		Right: &chplan.FuncCall{
-			Name: "fromUnixTimestamp64Nano",
+			Fn:   chplan.FnFromUnixNanos,
 			Args: []chplan.Expr{&chplan.LitInt{V: t.UnixNano()}},
 		},
 	}
@@ -1079,7 +1079,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: emptyAttrsMap(), Alias: "Attributes"},
 			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
-			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
 		}}
 	case isProjectShape(plan):
 		// `| select(...)` lowering produces Project(Filter?(Scan)) —
@@ -1145,8 +1145,8 @@ func sampleProjectionsWithSelected(s schema.Traces, selectedKVs []chplan.Expr) [
 		stripLeadingHexZeros(s.SpanIDColumn),
 	}
 	mapArgs = append(mapArgs, selectedKVs...)
-	reservedMap := &chplan.FuncCall{Name: "map", Args: mapArgs}
-	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+	reservedMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: mapArgs}
+	mergedAttrs := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 		reservedMap,
 	}}
@@ -1158,7 +1158,7 @@ func sampleProjectionsWithSelected(s schema.Traces, selectedKVs []chplan.Expr) [
 		// is float64 and clickhouse-go's Scan refuses Int64→float64 without
 		// a cast. toFloat64 keeps the wire shape lossless within the
 		// 53-bit mantissa range (a 100-day duration in ns still fits).
-		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
 }
 
@@ -1207,7 +1207,7 @@ func selectedAttrKVPairs(p *chplan.Project, s schema.Traces) []chplan.Expr {
 // selectedAttrKVPairs for the rationale per shape).
 func classifySelectedProjection(pr chplan.Projection, s schema.Traces) (string, chplan.Expr, bool) {
 	toStr := func(e chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{e}}
+		return &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{e}}
 	}
 	switch e := pr.Expr.(type) {
 	case *chplan.ColumnRef:
@@ -1218,7 +1218,7 @@ func classifySelectedProjection(pr chplan.Projection, s schema.Traces) (string, 
 			return searchKeySelName, toStr(e), true
 		case s.StatusCodeColumn, s.SpanKindColumn:
 			return searchKeySelStrPrefix + pr.Alias,
-				toStr(&chplan.FuncCall{Name: "lower", Args: []chplan.Expr{e}}), true
+				toStr(&chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{e}}), true
 		case s.StatusMessageColumn, s.ScopeNameColumn, s.ScopeVersionColumn:
 			return searchKeySelStrPrefix + pr.Alias, toStr(e), true
 		}
@@ -1245,7 +1245,7 @@ func classifySelectedProjection(pr chplan.Projection, s schema.Traces) (string, 
 // for parity with the historical descendant/ancestor split, but both
 // arms now emit identical projections.
 func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
-	reservedMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+	reservedMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros(s.TraceIDColumn),
 		&chplan.LitString{V: searchKeyParentSpanID},
@@ -1253,7 +1253,7 @@ func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
 		&chplan.LitString{V: searchKeySpanID},
 		stripLeadingHexZeros(s.SpanIDColumn),
 	}}
-	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+	mergedAttrs := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 		reservedMap,
 	}}
@@ -1261,7 +1261,7 @@ func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
 		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
 		{Expr: mergedAttrs, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
 }
 
@@ -1292,31 +1292,31 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 		// SpanKind / StatusCode are LowCardinality(String); cast to
 		// String so the mapConcat homogeneous-value-type requirement
 		// is met across the merged Map(String,String).
-		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanKindColumn}}},
+		&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanKindColumn}}},
 		&chplan.LitString{V: traceByIDKeyStatusCode},
-		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StatusCodeColumn}}},
+		&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StatusCodeColumn}}},
 		&chplan.LitString{V: traceByIDKeyScopeName},
 		// ScopeName / ScopeVersion are String in the upstream OTel-CH
 		// traces DDL, but custom schemas may declare them
 		// LowCardinality(String); toString keeps the map() literal's
 		// value type homogeneous either way (same rationale as
 		// SpanKind / StatusCode above).
-		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScopeNameColumn}}},
+		&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScopeNameColumn}}},
 		&chplan.LitString{V: traceByIDKeyScopeVersion},
-		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScopeVersionColumn}}},
+		&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScopeVersionColumn}}},
 		&chplan.LitString{V: traceByIDKeySpanAttrsJSON},
 		// CH `toJSONString(<Map>)` renders a JSON object like
 		// {"http.method":"GET","http.status_code":"200"}. The Go
 		// handler json-decodes it back into a Go map[string]string.
-		&chplan.FuncCall{Name: "toJSONString", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
+		&chplan.FuncCall{Fn: chplan.FnToJSONString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
 	}
-	metaMap := &chplan.FuncCall{Name: "map", Args: metaKVPairs}
+	metaMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: metaKVPairs}
 
 	// Final Attributes = mapConcat(ResourceAttributes, metaMap).
 	// Resource attribute keys (service.*, k8s.*, host.*, ...) never
 	// collide with the __cerberus_* reserved keys so no precedence
 	// surprises.
-	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+	mergedAttrs := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 		metaMap,
 	}}
@@ -1325,7 +1325,7 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
 		{Expr: mergedAttrs, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
-		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
 }
 
@@ -1336,9 +1336,9 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 // the rendered SQL has the same shape across the three QL surfaces.
 func emptyAttrsMap() chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "CAST",
+		Fn: chplan.FnCast,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "map", Args: nil},
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: nil},
 			&chplan.LitString{V: "Map(String,String)"},
 		},
 	}
@@ -1555,7 +1555,7 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 		Left:  &chplan.ColumnRef{Name: "TraceEndNs"},
 		Right: &chplan.ColumnRef{Name: "TraceStartNs"},
 	}
-	traceIDMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+	traceIDMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros("TraceId"),
 		&chplan.LitString{V: searchKeyParentSpanID},
@@ -1563,9 +1563,9 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 		&chplan.LitString{V: searchKeyTraceDurationNs},
 		// toString keeps the merged Map(String,String) homogeneous;
 		// the shaper parses the int back out on the Go side.
-		&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{traceDurationNs}},
+		&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{traceDurationNs}},
 	}}
-	mergedAttrs := &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+	mergedAttrs := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: "ResourceAttrs"},
 		traceIDMap,
 	}}
@@ -1573,7 +1573,7 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 		{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "MetricName"},
 		{Expr: mergedAttrs, Alias: "Attributes"},
 		{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "TimeUnix"},
-		{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
 	}
 }
 

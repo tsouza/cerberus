@@ -200,7 +200,7 @@ func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		GroupByAliases: []string{s.TraceIDColumn},
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "min",
+			Fn:    chplan.FnMin,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			Alias: phaseARankTsAlias,
 		}},

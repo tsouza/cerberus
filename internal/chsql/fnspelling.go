@@ -198,6 +198,7 @@ var fnSpellings = map[chplan.Fn]fnSpelling{
 	chplan.FnMax:        {Name: "max"},
 	chplan.FnMin:        {Name: "min"},
 	chplan.FnQuantile:   {Name: "quantile"},
+	chplan.FnQuantiles:  {Name: "quantiles"},
 	chplan.FnStddevPop:  {Name: "stddevPop"},
 	chplan.FnSum:        {Name: "sum"},
 	chplan.FnUniqExact:  {Name: "uniqExact"},

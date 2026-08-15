@@ -133,7 +133,7 @@ func TestWrapMetricsForSample_QuantileAttrsIncludeBucket(t *testing.T) {
 	}
 	attrsExpr := proj.Projections[1].Expr
 	call, ok := attrsExpr.(*chplan.FuncCall)
-	if !ok || call.Name != "map" {
+	if !ok || call.Fn != chplan.FnMap {
 		t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", attrsExpr, attrsExpr)
 	}
 
@@ -146,7 +146,7 @@ func TestWrapMetricsForSample_QuantileAttrsIncludeBucket(t *testing.T) {
 		if lit, ok := arg.(*chplan.LitString); ok && lit.V == "__bucket" {
 			foundBucketKey = true
 			if i+1 < len(call.Args) {
-				if fc, ok := call.Args[i+1].(*chplan.FuncCall); ok && fc.Name == "toString" {
+				if fc, ok := call.Args[i+1].(*chplan.FuncCall); ok && fc.Fn == chplan.FnToString {
 					if len(fc.Args) == 1 {
 						if col, ok := fc.Args[0].(*chplan.ColumnRef); ok && col.Name == "__bucket" {
 							foundBucketCol = true
@@ -249,7 +249,7 @@ func TestWrapMetricsForSample_UngroupedQuantileSurfacesBucket(t *testing.T) {
 		t.Errorf("Attributes map[0] (key) = %v, want LitString{__bucket}", call.Args[0])
 	}
 	val, ok := call.Args[1].(*chplan.FuncCall)
-	if !ok || val.Name != "toString" {
+	if !ok || val.Fn != chplan.FnToString {
 		t.Errorf("Attributes map[1] (value) = %v, want toString(...) call", call.Args[1])
 	}
 
@@ -384,7 +384,7 @@ func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
 		t.Fatalf("project has %d projections, want >= 2", len(proj.Projections))
 	}
 	call, ok := proj.Projections[1].Expr.(*chplan.FuncCall)
-	if !ok || call.Name != "map" {
+	if !ok || call.Fn != chplan.FnMap {
 		t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", proj.Projections[1].Expr, proj.Projections[1].Expr)
 	}
 	if len(call.Args) < 2 {
@@ -401,7 +401,7 @@ func TestWrapMetricsForSample_DisplayNameKeysAttributesMap(t *testing.T) {
 	// And the VALUE side wraps toString around the SQL-side alias, not
 	// the display name.
 	valueCall, ok := call.Args[1].(*chplan.FuncCall)
-	if !ok || valueCall.Name != "toString" {
+	if !ok || valueCall.Fn != chplan.FnToString {
 		t.Fatalf("map arg[1] = %T (%v), want toString(<alias>)", call.Args[1], call.Args[1])
 	}
 	if len(valueCall.Args) != 1 {
@@ -464,7 +464,7 @@ func TestWrapMetricsForSample_UngroupedAttachesMetricName(t *testing.T) {
 				t.Fatalf("project has %d projections, want >= 2", len(proj.Projections))
 			}
 			call, ok := proj.Projections[1].Expr.(*chplan.FuncCall)
-			if !ok || call.Name != "map" {
+			if !ok || call.Fn != chplan.FnMap {
 				t.Fatalf("Attributes expr = %T (%v), want *chplan.FuncCall(map)", proj.Projections[1].Expr, proj.Projections[1].Expr)
 			}
 			if len(call.Args) != 2 {

@@ -72,14 +72,14 @@ const (
 func wrapCompareForSample(rw *chplan.RangeWindow, m *chplan.MetricsCompare) chplan.Node {
 	selAlias, attrAlias, valAlias, valueAlias := compareAliases(m)
 	attrs := &chplan.FuncCall{
-		Name: "map",
+		Fn: chplan.FnMap,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: compareRowSelLabel},
-			&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: selAlias}}},
+			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: selAlias}}},
 			&chplan.LitString{V: compareRowAttrLabel},
-			&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAlias}}},
+			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAlias}}},
 			&chplan.LitString{V: compareRowValLabel},
-			&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: valAlias}}},
+			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: valAlias}}},
 		},
 	}
 	return &chplan.Project{

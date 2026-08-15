@@ -67,7 +67,7 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 		valueAlias = "Value"
 	}
 	countFunc := chplan.AggFunc{
-		Name:  "count",
+		Fn:    chplan.FnCount,
 		Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
 		Alias: valueAlias,
 	}

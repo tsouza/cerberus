@@ -549,6 +549,10 @@ const (
 	// CH's interpolated estimate.
 	FnQuantile Fn = "quantile"
 
+	// quantiles(phi1, phi2, ...)(x) aggregate — every requested percentile of x
+	// in the group as an Array(Float64), in parameter order.
+	FnQuantiles Fn = "quantiles"
+
 	// stddevPop(x) aggregate — the population standard deviation of x in the
 	// group.
 	FnStddevPop Fn = "stddevPop"

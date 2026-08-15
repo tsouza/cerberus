@@ -665,7 +665,7 @@ func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
 		return &chplan.LitString{V: anchorPrefix + lit.V + anchorSuffix}
 	}
 	return &chplan.FuncCall{
-		Name: "concat",
+		Fn: chplan.FnConcat,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: anchorPrefix},
 			v,
