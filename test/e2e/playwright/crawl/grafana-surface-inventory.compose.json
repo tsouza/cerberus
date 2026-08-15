@@ -823,6 +823,10 @@
       "lean": false
     },
     {
+      "url": "/a/grafana-metricsdrilldown-app/trail",
+      "lean": true
+    },
+    {
       "url": "/a/grafana-pyroscope-app/explore",
       "lean": false
     },

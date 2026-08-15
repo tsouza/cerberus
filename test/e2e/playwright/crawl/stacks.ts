@@ -169,22 +169,45 @@ const CERBERUS_DATASOURCES: ReadonlyArray<ExpectedDatasource> = [
 ];
 
 /**
+ * Metrics Drilldown's legacy `/trail` route: a real, still-live
+ * client redirector into `/drilldown` (verified live against
+ * grafana-metricsdrilldown-app 2.3.1 on grafana/grafana:12.2.9 —
+ * `/trail` navigates through `/trail/drilldown` and settles on
+ * `/drilldown`, the identical entry state `/drilldown` itself
+ * renders). It keeps its own pinned inventory row deliberately: the
+ * app dropping or breaking the alias is a real regression, and
+ * nothing else in the crawl visits the bare `/trail` path once
+ * `/drilldown` is the seed. It must stay a plain SEED, never an
+ * interaction root (see DRILLDOWN_LEAN_INTERACTION_ROOTS below) —
+ * driving controls from `/trail` drives them against the
+ * ALREADY-REDIRECTED `/drilldown` page, so every gesture's
+ * post-navigation URL canonicalizes to `/drilldown`, not `/trail`,
+ * misclassifying every in-place `/trail` state as a cross-owner
+ * `/drilldown` discovery instead (#2170 / #2174).
+ */
+const METRICS_DRILLDOWN_LEGACY_TRAIL_SEED =
+  '/a/grafana-metricsdrilldown-app/trail';
+
+/**
  * The lean representative set both stacks use today: one entry route
  * per first-party drilldown app (the catalogue in
- * helpers/drilldown.ts). Concrete paths — they may pin var-* state
+ * helpers/drilldown.ts), plus the metrics app's legacy `/trail`
+ * redirector seed above. Concrete paths — they may pin var-* state
  * the app needs on a cold context.
  */
-const DRILLDOWN_APP_SEEDS: ReadonlyArray<string> = DRILLDOWN_APPS.map(
-  (app) => app.root,
-);
+const DRILLDOWN_APP_SEEDS: ReadonlyArray<string> = [
+  ...DRILLDOWN_APPS.map((app) => app.root),
+  METRICS_DRILLDOWN_LEGACY_TRAIL_SEED,
+];
 
 /**
  * Lean interaction roots shared by both stacks: the three drilldown
  * app entry surfaces (canonical keys). The drilldown apps are where
- * the interaction gap class
- * lives — the 2026-06-10 maintainer find (Traces Drilldown
- * groupBy=kind → nil-comparison 422) was a state only an interaction
- * reaches.
+ * the interaction gap class lives — the 2026-06-10 maintainer find
+ * (Traces Drilldown groupBy=kind → nil-comparison 422) was a state
+ * only an interaction reaches. Metrics Drilldown's entry here is
+ * `/drilldown`, never the legacy `/trail` seed above — see that
+ * constant's doc for why driving `/trail`'s controls cannot work.
  */
 const DRILLDOWN_LEAN_INTERACTION_ROOTS: ReadonlyArray<string> = [
   '/a/grafana-exploretraces-app/explore',
