@@ -1496,6 +1496,11 @@ const subqueryStalenessLookback = instantLookback
 // lowering's documented global-emptiness posture, fanned across the
 // grid via lowerAbsent's StepGrid range mode.
 //
+// An `@`-pinned subquery (`absent(v)[5m:1m] @ <ts>`) evaluates its own
+// [pin-Range, pin] window once, overriding range mode wherever the two
+// disagree — the same precedence subqueryGridCtx applies to every other
+// subquery inner shape (#2071).
+//
 // A zero eval anchor (plain Lower() without LowerAt* threading) cannot
 // materialise the grid's literal timestamps; the wire handlers always
 // thread eval times, so the guard is unreachable via HTTP.
@@ -1509,17 +1514,31 @@ func lowerSubqueryOverAbsent(
 	if ctx.end.IsZero() {
 		return nil, fmt.Errorf("promql: subquery over absent() requires query eval-time context (use LowerAt)")
 	}
-	// Range mode fans one absence indicator per outer anchor, so the grid
-	// reaches back a full subquery range before the QUERY start — the
-	// leading anchors otherwise have no inner anchors to reduce. Instant
-	// eval has no query start and reaches back from the eval timestamp.
-	// (ctx.end is non-zero here by the guard above, so this is exactly
-	// ctx.rangeMode().)
-	gridStart := ctx.end.Add(-sub.Range)
-	if ctx.rangeMode() {
-		gridStart = ctx.start.Add(-sub.Range)
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
 	}
-	gridEnd := ctx.end
+	// An `@`-pinned subquery (`@ <ts>` / `@ start()` / `@ end()`) evaluates
+	// its OWN window once, at the pin, overriding range mode wherever the
+	// two disagree — mirrors subqueryGridCtx's precedence for every other
+	// subquery inner shape. Absent no `@` pin: range mode fans one absence
+	// indicator per outer anchor, so the grid reaches back a full subquery
+	// range before the QUERY start — the leading anchors otherwise have no
+	// inner anchors to reduce. Instant eval has no query start and reaches
+	// back from the eval timestamp. (ctx.end is non-zero here by the guard
+	// above, so the unpinned range check is exactly ctx.rangeMode().)
+	var gridStart, gridEnd time.Time
+	switch {
+	case subqueryPinned(sub) && !anchor.End.IsZero():
+		gridEnd = anchor.End
+		gridStart = anchor.End.Add(-sub.Range)
+	case ctx.rangeMode():
+		gridEnd = ctx.end
+		gridStart = ctx.start.Add(-sub.Range)
+	default:
+		gridEnd = ctx.end
+		gridStart = ctx.end.Add(-sub.Range)
+	}
 
 	// The SUBQUERY's own `offset` shifts WHICH instants it evaluates, so
 	// the whole anchor grid moves back with it — and the emitted anchor
@@ -1537,10 +1556,6 @@ func lowerSubqueryOverAbsent(
 	// selects inner anchors BY their timestamps and already applies the
 	// same offset to its own window — using both applies the shift twice
 	// and the two anchor ranges come out disjoint (empty result).
-	anchor, err := subqueryAnchor(sub, ctx)
-	if err != nil {
-		return nil, err
-	}
 	gridStart = gridStart.Add(-anchor.Offset)
 	gridEnd = gridEnd.Add(-anchor.Offset)
 

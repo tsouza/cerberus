@@ -133,12 +133,9 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // the scalar wrapper still lowers byte-for-byte the same way — then
 // rewrites the capping HistogramProjection to scale it.
 //
-// extraPassthrough only differs from empty for the bare-selector shape:
-// its per-shape lowering reads MetricName straight off the row (a bare
-// selector keeps `__name__`; the other two shapes derive a Sample with
-// an empty name and never read the column), and its range-fanout /
-// range-broadcast evaluation shapes read the step-grid anchor off the
-// row too. sum()/avg() and rate()/increase() already carry
+// extraPassthrough only differs from empty for the bare-selector range
+// shapes, which read the step-grid anchor off the row. sum()/avg() and
+// rate()/increase() already carry
 // stepGridAnchorColumn in their own Input's output when it applies —
 // [expHistogramGroupMerge] / [expHistogramWindowReshape] project it
 // themselves — so neither needs it repeated here.
@@ -152,9 +149,8 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 	case func() bool { _, ok := bareExpHistogramSelector(histSide, s, ctx); return ok }():
 		vs, _ := bareExpHistogramSelector(histSide, s, ctx)
 		node, err = lowerExpHistogramBare(vs, s, ctx)
-		extra = []string{s.MetricNameColumn}
 		if rangeGridShapeFor(vs, ctx) != gridSingleAnchor {
-			extra = append(extra, stepGridAnchorColumn)
+			extra = []string{stepGridAnchorColumn}
 		}
 	default:
 		if agg, vs, ok := sumOrAvgOverExpHistogram(histSide, s, ctx); ok {
@@ -188,8 +184,8 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 // HistogramProjection.Input is already guaranteed to expose — Attributes,
 // Scale, ZeroThreshold (if the schema persists it), both bucket offsets,
 // and the five count-bearing fields — that THIS caller's specific
-// lowering shape also needs carried through unscaled (MetricName / the
-// step-grid anchor for the bare-selector shape; see
+// lowering shape also needs carried through unscaled (the step-grid
+// anchor for the bare-selector range shape; see
 // [lowerExpHistogramScalarBinop]'s doc).
 func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, extraPassthrough ...string) *chplan.HistogramProjection {
 	passthroughCols := append([]string{
@@ -221,6 +217,13 @@ func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp
 
 	scaled := *hp
 	scaled.Input = &chplan.Project{Input: hp.Input, Projections: projs}
+	scaled.GroupBy = append([]chplan.Expr(nil), hp.GroupBy...)
+	for i, alias := range scaled.GroupByAliases {
+		if alias == s.MetricNameColumn {
+			scaled.GroupBy[i] = &chplan.LitString{V: ""}
+			break
+		}
+	}
 	return &scaled
 }
 

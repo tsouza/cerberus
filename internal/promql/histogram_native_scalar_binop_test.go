@@ -123,8 +123,13 @@ func TestLower_ExpHistogram_ScalarBinopIsHistogramValued(t *testing.T) {
 			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
 				t.Fatalf("lower(%q): plan root publishes %s, want histogram", tc.query, shape)
 			}
-			if _, ok := plan.(*chplan.HistogramProjection); !ok {
+			hp, ok := plan.(*chplan.HistogramProjection)
+			if !ok {
 				t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", tc.query, plan)
+			}
+			name, ok := hp.GroupBy[0].(*chplan.LitString)
+			if !ok || name.V != "" {
+				t.Fatalf("lower(%q): metric-name projection is %#v, want empty literal", tc.query, hp.GroupBy[0])
 			}
 		})
 	}
