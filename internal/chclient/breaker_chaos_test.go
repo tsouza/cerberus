@@ -207,8 +207,9 @@ func TestBreaker_OpensAfterNConsecutiveFailures(t *testing.T) {
 }
 
 // TestBreaker_FastFailsWhenOpen — once OPEN, Query returns ErrCircuitOpen
-// without touching the driver. Verified by elapsed time + the connection
-// call counter.
+// without touching the driver. The connection call counter is the structural
+// proof: unlike a wall-clock threshold, it is independent of runner load and
+// scheduling pauses.
 func TestBreaker_FastFailsWhenOpen(t *testing.T) {
 	t.Parallel()
 	conn := newFlakyConn(nil)
@@ -224,9 +225,7 @@ func TestBreaker_FastFailsWhenOpen(t *testing.T) {
 	}
 	callsBefore := conn.callCount.Load()
 
-	start := time.Now()
 	_, err := client.Query(ctx, "SELECT 1")
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("Query: nil error, want ErrCircuitOpen")
@@ -234,11 +233,8 @@ func TestBreaker_FastFailsWhenOpen(t *testing.T) {
 	if !errors.Is(err, ErrCircuitOpen) {
 		t.Fatalf("Query err: got %v, want ErrCircuitOpen wrap", err)
 	}
-	if elapsed > 10*time.Millisecond {
-		t.Errorf("OPEN fast-fail elapsed = %s; expected < 10ms (no CH dial)", elapsed)
-	}
 	if got := conn.callCount.Load(); got != callsBefore {
-		t.Errorf("conn.callCount: bumped by %d during OPEN fast-fail; should be 0", got-callsBefore)
+		t.Errorf("conn.callCount: bumped by %d during OPEN fast-fail; want no driver calls", got-callsBefore)
 	}
 }
 
