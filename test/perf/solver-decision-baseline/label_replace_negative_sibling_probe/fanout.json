@@ -1,5 +1,6 @@
 {
-  "query": "label_replace_negative_sibling_probe",
+  "query": "label_replace_negative_sibling_probe/fanout",
+  "lowering": "fanout",
   "routed": true,
   "k": 8,
   "reason": "routed",
