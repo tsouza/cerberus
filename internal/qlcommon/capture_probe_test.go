@@ -82,6 +82,46 @@ func TestReplacementToCHProbesCarrierParticipation(t *testing.T) {
 			},
 		},
 		{
+			// Carrier 1 gets a POSITIVE probe (so Probes is populated and
+			// kept, not nilled), carrier 2 gets a NEGATIVE sibling probe, and
+			// carrier 3 is a trailing unconditional carrier that answers for
+			// itself. This chain is the one that pins the loop in
+			// [captureGroups.expressibleCarriers] actually reaches every
+			// searched carrier rather than stopping once it resolves
+			// carrier 2's negative probe: carrier 3's own natural index in
+			// Probes only lands there if its iteration runs at all.
+			name:       "positive_then_negative_then_trailing_carrier",
+			regex:      `(?:x(?P<dup>a?))?(?:(?P<dup>b?)|c)(?P<dup>d)`,
+			wantProbed: `(?:(?P<cerberusprobe1>x(?P<dup>a?)))?(?:(?P<dup>b?)|(?P<cerberusprobe0>c))(?P<dup>d)`,
+			wantSegs: []chplan.LabelReplaceSegment{
+				{
+					Group:          2,
+					Fallbacks:      []int{3, 5},
+					Probes:         []int{1, 3, 5},
+					NegativeProbes: [][]int{nil, {4}, nil},
+				},
+			},
+		},
+		{
+			// Carrier 1 needs TWO negative-sibling probes (a three-way
+			// alternation with two non-empty companion branches), which is
+			// what makes the synthetic request numbering in
+			// [planCaptureProbes] (`nextRequest--`) actually count down
+			// across more than one request rather than being assigned once
+			// and never observed again. The exact probe NAMES land in
+			// [ProbedRegex] in descending-request order — cerberusprobe0
+			// on the LAST-discovered sibling, cerberusprobe1 on the first —
+			// so asserting the rewritten string pins the direction, not
+			// just the final index values each name resolves to.
+			name:  "carrier_with_two_negative_sibling_probes",
+			regex: `(?:(?P<dup>a?)|(?P<dup>b)|(?P<dup>c))(?P<dup>d)`,
+			wantProbed: `(?:(?P<dup>a?)|(?P<cerberusprobe1>(?P<dup>b))|(?P<cerberusprobe0>(?P<dup>c))` +
+				`)(?P<dup>d)`,
+			wantSegs: []chplan.LabelReplaceSegment{
+				{Group: 1, Fallbacks: []int{3, 5, 6}, NegativeProbes: [][]int{{2, 4}, nil, nil, nil}},
+			},
+		},
+		{
 			// Two independent carriers each get their own probe, and the
 			// numbering they report is the REWRITTEN one throughout.
 			name:       "two_carriers_two_probes",
@@ -123,6 +163,79 @@ func TestReplacementToCHProbesCarrierParticipation(t *testing.T) {
 				if !got.Segments[i].Equal(tc.wantSegs[i]) {
 					t.Fatalf("ReplacementToCH(%q): segment %d = %+v, want %+v",
 						tc.regex, i, got.Segments[i], tc.wantSegs[i])
+				}
+			}
+		})
+	}
+}
+
+// TestNegativeSiblingSpans pins the narrow structural proof required before
+// an empty sibling probe may stand in for a nullable carrier's participation.
+func TestNegativeSiblingSpans(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		src        string
+		want       []string
+		wantUsable bool
+	}{
+		{
+			name:       "mandatory_fork_with_non_empty_sibling",
+			src:        `(?:(?P<dup>a?)|(?P<dup>b))(?P<dup>c)`,
+			want:       []string{`(?P<dup>b)`},
+			wantUsable: true,
+		},
+		{
+			name:       "innermost_fork_wins",
+			src:        `(?:(?:(?P<dup>a?)|(?P<dup>b))|(?P<dup>c))(?P<dup>d)`,
+			want:       []string{`(?P<dup>b)`},
+			wantUsable: true,
+		},
+		{
+			// The carrier's immediate parent is a plain non-capturing
+			// wrapper, not the alternation itself, so finding the fork's
+			// enclosing alternation has to walk up PAST that wrapper —
+			// exercising the loop as a real multi-step walk rather than one
+			// that stops on its first check.
+			name:       "fork_ancestor_one_level_up",
+			src:        `(?:(?:(?P<dup>a?))|(?P<dup>b))(?P<dup>c)`,
+			want:       []string{`(?P<dup>b)`},
+			wantUsable: true,
+		},
+		{
+			name: "no_fork",
+			src:  `(?P<dup>a?)(?P<dup>b)`,
+		},
+		{
+			name: "nullable_sibling",
+			src:  `(?:(?P<dup>a?)|(?P<dup>b?))(?P<dup>c)`,
+		},
+		{
+			name: "repeated_fork",
+			src:  `(?:(?P<dup>a?)|(?P<dup>b))*(?P<dup>c)`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			groups, ok := scanSourceGroups(tc.src)
+			if !ok {
+				t.Fatalf("scanSourceGroups(%q) declined", tc.src)
+			}
+			at := groupIndexOf(groups, 1)
+			spans, usable := negativeSiblingSpans(tc.src, groups, at)
+			if usable != tc.wantUsable {
+				t.Fatalf("negativeSiblingSpans(%q) usable = %v, want %v", tc.src, usable, tc.wantUsable)
+			}
+			if len(spans) != len(tc.want) {
+				t.Fatalf("negativeSiblingSpans(%q) returned %d spans, want %d", tc.src, len(spans), len(tc.want))
+			}
+			for i, span := range spans {
+				if got := tc.src[span.start:span.end]; got != tc.want[i] {
+					t.Errorf("negativeSiblingSpans(%q) span %d = %q, want %q", tc.src, i, got, tc.want[i])
 				}
 			}
 		})
