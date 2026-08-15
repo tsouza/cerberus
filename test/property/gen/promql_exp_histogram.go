@@ -57,28 +57,29 @@ var expHistogramValueFns = []string{
 // latest-snapshot rule always has exactly one row to answer from.
 const expHistogramEvalOffset = 200 * time.Second
 
+// expHistogramRangeWindow includes every generated snapshot at the fixed
+// evaluation timestamp. A one-point series still exercises Prometheus's
+// silent insufficient-samples drop; every longer series reaches the native
+// histogram rate/increase fold.
+const expHistogramRangeWindow = 5 * time.Minute
+
 // ExpHistogramQuery returns a rapid generator producing a random
 // property.Query over the native (exponential) histogram dataset d
 // (see [ExpHistogramDataset]).
 //
-// Accept-set — the seven PromQL functions that read a native
-// histogram, each over a bare vector selector:
+// Accept-set:
 //
 //   - histogram_count / histogram_sum / histogram_avg /
 //     histogram_stddev / histogram_stdvar (metric{…})
 //   - histogram_quantile(phi, metric{…})
 //   - histogram_fraction(lower, upper, metric{…})
+//   - histogram-valued bare selector, sum/sum-by, rate, and increase
+//   - histogram_quantile over bare, sum/sum-by, rate/increase, and
+//     sum/sum-by wrapped rate/increase histogram vectors
 //
-// The bare selector itself is deliberately NOT in the accept-set: it
-// evaluates to a histogram-valued vector, which the Prom wire format
-// cerberus speaks cannot encode, so it is not a shape a differential
-// comparison of decoded float samples can be run over. Wrapping the
-// selector in any of the seven reduces it to a float first.
-//
-// The argument is always a bare selector because that is exactly
-// cerberus's own accept-set for these functions
-// (internal/promql/histogram_value_fns.go lowers a *parser.VectorSelector
-// argument and nothing else) as well as the oracle's.
+// The five value functions and histogram_fraction remain selector-only,
+// matching cerberus's lowering boundary. The other shapes exercise the
+// histogram-valued wire comparator and the oracle's merge/window support.
 //
 // As in [PromQLQuery] the expression is built as a parser AST and
 // rendered with String(), so every generated query is guaranteed to
@@ -94,30 +95,63 @@ func ExpHistogramQuery(d property.Dataset) *rapid.Generator[property.Query] {
 
 		name := rapid.SampledFrom(names).Draw(t, "expHistMetric")
 		matchers := drawMatchers(t, name, d.Metrics)
+		labelNames := mapKeys(d.Metrics.LabelsPresentFor(name))
+		groupLabel := ""
+		if len(labelNames) > 0 {
+			groupLabel = rapid.SampledFrom(labelNames).Draw(t, "expHistGroupLabel")
+		}
 
 		return property.Query{
-			String: drawExpHistogramExpr(t, name, matchers).String(),
+			String: drawExpHistogramExpr(t, name, matchers, groupLabel).String(),
 			EvalTs: AnchorTime().Add(expHistogramEvalOffset).Unix(),
 		}
 	})
 }
 
-// drawExpHistogramExpr picks one of the three call shapes and fills in
-// its scalar arguments.
-func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher) parser.Expr {
-	sel := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
-
-	switch rapid.IntRange(0, 2).Draw(t, "expHistShape") {
-	case 0:
-		fn := rapid.SampledFrom(expHistogramValueFns).Draw(t, "expHistValueFn")
-		return &parser.Call{Func: parser.Functions[fn], Args: []parser.Expr{sel}}
-	case 1:
+// drawExpHistogramExpr picks one of the supported native-histogram shapes.
+func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher, groupLabel string) parser.Expr {
+	selectorMatchers := func(grouped bool) []*labels.Matcher {
+		out := append([]*labels.Matcher(nil), matchers...)
+		if grouped && groupLabel != "" {
+			// Prometheus omits an absent grouping label, while cerberus's
+			// native-histogram merge materializes it as "" (#2163). Keep this
+			// generator on rows where both label shapes are identical.
+			out = append(out, labels.MustNewMatcher(labels.MatchNotEqual, groupLabel, ""))
+		}
+		return out
+	}
+	sel := func(grouped bool) parser.Expr {
+		return &parser.VectorSelector{Name: name, LabelMatchers: selectorMatchers(grouped)}
+	}
+	window := func(fn string, grouped bool) parser.Expr {
+		return &parser.Call{
+			Func: parser.Functions[fn],
+			Args: []parser.Expr{&parser.MatrixSelector{
+				VectorSelector: &parser.VectorSelector{Name: name, LabelMatchers: selectorMatchers(grouped)},
+				Range:          expHistogramRangeWindow,
+			}},
+		}
+	}
+	sum := func(expr parser.Expr, grouped bool) parser.Expr {
+		agg := &parser.AggregateExpr{Op: parser.SUM, Expr: expr}
+		if grouped && groupLabel != "" {
+			agg.Grouping = []string{groupLabel}
+		}
+		return agg
+	}
+	quantile := func(expr parser.Expr) parser.Expr {
 		phi := rapid.SampledFrom(ExpHistogramPhiPool).Draw(t, "expHistPhi")
 		return &parser.Call{
 			Func: parser.Functions["histogram_quantile"],
-			Args: []parser.Expr{&parser.NumberLiteral{Val: phi}, sel},
+			Args: []parser.Expr{&parser.NumberLiteral{Val: phi}, expr},
 		}
-	default:
+	}
+
+	switch rapid.IntRange(0, 15).Draw(t, "expHistShape") {
+	case 0:
+		fn := rapid.SampledFrom(expHistogramValueFns).Draw(t, "expHistValueFn")
+		return &parser.Call{Func: parser.Functions[fn], Args: []parser.Expr{sel(false)}}
+	case 1:
 		lower := rapid.SampledFrom(ExpHistogramFractionBoundPool).Draw(t, "expHistFractionLower")
 		upper := rapid.SampledFrom(ExpHistogramFractionBoundPool).Draw(t, "expHistFractionUpper")
 		degenerate := rapid.IntRange(0, expHistogramDegenerateFractionRate-1).
@@ -130,8 +164,36 @@ func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher) p
 			Args: []parser.Expr{
 				&parser.NumberLiteral{Val: lower},
 				&parser.NumberLiteral{Val: upper},
-				sel,
+				sel(false),
 			},
 		}
+	case 2:
+		return sel(false)
+	case 3:
+		return sum(sel(false), false)
+	case 4:
+		return sum(sel(true), true)
+	case 5:
+		return window("rate", false)
+	case 6:
+		return window("increase", false)
+	case 7:
+		return quantile(sel(false))
+	case 8:
+		return quantile(sum(sel(false), false))
+	case 9:
+		return quantile(sum(sel(true), true))
+	case 10:
+		return quantile(window("rate", false))
+	case 11:
+		return quantile(window("increase", false))
+	case 12:
+		return quantile(sum(window("rate", false), false))
+	case 13:
+		return quantile(sum(window("rate", true), true))
+	case 14:
+		return quantile(sum(window("increase", false), false))
+	default:
+		return quantile(sum(window("increase", true), true))
 	}
 }

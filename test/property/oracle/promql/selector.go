@@ -4,8 +4,6 @@ import (
 	"sort"
 
 	"github.com/prometheus/prometheus/promql/parser"
-
-	"github.com/tsouza/cerberus/test/property"
 )
 
 // VectorRow is one (labels, ts, value) tuple in an instant-vector
@@ -17,7 +15,7 @@ type VectorRow struct {
 	Labels    map[string]string
 	T         int64
 	V         float64
-	Histogram *property.NativeHistogram
+	Histogram *nativeHistogram
 }
 
 // RangePoints is one (labels, samples) tuple in a range-vector result.

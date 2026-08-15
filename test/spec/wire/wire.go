@@ -141,12 +141,23 @@ func decodeVector(raw json.RawMessage) property.Outcome {
 			stripped[k] = v
 		}
 
+		if s.Value != nil && s.Histogram != nil {
+			return property.Outcome{Err: fmt.Errorf("wire: vector sample %v has both float and histogram values", s.Metric)}
+		}
+		if s.Histogram != nil {
+			ts, histogram, perr := parseHistogramSample(*s.Histogram)
+			if perr != nil {
+				return property.Outcome{Err: fmt.Errorf("wire: parse histogram sample: %w", perr)}
+			}
+			out.Rows = append(out.Rows, property.OutcomeRow{
+				Labels:      stripped,
+				TimestampMs: ts,
+				Histogram:   histogram,
+			})
+			continue
+		}
 		if s.Value == nil {
-			// A histogram-valued sample (s.Histogram set instead) has no
-			// float Value; this harness only exercises float-valued PromQL
-			// shapes today, so treat it as a decode error rather than a
-			// nil-pointer panic.
-			return property.Outcome{Err: fmt.Errorf("wire: vector sample %v has no float value (histogram-valued?)", s.Metric)}
+			return property.Outcome{Err: fmt.Errorf("wire: vector sample %v has neither float nor histogram value", s.Metric)}
 		}
 		ts, val, perr := ParseSample(*s.Value)
 		if perr != nil {
@@ -202,6 +213,71 @@ func ParseSample(s prom.Sample) (int64, float64, error) {
 		return 0, 0, fmt.Errorf("sample[1]: parse float %q: %w", valStr, err)
 	}
 	return int64(tsSec * 1000), v, nil
+}
+
+func parseHistogramSample(s prom.Sample) (int64, *property.Histogram, error) {
+	if len(s) < 2 {
+		return 0, nil, fmt.Errorf("expected 2-element histogram sample, got %d", len(s))
+	}
+	tsSec, ok := s[0].(float64)
+	if !ok {
+		return 0, nil, fmt.Errorf("histogram sample[0]: want float64, got %T (%v)", s[0], s[0])
+	}
+	raw, err := json.Marshal(s[1])
+	if err != nil {
+		return 0, nil, fmt.Errorf("histogram sample[1]: encode body: %w", err)
+	}
+	var body struct {
+		Count   string              `json:"count"`
+		Sum     string              `json:"sum"`
+		Buckets [][]json.RawMessage `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return 0, nil, fmt.Errorf("histogram sample[1]: decode body: %w", err)
+	}
+	count, err := strconv.ParseFloat(body.Count, 64)
+	if err != nil {
+		return 0, nil, fmt.Errorf("histogram count %q: %w", body.Count, err)
+	}
+	sum, err := strconv.ParseFloat(body.Sum, 64)
+	if err != nil {
+		return 0, nil, fmt.Errorf("histogram sum %q: %w", body.Sum, err)
+	}
+	histogram := &property.Histogram{Count: count, Sum: sum, Buckets: make([]property.HistogramBucket, 0, len(body.Buckets))}
+	for i, rawBucket := range body.Buckets {
+		if len(rawBucket) != 4 {
+			return 0, nil, fmt.Errorf("histogram bucket[%d]: expected 4 elements, got %d", i, len(rawBucket))
+		}
+		var boundaries int
+		var fields [3]string
+		if err := json.Unmarshal(rawBucket[0], &boundaries); err != nil {
+			return 0, nil, fmt.Errorf("histogram bucket[%d] boundaries: %w", i, err)
+		}
+		for j := range fields {
+			if err := json.Unmarshal(rawBucket[j+1], &fields[j]); err != nil {
+				return 0, nil, fmt.Errorf("histogram bucket[%d] field[%d]: %w", i, j+1, err)
+			}
+		}
+		lower, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			return 0, nil, fmt.Errorf("histogram bucket[%d] lower %q: %w", i, fields[0], err)
+		}
+		upper, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil {
+			return 0, nil, fmt.Errorf("histogram bucket[%d] upper %q: %w", i, fields[1], err)
+		}
+		bucketCount, err := strconv.ParseFloat(fields[2], 64)
+		if err != nil {
+			return 0, nil, fmt.Errorf("histogram bucket[%d] count %q: %w", i, fields[2], err)
+		}
+		histogram.Buckets = append(histogram.Buckets, property.HistogramBucket{
+			Boundaries: boundaries,
+			Lower:      lower,
+			Upper:      upper,
+			Count:      bucketCount,
+		})
+	}
+	return int64(tsSec * 1000), histogram, nil
 }
 
 // baseEscapeChars are punctuation marks every generated PromQL query might

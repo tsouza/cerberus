@@ -256,22 +256,47 @@ type Outcome struct {
 // milliseconds (matching Prom).
 //
 // The Value field is the canonical sample value for numeric outcomes
-// (PromQL instant vectors, LogQL metric queries). The Line field
+// (PromQL instant vectors, LogQL metric queries). Histogram carries the
+// explicit Prometheus wire representation for native-histogram outcomes.
+// The Line field
 // carries log-stream content for LogQL log queries — both the oracle
 // and cerberus must populate it for stream-shaped outcomes; the
 // comparator's row matcher pairs entries by (label set, timestamp,
 // line) so two rows with identical labels + ts but different lines
 // won't collide.
 //
-// For numeric outcomes Line stays empty and the comparator falls back
-// to a value-equality check via [valuesClose]; for stream outcomes
-// Value stays zero and the comparator checks Line equality byte-for-
-// byte.
+// Exactly one of Histogram, Line, or Value is meaningful for a row. The
+// comparator checks histogram structure and every numeric field before
+// falling back to line or float comparison, so a histogram can never pass
+// vacuously through Value's zero value.
 type OutcomeRow struct {
 	Labels      map[string]string
 	TimestampMs int64
 	Value       float64
+	Histogram   *Histogram
 	Line        string
+}
+
+// Histogram is the decoded Prometheus HTTP representation of one native-
+// histogram sample. Its buckets have explicit boundaries rather than the
+// scale/offset representation used by the dataset and oracle internals,
+// because explicit boundaries are the only histogram shape observable at
+// the differential's HTTP seam.
+type Histogram struct {
+	Count   float64
+	Sum     float64
+	Buckets []HistogramBucket
+}
+
+// HistogramBucket is one populated native-histogram bucket in ascending
+// value order. Boundaries uses Prometheus's integer vocabulary: 0 means
+// lower-exclusive/upper-inclusive, 1 lower-inclusive/upper-exclusive, and
+// 3 both-inclusive.
+type HistogramBucket struct {
+	Boundaries int
+	Lower      float64
+	Upper      float64
+	Count      float64
 }
 
 // DatasetGen produces a random Dataset. Implementations should use
@@ -434,6 +459,13 @@ func CompareOutcomes(want, got Outcome) string {
 					key, i, ws[i].TimestampMs, gs[i].TimestampMs)
 				continue
 			}
+			if ws[i].Histogram != nil || gs[i].Histogram != nil {
+				if histDiff := compareHistograms(ws[i].Histogram, gs[i].Histogram); histDiff != "" {
+					fmt.Fprintf(&diff, "series %s: histogram[%d] @ts=%d %s\n",
+						key, i, ws[i].TimestampMs, histDiff)
+				}
+				continue
+			}
 			// Stream rows (Line non-empty on either side) check the
 			// line content byte-for-byte; numeric rows fall through to
 			// the float tolerance check. The two paths are mutually
@@ -459,6 +491,32 @@ func CompareOutcomes(want, got Outcome) string {
 	}
 
 	return diff.String()
+}
+
+func compareHistograms(want, got *Histogram) string {
+	if want == nil || got == nil {
+		return fmt.Sprintf("shape mismatch: want=%v got=%v", want != nil, got != nil)
+	}
+	if !valuesClose(want.Count, got.Count) {
+		return fmt.Sprintf("count want=%g got=%g", want.Count, got.Count)
+	}
+	if !valuesClose(want.Sum, got.Sum) {
+		return fmt.Sprintf("sum want=%g got=%g", want.Sum, got.Sum)
+	}
+	if len(want.Buckets) != len(got.Buckets) {
+		return fmt.Sprintf("bucket count want=%d got=%d", len(want.Buckets), len(got.Buckets))
+	}
+	for i := range want.Buckets {
+		w, g := want.Buckets[i], got.Buckets[i]
+		if w.Boundaries != g.Boundaries {
+			return fmt.Sprintf("bucket[%d] boundaries want=%d got=%d", i, w.Boundaries, g.Boundaries)
+		}
+		if !valuesClose(w.Lower, g.Lower) || !valuesClose(w.Upper, g.Upper) || !valuesClose(w.Count, g.Count) {
+			return fmt.Sprintf("bucket[%d] want=[%g,%g]=%g got=[%g,%g]=%g",
+				i, w.Lower, w.Upper, w.Count, g.Lower, g.Upper, g.Count)
+		}
+	}
+	return ""
 }
 
 func indexOutcomeRows(rows []OutcomeRow) map[string][]OutcomeRow {

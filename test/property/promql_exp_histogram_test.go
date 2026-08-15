@@ -13,8 +13,8 @@
 //     (scale, zero bucket, positive and negative bucket arrays) and
 //     renders them into an otel_metrics_exponential_histogram seed
 //     script alongside the in-memory mirror the oracle reads.
-//  2. gen.ExpHistogramQuery draws one of the seven PromQL functions
-//     that read a native histogram, over a bare selector.
+//  2. gen.ExpHistogramQuery draws selector-only value functions plus
+//     histogram-valued bare/sum/rate/increase and wrapped quantile shapes.
 //  3. The from-scratch oracle (test/property/oracle/promql's
 //     histogram_native.go) walks the bucket layout in Go, off the
 //     documented exponential-schema semantics — it never sees

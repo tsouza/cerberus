@@ -24,9 +24,10 @@
 //     (==, !=, <, >, <=, >=) with `bool` modifier, scalar-vector
 //     and vector-vector matching with on/ignoring +
 //     group_left/group_right (and label-include).
-//   - Histograms: histogram_quantile(phi, sum by(le)(rate(<bucket>[
-//     range]))) over classic-histogram (`_bucket`-suffixed) data.
-//     Native histograms are not covered by the oracle.
+//   - Histograms: histogram_quantile over classic buckets; native
+//     histogram selectors and scalar value functions; coarsest-scale
+//     native sum merges; reset-aware native rate/increase and quantiles
+//     over those wrapped values.
 //   - Modifiers: @<ts>, @start(), @end(), offset (positive, zero,
 //     negative).
 //
@@ -79,6 +80,8 @@
 //     by/without.
 //   - binary.go — binary ops + vector matching.
 //   - histogram.go — histogram_quantile over classic buckets.
+//   - histogram_native.go / histogram_merge.go — native histogram
+//     scalar functions, quantiles, merge, and wire conversion.
 //   - modifiers.go — @ts/@start()/@end() + offset application.
 //
 // [PromQL semantics documentation]: https://prometheus.io/docs/prometheus/latest/querying/basics/
