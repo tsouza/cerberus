@@ -84,6 +84,14 @@ func TestFnSpellings_NoOrphanEntry(t *testing.T) {
 // declaredFnValues scans every non-test .go file in internal/chplan for
 // `const` declarations typed Fn, returning symbol name -> underlying
 // string value (e.g. "FnArrayMap" -> "arrayMap").
+//
+// A const's RHS is either a string literal directly, or (once, for
+// FnMapSort) an identifier reusing another package-level string constant's
+// spelling rather than restating it — see CanonicalMapFunc's doc comment.
+// The scan resolves that one indirection level from a first pass over
+// every top-level string-literal const in the package, Fn-typed or not,
+// so an Fn constant spelled by reference is still counted as declared
+// instead of silently vanishing from this ratchet.
 func declaredFnValues(t *testing.T) map[string]string {
 	t.Helper()
 
@@ -93,7 +101,7 @@ func declaredFnValues(t *testing.T) map[string]string {
 		t.Fatalf("read internal/chplan: %v", err)
 	}
 
-	out := map[string]string{}
+	var files []*ast.File
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		name := e.Name()
@@ -104,9 +112,51 @@ func declaredFnValues(t *testing.T) map[string]string {
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
-		collectFnConsts(f, out)
+		files = append(files, f)
+	}
+
+	literals := map[string]string{}
+	for _, f := range files {
+		collectStringLiteralConsts(f, literals)
+	}
+
+	out := map[string]string{}
+	for _, f := range files {
+		collectFnConsts(f, literals, out)
 	}
 	return out
+}
+
+// collectStringLiteralConsts walks f's top-level const blocks, recording
+// every spec whose RHS is a plain string literal — regardless of type —
+// so an Fn const referencing one by identifier can be resolved.
+func collectStringLiteralConsts(f *ast.File, out map[string]string) {
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, n := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					continue
+				}
+				out[n.Name] = value
+			}
+		}
+	}
 }
 
 // collectFnConsts walks f's top-level const blocks, recording every spec
@@ -115,7 +165,7 @@ func declaredFnValues(t *testing.T) map[string]string {
 // explicitly on every line, but the scan tracks the last seen Type/Values
 // anyway so it degrades safely rather than silently under-counting if
 // that style ever changes.
-func collectFnConsts(f *ast.File, out map[string]string) {
+func collectFnConsts(f *ast.File, literals, out map[string]string) {
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.CONST {
@@ -142,15 +192,21 @@ func collectFnConsts(f *ast.File, out map[string]string) {
 				if i >= len(lastValues) {
 					continue
 				}
-				lit, ok := lastValues[i].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					continue
+				switch rhs := lastValues[i].(type) {
+				case *ast.BasicLit:
+					if rhs.Kind != token.STRING {
+						continue
+					}
+					value, err := strconv.Unquote(rhs.Value)
+					if err != nil {
+						continue
+					}
+					out[n.Name] = value
+				case *ast.Ident:
+					if value, ok := literals[rhs.Name]; ok {
+						out[n.Name] = value
+					}
 				}
-				value, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					continue
-				}
-				out[n.Name] = value
 			}
 		}
 	}
