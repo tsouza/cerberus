@@ -20,7 +20,7 @@ func TestMinePatternsVolumeFloor(t *testing.T) {
 	lines := repeatedPatternLines(base, "rare alpha quiet path", belowFloorCount)
 	lines = append(lines, repeatedPatternLines(base, "common beta loud route", atFloorCount)...)
 
-	got := minePatterns(lines, minimumPatternSampleResolution)
+	got := minePatterns(lines, base, base.Add(time.Minute), minimumPatternSampleResolution)
 	if len(got) != 1 {
 		t.Fatalf("patterns=%d want 1: %+v", len(got), got)
 	}
@@ -48,7 +48,7 @@ func TestMinePatternsVolumeSortAndSeriesCap(t *testing.T) {
 		}
 	}
 
-	got := minePatterns(lines, minimumPatternSampleResolution)
+	got := minePatterns(lines, base, base.Add(time.Minute), minimumPatternSampleResolution)
 	if len(got) != maximumPatternSeries {
 		t.Fatalf("patterns=%d want hard cap %d", len(got), maximumPatternSeries)
 	}
@@ -80,7 +80,7 @@ func TestMinePatternsUsesRequestedStep(t *testing.T) {
 		})
 	}
 
-	got := minePatterns(lines, requestedStep)
+	got := minePatterns(lines, base, base.Add(30*time.Second), requestedStep)
 	if len(got) != 1 {
 		t.Fatalf("patterns=%d want 1: %+v", len(got), got)
 	}

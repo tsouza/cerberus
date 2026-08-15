@@ -120,7 +120,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patterns := minePatterns(lines, step)
+	patterns := minePatterns(lines, start, end, step)
 
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
@@ -174,7 +174,7 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 // instance (confirmed independent — a Miner owns its own token tree and
 // cluster slice, no shared state), so lines never mix templates across
 // levels.
-func minePatterns(lines []chclient.TimestampedLine, step time.Duration) []Pattern {
+func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step time.Duration) []Pattern {
 	type patternWithVolume struct {
 		pattern Pattern
 		volume  int64
@@ -205,16 +205,18 @@ func minePatterns(lines []chclient.TimestampedLine, step time.Duration) []Patter
 			if s == "" {
 				continue
 			}
-			if c.Count() < minimumPatternVolume {
+			samples := projectSamples(c.Samples(), start, end)
+			volume := sampleVolume(samples)
+			if volume < minimumPatternVolume {
 				continue
 			}
 			weighted = append(weighted, patternWithVolume{
 				pattern: Pattern{
 					Pattern: s,
 					Level:   level,
-					Samples: projectSamples(c.Samples()),
+					Samples: samples,
 				},
-				volume: c.Count(),
+				volume: volume,
 			})
 		}
 	}
@@ -259,15 +261,31 @@ func parsePatternsStep(raw string, start, end time.Time) (time.Duration, error) 
 
 // projectSamples converts the in-house drain cluster samples
 // (TimestampUnixSec, Count) onto the upstream wire shape
-// `[][unix_seconds, count]`. Samples already arrive ascending by
-// timestamp (drain.Cluster.Samples sorts), and the resolution is whole
+// `[][unix_seconds, count]`. Drain aligns buckets to the Unix grid, so an
+// unaligned request start can put the first bucket's timestamp before the
+// query window even though its rows were in-window. Upstream drops that
+// partial pre-start bucket; apply the same [start,end] timestamp filter
+// before the volume floor is evaluated. Samples already arrive ascending
+// by timestamp (drain.Cluster.Samples sorts), and the resolution is whole
 // seconds, matching upstream's `WriteQueryPatternsResponseJSON`, which
 // emits `sample.Timestamp.Unix()`.
-func projectSamples(samples []drain.Sample) [][2]int64 {
+func projectSamples(samples []drain.Sample, start, end time.Time) [][2]int64 {
 	out := make([][2]int64, 0, len(samples))
 	for _, s := range samples {
+		stamp := time.Unix(s.TimestampUnixSec, 0)
+		if stamp.Before(start) || stamp.After(end) {
+			continue
+		}
 		out = append(out, [2]int64{s.TimestampUnixSec, s.Count})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
 	return out
+}
+
+func sampleVolume(samples [][2]int64) int64 {
+	var total int64
+	for _, sample := range samples {
+		total += sample[1]
+	}
+	return total
 }

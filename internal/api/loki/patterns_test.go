@@ -242,6 +242,64 @@ func TestPatterns_UsesRequestedStep(t *testing.T) {
 	}
 }
 
+func TestPatterns_DropsPartialPreStartBucket(t *testing.T) {
+	t.Parallel()
+
+	const (
+		requestStartUnix = int64(1786836195)
+		requestEndUnix   = int64(1786836315)
+		firstFullBucket  = int64(1786836200)
+	)
+	lines := []chclient.TimestampedLine{{
+		Timestamp: time.Unix(requestStartUnix+2, 0).UTC(),
+		Body:      "live warning request failed",
+		Severity:  "WARN",
+	}}
+	for offset := int64(0); offset < 4; offset++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: time.Unix(firstFullBucket+offset, 0).UTC(),
+			Body:      "live warning request failed",
+			Severity:  "WARN",
+		})
+	}
+	for i := 4; i < retainedPatternVolumeFloor; i++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: time.Unix(firstFullBucket+10, 0).UTC(),
+			Body:      "live warning request failed",
+			Severity:  "WARN",
+		})
+	}
+
+	srv := newServer(&stubQuerier{tsLines: lines})
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/patterns?query=%7Bservice_name%3D%22cerberus-patterns-live%22%7D` +
+		`&start=1786836195&end=1786836315&step=10s`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var out patternsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("patterns=%d want 1: %+v", len(out.Data), out.Data)
+	}
+	if got := out.Data[0].Samples[0]; got != [2]int64{firstFullBucket, 4} {
+		t.Fatalf("first sample=%v want [%d 4]; partial pre-start bucket was not dropped", got, firstFullBucket)
+	}
+	for _, sample := range out.Data[0].Samples {
+		if sample[0] < requestStartUnix || sample[0] > requestEndUnix {
+			t.Fatalf("sample %v outside request window [%d,%d]", sample, requestStartUnix, requestEndUnix)
+		}
+	}
+}
+
 // TestPatterns_BucketsByDetectedLevel feeds the handler two structurally
 // identical templates at different severities and asserts the handler
 // emits two DISTINCT clusters, one per level — pattern mining must not
