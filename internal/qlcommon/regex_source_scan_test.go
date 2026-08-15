@@ -45,7 +45,18 @@ func TestScanSourceGroupsLocatesGroups(t *testing.T) {
 		{"leading_bracket_member", `[]()](a)`, []string{"a"}, []int{1}},
 		{"negated_leading_bracket_member", `[^]()](a)`, []string{"a"}, []int{1}},
 		{"posix_class", `[[:alpha:]](a)`, []string{"a"}, []int{1}},
+		// An empty POSIX name (`::]` immediately) is the boundary where the
+		// terminator search finds `:]` at offset 0 rather than failing to
+		// find it at all — a construct this scanner still accepts, since
+		// well-formedness of the POSIX name itself is `regexp/syntax`'s
+		// business, not the offset scanner's.
+		{"posix_class_empty_name", `[[::]](a)`, []string{"a"}, []int{1}},
 		{"escaped_bracket_in_a_class", `[\]()](a)`, []string{"a"}, []int{1}},
+
+		// A `\Q…\E` quoted run is skipped as one unit — including any `(`
+		// inside it — and the scan must resume normally on whatever
+		// follows, not stop at the run's end.
+		{"quoted_run_then_group", `\Qfoo\E(a)`, []string{"a"}, []int{1}},
 
 		// A SCOPED flag group carries its setting with it, so wrapping it
 		// cannot move where the setting applies.
@@ -155,7 +166,7 @@ func TestPlanCaptureProbesDeclines(t *testing.T) {
 		need  []int
 	}{
 		{"nothing_to_probe", `(?P<dup>a)|(?P<dup>b)`, nil},
-		{"carrier_with_no_probeable_ancestor", `(?:(?P<dup>a?)|y)(?P<dup>b)`, []int{1}},
+		{"carrier_with_no_probeable_ancestor", `(?:(?P<dup>a?)|y?)(?P<dup>b)`, []int{1}},
 		{"carrier_alone_under_a_quest", `(?:(?P<dup>a?))?(?P<dup>b)`, []int{1}},
 		{"unparseable_regex", `(?P<dup>a`, []int{1}},
 		{"index_past_the_group_count", `(?P<dup>a?)(?P<dup>b)`, []int{9}},

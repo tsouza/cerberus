@@ -242,16 +242,19 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile) Frag {
 	//   bound_lo + (bound_hi - bound_lo) * (target - cum_lo) / (cum_hi - cum_lo)
 	// bound_hi = ExplicitBounds[idx]; cum_hi = cum[idx]; target = phi *
 	// observations. The grouping parens match the legacy emitter exactly:
-	//   (bound_lo + (bound_hi - bound_lo) * ((target) - cum_lo) / (cum_hi - cum_lo))
+	//   (bound_lo + (bound_hi - bound_lo) * (((target) - cum_lo) / (cum_hi - cum_lo)))
+	//
+	// Prometheus divides the rank offset before multiplying by the bucket width.
+	// Keeping that order preserves its Float64 rounding for rate-derived counts.
 	interp := Paren(
 		Add(
 			boundLo,
-			Div(
-				Mul(
-					Paren(Sub(boundAt(false), boundLo)),
+			Mul(
+				Paren(Sub(boundAt(false), boundLo)),
+				Paren(Div(
 					Paren(Sub(target, cumLo)),
-				),
-				Paren(Sub(cumAt(false), cumLo)),
+					Paren(Sub(cumAt(false), cumLo)),
+				)),
 			),
 		),
 	)

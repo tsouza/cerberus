@@ -338,6 +338,51 @@ func TestProbedIndexTranslatesOnlyRealGroups(t *testing.T) {
 	})
 }
 
+// TestReadBackPlanAcceptsCarrierZero pins readBackPlan's carrier-index
+// boundary: index 0 (the whole match) is a real carrier like any other,
+// distinct from the NEGATIVE indices [planCaptureProbes] mints for a
+// synthetic negative-sibling-probe request. A carrier filter that treated
+// 0 as one of those synthetic requests (rather than the boundary sitting
+// where the doc comment on [captureProbePlan.toProbed] says it does — "0
+// maps to itself") would silently drop the whole-match probe from
+// [captureProbePlan.probeOf] instead of erroring, so this exercises
+// readBackPlan directly rather than through a query that could never name
+// group 0 as a carrier (no attribute syntax spells `$0`'s OWN name).
+func TestReadBackPlanAcceptsCarrierZero(t *testing.T) {
+	t.Parallel()
+
+	original, err := regexp.Compile(`a`)
+	if err != nil {
+		t.Fatalf("regexp.Compile: %v", err)
+	}
+	const probed = `(?P<` + probeNamePrefix + `0>a)`
+	probeNames := map[int]string{0: probeNamePrefix + "0"}
+
+	plan, ok := readBackPlan(original, probed, probeNames, nil)
+	if !ok {
+		t.Fatal("readBackPlan declined a whole-match carrier, which is index 0 like any other")
+	}
+	at, planned := plan.probeOf[0]
+	if !planned {
+		t.Fatal("readBackPlan planned no probe for carrier 0 — a carrier filter that also caught " +
+			"index 0 would silently drop it here instead")
+	}
+	if got, want := compileNames(t, probed)[at], probeNamePrefix+"0"; got != want {
+		t.Errorf("readBackPlan(carrier 0) probe index %d names %q, want %q", at, got, want)
+	}
+}
+
+// compileNames compiles pattern and returns its SubexpNames, failing the
+// test on a compile error rather than every caller repeating the check.
+func compileNames(t *testing.T, pattern string) []string {
+	t.Helper()
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		t.Fatalf("regexp.Compile(%q): %v", pattern, err)
+	}
+	return re.SubexpNames()
+}
+
 // TestStripAnchorsRequiresBothEnds pins that the wrapper is only removed
 // when it is really there. A rewrite that lost its anchoring would be
 // handed back to the caller as an unanchored pattern and then anchored

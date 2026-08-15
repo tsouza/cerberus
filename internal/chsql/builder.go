@@ -19,8 +19,8 @@ import (
 // primitives the emitter uses, plus a handful of CH-specific helpers
 // (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos,
 // DateTime64Lit, Lambda, ParamAgg) and a QueryBuilder with first-class
-// PREWHERE, JOIN, and WITH RECURSIVE slots so the optimizer rules can
-// compose SQL fragments without re-parsing rendered strings.
+// PREWHERE, JOIN, and WITH RECURSIVE slots so emitters and endpoint-specific
+// callers can compose SQL fragments without re-parsing rendered strings.
 //
 // The zero value is ready to use.
 type Builder struct {
@@ -1117,6 +1117,29 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 	candidates = append(candidates, captureGroupAt(src, extract, seg.Group))
 	for _, idx := range seg.Fallbacks {
 		candidates = append(candidates, captureGroupAt(src, extract, idx))
+	}
+	if len(seg.NegativeProbes) != 0 {
+		args := make([]Frag, 0, 2*len(candidates)+1)
+		for i, candidate := range candidates {
+			witness := candidate
+			if len(seg.Probes) != 0 {
+				witness = captureGroupAt(src, extract, seg.Probes[i])
+			}
+			condition := Neq(witness, Lit(""))
+			if len(seg.NegativeProbes[i]) > 0 {
+				// A nullable carrier's own capture may be empty even when it
+				// participated. Here the mandatory alternation selected its
+				// branch exactly when none of its non-empty siblings did.
+				condition = Eq(captureGroupAt(src, extract, seg.NegativeProbes[i][0]), Lit(""))
+				for _, idx := range seg.NegativeProbes[i][1:] {
+					condition = And(condition, Eq(captureGroupAt(src, extract, idx), Lit("")))
+				}
+			}
+			args = append(args, condition, candidate)
+		}
+		args = append(args, Lit(""))
+		Call("multiIf", args...)(b)
+		return srcErr
 	}
 	if len(seg.Probes) == 0 {
 		Call(
@@ -2344,11 +2367,10 @@ type cteClause struct {
 //
 // PREWHERE is a first-class slot, distinct from WHERE. ClickHouse
 // evaluates PREWHERE before WHERE on the primary-key columns,
-// pruning rows before the full row read; the optimizer's PREWHERE
-// promotion rule moves predicates from WHERE → PREWHERE when the
-// predicate only references sort-key columns. Modelling PREWHERE separately
-// here means those rewrites are slot-level operations rather than
-// string rewrites on rendered SQL.
+// pruning rows before the full row read; the chsql emitter's Filter(Scan)
+// path promotes eligible predicates from WHERE → PREWHERE. Modelling
+// PREWHERE separately here makes that partition a slot-level operation
+// rather than a string rewrite on rendered SQL.
 //
 // JOIN clauses live in the joins slot, rendered in order between
 // FROM and PREWHERE. Each entry holds a JoinKind, a source Frag (the

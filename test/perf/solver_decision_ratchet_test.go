@@ -48,11 +48,33 @@
 // is fitted against. A drift here is a drift in every threshold's evidence base
 // even when no query changed route.
 //
+// # Two lowering tables, not one (#2120)
+//
+// Every corpus query is classified TWICE — once under `loweringFanout` (the
+// generic RangeWindow lowering `promql.RangeLowerers{}.withDefaults()`
+// resolves to) and once under `loweringNative` (every AutoSelect
+// `chopt.Registry()` feature wired to its native timeSeries*ToGrid strategy —
+// see `nativeLowerers`) — and the baseline key is `<query>/<lowering>`, not
+// the bare query id.
+//
+// Before this axis existed the ratchet called `promql.LowerAtRange`, which
+// resolves to the all-fan-out table unconditionally, so it classified the
+// configuration that is NOT what a capable server actually runs
+// (docs/performance.md: "the native path is the default on a capable server;
+// you only need to act to opt *out* of it"). #2117's `RangeWindowNative`
+// re-anchor fix changed that node's OWN routing classification —
+// not-sliceable to sliceable — and this ratchet regenerated with ZERO drift,
+// because it had never classified a single `RangeWindowNative` plan to begin
+// with (a 590-fixture census found exactly 0 occurrences). A native-routing
+// regression is invisible to a baseline that never records a native decision;
+// classifying under both tables puts the native rows beside the fan-out ones
+// in the same reviewed diff.
+//
 // # The ratchet semantics (bidirectional, no escape hatch)
 //
 // The committed baseline (`solver-decision-baseline/`, one JSON shard per
-// query — see baseline_shards_test.go) is the reviewed snapshot of every
-// query's decision. The test FAILS on ANY drift — route
+// (query, lowering) pair — see baseline_shards_test.go) is the reviewed
+// snapshot of every classified row's decision. The test FAILS on ANY drift — route
 // flipped, K changed, or reason changed — in EITHER direction. There is NO
 // allow-list, NO tolerance band, NO "expected drift" set: a silent change to a
 // routing decision must never pass.
@@ -98,6 +120,7 @@ package perf
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,6 +130,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -119,17 +143,92 @@ import (
 const promqlSpecDir = "../spec/promql"
 
 // decisionBaselinePath is the committed routing-decision snapshot, relative to
-// this package. It is a TREE of one shard per query, not a single file — see
-// baseline_shards_test.go for why the roster is stored that way.
+// this package. It is a TREE of one shard per (query, lowering) pair, not a
+// single file — see baseline_shards_test.go for why the roster is stored that
+// way, and #2120 for why the key has two segments rather than one.
 const decisionBaselinePath = "solver-decision-baseline"
 
-// decisionShardDepth is how many path segments a query id maps to: the id is a
-// bare fixture name, so its shard is solver-decision-baseline/<name>.json.
-const decisionShardDepth = 1
+// decisionShardDepth is how many path segments a baseline key maps to. A key
+// is "<query id>/<lowering>" — see decisionKey — so its shard is
+// solver-decision-baseline/<name>/<lowering>.json. Two segments, not one,
+// because #2120 found the ratchet classified every query under exactly ONE
+// lowering table (the all-fan-out default `withDefaults` resolves the zero
+// value to), leaving the native timeSeries*ToGrid configuration — the one
+// production actually runs on a capable server, per docs/performance.md — with
+// zero coverage. Keying on (query, lowering) puts both configurations' rows
+// side by side in the same reviewed diff instead of one silently shadowing
+// the other.
+const decisionShardDepth = 2
 
 // decisionRegen is the recipe that rewrites the tree, quoted in the failure
 // messages the shard store raises.
 const decisionRegen = "just update-solver-decision-baseline"
+
+// loweringFanout / loweringNative name the two lowering tables every corpus
+// query is classified under — the second baseline-key segment (decisionKey).
+//
+//   - loweringFanout is the all-fan-out configuration: the generic RangeWindow
+//     lowering `withDefaults` resolves promql.RangeLowerers{} (the zero value)
+//     to. This is what the ratchet classified exclusively before #2120.
+//   - loweringNative is the configuration production actually runs on a
+//     capable ClickHouse server (>= 25.9, experimental TS-grid permitted):
+//     every AutoSelect feature in chopt.Registry() wired to its native
+//     timeSeries*ToGrid strategy — see nativeLowerers.
+const (
+	loweringFanout = "fanout"
+	loweringNative = "native"
+)
+
+// decisionKey composes a baseline key from a query id and a lowering name —
+// the inverse the shard store's [baselineShards.keyOf] must agree with.
+func decisionKey(id, lowering string) string {
+	return fmt.Sprintf("%s/%s", id, lowering)
+}
+
+// nativeLowerers builds the promql.RangeLowerers table production wires on a
+// fully capable ClickHouse server: every AutoSelect feature in
+// chopt.Registry() resolved to its native strategy, mirroring
+// cmd/cerberus/main.go's nativeRangeLowerers with every optSet.Has(...) check
+// answering true. Built FROM the registry, not hand-copied, so a new
+// AutoSelect ts_grid feature fails this helper loudly — via the default case
+// below — instead of silently classifying only under the stale table, which
+// is exactly the blind spot #2120 reported (RangeWindowNative going from
+// not-sliceable to sliceable when #2117 shipped moved the ratchet's own
+// classification with zero recorded drift).
+func nativeLowerers(t *testing.T) promql.RangeLowerers {
+	t.Helper()
+
+	var l promql.RangeLowerers
+	recollapse := false
+	for _, f := range chopt.Registry() {
+		if !f.AutoSelect {
+			continue // not wired on any server — chopt.FeatureTSGridChanges today.
+		}
+		switch f.ID {
+		case chopt.FeatureTSGridRange:
+			// Composed below, once FeatureTSGridRecollapse (which narrows it)
+			// is known — Recollapse is a modifier on Rate, not its own field.
+		case chopt.FeatureTSGridResample:
+			l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+		case chopt.FeatureTSGridResets:
+			l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+		case chopt.FeatureTSGridDeriv:
+			l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
+		case chopt.FeatureTSGridPredictLinear:
+			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
+		case chopt.FeatureTSGridRecollapse:
+			recollapse = true
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache:
+			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
+			// strategy — no effect on which lowering table a query takes.
+		default:
+			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
+				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)
+		}
+	}
+	l.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}, Recollapse: recollapse}
+	return l
+}
 
 // updateDecisionEnv, when set to "1", regenerates the baseline from the
 // current corpus classification instead of asserting against it. Mirrors the
@@ -146,12 +245,27 @@ var (
 	decisionGridStep  = 15 * time.Second
 )
 
-// decisionEntry is the committed per-query routing decision. It is a pure
-// function of the query shape, the fixed grid, and the solver's DefaultConfig
-// (Mode=auto), so it reproduces run-to-run with no environment noise.
+// decisionEntry is the committed per-(query, lowering) routing decision. It
+// is a pure function of the query shape, the lowering table, the fixed grid,
+// and the solver's DefaultConfig (Mode=auto), so it reproduces run-to-run
+// with no environment noise.
 type decisionEntry struct {
-	// Query is the fixture id ("<name>" sans .txtar) — the stable baseline key.
+	// Query is the FULL baseline key — decisionKey(id, lowering), e.g.
+	// "rate_basic/native" — mirroring how the sibling cardinality baseline's
+	// Fixture field holds its own full "<head>/<name>" path rather than a
+	// bare name. The shard tree's structural guard
+	// (.github/scripts/generated-baseline-structural-guard.mjs) asserts this
+	// field equals the shard's own path verbatim, so it cannot be just the
+	// fixture id once a query has more than one row.
 	Query string `json:"query"`
+
+	// Lowering is loweringFanout or loweringNative, restated from the second
+	// half of Query for a diff/grep that does not want to split the key —
+	// naming which promql.RangeLowerers table classified this row. See
+	// #2120: without this axis the ratchet had exactly one row per query and
+	// it was always the fan-out one, leaving the native configuration
+	// production runs on a capable server unratcheted.
+	Lowering string `json:"lowering"`
 
 	// Routed is whether the Planner routed the plan B (sharded-timeslice).
 	Routed bool `json:"routed"`
@@ -179,12 +293,15 @@ type decisionEntry struct {
 	OuterRange  string `json:"outer_range"`
 }
 
-// classifyCorpus parses, lowers, optimizes, and classifies every PromQL
-// fixture in the corpus on the fixed grid, returning a query-id-keyed map of
-// decisions. A fixture without a `-- query.promql --` section (or with an
-// empty one) is not a query shape and is excluded. A parse / lower failure is
-// returned as a hard error: the corpus is curated, so every query must lower.
-func classifyCorpus(t *testing.T) map[string]decisionEntry {
+// classifyCorpus parses, lowers under `lowerers`, optimizes, and classifies
+// every PromQL fixture in the corpus on the fixed grid, returning a
+// decisionKey(id, lowering)-keyed map of decisions. A fixture without a
+// `-- query.promql --` section (or with an empty one) is not a query shape
+// and is excluded. A parse / lower failure is returned as a hard error: the
+// corpus is curated, so every query must lower under EVERY lowering table —
+// see [nativeLowerers] on why the native strategies always delegate to their
+// fan-out fallback instead of erroring on an ineligible shape.
+func classifyCorpus(t *testing.T, lowering string, lowerers promql.RangeLowerers) map[string]decisionEntry {
 	t.Helper()
 
 	matches, err := filepath.Glob(filepath.Join(promqlSpecDir, "*.txtar"))
@@ -216,6 +333,7 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 		End:   decisionGridEnd,
 		Step:  decisionGridStep,
 	}
+	opts := promql.LowerOpts{Lowerers: lowerers}
 
 	out := make(map[string]decisionEntry, len(matches))
 	for _, path := range matches {
@@ -237,16 +355,18 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 		if perr != nil {
 			t.Fatalf("%s: parse %q: %v", id, query, perr)
 		}
-		plan, lerr := promql.LowerAtRange(context.Background(), expr, sm,
-			decisionGridStart, decisionGridEnd, decisionGridStep)
+		plan, lerr := promql.LowerAtRangeOpts(context.Background(), expr, sm,
+			decisionGridStart, decisionGridEnd, decisionGridStep, opts)
 		if lerr != nil {
-			t.Fatalf("%s: lower %q: %v", id, query, lerr)
+			t.Fatalf("%s [%s]: lower %q: %v", id, lowering, query, lerr)
 		}
 		plan = optimizer.Default().Run(context.Background(), plan)
 
 		d, routed := planner.Plan(plan, meta)
-		out[id] = decisionEntry{
-			Query:       id,
+		key := decisionKey(id, lowering)
+		out[key] = decisionEntry{
+			Query:       key,
+			Lowering:    lowering,
 			Routed:      routed,
 			K:           d.K,
 			Reason:      d.Reason,
@@ -263,7 +383,19 @@ func classifyCorpus(t *testing.T) map[string]decisionEntry {
 }
 
 func TestSolverDecisionRatchet(t *testing.T) {
-	current := classifyCorpus(t)
+	// Classify every corpus query under BOTH lowering tables — the all-fan-out
+	// default and the native timeSeries*ToGrid configuration production auto-
+	// selects on a capable server — and merge into one decisionKey-keyed map.
+	// See #2120: a single-table classification left whichever configuration
+	// was NOT default with zero coverage, so a routing regression confined to
+	// it shipped with this ratchet reporting no drift.
+	current := make(map[string]decisionEntry)
+	for k, v := range classifyCorpus(t, loweringFanout, promql.RangeLowerers{}) {
+		current[k] = v
+	}
+	for k, v := range classifyCorpus(t, loweringNative, nativeLowerers(t)) {
+		current[k] = v
+	}
 
 	if os.Getenv(updateDecisionEnv) == "1" {
 		writeDecisionBaseline(t, current)
@@ -273,8 +405,8 @@ func TestSolverDecisionRatchet(t *testing.T) {
 				routed++
 			}
 		}
-		t.Logf("wrote %s with %d queries (%d routed / %d route-A)",
-			decisionBaselinePath, len(current), routed, len(current)-routed)
+		t.Logf("wrote %s with %d rows across %s/%s (%d routed / %d route-A)",
+			decisionBaselinePath, len(current), loweringFanout, loweringNative, routed, len(current)-routed)
 		return
 	}
 

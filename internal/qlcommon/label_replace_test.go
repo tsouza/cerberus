@@ -198,15 +198,13 @@ func TestReplacementToCHRejectsInexpressibleBackrefs(t *testing.T) {
 		wantErrs []string
 	}{
 		{
-			// Carrier 1 is alone in a branch of a mandatory alternation.
-			// The branch is nullable, so there is nothing in it to probe,
-			// and the alternation above it is exactly what lets a match
-			// skip the carrier — so no wider span can answer either.
-			// Witness "b": Go answers "" (the empty branch took part),
-			// the emitted search answers "b".
-			"nullable_carrier_alone_in_a_co_occurring_branch",
+			// The alternation is re-enterable, so a sibling's probe may be
+			// non-empty on an earlier pass even though the nullable carrier
+			// took part on a later one. Negative sibling probes cannot infer
+			// participation from that history.
+			"nullable_carrier_in_a_repeated_alternation",
 			"$dup",
-			`(?:(?P<dup>a?)|y)(?P<dup>b)`,
+			`(?:(?P<dup>a?)|y)*(?P<dup>b)`,
 			[]string{`"dup"`, "2 capture groups", "empty string", "capture group 1"},
 		},
 		{

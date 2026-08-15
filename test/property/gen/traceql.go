@@ -136,8 +136,7 @@ const (
 //   - "__status__"      → the CH-stored status literal (Ok/Error/Unset)
 //
 // MergeTree is the chosen engine (matches PromQL property test
-// rationale: Memory engine refuses PREWHERE the cerberus optimizer
-// emits).
+// rationale: Memory engine refuses PREWHERE the chsql emitter emits).
 func TraceQLDataset() *rapid.Generator[property.Dataset] {
 	return rapid.Custom(func(t *rapid.T) property.Dataset {
 		numTraces := rapid.IntRange(1, traceQLMaxTraces).Draw(t, "numTraces")

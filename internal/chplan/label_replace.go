@@ -122,6 +122,11 @@ type LabelReplaceSegment struct {
 	// indices refer to [LabelReplace.ProbedRegex], whose synthetic groups
 	// exist precisely to be read here.
 	Probes []int
+	// NegativeProbes holds sibling-branch probes which must all be empty for
+	// the candidate at the same offset to have participated. It is populated
+	// only for a nullable carrier in a mandatory, non-repeated alternation
+	// whose other branches are non-empty.
+	NegativeProbes [][]int
 	// Group is the capture-group index to substitute, or [NoCaptureGroup]
 	// when this segment is literal text.
 	Group int
@@ -131,6 +136,19 @@ type LabelReplaceSegment struct {
 func (s LabelReplaceSegment) Equal(o LabelReplaceSegment) bool {
 	if len(s.Probes) != len(o.Probes) {
 		return false
+	}
+	if len(s.NegativeProbes) != len(o.NegativeProbes) {
+		return false
+	}
+	for i := range s.NegativeProbes {
+		if len(s.NegativeProbes[i]) != len(o.NegativeProbes[i]) {
+			return false
+		}
+		for j := range s.NegativeProbes[i] {
+			if s.NegativeProbes[i][j] != o.NegativeProbes[i][j] {
+				return false
+			}
+		}
 	}
 	for i := range s.Probes {
 		if s.Probes[i] != o.Probes[i] {

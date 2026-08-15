@@ -229,9 +229,10 @@ func resolveSegments(repl string, groups captureGroups) ([]chplan.LabelReplaceSe
 		if ref.group != unresolvedGroup {
 			flush()
 			segments = append(segments, chplan.LabelReplaceSegment{
-				Group:     ref.group,
-				Fallbacks: ref.fallbacks,
-				Probes:    ref.probes,
+				Group:          ref.group,
+				Fallbacks:      ref.fallbacks,
+				Probes:         ref.probes,
+				NegativeProbes: ref.negativeProbes,
 			})
 		}
 		i += step
@@ -509,7 +510,8 @@ type resolvedRef struct {
 	// match. It is empty when no carrier needed one, in which case every
 	// carrier's own capture reports its participation and the search is
 	// the plain non-empty one. See [planCaptureProbes].
-	probes []int
+	probes         []int
+	negativeProbes [][]int
 }
 
 // resolve maps one extracted reference to the capture group(s) it points
@@ -570,7 +572,7 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 			out.group = g.probe.probedIndex(ref.num)
 		}
 	case len(carriers) > 1:
-		searched, probes, ambiguous, ok := g.expressibleCarriers(carriers)
+		searched, probes, negativeProbes, ambiguous, ok := g.expressibleCarriers(carriers)
 		if !ok {
 			return resolvedRef{}, fmt.Errorf(
 				"references capture-group name %q, which %d capture groups share, "+
@@ -583,7 +585,7 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 				ref.name, len(carriers), ambiguous,
 			)
 		}
-		out.group, out.fallbacks, out.probes = searched[0], searched[1:], probes
+		out.group, out.fallbacks, out.probes, out.negativeProbes = searched[0], searched[1:], probes, negativeProbes
 	case len(carriers) == 1:
 		out.group = g.probe.probedIndex(carriers[0])
 	}
@@ -618,16 +620,18 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 // A carrier the parse-tree walk could not classify has no shape recorded,
 // which reads as nullable and exclusive of nothing, so an unrecognised
 // regex keeps the rejection.
-func (g captureGroups) expressibleCarriers(carriers []int) ([]int, []int, int, bool) {
+func (g captureGroups) expressibleCarriers(carriers []int) ([]int, []int, [][]int, int, bool) {
 	end := g.searchableEnd(carriers)
 	searched := carriers[:end:end]
 
 	probes := make([]int, len(searched))
+	negativeProbes := make([][]int, len(searched))
 	anyProbe := false
+	anyNegativeProbe := false
 	for i, idx := range searched {
 		shape, known := g.shapes[idx]
 		if !known {
-			return nil, nil, idx, false
+			return nil, nil, nil, idx, false
 		}
 		// By default a carrier reports its own participation, which is
 		// what makes the emitted search the plain non-empty one.
@@ -636,14 +640,23 @@ func (g captureGroups) expressibleCarriers(carriers []int) ([]int, []int, int, b
 			continue
 		}
 		at, probed := g.probe.probeOf[idx]
-		if !probed {
-			return nil, nil, idx, false
+		if probed {
+			probes[i] = at
+			anyProbe = true
+			continue
 		}
-		probes[i] = at
-		anyProbe = true
+		if negative := g.probe.negativeOf[idx]; len(negative) > 0 {
+			negativeProbes[i] = negative
+			anyNegativeProbe = true
+			continue
+		}
+		return nil, nil, nil, idx, false
 	}
 	if !anyProbe {
 		probes = nil
+	}
+	if !anyNegativeProbe {
+		negativeProbes = nil
 	}
 
 	// Every index leaves in the rewritten regex's numbering, which is the
@@ -653,7 +666,7 @@ func (g captureGroups) expressibleCarriers(carriers []int) ([]int, []int, int, b
 	for i, idx := range searched {
 		out[i] = g.probe.probedIndex(idx)
 	}
-	return out, probes, 0, true
+	return out, probes, negativeProbes, 0, true
 }
 
 // exclusiveOfAll reports whether shape's group can never take part in the

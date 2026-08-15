@@ -1170,6 +1170,47 @@ func tailDialStatus(t *testing.T, srv *httptest.Server, query string) int {
 	return resp.StatusCode
 }
 
+// tailDialCapClose dials /tail expecting the handshake to SUCCEED (the
+// tail-cap rejection happens after Upgrade, per issue #2048) and returns
+// the close code and reason text the server sends. Fails the test outright
+// if the handshake itself is refused, or if the connection is torn down
+// some way other than a close frame (a bare read error, or no close at all
+// before the deadline) — either would mean the rejection regressed back
+// to a refused handshake, or stopped signalling the client at all.
+func tailDialCapClose(t *testing.T, srv *httptest.Server, query string) (code int, reason string) {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/loki/api/v1/tail"
+	u.RawQuery = "query=" + url.QueryEscape(query)
+
+	conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		status := -1
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("dial %s: handshake refused (status=%d, err=%v) — the tail-cap rejection must "+
+			"upgrade first and close after, not refuse the handshake", u.String(), status, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("dial %s: handshake status %d, want 101", u.String(), resp.StatusCode)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err = conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("ReadMessage after tail-cap rejection = %v, want a *websocket.CloseError", err)
+	}
+	return closeErr.Code, closeErr.Text
+}
+
 // TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted is the
 // regression pin for issue #1482 — the reason /tail has a budget of its
 // own at all.
@@ -1208,9 +1249,12 @@ func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
 	_ = dialTail(t, srv, `{job="api"}`)
 
 	// Corroborate that the tail budget really is full — otherwise the
-	// assertions below would pass trivially on an unoccupied budget.
-	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusServiceUnavailable {
-		t.Fatalf("second /tail dial: status %d, want 503 — the live session did not occupy the tail budget, so this test proves nothing", got)
+	// assertions below would pass trivially on an unoccupied budget. The
+	// rejection upgrades first (issue #2048) and closes with
+	// tailCapCloseCode rather than refusing the handshake.
+	if code, _ := tailDialCapClose(t, srv, `{job="api"}`); code != websocket.CloseTryAgainLater {
+		t.Fatalf("second /tail dial: close code %d, want %d (CloseTryAgainLater) — the live "+
+			"session did not occupy the tail budget, so this test proves nothing", code, websocket.CloseTryAgainLater)
 	}
 
 	// Every short-lived route, twice over the request cap, all serial so
@@ -1257,10 +1301,13 @@ func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
 // exempt it. A separate budget that never rejects would be an unbounded
 // resource wearing a cap's name.
 //
-// The rejection rides the same admit.Middleware contract as every other
-// route — HTTP 503 + Retry-After, written BEFORE the WebSocket upgrade,
-// so the client sees an ordinary refused handshake rather than an
-// upgraded-then-severed connection.
+// The rejection does NOT ride admit.Middleware the way every other route's
+// does: /tail upgrades to a WebSocket FIRST and the handler acquires
+// TailLimiter itself, so a full budget reaches the client as a close frame
+// on an already-101'd connection, not a refused handshake (issue #2048 —
+// a refused handshake gives a WebSocket client no distinguishable "retry"
+// signal, the same shape it gets from a missing endpoint or a broken
+// proxy).
 func TestConformance_LokiTailRejectedAtTailCap(t *testing.T) {
 	t.Parallel()
 
@@ -1273,8 +1320,12 @@ func TestConformance_LokiTailRejectedAtTailCap(t *testing.T) {
 
 	srv := newSplitBudgetServer(t, admit.New("loki", 4), tailLimiter)
 
-	if got := tailDialStatus(t, srv, `{job="api"}`); got != http.StatusServiceUnavailable {
-		t.Fatalf("/tail at cap: status %d, want 503", got)
+	code, reason := tailDialCapClose(t, srv, `{job="api"}`)
+	if code != websocket.CloseTryAgainLater {
+		t.Fatalf("/tail at cap: close code %d, want %d (CloseTryAgainLater)", code, websocket.CloseTryAgainLater)
+	}
+	if reason != loki.TailCapCloseReason {
+		t.Errorf("/tail at cap: close reason %q, want %q", reason, loki.TailCapCloseReason)
 	}
 }
 

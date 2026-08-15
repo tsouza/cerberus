@@ -10,9 +10,8 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // This is the **semantic / must-run** flavour of constant folding
 // (DataFusion `AnalyzerRule` shape — see analyzer.go). Downstream
 // rules assume that pure-literal subtrees have already collapsed to a
-// single Lit: a
-// PREWHERE-promotion rule that distinguishes `WHERE false` from
-// `WHERE 1=0` would silently miss the latter without this pass.
+// single Lit: the chsql emitter's PREWHERE partitioning would otherwise
+// distinguish `WHERE false` from the equivalent `WHERE 1=0` shape.
 //
 // Folding runs recursively across each expression tree before the
 // result is compared with the original — so a single Apply call can

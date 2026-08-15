@@ -1,25 +1,25 @@
 # Engine
 
 The query engine — `internal/engine/` — is the shared pipeline that
-turns an upstream query (PromQL / LogQL / TraceQL) into a
+turns an upstream language query (PromQL / LogQL / TraceQL) into a
 ClickHouse result. The three HTTP heads (Prometheus, Loki, Tempo)
-each plug in as a `Lang` adapter; the engine owns the parse →
-optimize → emit → execute loop and the telemetry around it.
+each plug in as a `Lang` adapter; for those query routes the engine owns
+the parse → optimize → emit → execute loop and the telemetry around it.
 
 ## Overview
 
-Cerberus has one shared query pipeline, not three. Each query
+Cerberus has one shared language-query pipeline, not three. Each query
 language has its own parser and its own response shape, but the
 work in the middle — lowering to the shared plan IR, optimizing,
 emitting ClickHouse SQL, executing against the driver — is
-identical. The engine extracts that middle so the heads stay thin:
+identical. The engine extracts that middle so those routes stay thin:
 HTTP dispatch + per-language adapter wiring + response shaping.
 
 ```text
    HTTP request
         │
         ▼
-   handler (api/{prom,loki,tempo})
+   query handler (api/{prom,loki,tempo})
         │
         │  builds Lang adapter
         ▼
@@ -41,16 +41,28 @@ adapters live next to (or inside) the head they serve:
 `internal/api/prom/lang.go`, `internal/logql/lang.go`,
 `internal/api/tempo/lang.go`.
 
+Not every upstream endpoint is a language query or returns the canonical
+sample row shape. Metadata, discovery, live-tail, and enrichment endpoints
+compose typed SQL in `internal/api` and use dedicated client decoders; those
+intentional paths are listed under [API-owned SQL paths](#api-owned-sql-paths).
+
 ## The Engine + Lang contract
 
-The engine is two types and one interface.
+The contract centers on `Engine`, the `Lang` interface, per-query `Meta`,
+and the result types.
 
 ### `Engine`
 
 ```go
 type Engine struct {
-    Optimizer *optimizer.Driver
-    Client    Querier
+    Optimizer       *optimizer.Driver
+    Client          Querier
+    Solver          *solver.Solver
+    Settings        SettingsRules
+    liveSettings    atomic.Pointer[SettingsRules]
+    QueryObserver   QueryObserver
+    MaxQuerySamples int64
+    RouteMemo       *routememo.Memo
 }
 ```
 
@@ -62,6 +74,16 @@ type Engine struct {
   `CursorQuerier` interface, the engine's `QueryCursor` /
   `QueryPlanCursor` entry points open a streaming cursor instead
   of draining rows into a slice. Required.
+- `Solver` optionally classifies PromQL plans and executes the sharded
+  route; `nil` keeps every request on the single-statement route.
+- `Settings` holds plan-gated ClickHouse settings. `liveSettings` is the
+  atomic replacement installed by `SetSettings` after capability changes.
+- `QueryObserver` optionally records dispatches and outcomes for the
+  asynchronous query-log performance corpus.
+- `MaxQuerySamples` rejects oversized subquery anchor grids before
+  dispatch; `0` disables that plan-side gate.
+- `RouteMemo` optionally remembers resource-failure routing outcomes and
+  can steer a later eligible PromQL request to route B.
 
 One Engine instance is constructed per HTTP head in
 `cmd/cerberus/main.go` and lives for the lifetime of the process.
@@ -108,6 +130,7 @@ type Meta struct {
     IsMetric      bool
     IsTraceByID   bool
     ResponseShape string
+    Guards        []Guard
     Extra         map[string]any
 }
 ```
@@ -128,6 +151,8 @@ the plan alone:
   `"tempo-trace"`, …). The engine does not read it; it is
   threaded through `Result` so the response formatter does not
   have to re-derive it.
+- `Guards` — ordered value-domain checks that the engine emits and
+  executes before the main query. The first violation rejects the request.
 - `Extra` — adapter-specific bag for per-language knobs that ride
   through `Meta` without bloating the type (the LogQL adapter
   uses it to carry the parsed `syntax.Expr` to the handler).
@@ -144,14 +169,15 @@ type Result struct {
     PlanNodeCount int
     Headers       map[string]string
     Meta          Meta
+    Inspected     int64
 }
 ```
 
 - `Samples` is the decoded row stream. Handlers pivot it into the
   upstream wire shape.
 - `SQL` + `Args` are surfaced for debug logging.
-- `Strategy` is a free-form label for the execution path taken —
-  empty in the default path; see [Extension points](#extension-points).
+- `Strategy` is the canonical execution-family label: `"native"` for
+  language queries and `"trace-by-id"` for that Tempo short-circuit.
 - `CHMillis` is the wall-clock time spent in `Client.Query`,
   exposed through the `X-Cerberus-CH-Millis` response header.
 - `PlanNodeCount` is the optimised plan's node count, exposed
@@ -161,6 +187,8 @@ type Result struct {
   of `http.ResponseWriter`.
 - `Meta` is the same `Meta` the adapter returned, threaded
   through so the response pivot can switch on it.
+- `Inspected` is the number of rows drained from ClickHouse on the eager
+  path. Streaming callers read the corresponding count from the cursor.
 
 A streaming sibling — `CursorResult` — mirrors this shape but
 carries a `chclient.Cursor` instead of a `[]Sample` slice. The
@@ -168,7 +196,7 @@ caller is responsible for `cursor.Close()`.
 
 ## Request lifecycle
 
-A typical request flows through the following stages:
+A typical parsed language-query request flows through the following stages:
 
 1. **HTTP dispatch.** The per-API handler (`internal/api/prom`,
    `internal/api/loki`, `internal/api/tempo`) parses the HTTP
@@ -188,13 +216,16 @@ A typical request flows through the following stages:
 4. **Inside the engine:**
    1. `lang.Parse` runs the head's parser and lowers to
       `chplan`. Opens `parse` + `lower` spans.
-   2. `lang.ProjectSamples` wraps the plan into the canonical
+   2. The engine executes any `Meta.Guards` before the main statement.
+   3. `lang.ProjectSamples` wraps the plan into the canonical
       `Sample` row shape.
-   3. The optimizer runs (skipped when `Meta.IsTraceByID` is
+   4. The optimizer runs (skipped when `Meta.IsTraceByID` is
       set). Opens an `optimize` span.
-   4. `chsql.Emit` materialises the plan into parameterised
+   5. The optional solver classifies the optimized plan and may select
+      the sharded route.
+   6. `chsql.Emit` materialises the plan into parameterised
       ClickHouse SQL. Opens an `emit` span.
-   5. `Client.Query` executes the SQL. Opens an `execute` span;
+   7. `Client.Query` executes the SQL. Opens an `execute` span;
       records wall-clock time into `Result.CHMillis`.
 5. **Result.** The engine returns a `Result` (or `CursorResult`)
    with the decoded samples and the metadata the handler needs
@@ -211,6 +242,31 @@ error types — `parseStageError` in the Prom adapter,
 `*httperr.Error` in the LogQL adapter — ride through the wrap
 so the handler can map them to the right HTTP status without
 losing the cause.
+
+## API-owned SQL paths
+
+The engine is the common path when an endpoint starts from a language query
+or plan and consumes canonical `Sample` rows. Some upstream APIs need a
+different row decoder, combine several generated statements, or perform a
+side query around the main result. Those handlers use the same typed `chsql`
+surface and `chclient`, but intentionally do not force the work through
+`Engine.Query`:
+
+- **Prometheus:** `internal/api/prom/metadata.go` builds the catalog and
+  series fan-in queries; `internal/api/prom/exemplars.go` emits the
+  endpoint's dedicated exemplar rows.
+- **Loki:** under `internal/api/loki`, `labels.go`, `label_values.go`,
+  `series.go`, `index_stats.go`, `index_volume.go`, `detected_labels.go`,
+  `detected_fields.go`, and `patterns.go` build metadata or sampled-row
+  shapes; `tail.go` builds each bounded poll in the live WebSocket loop.
+- **Tempo:** under `internal/api/tempo`, `search_tags.go` and
+  `search_tag_values.go` build tag discovery; `root_lookup.go` and
+  `structural_two_phase.go` emit follow-up or narrow phase plans;
+  `metrics_exec.go` emits the optional exemplar side query.
+
+These are API-layer orchestration paths, not alternate query-language
+pipelines. Main PromQL, LogQL, and TraceQL query execution still converges on
+the engine.
 
 ## Pipeline stages in depth
 
@@ -466,8 +522,10 @@ source of truth is the upstream OTel-CH exporter via the
 [`tsouza/opentelemetry-collector-contrib:cerberus-ddl`](https://github.com/tsouza/opentelemetry-collector-contrib/tree/cerberus-ddl)
 fork — cerberus consumes the same DDL templates the production
 exporter emits, so a deployment where the exporter writes and cerberus
-reads sees one schema across both sides. A thin YAML override config
-supports SigNoz schemas and custom column layouts.
+reads sees one schema across both sides. Runtime YAML and environment
+overrides cover the five metrics table names, the logs and spans table names,
+the traces timestamp-lookup toggle, and the Prometheus resource-label list.
+They do not provide a SigNoz preset or arbitrary column-name mapping.
 
 ## Adding a new query head
 
@@ -509,7 +567,7 @@ response. The contract is:
 | ----------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
 | `X-Cerberus-CH-Millis`  | `Result.CHMillis`       | Wall-clock milliseconds spent inside `Client.Query` (the ClickHouse roundtrip).          |
 | `X-Cerberus-Plan-Nodes` | `Result.PlanNodeCount`  | Node count of the optimised plan that produced the executed SQL.                         |
-| `X-Cerberus-Strategy`   | `Result.Strategy`       | Free-form label identifying the execution path. Empty in the default direct-table path.  |
+| `X-Cerberus-Strategy`   | `Result.Strategy`       | Execution-family label: `native` or `trace-by-id`.                                       |
 
 Handlers stamp these headers from `Result` (or via the chclient
 millisecond counter where a per-request middleware is in play).
@@ -533,20 +591,12 @@ the same way.
 
 ## Extension points
 
-The engine has two designed-in extension points beyond the `Lang`
-interface.
-
-### Strategy switch
-
-`Result.Strategy` is a free-form label that names the execution
-path taken. The default path leaves it empty. An optimizer rule
-that rewrites the plan to read from a materialised view, a
-pre-aggregated table, or any other alternative storage can stamp
-the strategy by setting it on a marker node the engine reads back
-after the optimizer pass. This is the seat for future
-fallback-evaluator work — adding a new strategy means writing the
-rule that detects when it applies and the label that identifies
-it, without touching the engine's loop.
+Beyond `Lang`, the engine has three optional runtime seams. `Solver` and
+`RouteMemo` own route classification, sharded execution, and failure-driven
+route selection. `Settings` plus `SetSettings` apply plan-gated ClickHouse
+settings and permit an atomic capability refresh. `QueryObserver` receives
+dispatch and outcome events for the performance corpus. Their nil or zero
+values preserve the ordinary single-statement path.
 
 ### OTel hooks
 
@@ -582,15 +632,18 @@ A short list, because the engine's narrow scope is deliberate:
 
 - **Not a query plan cache.** Plans are recomputed per request.
   The engine has no LRU, no memoisation, no plan store.
-- **Not a result cache.** Result rows are streamed straight from
-  the ClickHouse driver to the handler. Cerberus is a gateway,
-  not a memoisation layer.
+- **Not a result cache.** Cursor routes stream rows to the handler; eager
+  routes drain rows into the per-request `Result.Samples` slice. Neither
+  retains results beyond that request.
 - **Not a router.** URL → endpoint dispatch stays in the
   handlers; the engine sees a request only after the handler has
   decided which entry point to call.
+- **Not the owner of every ClickHouse statement.** It owns the shared
+  language-query pipeline. Endpoint-specific metadata, discovery, live-tail,
+  and enrichment statements remain in the API packages listed above.
 - **Not a translator of wire formats.** The handler formats
-  `Result.Samples` into the upstream wire shape; the engine never
-  touches `http.ResponseWriter`.
+  engine results or dedicated endpoint rows into the upstream wire shape;
+  the engine never touches `http.ResponseWriter`.
 - **Not a streaming subquery reducer.** A PromQL subquery
   `<reducer>_over_time(<inner>[range:step])` materialises
   `range/step + 1` anchor rows per series before collapsing them,
