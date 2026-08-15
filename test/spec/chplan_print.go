@@ -630,7 +630,7 @@ func printExpr(e chplan.Expr) string {
 		for i, a := range v.Args {
 			args[i] = printExpr(a)
 		}
-		return fmt.Sprintf("%s(%s)", v.Name, strings.Join(args, ", "))
+		return fmt.Sprintf("%s(%s)", fnDisplayName(v.Fn, v.Name), strings.Join(args, ", "))
 	case *chplan.MapAccess:
 		return fmt.Sprintf("%s[%s]", printExpr(v.Map), printExpr(v.Key))
 	case *chplan.FieldAccess:
@@ -728,20 +728,204 @@ func printAggFunc(a chplan.AggFunc) string {
 	for i, x := range a.Args {
 		args[i] = printExpr(x)
 	}
+	name := fnDisplayName(a.Fn, a.Name)
 	var head string
 	if len(a.Params) > 0 {
 		ps := make([]string, len(a.Params))
 		for i, p := range a.Params {
 			ps[i] = printExpr(p)
 		}
-		head = fmt.Sprintf("%s(%s)(%s)", a.Name, strings.Join(ps, ", "), strings.Join(args, ", "))
+		head = fmt.Sprintf("%s(%s)(%s)", name, strings.Join(ps, ", "), strings.Join(args, ", "))
 	} else {
-		head = fmt.Sprintf("%s(%s)", a.Name, strings.Join(args, ", "))
+		head = fmt.Sprintf("%s(%s)", name, strings.Join(args, ", "))
 	}
 	if a.Alias != "" {
 		return head + " AS " + a.Alias
 	}
 	return head
+}
+
+// fnDisplayName renders a FuncCall/AggFunc's identity for the IR snapshot.
+// Exactly one of fn/name is set on any real node (chplan's Fn/Name
+// dual-mode — see FuncCall's doc comment): fn prints as its Go symbol
+// (e.g. "FnToFloat64"), so a golden visibly pins WHICH construction sites
+// have migrated off the legacy Name string, rather than reprinting a
+// spelling ("toFloat64") that would look identical before and after.
+// name passes through verbatim for every site #2060's PR series has not
+// reached yet, in this package or another query-language head's.
+func fnDisplayName(fn chplan.Fn, name string) string {
+	if fn == "" {
+		return name
+	}
+	if goName, ok := fnGoNames[fn]; ok {
+		return goName
+	}
+	// No entry means fnGoNames has fallen behind chplan/fn.go's const
+	// block — TestFnGoNames_CoversEveryDeclaredFn catches that; fall back
+	// to the raw value so the dump still shows something instead of
+	// silently dropping the function name.
+	return string(fn)
+}
+
+// fnGoNames maps every chplan.Fn constant (internal/chplan/fn.go) to its
+// Go identifier, purely for IR-snapshot readability — the printer's own
+// choice about how to label a symbol, not a resolution table like
+// chsql's fnSpellings. TestFnGoNames_CoversEveryDeclaredFn (in
+// chplan_print_fn_names_test.go) ratchets it against fn.go's const block
+// the same way chsql's fnspelling_completeness_test.go ratchets
+// fnSpellings, so a new Fn constant with no entry here fails loudly
+// instead of silently printing its raw CH spelling.
+var fnGoNames = map[chplan.Fn]string{
+	chplan.FnArray:                           "FnArray",
+	chplan.FnArrayAvg:                        "FnArrayAvg",
+	chplan.FnArrayConcat:                     "FnArrayConcat",
+	chplan.FnArrayCumSum:                     "FnArrayCumSum",
+	chplan.FnArrayDistinct:                   "FnArrayDistinct",
+	chplan.FnArrayElement:                    "FnArrayElement",
+	chplan.FnArrayEnumerate:                  "FnArrayEnumerate",
+	chplan.FnArrayExists:                     "FnArrayExists",
+	chplan.FnArrayFilter:                     "FnArrayFilter",
+	chplan.FnArrayFlatten:                    "FnArrayFlatten",
+	chplan.FnArrayFold:                       "FnArrayFold",
+	chplan.FnArrayJoin:                       "FnArrayJoin",
+	chplan.FnArrayMap:                        "FnArrayMap",
+	chplan.FnArrayMax:                        "FnArrayMax",
+	chplan.FnArrayMin:                        "FnArrayMin",
+	chplan.FnArrayPopBack:                    "FnArrayPopBack",
+	chplan.FnArrayPopFront:                   "FnArrayPopFront",
+	chplan.FnArrayPushBack:                   "FnArrayPushBack",
+	chplan.FnArrayReduce:                     "FnArrayReduce",
+	chplan.FnArrayReverse:                    "FnArrayReverse",
+	chplan.FnArraySlice:                      "FnArraySlice",
+	chplan.FnArraySort:                       "FnArraySort",
+	chplan.FnArrayStringConcat:               "FnArrayStringConcat",
+	chplan.FnArraySum:                        "FnArraySum",
+	chplan.FnArrayZip:                        "FnArrayZip",
+	chplan.FnEmptyArrayFloat64:               "FnEmptyArrayFloat64",
+	chplan.FnArrayHas:                        "FnArrayHas",
+	chplan.FnRange:                           "FnRange",
+	chplan.FnTransform:                       "FnTransform",
+	chplan.FnTuple:                           "FnTuple",
+	chplan.FnTupleElement:                    "FnTupleElement",
+	chplan.FnMap:                             "FnMap",
+	chplan.FnMapApply:                        "FnMapApply",
+	chplan.FnMapMerge:                        "FnMapMerge",
+	chplan.FnMapContainsKey:                  "FnMapContainsKey",
+	chplan.FnMapFilter:                       "FnMapFilter",
+	chplan.FnMapFromArrays:                   "FnMapFromArrays",
+	chplan.FnMapKeys:                         "FnMapKeys",
+	chplan.FnMapSort:                         "FnMapSort",
+	chplan.FnMapUpdate:                       "FnMapUpdate",
+	chplan.FnMapValues:                       "FnMapValues",
+	chplan.FnChar:                            "FnChar",
+	chplan.FnCoalesce:                        "FnCoalesce",
+	chplan.FnConcat:                          "FnConcat",
+	chplan.FnCountSubstrings:                 "FnCountSubstrings",
+	chplan.FnRegexExtractFirst:               "FnRegexExtractFirst",
+	chplan.FnRegexExtractAll:                 "FnRegexExtractAll",
+	chplan.FnRegexExtractAllGroupsHorizontal: "FnRegexExtractAllGroupsHorizontal",
+	chplan.FnExtractKeyValuePairs:            "FnExtractKeyValuePairs",
+	chplan.FnIsValidJSON:                     "FnIsValidJSON",
+	chplan.FnJSONExtractKeysAndValuesRaw:     "FnJSONExtractKeysAndValuesRaw",
+	chplan.FnJSONExtractString:               "FnJSONExtractString",
+	chplan.FnLeftPad:                         "FnLeftPad",
+	chplan.FnLength:                          "FnLength",
+	chplan.FnLower:                           "FnLower",
+	chplan.FnRegexMatch:                      "FnRegexMatch",
+	chplan.FnNullIf:                          "FnNullIf",
+	chplan.FnParseReadableSize:               "FnParseReadableSize",
+	chplan.FnParseTimeDelta:                  "FnParseTimeDelta",
+	chplan.FnStringPosition:                  "FnStringPosition",
+	chplan.FnReplaceAll:                      "FnReplaceAll",
+	chplan.FnRegexReplaceAll:                 "FnRegexReplaceAll",
+	chplan.FnRegexReplaceFirst:               "FnRegexReplaceFirst",
+	chplan.FnStartsWith:                      "FnStartsWith",
+	chplan.FnSubstring:                       "FnSubstring",
+	chplan.FnToJSONString:                    "FnToJSONString",
+	chplan.FnToString:                        "FnToString",
+	chplan.FnXxHash64:                        "FnXxHash64",
+	chplan.FnGreatest:                        "FnGreatest",
+	chplan.FnLeast:                           "FnLeast",
+	chplan.FnIf:                              "FnIf",
+	chplan.FnIfNull:                          "FnIfNull",
+	chplan.FnIsInfinite:                      "FnIsInfinite",
+	chplan.FnIsNaN:                           "FnIsNaN",
+	chplan.FnIsNotNull:                       "FnIsNotNull",
+	chplan.FnMultiIf:                         "FnMultiIf",
+	chplan.FnNot:                             "FnNot",
+	chplan.FnThrowIf:                         "FnThrowIf",
+	chplan.FnAssumeNotNull:                   "FnAssumeNotNull",
+	chplan.FnCast:                            "FnCast",
+	chplan.FnToDateTime:                      "FnToDateTime",
+	chplan.FnToDateTime64:                    "FnToDateTime64",
+	chplan.FnToFloat64:                       "FnToFloat64",
+	chplan.FnToFloat64OrNull:                 "FnToFloat64OrNull",
+	chplan.FnToFloat64OrZero:                 "FnToFloat64OrZero",
+	chplan.FnToInt64:                         "FnToInt64",
+	chplan.FnToIntervalNanosecond:            "FnToIntervalNanosecond",
+	chplan.FnToNullable:                      "FnToNullable",
+	chplan.FnToUInt32:                        "FnToUInt32",
+	chplan.FnToUInt64:                        "FnToUInt64",
+	chplan.FnToIPv4:                          "FnToIPv4",
+	chplan.FnToIPv4OrNull:                    "FnToIPv4OrNull",
+	chplan.FnToIPv6:                          "FnToIPv6",
+	chplan.FnToIPv6OrNull:                    "FnToIPv6OrNull",
+	chplan.FnIsIPv6String:                    "FnIsIPv6String",
+	chplan.FnAddSeconds:                      "FnAddSeconds",
+	chplan.FnDateDiff:                        "FnDateDiff",
+	chplan.FnFromUnixNanos:                   "FnFromUnixNanos",
+	chplan.FnNow:                             "FnNow",
+	chplan.FnNow64:                           "FnNow64",
+	chplan.FnToDayOfMonth:                    "FnToDayOfMonth",
+	chplan.FnToDayOfWeek:                     "FnToDayOfWeek",
+	chplan.FnToDayOfYear:                     "FnToDayOfYear",
+	chplan.FnToHour:                          "FnToHour",
+	chplan.FnToLastDayOfMonth:                "FnToLastDayOfMonth",
+	chplan.FnToMinute:                        "FnToMinute",
+	chplan.FnToMonth:                         "FnToMonth",
+	chplan.FnToUnixNanos:                     "FnToUnixNanos",
+	chplan.FnToYear:                          "FnToYear",
+	chplan.FnAbs:                             "FnAbs",
+	chplan.FnBitShiftRight:                   "FnBitShiftRight",
+	chplan.FnCeil:                            "FnCeil",
+	chplan.FnExp:                             "FnExp",
+	chplan.FnFloor:                           "FnFloor",
+	chplan.FnLn:                              "FnLn",
+	chplan.FnLog2:                            "FnLog2",
+	chplan.FnLog10:                           "FnLog10",
+	chplan.FnPow:                             "FnPow",
+	chplan.FnRound:                           "FnRound",
+	chplan.FnSign:                            "FnSign",
+	chplan.FnSqrt:                            "FnSqrt",
+	chplan.FnAcos:                            "FnAcos",
+	chplan.FnAcosh:                           "FnAcosh",
+	chplan.FnAsin:                            "FnAsin",
+	chplan.FnAsinh:                           "FnAsinh",
+	chplan.FnAtan:                            "FnAtan",
+	chplan.FnAtanh:                           "FnAtanh",
+	chplan.FnCos:                             "FnCos",
+	chplan.FnCosh:                            "FnCosh",
+	chplan.FnSin:                             "FnSin",
+	chplan.FnSinh:                            "FnSinh",
+	chplan.FnTan:                             "FnTan",
+	chplan.FnTanh:                            "FnTanh",
+	chplan.FnDegrees:                         "FnDegrees",
+	chplan.FnRadians:                         "FnRadians",
+	chplan.FnAny:                             "FnAny",
+	chplan.FnArgMax:                          "FnArgMax",
+	chplan.FnArgMin:                          "FnArgMin",
+	chplan.FnArgMinIf:                        "FnArgMinIf",
+	chplan.FnAvg:                             "FnAvg",
+	chplan.FnCount:                           "FnCount",
+	chplan.FnCountEqual:                      "FnCountEqual",
+	chplan.FnGroupArray:                      "FnGroupArray",
+	chplan.FnMax:                             "FnMax",
+	chplan.FnMin:                             "FnMin",
+	chplan.FnQuantile:                        "FnQuantile",
+	chplan.FnStddevPop:                       "FnStddevPop",
+	chplan.FnSum:                             "FnSum",
+	chplan.FnUniqExact:                       "FnUniqExact",
+	chplan.FnVarPop:                          "FnVarPop",
 }
 
 func printVectorMatch(m chplan.VectorMatch) string {

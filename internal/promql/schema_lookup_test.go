@@ -79,14 +79,14 @@ func TestMatcherToExpr_ServiceNameRoutesToCoalesce(t *testing.T) {
 				t.Errorf("Op: got %v, want OpEq", bin.Op)
 			}
 			coalesce, ok := bin.Left.(*chplan.FuncCall)
-			if !ok || coalesce.Name != "coalesce" {
+			if !ok || coalesce.Fn != chplan.FnCoalesce {
 				t.Fatalf("lhs: got %#v, want coalesce(...)", bin.Left)
 			}
 			if len(coalesce.Args) != 2 {
 				t.Fatalf("coalesce args: got %d, want 2", len(coalesce.Args))
 			}
 			nullIf, ok := coalesce.Args[0].(*chplan.FuncCall)
-			if !ok || nullIf.Name != "nullIf" {
+			if !ok || nullIf.Fn != chplan.FnNullIf {
 				t.Fatalf("coalesce arg0: got %#v, want nullIf(...)", coalesce.Args[0])
 			}
 			col, ok := nullIf.Args[0].(*chplan.ColumnRef)
@@ -118,7 +118,7 @@ func TestMatcherToExpr_OtherLabelCoalescesResourceAttributes(t *testing.T) {
 	// `job` with the resource arm active → coalesce-over-two-maps with an
 	// empty-string floor (Attributes wins, absent-in-both → '').
 	call, ok := bin.Left.(*chplan.FuncCall)
-	if !ok || call.Name != "coalesce" {
+	if !ok || call.Fn != chplan.FnCoalesce {
 		t.Fatalf("lhs: got %T (%v), want *chplan.FuncCall coalesce", bin.Left, bin.Left)
 	}
 	if len(call.Args) != 3 {
@@ -127,7 +127,7 @@ func TestMatcherToExpr_OtherLabelCoalescesResourceAttributes(t *testing.T) {
 	// Arg 0 is the Attributes side, wrapped in nullIf; the inner lookup is
 	// the bare MapAccess (job has no underscore).
 	attrSide, ok := call.Args[0].(*chplan.FuncCall)
-	if !ok || attrSide.Name != "nullIf" {
+	if !ok || attrSide.Fn != chplan.FnNullIf {
 		t.Errorf("arg0: got %v, want nullIf(Attributes[...], '')", call.Args[0])
 	} else if _, ok := attrSide.Args[0].(*chplan.MapAccess); !ok {
 		t.Errorf("arg0 inner: got %T, want *chplan.MapAccess (Attributes['job'])", attrSide.Args[0])
@@ -270,7 +270,7 @@ func TestAugmentSelectorAttributes_DedicatedColumnSurvivesResourceOptOut(t *test
 		t.Fatalf("expected a Project wrap with ServiceNameColumn set, got %T", got)
 	}
 	call, ok := canonicalAttributesInner(t, attributesProjection(t, proj, s)).(*chplan.FuncCall)
-	if !ok || call.Name != "mapConcat" {
+	if !ok || call.Fn != chplan.FnMapMerge {
 		t.Fatalf("Attributes projection: got %v, want mapSort(mapConcat(Attributes, <dedicated>))", call)
 	}
 }
@@ -300,14 +300,14 @@ func TestAugmentSelectorAttributes_BareSelectorCarriesServiceName(t *testing.T) 
 		t.Fatalf("projections: got %d, want 4", len(proj.Projections))
 	}
 	mapConcat, ok := canonicalAttributesInner(t, attributesProjection(t, proj, s)).(*chplan.FuncCall)
-	if !ok || mapConcat.Name != "mapConcat" {
+	if !ok || mapConcat.Fn != chplan.FnMapMerge {
 		t.Fatalf("attrs expr: got %#v, want mapSort(mapConcat(...))", proj.Projections[1].Expr)
 	}
 	if len(mapConcat.Args) != 2 {
 		t.Fatalf("mapConcat args: got %d, want 2", len(mapConcat.Args))
 	}
 	base, ok := mapConcat.Args[0].(*chplan.FuncCall)
-	if !ok || base.Name != "mapUpdate" {
+	if !ok || base.Fn != chplan.FnMapUpdate {
 		t.Errorf("overlay base: got %v, want the mapUpdate resource merge", mapConcat.Args[0])
 	}
 	if !exprMentions(mapConcat.Args[1], s.ServiceNameColumn) {

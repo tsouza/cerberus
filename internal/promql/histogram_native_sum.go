@@ -256,8 +256,8 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 // nothing.
 func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
-		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
-		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
+		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
+		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
 	}
 	if expHistogramGroupIsAvg(agg) {
 		aggs = append(aggs, expHistogramGroupSeriesCountAgg())

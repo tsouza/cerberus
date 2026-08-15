@@ -323,7 +323,7 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 // clamp (see [hqWindowCountArrayAlias]).
 func expHistogramValuedWindowAggs(s schema.Metrics, windowFn string) []chplan.AggFunc {
 	return append(expHistogramWindowAggs(s, windowFn), chplan.AggFunc{
-		Name:  "groupArray",
+		Fn:    chplan.FnGroupArray,
 		Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}},
 		Alias: hqWindowSumArrayAlias,
 	})

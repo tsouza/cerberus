@@ -401,11 +401,11 @@ func collapseInfoSeriesBySignature(node chplan.Node, s schema.Metrics) chplan.No
 	}
 
 	timeUnix := &chplan.ColumnRef{Name: s.TimestampColumn}
-	maxTimeUnix := &chplan.FuncCall{Name: "max", Args: []chplan.Expr{timeUnix}}
+	maxTimeUnix := &chplan.FuncCall{Fn: chplan.FnMax, Args: []chplan.Expr{timeUnix}}
 	tieCount := &chplan.FuncCall{
-		Name: "countEqual",
+		Fn: chplan.FnCountEqual,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "groupArray", Args: []chplan.Expr{timeUnix}},
+			&chplan.FuncCall{Fn: chplan.FnGroupArray, Args: []chplan.Expr{timeUnix}},
 			maxTimeUnix,
 		},
 	}
@@ -416,7 +416,7 @@ func collapseInfoSeriesBySignature(node chplan.Node, s schema.Metrics) chplan.No
 	tieCheck := &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
-			Name: "throwIf",
+			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
 				&chplan.Binary{Op: chplan.OpGt, Left: tieCount, Right: &chplan.LitInt{V: 1}},
 				&chplan.InlineString{V: chplan.InfoConflictingLabelMessage},
@@ -431,17 +431,17 @@ func collapseInfoSeriesBySignature(node chplan.Node, s schema.Metrics) chplan.No
 		GroupByAliases: groupByAliases,
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}, timeUnix},
 				Alias: infoWinnerAttrsAlias,
 			},
 			{
-				Name:  "max",
+				Fn:    chplan.FnMax,
 				Args:  []chplan.Expr{timeUnix},
 				Alias: infoWinnerTimeAlias,
 			},
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}, timeUnix},
 				Alias: infoWinnerValueAlias,
 			},

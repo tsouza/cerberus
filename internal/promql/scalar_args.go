@@ -94,7 +94,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 		if isComparison(op) {
 			// Scalar-scalar comparisons require the `bool` modifier at
 			// parse time, so the result is always the 1.0/0.0 fold.
-			return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{bin}}, nil
+			return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{bin}}, nil
 		}
 		return bin, nil
 	case *parser.Call:
@@ -144,12 +144,12 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 				anchor = anchorBaseExpr(evalAnchor{})
 			}
 			return &chplan.FuncCall{
-				Name: "toFloat64",
+				Fn: chplan.FnToFloat64,
 				Args: []chplan.Expr{
 					&chplan.Binary{
 						Op: chplan.OpDiv,
 						Left: &chplan.FuncCall{
-							Name: "toUnixTimestamp64Nano",
+							Fn:   chplan.FnToUnixNanos,
 							Args: []chplan.Expr{anchor},
 						},
 						Right: &chplan.LitInt{V: chplan.NanoToSecondDivisor},
@@ -214,8 +214,8 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 	agg := &chplan.Aggregate{
 		Input: input,
 		AggFuncs: []chplan.AggFunc{
-			{Name: "count", Args: nil, Alias: scalarCountAlias},
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: scalarValueAlias},
+			{Fn: chplan.FnCount, Args: nil, Alias: scalarCountAlias},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: scalarValueAlias},
 		},
 		DropEmptyOnNoGroup: false,
 	}
@@ -224,7 +224,7 @@ func scalarValuePlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		Projections: []chplan.Projection{
 			{
 				Expr: &chplan.FuncCall{
-					Name: "if",
+					Fn: chplan.FnIf,
 					Args: []chplan.Expr{
 						&chplan.Binary{
 							Op:    chplan.OpEq,
@@ -281,8 +281,8 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 		GroupByAliases: []string{s.TimestampColumn},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "count", Args: nil, Alias: scalarCountAlias},
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: scalarValueAlias},
+			{Fn: chplan.FnCount, Args: nil, Alias: scalarCountAlias},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: scalarValueAlias},
 		},
 	}
 	keyed := &chplan.Project{
@@ -290,14 +290,14 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 		Projections: []chplan.Projection{
 			{
 				Expr: &chplan.FuncCall{
-					Name: "toUnixTimestamp64Nano",
+					Fn:   chplan.FnToUnixNanos,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 				},
 				Alias: scalarStepKeyAlias,
 			},
 			{
 				Expr: &chplan.FuncCall{
-					Name: "if",
+					Fn: chplan.FnIf,
 					Args: []chplan.Expr{
 						&chplan.Binary{
 							Op:    chplan.OpEq,
@@ -315,8 +315,8 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 	folded := &chplan.Aggregate{
 		Input: keyed,
 		AggFuncs: []chplan.AggFunc{
-			{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepKeyAlias}}, Alias: scalarStepKeysAlias},
-			{Name: "groupArray", Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepValueAlias}}, Alias: scalarStepValuesAlias},
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepKeyAlias}}, Alias: scalarStepKeysAlias},
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: scalarStepValueAlias}}, Alias: scalarStepValuesAlias},
 		},
 		DropEmptyOnNoGroup: false,
 	}
@@ -334,16 +334,16 @@ func scalarStepPlan(input chplan.Node, s schema.Metrics) chplan.Node {
 				// Array(Nullable(Float64)), so a missing step reads
 				// back NULL and [scalarStepValue] turns it into NaN.
 				Expr: &chplan.FuncCall{
-					Name: "mapFromArrays",
+					Fn: chplan.FnMapFromArrays,
 					Args: []chplan.Expr{
 						&chplan.ColumnRef{Name: scalarStepKeysAlias},
 						&chplan.FuncCall{
-							Name: "arrayMap",
+							Fn: chplan.FnArrayMap,
 							Args: []chplan.Expr{
 								&chplan.Lambda{
 									Params: []string{scalarStepNullableParam},
 									Body: &chplan.FuncCall{
-										Name: "toNullable",
+										Fn:   chplan.FnToNullable,
 										Args: []chplan.Expr{&chplan.BareIdent{Name: scalarStepNullableParam}},
 									},
 								},
@@ -381,17 +381,17 @@ func scalarStepValue(plan chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Ex
 		anchorColumn = s.TimestampColumn
 	}
 	lookup := &chplan.FuncCall{
-		Name: "arrayElement",
+		Fn: chplan.FnArrayElement,
 		Args: []chplan.Expr{
 			&chplan.ScalarSubquery{Input: plan},
 			&chplan.FuncCall{
-				Name: "toUnixTimestamp64Nano",
+				Fn:   chplan.FnToUnixNanos,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: anchorColumn}},
 			},
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "ifNull",
+		Fn:   chplan.FnIfNull,
 		Args: []chplan.Expr{lookup, &chplan.LitFloat{V: math.NaN()}},
 	}
 }
@@ -418,7 +418,7 @@ func scalarStepValue(plan chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Ex
 // Tuple(Float64, Float64) seed.
 func scalarSubqueryValue(plan chplan.Node) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "assumeNotNull",
+		Fn:   chplan.FnAssumeNotNull,
 		Args: []chplan.Expr{&chplan.ScalarSubquery{Input: plan}},
 	}
 }
@@ -427,13 +427,13 @@ func scalarSubqueryValue(plan chplan.Node) chplan.Expr {
 // sites to reproduce Go's NaN-propagation where the matching CH
 // function (greatest / least) treats NaN as orderable instead.
 func isNaNExpr(e chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "isNaN", Args: []chplan.Expr{e}}
+	return &chplan.FuncCall{Fn: chplan.FnIsNaN, Args: []chplan.Expr{e}}
 }
 
 // nanIfExpr returns `if(<cond>, nan, <e>)`.
 func nanIfExpr(cond, e chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn:   chplan.FnIf,
 		Args: []chplan.Expr{cond, &chplan.LitFloat{V: math.NaN()}, e},
 	}
 }
@@ -447,7 +447,7 @@ func nanIfExpr(cond, e chplan.Expr) chplan.Expr {
 // resolves the same rules at compile time via outOfRangePhiInf.
 func outOfRangePhiGuardExpr(phi, value chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			isNaNExpr(phi), &chplan.LitFloat{V: math.NaN()},
 			&chplan.Binary{Op: chplan.OpLt, Left: phi, Right: &chplan.LitFloat{V: 0}}, &chplan.LitFloat{V: math.Inf(-1)},
@@ -482,7 +482,7 @@ func sanitizedPhiParamExpr(phi chplan.Expr) chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn:   chplan.FnIf,
 		Args: []chplan.Expr{outOfDomain, &chplan.LitFloat{V: quantileSentinelPhi}, phi},
 	}
 }

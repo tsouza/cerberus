@@ -241,14 +241,22 @@ func rewriteAnchorRefs(expr chplan.Expr) chplan.Expr {
 	}
 	switch v := expr.(type) {
 	case *chplan.FuncCall:
-		if v.Name == "now64" || v.Name == "now" {
+		// now64(9) is minted by chplan's own Now() helper (still on the
+		// legacy Name path — chplan itself is out of scope for #2060 PR
+		// 2), while now() is built directly in this package's date_fns.go
+		// (Fn: chplan.FnNow since this PR). Both forms have to match
+		// until chplan's own construction sites migrate too.
+		if v.Name == "now64" || v.Fn == chplan.FnNow || v.Name == "now" {
 			return &chplan.ColumnRef{Name: "anchor_ts"}
 		}
 		newArgs := make([]chplan.Expr, len(v.Args))
 		for i, a := range v.Args {
 			newArgs[i] = rewriteAnchorRefs(a)
 		}
-		return &chplan.FuncCall{Name: v.Name, Args: newArgs}
+		// v's identity may be carried by either Fn or Name (dual-mode,
+		// see FuncCall's doc comment) — copy both through unconditionally
+		// rather than guessing which one is live.
+		return &chplan.FuncCall{Fn: v.Fn, Name: v.Name, Args: newArgs}
 	case *chplan.Binary:
 		return &chplan.Binary{Op: v.Op, Left: rewriteAnchorRefs(v.Left), Right: rewriteAnchorRefs(v.Right)}
 	}
@@ -292,12 +300,12 @@ func lowerTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	// outer toFloat64 widens the integer division to Float64 so the
 	// sub-second fraction (when present) survives the cast.
 	valueExpr := &chplan.FuncCall{
-		Name: "toFloat64",
+		Fn: chplan.FnToFloat64,
 		Args: []chplan.Expr{
 			&chplan.Binary{
 				Op: chplan.OpDiv,
 				Left: &chplan.FuncCall{
-					Name: "toUnixTimestamp64Nano",
+					Fn:   chplan.FnToUnixNanos,
 					Args: []chplan.Expr{anchor},
 				},
 				Right: &chplan.LitInt{V: chplan.NanoToSecondDivisor},

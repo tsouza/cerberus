@@ -240,14 +240,14 @@ func TestLower_HistogramBucket_PlanShape(t *testing.T) {
 			continue
 		}
 		fc, ok := proj.Expr.(*chplan.FuncCall)
-		if !ok || fc.Name != "arrayJoin" {
+		if !ok || fc.Fn != chplan.FnArrayJoin {
 			continue
 		}
 		if len(fc.Args) != 1 {
 			continue
 		}
 		inner2, ok := fc.Args[0].(*chplan.FuncCall)
-		if !ok || inner2.Name != "arrayEnumerate" {
+		if !ok || inner2.Fn != chplan.FnArrayEnumerate {
 			continue
 		}
 		found = true

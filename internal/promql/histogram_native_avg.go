@@ -76,7 +76,7 @@ const expHistogramGroupSeriesCountAlias = "_hq_group_series_count"
 // lowering's SQL to carry a column nothing consumes.
 func expHistogramGroupSeriesCountAgg() chplan.AggFunc {
 	return chplan.AggFunc{
-		Name:  "count",
+		Fn:    chplan.FnCount,
 		Args:  []chplan.Expr{},
 		Alias: expHistogramGroupSeriesCountAlias,
 	}
@@ -94,22 +94,15 @@ func expHistogramGroupSeriesCountAgg() chplan.AggFunc {
 //
 // The two count-bearing SHAPES need different arithmetic: Count, Sum and
 // ZeroCount are scalars and divide directly, while the two bucket
-// ladders are arrays and divide element-wise through `arrayMap`. That
-// same split — [scaleHistogramScalarExpr] / [scaleHistogramLadderExpr]
-// — now lives in histogram_native_scalar_binop.go, generalised from
-// "divide by the group's series count" to "scale by an arbitrary
-// expression and operator" for `<exp-hist shape> (*|/) <scalar>`
-// (cerberus issue #2087); this function is what that generalisation was
-// factored out of.
+// ladders are arrays and divide element-wise through `arrayMap`.
 func expHistogramAvgScaleProjections(projs []chplan.Projection, s schema.Metrics) []chplan.Projection {
-	seriesCount := chplan.Expr(&chplan.ColumnRef{Name: expHistogramGroupSeriesCountAlias})
 	scaled := make([]chplan.Projection, len(projs))
 	for i, p := range projs {
 		switch p.Alias {
 		case s.CountColumn, s.SumColumn, s.ZeroCountColumn:
-			scaled[i] = chplan.Projection{Expr: scaleHistogramScalarExpr(chplan.OpDiv, p.Expr, seriesCount), Alias: p.Alias}
+			scaled[i] = chplan.Projection{Expr: expHistogramAvgDivide(p.Expr), Alias: p.Alias}
 		case s.PositiveBucketCountsColumn, s.NegativeBucketCountsColumn:
-			scaled[i] = chplan.Projection{Expr: scaleHistogramLadderExpr(chplan.OpDiv, p.Expr, seriesCount), Alias: p.Alias}
+			scaled[i] = chplan.Projection{Expr: expHistogramAvgDivideLadder(p.Expr), Alias: p.Alias}
 		default:
 			// Scale, ZeroThreshold and both bucket offsets: position, not
 			// count. Reference's Div leaves all four alone.
@@ -117,6 +110,41 @@ func expHistogramAvgScaleProjections(projs []chplan.Projection, s schema.Metrics
 		}
 	}
 	return scaled
+}
+
+// expHistogramAvgDivide divides one scalar field by the group's series
+// count.
+func expHistogramAvgDivide(e chplan.Expr) chplan.Expr {
+	return &chplan.Binary{
+		Op:    chplan.OpDiv,
+		Left:  e,
+		Right: &chplan.ColumnRef{Name: expHistogramGroupSeriesCountAlias},
+	}
+}
+
+// expHistogramAvgDivideLadder divides every bucket of one merged ladder
+// by the group's series count, element-wise.
+//
+// The merged ladder is already dense over the merged scale — the
+// across-series merge emits one entry per index in the merged range — so
+// an element-wise map is the whole of reference's
+// `for i := range h.PositiveBuckets { h.PositiveBuckets[i] /= scalar }`.
+func expHistogramAvgDivideLadder(e chplan.Expr) chplan.Expr {
+	const paramBucket = "b"
+	return &chplan.FuncCall{
+		Fn: chplan.FnArrayMap,
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramBucket},
+				// BareIdent, not ColumnRef: a lambda parameter is bound by
+				// the lambda, not read off a row, and every other
+				// exp-histogram bucket expression in this package spells it
+				// that way (see expHistogramBucketRowContribExpr).
+				Body: expHistogramAvgDivide(&chplan.BareIdent{Name: paramBucket}),
+			},
+			e,
+		},
+	}
 }
 
 // expHistogramGroupIsAvg reports whether an aggregation this file's

@@ -165,8 +165,8 @@ func assertArgMaxLatestAggs(t *testing.T, s schema.Metrics, aggs []chplan.AggFun
 	}
 	for i, col := range want {
 		a := aggs[i]
-		if a.Name != "argMax" {
-			t.Errorf("AggFuncs[%d].Name = %q, want argMax", i, a.Name)
+		if a.Fn != chplan.FnArgMax {
+			t.Errorf("AggFuncs[%d].Fn = %q, want argMax", i, a.Fn)
 		}
 		if a.Alias != col {
 			t.Errorf("AggFuncs[%d].Alias = %q, want %q", i, a.Alias, col)

@@ -156,10 +156,10 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
 		chplan.Projection{
 			Expr: &chplan.FuncCall{
-				Name: "arrayJoin",
+				Fn: chplan.FnArrayJoin,
 				Args: []chplan.Expr{
 					&chplan.FuncCall{
-						Name: "arrayEnumerate",
+						Fn:   chplan.FnArrayEnumerate,
 						Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
 					},
 				},
@@ -195,11 +195,11 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 	// same key order. Sorting again would cost a sort per row and change
 	// nothing.
 	mergedAttrs := &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn: chplan.FnMapMerge,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 			&chplan.FuncCall{
-				Name: "map",
+				Fn: chplan.FnMap,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: bucketBoundLabel},
 					leStr,
@@ -208,13 +208,13 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 		},
 	}
 	cumCount := &chplan.FuncCall{
-		Name: "toFloat64",
+		Fn: chplan.FnToFloat64,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arraySum",
+				Fn: chplan.FnArraySum,
 				Args: []chplan.Expr{
 					&chplan.FuncCall{
-						Name: "arraySlice",
+						Fn: chplan.FnArraySlice,
 						Args: []chplan.Expr{
 							&chplan.ColumnRef{Name: s.BucketCountsColumn},
 							&chplan.LitInt{V: 1},

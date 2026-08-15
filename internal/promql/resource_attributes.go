@@ -150,12 +150,12 @@ func resourceLabelAllowed(s schema.Metrics, promLabel string) bool {
 // the bare Attributes ColumnRef both qualify).
 func sanitizeMapKeysExpr(src chplan.Expr) chplan.Expr {
 	sanitizedKeys := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{"k"},
 				Body: &chplan.FuncCall{
-					Name: "replaceRegexpAll",
+					Fn: chplan.FnRegexReplaceAll,
 					Args: []chplan.Expr{
 						&chplan.BareIdent{Name: "k"},
 						&chplan.InlineString{V: promLabelSanitizePattern},
@@ -163,14 +163,14 @@ func sanitizeMapKeysExpr(src chplan.Expr) chplan.Expr {
 					},
 				},
 			},
-			&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+			&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{src}},
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "mapFromArrays",
+		Fn: chplan.FnMapFromArrays,
 		Args: []chplan.Expr{
 			sanitizedKeys,
-			&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+			&chplan.FuncCall{Fn: chplan.FnMapValues, Args: []chplan.Expr{src}},
 		},
 	}
 }
@@ -198,15 +198,15 @@ func sanitizeResourceKeysExpr(s schema.Metrics) chplan.Expr {
 	// key set is open and the regex is the only correct rewrite.
 	if keys, sanitized := sanitizedResourceKeyPairs(s); len(keys) > 0 {
 		return &chplan.FuncCall{
-			Name: "mapFromArrays",
+			Fn: chplan.FnMapFromArrays,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "arrayMap",
+					Fn: chplan.FnArrayMap,
 					Args: []chplan.Expr{
 						&chplan.Lambda{
 							Params: []string{"k"},
 							Body: &chplan.FuncCall{
-								Name: "transform",
+								Fn: chplan.FnTransform,
 								Args: []chplan.Expr{
 									&chplan.BareIdent{Name: "k"},
 									stringArrayExpr(keys),
@@ -215,10 +215,10 @@ func sanitizeResourceKeysExpr(s schema.Metrics) chplan.Expr {
 								},
 							},
 						},
-						&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+						&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{src}},
 					},
 				},
-				&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+				&chplan.FuncCall{Fn: chplan.FnMapValues, Args: []chplan.Expr{src}},
 			},
 		}
 	}
@@ -232,7 +232,7 @@ func stringArrayExpr(vs []string) chplan.Expr {
 	for _, v := range vs {
 		args = append(args, &chplan.LitString{V: v})
 	}
-	return &chplan.FuncCall{Name: "array", Args: args}
+	return &chplan.FuncCall{Fn: chplan.FnArray, Args: args}
 }
 
 // resourceSourceMap returns the ResourceAttributes column ref, ALWAYS
@@ -289,7 +289,7 @@ func resourceSourceMap(s schema.Metrics) chplan.Expr {
 		return ra
 	}
 	return &chplan.FuncCall{
-		Name: "mapFilter",
+		Fn: chplan.FnMapFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{"k", "v"},
@@ -325,7 +325,7 @@ func mergeResourceAttributesExpr(s schema.Metrics) chplan.Expr {
 		return attrs
 	}
 	return &chplan.FuncCall{
-		Name: "mapUpdate",
+		Fn:   chplan.FnMapUpdate,
 		Args: []chplan.Expr{sanitizeResourceKeysExpr(s), sanitizeMapKeysExpr(attrs)},
 	}
 }
@@ -421,7 +421,7 @@ func resourceMatcherFallback(s schema.Metrics, promLabel string) chplan.Expr {
 		return nil
 	}
 	return &chplan.FuncCall{
-		Name: "nullIf",
+		Fn: chplan.FnNullIf,
 		Args: []chplan.Expr{
 			attributeLookup(s.ResourceAttributesColumn, promLabel),
 			&chplan.LitString{V: ""},

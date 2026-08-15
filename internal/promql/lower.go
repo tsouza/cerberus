@@ -809,7 +809,7 @@ func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s sch
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{
 			Expr: &chplan.FuncCall{
-				Name: "toFloat64",
+				Fn:   chplan.FnToFloat64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
 			},
 			Alias: s.ValueColumn,
@@ -968,7 +968,7 @@ func buildHistogramCompanionArm(
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{
 			Expr: &chplan.FuncCall{
-				Name: "toFloat64",
+				Fn:   chplan.FnToFloat64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
 			},
 			Alias: s.ValueColumn,
@@ -1255,12 +1255,12 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn},
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "max",
+				Fn:    chplan.FnMax,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 				Alias: lwrTsAlias,
 			},
 			{
-				Name: "argMax",
+				Fn: chplan.FnArgMax,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.ValueColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -1320,8 +1320,8 @@ func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.T
 		},
 		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: metaTsAlias},
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: metaValueAlias},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, Alias: metaTsAlias},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: metaValueAlias},
 		},
 	}
 	return &chplan.Project{
@@ -1376,7 +1376,7 @@ func metadataWindowPredicate(pred chplan.Expr, start, end time.Time, s schema.Me
 // bounds in emitted SQL.
 func metadataBoundExpr(t time.Time) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "toDateTime64",
+		Fn: chplan.FnToDateTime64,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
 			&chplan.LitInt{V: chplan.NanoScale},
@@ -1524,7 +1524,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 		},
 		GroupByAliases: []string{s.MetricNameColumn, s.AttributesColumn},
 		AggFuncs: []chplan.AggFunc{{
-			Name: "argMax",
+			Fn: chplan.FnArgMax,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: s.ValueColumn},
 				&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -1551,7 +1551,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 	// name; the canonical TimeUnix slot stays the step anchor.
 	if ctx.needSampleTimestamp {
 		innerAgg.AggFuncs = append(innerAgg.AggFuncs, chplan.AggFunc{
-			Name:  "max",
+			Fn:    chplan.FnMax,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			Alias: chplan.RangeLWRSampleTimestampColumn,
 		})
@@ -1639,7 +1639,7 @@ func windowLeftBoundExpr(a evalAnchor, lookback time.Duration) chplan.Expr {
 		Op:   chplan.OpSub,
 		Left: anchor,
 		Right: &chplan.FuncCall{
-			Name: "toIntervalNanosecond",
+			Fn:   chplan.FnToIntervalNanosecond,
 			Args: []chplan.Expr{&chplan.LitInt{V: offsetNs}},
 		},
 	}
@@ -1779,10 +1779,10 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 	mapLookup := attributeLookup(s.AttributesColumn, promLabel)
 	if col := schemaTopLevelColumn(s, promLabel); col != "" {
 		lhs = &chplan.FuncCall{
-			Name: "coalesce",
+			Fn: chplan.FnCoalesce,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "nullIf",
+					Fn: chplan.FnNullIf,
 					Args: []chplan.Expr{
 						&chplan.ColumnRef{Name: col},
 						&chplan.LitString{V: ""},
@@ -1813,7 +1813,7 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 		// and CH three-valued logic would otherwise drop the NULL row.
 		args := []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "nullIf",
+				Fn:   chplan.FnNullIf,
 				Args: []chplan.Expr{mapLookup, &chplan.LitString{V: ""}},
 			},
 			resArm,
@@ -1827,7 +1827,7 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 		// entry never displaces a spelling the chain already resolves.
 		for _, k := range configuredResourceKeysFor(s, promLabel) {
 			args = append(args, &chplan.FuncCall{
-				Name: "nullIf",
+				Fn: chplan.FnNullIf,
 				Args: []chplan.Expr{
 					&chplan.MapAccess{
 						Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
@@ -1837,7 +1837,7 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 				},
 			})
 		}
-		lhs = &chplan.FuncCall{Name: "coalesce", Args: append(args, &chplan.LitString{V: ""})}
+		lhs = &chplan.FuncCall{Fn: chplan.FnCoalesce, Args: append(args, &chplan.LitString{V: ""})}
 	} else {
 		lhs = mapLookup
 	}
@@ -1936,7 +1936,7 @@ func metricNamePredicateOn(m *labels.Matcher, s schema.Metrics, nameExpr func() 
 		normalized := &chplan.Binary{
 			Op: matchOp(m.Type),
 			Left: &chplan.FuncCall{
-				Name: "replaceRegexpAll",
+				Fn: chplan.FnRegexReplaceAll,
 				Args: []chplan.Expr{
 					nameExpr(),
 					&chplan.LitString{V: promMetricNormalizePattern},
@@ -3027,11 +3027,11 @@ func duplicateLabelsetGuardExpr(s schema.Metrics) chplan.Expr {
 	return &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
-			Name: "throwIf",
+			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
 				&chplan.Binary{
 					Op:    chplan.OpGt,
-					Left:  &chplan.FuncCall{Name: "uniqExact", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
+					Left:  &chplan.FuncCall{Fn: chplan.FnUniqExact, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}}},
 					Right: &chplan.LitInt{V: 1},
 				},
 				&chplan.InlineString{V: chplan.DuplicateLabelsetMessage},
@@ -3105,7 +3105,7 @@ func wrapDropNameCollisionGuard(
 		// aborted every group that held more than one name, so a surviving
 		// group holds exactly one row.
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "any",
+			Fn:    chplan.FnAny,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			Alias: s.ValueColumn,
 		}},
@@ -3441,7 +3441,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 	// Append the value-as-label group key; the wrapping Project
 	// references it by alias to bind the synthetic `<label>` column.
 	groupBy = append(groupBy, &chplan.FuncCall{
-		Name: "toString",
+		Fn:   chplan.FnToString,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 	})
 	aliases = append(aliases, valueKeyAlias)
@@ -3456,7 +3456,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		// `Aggregate function count() AS Value is found in GROUP BY`.
 		// The outer Project re-aliases cv_count back to Value.
 		AggFuncs: []chplan.AggFunc{
-			{Name: "count", Args: []chplan.Expr{}, Alias: countAlias},
+			{Fn: chplan.FnCount, Args: []chplan.Expr{}, Alias: countAlias},
 		},
 		// count_values returns one row per distinct value; empty input
 		// produces no rows naturally because there's nothing to group
@@ -3474,11 +3474,11 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		// via mapConcat (later-arg-wins, matching Prom's "synthetic
 		// label overwrites collisions" semantics).
 		attrs = &chplan.FuncCall{
-			Name: "mapConcat",
+			Fn: chplan.FnMapMerge,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: "gkey_0"},
 				&chplan.FuncCall{
-					Name: "map",
+					Fn: chplan.FnMap,
 					Args: []chplan.Expr{
 						&chplan.LitString{V: label},
 						&chplan.ColumnRef{Name: valueKeyAlias},
@@ -3505,7 +3505,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 			&chplan.ColumnRef{Name: valueKeyAlias},
 		)
 		attrs = &chplan.MapWithoutEmptyValues{
-			Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+			Map: &chplan.FuncCall{Fn: chplan.FnMap, Args: mapArgs},
 		}
 	}
 
@@ -3757,11 +3757,11 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 	full := attrs
 	if nameExpr != nil {
 		full = &chplan.FuncCall{
-			Name: "mapConcat",
+			Fn: chplan.FnMapMerge,
 			Args: []chplan.Expr{
 				attrs,
 				&chplan.FuncCall{
-					Name: "map",
+					Fn: chplan.FnMap,
 					// `__name__` MUST be an inline literal, not a `?`-bound
 					// LitString: with the key bound as a placeholder CH can't
 					// resolve the map literal's key type at analysis time and
@@ -3775,8 +3775,8 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 
 	// Sorted key list of the full map.
 	sortedKeys := &chplan.FuncCall{
-		Name: "arraySort",
-		Args: []chplan.Expr{&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{full}}},
+		Fn:   chplan.FnArraySort,
+		Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{full}}},
 	}
 
 	// Per-key encoding lambda: lenPrefix(k)+k+lenPrefix(full[k])+full[k].
@@ -3793,10 +3793,10 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 	keyIdent := &chplan.BareIdent{Name: mapKeysAlias}
 	valExpr := &chplan.Subscript{Container: full, Key: keyIdent}
 	toStr := func(e chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{e}}
+		return &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{e}}
 	}
 	perKey := &chplan.FuncCall{
-		Name: "concat",
+		Fn: chplan.FnConcat,
 		Args: []chplan.Expr{
 			toStr(lenPrefixExpr(keyIdent)),
 			toStr(keyIdent),
@@ -3806,10 +3806,10 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 	}
 
 	encoded := &chplan.FuncCall{
-		Name: "arrayStringConcat",
+		Fn: chplan.FnArrayStringConcat,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arrayMap",
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
 					&chplan.Lambda{Params: []string{mapKeysAlias}, Body: perKey},
 					sortedKeys,
@@ -3818,12 +3818,12 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 		},
 	}
 
-	hash := &chplan.FuncCall{Name: "xxHash64", Args: []chplan.Expr{encoded}}
+	hash := &chplan.FuncCall{Fn: chplan.FnXxHash64, Args: []chplan.Expr{encoded}}
 
 	// offset = toFloat64(hash) / float64(math.MaxUint64)
 	return &chplan.Binary{
 		Op:    chplan.OpDiv,
-		Left:  &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{hash}},
+		Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{hash}},
 		Right: &chplan.LitFloat{V: maxUint64AsFloat},
 	}
 }
@@ -3843,8 +3843,8 @@ func ratioOffsetExpr(s schema.Metrics, nameExpr chplan.Expr) chplan.Expr {
 // reach this path.
 func lenPrefixExpr(sExpr chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "char",
-		Args: []chplan.Expr{&chplan.FuncCall{Name: "length", Args: []chplan.Expr{sExpr}}},
+		Fn:   chplan.FnChar,
+		Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{sExpr}}},
 	}
 }
 
@@ -4171,7 +4171,7 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 // intent rather than a coincidence of comparison semantics.
 func topKDomainExpr(k chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			isNaNExpr(k),
 			&chplan.LitFloat{V: topKEmptyThreshold},
@@ -4239,7 +4239,7 @@ func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s sc
 			args = append(args, &chplan.LitString{V: label}, &chplan.ColumnRef{Name: aliases[i]})
 		}
 		attrs = &chplan.MapWithoutEmptyValues{
-			Map: &chplan.FuncCall{Name: "map", Args: args},
+			Map: &chplan.FuncCall{Fn: chplan.FnMap, Args: args},
 		}
 	}
 
@@ -4264,9 +4264,9 @@ func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s sc
 // `by/without` clause).
 func emptyAttrsMap() chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "CAST",
+		Fn: chplan.FnCast,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "map", Args: nil},
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: nil},
 			&chplan.LitString{V: "Map(String,String)"},
 		},
 	}
@@ -4328,12 +4328,12 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		if a.Param != nil {
 			return chplan.AggFunc{}, fmt.Errorf("promql: aggregation %s does not take a parameter", a.Op.String())
 		}
-		name, err := plainAggCH(a.Op)
+		fn, err := plainAggCH(a.Op)
 		if err != nil {
 			return chplan.AggFunc{}, err
 		}
 		return chplan.AggFunc{
-			Name:  name,
+			Fn:    fn,
 			Args:  []chplan.Expr{valueArg},
 			Alias: s.ValueColumn,
 		}, nil
@@ -4362,10 +4362,10 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 			return chplan.AggFunc{}, fmt.Errorf("promql: group() does not take a parameter")
 		}
 		return chplan.AggFunc{
-			Name: "any",
+			Fn: chplan.FnAny,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "toFloat64",
+					Fn:   chplan.FnToFloat64,
 					Args: []chplan.Expr{&chplan.LitInt{V: 1}},
 				},
 			},
@@ -4384,7 +4384,7 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 				emitPhi = 0.5
 			}
 			return chplan.AggFunc{
-				Name:   "quantile",
+				Fn:     chplan.FnQuantile,
 				Params: []chplan.Expr{&chplan.LitFloat{V: emitPhi}},
 				Args:   []chplan.Expr{valueArg},
 				Alias:  s.ValueColumn,
@@ -4408,7 +4408,7 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 			return chplan.AggFunc{}, err
 		}
 		return chplan.AggFunc{
-			Name:   "quantile",
+			Fn:     chplan.FnQuantile,
 			Params: []chplan.Expr{sanitizedPhiParamExpr(phiE)},
 			Args:   []chplan.Expr{valueArg},
 			Alias:  s.ValueColumn,
@@ -4425,23 +4425,23 @@ func buildAggFunc(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	return chplan.AggFunc{}, fmt.Errorf("promql: aggregation op %s is not yet supported", a.Op.String())
 }
 
-// plainAggCH maps a non-parameterised PromQL aggregator to its CH name.
-func plainAggCH(op parser.ItemType) (string, error) {
+// plainAggCH maps a non-parameterised PromQL aggregator to its CH Fn.
+func plainAggCH(op parser.ItemType) (chplan.Fn, error) {
 	switch op {
 	case parser.SUM:
-		return "sum", nil
+		return chplan.FnSum, nil
 	case parser.COUNT:
-		return "count", nil
+		return chplan.FnCount, nil
 	case parser.AVG:
-		return "avg", nil
+		return chplan.FnAvg, nil
 	case parser.MIN:
-		return "min", nil
+		return chplan.FnMin, nil
 	case parser.MAX:
-		return "max", nil
+		return chplan.FnMax, nil
 	case parser.STDDEV:
-		return "stddevPop", nil
+		return chplan.FnStddevPop, nil
 	case parser.STDVAR:
-		return "varPop", nil
+		return chplan.FnVarPop, nil
 	}
 	return "", fmt.Errorf("promql: aggregation op %s is not yet supported", op.String())
 }

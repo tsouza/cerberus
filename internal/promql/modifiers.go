@@ -376,7 +376,7 @@ func windowRightBoundExpr(a evalAnchor) chplan.Expr {
 		Op:   chplan.OpSub,
 		Left: base,
 		Right: &chplan.FuncCall{
-			Name: "toIntervalNanosecond",
+			Fn:   chplan.FnToIntervalNanosecond,
 			Args: []chplan.Expr{&chplan.LitInt{V: a.Offset.Nanoseconds()}},
 		},
 	}
@@ -426,7 +426,7 @@ func anchorBaseExpr(a evalAnchor) chplan.Expr {
 		return chplan.NowNano()
 	}
 	return &chplan.FuncCall{
-		Name: "toDateTime64",
+		Fn: chplan.FnToDateTime64,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: a.End.Format("2006-01-02 15:04:05.000000000")},
 			&chplan.LitInt{V: chplan.NanoScale},

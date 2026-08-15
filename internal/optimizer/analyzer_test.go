@@ -232,6 +232,43 @@ func TestConstantFoldHeuristic_LeavesLiteralArithmeticAlone(t *testing.T) {
 	}
 }
 
+// TestConstantFoldSemantic_PreservesFuncCallFn pins the sealed function
+// identity when folding rebuilds a FuncCall around a changed child. Dropping
+// Fn leaves both identity fields empty and makes the emitter render a
+// nameless call; histogram_fraction exposed that path because its deeply
+// nested Fn-only expression contains foldable literal arithmetic.
+func TestConstantFoldSemantic_PreservesFuncCallFn(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "t"},
+		Projections: []chplan.Projection{{
+			Expr: &chplan.FuncCall{
+				Fn: chplan.FnAbs,
+				Args: []chplan.Expr{&chplan.Binary{
+					Op:    chplan.OpAdd,
+					Left:  &chplan.LitInt{V: 1},
+					Right: &chplan.LitInt{V: 2},
+				}},
+			},
+		}},
+	}
+
+	out, changed := optimizer.ConstantFoldSemantic{}.Apply(plan)
+	if !changed {
+		t.Fatalf("ConstantFoldSemantic should have folded the FuncCall argument `1+2` → `3`")
+	}
+	project := out.(*chplan.Project)
+	call := project.Projections[0].Expr.(*chplan.FuncCall)
+	if call.Fn != chplan.FnAbs || call.Name != "" {
+		t.Fatalf("FuncCall identity changed during fold rebuild: Fn=%q Name=%q", call.Fn, call.Name)
+	}
+	arg, ok := call.Args[0].(*chplan.LitInt)
+	if !ok || arg.V != 3 {
+		t.Fatalf("expected Args[0] LitInt(3), got %#v", call.Args[0])
+	}
+}
+
 func TestConstantFoldSemantic_PreservesAggFuncParams(t *testing.T) {
 	t.Parallel()
 
@@ -244,7 +281,7 @@ func TestConstantFoldSemantic_PreservesAggFuncParams(t *testing.T) {
 		Input:   &chplan.Scan{Table: "t"},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		AggFuncs: []chplan.AggFunc{{
-			Name:   "quantile",
+			Fn:     chplan.FnQuantile,
 			Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
 			Args: []chplan.Expr{&chplan.Binary{
 				Op:    chplan.OpAdd,
@@ -264,6 +301,9 @@ func TestConstantFoldSemantic_PreservesAggFuncParams(t *testing.T) {
 		t.Fatalf("expected *Aggregate, got %T", out)
 	}
 	af := agg.AggFuncs[0]
+	if af.Fn != chplan.FnQuantile || af.Name != "" {
+		t.Fatalf("AggFunc identity changed during fold rebuild: Fn=%q Name=%q", af.Fn, af.Name)
+	}
 	if len(af.Params) != 1 {
 		t.Fatalf("AggFunc.Params dropped by the fold rebuild: got %d params, want 1", len(af.Params))
 	}
