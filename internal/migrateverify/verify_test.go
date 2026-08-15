@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -369,15 +370,21 @@ func nonMatrixServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// deadBackendURL returns the URL of an httptest server that has already been
-// closed, so any request against it fails at the transport layer (connection
-// refused) — a deterministic way to exercise the transport-error branches.
-func deadBackendURL(t *testing.T) string {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	u := srv.URL
-	srv.Close()
-	return u
+// unreachableBackendURL returns a URL whose host can never resolve. RFC 2606
+// reserves .invalid, so another test listener cannot make this backend
+// reachable by reusing a released ephemeral port.
+func unreachableBackendURL() string {
+	return "http://backend.invalid"
+}
+
+func TestUnreachableBackendURLUsesReservedHostWithoutPort(t *testing.T) {
+	u, err := url.Parse(unreachableBackendURL())
+	if err != nil {
+		t.Fatalf("parse unreachable backend URL: %v", err)
+	}
+	if u.Scheme != "http" || u.Hostname() != "backend.invalid" || u.Port() != "" {
+		t.Fatalf("unreachable backend URL = %q, want http://backend.invalid without a port", u)
+	}
 }
 
 // TestVerify_Cerberus200NonMatrix: cerberus answers 200 but with a non-matrix
@@ -427,7 +434,7 @@ func TestVerify_ReferenceTransportError(t *testing.T) {
 	cerBody := map[string]string{
 		"q": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
 	}
-	ref := NewHTTPBackend(deadBackendURL(t))
+	ref := NewHTTPBackend(unreachableBackendURL())
 	cer := NewHTTPBackend(matrixServer(t, cerBody).URL)
 	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
@@ -447,7 +454,7 @@ func TestVerify_CerberusTransportError(t *testing.T) {
 		"q": matrix(seriesSpec{labels: map[string]string{"job": "a"}, points: []pointSpec{{1_700_000_000, "1"}}}),
 	}
 	ref := NewHTTPBackend(matrixServer(t, refBody).URL)
-	cer := NewHTTPBackend(deadBackendURL(t))
+	cer := NewHTTPBackend(unreachableBackendURL())
 	rep := Verify(context.Background(), Corpus{Queries: []Query{promQuery("q", "s")}}, promLanes(ref, cer), testParams())
 	res := rep.Results[0]
 	if res.Verdict != VerdictError {
@@ -468,7 +475,7 @@ func TestVerify_TransportErrorRedactsCredentials(t *testing.T) {
 		user = "s3cr3t-token"
 		pass = "hunter2-pw"
 	)
-	addr := strings.TrimPrefix(deadBackendURL(t), "http://")
+	addr := strings.TrimPrefix(unreachableBackendURL(), "http://")
 	badURL := "http://" + user + ":" + pass + "@" + addr
 
 	cerBody := map[string]string{
