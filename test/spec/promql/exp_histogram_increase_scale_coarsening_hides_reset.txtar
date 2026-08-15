@@ -18,60 +18,55 @@ CREATE TABLE otel_metrics_exponential_histogram (
     NegativeOffset Int32,
     NegativeBucketCounts Array(UInt64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
--- A histogram that observes NEGATIVE values, so its Sum falls while
--- nothing else does. No counter reset happens anywhere in this window,
--- and reference Prometheus agrees: `FloatHistogram.DetectReset` reads
--- the bucket counts, the zero count, the schema and the observation
--- COUNT — and deliberately not the observation SUM ("in any bucket, in
--- the zero count, or in the count of observations, but NOT the sum of
--- observations"). Letting Sum vote on its own reset is the second of
--- the three divergences #2017 records.
+-- cerberus issue #2095: the counter-reset mask must judge each
+-- consecutive PAIR at that pair's own (later sample's) scale, never at
+-- the window's merged (coarsest-of-everyone) scale.
 --
--- Three scrapes 60s apart, evaluated at 00:00:01, so [5m] spans
--- (23:55:01, 00:00:01] and holds all three. Scale 0 puts positive
--- bucket 0 over (1, 2] and bucket 1 over (2, 4]; the negative array
--- starts at index 2, covering magnitudes (4, 8].
+-- Three scrapes, all inside the [5m] window (23:55:01, 00:00:01]:
 --
---   TimeUnix   Count   Sum   positive   negative
---   23:58:01      6   12.0    [4, 2]      [0]
---   23:59:01     12    0.0    [6, 3]      [3]     <- three -6s observed
---   00:00:01     15    6.0    [8, 4]      [3]
+--   TimeUnix   Count  Scale  PositiveBucketCounts
+--   23:58:01     10      3   [5, 5, 0, 0, 0, 0, 0, 0]
+--   23:59:01     13      3   [3, 10, 0, 0, 0, 0, 0, 0]
+--   00:00:01     16      0   [16]
 --
--- Every counter rises: Count 6 -> 12 -> 15, positives [4,2] -> [6,3] ->
--- [8,4], negatives [0] -> [3] -> [3]. Only Sum dips, at the scrape that
--- recorded the three negative observations, and it recovers afterwards.
+-- Pair 1 (23:58:01 -> 23:59:01), compared at ITS OWN scale (3, since
+-- neither row needs rescaling against the other): bucket[0] falls
+-- 5 -> 3 while bucket[1] rises 5 -> 10 and Count rises 10 -> 13 — a
+-- restart reference's DetectReset condemns (a populated bucket
+-- regressed while Count did not fall).
 --
--- The whole-histogram verdict is therefore "no reset at either step",
--- and every component telescopes:
+-- Pair 2 (23:59:01 -> 00:00:01), compared at ITS OWN scale (0, folding
+-- pair 1's 8 fine buckets into 1): 13 -> 16, no regression — no reset.
 --
---   Count       15 - 6  =  9
---   Sum       6.0 - 12.0 = -6.0
---   positive   [8-4, 4-2] = [4, 2]
---   negative   [3-0]      = [3]
+-- Comparing pair 1 at the WINDOW's merged scale (0, driven by the LATER
+-- sample) instead of its own hides the regression: bucket[0]/bucket[1]
+-- fold into the SAME merged-scale bucket, whose total only rises
+-- (10 -> 13), so the buggy merged-scale reading sees no reset anywhere
+-- in the window and increase() answers short by the whole pre-restart
+-- distribution.
 --
--- Asking Sum alone whether it regressed answers yes at the second
--- scrape, which would contribute 0.0 for that step and 6.0 for the next
--- — a window Sum of +6.0 where reference says -6.0, wrong in sign as
--- well as magnitude.
+-- Boundary extrapolation (both readings apply the SAME factor, so it
+-- cancels out of which one is right): sampledInterval = 120s,
+-- averageDurationBetweenSamples = 60s, durationToStart = 180s clamped
+-- to 30s (> 1.1x average), durationToEnd = 0s (last sample sits exactly
+-- at the window's right edge) — factor = (120+30+0)/120 = 1.25.
 --
--- Boundary extrapolation:
---   sampledInterval = 00:00:01 - 23:58:01           = 120s
---   averageDurationBetweenSamples = 120 / (3-1)     = 60s
---   extrapolationThreshold = 66s
---   durationToStart raw = 23:58:01 - 23:55:01 = 180s >= 66 -> 30s
---   durationToZero = 120 * (6/9) = 80s, not < 30 -> stays 30s
---   durationToEnd  = 0s
---   factor = (120 + 30 + 0) / 120                   = 1.25
+-- With the reset correctly detected at pair 1: Count folds to
+-- 13 (added back, not differenced) + (16-13) = 16, times 1.25 = 20.
+-- Sum: pick s0=5.0, s1=6.5 (arbitrary — a reset's contribution is the
+-- CURRENT sample alone, so s1 cancels out of the total), s2=8.0, folding
+-- to s1 + (s2-s1) = s2 = 8, times 1.25 = 10.
 --
---   Count 9*1.25 = 11.25, Sum -6.0*1.25 = -7.5,
---   positive [4*1.25, 2*1.25] = [5, 2.5], negative [3*1.25] = [3.75]
+-- Without the fix (merged-scale reading, no reset seen anywhere):
+-- Count folds to (13-10)+(16-13) = 6, times 1.25 = 7.5. Sum folds to
+-- (6.5-5.0)+(8.0-6.5) = s2-s0 = 3, times 1.25 = 3.75.
 INSERT INTO otel_metrics_exponential_histogram VALUES
-    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:01', 9),  6, 12.0, 0, 0, 0, [4, 2], 2, [0]),
-    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:01', 9), 12,  0.0, 0, 0, 0, [6, 3], 2, [3]),
-    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:01', 9), 15,  6.0, 0, 0, 0, [8, 4], 2, [3]);
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:01', 9), 10, 5.0, 3, 0, 0, [5, 5, 0, 0, 0, 0, 0, 0], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:01', 9), 13, 6.5, 3, 0, 0, [3, 10, 0, 0, 0, 0, 0, 0], 0, []),
+    ('latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:01', 9), 16, 8.0, 0, 0, 0, [16], 0, []);
 -- expected_rows --
 [
-  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 0, 11.25, -7.5, 0, 0, 0, 0, [5,2.5], 2, [3.75]]
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 0, 20, 10, 0, 0, 0, 0, [20], 0, []]
 ]
 -- args --
 [0] string = ""
