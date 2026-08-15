@@ -101,6 +101,19 @@ type droppedEntryStream struct {
 // 4xx errors are returned BEFORE the WebSocket upgrade so misuse looks
 // like an ordinary HTTP bad-request rather than a confusing websocket-
 // handshake-then-close failure.
+//
+// The tail-CAP rejection is the deliberate exception: it is checked AFTER
+// the upgrade, by acquiring h.TailLimiter's slot once the handshake has
+// already succeeded, and a refusal is delivered as a close frame
+// (tailCapCloseCode) rather than an HTTP status. Reference Loki's own
+// tail limit works the same way (its querier acquires the slot inside
+// the already-upgraded handler and the rejection reaches the client as a
+// close frame — see pkg/querier/tail/http.go upstream). Gating the cap
+// before Upgrade, as every other route's admit.Middleware does, would
+// refuse the handshake outright — indistinguishable, at the WebSocket
+// layer, from hitting a missing endpoint or a broken proxy, and a
+// WebSocket client has no HTTP-status-level "retry" signal to act on
+// (issue #2048).
 func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("query")
 	if q == "" {
@@ -160,6 +173,17 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 			h.Logger.Warn("cerberus loki tail: websocket close failed", "err", err)
 		}
 	}()
+
+	// The tail budget is acquired HERE, after the upgrade — see the
+	// handleTail doc comment for why. A nil TailLimiter (the "tailing is
+	// unadmitted" configuration) always grants, matching Acquire's own
+	// nil-receiver contract.
+	release, ok := h.TailLimiter.Acquire(r.Context())
+	if !ok {
+		writeTailCapClose(conn, h.tailWriteTimeout())
+		return
+	}
+	defer release()
 
 	tx, err := postProcessExtract(expr)
 	if err != nil {
@@ -302,6 +326,37 @@ func writeTailChunk(conn *websocket.Conn, streams []Stream, writeTimeout time.Du
 		Streams:        streams,
 		DroppedEntries: []droppedEntryStream{},
 	})
+}
+
+// tailCapCloseCode is the WebSocket close code sent when the tail budget
+// is saturated. 1013 ("Try Again Later", RFC 6455 §7.4.1) is the code the
+// spec reserves for exactly this — a server temporarily unable to service
+// the request that would likely accept it later — as opposed to 1008
+// ("Policy Violation") or 1011 ("Internal Error"), neither of which
+// invites a retry.
+const tailCapCloseCode = websocket.CloseTryAgainLater
+
+// tailCapCloseReason is the close-frame reason text. Kept well under the
+// 123-byte RFC 6455 control-frame payload limit and phrased like
+// admit.Middleware's own "admission control: server saturated" 503 body,
+// so an operator grepping logs on either side of the upgrade sees the
+// same vocabulary for the same condition.
+const tailCapCloseReason = "admission control: tail budget saturated"
+
+// writeTailCapClose sends the close frame for a tail request that lost
+// the race for a TailLimiter slot. The connection is already an upgraded
+// WebSocket at this point (handleTail calls this only after Upgrade
+// succeeds), so this is the ONLY way to signal the rejection — an HTTP
+// status is no longer available once the handshake completed. The error
+// is intentionally discarded: the caller's deferred conn.Close() tears
+// the connection down regardless, and a write failing because the peer
+// already vanished is not a fault worth logging.
+func writeTailCapClose(conn *websocket.Conn, writeTimeout time.Duration) {
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(tailCapCloseCode, tailCapCloseReason),
+		time.Now().Add(writeTimeout),
+	)
 }
 
 // buildTailSQL constructs the per-tick polling SELECT. The shape is:
