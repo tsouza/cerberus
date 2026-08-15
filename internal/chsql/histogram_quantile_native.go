@@ -16,17 +16,32 @@
 //     order. arrayReverse([]) = [], so distributions with no negative
 //     observations collapse to the positive-only walk
 //     (`arrayConcat([ZeroCount], PositiveBucketCounts)`).
-//  3. total = cum[length(cum)]; target = phi * total.
+//  3. total = cum[length(cum)] — the BUCKET-DERIVED total, used only for
+//     the backward arm's own complement arithmetic (step 4). The RANK is
+//     taken against the histogram's own stored Count column instead
+//     (rankBase), matching reference Prometheus's `HistogramQuantile`,
+//     which ranks against `h.Count` and never re-derives a total from
+//     the bucket array. The two agree everywhere except when the
+//     histogram counted NaN observations: those inflate stored Count
+//     without landing in any bucket, so Sum comes out NaN (the only way
+//     Count can exceed the bucket-derived total) and rankBase > total.
+//     target = phi * rankBase.
 //  4. idx = the 1-based position the rank walk stops on. Reference
 //     Prometheus walks the buckets in one of TWO directions depending
-//     on phi (quantile.go:243-262), so cerberus does too:
-//     - phi < reverseWalkPhi: forward, rank = phi * total, stopping at
+//     on phi AND on whether Sum is NaN (quantile.go:243-262), so
+//     cerberus does too:
+//     - phi < reverseWalkPhi, OR Sum is NaN: forward, rank =
+//     phi * rankBase, stopping at
 //     idx = arrayFirstIndex(c -> c >= target, cum).
-//     - phi >= reverseWalkPhi: backward from the top, rank =
-//     (1 - phi) * total. The count at or above the bucket at position
-//     i is `total - cum[i-1]`, so the walk stops at the smallest i
-//     with `total - cum[i-1] >= rank`, emitted as the first index at
-//     which the complementary test flips:
+//     Reference forces the forward arm whenever Sum is NaN regardless
+//     of phi, because a reverse walk cannot find a percentile whose
+//     mass sits outside every bucket.
+//     - phi >= reverseWalkPhi AND Sum is not NaN: backward from the
+//     top, rank = (1 - phi) * rankBase. The count at or above the
+//     bucket at position i is `total - cum[i-1]` (bucket-derived total,
+//     which equals rankBase whenever Sum is finite), so the walk stops
+//     at the smallest i with `total - cum[i-1] >= rank`, emitted as the
+//     first index at which the complementary test flips:
 //     idx = arrayFirstIndex(c -> total - c < rank, cum).
 //     The two directions agree everywhere except at an exact rank tie
 //     (target lands exactly on a cum boundary): forward stops on the
@@ -43,10 +58,22 @@
 //     rank. Only rank = 0 could stop on one, and that is exactly the
 //     phi = 0 / phi = 1 pair the phiLow / phiHigh edges handle
 //     explicitly (step 6).
+//     A rank ABOVE every bucket's reach — rankBase > total, which only
+//     happens when Sum is NaN and the walk is forced forward — leaves
+//     arrayFirstIndex with nothing to stop on; it returns 0, and the
+//     outer chain (step 6a) answers NaN, matching reference's own
+//     "walk exhausted every bucket without reaching the rank" result.
 //     Regions: idx ∈ [1, nlen] is the negative-side walk;
 //     idx = nlen+1 is the zero bucket; idx > nlen+1 is the positive
 //     walk. (nlen = length(NegativeBucketCounts).)
-//  5. fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
+//  5. fraction = (target - cum[idx-1]) / bucketCount(valueIdx), where
+//     valueIdx normally equals idx. For a NaN Sum, reference Prometheus
+//     continues the forward iterator to its end to detect NaN skew after
+//     rebasing the rank in idx. That annotation scan leaves `bucket` on
+//     the final iterated bucket, and the subsequent interpolation uses
+//     that bucket's geometry and count. valueIdx reproduces that observable
+//     behavior by selecting the last positive bucket, otherwise the
+//     populated zero bucket, otherwise the last negative bucket.
 //     ClickHouse returns the array element's default (0) for
 //     `cum[0]`, which matches the "no bucket consumed yet" semantics
 //     when idx = 1, so the formula needs no explicit guard.
@@ -57,10 +84,14 @@
 //     total - cum[idx-1] for the backward arm reduces its expression to
 //     this same (target - cum[idx-1]) / bucketCount, so only the STOP
 //     INDEX differs between the arms, never the interpolation.
-//  6. Edge cases (Prometheus quantile.go:114-119):
-//     - total = 0 → NaN.
+//  6. Edge cases (Prometheus quantile.go:114-119), tested in THIS order —
+//     out-of-domain phi is checked before the empty-histogram case, so a
+//     `phi` outside [0, 1] answers ±Inf even for an empty histogram
+//     (cerberus issue #2067; reference quantile.go:222-232 checks
+//     `q < 0` / `q > 1` before `h.Count == 0`):
 //     - phi < 0 → -Inf (out of domain).
 //     - phi > 1 → +Inf (out of domain).
+//     - rankBase (stored Count) = 0 → NaN (empty histogram).
 //     - phi == 0 → lower edge of the lowest POPULATED bucket (in
 //     domain), and phi == 1 → upper edge of the highest populated
 //     one. Both saturate to a bucket some observation fell in,
@@ -72,6 +103,12 @@
 //     fraction = 0 (lower) / 1 (upper), with idx replaced by
 //     `arrayFirstIndex` / `arrayLastIndex` of a non-zero count over
 //     the same concatenated walk order.
+//     - idx = 0 → NaN. arrayFirstIndex returns 0 when no cum element
+//     satisfies the walk's comparison — the "walk exhausted every
+//     bucket without reaching the rank" case from step 4, reachable
+//     only when Sum is NaN and rankBase (Count) exceeds every bucket's
+//     reach. Checked after phi == 0 / phi == 1 (step 6a) since those
+//     saturate rather than walk.
 //  7. Interpolation, by region:
 //     - Negative bucket (idx ≤ nlen). Original-array 0-based index
 //     within Negative is `nlen - idx`; absolute exp-bucket index is
@@ -116,6 +153,20 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+const (
+	hqQuantileBucketsColumn  = "_cerb_hq_buckets"
+	hqQuantileCumColumn      = "_cerb_hq_cum"
+	hqQuantileIdxColumn      = "_cerb_hq_idx"
+	hqQuantileValueIdxColumn = "_cerb_hq_value_idx"
+)
+
+type hqNativeHelperColumns struct {
+	buckets  string
+	cum      string
+	idx      string
+	valueIdx string
+}
+
 // emitHistogramQuantileNative renders a chplan.HistogramQuantileNative
 // against the OTel-CH exp_histogram schema. The outer QueryBuilder
 // projects the GroupBy columns aliased per GroupByAliases, then the
@@ -132,15 +183,51 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	// instead (see writeZt in histogramQuantileNativeValueFrag).
 	if h.PositiveBucketCountsColumn == "" || h.PositiveOffsetColumn == "" ||
 		h.ScaleColumn == "" || h.ZeroCountColumn == "" ||
-		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" {
-		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names", ErrUnsupported)
+		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" ||
+		h.CountColumn == "" || h.SumColumn == "" {
+		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts / Count / Sum column names", ErrUnsupported)
 	}
 	sub, err := e.subqueryFrag(h.Input)
 	if err != nil {
 		return err
 	}
 
-	sb := NewQuery().From(sub)
+	// Native quantile interpolation reuses the bucket walk, cumulative
+	// counts, stop index, and value index many times. Keep each one in its
+	// own typed derived-query stage so ClickHouse evaluates it once per row.
+	// Expanding those expressions at every use pushed the CH 24.8
+	// compatibility floor past its request deadline on shifting native
+	// histograms even though the result stayed correct.
+	rawW := newHQNativeWriters(h, hqNativeHelperColumns{})
+	bucketed := NewQuery().
+		Select(Star(), As(rawW.buckets(), hqQuantileBucketsColumn)).
+		From(sub)
+	cumulated := NewQuery().
+		Select(Star(), As(Call("arrayCumSum", Col(hqQuantileBucketsColumn)), hqQuantileCumColumn)).
+		From(Subquery(bucketed))
+	idxW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets: hqQuantileBucketsColumn,
+		cum:     hqQuantileCumColumn,
+	})
+	indexed := NewQuery().
+		Select(Star(), As(idxW.idx(), hqQuantileIdxColumn)).
+		From(Subquery(cumulated))
+	valueIdxW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets: hqQuantileBucketsColumn,
+		cum:     hqQuantileCumColumn,
+		idx:     hqQuantileIdxColumn,
+	})
+	withValueIdx := NewQuery().
+		Select(Star(), As(valueIdxW.valueIdx(), hqQuantileValueIdxColumn)).
+		From(Subquery(indexed))
+	helpers := hqNativeHelperColumns{
+		buckets:  hqQuantileBucketsColumn,
+		cum:      hqQuantileCumColumn,
+		idx:      hqQuantileIdxColumn,
+		valueIdx: hqQuantileValueIdxColumn,
+	}
+
+	sb := NewQuery().From(Subquery(withValueIdx))
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""
@@ -149,7 +236,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	sb.SelectAs(histogramQuantileNativeValueFrag(h), "Value")
+	sb.SelectAs(histogramQuantileNativeValueFrag(h, helpers), "Value")
 	return e.emitSelect(sb)
 }
 
@@ -161,10 +248,10 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 // parameter, not user data — while a computed phi (h.PhiExpr != nil)
 // renders the expression at every phi position with a leading
 // `isNaN(phi) → nan` guard. Mirrors classic emission style.
-func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
+func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) Frag {
 	po := h.PositiveOffsetColumn
 	no := h.NegativeOffsetColumn
-	w := newHQNativeWriters(h)
+	w := newHQNativeWriters(h, helpers)
 
 	// `nan` / `-inf` / `inf` are CH-portable shape tokens, not data —
 	// InlineLit would quote them, so they ride verbatim (the IfNonZero
@@ -216,7 +303,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		"pow",
 		w.base(),
 		Sub(
-			Add(Add(Col(no), Paren(Sub(w.nLen(), w.idx()))), InlineLit(1)),
+			Add(Add(Col(no), Paren(Sub(w.nLen(), w.valueIdx()))), InlineLit(1)),
 			w.fraction(),
 		),
 	))
@@ -235,32 +322,44 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		"pow",
 		w.base(),
 		Add(
-			Add(Col(po), Paren(Sub(Sub(w.idx(), w.nLen()), InlineLit(2)))),
+			Add(Col(po), Paren(Sub(Sub(w.valueIdx(), w.nLen()), InlineLit(2)))),
 			w.fraction(),
 		),
 	)
 
-	// Outer chain (Prometheus quantile.go:114-119):
-	//   if(total = 0, nan,
-	//     if(phi < 0, -inf,
-	//       if(phi > 1, inf,
+	// Outer chain (Prometheus quantile.go:222-232, 114-119). Out-of-domain
+	// phi is checked OUTERMOST, above the empty-histogram case, matching
+	// reference's own `q < 0` / `q > 1` / `h.Count == 0` order — cerberus
+	// issue #2067. rankBase = 0 ranks against the histogram's STORED
+	// Count rather than the bucket-derived total, so an empty histogram
+	// answers NaN even when Sum is itself NaN (0 == 0). idx = 0 is
+	// arrayFirstIndex's "not found" sentinel: the walk exhausted every
+	// bucket without reaching the rank, which only happens when Sum is
+	// NaN and the forced-forward rank exceeds the buckets' combined
+	// reach — cerberus issue #2072.
+	//
+	//   if(phi < 0, -inf,
+	//     if(phi > 1, inf,
+	//       if(rankBase = 0, nan,
 	//         if(phi = 0, phiLow,
 	//           if(phi = 1, phiHigh,
-	//             if(idx <= nlen, negInterp,
-	//               if(idx = nlen + 1, zeroInterp, posInterp)))))))
+	//             if(idx = 0, nan,
+	//               if(idx <= nlen, negInterp,
+	//                 if(idx = nlen + 1, zeroInterp, posInterp))))))))
 	//
 	// phi < 0 / phi > 1 are OUT of domain (-Inf / +Inf). phi == 0 and
 	// phi == 1 are IN domain and saturate to the smallest-bucket lower
 	// edge / largest-bucket upper edge respectively (the same phiLow /
 	// phiHigh edges the old saturating branches produced). ClickHouse
 	// parses the bare `inf` / `-inf` tokens as Float64.
-	core := If(Eq(w.total(), InlineLit(0)), nan,
-		If(Lt(w.phi(), InlineLit(0)), negInf,
-			If(Gt(w.phi(), InlineLit(1)), posInf,
+	core := If(Lt(w.phi(), InlineLit(0)), negInf,
+		If(Gt(w.phi(), InlineLit(1)), posInf,
+			If(Eq(w.rankBase(), InlineLit(0)), nan,
 				If(Eq(w.phi(), InlineLit(0)), phiLow,
 					If(Eq(w.phi(), InlineLit(1)), phiHigh,
-						If(Lte(w.idx(), w.nLen()), negInterp,
-							If(Eq(w.idx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp)))))))
+						If(Eq(w.idx(), InlineLit(0)), nan,
+							If(Lte(w.valueIdx(), w.nLen()), negInterp,
+								If(Eq(w.valueIdx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp))))))))
 
 	if h.PhiExpr == nil {
 		return core
@@ -285,7 +384,10 @@ type hqNativeWriters struct {
 	buckets        func() Frag
 	cum            func() Frag
 	total          func() Frag
+	rankBase       func() Frag
+	sumIsNaN       func() Frag
 	idx            func() Frag
+	valueIdx       func() Frag
 	cumAt          func(offsetMinusOne bool) Frag
 	nLen           func() Frag
 	pLen           func() Frag
@@ -315,21 +417,22 @@ func zeroBandOrigin() Frag { return verbatim("0.") }
 //
 // Reference also takes the forward arm whenever the histogram's Sum is
 // NaN, because NaN observations inflate h.Count without landing in any
-// bucket. cerberus derives `total` from the bucket arrays themselves
-// rather than from a stored count, so a NaN-observation histogram
-// differs from reference in the rank BASE and not merely in the walk
-// direction; switching direction alone would not make it agree.
-// Ranking against the stored count, and reference's NaN result when the
-// buckets run out below the rank, need the sum and count columns
-// plumbed through chplan — cerberus issue #2072.
+// bucket — a reverse walk cannot find a percentile whose mass sits
+// outside every bucket. See w.rankBase / w.sumIsNaN below: the rank
+// walk ranks against the histogram's own stored Count (chplan's
+// CountColumn) rather than a bucket-derived total, and w.idx()'s
+// direction choice carries the same Sum-is-NaN override reference
+// applies (cerberus issue #2072).
 const reverseWalkPhi = 0.5
 
-func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
+func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) hqNativeWriters {
 	pbc := h.PositiveBucketCountsColumn
 	nbc := h.NegativeBucketCountsColumn
 	scale := h.ScaleColumn
 	zc := h.ZeroCountColumn
 	zt := h.ZeroThresholdColumn
+	countCol := h.CountColumn
+	sumCol := h.SumColumn
 	var w hqNativeWriters
 
 	// phi: the computed expression when PhiExpr is set (typically a
@@ -353,13 +456,34 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	// arrayReverse on an empty array yields [], so the walk collapses to
 	// the positive-only shape when NegativeBucketCounts is empty.
 	w.buckets = func() Frag {
+		if helpers.buckets != "" {
+			return Col(helpers.buckets)
+		}
 		return Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc))
 	}
-	w.cum = func() Frag { return Call("arrayCumSum", w.buckets()) }
-	// total = cum[length(cum)] — last element of cum.
+	w.cum = func() Frag {
+		if helpers.cum != "" {
+			return Col(helpers.cum)
+		}
+		return Call("arrayCumSum", w.buckets())
+	}
+	// total = cum[length(cum)] — last element of cum. Used only for the
+	// backward arm's own complement arithmetic (rankBase, not total, is
+	// what the rank walk ranks against — see rankBase below).
 	w.total = func() Frag {
 		return Subscript(w.cum(), Call("length", w.cum()))
 	}
+	// rankBase is the histogram's own stored Count — what reference
+	// Prometheus's rank walk ranks against (quantile.go), as opposed to
+	// a total re-derived from the bucket arrays. The two agree whenever
+	// Sum is finite; they diverge only for a histogram that counted NaN
+	// observations, which inflate Count without landing in any bucket
+	// (cerberus issue #2072).
+	w.rankBase = func() Frag { return Col(countCol) }
+	// sumIsNaN reports whether this row's stored Sum is NaN — reference's
+	// marker for "counted an observation that fell in no bucket" and the
+	// condition that forces the forward rank walk regardless of phi.
+	w.sumIsNaN = func() Frag { return Call("isNaN", Col(sumCol)) }
 	// rankWalk renders `arrayFirstIndex(c -> <cmp>, cum)`, the shape both
 	// walk arms share — only the per-element comparison differs. Computed
 	// phi: wrap the lambda predicate as `(if(<cmp>, 1, 0) = 1)` — CH 24.8
@@ -375,43 +499,59 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 		return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
 	}
 	// Forward arm: stop on the first bucket whose cumulative count from
-	// the BOTTOM reaches rank = phi * total.
+	// the BOTTOM reaches rank = phi * rankBase. Ranking against rankBase
+	// (the stored Count) rather than the bucket-derived total is what lets
+	// this arm answer "not found" (arrayFirstIndex returns 0) when a
+	// NaN-observation histogram's rank exceeds every bucket's reach — see
+	// the outer chain's idx = 0 branch.
 	fwdIdx := func() Frag {
-		return rankWalk(Gte(BareIdent("c"), Paren(Mul(w.phi(), w.total()))))
+		return rankWalk(Gte(BareIdent("c"), Paren(Mul(w.phi(), w.rankBase()))))
 	}
 	// Backward arm: reference accumulates from the TOP and stops on the
 	// first bucket at which that running count reaches
-	// rank = (1 - phi) * total. The count at or above the bucket sitting
-	// at forward position i is exactly `total - cum[i-1]`, so the walk
-	// stops at the SMALLEST i with `total - cum[i-1] >= rank` — and since
-	// `total - cum[i]` only shrinks as i grows, that is the first i at
-	// which the complementary test `total - cum[i] < rank` flips true.
+	// rank = (1 - phi) * rankBase. The count at or above the bucket
+	// sitting at forward position i is exactly `total - cum[i-1]`, so the
+	// walk stops at the SMALLEST i with `total - cum[i-1] >= rank` — and
+	// since `total - cum[i]` only shrinks as i grows, that is the first i
+	// at which the complementary test `total - cum[i] < rank` flips true.
 	// Expressing it that way keeps the arm a mirror image of the forward
 	// one: same arrayFirstIndex, same cum array, same walk coordinates,
 	// so every downstream region / interpolation branch reads one index
 	// with no remapping.
 	//
-	// Both cum and total are exact integer bucket sums (arrayCumSum over
-	// UInt64 counts), so `total - cum[i]` reproduces reference's running
-	// count bit-for-bit rather than merely algebraically.
+	// This arm only ever runs when Sum is finite (w.idx() forces forward
+	// whenever Sum is NaN), and rankBase == total whenever Sum is finite,
+	// so using the bucket-derived total for the LHS complement — an exact
+	// integer bucket sum (arrayCumSum over UInt64 counts), reproducing
+	// reference's running count bit-for-bit — never disagrees with
+	// rankBase on the RHS target.
 	revIdx := func() Frag {
 		return rankWalk(Lt(
 			Sub(w.total(), BareIdent("c")),
-			Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.total())),
+			Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.rankBase())),
 		))
 	}
 	// idx: the direction-selected stop index (see the file header,
-	// step 4). A literal phi resolves the direction at emit time, so the
-	// rendered SQL carries exactly one arm; a computed phi cannot, and
-	// branches on the value at runtime.
+	// step 4). Reference forces the forward arm whenever Sum is NaN,
+	// regardless of phi, so that override is checked before the
+	// phi-based choice on both the literal and computed paths — a literal
+	// phi >= reverseWalkPhi still needs a runtime branch here because
+	// Sum-is-NaN is per-ROW data, not query shape.
 	w.idx = func() Frag {
+		if helpers.idx != "" {
+			return Col(helpers.idx)
+		}
 		if h.PhiExpr == nil {
 			if h.Phi < reverseWalkPhi {
 				return fwdIdx()
 			}
-			return revIdx()
+			return If(w.sumIsNaN(), fwdIdx(), revIdx())
 		}
-		return If(Lt(w.phi(), InlineLit(reverseWalkPhi)), fwdIdx(), revIdx())
+		return If(
+			Or(w.sumIsNaN(), Lt(w.phi(), InlineLit(reverseWalkPhi))),
+			fwdIdx(),
+			revIdx(),
+		)
 	}
 	// cum[idx] (offsetMinusOne=false) / cum[idx - 1] (true). idx=1 with
 	// the `- 1` form indexes cum[0], which CH evaluates to the array
@@ -426,6 +566,22 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	}
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
 	w.pLen = func() Frag { return Call("length", Col(pbc)) }
+	// valueIdx is the bucket whose geometry and count reference uses for
+	// interpolation. Normally it is the rank walk's stop bucket. With a
+	// NaN Sum, Prometheus continues the forward iterator after rebasing the
+	// rank so it can detect NaN skew; that scan leaves the iterator on its
+	// final bucket, which the subsequent interpolation observes.
+	w.valueIdx = func() Frag {
+		if helpers.valueIdx != "" {
+			return Col(helpers.valueIdx)
+		}
+		lastIterated := If(
+			Gt(w.pLen(), InlineLit(0)),
+			Add(Add(w.nLen(), InlineLit(1)), w.pLen()),
+			If(Gt(Col(zc), InlineLit(0)), Add(w.nLen(), InlineLit(1)), w.nLen()),
+		)
+		return If(w.sumIsNaN(), lastIterated, w.idx())
+	}
 	// first / last POPULATED position in the same concatenated walk order
 	// `cum` uses, so they index into the identical bucket geometry the
 	// interpolation branches read. Reference Prometheus's rank walk skips
@@ -490,12 +646,15 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 			w.zt(),
 		)
 	}
-	// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]),
-	// target = phi * total.
+	// fraction = (target - cum[idx-1]) / bucketCount(valueIdx), target =
+	// phi * rankBase. The numerator is rebased in the rank-walk stop bucket,
+	// while the denominator follows valueIdx: for a NaN Sum, reference's
+	// trailing annotation scan leaves `bucket` on the final iterated bucket
+	// before it divides by bucket.Count.
 	w.fraction = func() Frag {
 		return Div(
-			Paren(Sub(Paren(Mul(w.phi(), w.total())), w.cumAt(true))),
-			Paren(Sub(w.cumAt(false), w.cumAt(true))),
+			Paren(Sub(Paren(Mul(w.phi(), w.rankBase())), w.cumAt(true))),
+			Subscript(w.buckets(), w.valueIdx()),
 		)
 	}
 

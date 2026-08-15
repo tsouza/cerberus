@@ -70,6 +70,18 @@ type HistogramQuantileNative struct {
 	NegativeOffsetColumn       string
 	NegativeBucketCountsColumn string
 
+	// CountColumn / SumColumn name the histogram's own stored
+	// observation count / sum, as distinct from the bucket-array
+	// walk's derived total. Reference Prometheus's HistogramQuantile
+	// ranks against h.Count (not a re-derived bucket sum) and forces
+	// the forward walk whenever h.Sum is NaN — the marker for a
+	// histogram that counted observations landing in no bucket. A
+	// bucket-derived total under-counts exactly that case, so both
+	// columns must reach the emitter for the rank walk to agree with
+	// reference (cerberus issue #2072).
+	CountColumn string
+	SumColumn   string
+
 	// GroupBy + GroupByAliases: same shape as HistogramQuantile.
 	GroupBy        []Expr
 	GroupByAliases []string
@@ -104,6 +116,8 @@ func (h *HistogramQuantileNative) Equal(other Node) bool {
 		h.PositiveBucketCountsColumn != o.PositiveBucketCountsColumn ||
 		h.NegativeOffsetColumn != o.NegativeOffsetColumn ||
 		h.NegativeBucketCountsColumn != o.NegativeBucketCountsColumn ||
+		h.CountColumn != o.CountColumn ||
+		h.SumColumn != o.SumColumn ||
 		h.MetricNameColumn != o.MetricNameColumn ||
 		h.AttributesColumn != o.AttributesColumn ||
 		h.TimestampColumn != o.TimestampColumn ||

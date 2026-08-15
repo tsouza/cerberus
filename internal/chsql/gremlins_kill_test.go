@@ -1476,6 +1476,8 @@ func TestHistogramQuantileNative_AliasFallback(t *testing.T) {
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
 		NegativeOffsetColumn:       "NegativeOffset",
 		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		CountColumn:                "Count",
+		SumColumn:                  "Sum",
 		GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
 		GroupByAliases:             []string{"alias_a"}, // only one
 		Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
@@ -3913,8 +3915,12 @@ func TestEmitRangeLWR_LookbackSign(t *testing.T) {
 // (PhiExpr set) the emitter wraps the core in an `isNaN(phi)` guard
 // (Prometheus's NaN-phi contract); the literal-phi path omits it. The
 // `== nil` → `!= nil` flip would swap which path gets the wrapper, so
-// the isNaN token must be PRESENT for computed phi and ABSENT for
-// literal phi.
+// the isNaN(phi) token must be PRESENT for computed phi and ABSENT for
+// literal phi. Both paths still carry a SEPARATE `isNaN(Sum)` guard for
+// phi >= reverseWalkPhi's walk-direction choice (cerberus issue #2072):
+// Sum-is-NaN is per-ROW data, not query shape, so even a literal phi
+// needs the runtime check — this test distinguishes the two guards by
+// matching the phi-specific token rather than "isNaN" generically.
 func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 	t.Parallel()
 	build := func(phiExpr chplan.Expr) string {
@@ -3928,6 +3934,8 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 			PositiveBucketCountsColumn: "PositiveBucketCounts",
 			NegativeOffsetColumn:       "NegativeOffset",
 			NegativeBucketCountsColumn: "NegativeBucketCounts",
+			CountColumn:                "Count",
+			SumColumn:                  "Sum",
 			Input:                      &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		}
 		sql, _, err := Emit(context.Background(), plan)
@@ -3937,12 +3945,17 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 		return sql
 	}
 	computed := build(&chplan.FuncCall{Name: "scalar"})
-	if !strings.Contains(computed, "isNaN") {
-		t.Errorf("computed-phi native quantile must carry the isNaN NaN-guard; got:\n%s", computed)
+	if !strings.Contains(computed, "isNaN(scalar())") {
+		t.Errorf("computed-phi native quantile must carry the isNaN(phi) NaN-guard; got:\n%s", computed)
 	}
 	literal := build(nil)
-	if strings.Contains(literal, "isNaN") {
-		t.Errorf("literal-phi native quantile must NOT carry the isNaN guard; got:\n%s", literal)
+	if strings.Contains(literal, "isNaN(scalar())") {
+		t.Errorf("literal-phi native quantile must NOT carry a phi NaN-guard; got:\n%s", literal)
+	}
+	// Both literal and computed phi still carry the isNaN(Sum)
+	// walk-direction guard (Phi=0.9 >= reverseWalkPhi in this fixture).
+	if !strings.Contains(literal, "isNaN(`Sum`)") {
+		t.Errorf("literal-phi native quantile must still carry the isNaN(Sum) walk-direction guard; got:\n%s", literal)
 	}
 }
 

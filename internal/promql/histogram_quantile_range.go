@@ -493,7 +493,7 @@ func lowerHistogramQuantileNativeBareRange(
 	return buildHistogramNativeRangeTree(
 		scan, pred, windowFor(vs, instantLookback),
 		groupBy, groupByAliases, attrsRebuild,
-		nativeExpHistLatestAggs(s), phi, s, ctx,
+		nativeExpHistValuedLatestAggs(s), phi, s, ctx,
 	)
 }
 
@@ -588,6 +588,8 @@ func buildHistogramNativeRangeTree(
 		{Expr: &chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}, Alias: s.PositiveBucketCountsColumn},
 		{Expr: &chplan.ColumnRef{Name: s.NegativeOffsetColumn}, Alias: s.NegativeOffsetColumn},
 		{Expr: &chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}, Alias: s.NegativeBucketCountsColumn},
+		{Expr: &chplan.ColumnRef{Name: s.CountColumn}, Alias: s.CountColumn},
+		{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
 	}...)
 	rebuilt := &chplan.Project{
 		Input:       agg,
@@ -605,6 +607,8 @@ func buildHistogramNativeRangeTree(
 		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
 		NegativeOffsetColumn:       s.NegativeOffsetColumn,
 		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		CountColumn:                s.CountColumn,
+		SumColumn:                  s.SumColumn,
 		GroupBy: []chplan.Expr{
 			anchorRef,
 			&chplan.ColumnRef{Name: s.AttributesColumn},
@@ -667,27 +671,28 @@ func buildHistogramNativeRangeTreeMerge(
 	// the sample floor natively through RangeBucketFanout.MinSamples,
 	// which emits it as a HAVING — so the per-series reshape here does
 	// not repeat minSamplesFilter's wrapping Filter.
+	fold := histogramWindowFold(shape.windowFn, histogramWindowInputs{
+		rangeStart:  rangeStart,
+		rangeEnd:    rangeEnd,
+		countValues: expHistogramWindowCountValuesExpr(),
+		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
+		resets:      resets,
+	})
 	perSeries := expHistogramWindowReshape(
 		buildHistogramBucketFanout(
 			scan, pred, nil, win,
 			[]chplan.Expr{histogramIdentityExpr(s)},
 			[]string{s.AttributesColumn},
-			expHistogramWindowAggs(s, shape.windowFn), s, ctx,
+			expHistogramValuedWindowAggs(s, shape.windowFn), s, ctx,
 		),
-		expHistogramWindowAggs(s, shape.windowFn),
+		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		resets,
 		// countValues: the range-mode fanout collects the SAME
 		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
 		// for the instant path — see expHistogramWindowCountValuesExpr.
-		histogramWindowFold(shape.windowFn, histogramWindowInputs{
-			rangeStart:  rangeStart,
-			rangeEnd:    rangeEnd,
-			countValues: expHistogramWindowCountValuesExpr(),
-			temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
-			resets:      resets,
-		}),
-		nil,
+		fold,
+		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
 
@@ -697,7 +702,7 @@ func buildHistogramNativeRangeTreeMerge(
 		Input:              perSeries,
 		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
 		GroupByAliases:     append([]string{stepGridAnchorColumn}, userAliases...),
-		AggFuncs:           expHistogramMergeAggs(s),
+		AggFuncs:           hqQuantileRankScalarMergeAggs(s),
 		DropEmptyOnNoGroup: true,
 	}
 
@@ -710,7 +715,7 @@ func buildHistogramNativeRangeTreeMerge(
 				{Expr: anchorRef, Alias: stepGridAnchorColumn},
 				{Expr: attrsRebuild, Alias: s.AttributesColumn},
 			},
-			expHistogramMergeProjections(s)...,
+			hqQuantileRankScalarMergeProjections(s)...,
 		),
 	}
 
@@ -725,6 +730,8 @@ func buildHistogramNativeRangeTreeMerge(
 		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
 		NegativeOffsetColumn:       s.NegativeOffsetColumn,
 		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		CountColumn:                s.CountColumn,
+		SumColumn:                  s.SumColumn,
 		GroupBy: []chplan.Expr{
 			anchorRef,
 			&chplan.ColumnRef{Name: s.AttributesColumn},
