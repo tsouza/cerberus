@@ -20,7 +20,7 @@
       "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
       "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
       "class": "rejection",
-      "trigger_query": "{ -nestedSetParent = 2 }",
+      "trigger_query": "{ -nestedSetParent = -nestedSetLeft }",
       "evidence": {
         "guard": [
           "past returning if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent",
@@ -259,6 +259,23 @@
         "callers": [
           "lowerChainedSecondStage",
           "lowerRoot"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#6b70ed94",
+      "message": "traceql: cannot negate a %s literal",
+      "class": "internal",
+      "rationale": "Defensive: a nested-set intrinsic is always numeric (TypeInt), so a comparison pairing a negated nested-set operand with a non-numeric literal (string/boolean) fails the AST-level operand-type-match rule at parse time (\"binary operations must operate on the same type\") before this lowering code ever runs — no parseable query reaches it.",
+      "evidence": {
+        "guard": [
+          "if negated",
+          "if lit, ok := fieldExprStatic(other); ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerBinaryOperation"
         ]
       }
     },
