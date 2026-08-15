@@ -62,6 +62,22 @@ func (e *Evaluator) evalRangeFunction(c *parser.Call, evalTsMs int64) ([]VectorR
 
 	out := make([]VectorRow, 0, len(ranges))
 	for _, r := range ranges {
+		if c.Func.Name == "rate" || c.Func.Name == "increase" {
+			h, histogramInput, ok := extrapolatedHistogramRate(
+				r.Samples, rangeMs, effectiveTs, c.Func.Name == "rate",
+			)
+			if histogramInput {
+				if !ok {
+					continue
+				}
+				out = append(out, VectorRow{
+					Labels:    DropLabel(r.Labels, MetricNameLabel),
+					T:         evalTsMs,
+					Histogram: h,
+				})
+				continue
+			}
+		}
 		v, ok := applyRangeFn(c.Func.Name, r.Samples, rangeMs, effectiveTs)
 		if !ok {
 			// Fewer than 2 samples for rate/increase/delta -> Prom
@@ -417,9 +433,6 @@ func extrapolatedRate(samples []Sample, rangeMs, effectiveTs int64, isCounter, i
 	if len(samples) < 2 {
 		return 0, false
 	}
-	rangeStartMs := effectiveTs - rangeMs
-	rangeEndMs := effectiveTs
-
 	first := samples[0]
 	last := samples[len(samples)-1]
 
@@ -438,37 +451,103 @@ func extrapolatedRate(samples []Sample, rangeMs, effectiveTs int64, isCounter, i
 		}
 	}
 
+	factor, ok := extrapolationFactor(samples, rangeMs, effectiveTs, first.V, resultValue, isCounter, isRate)
+	if !ok {
+		return 0, false
+	}
+	resultValue *= factor
+
+	if math.IsNaN(resultValue) || math.IsInf(resultValue, 0) {
+		// Still return — Prom emits these, the comparator's NaN
+		// handling treats both-NaN as equal.
+		return resultValue, true
+	}
+	return resultValue, true
+}
+
+// extrapolatedHistogramRate is the native-histogram sibling of
+// extrapolatedRate. It subtracts the first distribution from the last at
+// the coarsest scale in the window, adds the complete previous histogram
+// back for every whole-histogram reset, then scales every component by one
+// boundary-extrapolation factor.
+func extrapolatedHistogramRate(samples []Sample, rangeMs, effectiveTs int64, isRate bool) (*nativeHistogram, bool, bool) {
+	var histogramCount int
+	for _, sample := range samples {
+		if sample.H != nil {
+			histogramCount++
+		}
+	}
+	if histogramCount == 0 {
+		return nil, false, false
+	}
+	if histogramCount != len(samples) || len(samples) < 2 {
+		return nil, true, false
+	}
+
+	targetScale := samples[0].H.Scale
+	for _, sample := range samples[1:] {
+		if sample.H.Scale < targetScale {
+			targetScale = sample.H.Scale
+		}
+	}
+	folded := make([]*nativeHistogram, len(samples))
+	for i, sample := range samples {
+		folded[i] = downscaleNativeHistogram(sample.H, targetScale)
+	}
+
+	result := addScaledNativeHistogram(nil, folded[len(folded)-1], 1)
+	result = addScaledNativeHistogram(result, folded[0], -1)
+	for i := 1; i < len(samples); i++ {
+		if nativeHistogramReset(samples[i].H, samples[i-1].H) {
+			result = addScaledNativeHistogram(result, folded[i-1], 1)
+		}
+	}
+
+	factor, ok := extrapolationFactor(
+		samples, rangeMs, effectiveTs,
+		folded[0].Count, result.Count,
+		true, isRate,
+	)
+	if !ok {
+		return nil, true, false
+	}
+	scaleNativeHistogram(result, factor)
+	return result, true, true
+}
+
+func extrapolationFactor(
+	samples []Sample,
+	rangeMs, effectiveTs int64,
+	firstValue, resultValue float64,
+	isCounter, isRate bool,
+) (float64, bool) {
+	if len(samples) < 2 {
+		return 0, false
+	}
+	first := samples[0]
+	last := samples[len(samples)-1]
+	rangeStartMs := effectiveTs - rangeMs
+
 	// Duration the measured samples cover, in ms.
 	durationToStart := float64(first.T - rangeStartMs)
-	durationToEnd := float64(rangeEndMs - last.T)
-
+	durationToEnd := float64(effectiveTs - last.T)
 	sampledIntervalMs := float64(last.T - first.T)
+	if sampledIntervalMs == 0 {
+		return 0, false
+	}
 	averageDurationBetweenSamplesMs := sampledIntervalMs / float64(len(samples)-1)
 
-	// Extrapolate window edges, but cap the extrapolation distance:
-	// don't assume the counter would have produced more than half
-	// the average gap of extra increase past either edge.
+	// Extrapolate window edges, but cap the extrapolation distance at half
+	// an average gap when a sample is too far from its edge.
 	extrapolationThreshold := averageDurationBetweenSamplesMs * 1.1
 	extrapolateToInterval := sampledIntervalMs
-
 	if durationToStart >= extrapolationThreshold {
 		durationToStart = averageDurationBetweenSamplesMs / 2
 	}
-	// Counter zero-crossing clamp (Prom functions.go::extrapolatedRate,
-	// the `if isCounter { … durationToZero … }` block, applied AFTER the
-	// threshold clamp above). Counters cannot be negative, so when the
-	// series has positive slope we extrapolate back only as far as the
-	// counter's implied zero point rather than all the way to the window
-	// edge — otherwise the left-edge extrapolation would invent negative
-	// counter history. `least(durationToStart, durationToZero)`: the zero
-	// point only shortens the reach, never lengthens it. Reachable once
-	// `offset` slides the window so its left edge sits before the first
-	// in-window sample (durationToStart large), which the range-offset
-	// generator now exercises.
 	if isCounter {
 		durationToZero := durationToStart
-		if resultValue > 0 && len(samples) > 0 && first.V >= 0 {
-			durationToZero = sampledIntervalMs * (first.V / resultValue)
+		if resultValue > 0 && firstValue >= 0 {
+			durationToZero = sampledIntervalMs * (firstValue / resultValue)
 		}
 		if durationToZero < durationToStart {
 			durationToStart = durationToZero
@@ -481,21 +560,11 @@ func extrapolatedRate(samples []Sample, rangeMs, effectiveTs int64, isCounter, i
 	}
 	extrapolateToInterval += durationToEnd
 
-	if sampledIntervalMs == 0 {
-		return 0, false
-	}
 	factor := extrapolateToInterval / sampledIntervalMs
 	if isRate {
-		factor /= float64(rangeMs) / 1000.0
+		factor /= float64(rangeMs) / float64(millisPerSecond)
 	}
-	resultValue *= factor
-
-	if math.IsNaN(resultValue) || math.IsInf(resultValue, 0) {
-		// Still return — Prom emits these, the comparator's NaN
-		// handling treats both-NaN as equal.
-		return resultValue, true
-	}
-	return resultValue, true
+	return factor, true
 }
 
 func sumOverTime(samples []Sample) float64 {

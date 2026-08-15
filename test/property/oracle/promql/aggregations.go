@@ -55,9 +55,10 @@ func (e *Evaluator) evalAggregation(a *parser.AggregateExpr, input []VectorRow, 
 		}
 		for _, v := range vs {
 			out = append(out, VectorRow{
-				Labels: v.labels,
-				T:      evalTsMs,
-				V:      v.value,
+				Labels:    v.labels,
+				T:         evalTsMs,
+				V:         v.value,
+				Histogram: v.histogram,
 			})
 		}
 	}
@@ -74,8 +75,9 @@ type aggGroup struct {
 // emit one row per group; topk/bottomk emit up to k rows per group,
 // each preserving the original input's label set.
 type aggResult struct {
-	labels map[string]string
-	value  float64
+	labels    map[string]string
+	value     float64
+	histogram *nativeHistogram
 }
 
 func applyAggregator(a *parser.AggregateExpr, rows []VectorRow) ([]aggResult, error) {
@@ -91,8 +93,27 @@ func applyAggregator(a *parser.AggregateExpr, rows []VectorRow) ([]aggResult, er
 		groupLabels = KeepLabels(rows[0].Labels, a.Grouping)
 	}
 
+	histograms := make([]*nativeHistogram, 0, len(rows))
+	for _, r := range rows {
+		if r.Histogram != nil {
+			histograms = append(histograms, r.Histogram)
+		}
+	}
+	if len(histograms) > 0 && a.Op != parser.SUM {
+		return nil, fmt.Errorf("oracle: aggregation op %s does not support histogram samples", a.Op)
+	}
+
 	switch a.Op {
 	case parser.SUM:
+		if len(histograms) > 0 {
+			if len(histograms) != len(rows) {
+				// Prometheus removes a group containing a mix of float and
+				// histogram samples. Returning no result keeps the warning-
+				// free oracle representation equivalent.
+				return nil, nil
+			}
+			return []aggResult{{labels: groupLabels, histogram: mergeNativeHistograms(histograms)}}, nil
+		}
 		var s float64
 		for _, r := range rows {
 			s += r.V

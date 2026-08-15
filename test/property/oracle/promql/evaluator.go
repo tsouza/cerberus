@@ -378,6 +378,7 @@ func outcomeFromValue(v value) property.Outcome {
 				Labels:      DropLabel(r.Labels, MetricNameLabel),
 				TimestampMs: r.T,
 				Value:       r.V,
+				Histogram:   nativeHistogramOutcome(r.Histogram),
 			})
 		}
 		return out

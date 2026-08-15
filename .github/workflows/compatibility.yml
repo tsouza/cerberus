@@ -302,6 +302,7 @@ jobs:
           # compatibility/prometheus/cmd/seed/main.go).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
+          TESTER_QUERY_PARALLELISM: "2"
         run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh
 
       - name: Summarise report
@@ -512,6 +513,7 @@ jobs:
         env:
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
+          TESTER_QUERY_PARALLELISM: "2"
           CERBERUS_EVAL_ROUTE: "sharded"
           FAIL_ON_DIFF: "1"
         run: ./compatibility/prometheus/scripts/run-prometheus-compatibility.sh

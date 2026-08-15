@@ -3,8 +3,6 @@ package promql
 import (
 	"fmt"
 	"math"
-
-	"github.com/tsouza/cerberus/test/property"
 )
 
 // nativeHistogramQuantile implements `histogram_quantile(phi, vector)`
@@ -14,15 +12,9 @@ import (
 // for routing classic-bucket rows (Histogram == nil) to
 // histogramQuantile instead.
 //
-// cerberus's own native-quantile support (internal/chsql/
-// histogram_quantile_native.go) is wider than this oracle: it also
-// handles rate()/sum by(...)-wrapped arguments via a scale-fold merge
-// algorithm. This oracle only covers the bare-selector shape (the
-// argument is a plain VectorSelector, one histogram sample per
-// series). Rows arriving without a Histogram payload — which is what
-// the oracle's aggregation path produces — route to the classic
-// le-bucket oracle and fail loudly there rather than being silently
-// dropped. Teaching the oracle the merge is tracked in #2063.
+// Rows may come from a bare selector, the aggregation merge, or a
+// rate/increase window fold; all three carry the same float histogram
+// representation by the time they reach this function.
 func nativeHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) []VectorRow {
 	out := make([]VectorRow, 0, len(rows))
 	for _, r := range rows {
@@ -44,6 +36,12 @@ func nativeHistogramQuantile(phi float64, rows []VectorRow, evalTsMs int64) []Ve
 // (promql/quantile.go: `if math.IsNaN(h.Sum) || q < 0.5`). cerberus's
 // emitter names the same constant.
 const reverseWalkPhi = 0.5
+
+// histogramRankEpsilon prevents a uniform rate/increase scaling factor
+// from moving an exact cumulative-count tie across a bucket boundary by a
+// few floating-point bits. Quantiles are invariant under uniform scaling,
+// so the scaled and unscaled distributions must choose the same bucket.
+const histogramRankEpsilon = 1e-12
 
 // nativeHistogramQuantileValue walks the bucket layout of a single
 // native-histogram sample to compute the phi-th quantile, following
@@ -85,7 +83,7 @@ const reverseWalkPhi = 0.5
 // array may carry zeros anywhere, since the offsets describe only the
 // leading gap. Answering from an array end would report the edge of an
 // interval no observation ever fell in.
-func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) float64 {
+func nativeHistogramQuantileValue(phi float64, h *nativeHistogram) float64 {
 	if phi < 0 {
 		return math.Inf(-1)
 	}
@@ -101,12 +99,10 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 	// most-negative observation toward the most-positive one.
 	buckets := make([]float64, 0, nlen+1+plen)
 	for i := nlen - 1; i >= 0; i-- {
-		buckets = append(buckets, float64(h.NegativeBucketCounts[i]))
+		buckets = append(buckets, h.NegativeBucketCounts[i])
 	}
-	buckets = append(buckets, float64(h.ZeroCount))
-	for _, c := range h.PositiveBucketCounts {
-		buckets = append(buckets, float64(c))
-	}
+	buckets = append(buckets, h.ZeroCount)
+	buckets = append(buckets, h.PositiveBucketCounts...)
 
 	// cum is 1-based to match the spec: cum[0] = 0 is the implicit "no
 	// bucket consumed yet" value the fraction formula needs at idx = 1.
@@ -137,7 +133,7 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 	idx := len(buckets) // 1-based; the walks below always reassign it
 	if phi < reverseWalkPhi {
 		for i := 1; i <= len(buckets); i++ {
-			if cum[i] >= target {
+			if countAtLeast(cum[i], target) {
 				idx = i
 				break
 			}
@@ -145,7 +141,7 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 	} else {
 		rank := (1 - phi) * total
 		for i := 1; i <= len(buckets); i++ {
-			if total-cum[i] < rank {
+			if countStrictlyLess(total-cum[i], rank) {
 				idx = i
 				break
 			}
@@ -161,6 +157,16 @@ func nativeHistogramQuantileValue(phi float64, h *property.NativeHistogram) floa
 		fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1])
 	}
 	return nativeHistogramBucketValue(h, idx, fraction)
+}
+
+func countAtLeast(value, target float64) bool {
+	tolerance := histogramRankEpsilon * math.Max(math.Abs(value), math.Abs(target))
+	return value >= target-tolerance
+}
+
+func countStrictlyLess(value, target float64) bool {
+	tolerance := histogramRankEpsilon * math.Max(math.Abs(value), math.Abs(target))
+	return value < target-tolerance
 }
 
 // populatedIndex returns the 1-based position of the first (last = false)
@@ -184,7 +190,7 @@ func populatedIndex(buckets []float64, last bool) int {
 // fraction of that bucket the rank consumed back to an observation
 // value, by the region the index falls in. fraction = 0 is the bucket's
 // low edge (nearest -Inf) and fraction = 1 its high edge.
-func nativeHistogramBucketValue(h *property.NativeHistogram, idx int, fraction float64) float64 {
+func nativeHistogramBucketValue(h *nativeHistogram, idx int, fraction float64) float64 {
 	base := math.Pow(2, math.Pow(2, -float64(h.Scale)))
 	nlen := len(h.NegativeBucketCounts)
 	switch {
@@ -227,17 +233,17 @@ func nativeHistogramValue(name string, rows []VectorRow, evalTsMs int64) ([]Vect
 	return out, nil
 }
 
-func histogramScalarValue(name string, h *property.NativeHistogram) (float64, error) {
+func histogramScalarValue(name string, h *nativeHistogram) (float64, error) {
 	switch name {
 	case "histogram_count":
-		return float64(h.Count), nil
+		return h.Count, nil
 	case "histogram_sum":
 		return h.Sum, nil
 	case "histogram_avg":
 		if h.Count == 0 {
 			return math.NaN(), nil
 		}
-		return h.Sum / float64(h.Count), nil
+		return h.Sum / h.Count, nil
 	case "histogram_stddev":
 		return math.Sqrt(histogramVariance(h)), nil
 	case "histogram_stdvar":
@@ -253,27 +259,27 @@ func histogramScalarValue(name string, h *property.NativeHistogram) (float64, er
 // internal/promql/histogram_value_fns.go's histogramVarianceExpr,
 // using the histogram's own Sum/Count as the mean rather than a
 // bucket-approximated one.
-func histogramVariance(h *property.NativeHistogram) float64 {
+func histogramVariance(h *nativeHistogram) float64 {
 	if h.Count == 0 {
 		return math.NaN()
 	}
-	mean := h.Sum / float64(h.Count)
+	mean := h.Sum / h.Count
 	base := math.Pow(2, math.Pow(2, -float64(h.Scale)))
 
 	var sumSq float64
 	for i, c := range h.PositiveBucketCounts {
 		mid := math.Pow(base, float64(h.PositiveOffset)+float64(i)+0.5)
 		d := mid - mean
-		sumSq += float64(c) * d * d
+		sumSq += c * d * d
 	}
 	for i, c := range h.NegativeBucketCounts {
 		mid := -math.Pow(base, float64(h.NegativeOffset)+float64(i)+0.5)
 		d := mid - mean
-		sumSq += float64(c) * d * d
+		sumSq += c * d * d
 	}
-	sumSq += float64(h.ZeroCount) * mean * mean
+	sumSq += h.ZeroCount * mean * mean
 
-	return sumSq / float64(h.Count)
+	return sumSq / h.Count
 }
 
 // nativeHistogramFraction implements `histogram_fraction(lower, upper,
@@ -295,7 +301,7 @@ func nativeHistogramFraction(lower, upper float64, rows []VectorRow, evalTsMs in
 	return out
 }
 
-func histogramFractionValue(lower, upper float64, h *property.NativeHistogram) float64 {
+func histogramFractionValue(lower, upper float64, h *nativeHistogram) float64 {
 	if math.IsNaN(lower) || math.IsNaN(upper) {
 		return math.NaN()
 	}
@@ -305,7 +311,7 @@ func histogramFractionValue(lower, upper float64, h *property.NativeHistogram) f
 	if lower >= upper {
 		return 0
 	}
-	count := float64(h.Count)
+	count := h.Count
 	rl := math.Min(count, histogramRank(h, lower))
 	ru := math.Min(count, histogramRank(h, upper))
 	return (ru - rl) / count
@@ -316,10 +322,10 @@ func histogramFractionValue(lower, upper float64, h *property.NativeHistogram) f
 // histogramRankExpr. logIdx converts a magnitude into the histogram's
 // exponential bucket-index space (base^logIdx == |v|); the sPos/sNeg
 // helpers then interpolate within the positive/negative bucket arrays.
-func histogramRank(h *property.NativeHistogram, v float64) float64 {
-	tn := sumUint64(h.NegativeBucketCounts)
-	tp := sumUint64(h.PositiveBucketCounts)
-	z := float64(h.ZeroCount)
+func histogramRank(h *nativeHistogram, v float64) float64 {
+	tn := sumHistogramBuckets(h.NegativeBucketCounts)
+	tp := sumHistogramBuckets(h.PositiveBucketCounts)
+	z := h.ZeroCount
 	scaleFactor := math.Pow(2, float64(h.Scale))
 
 	switch {
@@ -338,7 +344,7 @@ func histogramRank(h *property.NativeHistogram, v float64) float64 {
 
 // sPos is the positive-side rank contribution: the count of positive-
 // bucket samples at or below bucket-index position p (fractional).
-func sPos(pbc []uint64, total, p float64) float64 {
+func sPos(pbc []float64, total, p float64) float64 {
 	if p <= 0 {
 		return 0
 	}
@@ -349,9 +355,9 @@ func sPos(pbc []uint64, total, p float64) float64 {
 	frac := p - float64(k)
 	var cum float64
 	for i := 0; i < k; i++ {
-		cum += float64(pbc[i])
+		cum += pbc[i]
 	}
-	return cum + float64(pbc[k])*frac
+	return cum + pbc[k]*frac
 }
 
 // sNeg is the negative-side rank contribution: the count of negative-
@@ -359,7 +365,7 @@ func sPos(pbc []uint64, total, p float64) float64 {
 // counted from the far (most-negative) end inward — negative buckets
 // closer to zero rank HIGHER, mirroring how more-negative values sort
 // lower than less-negative ones.
-func sNeg(nbc []uint64, total, q float64) float64 {
+func sNeg(nbc []float64, total, q float64) float64 {
 	nlen := len(nbc)
 	if q >= float64(nlen) {
 		return 0
@@ -370,15 +376,15 @@ func sNeg(nbc []uint64, total, q float64) float64 {
 	m := int(math.Ceil(q))
 	var cum float64
 	for i := 0; i < m; i++ {
-		cum += float64(nbc[i])
+		cum += nbc[i]
 	}
-	return (total - cum) + float64(nbc[m-1])*(float64(m)-q)
+	return (total - cum) + nbc[m-1]*(float64(m)-q)
 }
 
-func sumUint64(xs []uint64) float64 {
+func sumHistogramBuckets(xs []float64) float64 {
 	var total float64
 	for _, x := range xs {
-		total += float64(x)
+		total += x
 	}
 	return total
 }

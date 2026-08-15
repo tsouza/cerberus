@@ -103,8 +103,8 @@ const (
 //     label pool.
 //   - Per series, 1–maxExpHistPoints snapshots at expHistogramStep
 //     spacing from the shared anchor.
-//   - Per snapshot, an exponential histogram whose scale, offsets,
-//     bucket arrays and zero bucket are all drawn (see
+//   - Per series, one scale; per snapshot, an exponential histogram whose
+//     offsets, bucket arrays and zero bucket are independently drawn (see
 //     drawNativeHistogram).
 //
 // Every drawn histogram is internally consistent: Count is the exact
@@ -162,9 +162,13 @@ func ExpHistogramDataset() *rapid.Generator[property.Dataset] {
 // is the whole answer.
 func drawExpHistogramPoints(t *rapid.T, id string) []property.Point {
 	count := rapid.IntRange(1, maxExpHistPoints).Draw(t, id+"_count")
+	// Keep one scale through a series' lifetime. Across-series merges still
+	// exercise mixed scales, while rate/increase draws avoid resolution-
+	// transition semantics and isolate counter resets in the generated lane.
+	scale := rapid.SampledFrom(ExpHistogramScalePool).Draw(t, id+"_scale")
 	out := make([]property.Point, 0, count)
 	for i := 0; i < count; i++ {
-		h := drawNativeHistogram(t, fmt.Sprintf("%s_h_%d", id, i))
+		h := drawNativeHistogram(t, fmt.Sprintf("%s_h_%d", id, i), scale)
 		out = append(out, property.Point{
 			TimestampMs: anchorTime.Add(time.Duration(i) * expHistogramStep).UnixMilli(),
 			Histogram:   &h,
@@ -182,8 +186,7 @@ func drawExpHistogramPoints(t *rapid.T, id string) []property.Point {
 // with a single observation, which keeps the dataset inside the
 // Count > 0 accept-set documented on [ExpHistogramDataset] without
 // discarding the draw (a rejected draw would bias the shrinker).
-func drawNativeHistogram(t *rapid.T, id string) property.NativeHistogram {
-	scale := rapid.SampledFrom(ExpHistogramScalePool).Draw(t, id+"_scale")
+func drawNativeHistogram(t *rapid.T, id string, scale int32) property.NativeHistogram {
 	posOffset := rapid.SampledFrom(ExpHistogramOffsetPool).Draw(t, id+"_posOffset")
 	negOffset := rapid.SampledFrom(ExpHistogramOffsetPool).Draw(t, id+"_negOffset")
 	pos := drawBucketCounts(t, id+"_pos", maxExpHistPositiveBuckets)

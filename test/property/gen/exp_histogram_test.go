@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"sort"
@@ -84,6 +85,7 @@ func TestExpHistogramDatasetInvariants(t *testing.T) {
 				rt.Fatalf("series %q drew no points", key)
 			}
 			var prevTs int64
+			var seriesScale int32
 			for i, p := range ser.Points {
 				if p.Histogram == nil {
 					rt.Fatalf("series %q point %d carries no histogram payload", key, i)
@@ -95,6 +97,11 @@ func TestExpHistogramDatasetInvariants(t *testing.T) {
 				prevTs = p.TimestampMs
 
 				h := p.Histogram
+				if i == 0 {
+					seriesScale = h.Scale
+				} else if h.Scale != seriesScale {
+					rt.Fatalf("series %q point %d changed scale from %d to %d", key, i, seriesScale, h.Scale)
+				}
 				// Count > 0 is the documented accept-set bound: every
 				// native-histogram function divides by Count or walks a
 				// cumulative array whose total is Count.
@@ -266,47 +273,120 @@ func TestExpHistogramValueFnVocabulary(t *testing.T) {
 	}
 }
 
-// TestExpHistogramQueryShapes asserts every generated query is one of
-// the seven native-histogram functions applied to a bare selector, and
-// that all three call shapes are reachable.
+// TestExpHistogramQueryShapes asserts every generated query stays inside
+// the oracle-backed native-histogram grammar and that the histogram-valued,
+// range, and wrapped-quantile families are all reachable.
 func TestExpHistogramQueryShapes(t *testing.T) {
-	accept := make(map[string]struct{}, len(expHistogramAcceptSet))
-	for _, fn := range expHistogramAcceptSet {
-		accept[fn] = struct{}{}
-	}
-
-	var sawValueFn, sawQuantile, sawFraction bool
+	var sawHistogramValue, sawRange, sawReducingCall, sawWrappedQuantile bool
 	rapid.Check(t, func(rt *rapid.T) {
 		d := ExpHistogramDataset().Draw(rt, "dataset")
 		q := ExpHistogramQuery(d).Draw(rt, "query")
 		if q.String == "" {
 			rt.Fatal("generated an empty query")
 		}
-		fn, rest, ok := strings.Cut(q.String, "(")
-		if !ok {
-			rt.Fatalf("query %q is not a function call", q.String)
+		p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+		expr, err := p.ParseExpr(q.String)
+		if err != nil {
+			rt.Fatalf("generated query %q does not parse: %v", q.String, err)
 		}
-		if _, known := accept[fn]; !known {
-			rt.Fatalf("query %q uses function %q outside the accept-set", q.String, fn)
+		family, err := expHistogramExprFamily(expr)
+		if err != nil {
+			rt.Fatalf("generated query %q: %v", q.String, err)
 		}
-		// The histogram argument is always a bare selector, which is
-		// cerberus's own accept-set for these functions: no nested call
-		// may appear after the scalar arguments.
-		if strings.Contains(rest, "(") {
-			rt.Fatalf("query %q wraps its histogram argument in a call; only a bare selector is supported", q.String)
-		}
-		switch fn {
-		case "histogram_quantile":
-			sawQuantile = true
-		case "histogram_fraction":
-			sawFraction = true
-		default:
-			sawValueFn = true
+		switch family {
+		case "histogram-value":
+			sawHistogramValue = true
+		case "range":
+			sawRange = true
+		case "reducing-call":
+			sawReducingCall = true
+		case "wrapped-quantile":
+			sawWrappedQuantile = true
 		}
 	})
 
-	if !sawValueFn || !sawQuantile || !sawFraction {
-		t.Errorf("not every call shape was drawn: valueFn=%v quantile=%v fraction=%v",
-			sawValueFn, sawQuantile, sawFraction)
+	if !sawHistogramValue || !sawRange || !sawReducingCall || !sawWrappedQuantile {
+		t.Errorf("not every query family was drawn: histogramValue=%v range=%v reducingCall=%v wrappedQuantile=%v",
+			sawHistogramValue, sawRange, sawReducingCall, sawWrappedQuantile)
+	}
+}
+
+func expHistogramExprFamily(expr parser.Expr) (string, error) {
+	switch e := expr.(type) {
+	case *parser.VectorSelector:
+		return "histogram-value", nil
+	case *parser.AggregateExpr:
+		if e.Op != parser.SUM {
+			return "", fmt.Errorf("aggregation %s is outside the accept-set", e.Op)
+		}
+		if _, ok := e.Expr.(*parser.VectorSelector); !ok {
+			return "", fmt.Errorf("top-level sum wraps %T, want selector", e.Expr)
+		}
+		return "histogram-value", nil
+	case *parser.Call:
+		switch e.Func.Name {
+		case "rate", "increase":
+			if len(e.Args) != 1 {
+				return "", fmt.Errorf("%s has %d args", e.Func.Name, len(e.Args))
+			}
+			if _, ok := e.Args[0].(*parser.MatrixSelector); !ok {
+				return "", fmt.Errorf("%s wraps %T, want matrix selector", e.Func.Name, e.Args[0])
+			}
+			return "range", nil
+		case "histogram_quantile":
+			if len(e.Args) != 2 {
+				return "", fmt.Errorf("histogram_quantile has %d args", len(e.Args))
+			}
+			if _, ok := e.Args[1].(*parser.VectorSelector); ok {
+				return "reducing-call", nil
+			}
+			return "wrapped-quantile", validateQuantileHistogramArg(e.Args[1])
+		case "histogram_fraction":
+			if len(e.Args) != 3 {
+				return "", fmt.Errorf("histogram_fraction has %d args", len(e.Args))
+			}
+			if _, ok := e.Args[2].(*parser.VectorSelector); !ok {
+				return "", fmt.Errorf("histogram_fraction wraps %T, want selector", e.Args[2])
+			}
+			return "reducing-call", nil
+		default:
+			if !slices.Contains(expHistogramValueFns, e.Func.Name) {
+				return "", fmt.Errorf("function %s is outside the accept-set", e.Func.Name)
+			}
+			if len(e.Args) != 1 {
+				return "", fmt.Errorf("%s has %d args", e.Func.Name, len(e.Args))
+			}
+			if _, ok := e.Args[0].(*parser.VectorSelector); !ok {
+				return "", fmt.Errorf("%s wraps %T, want selector", e.Func.Name, e.Args[0])
+			}
+			return "reducing-call", nil
+		}
+	default:
+		return "", fmt.Errorf("root %T is outside the accept-set", expr)
+	}
+}
+
+func validateQuantileHistogramArg(expr parser.Expr) error {
+	switch e := expr.(type) {
+	case *parser.AggregateExpr:
+		if e.Op != parser.SUM {
+			return fmt.Errorf("quantile aggregation %s is outside the accept-set", e.Op)
+		}
+		return validateQuantileHistogramArg(e.Expr)
+	case *parser.Call:
+		if e.Func.Name != "rate" && e.Func.Name != "increase" {
+			return fmt.Errorf("quantile wrapper %s is outside the accept-set", e.Func.Name)
+		}
+		if len(e.Args) != 1 {
+			return fmt.Errorf("quantile wrapper %s has %d args", e.Func.Name, len(e.Args))
+		}
+		if _, ok := e.Args[0].(*parser.MatrixSelector); !ok {
+			return fmt.Errorf("quantile wrapper %s wraps %T, want matrix selector", e.Func.Name, e.Args[0])
+		}
+		return nil
+	case *parser.VectorSelector:
+		return nil
+	default:
+		return fmt.Errorf("quantile histogram argument %T is outside the accept-set", expr)
 	}
 }

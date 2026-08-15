@@ -3,6 +3,7 @@ package promql
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/test/property"
 )
@@ -234,4 +235,146 @@ func TestNativeHistogramValue_SkipsFloatSamples(t *testing.T) {
 	d := build(makeSeries("cpu_seconds", map[string]string{"job": "api"}, sampleSpec{60, 42}))
 	o := eval(d, `histogram_count(cpu_seconds)`, 90)
 	assertRows(t, o, nil)
+}
+
+func TestMergeNativeHistogramsCoarsestScaleAndAlignedOffsets(t *testing.T) {
+	merged := mergeNativeHistograms([]*nativeHistogram{
+		{
+			Count: 10, Sum: 12, Scale: 1, ZeroCount: 1,
+			PositiveOffset: -1, PositiveBucketCounts: []float64{1, 2, 3, 4},
+			NegativeOffset: 0, NegativeBucketCounts: []float64{2, 4},
+		},
+		{
+			Count: 20, Sum: 30, Scale: 0, ZeroCount: 2,
+			PositiveOffset: 0, PositiveBucketCounts: []float64{10, 20},
+			NegativeOffset: -1, NegativeBucketCounts: []float64{3, 5},
+		},
+	})
+
+	if merged.Scale != 0 || merged.Count != 30 || merged.Sum != 42 || merged.ZeroCount != 3 {
+		t.Fatalf("merged scalars = %+v", merged)
+	}
+	assertBucketLadder(t, "positive", merged.PositiveOffset, merged.PositiveBucketCounts, -1, []float64{1, 15, 24})
+	assertBucketLadder(t, "negative", merged.NegativeOffset, merged.NegativeBucketCounts, -1, []float64{3, 11})
+}
+
+func TestNativeHistogramAggregationRetainsMergedHistogram(t *testing.T) {
+	d := build(
+		histSeries("latency_exp_hist", map[string]string{"job": "api", "instance": "a"}, 60, property.NativeHistogram{
+			Count: 10, Sum: 12, Scale: 1, PositiveOffset: 0, PositiveBucketCounts: []uint64{1, 2, 3, 4},
+		}),
+		histSeries("latency_exp_hist", map[string]string{"job": "api", "instance": "b"}, 60, property.NativeHistogram{
+			Count: 15, Sum: 18, Scale: 0, PositiveOffset: 0, PositiveBucketCounts: []uint64{5, 10},
+		}),
+	)
+
+	o := eval(d, `sum by (job) (latency_exp_hist)`, 90)
+	h := onlyHistogram(t, o)
+	if o.Rows[0].Labels["job"] != "api" || len(o.Rows[0].Labels) != 1 {
+		t.Errorf("labels = %v, want only job=api", o.Rows[0].Labels)
+	}
+	if h.Count != 25 || h.Sum != 30 || len(h.Buckets) != 2 {
+		t.Fatalf("merged wire histogram = %+v", h)
+	}
+	if h.Buckets[0].Count != 8 || h.Buckets[1].Count != 17 {
+		t.Errorf("merged bucket counts = [%g, %g], want [8, 17]", h.Buckets[0].Count, h.Buckets[1].Count)
+	}
+}
+
+func TestNativeHistogramIncreaseUsesWholeHistogramReset(t *testing.T) {
+	d := build(property.SeriesData{
+		MetricName: "latency_exp_hist",
+		Labels:     map[string]string{"service": "api"},
+		Points: []property.Point{
+			{TimestampMs: ts(0), Histogram: &property.NativeHistogram{Count: 10, Sum: 5, Scale: 0, PositiveBucketCounts: []uint64{8, 2}}},
+			{TimestampMs: ts(60), Histogram: &property.NativeHistogram{Count: 20, Sum: 10, Scale: 0, PositiveBucketCounts: []uint64{16, 4}}},
+			{TimestampMs: ts(120), Histogram: &property.NativeHistogram{Count: 12, Sum: 6, Scale: 0, PositiveBucketCounts: []uint64{5, 7}}},
+		},
+	})
+
+	h := onlyHistogram(t, eval(d, `increase(latency_exp_hist[5m])`, 120))
+	if !valuesClose(h.Count, 27.5) || !valuesClose(h.Sum, 13.75) {
+		t.Fatalf("increase count/sum = %g/%g, want 27.5/13.75", h.Count, h.Sum)
+	}
+	if len(h.Buckets) != 2 || !valuesClose(h.Buckets[0].Count, 16.25) || !valuesClose(h.Buckets[1].Count, 11.25) {
+		t.Fatalf("increase buckets = %+v, want [16.25, 11.25]", h.Buckets)
+	}
+
+	rate := onlyHistogram(t, eval(d, `rate(latency_exp_hist[5m])`, 120))
+	if !valuesClose(rate.Count, 27.5/300) || !valuesClose(rate.Buckets[1].Count, 11.25/300) {
+		t.Fatalf("rate histogram = %+v", rate)
+	}
+}
+
+func TestNativeHistogramQuantileOverMergedRate(t *testing.T) {
+	d := build(
+		property.SeriesData{
+			MetricName: "latency_exp_hist", Labels: map[string]string{"job": "api", "instance": "a"},
+			Points: []property.Point{
+				{TimestampMs: ts(0), Histogram: &property.NativeHistogram{Count: 2, Sum: 3, Scale: 1, PositiveBucketCounts: []uint64{1, 1}}},
+				{TimestampMs: ts(60), Histogram: &property.NativeHistogram{Count: 6, Sum: 9, Scale: 1, PositiveBucketCounts: []uint64{3, 3}}},
+			},
+		},
+		property.SeriesData{
+			MetricName: "latency_exp_hist", Labels: map[string]string{"job": "api", "instance": "b"},
+			Points: []property.Point{
+				{TimestampMs: ts(0), Histogram: &property.NativeHistogram{Count: 2, Sum: 4, Scale: 0, PositiveBucketCounts: []uint64{2}}},
+				{TimestampMs: ts(60), Histogram: &property.NativeHistogram{Count: 4, Sum: 8, Scale: 0, PositiveBucketCounts: []uint64{4}}},
+			},
+		},
+	)
+
+	o := eval(d, `histogram_quantile(0.5, sum by (job) (rate(latency_exp_hist[5m])))`, 60)
+	if o.Err != nil {
+		t.Fatalf("unexpected oracle error: %v", o.Err)
+	}
+	if len(o.Rows) != 1 || o.Rows[0].Histogram != nil || math.IsNaN(o.Rows[0].Value) {
+		t.Fatalf("quantile outcome = %+v", o.Rows)
+	}
+}
+
+func TestNativeHistogramRateResetWithShiftedOffsets(t *testing.T) {
+	samples := []Sample{
+		{T: ts(0), H: nativeHistogramFromStored(&property.NativeHistogram{
+			Count: 17, Sum: -72, Scale: 0, ZeroCount: 3,
+			PositiveOffset: -2, PositiveBucketCounts: []uint64{5, 3, 1},
+			NegativeOffset: 3, NegativeBucketCounts: []uint64{2, 3},
+		})},
+		{T: ts(15), H: nativeHistogramFromStored(&property.NativeHistogram{
+			Count: 22, Sum: 244, Scale: 0, ZeroCount: 3,
+			PositiveOffset: 3, PositiveBucketCounts: []uint64{5, 3, 3},
+			NegativeOffset: 0, NegativeBucketCounts: []uint64{5, 3},
+		})},
+	}
+
+	h, histogramInput, ok := extrapolatedHistogramRate(samples, int64((5*time.Minute)/time.Millisecond), ts(200), true)
+	if !histogramInput || !ok {
+		t.Fatalf("extrapolatedHistogramRate = input %v ok %v", histogramInput, ok)
+	}
+	if got := nativeHistogramQuantileValue(0.5, h); !valuesClose(got, 8) {
+		t.Fatalf("quantile = %g, want 8; histogram=%+v", got, h)
+	}
+}
+
+func assertBucketLadder(t *testing.T, name string, gotOffset int32, got []float64, wantOffset int32, want []float64) {
+	t.Helper()
+	if gotOffset != wantOffset || len(got) != len(want) {
+		t.Fatalf("%s ladder = offset %d %v, want offset %d %v", name, gotOffset, got, wantOffset, want)
+	}
+	for i := range want {
+		if !valuesClose(got[i], want[i]) {
+			t.Errorf("%s bucket[%d] = %g, want %g", name, i, got[i], want[i])
+		}
+	}
+}
+
+func onlyHistogram(t *testing.T, o property.Outcome) *property.Histogram {
+	t.Helper()
+	if o.Err != nil {
+		t.Fatalf("unexpected oracle error: %v", o.Err)
+	}
+	if len(o.Rows) != 1 || o.Rows[0].Histogram == nil {
+		t.Fatalf("outcome rows = %+v, want one histogram", o.Rows)
+	}
+	return o.Rows[0].Histogram
 }
