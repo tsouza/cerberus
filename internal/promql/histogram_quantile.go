@@ -1664,7 +1664,19 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, identity chplan.Expr, s sche
 			&chplan.ColumnRef{Name: alias},
 		)
 	}
-	attrs := &chplan.FuncCall{Name: "map", Args: mapArgs}
+	// `sum by (job, instance) (<native histogram>)` over series whose `job`
+	// label is absent produces a gkey with the CH-Map default empty string
+	// (attributeLookupExpr's Attributes/ResourceAttributes lookup returns ''
+	// when the key is missing). PromQL's canonical Labels representation
+	// drops empty-valued labels, so wrap the map() literal with
+	// MapWithoutEmptyValues to strip those entries before the wire layer
+	// renders them — the same fix wrapAggregateForSample applies on the
+	// float aggregation path (#2163: without it, cerberus answered
+	// `{job=""}` where the reference oracle and the float path both answer
+	// `{}`).
+	attrs := &chplan.MapWithoutEmptyValues{
+		Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+	}
 	return groupBy, aliases, attrs
 }
 

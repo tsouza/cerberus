@@ -256,6 +256,12 @@ func TestSharedCaptureNameSegmentsAgreeWithExpandString(t *testing.T) {
 			srcs:  []string{"", "a", "b"},
 		},
 		{
+			name:  "nullable_carrier_with_negative_sibling_probe",
+			regex: `(?:(?P<dup>a?)|(?P<dup>b))(?P<dup>c)`,
+			repl:  "$dup",
+			srcs:  []string{"c", "ac", "bc"},
+		},
+		{
 			// The LAST carrier's nullability never matters: there is
 			// nothing after it for a non-empty search to skip ahead to.
 			name:  "nullable_last_carrier",
@@ -392,7 +398,14 @@ func evaluateSegments(segments []chplan.LabelReplaceSegment, src string, groups 
 			if i < len(seg.Probes) {
 				witness = seg.Probes[i]
 			}
-			if groups[witness] != "" {
+			matches := groups[witness] != ""
+			if i < len(seg.NegativeProbes) && len(seg.NegativeProbes[i]) > 0 {
+				matches = true
+				for _, probe := range seg.NegativeProbes[i] {
+					matches = matches && groups[probe] == ""
+				}
+			}
+			if matches {
 				out += groups[idx]
 				break
 			}

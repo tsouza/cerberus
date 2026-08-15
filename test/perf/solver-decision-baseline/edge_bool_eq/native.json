@@ -1,0 +1,11 @@
+{
+  "query": "edge_bool_eq/native",
+  "lowering": "native",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 1,
+  "cumulative_d": "5m0s",
+  "outer_range": "1h0m0s"
+}

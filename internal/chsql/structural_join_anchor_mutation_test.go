@@ -85,3 +85,62 @@ func TestEmitStructuralRecursive_UnrestrictedAnchorHasNoSeedWhere(t *testing.T) 
 		t.Fatalf("plan set no pruning bound, yet the anchor seed carries a WHERE:\n%s", sql)
 	}
 }
+
+// structuralUnionClosurePlan returns a union recursive (`&>>`) StructuralJoin
+// — the shape whose L-projection arm renders through
+// buildStructuralInverseClosure's inverse closure, alongside the canonical
+// one the R-projection arm uses.
+func structuralUnionClosurePlan() *chplan.StructuralJoin {
+	plan := structuralClosurePlan()
+	plan.Op = chplan.StructuralUnionDescendant
+	return plan
+}
+
+// TestEmitStructuralRecursive_InverseAnchorCarriesTraceIDRestriction pins the
+// #2104 fix: the INVERSE closure's anchor seed (buildStructuralInverseClosure,
+// `_struct_closure_inv_*`) must fold the two-phase phase-B trace-id
+// restriction, exactly as the canonical closure's anchor does
+// (TestEmitStructuralRecursive_AnchorCarriesTraceIDRestriction). Before the
+// fix the inverse anchor carried only the request-window bound, so its seed
+// scan read every windowed trace on the R side instead of granule-pruning to
+// the top-N literals via idx_trace_id — a correct-but-amplified read, not a
+// wrong result (the closure only ever projects `_depth > 0` rows, which the
+// step arm's own restriction already confines to the top-N set).
+func TestEmitStructuralRecursive_InverseAnchorCarriesTraceIDRestriction(t *testing.T) {
+	t.Parallel()
+
+	plan := structuralUnionClosurePlan()
+	plan.TraceIDRestriction = []string{"aabb", "ccdd"}
+
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "_struct_closure_inv_") {
+		t.Fatalf("union recursive op did not render an inverse closure CTE:\n%s", sql)
+	}
+	if !strings.Contains(sql, "AS _seed WHERE `TraceId` IN ('aabb', 'ccdd')") {
+		t.Fatalf("trace-id restriction missing from the inverse closure's anchor seed:\n%s", sql)
+	}
+}
+
+// TestEmitStructuralRecursive_InverseAnchorUnrestrictedHasNoSeedWhere mirrors
+// TestEmitStructuralRecursive_UnrestrictedAnchorHasNoSeedWhere for the inverse
+// closure: a plan that sets no phase-B restriction (the single-query path,
+// not phase B of the two-phase search) must render the inverse anchor with no
+// seed WHERE, so the assertion above cannot be satisfied by an emitter that
+// always splices one in.
+func TestEmitStructuralRecursive_InverseAnchorUnrestrictedHasNoSeedWhere(t *testing.T) {
+	t.Parallel()
+
+	sql, _, err := chsql.Emit(context.Background(), structuralUnionClosurePlan())
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "_struct_closure_inv_") {
+		t.Fatalf("union recursive op did not render an inverse closure CTE:\n%s", sql)
+	}
+	if strings.Contains(sql, "AS _seed WHERE") {
+		t.Fatalf("plan set no pruning bound, yet the inverse anchor seed carries a WHERE:\n%s", sql)
+	}
+}

@@ -664,12 +664,14 @@ requests" says nothing about how many unbounded-duration streams the
 replica should carry. Set `CERBERUS_ADMIT_TAIL=0` to opt out of the tail
 cap as well, or `CERBERUS_ADMIT_DISABLED=true` to opt out of both.
 
-A tail refused by the tail cap is refused at the HTTP upgrade — `503` +
-`Retry-After: 1`, before the connection becomes a WebSocket — rather than
-upgraded and then closed with a close frame the way reference Loki
-answers its own `querier.max-concurrent-tail-requests`. Issue
-[#2048](https://github.com/tsouza/cerberus/issues/2048) tracks aligning
-the two, since a WebSocket client does not read the `Retry-After` header.
+A tail refused by the tail cap upgrades to a WebSocket first and is then
+closed with a `1013` (`Try Again Later`) close frame, the same shape
+reference Loki answers its own `querier.max-concurrent-tail-requests`
+with — every other admitted route refuses at the HTTP upgrade instead
+(`503` + `Retry-After: 1`), but a WebSocket client has no way to read an
+HTTP header once the handshake has already gone through, so `/tail`'s
+rejection has to live at the WebSocket layer to be actionable
+(issue [#2048](https://github.com/tsouza/cerberus/issues/2048)).
 
 `CERBERUS_ADMIT_DISABLED=true` removes admission control entirely, on
 every budget at once — useful for local development where artificial caps

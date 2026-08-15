@@ -96,10 +96,14 @@ test/perf/cardinality-baseline/**/*.json     -merge
 #   (UPDATE_SOLVER_DECISION_BASELINE=1 go test -count=1
 #    -run TestSolverDecisionRatchet ./test/perf/ — pure Go, no chDB). Also
 #   reached by `just update-golden`, which chains it as a PRIOR dep.
-#   One shard per corpus QUERY — solver-decision-baseline/<name>.json holds
-#   the record whose `query` is "<name>" — for the same reason, with the same
-#   residual case left to `-merge`.
-test/perf/solver-decision-baseline/*.json    -merge
+#   One shard per (corpus QUERY, lowering table) pair — see #2120 for why the
+#   lowering axis exists — filed under its query:
+#   solver-decision-baseline/<name>/<lowering>.json holds the record whose
+#   `query` is "<name>/<lowering>". Two branches adding different fixtures (or
+#   the same fixture under different lowerings) therefore write different
+#   paths and never meet; `-merge` covers the residual case of two branches
+#   moving the SAME record.
+test/perf/solver-decision-baseline/**/*.json -merge
 
 # Regenerate: `just update-scale-wall-baseline`
 #   (UPDATE_SCALE_WALL_BASELINE=1 go test -tags chdb -count=1

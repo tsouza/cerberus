@@ -1,0 +1,11 @@
+{
+  "query": "quantile_over_time_q_negative_no_modifier/native",
+  "lowering": "native",
+  "routed": false,
+  "k": 0,
+  "reason": "below-threshold",
+  "n_anchors": 241,
+  "fanout": 0,
+  "cumulative_d": "1s",
+  "outer_range": "1h0m0s"
+}

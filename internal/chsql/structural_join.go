@@ -882,11 +882,16 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, rightS
 	//
 	// The seed carries the request-window bound for the same reason the
 	// canonical closure's does: this anchor is a recursive-CTE arm, so nothing
-	// outside the CTE prunes its `(<R>) AS _seed` scan (#1942). The trace-id
-	// restriction is deliberately NOT folded here — the inverse closure projects
-	// only `_depth > 0` rows, which come from the step arm alone, and the step
-	// already restricts them (structuralStepWhere), so phase B stays a faithful
-	// top-N subset without it.
+	// outside the CTE prunes its `(<R>) AS _seed` scan (#1942). It also carries
+	// the two-phase trace-id restriction (structuralAnchorNodeBounds), shared
+	// with the canonical closure's anchor: #2104 found this seed omitted it,
+	// which does not change the RESULT — the inverse closure projects only
+	// `_depth > 0` rows, which come from the step arm alone, and the step
+	// already restricts them (structuralStepWhere), so phase B stayed a
+	// faithful top-N subset either way — but it does mean the seed scan read
+	// every windowed trace on the R side instead of granule-pruning to the
+	// top-N literals via idx_trace_id, exactly the amplification phase B
+	// exists to avoid.
 	anchor := NewQuery().
 		Select(
 			Distinct(Col(j.TraceIDColumn)),
@@ -895,7 +900,7 @@ func (e *emitter) buildStructuralInverseClosure(j *chplan.StructuralJoin, rightS
 			verbatim("0 AS _depth"),
 		).
 		From(aliasedFrag(rightSub, "_seed")).
-		Where(structuralAnchorWindowFrags(j)...)
+		Where(structuralAnchorNodeBounds(j)...)
 
 	stepOn := And(spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn), stepRel)
 	stepFrom, err := e.fromSpansScan(table, memoryStreamingBound())
@@ -960,12 +965,14 @@ func structuralStepWhere(j *chplan.StructuralJoin) []Frag {
 
 // structuralAnchorWhere builds the WHERE conjuncts for a recursive closure's
 // anchor seed: the candidate prefilter (both sides selective — restrict seeds
-// to traces present on the OTHER side too), the two-phase trace-id restriction
-// (phase B — restrict seeds to the top-N traces), and the request-window
-// partition-prune bound (structuralAnchorWindowFrags). The first two key on the
-// seed's TraceId; all three are pure pruning bounds, and a plan that sets none
-// gets an empty slice so the anchor stays byte-identical. otherSideSub is the
-// closure's other-side subquery Frag (R for the canonical closure).
+// to traces present on the OTHER side too) plus the node-only bounds every
+// anchor gets (structuralAnchorNodeBounds — the two-phase trace-id restriction
+// and the request-window partition-prune bound). The prefilter is
+// canonical-closure-only: the inverse closure's seed IS the other side
+// already, so intersecting it with itself would be a no-op at best. All are
+// pure pruning bounds, and a plan that sets none gets an empty slice so the
+// anchor stays byte-identical. otherSideSub is the closure's other-side
+// subquery Frag (R for the canonical closure).
 func structuralAnchorWhere(j *chplan.StructuralJoin, otherSideSub Frag) []Frag {
 	var conds []Frag
 	if j.CandidatePrefilter {
@@ -974,6 +981,22 @@ func structuralAnchorWhere(j *chplan.StructuralJoin, otherSideSub Frag) []Frag {
 			structuralCandidateTraceSubquery(otherSideSub, j.TraceIDColumn),
 		))
 	}
+	return append(conds, structuralAnchorNodeBounds(j)...)
+}
+
+// structuralAnchorNodeBounds builds the WHERE conjuncts every recursive
+// closure anchor gets regardless of projection direction: the two-phase
+// trace-id restriction (phase B — restrict the seed to the top-N traces via
+// idx_trace_id) and the request-window partition-prune bound
+// (structuralAnchorWindowFrags). Shared by the canonical closure's anchor
+// (through structuralAnchorWhere, which additionally folds the
+// CandidatePrefilter) and the inverse closure's anchor
+// (buildStructuralInverseClosure) — #2104 found the inverse anchor built its
+// own window-only WHERE by hand and never folded the restriction, so its seed
+// scan read every windowed trace on the R side instead of granule-pruning to
+// the top-N literals, exactly the read amplification phase B exists to avoid.
+func structuralAnchorNodeBounds(j *chplan.StructuralJoin) []Frag {
+	var conds []Frag
 	if len(j.TraceIDRestriction) > 0 {
 		conds = append(conds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
 	}

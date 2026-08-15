@@ -779,7 +779,7 @@ func buildHistogramBucketFanout(
 ) chplan.Node {
 	// Scan-side metric-bounded Filter: apply label matchers so the
 	// fan-out reads a metric-bounded row set; this is the
-	// PREWHERE-eligible shape the optimizer keeps fast.
+	// PREWHERE-eligible shape the chsql emitter keeps fast.
 	var rawSide chplan.Node = scan
 	if pred != nil {
 		rawSide = &chplan.Filter{Input: scan, Predicate: pred}

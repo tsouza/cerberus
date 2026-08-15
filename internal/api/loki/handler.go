@@ -91,6 +91,10 @@ type Handler struct {
 	// every subsequent Loki request on the replica 503s until a tail
 	// client disconnects — issue #1482. Two budgets means a full tail
 	// budget costs ordinary queries nothing.
+	//
+	// Unlike every other route, /tail does NOT front this limiter with
+	// admit.Middleware — see handleTail's doc comment (issue #2048) for
+	// why the acquire has to happen after the WebSocket upgrade instead.
 	TailLimiter *admit.Limiter
 
 	// Version is the cerberus build identifier surfaced via
@@ -170,7 +174,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	}
 	// register mounts an ordinary, short-lived Loki route on the shared
 	// request budget (CERBERUS_ADMIT_LOKI). /tail is the one route that
-	// does NOT go through here — it takes TailLimiter instead.
+	// does NOT go through here — see the mount comment on it below.
 	register := func(pattern string, hf http.HandlerFunc) {
 		registerWith(h.Limiter, pattern, hf)
 	}
@@ -197,11 +201,23 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	register("GET /loki/api/v1/patterns", h.handlePatterns)
 	register("POST /loki/api/v1/patterns", h.handlePatterns)
 	// /tail is WebSocket-upgrade only; no POST counterpart in upstream Loki.
-	// It is the ONE route mounted on TailLimiter rather than Limiter: its
-	// slot is held for the session's whole lifetime, so it must not be
+	// Its slot is held for the session's whole lifetime, so it must not be
 	// drawn from the budget the millisecond-scale routes above share (see
-	// the TailLimiter field doc and issue #1482).
-	registerWith(h.TailLimiter, "GET /loki/api/v1/tail", h.handleTail)
+	// the TailLimiter field doc and issue #1482) — that much matches every
+	// other route's registerWith call.
+	//
+	// What does NOT match is going through registerWith's admit.Middleware:
+	// that middleware acquires (or refuses) the slot BEFORE next runs, i.e.
+	// before the WebSocket handshake, so a refusal reaches the client as a
+	// 503 that never became a WebSocket at all. Reference Loki upgrades
+	// FIRST and enforces its tail limit inside the handler, so a rejection
+	// reaches an already-101'd client as a close frame — a shape a
+	// WebSocket client can actually act on, where an HTTP 503 on the
+	// handshake is invisible to WebSocket-level close handling (issue
+	// #2048). handleTail therefore acquires TailLimiter itself, after
+	// Upgrade succeeds; mounting it bypasses registerWith so the standard
+	// admission wrapper cannot double-gate the same budget beforehand.
+	mux.Handle("GET /loki/api/v1/tail", telemetry.QueryMiddleware("logql", panicEnvelope, http.HandlerFunc(h.handleTail)))
 	// Format-query + build-info probes. Grafana's Loki datasource hits
 	// /status/buildinfo on every page load to gate feature flags
 	// (LogQL editor capabilities, label-browser presence) and uses

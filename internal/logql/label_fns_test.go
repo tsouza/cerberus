@@ -26,12 +26,12 @@ func TestLowerLabelReplace_RejectsInexpressibleBackref(t *testing.T) {
 	// which. On `host="b"` reference Loki answers `service=""` where the
 	// emitted search would answer `service="b"`.
 	//
-	// The carrier here is alone in a nullable alternation branch, so
-	// nothing above it is guaranteed to be consumed and no probe can stand
-	// in for its participation — the case a probe rewrite cannot reach.
+	// The repeated alternation can take two branches in one match, so a
+	// sibling probe only records that a sibling took part at some point,
+	// not whether this carrier took part on the final pass.
 	// Issue #1956 tracks that residue.
 	const q = `label_replace(sum by (host) (count_over_time({app="a"}[5m])), ` +
-		`"service", "$dup", "host", "(?:(?P<dup>a?)|y)(?P<dup>b)")`
+		`"service", "$dup", "host", "(?:(?P<dup>a?)|y)*(?P<dup>b)")`
 
 	expr, err := syntax.ParseExpr(q)
 	if err != nil {
@@ -70,6 +70,9 @@ func TestLowerLabelReplace_AcceptsSharedCaptureName(t *testing.T) {
 		// A nullable carrier a match can skip, cleared by rewriting the
 		// regex to probe the mandatory text in the quest's body.
 		{"nullable_skippable_carrier_with_a_probeable_ancestor", `(?:x(?P<dup>a?))?(?P<dup>b)`},
+		// A mandatory alternation with non-empty sibling branches can use
+		// their absence as the nullable carrier's participation witness.
+		{"nullable_carrier_with_negative_sibling_probe", `(?:(?P<dup>a?)|(?P<dup>b))(?P<dup>c)`},
 	}
 
 	for _, tc := range cases {

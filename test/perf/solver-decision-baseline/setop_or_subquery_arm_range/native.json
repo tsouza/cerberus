@@ -1,0 +1,11 @@
+{
+  "query": "setop_or_subquery_arm_range/native",
+  "lowering": "native",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 12,
+  "cumulative_d": "13m0s",
+  "outer_range": "1h0m0s"
+}

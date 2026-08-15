@@ -52,8 +52,8 @@ Where a change belongs, by the question it answers:
 - **"The plan IR cannot express this"** → `internal/chplan/` (`Scan`, `Filter`, `Project`,
   `Aggregate`, `RangeWindow`, `Limit`, and the `Expr` tree). Shared by all three heads.
 - **"The plan is correct but slow"** → `internal/optimizer/`, a rule-based fixpoint driver with a
-  Pattern API and an analyzer/optimizer rule split (transposes, PREWHERE promotion, late
-  materialisation).
+  Pattern API and an analyzer/optimizer rule split (transposes, projection pushdown). Emitter-side
+  optimizations such as PREWHERE promotion and late materialisation live in `internal/chsql/`.
 - **"The SQL is wrong"** → `internal/chsql/`, the plan → ClickHouse SQL emitter. Typed Frags only
   (invariant 10).
 - **"The HTTP response shape is wrong"** → `internal/api/prom/`, `internal/api/loki/`,
