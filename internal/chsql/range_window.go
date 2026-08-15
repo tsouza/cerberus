@@ -714,12 +714,10 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	outer := NewQuery().From(regroup.Frag())
 	outer.Select(groupFrags...)
 	outer.Select(Col("anchor_ts"))
-	// See emitWindowedArrayExtrapolatedMatrix for the rationale: surface
+	// See projectAnchorAsTimestampColumn for the rationale: surface
 	// anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
-	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
-	}
+	projectAnchorAsTimestampColumn(outer, r)
 	outer.Select(RawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
@@ -773,6 +771,49 @@ func gridAnchorFrag(r *chplan.RangeWindow) Frag {
 // at each call site since it is site-specific.
 func offsetUnshiftAnchorFrag(anchor Frag, offsetNS int64) Frag {
 	return Paren(Add(anchor, Call("toIntervalNanosecond", InlineLit(offsetNS))))
+}
+
+// rangeWindowSchemaTimestampColumn is the canonical wire-projected name for
+// a Sample's timestamp — the name every *_over_time / rate / deriv matrix
+// emitter falls back to when its own RangeWindow carries no more specific
+// TimestampColumn override (see projectAnchorAsTimestampColumn).
+const rangeWindowSchemaTimestampColumn = "TimeUnix"
+
+// projectAnchorAsTimestampColumn surfaces the matrix anchor under a named
+// timestamp column, in addition to the bare `anchor_ts` every matrix-shape
+// emitter already projects.
+//
+// Most matrix RangeWindow reducers set TimestampColumn to the real schema
+// column ("TimeUnix" by default), so the emitted alias is what a wrapping
+// Aggregate's per-step `GROUP BY (ColumnRef{TimestampColumn})` resolves
+// against (see emitWindowedArrayExtrapolatedMatrix for the `bucket_ts`
+// failure this prevents).
+//
+// But an outer *_over_time / rate / deriv reducer stacked over ANOTHER
+// matrix RangeWindow — the PromQL subquery shape
+// `avg_over_time(rate(m[1m])[5m:1m])` — has its own TimestampColumn set to
+// RangeWindowAnchorAlias ("anchor_ts") itself: chplan's convention for "this
+// level added no rename, consume the anchor as-is". Read literally, that
+// makes the alias below a no-op (`anchor_ts AS anchor_ts`), which is why the
+// naive `TimestampColumn != RangeWindowAnchorAlias` guard used to skip
+// projecting ANY named timestamp column at all for this reducer family —
+// the raw pre-`wrapWithSampleProjection` SQL carried `anchor_ts` but no
+// `TimeUnix`, even though the anchor genuinely IS the row's output
+// timestamp (production is unaffected: the HTTP handler's
+// wrapWithSampleProjection renames anchor_ts to TimeUnix unconditionally on
+// the way out). Falling back to rangeWindowSchemaTimestampColumn in that
+// case keeps every matrix-shape emitter's raw SQL self-describing
+// regardless of which reducer produced it — mirrors
+// emitFusedMatrixSubquery's equivalent branch. See #2172.
+func projectAnchorAsTimestampColumn(q *QueryBuilder, r *chplan.RangeWindow) {
+	switch {
+	case r.TimestampColumn == "":
+		return
+	case r.TimestampColumn != RangeWindowAnchorAlias:
+		q.Select(As(gridAnchorFrag(r), r.TimestampColumn))
+	default:
+		q.Select(As(gridAnchorFrag(r), rangeWindowSchemaTimestampColumn))
+	}
 }
 
 // windowPairsSLRFrag renders the per-row CH simple-linear-regression
@@ -2722,10 +2763,10 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	regroup.Select(Col("anchor_ts"))
 	// Surface anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves
-	// — mirrors emitWindowedArrayMatrix's outer projection.
-	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		regroup.Select(As(gridAnchorFrag(r), r.TimestampColumn))
-	}
+	// — mirrors emitWindowedArrayMatrix's outer projection. See
+	// projectAnchorAsTimestampColumn for the anchor_ts-as-TimestampColumn
+	// fallback.
+	projectAnchorAsTimestampColumn(regroup, r)
 	// The aggregate references srcTs/ValueColumn; in the nested-matrix
 	// rename case (fanoutTsSource) it operates over Value only, so the
 	// rename of the timestamp column doesn't affect these order-free
@@ -3345,10 +3386,10 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// projection has no `TimeUnix` to read from. Keeping the bare
 	// `anchor_ts` column intact so downstream `wrapWithSampleProjection`
 	// (api/prom/handler.go) and the histogram/instant_fn callers that
-	// still read `anchor_ts` directly continue to work.
-	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
-	}
+	// still read `anchor_ts` directly continue to work. See
+	// projectAnchorAsTimestampColumn for the anchor_ts-as-TimestampColumn
+	// fallback.
+	projectAnchorAsTimestampColumn(outer, r)
 	outer.Select(As(extrapolatedValueFrag(kind, rangeSeconds), r.ValueColumn))
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
 
@@ -3795,12 +3836,11 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	outer := NewQuery().From(mid.Frag())
 	outer.Select(groupFrags...)
 	outer.Select(Col("anchor_ts"))
-	// See emitWindowedArrayExtrapolatedMatrix for the rationale: surface
-	// anchor_ts under the schema timestamp column so a wrapping
-	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
-	if r.TimestampColumn != "" && r.TimestampColumn != "anchor_ts" {
-		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
-	}
+	// See emitWindowedArrayExtrapolatedMatrix and
+	// projectAnchorAsTimestampColumn for the rationale: surface anchor_ts
+	// under the schema timestamp column so a wrapping Aggregate's
+	// per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
+	projectAnchorAsTimestampColumn(outer, r)
 	outer.Select(As(value, r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_vals", minWindowSize))
