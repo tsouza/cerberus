@@ -182,7 +182,7 @@ func TestParityEnrolmentFloor(t *testing.T) {
 
 	// parityEnrolmentFloor is the number of fixtures currently carrying a
 	// `parity:` section. It ratchets UP only.
-	const parityEnrolmentFloor = 625
+	const parityEnrolmentFloor = 635
 
 	enrolled := 0
 	for _, dir := range parityFixtureDirs(t) {

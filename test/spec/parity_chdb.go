@@ -258,13 +258,17 @@ const exponentialHistogramSeedTable = "otel_metrics_exponential_histogram"
 const exponentialHistogramMetricSuffix = "_exp_hist"
 
 // compareValues selects the one comparator appropriate to the expression and
-// its actual seeded storage shape. Native exponential-histogram interpolation
-// is the only class besides atan2 with measured cross-libm divergence.
+// its actual seeded storage shape. Native exponential-histogram
+// interpolation and histogram_quantile over a rate()/increase()'d classic
+// bucket selector are the only classes besides atan2 with measured
+// cross-implementation divergence.
 func compareValues(query, seed string) (func(a, b float64) bool, error) {
 	if atan2QueryPattern.MatchString(query) {
 		return oracle.EqualAtan2Values, nil
 	}
-	if !strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable) {
+	hasExponential := strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable)
+	hasClassic := strings.Contains(seed, "CREATE TABLE "+classicHistogramTable)
+	if !hasExponential && !hasClassic {
 		return oracle.EqualValues, nil
 	}
 
@@ -273,8 +277,11 @@ func compareValues(query, seed string) (func(a, b float64) bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse comparator query: %w", err)
 	}
-	if isExponentialHistogramInterpolation(expr) {
+	if hasExponential && isExponentialHistogramInterpolation(expr) {
 		return oracle.EqualExponentialHistogramInterpolationValues, nil
+	}
+	if hasClassic && isClassicHistogramRateQuantile(expr) {
+		return oracle.EqualClassicHistogramRateQuantileValues, nil
 	}
 	return oracle.EqualValues, nil
 }
@@ -313,6 +320,46 @@ func isExponentialHistogramInterpolation(expr parser.Expr) bool {
 		return nil
 	})
 	return selectors > 0 && allExponential
+}
+
+// isClassicHistogramRateQuantile proves that a complete query result is a
+// histogram_quantile whose bucket argument passes through rate() or
+// increase() — the shape [oracle.EqualClassicHistogramRateQuantileValues]
+// documents the measured divergence for. As with
+// isExponentialHistogramInterpolation, this only inspects the OUTERMOST
+// call: a comparator applies to the whole result vector, so finding a
+// rate()'d histogram_quantile nested under a binary or another aggregation
+// would relax unrelated output samples too.
+func isClassicHistogramRateQuantile(expr parser.Expr) bool {
+	call, ok := expr.(*parser.Call)
+	if !ok || call.Func.Name != "histogram_quantile" {
+		return false
+	}
+
+	found := false
+	parser.Inspect(call.Args[1], func(node parser.Node, _ []parser.Node) error {
+		c, ok := node.(*parser.Call)
+		if !ok || (c.Func.Name != "rate" && c.Func.Name != "increase") {
+			return nil
+		}
+
+		selectors := 0
+		allClassicBuckets := true
+		parser.Inspect(c.Args[0], func(node parser.Node, _ []parser.Node) error {
+			selector, ok := node.(*parser.VectorSelector)
+			if !ok {
+				return nil
+			}
+			selectors++
+			if !strings.HasSuffix(selector.Name, bucketSuffix) {
+				allClassicBuckets = false
+			}
+			return nil
+		})
+		found = found || selectors > 0 && allClassicBuckets
+		return nil
+	})
+	return found
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose

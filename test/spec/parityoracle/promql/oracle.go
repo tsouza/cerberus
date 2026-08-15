@@ -392,6 +392,16 @@ const exponentialHistogramInterpolationULPTolerance = 5
 // The engines use separate floating-point implementations for that operation.
 const nativeHistogramQuantileULPTolerance = 2
 
+// classicHistogramRateQuantileULPTolerance is the maximum measured ULP
+// distance between Prometheus's and cerberus's histogram_quantile answer
+// when the quantile's classic-bucket input passes through rate()/increase()
+// first. histogram_quantile_classic_{agg,bare}_rate_min_samples measured two
+// ULPs (0.29999999999999993 vs 0.30000000000000004) and one ULP
+// (0.06666666666666668 vs 0.06666666666666667); see
+// [EqualClassicHistogramRateQuantileValues] for why the divergence is
+// upstream of the interpolation arithmetic and not chaseable there.
+const classicHistogramRateQuantileULPTolerance = 2
+
 // EqualAtan2Values reports whether two float samples PRODUCED BY EVALUATING
 // PROMQL'S atan2 agree within [atan2ULPTolerance] ULPs. NaN==NaN is TRUE
 // here for the same reason it is in EqualValues.
@@ -478,6 +488,35 @@ func EqualNativeHistogramQuantileValues(a, b float64) bool {
 		return false
 	}
 	return ulpDistance(a, b) <= nativeHistogramQuantileULPTolerance
+}
+
+// EqualClassicHistogramRateQuantileValues reports whether two float samples
+// produced by histogram_quantile over a rate()/increase()'d classic-bucket
+// selector agree within [classicHistogramRateQuantileULPTolerance] ULPs.
+//
+// # Why this is a separate, narrow comparator
+//
+// Cerberus evaluates the rate-derived bucket ladder and interpolation in
+// ClickHouse, while Prometheus evaluates both in Go. The two
+// histogram_quantile_classic_{agg,bare}_rate_min_samples fixtures measure a
+// one-or-two-ULP difference from those independent floating-point paths.
+// Classic quantiles without rate()/increase() remain exact, so the parity
+// runner selects this comparator only when an outer histogram_quantile reads
+// a rate()/increase() call whose selectors are classic `_bucket` series.
+//
+// This mirrors [EqualAtan2Values] and [EqualExponentialHistogramInterpolationValues]
+// exactly: a NAMED exception for a proven case, not a general tolerance.
+// Do not widen it beyond histogram_quantile over rate()/increase() of a
+// classic bucket selector, and do not add another one without the same
+// measured evidence.
+func EqualClassicHistogramRateQuantileValues(a, b float64) bool {
+	if math.IsNaN(a) && math.IsNaN(b) {
+		return true
+	}
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return false
+	}
+	return ulpDistance(a, b) <= classicHistogramRateQuantileULPTolerance
 }
 
 // ulpDistance returns the number of math.Nextafter steps needed to walk
