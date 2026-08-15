@@ -799,12 +799,29 @@ jobs:
       (github.event_name != 'workflow_dispatch' ||
       (inputs.update_crawl_inventory != 'compose' && inputs.update_crawl_inventory != 'both'))
     runs-on: ubuntu-latest
+    # actions: read (on top of the workflow-level contents: read) is what
+    # `gh run download` below needs — job-level permissions REPLACE the
+    # workflow-level block for this job rather than adding to it, so
+    # contents: read has to be restated.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: crawl-slice-compose-*
-          path: crawl-slices
+      # `gh run download`, not `actions/download-artifact@v8`: the latter
+      # verifies each artifact's SHA256 against the upload-time manifest
+      # through the actions/toolkit artifact client, which has an
+      # intermittent `digest-mismatch` false positive against the Actions
+      # v4 backend — observed on PRs #2147, #2155 and #2156, each with a
+      # fresh digest every run, so it is the download verification that is
+      # flaky rather than the uploaded bytes. `gh run download` fetches the
+      # same artifacts through the REST API instead, sidestepping that
+      # client entirely — the workaround upstream issue threads for
+      # actions/download-artifact's digest verification converge on.
+      - name: Download compose crawl slices
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ github.run_id }} --pattern 'crawl-slice-compose-*' --dir crawl-slices
       - name: Merge compose crawl slices and assert inventory
         env:
           CRAWL_SLICE_DIR: crawl-slices
@@ -1425,13 +1442,36 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
       inputs.update_crawl_inventory != 'k3d' && inputs.update_crawl_inventory != 'both'))
     runs-on: ubuntu-latest
+    # actions: read (on top of the workflow-level contents: read) is what
+    # `gh run download` below needs — job-level permissions REPLACE the
+    # workflow-level block for this job rather than adding to it, so
+    # contents: read has to be restated.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: crawl-slice-k3d-*
-          path: crawl-slices
-          merge-multiple: true
+      # `gh run download`, not `actions/download-artifact@v8`: the latter
+      # verifies each artifact's SHA256 against the upload-time manifest
+      # through the actions/toolkit artifact client, which has an
+      # intermittent `digest-mismatch` false positive against the Actions
+      # v4 backend — observed on PRs #2147, #2155 and #2156, each with a
+      # fresh digest every run, so it is the download verification that is
+      # flaky rather than the uploaded bytes. `gh run download` fetches the
+      # same artifacts through the REST API instead, sidestepping that
+      # client entirely — the workaround upstream issue threads for
+      # actions/download-artifact's digest verification converge on.
+      # `gh run download` always extracts each artifact under its own
+      # subdirectory (it has no `merge-multiple` equivalent), unlike the
+      # toolkit downloader above with that flag set. That is fine here:
+      # `readSlices` in merge-crawl-slices.mjs walks CRAWL_SLICE_DIR
+      # recursively, so the per-artifact subdirectories are found either
+      # way — matching how the compose job's own download (never using
+      # `merge-multiple`) already works.
+      - name: Download k3d crawl slices
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ github.run_id }} --pattern 'crawl-slice-k3d-*' --dir crawl-slices
       - name: Merge k3d crawl slices and assert inventory
         env:
           CRAWL_SLICE_DIR: crawl-slices
