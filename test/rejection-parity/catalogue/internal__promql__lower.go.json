@@ -77,7 +77,7 @@
       "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
       "trigger_query": "demo_latency_exp_hist + 1",
-      "tracking_issue": 2191,
+      "tracking_issue": 2189,
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
