@@ -186,7 +186,7 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
-		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 
 		// A fixture carrying a `parity:` section is additionally answered
 		// by the REAL upstream Prometheus engine over the same seeded
@@ -214,7 +214,7 @@ func TestLower(t *testing.T) {
 			}
 			parityStart, parityEnd, parityStep = rangeStart, rangeEnd, d
 		}
-		spec.RunParity(t, c, spec.ParityEval{Start: parityStart, End: parityEnd, Step: parityStep})
+		spec.RunParity(t, c, spec.ParityEval{Start: parityStart, End: parityEnd, Step: parityStep}, roundTripResult)
 	})
 }
 

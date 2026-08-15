@@ -55,7 +55,6 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) {
 	defer chdbEngineMu.Unlock()
 
 	db := OpenChDB(t)
-	ApplySeed(t, db, rt.Seed)
 
 	spans, err := readSeededSpans(db)
 	if err != nil {

@@ -109,9 +109,9 @@ var chdbSessionSettingsApplied bool
 
 // chdbActiveDatabases maps a fixture subtest's t.Name() to the isolated
 // database OpenChDB already created for it, so a fixture that calls
-// OpenChDB more than once (RunRoundTrip, then RunRoundTripSQL, then
-// RunParity -- test/spec/parity_chdb.go's RunParity opens its own chDB
-// session too) pays ONE CREATE DATABASE / DROP DATABASE cycle for the
+// OpenChDB more than once (RunRoundTripSQL, then RunParity --
+// test/spec/parity_chdb.go's RunParity opens its own chDB session too)
+// pays ONE CREATE DATABASE / DROP DATABASE cycle for the
 // whole fixture rather than one per call. Every call still re-issues USE,
 // which is a single, cheap statement, so a later call is never left
 // pointing at a database an earlier call's cleanup already dropped out
@@ -283,17 +283,14 @@ func isolatedChDBDatabaseName(testName string) string {
 // and exec's each piece. Statements wrapped in single-quoted strings
 // keep their semicolons literal (handled by a tiny state machine).
 //
-// Idempotency within one fixture: a single fixture's seed can run
-// through this more than once in the same session — RunRoundTrip
-// (pre-optimizer) and RunRoundTripSQL/RunParity (post-optimizer /
-// reference-engine) all reseed the same `seed:` text into the isolated
-// DATABASE [OpenChDB] created for the fixture, which it caches for the
-// whole subtest and drops only at the END of it, not between these
-// calls. The applier promotes bare `CREATE TABLE` to
-// `CREATE OR REPLACE TABLE` so a second pass over the same seed within
-// one fixture doesn't trip TABLE_ALREADY_EXISTS. Fixture authors who
-// want strict CH semantics can opt out by writing
-// `CREATE OR REPLACE TABLE` / `CREATE TABLE IF NOT EXISTS` themselves.
+// The applier remains idempotent for direct harness callers: it promotes bare
+// `CREATE TABLE` to `CREATE OR REPLACE TABLE` so a repeated application inside
+// one fixture does not trip TABLE_ALREADY_EXISTS. The normal parity path does
+// not rely on that tolerance: [RunRoundTripSQL] applies the seed once and
+// returns a [RoundTripResult] proving it, then [RunParity] reuses the same
+// isolated database. Fixture authors who want strict CH semantics can opt out
+// by writing `CREATE OR REPLACE TABLE` / `CREATE TABLE IF NOT EXISTS`
+// themselves.
 func ApplySeed(t *testing.T, db *sql.DB, seed string) {
 	t.Helper()
 	stmts := testsql.BackfillMetricsColumns(testsql.SplitStatements(seed))
@@ -364,7 +361,7 @@ func RunRoundTrip(t *testing.T, c *Case, opts ...RoundTripOption) {
 
 	// expected_rows is ground truth for the pre-optimizer SQL above, so a
 	// mismatch here is safe to fold into GOLDEN_UPDATE.
-	runRoundTripSQL(t, c, rt, sql, args, true)
+	_ = runRoundTripSQL(t, c, rt, sql, args, true)
 }
 
 // RunRoundTripSQL is [RunRoundTrip]'s post-optimizer twin: it executes a
@@ -386,21 +383,22 @@ func RunRoundTrip(t *testing.T, c *Case, opts ...RoundTripOption) {
 // execution that RunRoundTrip captures; this function only ever compares
 // against it.
 //
-// A no-op for fixtures that never opted into round-trip execution, same
-// as RunRoundTrip.
-func RunRoundTripSQL(t *testing.T, c *Case, sql string, args []any) {
+// On success it returns the opaque seed/projection handoff [RunParity]
+// consumes. A fixture that never opted into round-trip execution returns the
+// zero result, just as RunRoundTrip is a no-op for it.
+func RunRoundTripSQL(t *testing.T, c *Case, sql string, args []any) RoundTripResult {
 	t.Helper()
 	rt, err := LoadRoundTrip(c)
 	if err != nil {
 		t.Fatalf("LoadRoundTrip: %v", err)
 	}
 	if !rt.IsRoundTrip() {
-		return
+		return RoundTripResult{}
 	}
 	if strings.TrimSpace(sql) == "" {
 		t.Fatalf("fixture %s: optimized SQL is empty", c.Name)
 	}
-	runRoundTripSQL(t, c, rt, sql, args, false)
+	return runRoundTripSQL(t, c, rt, sql, args, false)
 }
 
 // runRoundTripSQL is the shared chDB-execution core both RunRoundTrip and
@@ -411,7 +409,14 @@ func RunRoundTripSQL(t *testing.T, c *Case, sql string, args []any) {
 // or fails outright (RunRoundTripSQL, the post-optimizer check — a
 // mismatch there must never silently become the new "expected", since
 // that would launder a real optimizer bug into a passing golden).
-func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, args []any, allowGoldenUpdate bool) {
+func runRoundTripSQL(
+	t *testing.T,
+	c *Case,
+	rt *RoundTripSections,
+	sql string,
+	args []any,
+	allowGoldenUpdate bool,
+) RoundTripResult {
 	t.Helper()
 
 	// Acquire the process-global chDB engine lock for the FULL engine
@@ -448,6 +453,21 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 			query, queryArgs, err)
 	}
 	defer func() { _ = rows.Close() }()
+	// Read the projection names from the same driver result parity values use.
+	// rows.Columns avoids the Map-sensitive ColumnTypes path and costs no extra
+	// execution: the driver already has this metadata for the open result set.
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("rows.Columns: %v", err)
+	}
+	if len(cols) == 0 {
+		t.Fatalf("fixture %s: driver returned an empty SELECT projection", c.Name)
+	}
+	result := RoundTripResult{
+		fixtureName:       c.Name,
+		projectionColumns: append([]string(nil), cols...),
+		seeded:            true,
+	}
 
 	if colCount == 0 {
 		// Wildcard outer projection (`SELECT R.* FROM ...`): the
@@ -455,14 +475,7 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 		// Columns()` returns names without instantiating the
 		// driver's column-type table, so it sidesteps the Map
 		// `rows.ColumnTypes()` panic.
-		cols, cerr := rows.Columns()
-		if cerr != nil {
-			t.Fatalf("rows.Columns: %v", cerr)
-		}
 		colCount = len(cols)
-		if colCount == 0 {
-			t.Fatalf("fixture %s: cannot determine SELECT projection count from sql", c.Name)
-		}
 	}
 
 	got := make([][]any, 0, len(rt.ExpectedRows))
@@ -516,11 +529,12 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 			Match(t, c, map[string]string{
 				"expected_rows": formatExpectedRows(gotNorm),
 			})
-			return
+			return result
 		}
 		t.Fatalf("round-trip mismatch (fixture %s)\n got = %s\nwant = %s",
 			c.Name, mustJSON(gotNorm), mustJSON(want))
 	}
+	return result
 }
 
 // formatExpectedRows renders a row set in the canonical TXTAR

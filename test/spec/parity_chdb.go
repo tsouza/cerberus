@@ -124,7 +124,7 @@ var lokiParityEvaluator func(
 // with no runner compiled into this lane is a FATAL error, never a silent
 // pass: a fixture that believes it is enrolled and is not would be the
 // hollow green the whole mechanism exists to prevent.
-func RunParity(t *testing.T, c *Case, eval ParityEval) {
+func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult) {
 	t.Helper()
 
 	p, enrolled, err := LoadParity(c)
@@ -144,6 +144,13 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 			"fixture %s carries a `parity:` section but no executable round-trip. "+
 				"The parity check reads the seeded rows back out of chDB, so it needs the same "+
 				"`seed:` + `expected_rows:` opt-in RunRoundTrip needs.", c.Name,
+		)
+	}
+	if !roundTrip.seeded || roundTrip.fixtureName != c.Name {
+		t.Fatalf(
+			"fixture %s: parity requires the successful RunRoundTripSQL result for the same fixture; "+
+				"got fixture %q (seeded=%t)",
+			c.Name, roundTrip.fixtureName, roundTrip.seeded,
 		)
 	}
 
@@ -170,7 +177,6 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 	defer chdbEngineMu.Unlock()
 
 	db := OpenChDB(t)
-	ApplySeed(t, db, rt.Seed)
 
 	q := parityQuery{
 		Expr:  resolveAtModifiers(strings.TrimSpace(query), eval.Start, eval.End, eval.Step),
@@ -200,9 +206,9 @@ func RunParity(t *testing.T, c *Case, eval ParityEval) {
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
 
-	cols, err := parityProjectionColumns(db, rt)
-	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
+	cols := roundTrip.projectionColumns
+	if len(cols) == 0 {
+		t.Fatalf("fixture %s: RunRoundTripSQL returned no driver projection columns", c.Name)
 	}
 	sc, err := locateSampleColumns(cols)
 	if err != nil {
@@ -821,43 +827,6 @@ func (r metricNameRestorer) record(labels map[string]string, name string) error 
 
 // compareAgainstReference is the assertion itself. See
 // [comparesTimestamps] for which axes participate and why.
-// parityProjectionColumns returns the column names of the projection that
-// produced this fixture's `expected_rows:`.
-//
-// The names come from the DRIVER, by running the fixture's own pinned
-// `sql:` section against the already-seeded session and asking the result
-// for its columns. The alternative — parsing the outer SELECT's aliases
-// out of the SQL text — would be a second, hand-written answer to a
-// question the driver already answers exactly, and the two would
-// eventually disagree on some projection nobody thought to test.
-//
-// Nothing about the comparison becomes self-referential: only the column
-// LABELLING is learned here. Every value still comes from the pinned
-// `expected_rows:`, which is the artefact regeneration can corrupt and
-// therefore the artefact the reference engine must be checked against.
-func parityProjectionColumns(db *sql.DB, rt *RoundTripSections) ([]string, error) {
-	query, args := substituteNow64(rt.SQL, rt.Args)
-	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
-	query = testsql.RewriteMapProjections(query)
-	query = testsql.NestMapOrderBy(query)
-	query = testsql.NestMapWhere(query)
-
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("re-run the fixture's own sql to read its projection: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	// rows.Columns() returns names without instantiating the driver's
-	// column-type table, so it sidesteps the Map rows.ColumnTypes()
-	// panic the round-trip runner documents.
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("read the projection's column names: %w", err)
-	}
-	return cols, nil
-}
-
 func compareAgainstReference(
 	t *testing.T, c *Case, p *Parity, rt *RoundTripSections, sc sampleColumns,
 	got []referenceSample, compareTimestamps bool, query string,
