@@ -420,9 +420,7 @@ export function corpusRootFromShardTree(repoRoot, tree) {
   let best = null;
   let bestCount = 0;
   for (const c of candidates) {
-    const count = ids.filter((id) =>
-      existsSync(path.join(repoRoot, `${c}/${id}${FIXTURE_EXT}`)),
-    ).length;
+    const count = ids.filter((id) => idResolvesToFixture(repoRoot, c, id)).length;
     const deeper = best !== null && c.split('/').length > best.split('/').length;
     if (count > bestCount || (count === bestCount && count > 0 && deeper)) {
       best = c;
@@ -430,6 +428,28 @@ export function corpusRootFromShardTree(repoRoot, tree) {
     }
   }
   return bestCount > 0 ? best : null;
+}
+
+/**
+ * Reports whether shard id `id` names a fixture under corpus root `c` — tried
+ * as-is first, then (when `id` has a path segment) with its LAST segment
+ * stripped. A per-fixture shard tree pins one row per fixture, so its id IS
+ * the fixture path; a tree that shards on more than fixture identity alone —
+ * `test/perf/solver-decision-baseline/<fixture>/<lowering>.json` since #2120,
+ * one row per (fixture, lowering) pair — has an id that is the fixture path
+ * PLUS a trailing distinguishing segment the corpus itself does not carry.
+ * Trying the stripped form as a fallback (never as the ONLY form, so a shard
+ * tree that genuinely nests by corpus subdirectory — the cardinality
+ * baseline's `<head>/<name>` — still resolves on its first, exact try) keeps
+ * the corpus-root derivation blind to which per-fixture axis a shard adds,
+ * exactly as the file doc promises: "repoint a baseline at a different corpus
+ * and the derived root follows it," now also true of a baseline that grows a
+ * second per-fixture axis.
+ */
+function idResolvesToFixture(repoRoot, c, id) {
+  if (existsSync(path.join(repoRoot, `${c}/${id}${FIXTURE_EXT}`))) return true;
+  const parent = id.split('/').slice(0, -1).join('/');
+  return parent !== '' && existsSync(path.join(repoRoot, `${c}/${parent}${FIXTURE_EXT}`));
 }
 
 function specSubdirs(repoRoot) {
