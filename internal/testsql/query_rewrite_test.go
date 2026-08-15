@@ -180,6 +180,171 @@ func TestNestMapOrderBy(t *testing.T) {
 	}
 }
 
+// TestNestMapWhere pins the limit_ratio collision shape — a Filter
+// fused directly atop the final self-aliased projection, so the WHERE
+// clause and the toJSONString-wrapped Map alias sit in the same
+// SELECT — and, just as load-bearing, the shapes it must leave alone.
+func TestNestMapWhere(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			// limit_ratio: the shape #1986's parity enrolment exposed. The
+			// hash predicate references both `Attributes` and `MetricName`
+			// at the same level as their toJSONString-wrapped aliases.
+			name: "outer where hash predicate over map column is nested",
+			in: "SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, `Value` FROM " +
+				"(SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM `t`) " +
+				"WHERE ((toFloat64(xxHash64(mapConcat(`Attributes`, map('__name__', `MetricName`)))) / 1.0) < 0.5)",
+			want: "SELECT `MetricName`, toJSONString(`Attributes`) AS `Attributes`, `TimeUnix`, `Value` FROM " +
+				"(SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM `t`) " +
+				"WHERE ((toFloat64(xxHash64(mapConcat(`Attributes`, map('__name__', `MetricName`)))) / 1.0) < 0.5))",
+		},
+		{
+			// The mirror of NestMapOrderBy's own depth-tracking regression:
+			// the WHERE belongs to the INNER subquery, and the outer query
+			// has none at all. Nothing may move, even though `Attributes`
+			// appears both inside the subquery and in the outer GROUP BY.
+			name: "nested where inside from subquery is left alone",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `Value` FROM `t` WHERE `Value` > 0) GROUP BY `Attributes`",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `Value` FROM `t` WHERE `Value` > 0) GROUP BY `Attributes`",
+		},
+		{
+			name: "outer where without a map column is left alone",
+			in:   "SELECT `MetricName`, `Value` FROM (SELECT `MetricName`, `Value` FROM `t`) WHERE `Value` > 0",
+			want: "SELECT `MetricName`, `Value` FROM (SELECT `MetricName`, `Value` FROM `t`) WHERE `Value` > 0",
+		},
+		{
+			name: "no where at all is left alone",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes` FROM (SELECT `Attributes` FROM `t`)",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes` FROM (SELECT `Attributes` FROM `t`)",
+		},
+		{
+			// A bare table scan is not the single-parenthesised-subquery FROM
+			// this pass requires, so it declines rather than guessing.
+			name: "bare table from is left alone",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes` FROM `t` WHERE mapContains(`Attributes`, 'k')",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes` FROM `t` WHERE mapContains(`Attributes`, 'k')",
+		},
+		{
+			// An ORDER BY trailer, not WHERE, is NestMapOrderBy's own shape —
+			// this pass declines rather than double-handling it.
+			name: "order by trailer is left to NestMapOrderBy",
+			in:   "SELECT toJSONString(`Attributes`) AS `Attributes` FROM (SELECT `Attributes` FROM `t`) ORDER BY mapSort(`Attributes`)",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes` FROM (SELECT `Attributes` FROM `t`) ORDER BY mapSort(`Attributes`)",
+		},
+		{
+			// The regression a first version of this pass shipped with,
+			// caught by the promql corpus's own subquery-reduction fixtures
+			// (subquery_unary_minus and 38 others): every such fixture's SQL
+			// ends `WHERE anchor_ts > … AND anchor_ts <= … GROUP BY
+			// Attributes` — a WHERE this pass must nest, immediately
+			// followed by a GROUP BY that has to stay OUTSIDE the nest. A
+			// naive "everything after WHERE " capture swallowed the GROUP BY
+			// into the rewritten WHERE's parens, so ClickHouse read a bare
+			// column reference with no aggregation in scope and rejected the
+			// query outright (NOT_AN_AGGREGATE) — not a wrong answer, every
+			// one of those fixtures failing to execute at all.
+			name: "trailing group by survives the where nesting",
+			in: "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM " +
+				"(SELECT `Attributes`, `anchor_ts`, `Value` FROM `t`) " +
+				"WHERE (`anchor_ts` > 1) AND mapContains(`Attributes`, 'k') GROUP BY `Attributes`",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM " +
+				"(SELECT * FROM (SELECT `Attributes`, `anchor_ts`, `Value` FROM `t`) " +
+				"WHERE (`anchor_ts` > 1) AND mapContains(`Attributes`, 'k')) GROUP BY `Attributes`",
+		},
+		{
+			// The star-wrapper recursion (nestMapWhereThroughStarWrappers)
+			// only fires when NOTHING trails the outer FROM's own closing
+			// paren — the exact limit_ratio shape it exists for. A `GROUP
+			// BY` trailing the OUTER FROM, with the WHERE hiding one level
+			// deeper inside a star wrapper, is a shape no fixture in the
+			// corpus produces; this pass declines it conservatively rather
+			// than guessing how to re-attach the GROUP BY around a nest it
+			// was never verified against, the same discipline
+			// [NestMapOrderBy] applies to shapes outside its own verified
+			// set.
+			name: "star wrapper with a trailing group by outside it is left alone",
+			in: "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM " +
+				"(SELECT * FROM (SELECT `Attributes`, `anchor_ts`, `Value` FROM `t`) " +
+				"WHERE mapContains(`Attributes`, 'k')) GROUP BY `Attributes`",
+			want: "SELECT toJSONString(`Attributes`) AS `Attributes`, max(`Value`) AS `Value` FROM " +
+				"(SELECT * FROM (SELECT `Attributes`, `anchor_ts`, `Value` FROM `t`) " +
+				"WHERE mapContains(`Attributes`, 'k')) GROUP BY `Attributes`",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NestMapWhere(tc.in); got != tc.want {
+				t.Errorf("NestMapWhere:\n got: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSplitWherePredicate pins the depth- and quote-aware split
+// [NestMapWhere] and [nestMapWhereThroughStarWrappers] both depend on:
+// a WHERE predicate must stop exactly where a sibling GROUP BY / HAVING
+// / ORDER BY / LIMIT begins, never a byte earlier or later.
+func TestSplitWherePredicate(t *testing.T) {
+	cases := []struct {
+		name          string
+		in            string
+		wantPredicate string
+		wantRest      string
+	}{
+		{
+			name:          "no trailing clause",
+			in:            "`Value` > 0",
+			wantPredicate: "`Value` > 0",
+			wantRest:      "",
+		},
+		{
+			name:          "trailing group by",
+			in:            "`Value` > 0 GROUP BY `Attributes`",
+			wantPredicate: "`Value` > 0",
+			wantRest:      "GROUP BY `Attributes`",
+		},
+		{
+			name:          "trailing having",
+			in:            "`Value` > 0 HAVING count() > 1",
+			wantPredicate: "`Value` > 0",
+			wantRest:      "HAVING count() > 1",
+		},
+		{
+			name:          "trailing order by",
+			in:            "`Value` > 0 ORDER BY `Value` DESC",
+			wantPredicate: "`Value` > 0",
+			wantRest:      "ORDER BY `Value` DESC",
+		},
+		{
+			name:          "trailing limit",
+			in:            "`Value` > 0 LIMIT 10",
+			wantPredicate: "`Value` > 0",
+			wantRest:      "LIMIT 10",
+		},
+		{
+			// A keyword-shaped substring inside a paren-nested subquery or a
+			// string literal must never split the predicate early.
+			name:          "keyword text inside nested parens and a string literal is not a split point",
+			in:            "`Value` IN (SELECT 1 LIMIT 5) AND `Name` != 'GROUP BY'",
+			wantPredicate: "`Value` IN (SELECT 1 LIMIT 5) AND `Name` != 'GROUP BY'",
+			wantRest:      "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPredicate, gotRest := splitWherePredicate(tc.in)
+			if gotPredicate != tc.wantPredicate || gotRest != tc.wantRest {
+				t.Errorf("splitWherePredicate(%q):\n got: (%q, %q)\nwant: (%q, %q)",
+					tc.in, gotPredicate, gotRest, tc.wantPredicate, tc.wantRest)
+			}
+		})
+	}
+}
+
 func TestTolerantRowsErr(t *testing.T) {
 	if err := TolerantRowsErr(nil); err != nil {
 		t.Errorf("nil -> %v, want nil", err)

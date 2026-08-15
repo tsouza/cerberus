@@ -840,6 +840,7 @@ func parityProjectionColumns(db *sql.DB, rt *RoundTripSections) ([]string, error
 	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
 	query = testsql.RewriteMapProjections(query)
 	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
 
 	rows, err := db.Query(query, args...)
 	if err != nil {

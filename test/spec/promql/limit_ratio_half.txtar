@@ -1,5 +1,29 @@
 -- query.promql --
 limit_ratio(0.5, up)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.1),
+    ('up', map('job', 'api', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.5),
+    ('up', map('job', 'web', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.3),
+    ('up', map('job', 'web', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.8),
+    ('up', map('job', 'db', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.2),
+    ('up', map('job', 'db', 'instance', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 0.6);
+-- expected_rows --
+[
+  ["up", {"instance": "b", "job": "api"}, "2026-01-01T00:00:00Z", 0.5],
+  ["up", {"instance": "b", "job": "db"}, "2026-01-01T00:00:00Z", 0.6],
+  ["up", {"instance": "b", "job": "web"}, "2026-01-01T00:00:00Z", 0.8]
+]
 -- args --
 [0] string = "service.name"
 [1] string = "service_name"

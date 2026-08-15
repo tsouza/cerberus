@@ -182,10 +182,187 @@ func NestMapOrderBy(query string) string {
 		return query
 	}
 	orderBy := trailer[len("ORDER BY "):]
-	if !orderByReferencesMapColumn(orderBy) {
+	if !clauseReferencesMapColumn(orderBy) {
 		return query
 	}
 	return "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " ORDER BY " + orderBy + ")"
+}
+
+// NestMapWhere is [NestMapOrderBy]'s sibling for a trailing WHERE clause
+// instead of an ORDER BY: `SELECT <projs> FROM (<sub>) WHERE <predicate>`
+// where `<predicate>` references a Map column that [RewriteMapProjections]
+// wrapped in the OUTER projection under the same name.
+//
+// # Why this collision reaches WHERE at all
+//
+// A `Filter` chplan node fuses directly into the same SQL SELECT as the
+// `Project` beneath it whenever the filtered columns pass through that
+// Project unchanged (chsql's usual `col AS col` identity rename) — for
+// example `limit_ratio`'s per-series hash predicate, applied directly
+// atop the final `MetricName AS MetricName, Attributes AS Attributes, …`
+// projection with no intervening subquery boundary. That produces
+// exactly the shape [RewriteMapProjections] cannot see past: its own doc
+// comment says only the OUTERMOST SELECT is touched, and the WHERE
+// clause riding along in that same SELECT's `tail` is spliced back
+// verbatim — now sitting beside a SELECT-list alias that changed TYPE
+// (Map → String) under the identical name the WHERE clause still means
+// as the raw Map. ClickHouse resolves the identifier against the SELECT
+// alias ahead of the FROM column (the same precedence rule
+// [NestMapOrderBy]'s own doc comment describes for ORDER BY), so
+// `mapConcat(Attributes, …)` receives a String and the query
+// fails outright with `Argument 0 for function arrayConcat must be an
+// array but it has type String` — not a wrong answer, a hard chDB error,
+// which is what surfaced #1986's limit_ratio parity enrolment: the round
+// trip had never been exercised before because no earlier fixture fused
+// a Filter this way at the outermost level.
+//
+// Production never hits this: the live query path has no toJSONString
+// wrap, so `Attributes` stays a Map end to end and the identity rename
+// is a genuine no-op regardless of which scope ClickHouse binds it to.
+// The collision is purely an artefact of the test harness's parquet-Map
+// workaround, exactly as [NestMapOrderBy] documents for its own clause.
+//
+// The fix mirrors NestMapOrderBy's: push the WHERE one level below the
+// wrapped projection, so the inner subquery filters against the
+// still-raw Map and the outer wrapped projection only reshapes the
+// surviving rows for the wire.
+//
+// The transform is conservative in the same way: it fires only when the
+// query is a `SELECT <projs> FROM (<single subquery>) WHERE …` (no WITH
+// head) whose WHERE references a known Map column, and the FROM clause
+// is exactly one parenthesised subquery. Every other shape passes
+// through untouched.
+func NestMapWhere(query string) string {
+	q := strings.TrimSpace(query)
+	head, tail := splitOuterSelect(q)
+	if head == "" {
+		return query
+	}
+	fromBody, trailer, ok := splitParenthesisedFrom(tail)
+	if !ok {
+		return query
+	}
+	if trailer == "" {
+		// No trailing clause at THIS level, but chsql's own `SELECT * FROM
+		// (<plan>)` binding wrapper (the same shape RewriteMapProjections's
+		// starOverSubquery case recurses through) can sit directly inside
+		// the FROM, with the offending WHERE one level further in still —
+		// `FROM (SELECT * FROM (<sub>) WHERE <predicate>)`. ClickHouse
+		// treats a bare star passthrough as transparent to its enclosing
+		// scope, so a predicate sitting behind one binds exactly as if it
+		// were at this level. Peel however many such wrappers separate the
+		// WHERE from here and rewrap at the level it actually collides.
+		if nested, changed := nestMapWhereThroughStarWrappers(fromBody); changed {
+			return "SELECT " + head + " FROM " + nested
+		}
+		return query
+	}
+	if !strings.HasPrefix(strings.ToUpper(trailer), "WHERE ") {
+		return query
+	}
+	where, rest := splitWherePredicate(trailer[len("WHERE "):])
+	if !clauseReferencesMapColumn(where) {
+		return query
+	}
+	out := "SELECT " + head + " FROM (SELECT * FROM " + fromBody + " WHERE " + where + ")"
+	if rest != "" {
+		out += " " + rest
+	}
+	return out
+}
+
+// nestMapWhereThroughStarWrappers looks inside a parenthesised FROM
+// target — fromBody, INCLUDING its own enclosing parens — for a WHERE
+// clause hiding behind zero or more `SELECT * FROM (...)` passthrough
+// layers, and pushes exactly one more `SELECT * FROM (...)` boundary
+// around the WHERE-bearing subquery it finds. It reports whether it
+// found and rewrote one; a false return leaves fromBody's caller to
+// pass the original query through untouched, the same conservative
+// default [NestMapWhere] and [NestMapOrderBy] both keep.
+func nestMapWhereThroughStarWrappers(fromBody string) (string, bool) {
+	sub, ok := stripOuterParens(fromBody)
+	if !ok {
+		return fromBody, false
+	}
+	const starFrom = "SELECT * FROM "
+	if len(sub) < len(starFrom) || !strings.EqualFold(sub[:len(starFrom)], starFrom) {
+		return fromBody, false
+	}
+	innerFromBody, innerTrailer, ok := splitParenthesisedFrom(" FROM " + sub[len(starFrom):])
+	if !ok {
+		return fromBody, false
+	}
+	if innerTrailer == "" {
+		nested, changed := nestMapWhereThroughStarWrappers(innerFromBody)
+		if !changed {
+			return fromBody, false
+		}
+		return "(SELECT * FROM " + nested + ")", true
+	}
+	if !strings.HasPrefix(strings.ToUpper(innerTrailer), "WHERE ") {
+		return fromBody, false
+	}
+	where, rest := splitWherePredicate(innerTrailer[len("WHERE "):])
+	if !clauseReferencesMapColumn(where) {
+		return fromBody, false
+	}
+	wrapped := "SELECT * FROM (SELECT * FROM " + innerFromBody + " WHERE " + where + ")"
+	if rest != "" {
+		wrapped += " " + rest
+	}
+	return "(" + wrapped + ")", true
+}
+
+// whereTrailingKeywords are the clauses that can follow a WHERE
+// predicate within a single SELECT statement. [splitWherePredicate]
+// stops at the first one it finds so a trailing GROUP BY / HAVING /
+// ORDER BY / LIMIT is never mistaken for part of the predicate and
+// swallowed into the nested WHERE [NestMapWhere] builds — the
+// regression a first version of this pass shipped with: every
+// subquery-reduction fixture's outer `WHERE anchor_ts > … GROUP BY
+// Attributes` lost its GROUP BY into the rewritten WHERE's parens,
+// turning a valid aggregate query into ClickHouse's NOT_AN_AGGREGATE.
+var whereTrailingKeywords = []string{"GROUP BY", "HAVING", "ORDER BY", "LIMIT"}
+
+// splitWherePredicate splits a WHERE clause's body — the text after
+// `WHERE ` — into the predicate itself and whatever sibling clause
+// follows it, verbatim, keyword included. rest is "" when the WHERE
+// runs to the end of the statement. Depth- and quote-aware, so a
+// paren-nested or string-literal occurrence of a keyword-shaped
+// substring never triggers a false split.
+func splitWherePredicate(s string) (predicate, rest string) {
+	depth := 0
+	inStr := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr != 0 {
+			if c == inStr {
+				inStr = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '`':
+			inStr = c
+			continue
+		case '(':
+			depth++
+			continue
+		case ')':
+			depth--
+			continue
+		}
+		if depth != 0 || (i != 0 && !isSQLBreak(s[i-1])) {
+			continue
+		}
+		for _, kw := range whereTrailingKeywords {
+			if i+len(kw) <= len(s) && strings.EqualFold(s[i:i+len(kw)], kw) &&
+				(i+len(kw) == len(s) || s[i+len(kw)] == ' ') {
+				return strings.TrimSpace(s[:i]), s[i:]
+			}
+		}
+	}
+	return s, ""
 }
 
 // splitParenthesisedFrom expects tail in the shape ` FROM (<subquery>)<rest>`
@@ -218,18 +395,21 @@ func splitParenthesisedFrom(tail string) (fromBody, trailer string, ok bool) {
 	return "", "", false
 }
 
-// orderByReferencesMapColumn reports whether an ORDER BY clause body
+// clauseReferencesMapColumn reports whether a trailing clause's body
 // references a known Map column by its backtick-quoted name — whether
 // subscripted (e.g. "`Attributes`['handler'] DESC", the sort_by_label
-// shape) or passed to a function (e.g. "mapSort(`Attributes`),
-// `TimeUnix`", the route-A streaming-matrix ordering shape). Used by
-// [NestMapOrderBy] to detect either collision shape: both bind the Map
-// column's backtick-quoted identifier verbatim into the ORDER BY text,
-// so a plain substring match on the quoted name catches every syntactic
-// position it can appear in without needing a real SQL parser.
-func orderByReferencesMapColumn(orderBy string) bool {
+// ORDER BY shape), passed to a function (e.g. "mapSort(`Attributes`),
+// `TimeUnix`", the route-A streaming-matrix ordering shape), or folded
+// into a hash predicate (e.g. the limit_ratio WHERE shape's
+// "mapConcat(`Attributes`, map(...))"). Used by [NestMapOrderBy] and
+// [NestMapWhere] to detect either collision shape: every one of them
+// binds the Map column's backtick-quoted identifier verbatim into the
+// clause text, so a plain substring match on the quoted name catches
+// every syntactic position it can appear in without needing a real SQL
+// parser.
+func clauseReferencesMapColumn(clause string) bool {
 	for _, name := range mapColumnNames {
-		if strings.Contains(orderBy, "`"+name+"`") {
+		if strings.Contains(clause, "`"+name+"`") {
 			return true
 		}
 	}

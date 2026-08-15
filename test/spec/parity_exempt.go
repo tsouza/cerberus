@@ -89,6 +89,31 @@ const (
 	// lives in a dedicated Go test instead (see each fixture's own
 	// header comment for the exact test).
 	ReasonRejectionOnly = "rejection-only"
+
+	// ReasonVacuousEmptyInput covers a fixture whose query reads a
+	// SELECTOR (confirmed by RunParity's own exprReadsSeries — a
+	// VectorSelector or MatrixSelector genuinely present in the parsed
+	// expression) but whose seed intentionally provisions zero rows in
+	// every table that selector could read. evaluatePrometheusParity
+	// already refuses this case at runtime (see its own doc comment: "a
+	// genuinely empty series set is only a vacuous check ... when the
+	// query reads one"), so enrolling would not check cerberus against
+	// the reference engine, it would check cerberus against a reference
+	// engine handed no data to disagree with — every candidate answer
+	// passes, so a real lowering bug in the selector path would pass
+	// too. This is a fact about the SEED, not about the operator: it is
+	// the reverse of ReasonNoComparableOracle (whose gap is in
+	// RunParity's own dispatch table, not in the fixture's data).
+	//
+	// This is NOT the reason for a query that reads no selector at all
+	// — `pi()`, `time()`, `vector(N)`, the zero-argument date functions,
+	// and any of those same shapes used as a subquery inner — whose
+	// zero-series seed is not vacuous but the query's own correct,
+	// data-independent input (exprReadsSeries returns false for all of
+	// them; see pi_constant.txtar, hour_default.txtar, and
+	// subquery_inner_anchor_synthesised.txtar, all enrolled with a real
+	// `parity:` section for exactly that reason).
+	ReasonVacuousEmptyInput = "vacuous-empty-input"
 )
 
 // parityExemptReasons is the single source of truth for the `reason`
@@ -99,6 +124,7 @@ var parityExemptReasons = []string{
 	ReasonNondeterministicSelection,
 	ReasonNoComparableOracle,
 	ReasonRejectionOnly,
+	ReasonVacuousEmptyInput,
 }
 
 // ParityExemptReasons returns the accepted `reason` values, sorted.

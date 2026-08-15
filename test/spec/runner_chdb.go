@@ -439,6 +439,7 @@ func runRoundTripSQL(t *testing.T, c *Case, rt *RoundTripSections, sql string, a
 	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
 	query = testsql.RewriteMapProjections(query)
 	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
 	colCount := testsql.ProjectionCount(query)
 
 	rows, err := db.Query(query, queryArgs...)
