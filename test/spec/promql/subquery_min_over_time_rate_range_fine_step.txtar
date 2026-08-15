@@ -1,5 +1,9 @@
 -- query.promql --
 min_over_time(rate(http_requests_total[2m])[4m:30s])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --

@@ -18,6 +18,10 @@
 
 -- query.promql --
 label_replace(rate(cerberus_queries_total[5m]), "engine", "engine-$1", "cerberus_ql", "(.*)")
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --

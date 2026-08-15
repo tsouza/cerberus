@@ -29,6 +29,10 @@
 
 -- query.promql --
 rate(demo_native_a_total[5m]) or rate(demo_native_b_total[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 1m
 -- experimental_ts_grid_range --

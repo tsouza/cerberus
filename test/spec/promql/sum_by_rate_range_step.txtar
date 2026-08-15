@@ -10,6 +10,10 @@
 
 -- query.promql --
 sum by(cerberus_ql) (rate(cerberus_queries_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- seed --
