@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { mergeSlices, owner } from './merge-crawl-slices.mjs';
+import { mergeSlices, owner, readSlices } from './merge-crawl-slices.mjs';
 
 const stack = 'compose';
 const shardCount = 2;
@@ -33,6 +36,20 @@ test('owner keeps URL-encoded interaction states with their source route', () =>
   const inPlaceState = `${interactionURL}#tabs[Favorites|All]=All`;
   assert.equal(owner(interactionURL, shardCount), owner(source, shardCount));
   assert.equal(owner(inPlaceState, shardCount), owner(source, shardCount));
+});
+
+test('readSlices preserves same-named slices from separate artifacts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crawl-slices-'));
+  try {
+    for (const index of [0, 1]) {
+      const artifact = join(dir, `crawl-slice-compose-${index}`);
+      mkdirSync(artifact);
+      writeFileSync(join(artifact, 'crawl-slice.json'), JSON.stringify({ index }));
+    }
+    assert.deepEqual(readSlices(dir), [{ index: 0 }, { index: 1 }]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test('mergeSlices accepts a total, owned shard cover', () => {

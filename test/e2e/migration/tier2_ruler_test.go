@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -358,15 +359,42 @@ func tier2FetchJSON(ctx context.Context, url string, out any) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, tier2ErrBodyLimit))
+	// Successful Grafana rule listings can exceed the diagnostic body limit as
+	// provisioned rules and alert instances accumulate.
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("read %s body: %w", url, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, string(body))
+		return fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, tier2TruncateBody(body))
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode %s body %q: %w", url, string(body), err)
+		return fmt.Errorf("decode %s body %q: %w", url, tier2TruncateBody(body), err)
 	}
 	return nil
+}
+
+func tier2TruncateBody(body []byte) string {
+	if len(body) <= tier2ErrBodyLimit {
+		return string(body)
+	}
+	return string(body[:tier2ErrBodyLimit]) + "...(truncated)"
+}
+
+func TestTier2FetchJSONDecodesLargeSuccessResponse(t *testing.T) {
+	const paddingSize = tier2ErrBodyLimit + 1
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"padding":%q}`, string(bytes.Repeat([]byte("x"), paddingSize)))
+	}))
+	t.Cleanup(server.Close)
+
+	var response struct {
+		Padding string `json:"padding"`
+	}
+	if err := tier2FetchJSON(t.Context(), server.URL, &response); err != nil {
+		t.Fatalf("tier2FetchJSON: %v", err)
+	}
+	if len(response.Padding) != paddingSize {
+		t.Fatalf("decoded padding length = %d, want %d", len(response.Padding), paddingSize)
+	}
 }
