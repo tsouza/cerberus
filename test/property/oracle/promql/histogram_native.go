@@ -102,9 +102,7 @@ func nativeHistogramQuantileValue(phi float64, h *nativeHistogram) float64 {
 		buckets = append(buckets, h.NegativeBucketCounts[i])
 	}
 	buckets = append(buckets, h.ZeroCount)
-	for _, c := range h.PositiveBucketCounts {
-		buckets = append(buckets, c)
-	}
+	buckets = append(buckets, h.PositiveBucketCounts...)
 
 	// cum is 1-based to match the spec: cum[0] = 0 is the implicit "no
 	// bucket consumed yet" value the fraction formula needs at idx = 1.

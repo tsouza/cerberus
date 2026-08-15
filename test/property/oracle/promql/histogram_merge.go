@@ -100,7 +100,7 @@ func downscaledOffset(offset int32, buckets []float64, shift int32) int32 {
 	if len(buckets) == 0 {
 		return offset
 	}
-	return int32(int64(offset) >> shift)
+	return offset >> shift
 }
 
 func downscaleBuckets(offset int32, buckets []float64, shift int32) []float64 {
