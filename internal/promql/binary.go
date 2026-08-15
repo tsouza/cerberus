@@ -315,7 +315,7 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 	var newValue chplan.Expr
 	switch {
 	case isComparison(op) && returnBool:
-		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{cmpExpr}}
+		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{cmpExpr}}
 	case isComparison(op):
 		// Bare V-V comparison: Value is the LHS sample value (Prom's
 		// "preserve LHS where comparison holds" rule); the Filter
@@ -408,7 +408,7 @@ func foldSyntheticVectorBinary(
 
 	var newValue chplan.Expr = opExpr
 	if isComparison(op) && returnBool {
-		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
+		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{opExpr}}
 	}
 	// RangeWindow-aware projection — same rationale as lowerVectorScalar:
 	// a bare INSTANT RangeWindow vec leg (`sum_over_time(m[5m]) - time()`)
@@ -444,7 +444,11 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 		for i, a := range v.Args {
 			newArgs[i] = rewriteAnchorToTimeUnix(a, s)
 		}
-		return &chplan.FuncCall{Name: v.Name, Args: newArgs}
+		// v's identity may be carried by either Fn or Name (dual-mode,
+		// see FuncCall's doc comment) depending on whether the node's
+		// construction site has migrated to Fn yet — copy both through
+		// unconditionally rather than guessing which one is live.
+		return &chplan.FuncCall{Fn: v.Fn, Name: v.Name, Args: newArgs}
 	case *chplan.Binary:
 		return &chplan.Binary{
 			Op:    v.Op,
@@ -631,7 +635,7 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	// scalar `bool` compare + folded-scalar-in-bool cases).
 	newValue := chplan.Expr(opExpr)
 	if isComparison(op) && returnBool {
-		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
+		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{opExpr}}
 	}
 	// projectValueOverInner is RangeWindow-aware: for a selector input it
 	// emits the canonical (MetricName="", Attributes, TimeUnix, Value)

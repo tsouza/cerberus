@@ -177,7 +177,7 @@ func readsRangeSampleTimestamp(name string, arg parser.Expr, ctx lowerCtx) bool 
 // to read the per-row `anchor_ts` column so each step's row reflects
 // that step's date components.
 func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	now := &chplan.FuncCall{Name: "now"}
+	now := &chplan.FuncCall{Fn: chplan.FnNow}
 	expr := dateFnExpr(name, now, now)
 	if expr == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", name)
@@ -280,7 +280,7 @@ func evalInstantExpr(s schema.Metrics, ctx lowerCtx) chplan.Expr {
 // (CH's `toFloat64` is a no-op identity on Float64) so the wrap is
 // safe even on the `timestamp(v)` path that already yields Float64.
 func asFloat64(e chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{e}}
+	return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{e}}
 }
 
 // dateFnExpr returns the CH expression that computes the date-component
@@ -296,16 +296,16 @@ func asFloat64(e chplan.Expr) chplan.Expr {
 func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 	switch name {
 	case "year":
-		return &chplan.FuncCall{Name: "toYear", Args: []chplan.Expr{valueDT}}
+		return &chplan.FuncCall{Fn: chplan.FnToYear, Args: []chplan.Expr{valueDT}}
 	case "month":
-		return &chplan.FuncCall{Name: "toMonth", Args: []chplan.Expr{valueDT}}
+		return &chplan.FuncCall{Fn: chplan.FnToMonth, Args: []chplan.Expr{valueDT}}
 	case "day_of_month":
-		return &chplan.FuncCall{Name: "toDayOfMonth", Args: []chplan.Expr{valueDT}}
+		return &chplan.FuncCall{Fn: chplan.FnToDayOfMonth, Args: []chplan.Expr{valueDT}}
 	case "day_of_year":
 		// PromQL `day_of_year` returns 1-366 (Jan 1 = 1); CH's
 		// `toDayOfYear(d)` uses the identical 1-based convention, so it
 		// maps directly with no offset.
-		return &chplan.FuncCall{Name: "toDayOfYear", Args: []chplan.Expr{valueDT}}
+		return &chplan.FuncCall{Fn: chplan.FnToDayOfYear, Args: []chplan.Expr{valueDT}}
 	case "day_of_week":
 		// CH toDayOfWeek default returns Mon=1..Sun=7 (ISO).
 		// PromQL day_of_week returns Sun=0..Sat=6 (US).
@@ -313,22 +313,22 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 		// yielding the PromQL semantics directly.
 		return &chplan.Binary{
 			Op:    chplan.OpMod,
-			Left:  &chplan.FuncCall{Name: "toDayOfWeek", Args: []chplan.Expr{valueDT}},
+			Left:  &chplan.FuncCall{Fn: chplan.FnToDayOfWeek, Args: []chplan.Expr{valueDT}},
 			Right: &chplan.LitInt{V: 7},
 		}
 	case "days_in_month":
 		// CH has no direct daysInMonth; the day-of-month of the last
 		// day in the month IS the day count for that month.
 		return &chplan.FuncCall{
-			Name: "toDayOfMonth",
+			Fn: chplan.FnToDayOfMonth,
 			Args: []chplan.Expr{
-				&chplan.FuncCall{Name: "toLastDayOfMonth", Args: []chplan.Expr{valueDT}},
+				&chplan.FuncCall{Fn: chplan.FnToLastDayOfMonth, Args: []chplan.Expr{valueDT}},
 			},
 		}
 	case "hour":
-		return &chplan.FuncCall{Name: "toHour", Args: []chplan.Expr{valueDT}}
+		return &chplan.FuncCall{Fn: chplan.FnToHour, Args: []chplan.Expr{valueDT}}
 	case "minute":
-		return &chplan.FuncCall{Name: "toMinute", Args: []chplan.Expr{valueDT}}
+		return &chplan.FuncCall{Fn: chplan.FnToMinute, Args: []chplan.Expr{valueDT}}
 	case "timestamp":
 		// `timestamp(v)` returns tsRef as float seconds — NOT a
 		// function of Value. Convert the DateTime64(9) expression to
@@ -336,7 +336,7 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 		// seconds.
 		return &chplan.Binary{
 			Op:    chplan.OpDiv,
-			Left:  &chplan.FuncCall{Name: "toUnixTimestamp64Nano", Args: []chplan.Expr{tsRef}},
+			Left:  &chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{tsRef}},
 			Right: &chplan.LitFloat{V: float64(chplan.NanoToSecondDivisor)},
 		}
 	}
@@ -350,10 +350,10 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 // the server's default timezone (PromQL specifies UTC).
 func valueAsDateTime(s schema.Metrics) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "toDateTime",
+		Fn: chplan.FnToDateTime,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "toInt64",
+				Fn:   chplan.FnToInt64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			},
 			&chplan.LitString{V: "UTC"},

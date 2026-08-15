@@ -27,6 +27,9 @@ const (
 	// CH element type is the common supertype.
 	FnArray Fn = "array"
 
+	// arrayAvg(arr) — the average of a numeric array's elements.
+	FnArrayAvg Fn = "arrayAvg"
+
 	// arrayConcat(arr1, arr2, ...) — arrays joined end to end, all operands the
 	// same element type.
 	FnArrayConcat Fn = "arrayConcat"

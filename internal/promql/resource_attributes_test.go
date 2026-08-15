@@ -59,7 +59,7 @@ func TestMatcherToExpr_AllowlistNarrowsResourceArm(t *testing.T) {
 	if !ok {
 		t.Fatalf("allowed matcher: got %T, want *chplan.Binary", matcherToExpr(mAllowed, s))
 	}
-	if call, ok := allowedBin.Left.(*chplan.FuncCall); !ok || call.Name != "coalesce" {
+	if call, ok := allowedBin.Left.(*chplan.FuncCall); !ok || call.Fn != chplan.FnCoalesce {
 		t.Errorf("allowed matcher LHS: got %v, want coalesce(...) with resource arm", allowedBin.Left)
 	}
 
@@ -74,7 +74,7 @@ func TestMatcherToExpr_AllowlistNarrowsResourceArm(t *testing.T) {
 	}
 	// deployment_environment_name has underscores so the bare lookup is the
 	// candidate-chain `if(mapContains(...))`, NOT a coalesce-over-two-maps.
-	if call, ok := deniedBin.Left.(*chplan.FuncCall); ok && call.Name == "coalesce" {
+	if call, ok := deniedBin.Left.(*chplan.FuncCall); ok && call.Fn == chplan.FnCoalesce {
 		t.Errorf("denied matcher LHS leaked the resource arm: %v", deniedBin.Left)
 	}
 }
@@ -93,7 +93,7 @@ func TestMergeResourceAttributesExpr_AllowlistFilter(t *testing.T) {
 	sAll := schema.DefaultOTelMetrics()
 	src := resourceSourceMap(sAll)
 	call, ok := src.(*chplan.FuncCall)
-	if !ok || call.Name != "mapFilter" {
+	if !ok || call.Fn != chplan.FnMapFilter {
 		t.Fatalf("default-schema source: got %v, want mapFilter(... NOT IN dedicated keys ...)", src)
 	}
 
@@ -102,7 +102,7 @@ func TestMergeResourceAttributesExpr_AllowlistFilter(t *testing.T) {
 	sNarrow.PromResourceLabels = []string{"k8s.namespace.name"}
 	narrow := resourceSourceMap(sNarrow)
 	ncall, ok := narrow.(*chplan.FuncCall)
-	if !ok || ncall.Name != "mapFilter" {
+	if !ok || ncall.Fn != chplan.FnMapFilter {
 		t.Fatalf("non-empty allowlist source: got %v, want mapFilter(...)", narrow)
 	}
 

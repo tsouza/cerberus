@@ -39,6 +39,7 @@ type fnSpelling struct {
 var fnSpellings = map[chplan.Fn]fnSpelling{
 	// Array functions.
 	chplan.FnArray:             {Name: "array"},
+	chplan.FnArrayAvg:          {Name: "arrayAvg"},
 	chplan.FnArrayConcat:       {Name: "arrayConcat"},
 	chplan.FnArrayCumSum:       {Name: "arrayCumSum"},
 	chplan.FnArrayDistinct:     {Name: "arrayDistinct"},

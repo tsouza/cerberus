@@ -212,7 +212,7 @@ func TestLower_ExpHistogram_ScalarBinopScalesOnlyTheCountFields(t *testing.T) {
 					t.Fatalf("lower(%q): no projection for %q", tc.query, alias)
 				}
 				call, ok := e.(*chplan.FuncCall)
-				if !ok || call.Name != "arrayMap" || len(call.Args) != 2 {
+				if !ok || call.Fn != chplan.FnArrayMap || len(call.Args) != 2 {
 					t.Fatalf("lower(%q): projection for %q = %#v, want arrayMap(...)", tc.query, alias, e)
 				}
 				lambda, ok := call.Args[0].(*chplan.Lambda)
@@ -233,7 +233,7 @@ func TestLower_ExpHistogram_ScalarBinopScalesOnlyTheCountFields(t *testing.T) {
 				if _, isBinary := e.(*chplan.Binary); isBinary {
 					t.Fatalf("lower(%q): position-bearing column %q was scaled: %#v", tc.query, alias, e)
 				}
-				if call, isCall := e.(*chplan.FuncCall); isCall && call.Name == "arrayMap" {
+				if call, isCall := e.(*chplan.FuncCall); isCall && call.Fn == chplan.FnArrayMap {
 					t.Fatalf("lower(%q): position-bearing column %q was scaled: %#v", tc.query, alias, e)
 				}
 			}

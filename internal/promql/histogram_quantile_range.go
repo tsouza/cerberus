@@ -130,7 +130,7 @@ func fanoutWindowBoundsExpr(anchorRef chplan.Expr, win histogramWindow) (start, 
 			Op:   chplan.OpSub,
 			Left: anchorRef,
 			Right: &chplan.FuncCall{
-				Name: "toIntervalNanosecond",
+				Fn:   chplan.FnToIntervalNanosecond,
 				Args: []chplan.Expr{&chplan.LitInt{V: win.offset.Nanoseconds()}},
 			},
 		}
@@ -139,7 +139,7 @@ func fanoutWindowBoundsExpr(anchorRef chplan.Expr, win histogramWindow) (start, 
 		Op:   chplan.OpSub,
 		Left: end,
 		Right: &chplan.FuncCall{
-			Name: "toIntervalNanosecond",
+			Fn:   chplan.FnToIntervalNanosecond,
 			Args: []chplan.Expr{&chplan.LitInt{V: win.lookback.Nanoseconds()}},
 		},
 	}
@@ -211,7 +211,7 @@ func nativeExpHistLatestAggs(s schema.Metrics) []chplan.AggFunc {
 // latestArgMax is `argMax(<col>, TimeUnix) AS <col>`.
 func latestArgMax(col string, s schema.Metrics) chplan.AggFunc {
 	return chplan.AggFunc{
-		Name: "argMax",
+		Fn: chplan.FnArgMax,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: col},
 			&chplan.ColumnRef{Name: s.TimestampColumn},

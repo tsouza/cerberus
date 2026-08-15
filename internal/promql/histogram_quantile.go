@@ -544,11 +544,11 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 		// Attributes canonically and mapConcat appends to that, so every
 		// row of one logical series gets the same key order.
 		attrs := &chplan.FuncCall{
-			Name: "mapConcat",
+			Fn: chplan.FnMapMerge,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: s.AttributesColumn},
 				&chplan.FuncCall{
-					Name: "map",
+					Fn: chplan.FnMap,
 					Args: []chplan.Expr{
 						&chplan.LitString{V: labelName},
 						phiLabel,
@@ -608,8 +608,8 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 		expPadBelow = 10
 	)
 
-	call := func(name string, args ...chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: name, Args: args}
+	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: fn, Args: args}
 	}
 	// Shape constants go inline rather than through `?` placeholders:
 	// they feed `concat`, where a bound parameter leaves the operand
@@ -637,33 +637,33 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	// chDB coerces it away, so only the strict-scan differential sees it.
 	// Landing every count on Int64 at the source keeps each `if`
 	// single-typed.
-	countOf := func(name string, args ...chplan.Expr) chplan.Expr {
-		return call("toInt64", call(name, args...))
+	countOf := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
+		return call(chplan.FnToInt64, call(fn, args...))
 	}
 
 	// Position of the exponent marker in CH's rendering; 0 when CH chose
 	// fixed notation.
-	epos := func() chplan.Expr { return countOf("position", u(), str("e")) }
+	epos := func() chplan.Expr { return countOf(chplan.FnStringPosition, u(), str("e")) }
 	// The mantissa CH rendered — the whole string in fixed notation.
 	mantRaw := func() chplan.Expr {
-		return call("if", bin(chplan.OpGt, epos(), i(0)),
-			call("substring", u(), i(1), bin(chplan.OpSub, epos(), i(1))),
+		return call(chplan.FnIf, bin(chplan.OpGt, epos(), i(0)),
+			call(chplan.FnSubstring, u(), i(1), bin(chplan.OpSub, epos(), i(1))),
 			u())
 	}
 	// Mantissa digits with the decimal point removed, then with leading
 	// and trailing zeros stripped: the significant digits, most
 	// significant first.
-	digitsAll := func() chplan.Expr { return call("replaceAll", mantRaw(), str("."), str("")) }
-	digitsLead := func() chplan.Expr { return call("replaceRegexpOne", digitsAll(), str("^0+"), str("")) }
-	digits := func() chplan.Expr { return call("replaceRegexpOne", digitsLead(), str("0+$"), str("")) }
+	digitsAll := func() chplan.Expr { return call(chplan.FnReplaceAll, mantRaw(), str("."), str("")) }
+	digitsLead := func() chplan.Expr { return call(chplan.FnRegexReplaceFirst, digitsAll(), str("^0+"), str("")) }
+	digits := func() chplan.Expr { return call(chplan.FnRegexReplaceFirst, digitsLead(), str("0+$"), str("")) }
 
-	pointPos := func() chplan.Expr { return countOf("position", mantRaw(), str(".")) }
+	pointPos := func() chplan.Expr { return countOf(chplan.FnStringPosition, mantRaw(), str(".")) }
 	// Digit count left of the decimal point (the whole mantissa when
 	// there is no point).
 	intLen := func() chplan.Expr {
-		return call("if", bin(chplan.OpGt, pointPos(), i(0)),
+		return call(chplan.FnIf, bin(chplan.OpGt, pointPos(), i(0)),
 			bin(chplan.OpSub, pointPos(), i(1)),
-			countOf("length", mantRaw()))
+			countOf(chplan.FnLength, mantRaw()))
 	}
 	// The decimal exponent: read straight off CH's exponent when it used
 	// scientific notation, else derived from where the first significant
@@ -671,48 +671,48 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 	// no floating-point log is involved, so the [-4, 21) boundaries
 	// cannot be misclassified.
 	expVal := func() chplan.Expr {
-		leadingZeros := bin(chplan.OpSub, countOf("length", digitsAll()), countOf("length", digitsLead()))
-		return call("if", bin(chplan.OpGt, epos(), i(0)),
-			call("toInt64", call("substring", u(), bin(chplan.OpAdd, epos(), i(1)))),
+		leadingZeros := bin(chplan.OpSub, countOf(chplan.FnLength, digitsAll()), countOf(chplan.FnLength, digitsLead()))
+		return call(chplan.FnIf, bin(chplan.OpGt, epos(), i(0)),
+			call(chplan.FnToInt64, call(chplan.FnSubstring, u(), bin(chplan.OpAdd, epos(), i(1)))),
 			bin(chplan.OpSub, bin(chplan.OpSub, intLen(), leadingZeros), i(1)))
 	}
 
 	// `d` or `d.ddd` — Go's normalised scientific mantissa.
 	mantissa := func() chplan.Expr {
-		return call("if", bin(chplan.OpLe, countOf("length", digits()), i(1)),
+		return call(chplan.FnIf, bin(chplan.OpLe, countOf(chplan.FnLength, digits()), i(1)),
 			digits(),
-			call("concat", call("substring", digits(), i(1), i(1)), str("."), call("substring", digits(), i(2))))
+			call(chplan.FnConcat, call(chplan.FnSubstring, digits(), i(1), i(1)), str("."), call(chplan.FnSubstring, digits(), i(2))))
 	}
-	expDigits := func() chplan.Expr { return call("toString", call("abs", expVal())) }
+	expDigits := func() chplan.Expr { return call(chplan.FnToString, call(chplan.FnAbs, expVal())) }
 	expSuffix := func() chplan.Expr {
-		return call("concat",
-			call("if", bin(chplan.OpLt, expVal(), i(0)), str("-"), str("+")),
-			call("if", bin(chplan.OpLt, call("abs", expVal()), i(expPadBelow)),
-				call("concat", str("0"), expDigits()),
+		return call(chplan.FnConcat,
+			call(chplan.FnIf, bin(chplan.OpLt, expVal(), i(0)), str("-"), str("+")),
+			call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, expVal()), i(expPadBelow)),
+				call(chplan.FnConcat, str("0"), expDigits()),
 				expDigits()))
 	}
 	// `u` is the magnitude's rendering, so the sign is reattached here
 	// for both layouts.
 	sign := func() chplan.Expr {
-		return call("if", bin(chplan.OpLt, v(), f(0)), str("-"), str(""))
+		return call(chplan.FnIf, bin(chplan.OpLt, v(), f(0)), str("-"), str(""))
 	}
-	sci := call("concat", sign(), mantissa(), str("e"), expSuffix())
+	sci := call(chplan.FnConcat, sign(), mantissa(), str("e"), expSuffix())
 	// CH's fixed notation already matches Go's over the whole [-4, 21)
 	// exponent range; only Go's trailing `.0` for integral values is
 	// missing.
-	fixed := call("concat", sign(),
-		call("if", bin(chplan.OpGt, pointPos(), i(0)), u(), call("concat", u(), str(".0"))))
+	fixed := call(chplan.FnConcat, sign(),
+		call(chplan.FnIf, bin(chplan.OpGt, pointPos(), i(0)), u(), call(chplan.FnConcat, u(), str(".0"))))
 
-	body := call("multiIf",
-		call("isNaN", v()), str("NaN"),
+	body := call(chplan.FnMultiIf,
+		call(chplan.FnIsNaN, v()), str("NaN"),
 		bin(chplan.OpEq, v(), f(1)), str("1.0"),
 		bin(chplan.OpEq, v(), f(0)), str("0.0"),
 		bin(chplan.OpEq, v(), f(-1)), str("-1.0"),
-		bin(chplan.OpAnd, call("isInfinite", v()), bin(chplan.OpGt, v(), f(0))), str("+Inf"),
-		call("isInfinite", v()), str("-Inf"),
+		bin(chplan.OpAnd, call(chplan.FnIsInfinite, v()), bin(chplan.OpGt, v(), f(0))), str("+Inf"),
+		call(chplan.FnIsInfinite, v()), str("-Inf"),
 		bin(chplan.OpOr,
-			bin(chplan.OpLt, call("abs", v()), f(sciLowerBound)),
-			bin(chplan.OpGe, call("abs", v()), f(sciUpperBound))), sci,
+			bin(chplan.OpLt, call(chplan.FnAbs, v()), f(sciLowerBound)),
+			bin(chplan.OpGe, call(chplan.FnAbs, v()), f(sciUpperBound))), sci,
 		fixed)
 
 	phiValue, err := newPhi()
@@ -724,10 +724,10 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 		return nil, err
 	}
 	return &chplan.Subscript{
-		Container: call("arrayMap",
+		Container: call(chplan.FnArrayMap,
 			&chplan.Lambda{Params: []string{valueParam, digitsParam}, Body: body},
-			call("array", phiValue),
-			call("array", call("toString", call("abs", phiDigits)))),
+			call(chplan.FnArray, phiValue),
+			call(chplan.FnArray, call(chplan.FnToString, call(chplan.FnAbs, phiDigits)))),
 		Key: i(1),
 	}, nil
 }
@@ -848,15 +848,18 @@ const promGroupSampleValue = 1.0
 // lowerHistogramQuantileClassicFloat instead — the float-domain evaluator
 // that reproduces what Prometheus does with these operators.
 func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (classicBucketRungFold, error) {
-	arrayFold := func(name string) classicBucketRungFold {
+	arrayFold := func(fn chplan.Fn) classicBucketRungFold {
 		return func(rungs chplan.Expr) chplan.Expr {
-			return &chplan.FuncCall{Name: name, Args: []chplan.Expr{rungs}}
+			return &chplan.FuncCall{Fn: fn, Args: []chplan.Expr{rungs}}
 		}
 	}
+	// reduceFold's agg parameter is arrayReduce's aggregate-name STRING
+	// argument (see chplan.FnArrayReduce's doc comment) — data CH
+	// interprets, not a chsql-resolved Fn — so it stays a string.
 	reduceFold := func(agg string) classicBucketRungFold {
 		return func(rungs chplan.Expr) chplan.Expr {
 			return &chplan.FuncCall{
-				Name: "arrayReduce",
+				Fn:   chplan.FnArrayReduce,
 				Args: []chplan.Expr{&chplan.LitString{V: agg}, rungs},
 			}
 		}
@@ -865,22 +868,22 @@ func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lo
 		// A bare `rate(...)` with no aggregation wrapper still folds every
 		// in-window row of a series into one ladder, and summing is what
 		// that window collapse means.
-		return arrayFold("arraySum"), nil
+		return arrayFold(chplan.FnArraySum), nil
 	}
 	switch agg.Op {
 	case parser.SUM:
-		return arrayFold("arraySum"), nil
+		return arrayFold(chplan.FnArraySum), nil
 	case parser.AVG:
-		return arrayFold("arrayAvg"), nil
+		return arrayFold(chplan.FnArrayAvg), nil
 	case parser.MIN:
-		return arrayFold("arrayMin"), nil
+		return arrayFold(chplan.FnArrayMin), nil
 	case parser.MAX:
-		return arrayFold("arrayMax"), nil
+		return arrayFold(chplan.FnArrayMax), nil
 	case parser.COUNT:
 		// Prom's `count` is the number of contributing series at that
 		// `le`; here it is the number of contributing ROWS, the same
 		// window model every other fold on this path uses.
-		return arrayFold("length"), nil
+		return arrayFold(chplan.FnLength), nil
 	case parser.GROUP:
 		return func(chplan.Expr) chplan.Expr {
 			return &chplan.LitFloat{V: promGroupSampleValue}
@@ -963,11 +966,11 @@ func promQuantileInterpolateFold(phi chplan.Expr) classicBucketRungFold {
 		sorted := chplan.Expr(&chplan.BareIdent{Name: paramSortedRungs})
 		rank := chplan.Expr(&chplan.BareIdent{Name: paramQuantileRank})
 		lastIdx := subExpr(toFloat64Expr(&chplan.FuncCall{
-			Name: "length", Args: []chplan.Expr{sorted},
+			Fn: chplan.FnLength, Args: []chplan.Expr{sorted},
 		}), &chplan.LitInt{V: 1})
 
-		lo := &chplan.FuncCall{Name: "floor", Args: []chplan.Expr{rank}}
-		hi := &chplan.FuncCall{Name: "least", Args: []chplan.Expr{
+		lo := &chplan.FuncCall{Fn: chplan.FnFloor, Args: []chplan.Expr{rank}}
+		hi := &chplan.FuncCall{Fn: chplan.FnLeast, Args: []chplan.Expr{
 			lastIdx, addExpr(lo, &chplan.LitInt{V: 1}),
 		}}
 		weight := subExpr(rank, lo)
@@ -982,7 +985,7 @@ func promQuantileInterpolateFold(phi chplan.Expr) classicBucketRungFold {
 		// parameter nor the rung array is re-evaluated per reference.
 		return bindOnce(
 			paramSortedRungs,
-			&chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{rungs}},
+			&chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{rungs}},
 			bindOnce(paramQuantileRank, mulExpr(phi, lastIdx), interpolated),
 		)
 	}
@@ -994,7 +997,7 @@ func rungAt(sorted, idx chplan.Expr) chplan.Expr {
 	return &chplan.Subscript{
 		Container: sorted,
 		Key: addExpr(
-			&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{idx}},
+			&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{idx}},
 			&chplan.LitInt{V: 1},
 		),
 	}
@@ -1008,9 +1011,9 @@ func rungAt(sorted, idx chplan.Expr) chplan.Expr {
 // the single-element-array idiom that stands in for one.
 func bindOnce(name string, value, body chplan.Expr) chplan.Expr {
 	return &chplan.Subscript{
-		Container: &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		Container: &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{name}, Body: body},
-			&chplan.FuncCall{Name: "array", Args: []chplan.Expr{value}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{value}},
 		}},
 		Key: &chplan.LitInt{V: 1},
 	}
@@ -1029,7 +1032,7 @@ func mulExpr(l, r chplan.Expr) chplan.Expr {
 }
 
 func toFloat64Expr(e chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{e}}
+	return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{e}}
 }
 
 // expHistogramAggOpIsMergeable reports whether a PromQL aggregation over
@@ -1331,12 +1334,12 @@ func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) cla
 	return classicBucketShaping{
 		aggs: []chplan.AggFunc{
 			{
-				Name:  "groupArray",
+				Fn:    chplan.FnGroupArray,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
 				Alias: hqAggBoundsListAlias,
 			},
 			{
-				Name:  "groupArray",
+				Fn:    chplan.FnGroupArray,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
 				Alias: hqAggCountsListAlias,
 			},
@@ -1406,9 +1409,9 @@ func (sh classicBucketShaping) reshape(
 // answers a question nobody asked: the caller asked for one series per
 // group, not one per boundary set.
 func classicBucketUnionBoundsExpr() chplan.Expr {
-	return &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "arrayDistinct", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "arrayFlatten", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArrayDistinct, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnArrayFlatten, Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: hqAggBoundsListAlias},
 			}},
 		}},
@@ -1456,11 +1459,11 @@ func classicBucketUnionBoundsExpr() chplan.Expr {
 // and the two would silently disagree about the +Inf slice if each kept
 // its own copy.
 func classicBucketRowCumulativeExpr() chplan.Expr {
-	return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramBucketBound, paramBucketCount},
-				Body: &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+				Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 					&chplan.Binary{
 						Op:    chplan.OpLe,
 						Left:  &chplan.BareIdent{Name: paramBucketBound},
@@ -1475,17 +1478,17 @@ func classicBucketRowCumulativeExpr() chplan.Expr {
 					// accepts. Prometheus's classic buckets are float
 					// samples anyway.
 					&chplan.FuncCall{
-						Name: "toFloat64",
+						Fn:   chplan.FnToFloat64,
 						Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketCount}},
 					},
 					&chplan.LitFloat{V: 0},
 				}},
 			},
 			&chplan.BareIdent{Name: paramRowBounds},
-			&chplan.FuncCall{Name: "arraySlice", Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
 				&chplan.BareIdent{Name: paramRowCounts},
 				&chplan.LitInt{V: 1},
-				&chplan.FuncCall{Name: "length", Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowBounds}}},
+				&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowBounds}}},
 			}},
 		}},
 	}}
@@ -1496,9 +1499,9 @@ func classicBucketRowCumulativeExpr() chplan.Expr {
 // paramRowCounts. Float64 for the same reason
 // classicBucketRowCumulativeExpr is.
 func classicBucketRowTotalExpr() chplan.Expr {
-	return &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{
 		&chplan.FuncCall{
-			Name: "arraySum",
+			Fn:   chplan.FnArraySum,
 			Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowCounts}},
 		},
 	}}
@@ -1510,15 +1513,15 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 
 	rowCumulativeAtBound := classicBucketRowCumulativeExpr()
 
-	contributingRungs := &chplan.FuncCall{Name: "arrayFilter", Args: []chplan.Expr{
+	contributingRungs := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramRowCum, paramRowLayout},
-			Body: &chplan.FuncCall{Name: "has", Args: []chplan.Expr{
+			Body: &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{
 				&chplan.BareIdent{Name: paramRowLayout},
 				&chplan.BareIdent{Name: paramUnionBound},
 			}},
 		},
-		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramRowBounds, paramRowCounts},
 				Body:   rowCumulativeAtBound,
@@ -1529,7 +1532,7 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 		boundsList,
 	}}
 
-	infRungs := &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	infRungs := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramRowCounts},
 			Body:   classicBucketRowTotalExpr(),
@@ -1537,12 +1540,12 @@ func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
 		countsList,
 	}}
 
-	return &chplan.FuncCall{Name: "arrayConcat", Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{paramUnionBound}, Body: fold(contributingRungs)},
 			classicBucketUnionBoundsExpr(),
 		}},
-		&chplan.FuncCall{Name: "array", Args: []chplan.Expr{fold(infRungs)}},
+		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{fold(infRungs)}},
 	}}
 }
 
@@ -1575,18 +1578,18 @@ func classicBucketMonotonicLadderExpr() chplan.Expr {
 // their rungs independently rather than by accumulating non-negative
 // counts, so both can hand up a ladder that dips.
 func classicBucketMonotonicExpr(ladder chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramLadderIdx},
-			Body: &chplan.FuncCall{Name: "arrayMax", Args: []chplan.Expr{
-				&chplan.FuncCall{Name: "arraySlice", Args: []chplan.Expr{
+			Body: &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
 					ladder,
 					&chplan.LitInt{V: 1},
 					&chplan.BareIdent{Name: paramLadderIdx},
 				}},
 			}},
 		},
-		&chplan.FuncCall{Name: "arrayEnumerate", Args: []chplan.Expr{ladder}},
+		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{ladder}},
 	}}
 }
 
@@ -1675,7 +1678,7 @@ func histogramAggGroupBy(agg *parser.AggregateExpr, identity chplan.Expr, s sche
 	// `{job=""}` where the reference oracle and the float path both answer
 	// `{}`).
 	attrs := &chplan.MapWithoutEmptyValues{
-		Map: &chplan.FuncCall{Name: "map", Args: mapArgs},
+		Map: &chplan.FuncCall{Fn: chplan.FnMap, Args: mapArgs},
 	}
 	return groupBy, aliases, attrs
 }
@@ -1973,15 +1976,15 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 // min-offset semantics.
 func expHistogramMergeOffsetExpr(offArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "arrayMin",
+		Fn: chplan.FnArrayMin,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arrayMap",
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
 					&chplan.Lambda{
 						Params: []string{paramExpRowScale, paramExpRowOffset},
 						Body: &chplan.FuncCall{
-							Name: "bitShiftRight",
+							Fn: chplan.FnBitShiftRight,
 							Args: []chplan.Expr{
 								&chplan.BareIdent{Name: paramExpRowOffset},
 								&chplan.Binary{
@@ -2041,16 +2044,16 @@ func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, merg
 	// parses cleanly even when mergedLength is computed from signed
 	// values.
 	return &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramT},
 				Body:   rowsSum,
 			},
 			&chplan.FuncCall{
-				Name: "range",
+				Fn: chplan.FnRange,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{mergedLength}},
+					&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
 				},
 			},
 		},
@@ -2071,12 +2074,12 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 
 	// per-row downscaled start: arrayMap((sm, om) -> bitShiftRight(om, sm - merged_scale), scalesArr, offArr)
 	downscaledStarts := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramScalesInner, paramOffInner},
 				Body: &chplan.FuncCall{
-					Name: "bitShiftRight",
+					Fn: chplan.FnBitShiftRight,
 					Args: []chplan.Expr{
 						&chplan.BareIdent{Name: paramOffInner},
 						&chplan.Binary{
@@ -2095,19 +2098,19 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 	// per-row downscaled end: arrayMap((sm, om, am) -> bitShiftRight(om + length(am) - 1, sm - merged_scale), scalesArr, offArr, bucArr).
 	// Rows with empty arrays produce (om + 0 - 1) = om - 1 — slightly below their start, which is fine since they contribute nothing.
 	downscaledEnds := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramScalesInner, paramOffInner, paramArrInner},
 				Body: &chplan.FuncCall{
-					Name: "bitShiftRight",
+					Fn: chplan.FnBitShiftRight,
 					Args: []chplan.Expr{
 						&chplan.Binary{
 							Op:   chplan.OpAdd,
 							Left: &chplan.BareIdent{Name: paramOffInner},
 							Right: &chplan.Binary{
 								Op:    chplan.OpSub,
-								Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{&chplan.BareIdent{Name: paramArrInner}}},
+								Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.BareIdent{Name: paramArrInner}}},
 								Right: &chplan.LitInt{V: 1},
 							},
 						},
@@ -2125,12 +2128,12 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 		},
 	}
 
-	mergedStart = &chplan.FuncCall{Name: "arrayMin", Args: []chplan.Expr{downscaledStarts}}
-	mergedEnd := &chplan.FuncCall{Name: "arrayMax", Args: []chplan.Expr{downscaledEnds}}
+	mergedStart = &chplan.FuncCall{Fn: chplan.FnArrayMin, Args: []chplan.Expr{downscaledStarts}}
+	mergedEnd := &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{downscaledEnds}}
 	// merged_length = mergedEnd - mergedStart + 1.
 	// Guard the "no rows contribute" case by clamping to 0 via greatest(0, …).
 	mergedLength = &chplan.FuncCall{
-		Name: "greatest",
+		Fn: chplan.FnGreatest,
 		Args: []chplan.Expr{
 			&chplan.LitInt{V: 0},
 			&chplan.Binary{
@@ -2155,7 +2158,7 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 // (s - merged_scale) == mergedStart + t, else 0.
 func expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "arraySum",
+		Fn: chplan.FnArraySum,
 		Args: []chplan.Expr{
 			expHistogramRowContribsExpr(
 				scalesArr, offArr, bucArr,
@@ -2185,20 +2188,20 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 	// For one (s, off, arr) tuple and target absolute index T,
 	// arraySum(arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))).
 	return &chplan.FuncCall{
-		Name: "arraySum",
+		Fn: chplan.FnArraySum,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arrayMap",
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
 					&chplan.Lambda{
 						Params: []string{paramExpBucketPos},
 						Body: &chplan.FuncCall{
-							Name: "if",
+							Fn: chplan.FnIf,
 							Args: []chplan.Expr{
 								&chplan.Binary{
 									Op: chplan.OpEq,
 									Left: &chplan.FuncCall{
-										Name: "bitShiftRight",
+										Fn: chplan.FnBitShiftRight,
 										Args: []chplan.Expr{
 											&chplan.Binary{
 												Op:   chplan.OpAdd,
@@ -2232,7 +2235,7 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 						},
 					},
 					&chplan.FuncCall{
-						Name: "arrayEnumerate",
+						Fn:   chplan.FnArrayEnumerate,
 						Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
 					},
 				},
@@ -2256,7 +2259,7 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 // exactly how the two axes would drift apart on a scale change.
 func expHistogramRowContribsExpr(scalesArr, offArr, bucArr, rowContrib chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramExpRowScale, paramExpRowOffset, paramExpRowBuckets},

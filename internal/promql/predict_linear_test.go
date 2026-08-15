@@ -134,7 +134,7 @@ func TestLower_PredictLinear_ComputedHorizon(t *testing.T) {
 	// layers, so dropping the wrapper is caught here rather than as a
 	// TYPE_MISMATCH from a downstream consumer.
 	wrap, ok := rw.ScalarExprs[0].(*chplan.FuncCall)
-	if !ok || wrap.Name != "assumeNotNull" || len(wrap.Args) != 1 {
+	if !ok || wrap.Fn != chplan.FnAssumeNotNull || len(wrap.Args) != 1 {
 		t.Fatalf("ScalarExprs[0] = %#v, want assumeNotNull(<1 arg>)", rw.ScalarExprs[0])
 	}
 	if _, ok := wrap.Args[0].(*chplan.ScalarSubquery); !ok {

@@ -126,14 +126,14 @@ func augmentAttributesForTopLevelExpr(s schema.Metrics, base chplan.Expr) chplan
 			args,
 			&chplan.LitString{V: p[0]},
 			&chplan.FuncCall{
-				Name: "toString",
+				Fn:   chplan.FnToString,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: p[1]}},
 			},
 		)
 	}
-	synth := &chplan.FuncCall{Name: "map", Args: args}
+	synth := &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	filtered := &chplan.FuncCall{
-		Name: "mapFilter",
+		Fn: chplan.FnMapFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{"k", "v"},
@@ -147,7 +147,7 @@ func augmentAttributesForTopLevelExpr(s schema.Metrics, base chplan.Expr) chplan
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{base, filtered},
 	}
 }

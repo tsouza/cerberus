@@ -239,7 +239,7 @@ func histogramValueLatestAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := make([]chplan.AggFunc, 0, len(cols))
 	for _, col := range cols {
 		aggs = append(aggs, chplan.AggFunc{
-			Name: "argMax",
+			Fn: chplan.FnArgMax,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: col},
 				&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -307,7 +307,7 @@ func histogramValueExpr(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	case "histogram_avg":
 		return mean, nil
 	case "histogram_stddev":
-		return hvCall("sqrt", histogramVarianceExpr(s, mean, countF)), nil
+		return hvCall(chplan.FnSqrt, histogramVarianceExpr(s, mean, countF)), nil
 	case "histogram_stdvar":
 		return histogramVarianceExpr(s, mean, countF), nil
 	case "histogram_fraction":
@@ -355,7 +355,7 @@ func histogramVarianceExpr(s schema.Metrics, mean, countF chplan.Expr) chplan.Ex
 			Params: []string{"c", "i"},
 			Body:   hvMul(hvFloat(hvBare("c")), hvMul(delta, delta)),
 		}
-		return hvCall("arraySum", hvCall("arrayMap", lambda, hvCol(bucketsCol), hvCall("arrayEnumerate", hvCol(bucketsCol))))
+		return hvCall(chplan.FnArraySum, hvCall(chplan.FnArrayMap, lambda, hvCol(bucketsCol), hvCall(chplan.FnArrayEnumerate, hvCol(bucketsCol))))
 	}
 	zero := hvMul(hvFloat(hvCol(s.ZeroCountColumn)), hvMul(mean, mean))
 	total := hvAdd(hvAdd(sumSide(s.PositiveBucketCountsColumn, s.PositiveOffsetColumn, false),
@@ -368,11 +368,11 @@ func histogramVarianceExpr(s schema.Metrics, mean, countF chplan.Expr) chplan.Ex
 // Count = 0 or NaN bound → NaN; lower >= upper → 0. Both ranks clamp
 // to Count (the reference's trailing `rank > count → count` clamp).
 func histogramFractionExpr(s schema.Metrics, lowerE, upperE, countF chplan.Expr) chplan.Expr {
-	rUpper := hvCall("least", countF, histogramRankExpr(s, upperE))
-	rLower := hvCall("least", countF, histogramRankExpr(s, lowerE))
+	rUpper := hvCall(chplan.FnLeast, countF, histogramRankExpr(s, upperE))
+	rLower := hvCall(chplan.FnLeast, countF, histogramRankExpr(s, lowerE))
 	frac := hvDiv(hvSub(rUpper, rLower), countF)
 	return &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			hvOr(hvBin(chplan.OpEq, countF, hvLit(0)), hvOr(isNaNExpr(lowerE), isNaNExpr(upperE))),
 			&chplan.LitFloat{V: math.NaN()},
@@ -403,24 +403,24 @@ func histogramRankExpr(s schema.Metrics, v chplan.Expr) chplan.Expr {
 	// arraySum over Array(UInt64) is UInt64; every consumer below sits
 	// in a multiIf whose other branches are Float64, and CH refuses a
 	// UInt64/Float64 supertype — pin Float64 at the source.
-	tn := hvFloat(hvCall("arraySum", hvCol(s.NegativeBucketCountsColumn)))
+	tn := hvFloat(hvCall(chplan.FnArraySum, hvCol(s.NegativeBucketCountsColumn)))
 	z := hvFloat(hvCol(s.ZeroCountColumn))
-	tp := hvFloat(hvCall("arraySum", hvCol(s.PositiveBucketCountsColumn)))
+	tp := hvFloat(hvCall(chplan.FnArraySum, hvCol(s.PositiveBucketCountsColumn)))
 
 	// log-index of |v| in bucket units: log2(|v|) · 2^Scale.
-	logIdx := hvMul(hvCall("log2", hvCall("abs", v)), hvPow(hvLit(2), hvFloat(hvCol(s.ScaleColumn))))
+	logIdx := hvMul(hvCall(chplan.FnLog2, hvCall(chplan.FnAbs, v)), hvPow(hvLit(2), hvFloat(hvCol(s.ScaleColumn))))
 
 	// Positive side: p = logIdx − PositiveOffset.
 	p := hvSub(logIdx, hvFloat(hvCol(s.PositiveOffsetColumn)))
-	pbcLen := hvFloat(hvCall("length", hvCol(s.PositiveBucketCountsColumn)))
-	cumP := hvCall("arrayCumSum", hvCol(s.PositiveBucketCountsColumn))
-	posFull := hvFloat(hvSubscript(cumP, hvCall("toUInt32", hvCall("floor", p))))
+	pbcLen := hvFloat(hvCall(chplan.FnLength, hvCol(s.PositiveBucketCountsColumn)))
+	cumP := hvCall(chplan.FnArrayCumSum, hvCol(s.PositiveBucketCountsColumn))
+	posFull := hvFloat(hvSubscript(cumP, hvCall(chplan.FnToUInt32, hvCall(chplan.FnFloor, p))))
 	posPartial := hvMul(
-		hvFloat(hvSubscript(hvCol(s.PositiveBucketCountsColumn), hvAdd(hvCall("toUInt32", hvCall("floor", p)), hvInt(1)))),
-		hvSub(p, hvCall("floor", p)),
+		hvFloat(hvSubscript(hvCol(s.PositiveBucketCountsColumn), hvAdd(hvCall(chplan.FnToUInt32, hvCall(chplan.FnFloor, p)), hvInt(1)))),
+		hvSub(p, hvCall(chplan.FnFloor, p)),
 	)
 	sPos := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			hvBin(chplan.OpLe, p, hvLit(0)), hvLit(0),
 			hvBin(chplan.OpGe, p, pbcLen), tp,
@@ -432,18 +432,18 @@ func histogramRankExpr(s schema.Metrics, v chplan.Expr) chplan.Expr {
 	// j = ceil(q) − 1 (0-based); rank = (TN − cum[ceil(q)]) +
 	// NBC[ceil(q)]·(ceil(q) − q).
 	q := hvSub(logIdx, hvFloat(hvCol(s.NegativeOffsetColumn)))
-	nbcLen := hvFloat(hvCall("length", hvCol(s.NegativeBucketCountsColumn)))
-	cumN := hvCall("arrayCumSum", hvCol(s.NegativeBucketCountsColumn))
-	ceilQ := hvCall("ceil", q)
+	nbcLen := hvFloat(hvCall(chplan.FnLength, hvCol(s.NegativeBucketCountsColumn)))
+	cumN := hvCall(chplan.FnArrayCumSum, hvCol(s.NegativeBucketCountsColumn))
+	ceilQ := hvCall(chplan.FnCeil, q)
 	negRank := hvAdd(
-		hvSub(tn, hvFloat(hvSubscript(cumN, hvCall("toUInt32", ceilQ)))),
+		hvSub(tn, hvFloat(hvSubscript(cumN, hvCall(chplan.FnToUInt32, ceilQ)))),
 		hvMul(
-			hvFloat(hvSubscript(hvCol(s.NegativeBucketCountsColumn), hvCall("toUInt32", ceilQ))),
+			hvFloat(hvSubscript(hvCol(s.NegativeBucketCountsColumn), hvCall(chplan.FnToUInt32, ceilQ))),
 			hvSub(ceilQ, q),
 		),
 	)
 	sNeg := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			hvBin(chplan.OpGe, q, nbcLen), hvLit(0),
 			hvBin(chplan.OpLe, q, hvLit(0)), tn,
@@ -452,7 +452,7 @@ func histogramRankExpr(s schema.Metrics, v chplan.Expr) chplan.Expr {
 	}
 
 	return &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			hvBin(chplan.OpGt, v, hvLit(0)), hvAdd(hvAdd(tn, z), sPos),
 			hvBin(chplan.OpLt, v, hvLit(0)), sNeg,
@@ -469,11 +469,11 @@ func hvBare(name string) chplan.Expr { return &chplan.BareIdent{Name: name} }
 func hvLit(v float64) chplan.Expr    { return &chplan.LitFloat{V: v} }
 func hvInt(v int64) chplan.Expr      { return &chplan.LitInt{V: v} }
 
-func hvCall(name string, args ...chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: name, Args: args}
+func hvCall(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: fn, Args: args}
 }
 
-func hvFloat(e chplan.Expr) chplan.Expr { return hvCall("toFloat64", e) }
+func hvFloat(e chplan.Expr) chplan.Expr { return hvCall(chplan.FnToFloat64, e) }
 
 func hvBin(op chplan.BinaryOp, l, r chplan.Expr) chplan.Expr {
 	return &chplan.Binary{Op: op, Left: l, Right: r}
@@ -485,7 +485,7 @@ func hvMul(l, r chplan.Expr) chplan.Expr { return hvBin(chplan.OpMul, l, r) }
 func hvDiv(l, r chplan.Expr) chplan.Expr { return hvBin(chplan.OpDiv, l, r) }
 func hvOr(l, r chplan.Expr) chplan.Expr  { return hvBin(chplan.OpOr, l, r) }
 
-func hvPow(l, r chplan.Expr) chplan.Expr { return hvCall("pow", l, r) }
+func hvPow(l, r chplan.Expr) chplan.Expr { return hvCall(chplan.FnPow, l, r) }
 
 func hvSubscript(container, key chplan.Expr) chplan.Expr {
 	return &chplan.Subscript{Container: container, Key: key}

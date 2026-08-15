@@ -190,7 +190,7 @@ func TestClassicBucketLadderFold_NilAggIsSum(t *testing.T) {
 		t.Fatal("bare-rate fold does not reference its rung array")
 	}
 	call, ok := out.(*chplan.FuncCall)
-	if !ok || call.Name != "arraySum" {
+	if !ok || call.Fn != chplan.FnArraySum {
 		t.Fatalf("bare-rate fold = %#v, want arraySum", out)
 	}
 }
