@@ -67,15 +67,12 @@ func newChDBPatternsServer(t *testing.T, ddl string) (*httptest.Server, *chclien
 	return srv, c
 }
 
-// TestPatterns_ChDB_DrainRoundtrip seeds otel_logs with 10 lines across
-// three pattern shapes, exercises the handler end-to-end through chDB,
+// TestPatterns_ChDB_DrainRoundtrip seeds otel_logs with one pattern at
+// upstream's volume floor, exercises the handler end-to-end through chDB,
 // and asserts the response carries:
-//   - at least one cluster (drain folds the lines into >=1 templates;
-//     the seed is shaped to produce exactly 3 token-skeletons but drain
-//     may merge based on SimTh — the lower bound is robust),
-//   - sum of samples[*][1] across all clusters == 10 (every trained
-//     line accounts for one count, none dropped by the limiter — drain's
-//     DefaultConfig.MaxClusters is 300, far above three),
+//   - one retained cluster (all rows share one token skeleton),
+//   - sum of samples[*][1] across all clusters == 30 (every trained
+//     line accounts for one count),
 //   - at least one cluster contains both "GET" and "200" (the dominant
 //     shape), exercising the structural-not-exact assertion strategy
 //     from plan §4,
@@ -91,38 +88,25 @@ func TestPatterns_ChDB_DrainRoundtrip(t *testing.T) {
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	const tsFmt = "2006-01-02 15:04:05.000"
 
-	// Three pattern shapes. Drain rejects lines with fewer than 4
-	// tokens, so each body carries at least four space-separated chunks
-	// (verb, path, status, latency suffix) to clear the threshold.
+	// One pattern shape at upstream's 30-line retention floor. Drain
+	// rejects lines with fewer than 4 tokens, so each body carries at
+	// least four space-separated chunks (verb, path, status, latency
+	// suffix) to clear the threshold.
 	//
-	//   - 5x "GET /api/foo/<N> status=200 latency=<L>ms" — drain folds
-	//     into a single template
-	//   - 3x "GET /api/bar/<M> status=200 latency=<L>ms" — drain folds
-	//     into a single template (may merge with foo at coarser
-	//     `LogClusterDepth` settings)
-	//   - 2x "POST /bar status=500 latency=<L>ms" — drain folds into
-	//     a single template
-	//
-	// Total: 10 lines, expected >=1 cluster (seed is engineered to
-	// yield up to 3; drain's punctuation tokeniser may merge based on
-	// SimTh — the lower-bound assertion is robust).
-	seedRows := []struct {
+	// All rows use "GET /api/foo/<N> status=200 latency=<L>ms", which
+	// drain folds into a single retained template.
+	seedRows := make([]struct {
 		dt   time.Duration
 		body string
-	}{
-		// GET /api/foo/<N> ... — 5 variants.
-		{0 * time.Second, "GET /api/foo/1 status=200 latency=5ms"},
-		{1 * time.Second, "GET /api/foo/2 status=200 latency=7ms"},
-		{2 * time.Second, "GET /api/foo/3 status=200 latency=4ms"},
-		{3 * time.Second, "GET /api/foo/4 status=200 latency=11ms"},
-		{4 * time.Second, "GET /api/foo/5 status=200 latency=9ms"},
-		// GET /api/bar/<M> ... — 3 variants.
-		{5 * time.Second, "GET /api/bar/10 status=200 latency=12ms"},
-		{6 * time.Second, "GET /api/bar/20 status=200 latency=8ms"},
-		{7 * time.Second, "GET /api/bar/30 status=200 latency=6ms"},
-		// POST /bar ... — 2 lines, varied latency.
-		{8 * time.Second, "POST /bar status=500 latency=22ms"},
-		{9 * time.Second, "POST /bar status=500 latency=18ms"},
+	}, 0, retainedPatternVolumeFloor)
+	for i := 0; i < retainedPatternVolumeFloor; i++ {
+		seedRows = append(seedRows, struct {
+			dt   time.Duration
+			body string
+		}{
+			dt:   time.Duration(i) * time.Second,
+			body: fmt.Sprintf("GET /api/foo/%d status=200 latency=%dms", i, i+1),
+		})
 	}
 
 	var inserts strings.Builder
@@ -144,7 +128,7 @@ func TestPatterns_ChDB_DrainRoundtrip(t *testing.T) {
 	startUnix := base.Add(-1 * time.Minute).Unix()
 	endUnix := base.Add(1 * time.Minute).Unix()
 	url := fmt.Sprintf(
-		`%s/loki/api/v1/patterns?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d&line_limit=20`,
+		`%s/loki/api/v1/patterns?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d&line_limit=30`,
 		srv.URL, startUnix, endUnix,
 	)
 	resp, err := http.Get(url)
@@ -167,33 +151,30 @@ func TestPatterns_ChDB_DrainRoundtrip(t *testing.T) {
 		t.Fatalf("status=%q want success", out.Status)
 	}
 
-	// Plan §4 assertion: cluster count is >=1. The seed is shaped to
-	// yield exactly 3 (one per token skeleton); drain's punctuation
-	// tokeniser may split or merge differently across upstream bumps,
-	// so the assertion is the lower bound — anything below 1 means
-	// the SQL did not retrieve any rows or drain failed to train.
+	// The 30 structurally equivalent rows meet the retention floor, so
+	// anything below one cluster means the SQL did not retrieve them or
+	// drain failed to train.
 	if len(out.Data) < 1 {
-		t.Fatalf("expected >=1 cluster after training 10 lines; got %d: %+v",
+		t.Fatalf("expected >=1 cluster after training %d lines; got %d: %+v",
+			retainedPatternVolumeFloor,
 			len(out.Data), out.Data)
 	}
 
 	// Plan §4 assertion: sum of samples[*][1] across all clusters ==
-	// 10 (every trained line accounts for one count, none dropped by
-	// the limiter — DefaultConfig.MaxClusters is 300, far above 3).
+	// 30 (every trained line accounts for one count).
 	var totalCount int64
 	for _, p := range out.Data {
 		for _, s := range p.Samples {
 			totalCount += s[1]
 		}
 	}
-	if totalCount != 10 {
-		t.Errorf("expected sample-count sum == 10 (one per trained line); got %d across %d clusters",
-			totalCount, len(out.Data))
+	if totalCount != retainedPatternVolumeFloor {
+		t.Errorf("expected sample-count sum == %d (one per trained line); got %d across %d clusters",
+			retainedPatternVolumeFloor, totalCount, len(out.Data))
 	}
 
 	// Plan §4 assertion: at least one cluster contains the literal
-	// tokens "GET" and "200" (the dominant 8-line shape across foo
-	// and bar). Structural assertion — drain's `<_>` placeholder may
+	// tokens "GET" and "200". Structural assertion — drain's `<_>` placeholder may
 	// land anywhere between the verbs/codes.
 	var foundGET bool
 	for _, p := range out.Data {

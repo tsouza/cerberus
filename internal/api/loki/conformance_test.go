@@ -636,20 +636,19 @@ func TestConformance_LokiPatternsBasic(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
-	// 5 canned (Timestamp, Body) rows feeding the stub Querier — drain
-	// folds them into >=1 clusters when the handler trains on them.
+	// Enough canned rows to meet upstream's retained-pattern volume floor;
+	// drain folds them into one cluster when the handler trains on them.
 	// Drain rejects lines with fewer than 4 tokens, so each body
 	// includes at least four space-separated chunks (path, status,
 	// latency suffix) to satisfy the minimum.
-	q := &stubQuerier{
-		tsLines: []chclient.TimestampedLine{
-			{Timestamp: base, Body: "GET /api/foo/1 status=200 latency=5ms"},
-			{Timestamp: base.Add(1 * time.Second), Body: "GET /api/foo/2 status=200 latency=7ms"},
-			{Timestamp: base.Add(2 * time.Second), Body: "GET /api/foo/3 status=200 latency=4ms"},
-			{Timestamp: base.Add(3 * time.Second), Body: "GET /api/foo/4 status=200 latency=11ms"},
-			{Timestamp: base.Add(4 * time.Second), Body: "GET /api/foo/5 status=200 latency=9ms"},
-		},
+	lines := make([]chclient.TimestampedLine, 0, retainedPatternVolumeFloor)
+	for i := 0; i < retainedPatternVolumeFloor; i++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			Body:      "GET /api/foo/1 status=200 latency=5ms",
+		})
 	}
+	q := &stubQuerier{tsLines: lines}
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
 
@@ -681,7 +680,8 @@ func TestConformance_LokiPatternsBasic(t *testing.T) {
 		t.Fatalf("expected non-nil Data slice (JSON []); got nil — body=%s", body)
 	}
 	if len(env.Data) < 1 {
-		t.Fatalf("expected >=1 cluster after 5 trained lines; got %d — body=%s",
+		t.Fatalf("expected >=1 cluster after %d trained lines; got %d — body=%s",
+			retainedPatternVolumeFloor,
 			len(env.Data), body)
 	}
 	// Per-element pins: each Pattern decodes with the
