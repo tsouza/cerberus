@@ -1245,8 +1245,14 @@ func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
 	srv := newSplitBudgetServer(t, limiter, tailLimiter)
 
 	// A live tail session takes the one tail slot and keeps it for the
-	// rest of the test (the conn closes on cleanup).
-	_ = dialTail(t, srv, `{job="api"}`)
+	// rest of the test (the conn closes on cleanup). The handshake finishes
+	// before handleTail acquires that slot, so wait for its first payload
+	// before racing a second connection against it.
+	liveTail := dialTail(t, srv, `{job="api"}`)
+	_ = liveTail.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, _, err := liveTail.ReadMessage(); err != nil {
+		t.Fatalf("read first live-tail message: %v", err)
+	}
 
 	// Corroborate that the tail budget really is full — otherwise the
 	// assertions below would pass trivially on an unoccupied budget. The
