@@ -316,27 +316,50 @@ func TestWidenSubquerySpineSkipsInstantWindows(t *testing.T) {
 // In range mode the grid has to reach back a full subquery range before
 // the QUERY start, or the leading outer anchors have no inner anchors to
 // reduce and the series silently begins late; instant eval has no query
-// start and reaches back from the eval timestamp instead.
+// start and reaches back from the eval timestamp instead. An `@` pin
+// overrides both: the subquery evaluates its own [pin-Range, pin] window
+// regardless of the surrounding query's mode (#2071 — lowerSubqueryOverAbsent
+// used to ignore the pin entirely and always fall back to the query's own
+// window).
 func TestSubqueryOverAbsentGridCoversEveryOuterAnchor(t *testing.T) {
 	t.Parallel()
 
 	const query = `absent(up)[5m:1m]`
 	const subRange = 5 * time.Minute
 
+	// Deliberately far from both query bounds, so a grid that ignored the
+	// pin would land on visibly different anchors.
+	pin := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	pinMillis := pin.UnixMilli()
+
 	cases := []struct {
-		name string
-		ctx  lowerCtx
-		want time.Time
+		name      string
+		pinAt     *int64
+		ctx       lowerCtx
+		wantStart time.Time
+		wantEnd   time.Time
 	}{
 		{
-			name: "range mode reaches back from the query start",
-			ctx:  lowerCtx{start: gridTestQueryStart, end: gridTestQueryEnd, step: gridTestQueryStep},
-			want: gridTestQueryStart.Add(-subRange),
+			name:      "range mode reaches back from the query start",
+			ctx:       lowerCtx{start: gridTestQueryStart, end: gridTestQueryEnd, step: gridTestQueryStep},
+			wantStart: gridTestQueryStart.Add(-subRange),
+			wantEnd:   gridTestQueryEnd,
 		},
 		{
-			name: "instant eval reaches back from the eval timestamp",
-			ctx:  lowerCtx{end: gridTestQueryEnd},
-			want: gridTestQueryEnd.Add(-subRange),
+			name:      "instant eval reaches back from the eval timestamp",
+			ctx:       lowerCtx{end: gridTestQueryEnd},
+			wantStart: gridTestQueryEnd.Add(-subRange),
+			wantEnd:   gridTestQueryEnd,
+		},
+		{
+			// A `@` pin overrides the range-mode window entirely: the
+			// subquery evaluates its own [pin-Range, pin], not the outer
+			// query's [start, end].
+			name:      "@ pin wins over the range-mode window",
+			pinAt:     &pinMillis,
+			ctx:       lowerCtx{start: gridTestQueryStart, end: gridTestQueryEnd, step: gridTestQueryStep},
+			wantStart: pin.Add(-subRange),
+			wantEnd:   pin,
 		},
 	}
 
@@ -344,9 +367,13 @@ func TestSubqueryOverAbsentGridCoversEveryOuterAnchor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			sub := parseSubquery(t, query)
+			if tc.pinAt != nil {
+				sub.Timestamp = tc.pinAt
+			}
 			ctx := tc.ctx
 			ctx.lowerers = RangeLowerers{}.withDefaults()
-			plan, err := lowerSubquery(parseSubquery(t, query), schema.DefaultOTelMetrics(), ctx)
+			plan, err := lowerSubquery(sub, schema.DefaultOTelMetrics(), ctx)
 			if err != nil {
 				t.Fatalf("lowerSubquery(%q): %v", query, err)
 			}
@@ -358,11 +385,11 @@ func TestSubqueryOverAbsentGridCoversEveryOuterAnchor(t *testing.T) {
 			if !ok {
 				t.Fatalf("lowered %q over %T, want *chplan.AbsentOverTime", query, project.Input)
 			}
-			if !absent.Start.Equal(tc.want) {
-				t.Errorf("AbsentOverTime.Start = %s, want %s", absent.Start, tc.want)
+			if !absent.Start.Equal(tc.wantStart) {
+				t.Errorf("AbsentOverTime.Start = %s, want %s", absent.Start, tc.wantStart)
 			}
-			if !absent.End.Equal(tc.ctx.end) {
-				t.Errorf("AbsentOverTime.End = %s, want %s", absent.End, tc.ctx.end)
+			if !absent.End.Equal(tc.wantEnd) {
+				t.Errorf("AbsentOverTime.End = %s, want %s", absent.End, tc.wantEnd)
 			}
 		})
 	}
