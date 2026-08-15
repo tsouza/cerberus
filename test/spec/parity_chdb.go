@@ -1409,6 +1409,7 @@ const promNameLabel = "__name__"
 const (
 	colMetricName = "MetricName"
 	colAttributes = "Attributes"
+	colAnchorTS   = "anchor_ts"
 	colTimeUnix   = "TimeUnix"
 	colValue      = "Value"
 )
@@ -1451,22 +1452,29 @@ type sampleColumns struct {
 // is nothing to compare. MetricName and TimeUnix are optional — a function
 // that drops `__name__` projects no MetricName, and an instant query's
 // timestamps do not participate in the comparison at all (see
-// [comparesTimestamps]). Any other column, `anchor_ts` among them, is a
-// scaffolding column of the emitted query rather than a field of the
-// answer, and is ignored.
+// [comparesTimestamps]). When TimeUnix is absent, anchor_ts is the range
+// answer's timestamp before the HTTP handler's Sample projection renames it
+// to TimeUnix. If both are present, TimeUnix remains authoritative and
+// anchor_ts is only subquery scaffolding.
 func locateSampleColumns(cols []string) (sampleColumns, error) {
 	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1}
+	anchorTS := -1
 	for i, col := range cols {
 		switch col {
 		case colMetricName:
 			sc.name = i
 		case colAttributes:
 			sc.attrs = i
+		case colAnchorTS:
+			anchorTS = i
 		case colTimeUnix:
 			sc.ts = i
 		case colValue:
 			sc.value = i
 		}
+	}
+	if sc.ts < 0 {
+		sc.ts = anchorTS
 	}
 	if sc.attrs < 0 || sc.value < 0 {
 		return sc, fmt.Errorf(

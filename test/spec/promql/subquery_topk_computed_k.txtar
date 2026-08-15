@@ -6,6 +6,10 @@
 # anchor_ts in the partition list so K series are picked per step.
 -- query.promql --
 max_over_time(topk(scalar(metric_k), rate(http_requests_total[5m]))[30m:5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
 -- seed --
 CREATE TABLE otel_metrics_sum (
     MetricName String,
@@ -45,6 +49,14 @@ CREATE TABLE otel_metrics_gauge (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
+    ('metric_k', map(), toDateTime64('2025-12-31 23:29:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:33:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:37:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:41:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:45:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:49:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:53:00', 9), 1.0),
+    ('metric_k', map(), toDateTime64('2025-12-31 23:57:00', 9), 1.0),
     ('metric_k', map(), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- args --
 [0] string = "service.name"

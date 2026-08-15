@@ -1,8 +1,9 @@
 -- query.promql --
 avg_over_time(rate(http_requests_total[1m])[2m:10s])
--- parity_exempt --
-reason: no-comparable-oracle
-detail: In range mode this lowers to chsql's array-reduce outer RangeWindow emission (arrayAvg(window_vals) over the inner rate's window array), whose raw SQL projects (Attributes, anchor_ts, Value) with no TimeUnix alias; production always gets a correct TimeUnix column because internal/api/prom/handler.go's wrapWithSampleProjection renames anchor_ts to TimeUnix for every chplan.IsDerivedShape plan on the way out of the HTTP handler, but the spec lane's pinned `-- sql --` is the pre-wrap plan RunParity re-executes directly, so locateSampleColumns never sees that rename and cannot check output timestamps for this fixture, which a range endpoint requires (see comparesTimestamps). The sibling max_over_time family happens to alias TimeUnix in its own raw SQL (an incidental side effect of its tupleElement-based emission), which is why subquery_max_over_time_rate_range enrols cleanly while this one cannot.
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
 -- range_step --
 30s
 -- args --

@@ -48,9 +48,11 @@ func TestLocateSampleColumns(t *testing.T) {
 			want: sampleColumns{name: -1, attrs: 0, ts: 2, value: 3},
 		},
 		{
-			name: "subquery projection with anchor_ts and no sample time",
+			// A raw range projection is wrapped into the public Sample
+			// shape by renaming anchor_ts to TimeUnix in the HTTP layer.
+			name: "range projection whose sample time is anchor_ts",
 			cols: []string{"Attributes", "anchor_ts", "Value"},
-			want: sampleColumns{name: -1, attrs: 0, ts: -1, value: 2},
+			want: sampleColumns{name: -1, attrs: 0, ts: 1, value: 2},
 		},
 		{
 			name: "named subquery projection interposing anchor_ts",
