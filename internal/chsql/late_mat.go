@@ -426,7 +426,7 @@ func qualifyExpr(e chplan.Expr, wideSet map[string]struct{}) chplan.Expr {
 		for i, a := range v.Args {
 			args[i] = qualifyExpr(a, wideSet)
 		}
-		return &chplan.FuncCall{Name: v.Name, Args: args}
+		return &chplan.FuncCall{Fn: v.Fn, Name: v.Name, Args: args}
 	case *chplan.MapAccess:
 		return &chplan.MapAccess{
 			Map: qualifyExpr(v.Map, wideSet),
