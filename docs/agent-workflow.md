@@ -5,7 +5,7 @@ the invariants in one line each; this document holds the mechanics behind them.
 
 ## The change lifecycle
 
-A non-trivial change runs through five stages in order. A trivial change — a typo, a comment, a
+A non-trivial change runs through four stages in order. A trivial change — a typo, a comment, a
 one-line fix with an obvious test — goes straight to the PR.
 
 1. **Plan mode.** Read before writing. Establish where the change belongs using the architecture
@@ -16,19 +16,10 @@ one-line fix with an obvious test — goes straight to the PR.
    today, whether the change is observable on the wire or only in the plan, and which generated
    artefacts will need regenerating. When the answer is unavailable — an agent running unattended,
    for instance — make the call, state it explicitly, and continue rather than blocking.
-3. **Spec at `docs/specs/<feature>.md`.** One file per change, named for the change rather than the
-   issue number so it stays readable. A spec states, in this order: the problem with evidence (file
-   and line, or the reference backend's answer next to cerberus's); the scope boundary, meaning both
-   what is included and what is explicitly not; the design, at the level of which packages gain which
-   behaviour; the verification plan naming the specific test layers and files; and the risks. A spec
-   that cannot name its verification layer is not finished.
-4. **Numbered task list for owner review.** Each task independently reviewable, ordered so the tree
-   is green between any two of them, with its verification named. This is the artefact the owner
-   approves; approval of the spec is not approval of the task list.
-5. **Implementation.** One PR per coherent change, following the shipping ritual below.
-
-Specs are living documents while the change is in flight and archival once it merges. They record the
-decision, not the history of arriving at it.
+3. **Record the change context.** Put the problem with evidence, scope boundary, design, verification
+   plan, and risks in the issue body or PR description. Pin observable behaviour in tests and explain
+   non-obvious implementation decisions in code. Do not create sidecar specification documents.
+4. **Implementation.** One PR per coherent change, following the shipping ritual below.
 
 ## Shipping ritual
 
@@ -40,6 +31,8 @@ branch off `origin/main`, so avoid the situation instead. Re-check the base befo
 The push and the `gh pr create` are a single step. A pushed branch with no PR appears in no
 `gh pr list`, gets no check runs, and reaches no reviewer; if the work it belongs to merges without
 it, its commits are stranded. A branch that is not ready for review is a draft PR, not an absent one.
+PR bodies must contain actual newline bytes: never pass literal `\n` escapes through `gh pr create/edit
+--body`; use a body file or equivalent newline-safe input.
 
 Verify the push landed by SHA rather than by the client's own report:
 
