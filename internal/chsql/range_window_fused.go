@@ -462,13 +462,12 @@ func (e *emitter) emitFusedMatrixSubquery(
 	outQ := NewQuery().From(joinQ.Frag())
 	outQ.Select(g.groupFrags...)
 	outQ.Select(As(tupleElemFrag(BareIdent(fusedOuterAnchorAlias), 1), RangeWindowAnchorAlias))
-	if r.TimestampColumn != "" && r.TimestampColumn != RangeWindowAnchorAlias {
-		outQ.Select(As(gridAnchorFrag(r), r.TimestampColumn))
-	} else if r.TimestampColumn == RangeWindowAnchorAlias {
-		// The outer reducer consumes anchor_ts, while the root matrix answer
-		// must also expose the request-grid timestamp to downstream consumers.
-		outQ.Select(As(gridAnchorFrag(r), "TimeUnix"))
-	}
+	// See projectAnchorAsTimestampColumn (range_window.go): when the outer
+	// reducer's own TimestampColumn is anchor_ts itself (a reducer stacked
+	// over another matrix RangeWindow), the root matrix answer still needs
+	// the request-grid timestamp exposed under the canonical schema column
+	// for downstream consumers, so the fallback there covers this case too.
+	projectAnchorAsTimestampColumn(outQ, r)
 	outQ.Select(As(tupleElemFrag(BareIdent(fusedOuterAnchorAlias), 2), r.ValueColumn))
 
 	return e.emitSelect(outQ)
