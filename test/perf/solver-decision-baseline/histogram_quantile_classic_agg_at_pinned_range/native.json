@@ -1,0 +1,11 @@
+{
+  "query": "histogram_quantile_classic_agg_at_pinned_range/native",
+  "lowering": "native",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 0,
+  "cumulative_d": "0s",
+  "outer_range": "1h0m0s"
+}
