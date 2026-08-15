@@ -47,14 +47,15 @@ var agplOracleLanes = []agplOracleLane{
 		},
 	},
 	{
-		// The TraceQL parity runner needs the reference engine AND the
-		// chDB session that holds the seeded spans, so it runs on the
-		// chDB lane's traceql leg rather than in the tag's own lane.
+		// The TraceQL parity runner and fixed LogQL integration suite need
+		// their reference oracles AND a chDB session, so they run in the
+		// chDB workflow rather than in the tag's own lane.
 		workflow: ".github/workflows/chdb.yml",
 		tags:     "chdb,agpl_oracle,chdb_agpl_oracle",
 		scopes: []string{
 			"test/spec/",
 			"internal/traceql/",
+			"test/integration/logql/",
 		},
 	},
 }

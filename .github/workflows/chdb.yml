@@ -549,3 +549,81 @@ jobs:
 
       - name: Run exotic PromQL integration suite (chDB)
         run: go test -tags chdb -count=1 ./test/integration/promql/...
+
+  # `integration-logql` is the LogQL sibling of integration-promql. It
+  # seeds ONE rich, fixed OTel logs fixture, mounts the real loki.Handler,
+  # and compares the stream rows for every category-matrix query with the
+  # independent property oracle. The oracle's Loki parser dependency stays
+  # test-only behind the established three-tag AGPL quarantine.
+  #
+  # This is ORTHOGONAL to `roundtrip`: roundtrip pins self-derived SQL and
+  # expected_rows; this live HTTP pipeline has no golden/GOLDEN_UPDATE path
+  # and catches semantic lowering, optimizer, emitter, and wire drift.
+  integration-logql:
+    name: integration (logql)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        with:
+          tool: just
+
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run exotic LogQL integration suite (chDB)
+        run: go test -tags chdb,agpl_oracle,chdb_agpl_oracle -count=1 ./test/integration/logql/...
+
+  # `integration-traceql` is the TraceQL sibling of integration-promql.
+  # It seeds ONE rich, fixed OTel traces fixture with real parent chains,
+  # mounts the real tempo.Handler, and compares every category-matrix query
+  # with the independent from-scratch TraceQL property oracle.
+  #
+  # This is ORTHOGONAL to `roundtrip`: roundtrip pins self-derived SQL and
+  # expected_rows; this live HTTP pipeline has no golden/GOLDEN_UPDATE path
+  # and catches semantic selector, structural, aggregate, optimizer, emitter,
+  # and wire drift.
+  integration-traceql:
+    name: integration (traceql)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        with:
+          tool: just
+
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run exotic TraceQL integration suite (chDB)
+        run: go test -tags chdb -count=1 ./test/integration/traceql/...
