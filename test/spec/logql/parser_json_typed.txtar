@@ -33,5 +33,5 @@ INSERT INTO otel_logs (Body) VALUES
   [{"msg": "retry", "severity": "error", "ts": "2025-01-01"}]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), JSONExtractString(Body, "severity"))), "level"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "level"), "level_extracted", "level"), JSONExtractString(Body, "severity")))["level"], LogAttributes["level"]) = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnJSONExtractString(Body, "severity"))), "level"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnJSONExtractString(Body, "severity")))["level"], LogAttributes["level"]) = "error"))
   Scan(otel_logs)

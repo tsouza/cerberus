@@ -213,21 +213,21 @@ func TestLowerVectorAggregationByTopLevelColumn(t *testing.T) {
 	}
 	identity := requireCanonicalIdentity(t, innerProj.Projections[0].Expr)
 	wrap, ok := identity.(*chplan.FuncCall)
-	if !ok || wrap.Name != "mapConcat" {
+	if !ok || wrap.Fn != chplan.FnMapMerge {
 		t.Fatalf("inner identity projection is %T (name %q), want *chplan.FuncCall(mapConcat)", identity, funcName(identity))
 	}
 	if len(wrap.Args) < 2 {
 		t.Fatalf("mapConcat has %d args, want >= 2", len(wrap.Args))
 	}
 	mapFilter, ok := wrap.Args[1].(*chplan.FuncCall)
-	if !ok || mapFilter.Name != "mapFilter" {
+	if !ok || mapFilter.Fn != chplan.FnMapFilter {
 		t.Fatalf("mapConcat.Args[1] = %T (%q), want *chplan.FuncCall(mapFilter)", wrap.Args[1], funcName(wrap.Args[1]))
 	}
 	if len(mapFilter.Args) < 2 {
 		t.Fatalf("mapFilter has %d args, want >= 2", len(mapFilter.Args))
 	}
 	synthMap, ok := mapFilter.Args[1].(*chplan.FuncCall)
-	if !ok || synthMap.Name != "map" {
+	if !ok || synthMap.Fn != chplan.FnMap {
 		t.Fatalf("mapFilter.Args[1] = %T (%q), want *chplan.FuncCall(map)", mapFilter.Args[1], funcName(mapFilter.Args[1]))
 	}
 

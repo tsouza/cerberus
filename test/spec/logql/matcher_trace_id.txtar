@@ -38,7 +38,7 @@ INSERT INTO otel_logs (Timestamp, Body) VALUES
 [1] string = "TraceId"
 [2] string = "0123456789abcdef0123456789abcdef"
 -- chplan --
-Filter predicate=(coalesce(nullIf(TraceId, ""), ResourceAttributes["TraceId"]) = "0123456789abcdef0123456789abcdef")
+Filter predicate=(FnCoalesce(FnNullIf(TraceId, ""), ResourceAttributes["TraceId"]) = "0123456789abcdef0123456789abcdef")
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`TraceId`, ?), `ResourceAttributes`[?]) = ?)

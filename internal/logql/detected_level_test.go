@@ -53,8 +53,8 @@ func TestDetectedLevel_RoutesAllMatcherOps(t *testing.T) {
 			if !ok {
 				t.Fatalf("matcher %q: LHS = %T; want *chplan.FuncCall (multiIf)", tc.name, filterBin.Left)
 			}
-			if fn.Name != "multiIf" {
-				t.Errorf("matcher %q: LHS func = %q; want %q", tc.name, fn.Name, "multiIf")
+			if fn.Fn != chplan.FnMultiIf {
+				t.Errorf("matcher %q: LHS func = %q; want %q", tc.name, fn.Fn, chplan.FnMultiIf)
 			}
 			// The matcher value must ride on the RHS as a LitString.
 			lit, ok := filterBin.Right.(*chplan.LitString)
@@ -178,7 +178,7 @@ func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 	}
 	identity := requireCanonicalIdentity(t, proj.Projections[0].Expr)
 	mapCall, ok := identity.(*chplan.FuncCall)
-	if !ok || mapCall.Name != "map" {
+	if !ok || mapCall.Fn != chplan.FnMap {
 		t.Fatalf("identity projection = %v; want FuncCall(map, ...)", identity)
 	}
 	// args = ["level", <levelExpr>] for `by (level)`.
@@ -190,7 +190,7 @@ func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 		t.Fatalf("map call args[0] = %v; want LitString(\"level\")", mapCall.Args[0])
 	}
 	multiIf, ok := mapCall.Args[1].(*chplan.FuncCall)
-	if !ok || multiIf.Name != "multiIf" {
+	if !ok || multiIf.Fn != chplan.FnMultiIf {
 		t.Fatalf("map call args[1] = %v; want FuncCall(multiIf, ...) (SeverityText-derived expression)", mapCall.Args[1])
 	}
 }
@@ -276,7 +276,7 @@ func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
 			return
 		}
 		lhs, ok := bin.Left.(*chplan.FuncCall)
-		if !ok || lhs.Name != "if" {
+		if !ok || lhs.Fn != chplan.FnIf {
 			return
 		}
 		sawLevelCompare = true
@@ -369,7 +369,7 @@ func mustFindDetectedLevelBinary(t *testing.T, expr syntax.Expr, s schema.Logs) 
 
 	for _, b := range bins {
 		fn, ok := b.Left.(*chplan.FuncCall)
-		if !ok || fn.Name != "multiIf" {
+		if !ok || fn.Fn != chplan.FnMultiIf {
 			continue
 		}
 		if _, ok := b.Right.(*chplan.LitString); ok {
@@ -484,8 +484,8 @@ func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("detectedLevelExpr returned %T; want *chplan.FuncCall (multiIf)", expr)
 	}
-	if fn.Name != "multiIf" {
-		t.Fatalf("FuncCall.Name = %q; want %q", fn.Name, "multiIf")
+	if fn.Fn != chplan.FnMultiIf {
+		t.Fatalf("FuncCall.Fn = %q; want %q", fn.Fn, chplan.FnMultiIf)
 	}
 
 	// The leading (empty → "unknown") pair — reference Loki stamps
@@ -534,7 +534,7 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	if rhs, ok := emptyCond.Right.(*chplan.LitString); !ok || rhs.V != "" {
 		t.Fatalf("args[0] RHS = %#v; want empty-string literal", emptyCond.Right)
 	}
-	if lowerCall, ok := emptyCond.Left.(*chplan.FuncCall); !ok || lowerCall.Name != "lower" {
+	if lowerCall, ok := emptyCond.Left.(*chplan.FuncCall); !ok || lowerCall.Fn != chplan.FnLower {
 		t.Fatalf("args[0] LHS = %#v; want lower(<source>)", emptyCond.Left)
 	} else {
 		assertSourceCascade(t, lowerCall.Args[0], s)
@@ -587,8 +587,8 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	if !ok {
 		t.Fatalf("default branch at args[%d] = %T; want *chplan.FuncCall (lower(...))", defaultIdx, fn.Args[defaultIdx])
 	}
-	if defaultCall.Name != "lower" {
-		t.Errorf("default branch FuncCall.Name = %q; want %q", defaultCall.Name, "lower")
+	if defaultCall.Fn != chplan.FnLower {
+		t.Errorf("default branch FuncCall.Fn = %q; want %q", defaultCall.Fn, chplan.FnLower)
 	}
 	if len(defaultCall.Args) != 1 {
 		t.Fatalf("default branch lower() args = %d; want 1", len(defaultCall.Args))
@@ -605,7 +605,7 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 func assertSourceCascade(t *testing.T, e chplan.Expr, s schema.Logs) {
 	t.Helper()
 	mi, ok := e.(*chplan.FuncCall)
-	if !ok || mi.Name != "multiIf" {
+	if !ok || mi.Fn != chplan.FnMultiIf {
 		t.Fatalf("source = %#v; want multiIf(...) precedence cascade", e)
 	}
 	if len(mi.Args) == 0 {
@@ -666,7 +666,7 @@ func TestDetectedLevelSource_PrecedenceCascade(t *testing.T) {
 
 	s := schema.DefaultOTelLogs()
 	cascade, ok := detectedLevelSourceExpr(s).(*chplan.FuncCall)
-	if !ok || cascade.Name != "multiIf" {
+	if !ok || cascade.Fn != chplan.FnMultiIf {
 		t.Fatalf("source = %#v; want multiIf cascade", detectedLevelSourceExpr(s))
 	}
 

@@ -55,11 +55,11 @@ func TestNarrowIdentityByProjection_StagesComposeInOrder(t *testing.T) {
 
 	got := narrowIdentityByProjection(&chplan.ColumnRef{Name: "ResourceAttributes"}, sel)
 	outer, ok := got.(*chplan.FuncCall)
-	if !ok || outer.Name != "mapFilter" {
+	if !ok || outer.Fn != chplan.FnMapFilter {
 		t.Fatalf("outer node is %#v; want a mapFilter FuncCall", got)
 	}
 	inner, ok := outer.Args[1].(*chplan.FuncCall)
-	if !ok || inner.Name != "mapFilter" {
+	if !ok || inner.Fn != chplan.FnMapFilter {
 		t.Fatalf("inner node is %#v; want a second mapFilter FuncCall", outer.Args[1])
 	}
 	if _, ok := inner.Args[1].(*chplan.ColumnRef); !ok {

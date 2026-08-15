@@ -50,7 +50,7 @@ INSERT INTO otel_logs (Timestamp, Body) VALUES
 [1] string = "SeverityText"
 [2] string = "DEBUG"
 -- chplan --
-Filter predicate=(coalesce(nullIf(SeverityText, ""), ResourceAttributes["SeverityText"]) = "DEBUG")
+Filter predicate=(FnCoalesce(FnNullIf(SeverityText, ""), ResourceAttributes["SeverityText"]) = "DEBUG")
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`SeverityText`, ?), `ResourceAttributes`[?]) = ?)

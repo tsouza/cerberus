@@ -43,5 +43,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["r3-fatal"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (((if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error") OR (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "warn")) OR (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "fatal")))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (((FnIf(FnMapContainsKey(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error") OR (FnIf(FnMapContainsKey(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "warn")) OR (FnIf(FnMapContainsKey(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "fatal")))
   Scan(otel_logs)

@@ -204,11 +204,11 @@ func TestAbsentSynthLabelsDuplicateEqualityDropped(t *testing.T) {
 // helper cleanly distinguishes "error-bypass applied" from "not applied".
 func isErrorBypassIdentity(e chplan.Expr) bool {
 	fc, ok := e.(*chplan.FuncCall)
-	if !ok || fc.Name != "if" || len(fc.Args) != 3 {
+	if !ok || fc.Fn != chplan.FnIf || len(fc.Args) != 3 {
 		return false
 	}
 	cond, ok := fc.Args[0].(*chplan.FuncCall)
-	if !ok || cond.Name != "mapContains" || len(cond.Args) != 2 {
+	if !ok || cond.Fn != chplan.FnMapContainsKey || len(cond.Args) != 2 {
 		return false
 	}
 	lit, ok := cond.Args[1].(*chplan.LitString)

@@ -165,15 +165,15 @@ func TestDurationLabelFilterExpr_ReferenceSemantics(t *testing.T) {
 	// The final labels map must carry the conditional __error__ stamp:
 	// a mapConcat whose second arg is the marks branch.
 	outer, ok := labels.(*chplan.FuncCall)
-	if !ok || outer.Name != "mapConcat" {
+	if !ok || outer.Fn != chplan.FnMapMerge {
 		t.Fatalf("final labels = %T (%v); want mapConcat(<labels>, <marks branch>)", labels, labels)
 	}
 	branch, ok := outer.Args[1].(*chplan.FuncCall)
-	if !ok || (branch.Name != "if" && branch.Name != "multiIf") {
+	if !ok || (branch.Fn != chplan.FnIf && branch.Fn != chplan.FnMultiIf) {
 		t.Fatalf("marks branch = %T; want if/multiIf FuncCall", outer.Args[1])
 	}
 	errMap, ok := branch.Args[1].(*chplan.FuncCall)
-	if !ok || errMap.Name != "map" {
+	if !ok || errMap.Fn != chplan.FnMap {
 		t.Fatalf("marks branch then-arm = %T; want map(...)", branch.Args[1])
 	}
 	wantKeys := []string{syntax.ErrorLabel, errLabelFilterKind, syntax.ErrorDetailsLabel}
@@ -186,12 +186,12 @@ func TestDurationLabelFilterExpr_ReferenceSemantics(t *testing.T) {
 	// The details slot is the three-way Go error classification —
 	// a multiIf whose branch literals carry the `time: …` prefixes.
 	details, ok := errMap.Args[3].(*chplan.FuncCall)
-	if !ok || details.Name != "multiIf" {
+	if !ok || details.Fn != chplan.FnMultiIf {
 		t.Fatalf("error map details arm = %T; want multiIf classification", errMap.Args[3])
 	}
 	var prefixes []string
 	for _, arg := range details.Args {
-		if call, ok := arg.(*chplan.FuncCall); ok && call.Name == "concat" {
+		if call, ok := arg.(*chplan.FuncCall); ok && call.Fn == chplan.FnConcat {
 			if lit, ok := call.Args[0].(*chplan.LitString); ok {
 				prefixes = append(prefixes, lit.V)
 			}

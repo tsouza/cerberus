@@ -25,7 +25,7 @@ func scanNode() chplan.Node { return &chplan.Scan{Table: "otel_logs"} }
 // the resource-attributes column.
 func parserMergedExpr(s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
 	}
 }

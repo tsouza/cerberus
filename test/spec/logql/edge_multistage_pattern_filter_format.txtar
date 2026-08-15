@@ -29,5 +29,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["m2 ts error upstream gone"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "error"))
   Scan(otel_logs)

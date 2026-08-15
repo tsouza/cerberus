@@ -47,15 +47,15 @@ import (
 func surfacedIdentityHasKey(t *testing.T, identityExpr chplan.Expr, target string) bool {
 	t.Helper()
 	mc, ok := identityExpr.(*chplan.FuncCall)
-	if !ok || mc.Name != "mapConcat" || len(mc.Args) < 2 {
+	if !ok || mc.Fn != chplan.FnMapMerge || len(mc.Args) < 2 {
 		t.Fatalf("identity expr = %T (%q), want *chplan.FuncCall(mapConcat) with >=2 args", identityExpr, funcName(identityExpr))
 	}
 	mf, ok := mc.Args[1].(*chplan.FuncCall)
-	if !ok || mf.Name != "mapFilter" || len(mf.Args) < 2 {
+	if !ok || mf.Fn != chplan.FnMapFilter || len(mf.Args) < 2 {
 		t.Fatalf("mapConcat.Args[1] = %T (%q), want *chplan.FuncCall(mapFilter)", mc.Args[1], funcName(mc.Args[1]))
 	}
 	sm, ok := mf.Args[1].(*chplan.FuncCall)
-	if !ok || sm.Name != "map" {
+	if !ok || sm.Fn != chplan.FnMap {
 		t.Fatalf("mapFilter.Args[1] = %T (%q), want *chplan.FuncCall(map)", mf.Args[1], funcName(mf.Args[1]))
 	}
 	for i := 0; i+1 < len(sm.Args); i += 2 {

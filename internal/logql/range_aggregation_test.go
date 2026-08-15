@@ -843,8 +843,8 @@ func assertRangeGroupByMapShape(t *testing.T, got chplan.Expr, ra *syntax.RangeA
 	if !ok {
 		t.Fatalf("rangeAggregationGroupBy -> %T, want *chplan.FuncCall", got)
 	}
-	if fc.Name != "map" {
-		t.Errorf("FuncCall.Name = %q, want %q", fc.Name, "map")
+	if fc.Fn != chplan.FnMap {
+		t.Errorf("FuncCall.Fn = %q, want %q", fc.Fn, chplan.FnMap)
 	}
 
 	// Two args per label: alternating LitString{label} + key
@@ -937,7 +937,7 @@ func TestRangeAggregationGroupByWithoutStripsFromIdentityBase(t *testing.T) {
 	// parser-extracted labels survive into the series identity and an
 	// enclosing `by (level)` still resolves the severity dimension.
 	wrap, ok := mwk.Map.(*chplan.FuncCall)
-	if !ok || wrap.Name != "mapConcat" {
+	if !ok || wrap.Fn != chplan.FnMapMerge {
 		t.Fatalf("MapWithoutKeys.Map = %T (%v), want mapConcat FuncCall wrapping identityBase", mwk.Map, mwk.Map)
 	}
 	if len(wrap.Args) == 0 || !wrap.Args[0].Equal(identityBase) {

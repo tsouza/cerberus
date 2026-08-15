@@ -25,5 +25,5 @@ INSERT INTO otel_logs (Body) VALUES ('e1'), ('e2'), ('e3-stg');
   ["e2"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod"))
   Scan(otel_logs)

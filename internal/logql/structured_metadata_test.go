@@ -25,7 +25,7 @@ func findCoalescingLookup(root chplan.Expr, key string) bool {
 	sawIf := false
 	sawLALookup := false
 	walkExprTree(root, func(e chplan.Expr) {
-		if fc, ok := e.(*chplan.FuncCall); ok && fc.Name == "if" {
+		if fc, ok := e.(*chplan.FuncCall); ok && fc.Fn == chplan.FnIf {
 			sawIf = true
 		}
 		ma, ok := e.(*chplan.MapAccess)
@@ -67,12 +67,12 @@ func TestStructuredOrStreamLookup_BarePrecedence(t *testing.T) {
 
 	got := structuredOrStreamLookup(s, "env")
 	fc, ok := got.(*chplan.FuncCall)
-	if !ok || fc.Name != "if" || len(fc.Args) != 3 {
+	if !ok || fc.Fn != chplan.FnIf || len(fc.Args) != 3 {
 		t.Fatalf("want if(...) coalescing call, got %#v", got)
 	}
 	// guard: mapContains(LogAttributes, "env")
 	guard, ok := fc.Args[0].(*chplan.FuncCall)
-	if !ok || guard.Name != "mapContains" {
+	if !ok || guard.Fn != chplan.FnMapContainsKey {
 		t.Fatalf("want mapContains guard, got %#v", fc.Args[0])
 	}
 	// then: LogAttributes["env"]
@@ -120,7 +120,7 @@ func TestStructuredOrStreamLookupOnMap_ParserMerged(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	// A mapConcat carrier stands in for a `| logfmt` merged labels map.
 	merged := &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn: chplan.FnMapMerge,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 			&chplan.ColumnRef{Name: "extracted"},
@@ -128,12 +128,12 @@ func TestStructuredOrStreamLookupOnMap_ParserMerged(t *testing.T) {
 	}
 	got := structuredOrStreamLookupOnMap(s, merged, "status")
 	fc, ok := got.(*chplan.FuncCall)
-	if !ok || fc.Name != "if" || len(fc.Args) != 3 {
+	if !ok || fc.Fn != chplan.FnIf || len(fc.Args) != 3 {
 		t.Fatalf("want if(...) coalescing call, got %#v", got)
 	}
 	// guard must be mapContains on the LIVE merged map (parsed+stream).
 	guard, ok := fc.Args[0].(*chplan.FuncCall)
-	if !ok || guard.Name != "mapContains" {
+	if !ok || guard.Fn != chplan.FnMapContainsKey {
 		t.Fatalf("want mapContains guard, got %#v", fc.Args[0])
 	}
 	if !guard.Args[0].Equal(merged) {

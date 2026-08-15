@@ -141,13 +141,13 @@ func TestProjectSamples_VectorAggregateRefsAttributes(t *testing.T) {
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: &chplan.FuncCall{
-				Name: "CAST",
+				Fn: chplan.FnCast,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Name: "map", Args: nil},
+					&chplan.FuncCall{Fn: chplan.FnMap, Args: nil},
 					&chplan.LitString{V: "Map(String,String)"},
 				},
 			}, Alias: "Attributes"},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
 			{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"},
 		},
 	}
@@ -270,9 +270,9 @@ func TestProjectSamples_VectorAggregateOverMatrixForwardsTimeUnix(t *testing.T) 
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: &chplan.FuncCall{
-				Name: "CAST",
+				Fn: chplan.FnCast,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Name: "map", Args: nil},
+					&chplan.FuncCall{Fn: chplan.FnMap, Args: nil},
 					&chplan.LitString{V: "Map(String,String)"},
 				},
 			}, Alias: "Attributes"},
@@ -332,7 +332,7 @@ func TestProjectSamples_VectorVectorBinopRefsAttributes(t *testing.T) {
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
 			{Expr: &chplan.LitString{V: ""}, Alias: "Attributes"},
-			{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "TimeUnix"},
 			{Expr: &chplan.LitFloat{V: 1}, Alias: "Value"},
 		},
 	}
@@ -449,13 +449,13 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 	// outer toJSONString renders the filtered map to a JSON-object String so
 	// it scans on BOTH chDB (no native Map scan) and prod ClickHouse.
 	metaFn, ok := metaSlot.Expr.(*chplan.FuncCall)
-	if !ok || metaFn.Name != "toJSONString" || len(metaFn.Args) != 1 {
+	if !ok || metaFn.Fn != chplan.FnToJSONString || len(metaFn.Args) != 1 {
 		t.Fatalf("metadata slot expr: got %T/%v, want *chplan.FuncCall toJSONString(<1 arg>) "+
 			"(structured-metadata surface scans as a JSON string for chDB Map-scan compat)",
 			metaSlot.Expr, metaSlot.Expr)
 	}
 	innerFilter, ok := metaFn.Args[0].(*chplan.FuncCall)
-	if !ok || innerFilter.Name != "mapFilter" {
+	if !ok || innerFilter.Fn != chplan.FnMapFilter {
 		t.Fatalf("metadata slot inner expr: got %T/%v, want *chplan.FuncCall mapFilter "+
 			"(structured-metadata surface drops empty LogAttributes values)",
 			metaFn.Args[0], metaFn.Args[0])
@@ -477,10 +477,10 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 			"explicitly references it)",
 			attrsSlot.Expr)
 	}
-	if fn.Name != "mapConcat" {
+	if fn.Fn != chplan.FnMapMerge {
 		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
 			"(wire-wrap must fold detected_level via mapConcat when "+
-			"referenced)", fn.Name, "mapConcat")
+			"referenced)", fn.Fn, chplan.FnMapMerge)
 	}
 }
 
@@ -543,10 +543,10 @@ func TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel(t *testing.T) {
 			"comparison aligned)",
 			attrsSlot.Expr)
 	}
-	if fn.Name != "mapConcat" {
+	if fn.Fn != chplan.FnMapMerge {
 		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
 			"(bare selector must fold detected_level via mapConcat)",
-			fn.Name, "mapConcat")
+			fn.Fn, chplan.FnMapMerge)
 	}
 }
 
@@ -604,9 +604,9 @@ func TestProjectSamples_ParserStageQuerySurfacesDetectedLevel(t *testing.T) {
 					"for parser-stage query %q — parser stages should still surface "+
 					"detected_level alongside their extracted keys", attrsSlot.Expr, q)
 			}
-			if fn.Name != "mapConcat" {
+			if fn.Fn != chplan.FnMapMerge {
 				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
-					fn.Name, "mapConcat", q)
+					fn.Fn, chplan.FnMapMerge, q)
 			}
 		})
 	}
@@ -664,9 +664,9 @@ func TestProjectSamples_LineFilterQuerySurfacesDetectedLevel(t *testing.T) {
 					"for line-filter / label-filter query %q — reference Loki "+
 					"surfaces detected_level on these too", attrsSlot.Expr, q)
 			}
-			if fn.Name != "mapConcat" {
+			if fn.Fn != chplan.FnMapMerge {
 				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
-					fn.Name, "mapConcat", q)
+					fn.Fn, chplan.FnMapMerge, q)
 			}
 		})
 	}
@@ -734,8 +734,8 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 			if !ok {
 				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall", attrsSlot.Expr)
 			}
-			if outer.Name != "mapConcat" {
-				t.Fatalf("outer FuncCall.Name: got %q, want %q", outer.Name, "mapConcat")
+			if outer.Fn != chplan.FnMapMerge {
+				t.Fatalf("outer FuncCall.Fn: got %q, want %q", outer.Fn, chplan.FnMapMerge)
 			}
 			if len(outer.Args) != 2 {
 				t.Fatalf("outer mapConcat args: got %d, want 2", len(outer.Args))
@@ -749,8 +749,8 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 					"per `| logfmt` / `| json` query into a handful on the "+
 					"loki-compat differential", outer.Args[0])
 			}
-			if inner.Name != "mapConcat" {
-				t.Errorf("inner parser-merge FuncCall.Name: got %q, want %q", inner.Name, "mapConcat")
+			if inner.Fn != chplan.FnMapMerge {
+				t.Errorf("inner parser-merge FuncCall.Fn: got %q, want %q", inner.Fn, chplan.FnMapMerge)
 			}
 		})
 	}
@@ -794,8 +794,8 @@ func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) 
 				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall "+
 					"(detected_level wrap)", attrsSlot.Expr)
 			}
-			if outer.Name != "mapConcat" {
-				t.Fatalf("outer FuncCall.Name: got %q, want %q", outer.Name, "mapConcat")
+			if outer.Fn != chplan.FnMapMerge {
+				t.Fatalf("outer FuncCall.Fn: got %q, want %q", outer.Fn, chplan.FnMapMerge)
 			}
 			// arg[0] must be the bare ResourceAttributes ColumnRef — NOT
 			// another mapConcat. A nested mapConcat would mean the
@@ -855,9 +855,9 @@ func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T
 				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall (mapConcat) for query %q",
 					attrsSlot.Expr, q)
 			}
-			if fn.Name != "mapConcat" {
+			if fn.Fn != chplan.FnMapMerge {
 				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
-					fn.Name, "mapConcat", q)
+					fn.Fn, chplan.FnMapMerge, q)
 			}
 		})
 	}
@@ -973,9 +973,9 @@ func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *te
 					"(mapConcat) — this shape doesn't statically guarantee "+
 					"detected_level is dropped, so the wrap must still run", q, attrsSlot.Expr)
 			}
-			if fn.Name != "mapConcat" {
+			if fn.Fn != chplan.FnMapMerge {
 				t.Errorf("attributes slot FuncCall.Name for query %q: got %q, want %q",
-					q, fn.Name, "mapConcat")
+					q, fn.Fn, chplan.FnMapMerge)
 			}
 		})
 	}

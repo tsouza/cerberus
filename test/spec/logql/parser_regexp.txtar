@@ -37,5 +37,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["POST /api 500 took=22ms"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "status"), "status_extracted", "status"), extractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1])), "status"), mapConcat(ResourceAttributes, map(if(mapContains(ResourceAttributes, "status"), "status_extracted", "status"), extractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"], LogAttributes["status"]) = "500"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1])), "status"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"], LogAttributes["status"]) = "500"))
   Scan(otel_logs)

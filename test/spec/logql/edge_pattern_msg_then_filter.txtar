@@ -28,5 +28,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["r2 quick test"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "msg"), LogAttributes["msg"], ResourceAttributes["msg"]) !~ "^$"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "msg"), LogAttributes["msg"], ResourceAttributes["msg"]) !~ "^$"))
   Scan(otel_logs)
