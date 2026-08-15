@@ -18,14 +18,28 @@ var seedAnchor = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 // matrix category has both accepting and rejecting records.
 func RichSeed() (string, *property.LogsModel) {
 	records := []property.LogRecord{
-		logRecord(0, "INFO", "request ok cache hit 10.1.2.3", labels("job", "api", "service_name", "checkout"), labels("trace.id", "t-1")),
-		logRecord(1, "WARN", "request timeout retry 10.200.0.9", labels("job", "api", "service_name", "checkout"), labels("level", "ERR", "trace.id", "t-2")),
-		logRecord(2, "ERROR", "auth error retry 192.168.1.5", labels("job", "api", "service_name", "auth"), labels("detected_level", "Warn", "tenant", "blue")),
-		logRecord(3, "DEBUG", "cache miss ok 172.16.0.1", labels("job", "web", "service_name", "checkout"), labels("log.level", "debug", "tenant", "green")),
-		logRecord(4, "", "billing error timeout 8.8.8.8", labels("job", "batch", "service_name", "billing"), labels("severity", "critical")),
-		logRecord(5, "INFO", "request ok cache miss", labels("job", "web", "service_name", "auth"), nil),
-		logRecord(6, "ERROR", "auth timeout from 10.1.2.3 retry", labels("job", "api", "service_name", "auth"), labels("severity_text", "fatal", "tenant", "blue")),
-		logRecord(7, "", "worker heartbeat ok", labels("job", "batch", "service_name", "billing"), nil),
+		logRecord(0, "INFO", "request ok cache hit 10.1.2.3",
+			map[string]string{"job": "api", "service_name": "checkout"},
+			map[string]string{"trace.id": "t-1"}),
+		logRecord(1, "WARN", "request timeout retry 10.200.0.9",
+			map[string]string{"job": "api", "service_name": "checkout"},
+			map[string]string{"level": "ERR", "trace.id": "t-2"}),
+		logRecord(2, "ERROR", "auth error retry 192.168.1.5",
+			map[string]string{"job": "api", "service_name": "auth"},
+			map[string]string{"detected_level": "Warn", "tenant": "blue"}),
+		logRecord(3, "DEBUG", "cache miss ok 172.16.0.1",
+			map[string]string{"job": "web", "service_name": "checkout"},
+			map[string]string{"log.level": "debug", "tenant": "green"}),
+		logRecord(4, "", "billing error timeout 8.8.8.8",
+			map[string]string{"job": "batch", "service_name": "billing"},
+			map[string]string{"severity": "critical"}),
+		logRecord(5, "INFO", "request ok cache miss",
+			map[string]string{"job": "web", "service_name": "auth"}, nil),
+		logRecord(6, "ERROR", "auth timeout from 10.1.2.3 retry",
+			map[string]string{"job": "api", "service_name": "auth"},
+			map[string]string{"severity_text": "fatal", "tenant": "blue"}),
+		logRecord(7, "", "worker heartbeat ok",
+			map[string]string{"job": "batch", "service_name": "billing"}, nil),
 	}
 	return renderDDL(records), &property.LogsModel{Records: records}
 }
@@ -38,14 +52,6 @@ func logRecord(step int, severity, body string, resource, attrs map[string]strin
 		LogAttributes:      attrs,
 		TimestampNanos:     seedAnchor.Add(time.Duration(step) * 15 * time.Second).UnixNano(),
 	}
-}
-
-func labels(kv ...string) map[string]string {
-	out := make(map[string]string, len(kv)/2)
-	for i := 0; i < len(kv); i += 2 {
-		out[kv[i]] = kv[i+1]
-	}
-	return out
 }
 
 func renderDDL(records []property.LogRecord) string {
