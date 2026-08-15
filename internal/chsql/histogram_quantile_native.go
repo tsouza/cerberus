@@ -66,7 +66,14 @@
 //     Regions: idx ∈ [1, nlen] is the negative-side walk;
 //     idx = nlen+1 is the zero bucket; idx > nlen+1 is the positive
 //     walk. (nlen = length(NegativeBucketCounts).)
-//  5. fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]).
+//  5. fraction = (target - cum[idx-1]) / bucketCount(valueIdx), where
+//     valueIdx normally equals idx. For a NaN Sum, reference Prometheus
+//     continues the forward iterator to its end to detect NaN skew after
+//     rebasing the rank in idx. That annotation scan leaves `bucket` on
+//     the final iterated bucket, and the subsequent interpolation uses
+//     that bucket's geometry and count. valueIdx reproduces that observable
+//     behavior by selecting the last positive bucket, otherwise the
+//     populated zero bucket, otherwise the last negative bucket.
 //     ClickHouse returns the array element's default (0) for
 //     `cum[0]`, which matches the "no bucket consumed yet" semantics
 //     when idx = 1, so the formula needs no explicit guard.
@@ -247,7 +254,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		"pow",
 		w.base(),
 		Sub(
-			Add(Add(Col(no), Paren(Sub(w.nLen(), w.idx()))), InlineLit(1)),
+			Add(Add(Col(no), Paren(Sub(w.nLen(), w.valueIdx()))), InlineLit(1)),
 			w.fraction(),
 		),
 	))
@@ -266,7 +273,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 		"pow",
 		w.base(),
 		Add(
-			Add(Col(po), Paren(Sub(Sub(w.idx(), w.nLen()), InlineLit(2)))),
+			Add(Col(po), Paren(Sub(Sub(w.valueIdx(), w.nLen()), InlineLit(2)))),
 			w.fraction(),
 		),
 	)
@@ -302,8 +309,8 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
 				If(Eq(w.phi(), InlineLit(0)), phiLow,
 					If(Eq(w.phi(), InlineLit(1)), phiHigh,
 						If(Eq(w.idx(), InlineLit(0)), nan,
-							If(Lte(w.idx(), w.nLen()), negInterp,
-								If(Eq(w.idx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp))))))))
+							If(Lte(w.valueIdx(), w.nLen()), negInterp,
+								If(Eq(w.valueIdx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp))))))))
 
 	if h.PhiExpr == nil {
 		return core
@@ -331,6 +338,7 @@ type hqNativeWriters struct {
 	rankBase       func() Frag
 	sumIsNaN       func() Frag
 	idx            func() Frag
+	valueIdx       func() Frag
 	cumAt          func(offsetMinusOne bool) Frag
 	nLen           func() Frag
 	pLen           func() Frag
@@ -498,6 +506,19 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	}
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
 	w.pLen = func() Frag { return Call("length", Col(pbc)) }
+	// valueIdx is the bucket whose geometry and count reference uses for
+	// interpolation. Normally it is the rank walk's stop bucket. With a
+	// NaN Sum, Prometheus continues the forward iterator after rebasing the
+	// rank so it can detect NaN skew; that scan leaves the iterator on its
+	// final bucket, which the subsequent interpolation observes.
+	w.valueIdx = func() Frag {
+		lastIterated := If(
+			Gt(w.pLen(), InlineLit(0)),
+			Add(Add(w.nLen(), InlineLit(1)), w.pLen()),
+			If(Gt(Col(zc), InlineLit(0)), Add(w.nLen(), InlineLit(1)), w.nLen()),
+		)
+		return If(w.sumIsNaN(), lastIterated, w.idx())
+	}
 	// first / last POPULATED position in the same concatenated walk order
 	// `cum` uses, so they index into the identical bucket geometry the
 	// interpolation branches read. Reference Prometheus's rank walk skips
@@ -562,12 +583,15 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 			w.zt(),
 		)
 	}
-	// fraction = (target - cum[idx-1]) / (cum[idx] - cum[idx-1]),
-	// target = phi * total.
+	// fraction = (target - cum[idx-1]) / bucketCount(valueIdx), target =
+	// phi * rankBase. The numerator is rebased in the rank-walk stop bucket,
+	// while the denominator follows valueIdx: for a NaN Sum, reference's
+	// trailing annotation scan leaves `bucket` on the final iterated bucket
+	// before it divides by bucket.Count.
 	w.fraction = func() Frag {
 		return Div(
 			Paren(Sub(Paren(Mul(w.phi(), w.rankBase())), w.cumAt(true))),
-			Paren(Sub(w.cumAt(false), w.cumAt(true))),
+			Subscript(w.buckets(), w.valueIdx()),
 		)
 	}
 

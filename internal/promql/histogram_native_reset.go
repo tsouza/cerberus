@@ -72,17 +72,17 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // does declare the column persists ONE value per row and aggregates it as
 // `max`, which is that same fixed-band reading.
 //
-// The bucket comparison is made at the group's MERGED scale — the
-// coarsest any row in the window carries — rather than at each pair's own
-// current scale, because that is the scale every row has already been
-// rescaled onto and the only one they are all comparable at. The two
-// readings coincide whenever a series holds ONE scale across the window,
-// which is every series that never restarts and every restart that does
-// not change resolution. They part company when a LATER sample coarsens
-// the scale, since that pulls the merged scale below the earlier pairs'
-// own and a fine-bucket regression its coarse bucket absorbs stops being
-// visible — issue #2095 carries that residual, which the per-component
-// rule this mask replaced read exactly the same way.
+// The bucket comparison is made at EACH PAIR's own scale — the current
+// row's own, matching reference's "prev reconciled to the current
+// schema" — never at the window's merged (coarsest-of-everyone) scale.
+// Comparing at the merged scale instead (cerberus issue #2095, fixed by
+// [expHistogramResetPairBucketRegressedExpr]) let a LATER sample's
+// coarser scale pull the comparison scale below an EARLIER pair's own,
+// so a fine-bucket regression the coarser bucket absorbed stopped being
+// visible: reference condemned the sample, the merged-scale reading did
+// not. Rescaling only the pair's own two rows — not the whole window —
+// is also cheaper: the cost is linear in the PAIR's bucket span, not the
+// window's.
 //
 // # Why it is a column and not an expression inlined into the fold
 //
@@ -117,15 +117,11 @@ const (
 	paramResetBucketRow    = "rz"
 )
 
-// Lambda parameter names hqLet binds the mask's shared subexpressions to.
-// Each is read by the per-pair verdict below it, which evaluates once per
-// pair, so binding them is what keeps a per-series quantity from being
-// recomputed per pair — see hqLet.
-const (
-	paramResetOrderedRows = "wrp"
-	paramResetPosRescaled = "wrq"
-	paramResetNegRescaled = "wrn"
-)
+// paramResetOrderedRows is the lambda parameter name hqLet binds the
+// mask's time-sorted row-position permutation to — a per-series
+// quantity every pair reads, so binding it once is what keeps it from
+// being recomputed per pair. See hqLet.
+const paramResetOrderedRows = "wrp"
 
 // expHistogramResetMaskFor names the reset-mask column for an
 // exponential-histogram window reduced by windowFn, or nil for a windowFn
@@ -200,20 +196,14 @@ func expHistogramResetMaskExpr() chplan.Expr {
 	}}
 
 	return hqLet(paramResetOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		posRescaled := expHistogramResetRescaledExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias)
-		return hqLet(paramResetPosRescaled, posRescaled, func(pos chplan.Expr) chplan.Expr {
-			negRescaled := expHistogramResetRescaledExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias)
-			return hqLet(paramResetNegRescaled, negRescaled, func(neg chplan.Expr) chplan.Expr {
-				return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
-					&chplan.Lambda{
-						Params: []string{paramResetPrevRow, paramResetCurrRow},
-						Body:   expHistogramResetVerdictExpr(pos, neg),
-					},
-					&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{rows}},
-					&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{rows}},
-				}}
-			})
-		})
+		return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramResetPrevRow, paramResetCurrRow},
+				Body:   expHistogramResetVerdictExpr(),
+			},
+			&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{rows}},
+			&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{rows}},
+		}}
 	})
 }
 
@@ -221,15 +211,14 @@ func expHistogramResetMaskExpr() chplan.Expr {
 // pair, with the pair's two row positions bound to paramResetPrevRow /
 // paramResetCurrRow by the caller's lambda.
 //
-// posRescaled / negRescaled are the two signed ladders already rescaled
-// to the merged scale and indexed [target bucket][row], so a bucket
-// regression is "does any target bucket's per-row list fall between these
-// two positions". A bucket a row does not store contributes 0 there —
-// [expHistogramRowContribsExpr] pads rather than filters — which is
-// exactly reference's "a populated previous bucket the current histogram
-// does not have at all is a reset", and equally exactly its silence about
-// an UNpopulated one, since 0 < 0 is false.
-func expHistogramResetVerdictExpr(posRescaled, negRescaled chplan.Expr) chplan.Expr {
+// The bucket comparison rescales the PREVIOUS row down to the CURRENT
+// row's own scale — never to the window's merged (coarsest-of-everyone)
+// scale — matching reference's own "prev reconciled to the current
+// schema" (cerberus issue #2095). A LATER sample coarsening the window's
+// merged scale therefore cannot hide an EARLIER pair's fine-scale
+// regression: each pair answers entirely from its own two rows, so it
+// cannot see any OTHER row's scale at all.
+func expHistogramResetVerdictExpr() chplan.Expr {
 	prev := chplan.Expr(&chplan.BareIdent{Name: paramResetPrevRow})
 	curr := chplan.Expr(&chplan.BareIdent{Name: paramResetCurrRow})
 
@@ -244,15 +233,6 @@ func expHistogramResetVerdictExpr(posRescaled, negRescaled chplan.Expr) chplan.E
 	regressed := func(alias string) chplan.Expr {
 		return pairwise(&chplan.ColumnRef{Name: alias}, chplan.OpLt)
 	}
-	bucketRegressed := func(rescaled chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "arrayExists", Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramResetBucketRow},
-				Body:   pairwise(&chplan.BareIdent{Name: paramResetBucketRow}, chplan.OpLt),
-			},
-			rescaled,
-		}}
-	}
 
 	return orAllExpr(
 		regressed(hqWindowCountArrayAlias),
@@ -261,8 +241,8 @@ func expHistogramResetVerdictExpr(posRescaled, negRescaled chplan.Expr) chplan.E
 		// fold of a finer one and happens without a restart, which is
 		// why reference tests `>` rather than `!=`.
 		pairwise(&chplan.ColumnRef{Name: hqAggScalesArrayAlias}, chplan.OpGt),
-		bucketRegressed(posRescaled),
-		bucketRegressed(negRescaled),
+		expHistogramResetPairBucketRegressedExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, prev, curr),
+		expHistogramResetPairBucketRegressedExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, prev, curr),
 	)
 }
 
@@ -278,32 +258,73 @@ func orAllExpr(first chplan.Expr, rest ...chplan.Expr) chplan.Expr {
 	return out
 }
 
-// expHistogramResetRescaledExpr renders one signed bucket ladder as
-// [target bucket][row] — every row's count at every target bucket of the
-// group's merged scale.
+// expHistogramResetPairBucketRegressedExpr reports whether ANY bucket of
+// one signed ladder (Positive or Negative, named by offArrAlias /
+// bucArrAlias) regressed between prev and curr, comparing the two rows
+// at CURR's own scale — reference's "prev reconciled to the current
+// schema" (cerberus issue #2095; see expHistogramResetVerdictExpr).
 //
-// It is [expHistogramWindowBucketsExpr] with the time fold left off: the
-// same merged bounds, the same per-row rescale, stopping at the point
-// where that function would reduce each target bucket's per-row list.
-// Sharing [expHistogramRowContribsExpr] with it is what makes the mask
-// and the fold agree bucket-for-bucket about which stored position lands
-// where — a second transcription of the downscale is exactly where a
-// verdict about a bucket would stop matching the fold applied to it.
-func expHistogramResetRescaledExpr(offArrAlias, bucArrAlias string) chplan.Expr {
-	mergedScale := chplan.Expr(&chplan.ColumnRef{Name: hqAggMergedScaleAlias})
+// Unlike the mask's other components, this reads only the ONE pair's own
+// two rows rather than a per-series array, so it needs its own small
+// bound + rescale exactly like [expHistogramMergeBucketsExpr] computes
+// for a whole group — but over an ad hoc 2-row "group" built from prev
+// and curr alone via `array(prevX, currX)`. Sharing
+// [expHistogramMergeBucketsBoundsExpr] and [expHistogramBucketRowContribExpr]
+// with the merge and the window fold is what keeps all three agreeing
+// bucket-for-bucket about which stored position lands where.
+//
+// This is linear in the PAIR's own bucket span, not the window's: for N
+// rows there are N-1 pairs, each rescaling only its own two rows, so the
+// total cost is the same order as the single window-wide rescale the
+// mask used before — never a rows × rows × buckets blowup.
+func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, prev, curr chplan.Expr) chplan.Expr {
 	scalesArr := chplan.Expr(&chplan.ColumnRef{Name: hqAggScalesArrayAlias})
 	offArr := chplan.Expr(&chplan.ColumnRef{Name: offArrAlias})
 	bucArr := chplan.Expr(&chplan.ColumnRef{Name: bucArrAlias})
 
-	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
-	contribs := expHistogramRowContribsExpr(
-		scalesArr, offArr, bucArr,
-		expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramResetTargetBucket),
+	at := func(list, pos chplan.Expr) chplan.Expr {
+		return &chplan.Subscript{Container: list, Key: pos}
+	}
+	prevScale, currScale := at(scalesArr, prev), at(scalesArr, curr)
+	prevOff, currOff := at(offArr, prev), at(offArr, curr)
+	prevBuc, currBuc := at(bucArr, prev), at(bucArr, curr)
+
+	pairArray := func(a, b chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Name: "array", Args: []chplan.Expr{a, b}}
+	}
+	start, length := expHistogramMergeBucketsBoundsExpr(
+		pairArray(prevScale, currScale), pairArray(prevOff, currOff), pairArray(prevBuc, currBuc),
+		currScale,
 	)
-	return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
-		&chplan.Lambda{Params: []string{paramResetTargetBucket}, Body: contribs},
+
+	// One row's contribution at target absolute index `start + rk`,
+	// rescaled from that row's OWN scale to currScale. Binding
+	// (paramExpRowScale, paramExpRowOffset, paramExpRowBuckets) via
+	// hqLet — rather than an arrayMap over a parallel array, which is
+	// what every other caller of expHistogramBucketRowContribExpr does —
+	// evaluates the ONE row's contribution exactly once per target
+	// index, matching hqLet's own "one evaluation" contract.
+	contribAt := func(rowScale, rowOff, rowBuc chplan.Expr) chplan.Expr {
+		return hqLet(paramExpRowScale, rowScale, func(chplan.Expr) chplan.Expr {
+			return hqLet(paramExpRowOffset, rowOff, func(chplan.Expr) chplan.Expr {
+				return hqLet(paramExpRowBuckets, rowBuc, func(chplan.Expr) chplan.Expr {
+					return expHistogramBucketRowContribExpr(currScale, start, paramResetTargetBucket)
+				})
+			})
+		})
+	}
+
+	return &chplan.FuncCall{Name: "arrayExists", Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramResetTargetBucket},
+			Body: &chplan.Binary{
+				Op:    chplan.OpLt,
+				Left:  contribAt(currScale, currOff, currBuc),
+				Right: contribAt(prevScale, prevOff, prevBuc),
+			},
+		},
 		&chplan.FuncCall{Name: "range", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{mergedLength}},
+			&chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{length}},
 		}},
 	}}
 }
