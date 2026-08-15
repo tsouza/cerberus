@@ -10,6 +10,9 @@ window share one Filter directly above the scan.
 requests_total{job="api"}
 -- metadata_label_values --
 region
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: The answer is a /api/v1/label/<name>/values-shaped list of label VALUES, not a (Attributes, ts, Value) Sample stream. RunParity's endpoint vocabulary (/api/v1/query, /api/v1/query_range, /api/search) has no label-value-list comparator, so there is nothing for locateSampleColumns/compareAgainstReference to compare this projection against.
 -- sql --
 SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
 -- args --

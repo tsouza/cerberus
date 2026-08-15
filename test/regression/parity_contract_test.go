@@ -161,11 +161,22 @@ func TestParitySectionsParse(t *testing.T) {
 // reviewer must accept.
 //
 // That is deliberately weaker than the all-or-nothing enrolment a closed
-// corpus would allow, and it is the honest trade: PromQL fixtures include
-// metadata and exemplar shapes that ask no PromQL expression at all, so
-// "every fixture must enrol" is unattainable, and forcing it would require
-// a per-fixture exemption vocabulary — precisely the allow-list shape
-// invariant 7 forbids.
+// corpus would allow: PromQL fixtures include metadata and exemplar
+// shapes that ask no PromQL expression at all, and a handful of others
+// (limitk's arbitrary tie-break, the duplicate-labelset must-fail guards)
+// have no reference answer to compare against even in principle. "Every
+// fixture must carry `parity:`" is unattainable for those.
+//
+// What IS attainable — and is what
+// [TestPromQLParityCoverageIsComplete] enforces for the promql corpus —
+// is that every fixture carries `parity:` OR a reviewed, closed-vocabulary
+// `parity_exempt:` (test/spec/parity_exempt.go) explaining structurally
+// why it cannot. That is not the free-form per-fixture allow-list
+// invariant 7 forbids: the exemption `reason:` is a small, closed set of
+// STRUCTURAL claims (parity_exempt.go's own doc comment says why), pinned
+// by [TestParityExemptVocabulariesAreClosed] exactly as parity.go's own
+// vocabulary is pinned, and widening it is a reviewed source-line change,
+// not a per-fixture opt-out.
 func TestParityEnrolmentFloor(t *testing.T) {
 	t.Parallel()
 
@@ -223,6 +234,104 @@ func TestParityVocabulariesAreClosed(t *testing.T) {
 			if strings.TrimSpace(v) == "" {
 				t.Errorf("parity key %q accepts an empty value", key)
 			}
+		}
+	}
+}
+
+// TestParityExemptSectionsParse mirrors TestParitySectionsParse for the
+// `parity_exempt:` section: every fixture carrying one must have a
+// WELL-FORMED one, checked in the fast untagged lane rather than only
+// surfacing as a confusing failure once TestPromQLParityCoverageIsComplete
+// (or a chdb-tagged lane) trips over it.
+func TestParityExemptSectionsParse(t *testing.T) {
+	t.Parallel()
+
+	for _, dir := range parityFixtureDirs(t) {
+		for _, path := range txtarFilesForParity(t, dir) {
+			c, err := spec.Load(path)
+			if err != nil {
+				t.Fatalf("load %s: %v", path, err)
+			}
+			if _, _, err := spec.LoadParityExempt(c); err != nil {
+				t.Errorf("%s: %v", filepath.Base(path), err)
+			}
+		}
+	}
+}
+
+// TestParityExemptVocabulariesAreClosed mirrors
+// TestParityVocabulariesAreClosed: the exemption `reason:` vocabulary must
+// be non-empty with no blank members, which is the property
+// LoadParityExempt's rejection path depends on.
+func TestParityExemptVocabulariesAreClosed(t *testing.T) {
+	t.Parallel()
+
+	reasons := spec.ParityExemptReasons()
+	if len(reasons) == 0 {
+		t.Fatal("parity_exempt reason vocabulary is empty; LoadParityExempt would accept any reason")
+	}
+	for _, r := range reasons {
+		if strings.TrimSpace(r) == "" {
+			t.Error("parity_exempt reason vocabulary accepts an empty value")
+		}
+	}
+}
+
+// TestPromQLParityCoverageIsComplete is the closure the epic behind
+// TestParityEnrolmentFloor names as its definition of done: every promql
+// fixture ends up EITHER carrying a real `parity:` enrolment OR a
+// `parity_exempt:` declaration — never neither, which would be silently
+// indistinguishable from a fixture nobody has looked at, and never both,
+// which would make the two sections' claims about the same fixture
+// contradict each other.
+//
+// Scoped to test/spec/promql only. The epic this closes (#1986) is
+// itself scoped to promql — see its title, "331 promql fixtures cannot
+// be enrolled" — and logql/traceql are nowhere near this bar today (171
+// and 176 of their fixtures respectively carry neither section, entirely
+// unclassified by this effort). Widening this gate to those corpora is
+// real, separate work: it needs its own classification pass first, the
+// same way this one did for promql, not a silent inclusion here.
+func TestPromQLParityCoverageIsComplete(t *testing.T) {
+	t.Parallel()
+
+	root := repoRootForParity(t)
+	dir := filepath.Join(root, "test", "spec", "promql")
+
+	for _, path := range txtarFilesForParity(t, dir) {
+		name := filepath.Base(path)
+		c, err := spec.Load(path)
+		if err != nil {
+			t.Fatalf("load %s: %v", path, err)
+		}
+
+		_, enrolled, err := spec.LoadParity(c)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		_, exempted, err := spec.LoadParityExempt(c)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+
+		switch {
+		case enrolled && exempted:
+			t.Errorf(
+				"%s carries BOTH `parity:` and `parity_exempt:`. A fixture is either enrolled "+
+					"against a real reference engine or it declares why it cannot be — the two "+
+					"claims contradict each other for the same fixture.",
+				name,
+			)
+		case !enrolled && !exempted:
+			t.Errorf(
+				"%s carries neither `parity:` nor `parity_exempt:`. That is silently "+
+					"indistinguishable from a fixture nobody has looked at — enrol it against a "+
+					"reference engine (see parity.go) or declare, with a closed-vocabulary reason, "+
+					"why it structurally cannot be (see parity_exempt.go).",
+				name,
+			)
 		}
 	}
 }

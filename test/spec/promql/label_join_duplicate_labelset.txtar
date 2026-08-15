@@ -17,6 +17,9 @@
 # internal/api/prom/handler_chdb_duplicate_labelset_test.go.
 -- query.promql --
 label_join(cpu_temp, "core", "-")
+-- parity_exempt --
+reason: rejection-only
+detail: This query must be REJECTED (HTTP 422); it carries no seed/expected_rows because the round-trip runner has no shape for an expected error. The executable assertion lives in internal/api/prom/handler_chdb_duplicate_labelset_test.go, not in a value comparison RunParity could perform.
 -- args --
 [0] string = "core"
 [1] string = "-"

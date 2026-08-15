@@ -1,5 +1,8 @@
 -- query.promql --
 limitk(1, up) by (job)
+-- parity_exempt --
+reason: nondeterministic-selection
+detail: limitk(1, up) by(job) keeps whichever series arrives first in the reference engine's own input iteration order (prometheus/promql/engine.go, LIMITK case), which neither engine documents or guarantees; cerberus's `row_number() OVER ()` has no ORDER BY either, so there is no shared contract for two independent implementations to agree on.
 -- seed --
 CREATE TABLE otel_metrics_gauge (
     MetricName String,

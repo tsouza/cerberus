@@ -11,6 +11,9 @@ disappears is the per-series collapse above them.
 latency_seconds_bucket
 -- metadata_label_values --
 le
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: The answer is a /api/v1/label/le/values-shaped list of label VALUES fanned out of the classic-histogram bucket layout, not a (Attributes, ts, Value) Sample stream. RunParity's endpoint vocabulary has no label-value-list comparator to compare this projection against.
 -- seed --
 CREATE TABLE otel_metrics_histogram (
     MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String), ServiceName String,
