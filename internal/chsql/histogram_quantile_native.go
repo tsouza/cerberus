@@ -153,6 +153,20 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+const (
+	hqQuantileBucketsColumn  = "_cerb_hq_buckets"
+	hqQuantileCumColumn      = "_cerb_hq_cum"
+	hqQuantileIdxColumn      = "_cerb_hq_idx"
+	hqQuantileValueIdxColumn = "_cerb_hq_value_idx"
+)
+
+type hqNativeHelperColumns struct {
+	buckets  string
+	cum      string
+	idx      string
+	valueIdx string
+}
+
 // emitHistogramQuantileNative renders a chplan.HistogramQuantileNative
 // against the OTel-CH exp_histogram schema. The outer QueryBuilder
 // projects the GroupBy columns aliased per GroupByAliases, then the
@@ -178,7 +192,42 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		return err
 	}
 
-	sb := NewQuery().From(sub)
+	// Native quantile interpolation reuses the bucket walk, cumulative
+	// counts, stop index, and value index many times. Keep each one in its
+	// own typed derived-query stage so ClickHouse evaluates it once per row.
+	// Expanding those expressions at every use pushed the CH 24.8
+	// compatibility floor past its request deadline on shifting native
+	// histograms even though the result stayed correct.
+	rawW := newHQNativeWriters(h, hqNativeHelperColumns{})
+	bucketed := NewQuery().
+		Select(Star(), As(rawW.buckets(), hqQuantileBucketsColumn)).
+		From(sub)
+	cumulated := NewQuery().
+		Select(Star(), As(Call("arrayCumSum", Col(hqQuantileBucketsColumn)), hqQuantileCumColumn)).
+		From(Subquery(bucketed))
+	idxW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets: hqQuantileBucketsColumn,
+		cum:     hqQuantileCumColumn,
+	})
+	indexed := NewQuery().
+		Select(Star(), As(idxW.idx(), hqQuantileIdxColumn)).
+		From(Subquery(cumulated))
+	valueIdxW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets: hqQuantileBucketsColumn,
+		cum:     hqQuantileCumColumn,
+		idx:     hqQuantileIdxColumn,
+	})
+	withValueIdx := NewQuery().
+		Select(Star(), As(valueIdxW.valueIdx(), hqQuantileValueIdxColumn)).
+		From(Subquery(indexed))
+	helpers := hqNativeHelperColumns{
+		buckets:  hqQuantileBucketsColumn,
+		cum:      hqQuantileCumColumn,
+		idx:      hqQuantileIdxColumn,
+		valueIdx: hqQuantileValueIdxColumn,
+	}
+
+	sb := NewQuery().From(Subquery(withValueIdx))
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""
@@ -187,7 +236,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	sb.SelectAs(histogramQuantileNativeValueFrag(h), "Value")
+	sb.SelectAs(histogramQuantileNativeValueFrag(h, helpers), "Value")
 	return e.emitSelect(sb)
 }
 
@@ -199,10 +248,10 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 // parameter, not user data — while a computed phi (h.PhiExpr != nil)
 // renders the expression at every phi position with a leading
 // `isNaN(phi) → nan` guard. Mirrors classic emission style.
-func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative) Frag {
+func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) Frag {
 	po := h.PositiveOffsetColumn
 	no := h.NegativeOffsetColumn
-	w := newHQNativeWriters(h)
+	w := newHQNativeWriters(h, helpers)
 
 	// `nan` / `-inf` / `inf` are CH-portable shape tokens, not data —
 	// InlineLit would quote them, so they ride verbatim (the IfNonZero
@@ -376,7 +425,7 @@ func zeroBandOrigin() Frag { return verbatim("0.") }
 // applies (cerberus issue #2072).
 const reverseWalkPhi = 0.5
 
-func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
+func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) hqNativeWriters {
 	pbc := h.PositiveBucketCountsColumn
 	nbc := h.NegativeBucketCountsColumn
 	scale := h.ScaleColumn
@@ -407,9 +456,17 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	// arrayReverse on an empty array yields [], so the walk collapses to
 	// the positive-only shape when NegativeBucketCounts is empty.
 	w.buckets = func() Frag {
+		if helpers.buckets != "" {
+			return Col(helpers.buckets)
+		}
 		return Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc))
 	}
-	w.cum = func() Frag { return Call("arrayCumSum", w.buckets()) }
+	w.cum = func() Frag {
+		if helpers.cum != "" {
+			return Col(helpers.cum)
+		}
+		return Call("arrayCumSum", w.buckets())
+	}
 	// total = cum[length(cum)] — last element of cum. Used only for the
 	// backward arm's own complement arithmetic (rankBase, not total, is
 	// what the rank walk ranks against — see rankBase below).
@@ -481,6 +538,9 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	// phi >= reverseWalkPhi still needs a runtime branch here because
 	// Sum-is-NaN is per-ROW data, not query shape.
 	w.idx = func() Frag {
+		if helpers.idx != "" {
+			return Col(helpers.idx)
+		}
 		if h.PhiExpr == nil {
 			if h.Phi < reverseWalkPhi {
 				return fwdIdx()
@@ -512,6 +572,9 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative) hqNativeWriters {
 	// rank so it can detect NaN skew; that scan leaves the iterator on its
 	// final bucket, which the subsequent interpolation observes.
 	w.valueIdx = func() Frag {
+		if helpers.valueIdx != "" {
+			return Col(helpers.valueIdx)
+		}
 		lastIterated := If(
 			Gt(w.pLen(), InlineLit(0)),
 			Add(Add(w.nLen(), InlineLit(1)), w.pLen()),
