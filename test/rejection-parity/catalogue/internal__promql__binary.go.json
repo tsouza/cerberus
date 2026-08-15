@@ -110,18 +110,23 @@
       "site": "internal/promql/binary.go:promBinaryOp#2d85dac3",
       "message": "promql: vector set op %s should route through lowerVectorSetOp",
       "class": "internal",
-      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping",
+      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping, for every caller — lowerBinary and lowerScalarArg route a parser.BinaryExpr's own set-operator check first, and expHistogramScalarBinop (cerberus issue #2087) never reaches this function with a set-operator op at all: it calls promBinaryOp only after confirming b.Op is MUL or DIV.",
       "evidence": {
         "guard": [
           "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
           "if op.IsSetOperator()"
         ],
         "callers": [
+          "expHistogramScalarBinop",
           "lowerBinary",
           "lowerScalarArg"
         ],
         "cited": [
-          "lowerVectorSetOp"
+          "expHistogramScalarBinop",
+          "lowerBinary",
+          "lowerScalarArg",
+          "lowerVectorSetOp",
+          "promBinaryOp"
         ]
       }
     },
@@ -130,18 +135,21 @@
       "site": "internal/promql/binary.go:promBinaryOp#63a5ec6e",
       "message": "promql: binary op %s unsupported",
       "class": "internal",
-      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm.",
+      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm. expHistogramScalarBinop (cerberus issue #2087) narrows further still: it only ever calls promBinaryOp with MUL or DIV, both already covered by the switch above.",
       "evidence": {
         "guard": [
           "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
           "past returning if op.IsSetOperator()"
         ],
         "callers": [
+          "expHistogramScalarBinop",
           "lowerBinary",
           "lowerScalarArg"
         ],
         "cited": [
-          "lowerVectorSetOp"
+          "expHistogramScalarBinop",
+          "lowerVectorSetOp",
+          "promBinaryOp"
         ]
       }
     },

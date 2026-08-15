@@ -1,0 +1,256 @@
+package promql
+
+import (
+	"fmt"
+
+	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
+)
+
+// histogram_native_scalar_binop.go answers `<exp-hist shape> (*|/)
+// <scalar>` and its commutative `<scalar> * <exp-hist shape>` sibling
+// over a native (OTel exponential) histogram — cerberus issue #2087,
+// spun out of #1772 while implementing avg().
+//
+// Reference Prometheus answers scalar `*` / `/` over a native-histogram
+// sample histogram-valued (promql/engine.go's `vectorElemBinop`):
+//
+//	case hlhs != nil && hrhs == nil:
+//	    case parser.MUL: return 0, hlhs.Copy().Mul(rhs).Compact(0), true, nil, nil
+//	    case parser.DIV: return 0, hlhs.Copy().Div(rhs).Compact(0), true, nil, nil
+//
+// `FloatHistogram.Mul` / `.Div` scale exactly the five COUNT-bearing
+// fields — Count, Sum, ZeroCount, and both signed bucket ladders — and
+// leave Scale, ZeroThreshold and both bucket offsets alone: those
+// describe where the buckets SIT on the value axis, not how much fell
+// into them. [scaleHistogramProjection] is that same five-field split,
+// generalised from [expHistogramAvgScaleProjections]'s "divide by the
+// group's member count" to "scale by an arbitrary PromQL scalar and
+// operator" — see that function's doc for why it is factored this way.
+//
+// Only `*` / `/` are answered here. In the same reference switch, `+` /
+// `-` / `^` / `%` and the comparison family return
+// NewIncompatibleTypesInBinOpInfo and drop the sample rather than
+// answering a value — so `latency_exp_hist + 1` stays rejected exactly
+// as it was before this file, and admitting it would answer where
+// reference answers an empty result with an info annotation instead.
+//
+// This shape composes with the three shipped histogram-VALUED
+// lowerings — bare selector (histogram_native_bare.go), sum()/avg()
+// (histogram_native_sum.go), rate()/increase() (histogram_native_rate.go)
+// — rather than replacing any of them: [lowerExpHistogramScalarBinop]
+// lowers the histogram side through its own existing recognizer and
+// lowering pair unchanged, then rewrites the capping
+// [chplan.HistogramProjection]'s Input to scale it. `rate()` already
+// scales a histogram by a scalar for its own per-second division, but
+// does so by composing with the window fold
+// (expHistogramValuedWindowFold in histogram_native_rate.go) rather than
+// this mechanism: a bare selector and `sum()` have no fold in their
+// plan for a PromQL-supplied scalar to ride along with, which is why
+// this file exists as a THIRD, general-purpose scale layer instead of
+// widening the fold.
+//
+// A `*parser.BinaryExpr` root needs its own dispatch line in
+// [lowerRoot]: that function recognises a selector, an aggregation and a
+// range-vector call, and a binary expression is none of those, so
+// `latency_exp_hist * 2` previously descended through lowerBinary →
+// lowerVectorSelector and was rejected before any histogram-aware code
+// saw it.
+
+// expHistogramScalarBinop recognises `<exp-hist shape> (*|/) <scalar
+// literal>` or its commutative `<scalar> * <exp-hist shape>` sibling,
+// and returns the histogram-side sub-expression, the chplan operator,
+// and the scalar as a chplan literal.
+//
+// DIV is not commutative — `scalar / <exp-hist shape>` is not this
+// shape's mirror (reference's own switch keys off which OPERAND carries
+// the histogram, and a histogram can only be the numerator here) — so
+// only the `<exp-hist shape> / <scalar>` order is recognised for it.
+func expHistogramScalarBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, ok bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return nil, "", nil, false
+	}
+	b, isBin := unwrapBinaryExpr(expr)
+	if !isBin || (b.Op != parser.MUL && b.Op != parser.DIV) {
+		return nil, "", nil, false
+	}
+	chOp, err := promBinaryOp(b.Op)
+	if err != nil {
+		return nil, "", nil, false
+	}
+	if b.Op == parser.MUL {
+		if lv, isScalar := tryScalarLiteral(b.LHS); isScalar && isExpHistogramValuedShape(b.RHS, s, ctx) {
+			return b.RHS, chOp, &chplan.LitFloat{V: lv}, true
+		}
+	}
+	if rv, isScalar := tryScalarLiteral(b.RHS); isScalar && isExpHistogramValuedShape(b.LHS, s, ctx) {
+		return b.LHS, chOp, &chplan.LitFloat{V: rv}, true
+	}
+	return nil, "", nil, false
+}
+
+// unwrapBinaryExpr peels the transparent ParenExpr / StepInvariantExpr
+// wrappers the parser can put between the root and a binary expression —
+// `(latency_exp_hist * 2)` — and reports the BinaryExpr underneath.
+// Mirrors [unwrapVectorSelector] / [unwrapAggregateExpr], which do the
+// same for a selector / an aggregation.
+func unwrapBinaryExpr(e parser.Expr) (*parser.BinaryExpr, bool) {
+	for {
+		switch v := e.(type) {
+		case *parser.BinaryExpr:
+			return v, true
+		case *parser.ParenExpr:
+			e = v.Expr
+		case *parser.StepInvariantExpr:
+			e = v.Expr
+		default:
+			return nil, false
+		}
+	}
+}
+
+// isExpHistogramValuedShape reports whether expr is one of the three
+// shapes that answer histogram-valued: a bare exp-histogram selector,
+// sum()/avg() over one, or rate()/increase() over one.
+func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
+	if _, ok := bareExpHistogramSelector(expr, s, ctx); ok {
+		return true
+	}
+	if _, _, ok := sumOrAvgOverExpHistogram(expr, s, ctx); ok {
+		return true
+	}
+	if _, ok := rateOverExpHistogram(expr, s, ctx); ok {
+		return true
+	}
+	return false
+}
+
+// lowerExpHistogramScalarBinop lowers the shape
+// [expHistogramScalarBinop] recognised: it defers entirely to the
+// histogram side's own shipped lowering — unmodified, so a query without
+// the scalar wrapper still lowers byte-for-byte the same way — then
+// rewrites the capping HistogramProjection to scale it.
+//
+// extraPassthrough only differs from empty for the bare-selector range
+// shapes, which read the step-grid anchor off the row. sum()/avg() and
+// rate()/increase() already carry
+// stepGridAnchorColumn in their own Input's output when it applies —
+// [expHistogramGroupMerge] / [expHistogramWindowReshape] project it
+// themselves — so neither needs it repeated here.
+func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	var (
+		node  chplan.Node
+		err   error
+		extra []string
+	)
+	switch {
+	case func() bool { _, ok := bareExpHistogramSelector(histSide, s, ctx); return ok }():
+		vs, _ := bareExpHistogramSelector(histSide, s, ctx)
+		node, err = lowerExpHistogramBare(vs, s, ctx)
+		if rangeGridShapeFor(vs, ctx) != gridSingleAnchor {
+			extra = []string{stepGridAnchorColumn}
+		}
+	default:
+		if agg, vs, ok := sumOrAvgOverExpHistogram(histSide, s, ctx); ok {
+			node, err = lowerExpHistogramSumOrAvg(agg, vs, s, ctx)
+		} else if shape, ok := rateOverExpHistogram(histSide, s, ctx); ok {
+			node, err = lowerExpHistogramRate(shape, s, ctx)
+		} else {
+			// Unreachable: expHistogramScalarBinop only names histSide
+			// after isExpHistogramValuedShape confirmed it matches one
+			// of these three recognizers.
+			return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v", histSide)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	hp, ok := node.(*chplan.HistogramProjection)
+	if !ok {
+		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not cap with *chplan.HistogramProjection, got %T", node)
+	}
+	return scaleHistogramProjection(hp, op, scale, s, extra...), nil
+}
+
+// scaleHistogramProjection rewrites hp's Input so the row it publishes
+// is scaled by `scale` under `op` — the same five-field split
+// [expHistogramAvgScaleProjections] applies for avg()'s "divide by the
+// group's member count", generalised to an arbitrary scalar expression
+// and operator (cerberus issue #2087).
+//
+// extraPassthrough names any columns beyond the closed set every
+// HistogramProjection.Input is already guaranteed to expose — Attributes,
+// Scale, ZeroThreshold (if the schema persists it), both bucket offsets,
+// and the five count-bearing fields — that THIS caller's specific
+// lowering shape also needs carried through unscaled (the step-grid
+// anchor for the bare-selector range shape; see
+// [lowerExpHistogramScalarBinop]'s doc).
+func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, extraPassthrough ...string) *chplan.HistogramProjection {
+	passthroughCols := append([]string{
+		s.AttributesColumn,
+		s.ScaleColumn,
+		s.PositiveOffsetColumn,
+		s.NegativeOffsetColumn,
+	}, extraPassthrough...)
+
+	projs := make([]chplan.Projection, 0, len(passthroughCols)+1+5)
+	for _, col := range passthroughCols {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col})
+	}
+	if s.ZeroThresholdColumn != "" {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ZeroThresholdColumn}, Alias: s.ZeroThresholdColumn})
+	}
+	for _, col := range []string{s.CountColumn, s.SumColumn, s.ZeroCountColumn} {
+		projs = append(projs, chplan.Projection{
+			Expr:  scaleHistogramScalarExpr(op, &chplan.ColumnRef{Name: col}, scale),
+			Alias: col,
+		})
+	}
+	for _, col := range []string{s.PositiveBucketCountsColumn, s.NegativeBucketCountsColumn} {
+		projs = append(projs, chplan.Projection{
+			Expr:  scaleHistogramLadderExpr(op, &chplan.ColumnRef{Name: col}, scale),
+			Alias: col,
+		})
+	}
+
+	scaled := *hp
+	scaled.Input = &chplan.Project{Input: hp.Input, Projections: projs}
+	scaled.GroupBy = append([]chplan.Expr(nil), hp.GroupBy...)
+	for i, alias := range scaled.GroupByAliases {
+		if alias == s.MetricNameColumn {
+			scaled.GroupBy[i] = &chplan.LitString{V: ""}
+			break
+		}
+	}
+	return &scaled
+}
+
+// scaleHistogramScalarExpr renders `e OP scale` for one scalar
+// count-bearing field (Count, Sum, ZeroCount).
+func scaleHistogramScalarExpr(op chplan.BinaryOp, e, scale chplan.Expr) chplan.Expr {
+	return &chplan.Binary{Op: op, Left: e, Right: scale}
+}
+
+// scaleHistogramLadderExpr renders an element-wise `arrayMap(b -> b OP
+// scale, e)` for one signed bucket ladder — reference's `for i := range
+// h.PositiveBuckets { h.PositiveBuckets[i] OP= scalar }`, expressed as a
+// single array expression rather than a per-element loop.
+func scaleHistogramLadderExpr(op chplan.BinaryOp, e, scale chplan.Expr) chplan.Expr {
+	const paramBucket = "b"
+	return &chplan.FuncCall{
+		Name: "arrayMap",
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramBucket},
+				// BareIdent, not ColumnRef: a lambda parameter is bound by
+				// the lambda, not read off a row — every other
+				// exp-histogram bucket expression in this package spells
+				// it that way (see expHistogramBucketRowContribExpr).
+				Body: scaleHistogramScalarExpr(op, &chplan.BareIdent{Name: paramBucket}, scale),
+			},
+			e,
+		},
+	}
+}
