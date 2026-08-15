@@ -796,11 +796,11 @@
     },
     {
       "url": "/a/grafana-metricsdrilldown-app/drilldown#adhoc[+ label = value]={rep}",
-      "lean": false
+      "lean": true
     },
     {
       "url": "/a/grafana-metricsdrilldown-app/drilldown#radio[Grid|Rows]=Rows",
-      "lean": false
+      "lean": true
     },
     {
       "url": "/a/grafana-metricsdrilldown-app/drilldown?actionView=related&metric={metric}",
@@ -821,10 +821,6 @@
     {
       "url": "/a/grafana-metricsdrilldown-app/drilldown?metric={metric}#select[group-by-selector-combobox]={rep}",
       "lean": false
-    },
-    {
-      "url": "/a/grafana-metricsdrilldown-app/trail",
-      "lean": true
     },
     {
       "url": "/a/grafana-pyroscope-app/explore",
