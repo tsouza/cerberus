@@ -39,6 +39,15 @@ import (
 //
 // ZeroThreshold is absent on purpose — the upstream OTel-CH exp-histogram DDL
 // does not persist it, so this is the production column set.
+//
+// Count and Sum are the histogram's own stored scalars the rank walk
+// now ranks against / checks for NaN (cerberus issue #2072). Count = 4
+// matches the bucket-array total (2 negative + 2 positive, no
+// NaN-observation slop) and Sum = 0 (a finite, symmetric placeholder —
+// this fixture is about the walk DIRECTION at an exact rank tie, not
+// about Sum's value), so both walk arms behave exactly as they did
+// before that column pair existed and this test's own tie-break
+// scenario is unaffected.
 const rankTieHistogramRow = `SELECT ` +
 	`map('service', 'api') AS Attributes, ` +
 	`toInt32(0) AS Scale, ` +
@@ -46,7 +55,9 @@ const rankTieHistogramRow = `SELECT ` +
 	`toInt32(0) AS PositiveOffset, ` +
 	`[toUInt64(2)] AS PositiveBucketCounts, ` +
 	`toInt32(0) AS NegativeOffset, ` +
-	`[toUInt64(2)] AS NegativeBucketCounts`
+	`[toUInt64(2)] AS NegativeBucketCounts, ` +
+	`toUInt64(4) AS Count, ` +
+	`toFloat64(0) AS Sum`
 
 // rankTieInterpolationTolerance is the relative agreement demanded of the
 // phi values that are NOT at the tie. Those land strictly inside a bucket, so
@@ -95,6 +106,8 @@ func TestEmitHistogramQuantileNative_RankTieMatchesReferenceWalk(t *testing.T) {
 				PositiveBucketCountsColumn: "PositiveBucketCounts",
 				NegativeOffsetColumn:       "NegativeOffset",
 				NegativeBucketCountsColumn: "NegativeBucketCounts",
+				CountColumn:                "Count",
+				SumColumn:                  "Sum",
 				GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 				GroupByAliases:             []string{"Attributes"},
 				MetricNameColumn:           "MetricName",

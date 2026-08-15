@@ -313,27 +313,34 @@ func expHistogramWindowReshape(
 // rangeStart / rangeEnd are the window's own edges — see
 // classicBucketWindowStage's twin doc.
 func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
+	// Widened by expHistogramValuedWindowAggs / expHistogramValuedWindowScalars
+	// — the same Sum-collecting widening rate()/increase() apply for their
+	// histogram-VALUED output — so the quantile kernel's rankBase /
+	// sumIsNaN (histogram_quantile_native.go, cerberus issue #2072) see
+	// this series' own window-folded Count and Sum rather than a
+	// bucket-derived total.
 	group := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(expHistogramWindowAggs(s, shape.windowFn), windowSampleCountAgg(s)),
+		AggFuncs:           append(expHistogramValuedWindowAggs(s, shape.windowFn), windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
 	resets := expHistogramResetMaskFor(shape.windowFn)
+	fold := histogramWindowFold(shape.windowFn, histogramWindowInputs{
+		rangeStart:  rangeStart,
+		rangeEnd:    rangeEnd,
+		countValues: expHistogramWindowCountValuesExpr(),
+		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
+		resets:      resets,
+	})
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		expHistogramWindowAggs(s, shape.windowFn),
+		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{s.AttributesColumn},
 		resets,
-		histogramWindowFold(shape.windowFn, histogramWindowInputs{
-			rangeStart:  rangeStart,
-			rangeEnd:    rangeEnd,
-			countValues: expHistogramWindowCountValuesExpr(),
-			temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
-			resets:      resets,
-		}),
-		nil,
+		fold,
+		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
 }
@@ -405,4 +412,31 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
 		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
 	}...)
+}
+
+// hqQuantileRankScalarMergeAggs is [expHistogramMergeAggs] widened by the
+// group's total Count and Sum — sum(Count) AS Count, sum(Sum) AS Sum —
+// the histogram's own stored scalars the quantile kernel ranks against
+// (histogram_quantile_native.go's rankBase / sumIsNaN, cerberus issue
+// #2072). Count and Sum add plainly across a merge, the same additivity
+// [expHistogramGroupMergeAggs] relies on for a histogram-VALUED sum() /
+// avg() answer; unlike that sibling this one never widens further for
+// avg's per-series-count collection, since histogram_quantile has no
+// avg-shaped caller.
+func hqQuantileRankScalarMergeAggs(s schema.Metrics) []chplan.AggFunc {
+	return append([]chplan.AggFunc{
+		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
+		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
+	}, expHistogramMergeAggs(s)...)
+}
+
+// hqQuantileRankScalarMergeProjections is [expHistogramMergeProjections]
+// plus the Count / Sum pass-through [hqQuantileRankScalarMergeAggs]
+// collected, so the quantile node's Input row carries the two scalars
+// alongside the merged bucket ladders.
+func hqQuantileRankScalarMergeProjections(s schema.Metrics) []chplan.Projection {
+	return append([]chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.CountColumn}, Alias: s.CountColumn},
+		{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
+	}, expHistogramMergeProjections(s)...)
 }

@@ -1734,7 +1734,7 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schem
 	}
 
 	hq := &chplan.HistogramQuantileNative{
-		Input:                      latestSampleAgg(input, nativeExpHistLatestAggs(s), s),
+		Input:                      latestSampleAgg(input, nativeExpHistValuedLatestAggs(s), s),
 		Phi:                        phi.lit,
 		PhiExpr:                    phi.expr,
 		ScaleColumn:                s.ScaleColumn,
@@ -1744,6 +1744,8 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schem
 		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
 		NegativeOffsetColumn:       s.NegativeOffsetColumn,
 		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		CountColumn:                s.CountColumn,
+		SumColumn:                  s.SumColumn,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},
@@ -1904,7 +1906,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 		Input:              perSeries,
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
-		AggFuncs:           expHistogramMergeAggs(s),
+		AggFuncs:           hqQuantileRankScalarMergeAggs(s),
 		DropEmptyOnNoGroup: true,
 	}
 
@@ -1916,7 +1918,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 		Input: agg,
 		Projections: append(
 			[]chplan.Projection{{Expr: attrsRebuild, Alias: s.AttributesColumn}},
-			expHistogramMergeProjections(s)...,
+			hqQuantileRankScalarMergeProjections(s)...,
 		),
 	}
 
@@ -1931,6 +1933,8 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 		PositiveBucketCountsColumn: s.PositiveBucketCountsColumn,
 		NegativeOffsetColumn:       s.NegativeOffsetColumn,
 		NegativeBucketCountsColumn: s.NegativeBucketCountsColumn,
+		CountColumn:                s.CountColumn,
+		SumColumn:                  s.SumColumn,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 		},

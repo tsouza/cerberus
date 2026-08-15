@@ -51,6 +51,8 @@ func TestEmit_HistogramQuantileNative_NoZeroThresholdColumn(t *testing.T) {
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
 		NegativeOffsetColumn:       "NegativeOffset",
 		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		CountColumn:                "Count",
+		SumColumn:                  "Sum",
 	}
 	sql, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
@@ -88,6 +90,8 @@ func TestEmit_HistogramQuantileNative_MissingColumns(t *testing.T) {
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
 		NegativeOffsetColumn:       "NegativeOffset",
 		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		CountColumn:                "Count",
+		SumColumn:                  "Sum",
 	}
 
 	cases := []struct {
@@ -143,6 +147,8 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
 		NegativeOffsetColumn:       "NegativeOffset",
 		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		CountColumn:                "Count",
+		SumColumn:                  "Sum",
 		GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		GroupByAliases:             []string{"Attributes"},
 		MetricNameColumn:           "MetricName",
@@ -229,6 +235,8 @@ func hqNativePlan(phi float64, phiExpr chplan.Expr) *chplan.HistogramQuantileNat
 		PositiveBucketCountsColumn: "PositiveBucketCounts",
 		NegativeOffsetColumn:       "NegativeOffset",
 		NegativeBucketCountsColumn: "NegativeBucketCounts",
+		CountColumn:                "Count",
+		SumColumn:                  "Sum",
 		GroupBy:                    []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		GroupByAliases:             []string{"Attributes"},
 		MetricNameColumn:           "MetricName",
@@ -272,17 +280,28 @@ func TestEmit_HistogramQuantileNative_WalkDirection(t *testing.T) {
 			notWant: []string{"1 - 0.25"},
 		},
 		{
-			// The exact boundary: reference flips AT 0.5, not above it.
-			name:    "at-half-walks-backward",
-			phi:     0.5,
-			want:    []string{"arrayFirstIndex(c -> ", revRank + "1 - 0.5) * "},
-			notWant: []string{"c >= (0.5 * "},
+			// The exact boundary: reference flips AT 0.5, not above it —
+			// but only when Sum is finite. Reference forces the forward
+			// arm regardless of phi when Sum is NaN (cerberus issue
+			// #2072), so BOTH arms now ride behind a runtime
+			// `isNaN(Sum)` dispatch for phi >= reverseWalkPhi, mirroring
+			// the computed-phi case below.
+			name: "at-half-walks-backward",
+			phi:  0.5,
+			want: []string{
+				"arrayFirstIndex(c -> ", revRank + "1 - 0.5) * ",
+				"isNaN(`Sum`)",
+				"c >= (0.5 * ",
+			},
 		},
 		{
-			name:    "above-half-walks-backward",
-			phi:     0.95,
-			want:    []string{revRank + "1 - 0.95) * "},
-			notWant: []string{"c >= (0.95 * "},
+			name: "above-half-walks-backward",
+			phi:  0.95,
+			want: []string{
+				revRank + "1 - 0.95) * ",
+				"isNaN(`Sum`)",
+				"c >= (0.95 * ",
+			},
 		},
 		{
 			// A computed phi is unknown until the row is evaluated, so
