@@ -88,6 +88,7 @@ type flags struct {
 	corpusDir          string
 	cerberusQueriesDir string
 	metadataDir        string
+	livePatternsPath   string
 	reportPath         string
 	scorePath          string
 	casesPath          string
@@ -108,6 +109,7 @@ func parseFlags() flags {
 	flag.StringVar(&f.corpusDir, "corpus", "./queries", "Path to the vendored bench/queries/ directory (suite subdirs: fast/, regression/, exhaustive/)")
 	flag.StringVar(&f.cerberusQueriesDir, "cerberus-queries", "./cerberus-queries", "Path to the cerberus-owned additive query directory (same suite subdirs: fast/, regression/, exhaustive/); merged into the corpus loaded from -corpus. Never edits the AGPL vendor snapshot.")
 	flag.StringVar(&f.metadataDir, "metadata-dir", ".", "Directory containing dataset_metadata.json")
+	flag.StringVar(&f.livePatternsPath, "live-patterns-metadata", "", "Path to the seeder's now-anchored /patterns fixture handshake (required for range runs)")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
 	flag.StringVar(&f.scorePath, "score", "", "shields.io endpoint-badge score JSON output path; empty means do not write")
 	flag.StringVar(&f.casesPath, "cases", "", "per-case parity roster JSON output path; empty means do not write")
@@ -150,6 +152,9 @@ func run() error {
 		return errors.New("both -addr-1 and -addr-2 must be set")
 	}
 	isInstant := f.rangeType == "instant"
+	if !isInstant && f.livePatternsPath == "" {
+		return errors.New("-live-patterns-metadata is required for range runs")
+	}
 
 	// Sanity rail (task #269): when -skip-baseline is set, partition
 	// the full corpus into runnable + upstream-skipped, then diff the
@@ -182,6 +187,10 @@ func run() error {
 	// results join the same report + score pipeline as the corpus
 	// cases — no separate bucket, no allow-list.
 	if !isInstant {
+		livePatterns, err := readLivePatternsMetadata(f.livePatternsPath, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("load live patterns metadata: %w", err)
+		}
 		metadata, err := bench.LoadMetadata(f.metadataDir)
 		if err != nil {
 			return fmt.Errorf("LoadMetadata(%s) for detected-fields pass: %w", f.metadataDir, err)
@@ -212,6 +221,13 @@ func run() error {
 		// #1435 / #1593 / #1484 / #1626 describe on the Tempo side. See
 		// status_parity.go.
 		results = append(results, compareStatusParityAll(httpClient, f)...)
+
+		// /patterns is backed by a wall-clock-retained pattern ingester in
+		// reference Loki, so it consumes the separate live fixture described
+		// by the seeder handshake rather than dataset_metadata.json's static
+		// corpus. Only stable protocol axes are graded; pattern strings and
+		// cluster identities are deliberately outside the comparison.
+		results = append(results, compareLivePatterns(httpClient, f, livePatterns)...)
 	}
 
 	report := Report{

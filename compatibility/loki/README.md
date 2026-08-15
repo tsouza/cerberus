@@ -28,7 +28,7 @@ compatibility/loki/
   cerberus-queries/               cerberus-owned ADDITIVE query corpus (see below)
   upstream-skip-baseline.txt      pinned set of upstream `skip: true` keys (sanity rail; see "Upstream-skip baseline")
   dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}
-  reports/                        diff driver output (gitignored)
+  reports/                        diff output + live fixture handshake (gitignored)
   cmd/
     seed/                         deterministic OTel-shape log seeder
     loki-compliance-tester/       cerberus-owned diff driver
@@ -162,6 +162,25 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   snapshot untouched: it is upstream's code, unused only in the subset
   cerberus vendors, and the bump procedure below re-copies `metadata.go`
   verbatim, so deleting it locally would be undone at the next bump.
+
+The `/patterns` differential does not use `dataset_metadata.json`.
+Reference Loki serves recent patterns from a wall-clock-retained in-memory
+ingester, so the static corpus anchor cannot provide a sound fixture. The
+seeder therefore dual-writes one dedicated current-time stream and atomically
+publishes its selector, exact query window, and per-level input volumes to
+`reports/live-patterns-metadata.json`. The stream stays outside
+`serviceConfigs` and the template resolver, so it cannot perturb corpus case
+selection. The range driver refuses a missing, malformed, future, or stale
+handshake before issuing any differential request.
+
+The four `/patterns` result rows grade only the portable contract: success
+envelope with non-empty data, exact seeded level vocabulary and coverage,
+two-integer positive sample tuples inside the advertised window, and returned
+volume in `(0, seeded]` for every level on each backend. Pattern text and
+cluster identity are intentionally not compared: upstream's Drain miner and
+Cerberus's clean-room miner are different implementations, and upstream's
+cluster floor/cap are not endpoint semantics Cerberus can soundly mirror by
+comparing templates.
 
 ## Detected-fields differential pass
 

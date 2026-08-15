@@ -938,9 +938,13 @@
       ]
     },
     "loki": {
-      "passed": 218,
-      "total": 218,
+      "passed": 222,
+      "total": 222,
       "cases": [
+        "cerberus/patterns-live | patterns_envelope | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns success envelope and non-empty data",
+        "cerberus/patterns-live | patterns_levels | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns level vocabulary and coverage",
+        "cerberus/patterns-live | patterns_samples | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns sample tuple encoding",
+        "cerberus/patterns-live | patterns_volume | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns per-level volume bound",
         "cerberus/status-parity | status_parity | range | n/a |  | missing query parameter on /query_range",
         "cerberus/status-parity | status_parity | range | n/a | { | syntactically invalid LogQL (unbalanced selector) on /query_range",
         "cerberus/wrong-rejection-burndown | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} != ip(\"255.255.255.255\") | ip line filter negated: single-IP",

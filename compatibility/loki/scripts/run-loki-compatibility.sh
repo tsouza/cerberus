@@ -51,6 +51,10 @@
 #                       reports/compat-cases.json). The per-case
 #                       (identity, agreed) roster the parity ratchet
 #                       gates on; see compatibility/internal/score.
+#   LIVE_PATTERNS_METADATA
+#                       Seeder/tester handshake for the now-anchored
+#                       /patterns fixture (default:
+#                       reports/live-patterns-metadata.json).
 #   DRIVER_TIMEOUT      Per-request HTTP timeout (default: 30s).
 #   DRIVER_TOLERANCE    -tolerance flag (default: 1e-5; matches upstream).
 #   DRIVER_RANGE_TYPE   -range-type flag (default: range; 'instant' also valid).
@@ -79,6 +83,7 @@ export COMPOSE_PROJECT_SUFFIX
 REPORT=${DRIVER_REPORT:-"$ROOT_DIR/reports/diff.json"}
 SCORE=${DRIVER_SCORE:-"$ROOT_DIR/reports/compat-score.json"}
 CASES=${DRIVER_CASES:-"$ROOT_DIR/reports/compat-cases.json"}
+LIVE_PATTERNS_METADATA=${LIVE_PATTERNS_METADATA:-"$ROOT_DIR/reports/live-patterns-metadata.json"}
 TIMEOUT=${DRIVER_TIMEOUT:-30s}
 TOLERANCE=${DRIVER_TOLERANCE:-1e-5}
 RANGE_TYPE=${DRIVER_RANGE_TYPE:-range}
@@ -126,7 +131,8 @@ node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
     docker compose up -d --build --wait clickhouse loki cerberus
 
 echo "==> running seeder (go run ./cmd/seed)"
-(cd "$REPO_ROOT" && go run ./compatibility/loki/cmd/seed/)
+(cd "$REPO_ROOT" && go run ./compatibility/loki/cmd/seed/ \
+    -live-patterns-metadata="$LIVE_PATTERNS_METADATA")
 
 if [ -n "${DRIVER_SKIP:-}" ]; then
     echo "==> DRIVER_SKIP set — finishing after smoke"
@@ -164,6 +170,7 @@ set +e
     -corpus="$ROOT_DIR/upstream/loki-bench/queries" \
     -cerberus-queries="$ROOT_DIR/cerberus-queries" \
     -metadata-dir="$ROOT_DIR" \
+    -live-patterns-metadata="$LIVE_PATTERNS_METADATA" \
     -skip-baseline="$SKIP_BASELINE" \
     -report="$REPORT" \
     -score="$SCORE" \

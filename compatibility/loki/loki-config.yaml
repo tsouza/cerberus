@@ -83,6 +83,14 @@ ingester:
   wal:
     disk_full_threshold: 0
 
+# /patterns is served from a separate, in-memory pattern ingester. The
+# compatibility seeder writes a small wall-clock-anchored stream for this
+# endpoint; the large deterministic corpus remains fixed at its historical
+# anchor and is intentionally unsuitable for the pattern ingester's retention
+# window.
+pattern_ingester:
+  enabled: true
+
 ruler:
   alertmanager_url: http://localhost:9093
 
