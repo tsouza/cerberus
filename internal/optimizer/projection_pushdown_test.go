@@ -110,3 +110,141 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 		})
 	}
 }
+
+// TestRangeWindowColumns_Temporality pins the #2127 fix: rangeWindowColumns
+// must include TemporalityColumn whenever it is set, because
+// emitWindowedArrayExtrapolated (chsql/range_window.go) reads
+// `any(<TemporalityColumn>)` off the same Input this pushdown narrows,
+// unconditionally. Reached in production by a `rate()` / `increase()` over
+// a schema that clears ResourceAttributesColumn (and has no dedicated
+// top-level-column overlay) with AggregationTemporalityColumn set: on such
+// a schema augmentSelectorAttributes (internal/promql/lower.go) skips the
+// Project wrap that would otherwise carry TemporalityColumn, so the
+// RangeWindow's Input is a bare Filter(Scan) with TemporalityColumn still
+// populated — exactly the shape applyStageScan narrows directly.
+func TestRangeWindowColumns_Temporality(t *testing.T) {
+	t.Parallel()
+
+	r := &chplan.RangeWindow{
+		Input:             &chplan.Scan{Table: "otel_metrics_sum"},
+		Func:              "rate",
+		TimestampColumn:   "TimeUnix",
+		ValueColumn:       "Value",
+		TemporalityColumn: "AggregationTemporality",
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	want := []string{"AggregationTemporality", "Attributes", "TimeUnix", "Value"}
+	if got := rangeWindowColumns(r); !reflect.DeepEqual(got, want) {
+		t.Errorf("rangeWindowColumns() = %v, want %v", got, want)
+	}
+}
+
+// TestRangeWindowColumns_TemporalityReachesNarrowedScan proves the gap end
+// to end through the rule itself, not just the enumerator: applying
+// ProjectionPushdown to `RangeWindow(Filter(Scan))` with TemporalityColumn
+// set must leave AggregationTemporality in the narrowed Scan.Columns.
+// Before the #2127 fix this narrowed the Scan to {Attributes, TimeUnix,
+// Value}, dropping AggregationTemporality out from under the emitter and
+// 502ing with UNKNOWN_IDENTIFIER.
+func TestRangeWindowColumns_TemporalityReachesNarrowedScan(t *testing.T) {
+	t.Parallel()
+
+	scan := &chplan.Scan{Table: "otel_metrics_sum"}
+	filter := &chplan.Filter{
+		Input:     scan,
+		Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "MetricName"}, Right: &chplan.InlineString{V: "x"}},
+	}
+	r := &chplan.RangeWindow{
+		Input:             filter,
+		Func:              "rate",
+		TimestampColumn:   "TimeUnix",
+		ValueColumn:       "Value",
+		TemporalityColumn: "AggregationTemporality",
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+
+	got, changed := (ProjectionPushdown{}).Apply(r)
+	if !changed {
+		t.Fatalf("ProjectionPushdown.Apply() reported no change")
+	}
+	rewritten, ok := got.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("ProjectionPushdown.Apply() returned %T, want *chplan.RangeWindow", got)
+	}
+	rewrittenFilter, ok := rewritten.Input.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("rewritten RangeWindow.Input = %T, want *chplan.Filter", rewritten.Input)
+	}
+	rewrittenScan, ok := rewrittenFilter.Input.(*chplan.Scan)
+	if !ok {
+		t.Fatalf("rewritten Filter.Input = %T, want *chplan.Scan", rewrittenFilter.Input)
+	}
+
+	want := []string{"AggregationTemporality", "Attributes", "MetricName", "TimeUnix", "Value"}
+	if !reflect.DeepEqual(rewrittenScan.Columns, want) {
+		t.Errorf("narrowed Scan.Columns = %v, want %v", rewrittenScan.Columns, want)
+	}
+}
+
+// TestRangeWindowColumns_Variants pins the second #2127 latent gap: a fused
+// multi-arm RangeWindow (LogQL's variants(...)) must contribute every arm's
+// own ValueColumn, since range_window_variants.go reads each arm's column
+// directly off Input. Currently reached only through a Project gate
+// applyStageScan declines, but the enumerator itself must still be a
+// complete description of what the emit reads.
+func TestRangeWindowColumns_Variants(t *testing.T) {
+	t.Parallel()
+
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "logs"},
+		TimestampColumn: "TimeUnix",
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		Variants: []chplan.RangeWindowVariant{
+			{Func: "count_over_time", ValueColumn: "CountValue", Label: "0"},
+			{Func: "bytes_over_time", ValueColumn: "BytesValue", Label: "1"},
+		},
+		VariantColumn: "__variant__",
+	}
+	want := []string{"Attributes", "BytesValue", "CountValue", "TimeUnix"}
+	if got := rangeWindowColumns(r); !reflect.DeepEqual(got, want) {
+		t.Errorf("rangeWindowColumns() = %v, want %v", got, want)
+	}
+}
+
+// TestAggregateColumns_Having pins the third #2127 latent gap:
+// aggregateColumns must include the columns Having references, since
+// emitAggregate (chsql/emit_node.go) renders Having as a real SQL HAVING
+// clause evaluated against the same narrowed row shape. Mirrors
+// duplicateLabelsetGuardExpr's shape (internal/promql/lower.go): a
+// `throwIf(uniqExact(MetricName) > 1, …) = 0` guard where MetricName is
+// deliberately absent from both GroupBy and AggFuncs.
+func TestAggregateColumns_Having(t *testing.T) {
+	t.Parallel()
+
+	a := &chplan.Aggregate{
+		Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: []chplan.AggFunc{
+			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"},
+		},
+		Having: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.FuncCall{
+				Name: "throwIf",
+				Args: []chplan.Expr{
+					&chplan.Binary{
+						Op:    chplan.OpGt,
+						Left:  &chplan.FuncCall{Name: "uniqExact", Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}}},
+						Right: &chplan.LitInt{V: 1},
+					},
+					&chplan.InlineString{V: "duplicate labelset"},
+				},
+			},
+			Right: &chplan.LitInt{V: 0},
+		},
+	}
+	want := []string{"Attributes", "MetricName", "Value"}
+	if got := aggregateColumns(a); !reflect.DeepEqual(got, want) {
+		t.Errorf("aggregateColumns() = %v, want %v", got, want)
+	}
+}

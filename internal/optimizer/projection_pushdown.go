@@ -33,11 +33,13 @@ import (
 // RangeWindow — sitting directly over Scan or Filter(Scan):
 //
 //  3. `Aggregate(Scan)` / `Aggregate(Filter(Scan))` — narrow the Scan to
-//     the union of the columns the Aggregate's GroupBy keys and AggFunc
-//     params/args read, plus the Filter predicate's columns when present.
+//     the union of the columns the Aggregate's GroupBy keys, AggFunc
+//     params/args, and Having predicate read, plus the Filter predicate's
+//     columns when present.
 //  4. `RangeWindow(Scan)` / `RangeWindow(Filter(Scan))` — narrow the Scan
 //     to the union of TimestampColumn + ValueColumn (the per-sample pair
-//     the windowed-array idiom reads), the GroupBy + ScalarExprs column
+//     the windowed-array idiom reads), TemporalityColumn when set, each
+//     fused Variants arm's ValueColumn, the GroupBy + ScalarExprs column
 //     refs, plus the Filter predicate's columns when present.
 //  5. `RangeWindowNative(Scan)` / `RangeWindowNative(Filter(Scan))` — the
 //     experimental ClickHouse-native `timeSeriesRateToGrid` lowering.
@@ -230,32 +232,68 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 }
 
 // aggregateColumns returns the sorted, deduped set of base columns an
-// Aggregate's own emit reads: the union of every GroupBy key expression
-// and every AggFunc's Params + Args. emitAggregate (chsql/emit_node.go)
-// selects exactly these — GroupBy in the SELECT/GROUP BY, AggFuncs as the
-// reducers — so this is the complete set the narrowed Scan must carry.
+// Aggregate's own emit reads: the union of every GroupBy key expression,
+// every AggFunc's Params + Args, and Having. emitAggregate
+// (chsql/emit_node.go) renders exactly these — GroupBy in the
+// SELECT/GROUP BY, AggFuncs as the reducers, Having as a real SQL HAVING
+// evaluated against the same row shape — so this is the complete set the
+// narrowed Scan must carry.
+//
+// Having matters even though it never rides as a GroupBy key or an
+// AggFunc arg: duplicateLabelsetGuardExpr (internal/promql/lower.go)
+// plants `throwIf(uniqExact(MetricName) > 1, …) = 0` as an Aggregate's
+// Having specifically because MetricName is NOT a GroupBy key for that
+// shape (the guard exists to detect distinct names colliding under one
+// dropped-name group) — so a narrowed Scan that only unions GroupBy +
+// AggFuncs strips MetricName out from under a HAVING clause that
+// references it, and ClickHouse fails outer-scope resolution with error
+// 47 (UNKNOWN_IDENTIFIER).
 func aggregateColumns(a *chplan.Aggregate) []string {
-	seen := map[string]struct{}{}
-	collect := collectColumn(seen)
-	for _, g := range a.GroupBy {
-		walkExpr(g, collect)
-	}
-	for _, af := range a.AggFuncs {
-		for _, p := range af.Params {
-			walkExpr(p, collect)
-		}
-		for _, ar := range af.Args {
-			walkExpr(ar, collect)
-		}
-	}
-	return sortedColumnSet(seen)
+	var roots []chplan.Expr
+	roots = append(roots, a.GroupBy...)
+	roots = append(roots, aggFuncExprs(a.AggFuncs)...)
+	roots = append(roots, a.Having)
+	return stageColumns(nil, roots...)
 }
 
 // rangeWindowColumns returns the sorted, deduped set of base columns a
 // RangeWindow's row-shape emit reads: the bare-string TimestampColumn +
 // ValueColumn (the per-sample pair the windowed-array idiom consumes —
-// added literally, they are plain column names, not Exprs), plus the
-// column refs walked out of GroupBy and ScalarExprs.
+// added literally, they are plain column names, not Exprs), TemporalityColumn
+// when set, each fused Variants arm's ValueColumn, plus the column refs
+// walked out of GroupBy and ScalarExprs.
+//
+// TemporalityColumn matters even though the doc on that field frames it as
+// an opt-in extra: whenever it is non-empty, emitWindowedArrayExtrapolated
+// (chsql/range_window.go) reads `any(<TemporalityColumn>)` off Input inside
+// the same innermost SELECT this pushdown narrows, unconditionally — so
+// omitting it here narrows the Scan out from under a column the emit still
+// references, and ClickHouse fails outer-scope resolution with error 47
+// (UNKNOWN_IDENTIFIER). The default OTel-CH lowering never exposes the gap
+// because augmentSelectorAttributes (internal/promql/lower.go) wraps the
+// selector in a Project that carries TemporalityColumn whenever the schema
+// sets both ResourceAttributesColumn and AggregationTemporalityColumn — a
+// Project input applyStageScan declines outright. A schema that clears
+// ResourceAttributesColumn (and has no dedicated top-level-column overlay)
+// makes that Project a no-op that augmentSelectorAttributes skips
+// (isBareAttributesRef, internal/promql/resource_attributes.go), so a
+// `rate()` / `increase()` over an unambiguous Sum/Histogram-table selector
+// on such a schema reaches this function with a bare Filter(Scan) Input and
+// TemporalityColumn still set — the gap is live, not merely hypothetical.
+//
+// The fused Variants arms matter for the same reason each stage's own
+// per-arm value column matters everywhere else in this file: LogQL's
+// `variants(...)` construct (internal/logql/variants.go) fuses several
+// range-function arms into one window, each naming its own ValueColumn,
+// and the emitter (chsql/range_window_variants.go) reads every arm's
+// column directly off Input. Today every LogQL fused Input arrives wrapped
+// in a Project, which applyStageScan declines — so, like TemporalityColumn
+// above, this is currently reached through a Project gate that keeps the
+// omission latent rather than live. Collecting it here anyway keeps this
+// function a complete, self-contained description of "every base column
+// RangeWindow's own emit reads off Input", so the day a lowering emits a
+// fused window directly over Scan/Filter(Scan), or applyStageScan grows a
+// Project arm, the pushdown already narrows correctly instead of 502ing.
 //
 // Only the row-shape (PromQL / LogQL) RangeWindow over Scan / Filter(Scan)
 // reaches this: the Apply switch routes a RangeWindow whose Input is a
@@ -264,21 +302,14 @@ func aggregateColumns(a *chplan.Aggregate) []string {
 // — to applyRangeWindowOverMetricsAggregate instead, since that shape needs
 // to WIDEN an already-narrowed Scan rather than narrow one directly.
 func rangeWindowColumns(r *chplan.RangeWindow) []string {
-	seen := map[string]struct{}{}
-	if r.TimestampColumn != "" {
-		seen[r.TimestampColumn] = struct{}{}
+	bare := []string{r.TimestampColumn, r.ValueColumn, r.TemporalityColumn}
+	for _, v := range r.Variants {
+		bare = append(bare, v.ValueColumn)
 	}
-	if r.ValueColumn != "" {
-		seen[r.ValueColumn] = struct{}{}
-	}
-	collect := collectColumn(seen)
-	for _, g := range r.GroupBy {
-		walkExpr(g, collect)
-	}
-	for _, s := range r.ScalarExprs {
-		walkExpr(s, collect)
-	}
-	return sortedColumnSet(seen)
+	var roots []chplan.Expr
+	roots = append(roots, r.GroupBy...)
+	roots = append(roots, r.ScalarExprs...)
+	return stageColumns(bare, roots...)
 }
 
 // applyRangeWindowOverMetricsAggregate handles the TraceQL matrix shape
@@ -391,21 +422,11 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // invariant-relaxation away from re-opening the #860/#861 dropped-column
 // class. Both ship.
 func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
-	seen := map[string]struct{}{}
-	if r.TimestampColumn != "" {
-		seen[r.TimestampColumn] = struct{}{}
-	}
-	if r.ValueColumn != "" {
-		seen[r.ValueColumn] = struct{}{}
-	}
-	collect := collectColumn(seen)
-	for _, g := range r.GroupBy {
-		walkExpr(g, collect)
-	}
-	for _, p := range r.Recollapse {
-		walkExpr(p.Expr, collect)
-	}
-	return sortedColumnSet(seen)
+	bare := []string{r.TimestampColumn, r.ValueColumn}
+	var roots []chplan.Expr
+	roots = append(roots, r.GroupBy...)
+	roots = append(roots, projectionExprs(r.Recollapse)...)
+	return stageColumns(bare, roots...)
 }
 
 // resampleRangeWindowColumns returns the sorted, deduped set of base columns a
@@ -424,13 +445,7 @@ func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
 // columns — 502s the query at runtime, so the enumeration must match the emit's
 // reads exactly (the same #860/#861 failure class the native-rate path guards).
 func resampleRangeWindowColumns(r *chplan.RangeWindowResample) []string {
-	seen := map[string]struct{}{}
-	for _, c := range []string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol} {
-		if c != "" {
-			seen[c] = struct{}{}
-		}
-	}
-	return sortedColumnSet(seen)
+	return stageColumns([]string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol})
 }
 
 // rangeBucketFanoutColumns returns the sorted, deduped set of base columns
@@ -442,23 +457,10 @@ func resampleRangeWindowColumns(r *chplan.RangeWindowResample) []string {
 // columns, and each AggFunc's Params + Args — so narrowing the Scan to
 // exactly that union is safe.
 func rangeBucketFanoutColumns(r *chplan.RangeBucketFanout) []string {
-	seen := map[string]struct{}{}
-	if r.TimestampCol != "" {
-		seen[r.TimestampCol] = struct{}{}
-	}
-	collect := collectColumn(seen)
-	for _, g := range r.GroupBy {
-		walkExpr(g, collect)
-	}
-	for _, af := range r.AggFuncs {
-		for _, p := range af.Params {
-			walkExpr(p, collect)
-		}
-		for _, a := range af.Args {
-			walkExpr(a, collect)
-		}
-	}
-	return sortedColumnSet(seen)
+	var roots []chplan.Expr
+	roots = append(roots, r.GroupBy...)
+	roots = append(roots, aggFuncExprs(r.AggFuncs)...)
+	return stageColumns([]string{r.TimestampCol}, roots...)
 }
 
 // rangeLWRColumns returns the sorted, deduped set of base columns a
@@ -466,13 +468,7 @@ func rangeBucketFanoutColumns(r *chplan.RangeBucketFanout) []string {
 // four named columns — MetricNameCol, AttributesCol, TimestampCol,
 // ValueCol (mirrors resampleRangeWindowColumns).
 func rangeLWRColumns(r *chplan.RangeLWR) []string {
-	seen := map[string]struct{}{}
-	for _, c := range []string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol} {
-		if c != "" {
-			seen[c] = struct{}{}
-		}
-	}
-	return sortedColumnSet(seen)
+	return stageColumns([]string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol})
 }
 
 // metricsAggregateColumns returns the sorted, deduped set of base columns
@@ -484,13 +480,10 @@ func rangeLWRColumns(r *chplan.RangeLWR) []string {
 // enumerate it; applyRangeWindowOverMetricsAggregate widens the Scan this
 // rule narrows to include it once the RangeWindow's own Apply case runs.
 func metricsAggregateColumns(m *chplan.MetricsAggregate) []string {
-	seen := map[string]struct{}{}
-	collect := collectColumn(seen)
-	for _, g := range m.GroupBy {
-		walkExpr(g, collect)
-	}
-	walkExpr(m.Attr, collect)
-	return sortedColumnSet(seen)
+	var roots []chplan.Expr
+	roots = append(roots, m.GroupBy...)
+	roots = append(roots, m.Attr)
+	return stageColumns(nil, roots...)
 }
 
 // histogramQuantileColumns returns the sorted, deduped set of base columns
@@ -501,23 +494,62 @@ func metricsAggregateColumns(m *chplan.MetricsAggregate) []string {
 // build the Sample contract Project ABOVE this node. PhiExpr is likewise
 // excluded — it is a self-contained ScalarSubquery over a SEPARATE plan.
 func histogramQuantileColumns(h *chplan.HistogramQuantile) []string {
+	return stageColumns([]string{h.BucketCountsColumn, h.ExplicitBoundsColumn}, h.GroupBy...)
+}
+
+// stageColumns is the one derivation every *Columns enumerator above
+// funnels through: "the set of base-relation column names this node's own
+// emit reads off its input" is always bare column names (`bare`, empty
+// entries skipped) union the ColumnRef leaves reachable from a set of
+// expression roots (`roots`), sorted and deduped so the narrowed Scan's
+// Columns is reproducible across runs. Before this helper existed the
+// eight enumerators repeated this shape by hand — two of them
+// (resampleRangeWindowColumns / rangeLWRColumns) with byte-identical
+// bodies modulo the receiver type — which is exactly how aggregateColumns
+// silently omitted Having and rangeWindowColumns silently omitted
+// TemporalityColumn and the fused Variants arms: a field added to a plan
+// node was eight places to remember, not one.
+func stageColumns(bare []string, roots ...chplan.Expr) []string {
 	seen := map[string]struct{}{}
-	if h.BucketCountsColumn != "" {
-		seen[h.BucketCountsColumn] = struct{}{}
-	}
-	if h.ExplicitBoundsColumn != "" {
-		seen[h.ExplicitBoundsColumn] = struct{}{}
+	for _, c := range bare {
+		if c != "" {
+			seen[c] = struct{}{}
+		}
 	}
 	collect := collectColumn(seen)
-	for _, g := range h.GroupBy {
-		walkExpr(g, collect)
+	for _, r := range roots {
+		walkExpr(r, collect)
 	}
 	return sortedColumnSet(seen)
 }
 
+// aggFuncExprs flattens an AggFunc list's Params + Args, in order, into one
+// Expr slice for feeding to stageColumns. Shared by aggregateColumns and
+// rangeBucketFanoutColumns, whose AggFunc loops were character-for-character
+// identical modulo the loop variable name.
+func aggFuncExprs(fns []chplan.AggFunc) []chplan.Expr {
+	var out []chplan.Expr
+	for _, af := range fns {
+		out = append(out, af.Params...)
+		out = append(out, af.Args...)
+	}
+	return out
+}
+
+// projectionExprs flattens a Projection list's Expr fields, in order, into
+// one Expr slice for feeding to stageColumns.
+func projectionExprs(projs []chplan.Projection) []chplan.Expr {
+	out := make([]chplan.Expr, 0, len(projs))
+	for _, p := range projs {
+		out = append(out, p.Expr)
+	}
+	return out
+}
+
 // sortedColumnSet flattens a column-name set into a sorted, deduped slice.
-// Shared by aggregateColumns / rangeWindowColumns so the narrowed Scan's
-// Columns is reproducible across runs.
+// The single sink every column-collecting function in this file — stageColumns,
+// predicateColumns, referencedColumns — funnels through, so the narrowed
+// Scan's Columns is reproducible across runs.
 func sortedColumnSet(seen map[string]struct{}) []string {
 	out := make([]string, 0, len(seen))
 	for name := range seen {
@@ -572,14 +604,7 @@ func applyProjectFilterScan(p *chplan.Project, f *chplan.Filter) (chplan.Node, b
 // refs (joins, not in scope here) are not expected on a Filter directly
 // over a Scan.
 func predicateColumns(e chplan.Expr) []string {
-	seen := map[string]struct{}{}
-	walkExpr(e, collectColumn(seen))
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return stageColumns(nil, e)
 }
 
 // collectColumn returns a walkExpr visitor that records every column
@@ -631,16 +656,7 @@ func unionSortedColumns(a, b []string) []string {
 // referencedColumns returns the set of ColumnRef names referenced anywhere
 // in projs, deduped and sorted for deterministic emission.
 func referencedColumns(projs []chplan.Projection) []string {
-	seen := map[string]struct{}{}
-	for _, p := range projs {
-		walkExpr(p.Expr, collectColumn(seen))
-	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return stageColumns(nil, projectionExprs(projs)...)
 }
 
 // walkExpr visits e and every Expr reachable from it. Every chplan
