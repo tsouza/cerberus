@@ -1,8 +1,8 @@
 {
   "fixture": "promql/native_rate_join_range_step",
-  "fan_factor": 1,
-  "scan_rows": 5,
-  "peak_intermediate": 5,
+  "fan_factor": 0.5,
+  "scan_rows": 12,
+  "peak_intermediate": 6,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,

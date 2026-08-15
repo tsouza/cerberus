@@ -36,19 +36,19 @@ func planHasRecursiveCTE(plan string) bool {
 // level, OUTERMOST FIRST, so callers can run `count() FROM (<level>)` per
 // level to build the intermediate-cardinality decomposition. Depth 0 is
 // the full query; each subsequent entry strips one layer of `SELECT ...
-// FROM (<inner>) ...` nesting, descending the leftmost FROM-source chain
-// down to the leaf scan.
+// FROM (<inner>) ...` nesting, descending through every UNION ALL arm and
+// down to each leaf scan.
 //
-// Only the LEFTMOST FROM source is descended at each level — the common
+// The LEFTMOST FROM source is descended at each ordinary level — the common
 // fan-out shape in cerberus's emitted SQL is a straight nest of
 // `SELECT ... FROM (SELECT ... FROM (... merge(...)))`, where each layer
 // is the Project / Aggregate / Filter / RangeWindow stage wrapping the
 // one below. A CROSS JOIN / ARRAY JOIN widens the row set WITHIN a level
 // (so its inflated count shows up as that level's count()), which is
-// exactly what we want the per-level count to capture. Branch subqueries
-// (UNION arms, join RHS, scalar/IN subqueries) are not separately
-// descended — the level's own count() already reflects their contribution
-// to that level's row set.
+// exactly what we want the per-level count to capture. UNION ALL is the
+// exception: each arm is a separate scan pipeline, so every arm is descended
+// and its leaf is marked as a scan source. Join RHS and scalar/IN subqueries
+// remain represented only by the level's own count.
 //
 // A WITH-prefixed query (CTE chain, recursive or set-op CSE) is kept
 // intact at depth 0 and not descended, because its inner SELECTs
@@ -82,6 +82,22 @@ func fromSourceLevels(query string) []string {
 	return levels
 }
 
+// queryLevel is one independently countable pipeline level. scanSource marks
+// the leaf of one scan pipeline; a UNION ALL therefore has one scan source per
+// arm, and ProfileFixture sums their counts for its ScanRows denominator.
+type queryLevel struct {
+	query      string
+	depth      int
+	scanSource bool
+}
+
+type queryDecomposition struct {
+	levels  []queryLevel
+	reasons []string
+}
+
+const maxFromSourceDepth = 64
+
 // levelsWithReasons walks the same leftmost FROM-source chain
 // [fromSourceLevels] documents, and ADDITIONALLY reports, as
 // uncountableReasons, every point where the descent had to stop because
@@ -111,44 +127,154 @@ func fromSourceLevels(query string) []string {
 // [subqueryFrag]-family emitters splice into a WITH clause, and once
 // spliced there this function cannot see through it.
 func levelsWithReasons(query string) ([]string, []string) {
+	decomposition := decomposeQuery(query, 0)
+	levels := make([]string, 0, len(decomposition.levels))
+	for _, level := range decomposition.levels {
+		levels = append(levels, level.query)
+	}
+	return levels, decomposition.reasons
+}
+
+func decomposeQuery(query string, depth int) queryDecomposition {
 	query = strings.TrimSpace(query)
-	levels := []string{query}
+	decomposition := queryDecomposition{
+		levels: []queryLevel{{query: query, depth: depth}},
+	}
+	if depth >= maxFromSourceDepth {
+		decomposition.levels[0].scanSource = true
+		return decomposition
+	}
 
 	// A RECURSIVE top-level query: 1 level, no reason (see doc above —
 	// ProfileFixture's HasRecursiveCTE-driven reason covers it).
 	if hasWithRecursivePrefix(query) {
-		return levels, nil
+		decomposition.levels[0].scanSource = true
+		return decomposition
 	}
 	// A non-recursive WITH-prefixed top-level query: 1 level, and a
 	// reason — descending into the CTE bodies would reference
 	// out-of-scope CTE names.
 	if hasWithPrefix(query) {
-		return levels, []string{uncountableCTEReason(0)}
+		decomposition.levels[0].scanSource = true
+		decomposition.reasons = []string{uncountableCTEReason(depth)}
+		return decomposition
 	}
 
-	cur := query
-	// Bound the descent so a pathological input can't loop unboundedly.
-	for i := 0; i < 64; i++ {
-		inner, ok := leftmostFromSubquery(cur)
-		if !ok {
-			break
+	if arms := splitTopLevelUnionAll(query); len(arms) > 1 {
+		for _, arm := range arms {
+			armDecomposition := decomposeQuery(trimEnclosingParens(arm), depth+1)
+			decomposition.levels = append(decomposition.levels, armDecomposition.levels...)
+			decomposition.reasons = append(decomposition.reasons, armDecomposition.reasons...)
 		}
-		inner = strings.TrimSpace(inner)
-		if inner == "" || strings.EqualFold(inner, cur) {
-			break
-		}
-		if hasWithRecursivePrefix(inner) {
-			// Same rationale as the top-level case: no reason here, the
-			// HasRecursiveCTE flag covers it exactly once.
-			break
-		}
-		if hasWithPrefix(inner) {
-			return levels, []string{uncountableCTEReason(len(levels))}
-		}
-		levels = append(levels, inner)
-		cur = inner
+		return decomposition
 	}
-	return levels, nil
+
+	inner, ok := leftmostFromSubquery(query)
+	if !ok {
+		decomposition.levels[0].scanSource = true
+		return decomposition
+	}
+	inner = strings.TrimSpace(inner)
+	if inner == "" || strings.EqualFold(inner, query) {
+		decomposition.levels[0].scanSource = true
+		return decomposition
+	}
+	if hasWithRecursivePrefix(inner) {
+		// Same rationale as the top-level case: no reason here, the
+		// HasRecursiveCTE flag covers it exactly once.
+		decomposition.levels[0].scanSource = true
+		return decomposition
+	}
+	if hasWithPrefix(inner) {
+		decomposition.levels[0].scanSource = true
+		decomposition.reasons = []string{uncountableCTEReason(depth + 1)}
+		return decomposition
+	}
+
+	innerDecomposition := decomposeQuery(inner, depth+1)
+	decomposition.levels = append(decomposition.levels, innerDecomposition.levels...)
+	decomposition.reasons = append(decomposition.reasons, innerDecomposition.reasons...)
+	return decomposition
+}
+
+// splitTopLevelUnionAll splits a UNION ALL chain only at depth zero and
+// outside string literals. A one-element result means query is not a top-level
+// UNION ALL. Cerberus emits UNION arms parenthesised, but accepting bare SELECT
+// arms as well keeps the decomposition faithful to valid ClickHouse SQL.
+func splitTopLevelUnionAll(query string) []string {
+	var arms []string
+	start := 0
+	depth := 0
+	inString := false
+	for i := 0; i < len(query); i++ {
+		if inString {
+			switch query[i] {
+			case '\\':
+				i++
+			case '\'':
+				if i+1 < len(query) && query[i+1] == '\'' {
+					i++
+				} else {
+					inString = false
+				}
+			}
+			continue
+		}
+		switch query[i] {
+		case '\'':
+			inString = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth != 0 || !sqlWordAt(query, i, "UNION") {
+				continue
+			}
+			allStart := skipSQLSpace(query, i+len("UNION"))
+			if !sqlWordAt(query, allStart, "ALL") {
+				continue
+			}
+			arms = append(arms, strings.TrimSpace(query[start:i]))
+			i = allStart + len("ALL") - 1
+			start = i + 1
+		}
+	}
+	if len(arms) == 0 {
+		return []string{query}
+	}
+	return append(arms, strings.TrimSpace(query[start:]))
+}
+
+func sqlWordAt(query string, start int, word string) bool {
+	end := start + len(word)
+	if start < 0 || end > len(query) || !strings.EqualFold(query[start:end], word) {
+		return false
+	}
+	return (start == 0 || !isSQLWordByte(query[start-1])) &&
+		(end == len(query) || !isSQLWordByte(query[end]))
+}
+
+func isSQLWordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+func skipSQLSpace(query string, start int) int {
+	for start < len(query) && strings.ContainsRune(" \t\n\r", rune(query[start])) {
+		start++
+	}
+	return start
+}
+
+func trimEnclosingParens(query string) string {
+	query = strings.TrimSpace(query)
+	inner, ok := balancedParen(query)
+	if !ok || len(query) != len(inner)+2 {
+		return query
+	}
+	return strings.TrimSpace(inner)
 }
 
 // uncountableCTEReason renders the human-readable line recorded in

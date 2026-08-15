@@ -1,7 +1,7 @@
 {
   "fixture": "traceql/structural_union_descendant",
   "fan_factor": null,
-  "scan_rows": 2,
+  "scan_rows": 3,
   "peak_intermediate": 2,
   "has_cross_join": false,
   "has_array_join": false,

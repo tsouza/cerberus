@@ -66,9 +66,10 @@ type Record struct {
 	// test/spec/.
 	Fixture string `json:"fixture"`
 
-	// ScanRows is the row count of the deepest (leaf) FROM-source
-	// subquery level — the rows actually read off the seeded tables
-	// before any fan-out stage. The fan-out denominator.
+	// ScanRows is the sum of the deepest (leaf) FROM-source subquery level
+	// in every scan pipeline — the rows actually read off the seeded tables
+	// before any fan-out stage. A UNION ALL contributes one leaf per arm.
+	// The fan-out denominator.
 	ScanRows int64 `json:"scan_rows"`
 
 	// PeakIntermediate is the maximum count() over every non-aggregating
@@ -293,17 +294,17 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 	// through — see that function's doc for why a RECURSIVE CTE is
 	// handled separately, below, from the structural EXPLAIN flag
 	// instead.
-	levels, descentReasons := levelsWithReasons(query)
-	rec.UncountableReasons = append(rec.UncountableReasons, descentReasons...)
+	decomposition := decomposeQuery(query, 0)
+	rec.UncountableReasons = append(rec.UncountableReasons, decomposition.reasons...)
 	if rec.HasRecursiveCTE {
 		rec.UncountableReasons = append(rec.UncountableReasons, recursiveCTEUncountableReason)
 	}
 
-	rec.Levels = make([]LevelCount, 0, len(levels))
+	rec.Levels = make([]LevelCount, 0, len(decomposition.levels))
 	var peak int64
 	var peakBytes uint64
-	for depth, lvl := range levels {
-		c, br, err := p.scalarCount(lvl)
+	for _, level := range decomposition.levels {
+		c, br, err := p.scalarCount(level.query)
 		if err != nil {
 			// A level that can't be counted in isolation (e.g. it
 			// references a name only in scope at an outer level) is
@@ -313,10 +314,16 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 			// stage's contribution to PeakIntermediate is unknown rather
 			// than silently treated as zero.
 			rec.UncountableReasons = append(rec.UncountableReasons,
-				fmt.Sprintf("depth %d: count() failed in isolation: %v", depth, err))
+				fmt.Sprintf("depth %d: count() failed in isolation: %v", level.depth, err))
 			continue
 		}
-		rec.Levels = append(rec.Levels, LevelCount{Depth: depth, Count: c})
+		rec.Levels = append(rec.Levels, LevelCount{Depth: level.depth, Count: c})
+		if level.depth == 0 {
+			rec.ResultRows = c
+		}
+		if level.scanSource {
+			rec.ScanRows += c
+		}
 		if c > peak {
 			peak = c
 		}
@@ -326,13 +333,6 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 	}
 	rec.PeakIntermediate = peak
 	rec.PeakBytesRead = peakBytes
-
-	// scan_rows is the deepest level we could count (the leaf FROM
-	// source). result_rows is the outermost (depth 0).
-	if len(rec.Levels) > 0 {
-		rec.ScanRows = rec.Levels[len(rec.Levels)-1].Count
-		rec.ResultRows = rec.Levels[0].Count
-	}
 
 	rec.UncountableLevels = len(rec.UncountableReasons)
 	// FanFactor stays nil whenever any level was opaque: a fabricated
