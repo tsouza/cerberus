@@ -1,0 +1,53 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#03401a30",
+      "message": "promql: internal invariant violated: exp-histogram lowering did not cap with *chplan.HistogramProjection, got %T",
+      "class": "internal",
+      "rationale": "defensive type assertion: lowerExpHistogramBare, lowerExpHistogramSumOrAvg and lowerExpHistogramRate — the only three functions this switch calls — each cap their returned plan with a *chplan.HistogramProjection by construction (nativeHistogramProjection / aggregatedHistogramProjection), so the type assertion below this guard never fails for a lowerRoot-reachable query. It guards against a future change to one of those three lowerings dropping the cap.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "aggregatedHistogramProjection",
+          "lowerExpHistogramBare",
+          "lowerExpHistogramRate",
+          "lowerExpHistogramSumOrAvg",
+          "lowerRoot",
+          "nativeHistogramProjection"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#d112d97a",
+      "message": "promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v",
+      "class": "internal",
+      "rationale": "defensive fallback: expHistogramScalarBinop only ever names histSide after isExpHistogramValuedShape confirmed it matches bareExpHistogramSelector, sumOrAvgOverExpHistogram or rateOverExpHistogram, so this switch's three arms are exhaustive for every histSide lowerRoot passes in. It guards against the recognizer and this switch drifting apart if a fourth shape is ever added to one without the other.",
+      "evidence": {
+        "guard": [
+          "default of switch over [case func() bool { _, ok := bareExpHistogramSelector(histSide, s, ctx); return ok }(); default]",
+          "else of if agg, vs, ok := sumOrAvgOverExpHistogram(histSide, s, ctx); ok",
+          "else of if shape, ok := rateOverExpHistogram(histSide, s, ctx); ok"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "bareExpHistogramSelector",
+          "expHistogramScalarBinop",
+          "isExpHistogramValuedShape",
+          "lowerRoot",
+          "rateOverExpHistogram",
+          "sumOrAvgOverExpHistogram"
+        ]
+      }
+    }
+  ]
+}
