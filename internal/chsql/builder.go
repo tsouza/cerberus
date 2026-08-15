@@ -862,8 +862,21 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 	return nil
 }
 
+// exprFunc renders a FuncCall. When Fn is set it resolves through
+// fnSpellings (internal/chsql/fnspelling.go); when it is unset, Name
+// passes through verbatim — the legacy path every current construction
+// site still takes (see chplan.FuncCall's doc comment for the dual-mode
+// contract, and resolveDualMode for the shared resolution logic AggFunc
+// rendering also uses).
 func (b *Builder) exprFunc(f *chplan.FuncCall) error {
-	b.sb.WriteString(f.Name)
+	name, render, err := resolveDualMode(f.Fn, f.Name, "FuncCall")
+	if err != nil {
+		return err
+	}
+	if render != nil {
+		return render(b, f.Args)
+	}
+	b.sb.WriteString(name)
 	b.sb.WriteByte('(')
 	for i, a := range f.Args {
 		if i > 0 {

@@ -625,29 +625,43 @@ var intReturningAggregates = map[string]bool{
 
 // aggFuncFrag returns a Frag rendering `<name>[(<params>)](<args>) [AS <alias>]`
 // via Builder.ParamAgg + As. The expression-render errors surface from
-// the pre-flight loop in emitAggregate before the Frag ever runs, so the
-// rendering path here is infallible.
+// the pre-flight loop in emitAggregate before the Frag ever runs; the
+// Fn/Name dual-mode resolution (resolveAggFuncName) cannot be checked
+// that early because aggFuncFrag is called from several sites beyond
+// emitAggregate's own loop (range_lwr.go, range_window.go, ...), so it
+// surfaces a resolution error the same way Builder.Expr does for a
+// closure with no error return of its own — first-error-wins on
+// Builder.err (see Builder.err's doc comment).
 //
 // Aggregates whose CH return type is integer (see intReturningAggregates)
 // are wrapped in `toFloat64(...)` so the resulting column scans cleanly
 // into chclient.Sample.Value (`*float64`).
 func aggFuncFrag(af chplan.AggFunc) Frag {
-	mkExpr := func(x chplan.Expr) func(b *Builder) {
-		return func(b *Builder) { _ = b.Expr(x) }
+	return func(b *Builder) {
+		name, err := resolveAggFuncName(af)
+		if err != nil {
+			if b.err == nil {
+				b.err = err
+			}
+			return
+		}
+		mkExpr := func(x chplan.Expr) func(b *Builder) {
+			return func(b *Builder) { _ = b.Expr(x) }
+		}
+		params := make([]func(b *Builder), 0, len(af.Params))
+		for _, p := range af.Params {
+			params = append(params, mkExpr(p))
+		}
+		args := make([]func(b *Builder), 0, len(af.Args))
+		for _, a := range af.Args {
+			args = append(args, mkExpr(a))
+		}
+		var body Frag = func(b *Builder) { b.ParamAgg(name, params, args) }
+		if intReturningAggregates[name] {
+			body = Call("toFloat64", body)
+		}
+		As(body, af.Alias)(b)
 	}
-	params := make([]func(b *Builder), 0, len(af.Params))
-	for _, p := range af.Params {
-		params = append(params, mkExpr(p))
-	}
-	args := make([]func(b *Builder), 0, len(af.Args))
-	for _, a := range af.Args {
-		args = append(args, mkExpr(a))
-	}
-	var body Frag = func(b *Builder) { b.ParamAgg(af.Name, params, args) }
-	if intReturningAggregates[af.Name] {
-		body = Call("toFloat64", body)
-	}
-	return As(body, af.Alias)
 }
 
 // emitRangeWindow lives in range_window.go — full windowed-array idiom.
