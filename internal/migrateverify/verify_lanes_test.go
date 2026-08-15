@@ -522,7 +522,7 @@ func TestVerify_TransportErrorRedactsCredentialsAllDialects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.head, func(t *testing.T) {
-			addr := strings.TrimPrefix(deadBackendURL(t), "http://")
+			addr := strings.TrimPrefix(unreachableBackendURL(), "http://")
 			badURL := "http://" + user + ":" + pass + "@" + addr
 			lanes := map[string]Lane{tc.head: {
 				Ref:      NewHTTPBackend(badURL, WithDialect(tc.dialect)),

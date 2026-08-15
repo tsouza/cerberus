@@ -367,17 +367,29 @@ func TestDoQuery_NonOKCarriesStatusAndTruncatedBody(t *testing.T) {
 // than surfacing as a zero-value result that would read as "empty".
 func TestDoQuery_UnreachableHost(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	addr := srv.URL
-	srv.Close() // nothing listens on this port any more
+	addr := unreachableBackendURL()
+	u, err := url.Parse(addr)
+	if err != nil {
+		t.Fatalf("parse unreachable backend URL: %v", err)
+	}
+	if u.Scheme != "http" || u.Hostname() != "backend.invalid" || u.Port() != "" {
+		t.Fatalf("unreachable backend URL = %q, want http://backend.invalid without a port", u)
+	}
 
-	_, err := doQuery(&http.Client{Timeout: 2 * time.Second}, addr+"/loki/api/v1/query_range", url.Values{})
+	_, err = doQuery(&http.Client{Timeout: 2 * time.Second}, addr+"/loki/api/v1/query_range", url.Values{})
 	if err == nil {
-		t.Fatal("doQuery against a closed listener returned no error")
+		t.Fatal("doQuery against an unreachable host returned no error")
 	}
 	if !strings.Contains(err.Error(), "http call") {
 		t.Fatalf("error %q should be the wrapped transport failure", err.Error())
 	}
+}
+
+// unreachableBackendURL uses the RFC 2606 reserved .invalid TLD so the
+// transport-error test never depends on a released ephemeral port staying
+// unclaimed by another parallel test listener.
+func unreachableBackendURL() string {
+	return "http://backend.invalid"
 }
 
 // TestCompareAll_ExpansionErrorsBypassTheWire — a case that failed to
