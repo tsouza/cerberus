@@ -70,7 +70,7 @@ export type DrilldownApp = {
 export const DRILLDOWN_APPS: ReadonlyArray<DrilldownApp> = [
   {
     id: 'grafana-metricsdrilldown-app',
-    root: '/a/grafana-metricsdrilldown-app/trail',
+    root: '/a/grafana-metricsdrilldown-app/drilldown',
     label: 'Explore Metrics',
   },
   {

@@ -180,9 +180,8 @@ const DRILLDOWN_APP_SEEDS: ReadonlyArray<string> = DRILLDOWN_APPS.map(
 
 /**
  * Lean interaction roots shared by both stacks: the three drilldown
- * app entry surfaces (canonical keys — the metrics app's /trail seed
- * redirects to /drilldown but stays KEYED by the harvested /trail
- * path). The drilldown apps are where the interaction gap class
+ * app entry surfaces (canonical keys). The drilldown apps are where
+ * the interaction gap class
  * lives — the 2026-06-10 maintainer find (Traces Drilldown
  * groupBy=kind → nil-comparison 422) was a state only an interaction
  * reaches.
@@ -190,7 +189,7 @@ const DRILLDOWN_APP_SEEDS: ReadonlyArray<string> = DRILLDOWN_APPS.map(
 const DRILLDOWN_LEAN_INTERACTION_ROOTS: ReadonlyArray<string> = [
   '/a/grafana-exploretraces-app/explore',
   '/a/grafana-lokiexplore-app/explore',
-  '/a/grafana-metricsdrilldown-app/trail',
+  '/a/grafana-metricsdrilldown-app/drilldown',
 ];
 
 // ---------------------------------------------------------------------------
