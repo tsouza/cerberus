@@ -77,7 +77,7 @@ var fnSpellings = map[chplan.Fn]fnSpelling{
 	chplan.FnMapFilter:      {Name: "mapFilter"},
 	chplan.FnMapFromArrays:  {Name: "mapFromArrays"},
 	chplan.FnMapKeys:        {Name: "mapKeys"},
-	chplan.FnMapSort:        {Name: "mapSort"},
+	chplan.FnMapSort:        {Name: chplan.CanonicalMapFunc},
 	chplan.FnMapUpdate:      {Name: "mapUpdate"},
 	chplan.FnMapValues:      {Name: "mapValues"},
 

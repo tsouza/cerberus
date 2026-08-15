@@ -164,8 +164,9 @@ const (
 	FnMapKeys Fn = "mapKeys"
 
 	// mapSort(m) — m with its entries in a canonical key order; establishes the
-	// series-identity key-order invariant (see chplan.CanonicalMapFunc).
-	FnMapSort Fn = "mapSort"
+	// series-identity key-order invariant (see CanonicalMapFunc), whose
+	// spelling this constant reuses rather than restates.
+	FnMapSort Fn = CanonicalMapFunc
 
 	// mapUpdate(m1, m2) — m1 with every key of m2 overwritten (or inserted) from
 	// m2; keys unique to m1 are kept.
