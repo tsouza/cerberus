@@ -22,7 +22,7 @@ INSERT INTO otel_logs (Body) VALUES
 [4] int64 = 0
 [5] string = "[0-9.]+"
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND not(arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4("10.0.0.1")) AND (toIPv4OrNull(_cerb_ip) <= toIPv4("10.0.0.3"))), 0), extractAll(Body, "[0-9.]+"))))
+Filter predicate=((ResourceAttributes["job"] = "api") AND FnNot(FnArrayExists(_cerb_ip -> FnIfNull(((FnToIPv4OrNull(_cerb_ip) >= FnToIPv4("10.0.0.1")) AND (FnToIPv4OrNull(_cerb_ip) <= FnToIPv4("10.0.0.3"))), 0), FnRegexExtractAll(Body, "[0-9.]+"))))
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND not(arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(`Body`, ?)))

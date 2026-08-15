@@ -125,7 +125,7 @@ func lowerVectorScalar(vec syntax.Expr, s schema.Logs, op chplan.BinaryOp, scala
 		// `bool`-modified comparison — surface every matched row as a
 		// 1.0 / 0.0 numeric instead of letting CH's Bool result type
 		// flow into Value. toFloat64 mirrors PromQL's identical wrap.
-		newValue = &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{opExpr}}
+		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{opExpr}}
 	}
 	if isComparison(op) && !returnBool {
 		// Bare comparison (no `bool`) on a LogQL metric query — Loki

@@ -467,10 +467,10 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inne
 // already mutated the LabelsBuilder by then, error or not.
 func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity, levelValue chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapContains",
+				Fn:   chplan.FnMapContainsKey,
 				Args: []chplan.Expr{fullLabels, &chplan.LitString{V: syntax.ErrorLabel}},
 			},
 			withDetectedLevel(s, fullLabels, levelValue),
@@ -657,9 +657,9 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 		return &chplan.LitInt{V: 1}, nil
 	case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes:
 		return &chplan.FuncCall{
-			Name: "toFloat64",
+			Fn: chplan.FnToFloat64,
 			Args: []chplan.Expr{&chplan.FuncCall{
-				Name: "length",
+				Fn:   chplan.FnLength,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BodyColumn}},
 			}},
 		}, nil
@@ -717,7 +717,7 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr
 	switch u.Operation {
 	case "":
 		return &chplan.FuncCall{
-			Name: "toFloat64OrZero",
+			Fn:   chplan.FnToFloat64OrZero,
 			Args: []chplan.Expr{access},
 		}, nil
 	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
@@ -742,9 +742,9 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr
 		// the comment above and matches the `length(Body)` path in
 		// `rangeValueExpr` which is also toFloat64-wrapped.
 		return &chplan.FuncCall{
-			Name: "toFloat64",
+			Fn: chplan.FnToFloat64,
 			Args: []chplan.Expr{&chplan.FuncCall{
-				Name: "parseReadableSize",
+				Fn:   chplan.FnParseReadableSize,
 				Args: []chplan.Expr{access},
 			}},
 		}, nil
@@ -844,7 +844,7 @@ func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, iden
 			levelAwareRangeGroupKey(label, s, newLevelValue),
 		)
 	}
-	return &chplan.FuncCall{Name: "map", Args: args}, nil
+	return &chplan.FuncCall{Fn: chplan.FnMap, Args: args}, nil
 }
 
 // rangeFuncName maps LogQL range ops to the chplan/chsql RangeWindow

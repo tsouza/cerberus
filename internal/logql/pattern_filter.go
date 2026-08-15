@@ -118,7 +118,7 @@ func patternLineFilterExpr(match string, negated bool, body chplan.Expr) (chplan
 
 // expr renders the Test() walk for one parsed pattern over `line`.
 func (p patternLineFilter) expr(line chplan.Expr) chplan.Expr {
-	lineLen := &chplan.FuncCall{Name: "length", Args: []chplan.Expr{line}}
+	lineLen := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{line}}
 	if p.Empty {
 		// Empty pattern ⇔ empty line.
 		return &chplan.Binary{Op: chplan.OpEq, Left: lineLen, Right: &chplan.LitInt{V: 0}}
@@ -157,7 +157,7 @@ func (p patternLineFilter) foldExpr(line chplan.Expr) chplan.Expr {
 	lit := func() chplan.Expr { return &chplan.BareIdent{Name: litParam} }
 	mustGap := func() chplan.Expr { return &chplan.BareIdent{Name: gapParam} }
 	fail := func() chplan.Expr {
-		return &chplan.FuncCall{Name: "toInt64", Args: []chplan.Expr{&chplan.LitInt{V: -1}}}
+		return &chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{&chplan.LitInt{V: -1}}}
 	}
 	// 1-based search start: cursor + 1. The greatest() clamp keeps the
 	// UInt64 cast in-range on the failed-sentinel branch even when CH
@@ -167,15 +167,15 @@ func (p patternLineFilter) foldExpr(line chplan.Expr) chplan.Expr {
 	searchFrom := func() chplan.Expr {
 		return &chplan.Binary{
 			Op: chplan.OpAdd,
-			Left: &chplan.FuncCall{Name: "toUInt64", Args: []chplan.Expr{
-				&chplan.FuncCall{Name: "greatest", Args: []chplan.Expr{acc(), &chplan.LitInt{V: 0}}},
+			Left: &chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnGreatest, Args: []chplan.Expr{acc(), &chplan.LitInt{V: 0}}},
 			}},
 			Right: &chplan.LitInt{V: 1},
 		}
 	}
 	// position(line, lit, cursor + 1) — byte-based, 0 when not found.
 	pos := func() chplan.Expr {
-		return &chplan.FuncCall{Name: "position", Args: []chplan.Expr{line, lit(), searchFrom()}}
+		return &chplan.FuncCall{Fn: chplan.FnStringPosition, Args: []chplan.Expr{line, lit(), searchFrom()}}
 	}
 
 	litArgs := make([]chplan.Expr, 0, len(p.Literals))
@@ -192,7 +192,7 @@ func (p patternLineFilter) foldExpr(line chplan.Expr) chplan.Expr {
 	}
 
 	body := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			// Already failed: sticky.
 			&chplan.Binary{Op: chplan.OpLt, Left: acc(), Right: &chplan.LitInt{V: 0}},
@@ -214,11 +214,11 @@ func (p patternLineFilter) foldExpr(line chplan.Expr) chplan.Expr {
 			// Advance: cursor = (position - 1) + length(lit), 0-based.
 			&chplan.Binary{
 				Op: chplan.OpSub,
-				Left: &chplan.FuncCall{Name: "toInt64", Args: []chplan.Expr{
+				Left: &chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{
 					&chplan.Binary{
 						Op:    chplan.OpAdd,
 						Left:  pos(),
-						Right: &chplan.FuncCall{Name: "length", Args: []chplan.Expr{lit()}},
+						Right: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{lit()}},
 					},
 				}},
 				Right: &chplan.LitInt{V: 1},
@@ -227,12 +227,12 @@ func (p patternLineFilter) foldExpr(line chplan.Expr) chplan.Expr {
 	}
 
 	return &chplan.FuncCall{
-		Name: "arrayFold",
+		Fn: chplan.FnArrayFold,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{accParam, litParam, gapParam}, Body: body},
-			&chplan.FuncCall{Name: "array", Args: litArgs},
-			&chplan.FuncCall{Name: "array", Args: gapArgs},
-			&chplan.FuncCall{Name: "toInt64", Args: []chplan.Expr{&chplan.LitInt{V: 0}}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: litArgs},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: gapArgs},
+			&chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{&chplan.LitInt{V: 0}}},
 		},
 	}
 }

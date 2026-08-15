@@ -23,7 +23,7 @@ INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES
 [3] string = "api"
 -- chplan --
 RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-  Project [mapSort(mapFilter((k, v) -> not((k = "detected_level")), ResourceAttributes)) AS ResourceAttributes, Timestamp, 1 AS Value]
+  Project [mapSort(FnMapFilter((k, v) -> FnNot((k = "detected_level")), ResourceAttributes)) AS ResourceAttributes, Timestamp, 1 AS Value]
     Filter predicate=(ResourceAttributes["job"] = "api")
       Scan(otel_logs)
 -- sql --

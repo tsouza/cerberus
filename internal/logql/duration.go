@@ -130,7 +130,7 @@ func newDurationParse(raw chplan.Expr) durationParse {
 	// stripped = raw minus one leading sign character — Go consumes a
 	// single optional [+-] before anything else.
 	stripped := &chplan.FuncCall{
-		Name: "replaceRegexpAll",
+		Fn:   chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{raw, &chplan.LitString{V: `^[+-]`}, &chplan.LitString{V: ``}},
 	}
 	isZero := &chplan.Binary{Op: chplan.OpEq, Left: stripped, Right: &chplan.LitString{V: "0"}}
@@ -138,7 +138,7 @@ func newDurationParse(raw chplan.Expr) durationParse {
 		Op:   chplan.OpOr,
 		Left: isZero,
 		Right: &chplan.FuncCall{
-			Name: "match",
+			Fn:   chplan.FnRegexMatch,
 			Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationValidRe}},
 		},
 	}
@@ -149,21 +149,21 @@ func newDurationParse(raw chplan.Expr) durationParse {
 	// Only ever evaluated under `valid`, so the rewrites are
 	// value-preserving by construction.
 	micro := &chplan.FuncCall{
-		Name: "replaceAll",
+		Fn: chplan.FnReplaceAll,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "replaceAll",
+				Fn:   chplan.FnReplaceAll,
 				Args: []chplan.Expr{stripped, &chplan.LitString{V: "µ"}, &chplan.LitString{V: "u"}},
 			},
 			&chplan.LitString{V: "μ"}, &chplan.LitString{V: "u"},
 		},
 	}
 	leadingDotFixed := &chplan.FuncCall{
-		Name: "replaceRegexpAll",
+		Fn:   chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{micro, &chplan.LitString{V: `(^|[a-z])\.([0-9])`}, &chplan.LitString{V: `\10.\2`}},
 	}
 	normalised := &chplan.FuncCall{
-		Name: "replaceRegexpAll",
+		Fn:   chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{leadingDotFixed, &chplan.LitString{V: `\.([a-z])`}, &chplan.LitString{V: `\1`}},
 	}
 
@@ -171,22 +171,22 @@ func newDurationParse(raw chplan.Expr) durationParse {
 	// "-0" yields +0.0 like Go (a bare `sign * 0.` would emit IEEE -0,
 	// which JSON-marshals differently from reference Loki's 0).
 	sign := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "startsWith", Args: []chplan.Expr{raw, &chplan.LitString{V: "-"}}},
+			&chplan.FuncCall{Fn: chplan.FnStartsWith, Args: []chplan.Expr{raw, &chplan.LitString{V: "-"}}},
 			&chplan.LitFloat{V: -1},
 			&chplan.LitFloat{V: 1},
 		},
 	}
 	seconds := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.Binary{Op: chplan.OpAnd, Left: valid, Right: notExpr(isZero)},
 			&chplan.Binary{
 				Op:   chplan.OpMul,
 				Left: sign,
 				Right: &chplan.FuncCall{
-					Name: "parseTimeDelta",
+					Fn:   chplan.FnParseTimeDelta,
 					Args: []chplan.Expr{normalised},
 				},
 			},
@@ -200,35 +200,35 @@ func newDurationParse(raw chplan.Expr) durationParse {
 	// quotes "-5x", not "5x".
 	quote := &chplan.LitString{V: `"`}
 	details := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "match",
+				Fn:   chplan.FnRegexMatch,
 				Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationMissingUnitRe}},
 			},
 			&chplan.FuncCall{
-				Name: "concat",
+				Fn: chplan.FnConcat,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: `time: missing unit in duration "`}, raw, quote,
 				},
 			},
 			&chplan.FuncCall{
-				Name: "match",
+				Fn:   chplan.FnRegexMatch,
 				Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationUnknownUnitRe}},
 			},
 			&chplan.FuncCall{
-				Name: "concat",
+				Fn: chplan.FnConcat,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: `time: unknown unit "`},
 					&chplan.FuncCall{
-						Name: "extract",
+						Fn:   chplan.FnRegexExtractFirst,
 						Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationUnknownUnitExtractRe}},
 					},
 					&chplan.LitString{V: `" in duration "`}, raw, quote,
 				},
 			},
 			&chplan.FuncCall{
-				Name: "concat",
+				Fn: chplan.FnConcat,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: `time: invalid duration "`}, raw, quote,
 				},
@@ -261,7 +261,7 @@ func gateMark(m labelFilterMark, gate chplan.Expr) labelFilterMark {
 
 // notExpr wraps e in CH's `not(...)`.
 func notExpr(e chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{e}}
+	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{e}}
 }
 
 // wrapLabelsWithMarks folds a mark list onto labelsExpr:
@@ -289,7 +289,7 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 		return labelsExpr
 	}
 	noPriorError := notExpr(&chplan.FuncCall{
-		Name: "mapContains",
+		Fn:   chplan.FnMapContainsKey,
 		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: syntax.ErrorLabel}},
 	})
 	args := make([]chplan.Expr, 0, len(marks)*2+1)
@@ -297,7 +297,7 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 		args = append(
 			args,
 			&chplan.Binary{Op: chplan.OpAnd, Left: noPriorError, Right: m.cond},
-			&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 				&chplan.LitString{V: syntax.ErrorLabel},
 				&chplan.LitString{V: m.kind},
 				&chplan.LitString{V: syntax.ErrorDetailsLabel},
@@ -305,15 +305,15 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 			}},
 		)
 	}
-	args = append(args, &chplan.FuncCall{Name: "map"})
-	branch := chplan.Expr(&chplan.FuncCall{Name: "multiIf", Args: args})
+	args = append(args, &chplan.FuncCall{Fn: chplan.FnMap})
+	branch := chplan.Expr(&chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args})
 	if len(marks) == 1 {
 		// multiIf demands ≥2 condition/branch pairs only in spirit; CH
 		// accepts the 3-arg form but `if` is the canonical spelling.
-		branch = &chplan.FuncCall{Name: "if", Args: args}
+		branch = &chplan.FuncCall{Fn: chplan.FnIf, Args: args}
 	}
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{labelsExpr, branch},
 	}
 }

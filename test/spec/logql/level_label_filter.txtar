@@ -25,5 +25,5 @@ INSERT INTO otel_logs (Body) VALUES ('error log one'), ('error log two'), ('info
   ["error log two"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (if(mapContains(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "ERROR"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "level"), LogAttributes["level"], ResourceAttributes["level"]) = "ERROR"))
   Scan(otel_logs)

@@ -89,8 +89,8 @@ func TestRegexpMergeLabelsSkipsUnnamedSubexps(t *testing.T) {
 	if !ok {
 		t.Fatalf("regexpMergeLabels(%q) returned %T, want *chplan.FuncCall (mapConcat)", pattern, expr)
 	}
-	if outer.Name != "mapConcat" {
-		t.Fatalf("regexpMergeLabels(%q) outer FuncCall.Name = %q, want %q", pattern, outer.Name, "mapConcat")
+	if outer.Fn != chplan.FnMapMerge {
+		t.Fatalf("regexpMergeLabels(%q) outer FuncCall.Fn = %q, want %q", pattern, outer.Fn, chplan.FnMapMerge)
 	}
 	if len(outer.Args) != 2 {
 		t.Fatalf("regexpMergeLabels(%q) mapConcat has %d args, want 2", pattern, len(outer.Args))
@@ -100,8 +100,8 @@ func TestRegexpMergeLabelsSkipsUnnamedSubexps(t *testing.T) {
 	if !ok {
 		t.Fatalf("regexpMergeLabels(%q) inner Args[1] is %T, want *chplan.FuncCall (map)", pattern, outer.Args[1])
 	}
-	if inner.Name != "map" {
-		t.Fatalf("regexpMergeLabels(%q) inner FuncCall.Name = %q, want %q", pattern, inner.Name, "map")
+	if inner.Fn != chplan.FnMap {
+		t.Fatalf("regexpMergeLabels(%q) inner FuncCall.Fn = %q, want %q", pattern, inner.Fn, chplan.FnMap)
 	}
 
 	// One named capture -> exactly 2 (key, value) args. With the `&&`
@@ -121,8 +121,8 @@ func TestRegexpMergeLabelsSkipsUnnamedSubexps(t *testing.T) {
 	if !ok {
 		t.Fatalf("regexpMergeLabels(%q) inner map key is %T, want *chplan.FuncCall (collision rename)", pattern, inner.Args[0])
 	}
-	if key.Name != "if" || len(key.Args) != 3 {
-		t.Fatalf("regexpMergeLabels(%q) inner map key = %s/%d args, want if/3 (collision rename)", pattern, key.Name, len(key.Args))
+	if key.Fn != chplan.FnIf || len(key.Args) != 3 {
+		t.Fatalf("regexpMergeLabels(%q) inner map key = %s/%d args, want if/3 (collision rename)", pattern, key.Fn, len(key.Args))
 	}
 	bare, ok := key.Args[2].(*chplan.LitString)
 	if !ok {
@@ -474,11 +474,11 @@ func TestMatcherToExpr_TopLevelColumnCoalesce_Conformance(t *testing.T) {
 			// ResourceAttributes[<col>])`. Unwrap layer-by-layer so
 			// a regression that drops the wrap is loud.
 			coalesce, ok := bin.Left.(*chplan.FuncCall)
-			if !ok || coalesce.Name != "coalesce" || len(coalesce.Args) != 2 {
+			if !ok || coalesce.Fn != chplan.FnCoalesce || len(coalesce.Args) != 2 {
 				t.Fatalf("matcherToExpr(%s=val) LHS = %v; want coalesce(nullIf(...), ...) — top-level column missed the resourceAttributeFallbackLHS wrap (task #240)", col, bin.Left)
 			}
 			null, ok := coalesce.Args[0].(*chplan.FuncCall)
-			if !ok || null.Name != "nullIf" || len(null.Args) != 2 {
+			if !ok || null.Fn != chplan.FnNullIf || len(null.Args) != 2 {
 				t.Fatalf("matcherToExpr(%s=val) coalesce arg0 = %v; want nullIf(<col>, '')", col, coalesce.Args[0])
 			}
 			topRef, ok := null.Args[0].(*chplan.ColumnRef)

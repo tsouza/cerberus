@@ -145,25 +145,26 @@ func ipSubjectMatchExpr(subject chplan.Expr, r ipPatternRange) chplan.Expr {
 	const tok = "_cerb_ip"
 	x := func() chplan.Expr { return &chplan.BareIdent{Name: tok} }
 
-	convFn, castFn, candidateRegex := "toIPv4OrNull", "toIPv4", ipv4CandidateRegex
+	convFn, castFn := chplan.FnToIPv4OrNull, chplan.FnToIPv4
+	candidateRegex := ipv4CandidateRegex
 	if r.V6 {
-		convFn, castFn, candidateRegex = "toIPv6OrNull", "toIPv6", ipv6CandidateRegex
+		convFn, castFn, candidateRegex = chplan.FnToIPv6OrNull, chplan.FnToIPv6, ipv6CandidateRegex
 	}
 
 	between := &chplan.FuncCall{
-		Name: "ifNull",
+		Fn: chplan.FnIfNull,
 		Args: []chplan.Expr{
 			&chplan.Binary{
 				Op: chplan.OpAnd,
 				Left: &chplan.Binary{
 					Op:    chplan.OpGe,
-					Left:  &chplan.FuncCall{Name: convFn, Args: []chplan.Expr{x()}},
-					Right: &chplan.FuncCall{Name: castFn, Args: []chplan.Expr{&chplan.LitString{V: r.Lo.String()}}},
+					Left:  &chplan.FuncCall{Fn: convFn, Args: []chplan.Expr{x()}},
+					Right: &chplan.FuncCall{Fn: castFn, Args: []chplan.Expr{&chplan.LitString{V: r.Lo.String()}}},
 				},
 				Right: &chplan.Binary{
 					Op:    chplan.OpLe,
-					Left:  &chplan.FuncCall{Name: convFn, Args: []chplan.Expr{x()}},
-					Right: &chplan.FuncCall{Name: castFn, Args: []chplan.Expr{&chplan.LitString{V: r.Hi.String()}}},
+					Left:  &chplan.FuncCall{Fn: convFn, Args: []chplan.Expr{x()}},
+					Right: &chplan.FuncCall{Fn: castFn, Args: []chplan.Expr{&chplan.LitString{V: r.Hi.String()}}},
 				},
 			},
 			&chplan.LitInt{V: 0},
@@ -176,17 +177,17 @@ func ipSubjectMatchExpr(subject chplan.Expr, r ipPatternRange) chplan.Expr {
 		// reference netip containment is family-exact.
 		body = &chplan.Binary{
 			Op:    chplan.OpAnd,
-			Left:  &chplan.FuncCall{Name: "isIPv6String", Args: []chplan.Expr{x()}},
+			Left:  &chplan.FuncCall{Fn: chplan.FnIsIPv6String, Args: []chplan.Expr{x()}},
 			Right: between,
 		}
 	}
 
 	return &chplan.FuncCall{
-		Name: "arrayExists",
+		Fn: chplan.FnArrayExists,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{tok}, Body: body},
 			&chplan.FuncCall{
-				Name: "extractAll",
+				Fn:   chplan.FnRegexExtractAll,
 				Args: []chplan.Expr{subject, &chplan.LitString{V: candidateRegex}},
 			},
 		},
@@ -249,15 +250,15 @@ func ipLabelFilterExpr(f *syntax.IPLabelFilter, labelsExpr chplan.Expr) (chplan.
 	}
 
 	hasErr := &chplan.FuncCall{
-		Name: "mapContains",
+		Fn:   chplan.FnMapContainsKey,
 		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: syntax.ErrorLabel}},
 	}
 	exists := &chplan.FuncCall{
-		Name: "mapContains",
+		Fn:   chplan.FnMapContainsKey,
 		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: f.Label}},
 	}
 	return &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			hasErr, &chplan.LitBool{V: true},
 			notExpr(exists), &chplan.LitBool{V: false},

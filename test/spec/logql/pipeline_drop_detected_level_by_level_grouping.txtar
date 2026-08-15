@@ -26,10 +26,10 @@ INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES
 [6] string = "job"
 [7] string = "api"
 -- chplan --
-Project ["" AS MetricName, map("detected_level", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[ResourceAttributes["detected_level"] AS gkey_0] funcs=[sum(Value) AS Value]
+Project ["" AS MetricName, FnMap("detected_level", gkey_0) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[ResourceAttributes["detected_level"] AS gkey_0] funcs=[FnSum(Value) AS Value]
     RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
-      Project [mapSort(mapFilter((k, v) -> not((k = "detected_level")), ResourceAttributes)) AS ResourceAttributes, Timestamp, 1 AS Value]
+      Project [mapSort(FnMapFilter((k, v) -> FnNot((k = "detected_level")), ResourceAttributes)) AS ResourceAttributes, Timestamp, 1 AS Value]
         Filter predicate=(ResourceAttributes["job"] = "api")
           Scan(otel_logs)
 -- sql --

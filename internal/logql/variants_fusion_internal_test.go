@@ -37,7 +37,7 @@ func countArm() *chplan.RangeWindow {
 
 func bytesArm() *chplan.RangeWindow {
 	return variantArm("sum_over_time",
-		&chplan.FuncCall{Name: "length", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+		&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 		"otel_logs")
 }
 
@@ -282,7 +282,7 @@ func groupedArm(rw *chplan.RangeWindow, groupKey string) chplan.Node {
 		},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+			{Expr: &chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 				&chplan.LitString{V: groupKey}, &chplan.ColumnRef{Name: "gkey_0"},
 			}}, Alias: "Attributes"},
 			{Expr: chplan.NowNano(), Alias: "TimeUnix"},

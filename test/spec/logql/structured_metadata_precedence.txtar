@@ -19,7 +19,7 @@ INSERT INTO otel_logs (Body) VALUES ('p1'), ('p2'), ('d1');
   ["clickhouse", "p2"]
 ]
 -- chplan --
-Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod"))
+Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (FnIf(FnMapContainsKey(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod"))
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?)

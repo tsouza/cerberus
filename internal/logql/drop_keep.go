@@ -46,7 +46,7 @@ func narrowIdentityByProjection(identity chplan.Expr, sel syntax.LogSelectorExpr
 		case *syntax.DropLabelsExpr:
 			if pred := anyProjectionEntryMatches(st.Matchers()); pred != nil {
 				identity = mapFilterExpr(identity, &chplan.FuncCall{
-					Name: "not",
+					Fn:   chplan.FnNot,
 					Args: []chplan.Expr{pred},
 				})
 			}
@@ -113,7 +113,7 @@ func projectSyntheticLabelValue(expr syntax.Expr, key string, newValue func() ch
 					continue
 				}
 				survives = andExpr(survives, &chplan.FuncCall{
-					Name: "not",
+					Fn:   chplan.FnNot,
 					Args: []chplan.Expr{syntheticValueMatches(e, newValue())},
 				})
 			}
@@ -137,7 +137,7 @@ func projectSyntheticLabelValue(expr syntax.Expr, key string, newValue func() ch
 		return newValue()
 	}
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn:   chplan.FnIf,
 		Args: []chplan.Expr{survives, newValue(), &chplan.LitString{V: ""}},
 	}
 }
@@ -198,7 +198,7 @@ func andExpr(pred, next chplan.Expr) chplan.Expr {
 // mapFilterExpr builds `mapFilter((k, v) -> <pred>, <m>)`.
 func mapFilterExpr(m, pred chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "mapFilter",
+		Fn: chplan.FnMapFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{projectionKeyParam, projectionValueParam},

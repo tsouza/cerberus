@@ -60,8 +60,8 @@ func TestDetectedLevelIdentityExpr_ProjectionOutcomes(t *testing.T) {
 		if !ok {
 			t.Fatalf("detectedLevelIdentityExpr -> %T, want *chplan.FuncCall or nil", e)
 		}
-		switch fc.Name {
-		case "if":
+		switch fc.Fn {
+		case chplan.FnIf:
 			if len(fc.Args) != 3 {
 				t.Fatalf("if(...) has %d args, want 3", len(fc.Args))
 			}
@@ -71,10 +71,10 @@ func TestDetectedLevelIdentityExpr_ProjectionOutcomes(t *testing.T) {
 					"enclosing mapFilter prunes the key", fc.Args[2])
 			}
 			return conditional
-		case "multiIf":
+		case chplan.FnMultiIf:
 			return unconditional
 		default:
-			t.Fatalf("detectedLevelIdentityExpr -> FuncCall %q, want if / multiIf", fc.Name)
+			t.Fatalf("detectedLevelIdentityExpr -> FuncCall %q, want if / multiIf", fc.Fn)
 			return ""
 		}
 	}
@@ -120,7 +120,7 @@ func TestDetectedLevelIdentityExpr_MultipleKeepEntriesOr(t *testing.T) {
 	expr := parseProjectionExpr(t, `{job="api"} | keep detected_level="info", detected_level="warn"`)
 
 	got, ok := detectedLevelIdentityExpr(s, expr).(*chplan.FuncCall)
-	if !ok || got.Name != "if" {
+	if !ok || got.Fn != chplan.FnIf {
 		t.Fatalf("detectedLevelIdentityExpr -> %#v, want an if(...) FuncCall", got)
 	}
 	pred, ok := got.Args[0].(*chplan.Binary)
@@ -145,7 +145,7 @@ func TestDetectedLevelIdentityExpr_TwoDropMatchersAnd(t *testing.T) {
 	expr := parseProjectionExpr(t, `{job="api"} | drop detected_level="info", detected_level="warn"`)
 
 	got, ok := detectedLevelIdentityExpr(s, expr).(*chplan.FuncCall)
-	if !ok || got.Name != "if" {
+	if !ok || got.Fn != chplan.FnIf {
 		t.Fatalf("detectedLevelIdentityExpr -> %#v, want an if(...) FuncCall", got)
 	}
 	pred, ok := got.Args[0].(*chplan.Binary)
@@ -196,7 +196,7 @@ func TestProjectSyntheticLabelValue_FreshValuePerUse(t *testing.T) {
 		},
 	)
 	fc, ok := got.(*chplan.FuncCall)
-	if !ok || fc.Name != "if" {
+	if !ok || fc.Fn != chplan.FnIf {
 		t.Fatalf("projectSyntheticLabelValue -> %#v, want an if(...) FuncCall", got)
 	}
 	if calls != 2 {
@@ -204,7 +204,7 @@ func TestProjectSyntheticLabelValue_FreshValuePerUse(t *testing.T) {
 			"retained branch) — a single shared node would alias into two live positions", calls)
 	}
 	not, ok := fc.Args[0].(*chplan.FuncCall)
-	if !ok || not.Name != "not" {
+	if !ok || not.Fn != chplan.FnNot {
 		t.Fatalf("if(...) predicate = %#v, want not(...)", fc.Args[0])
 	}
 	cmp, ok := not.Args[0].(*chplan.Binary)

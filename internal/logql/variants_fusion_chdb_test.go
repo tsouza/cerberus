@@ -318,9 +318,9 @@ func TestFusedArmsSortOnTheirOwnValue(t *testing.T) {
 // ascends where its negation descends.
 func crossedTieValueA() chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "toFloat64",
+		Fn: chplan.FnToFloat64,
 		Args: []chplan.Expr{&chplan.FuncCall{
-			Name: "length", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
+			Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
 		}},
 	}
 }

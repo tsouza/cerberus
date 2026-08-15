@@ -29,5 +29,5 @@ INSERT INTO otel_logs (Body) VALUES ('r1'), ('r2'), ('r3'), ('r4');
   ["r4"]
 ]
 -- chplan --
-Filter predicate=(coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) =~ ".*")
+Filter predicate=(FnCoalesce(FnNullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) =~ ".*")
   Scan(otel_logs)

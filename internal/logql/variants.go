@@ -498,11 +498,11 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 	}
 
 	attrs := &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn: chplan.FnMapMerge,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: cols.attrsCol},
 			&chplan.FuncCall{
-				Name: "map",
+				Fn: chplan.FnMap,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: variantLabel},
 					&chplan.LitString{V: variantLabelFor(index)},
@@ -532,11 +532,11 @@ func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan
 		tsExpr = timeLiteralExpr(lc.End)
 	}
 	attrs := &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn: chplan.FnMapMerge,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: cols.attrsCol},
 			&chplan.FuncCall{
-				Name: "map",
+				Fn: chplan.FnMap,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: variantLabel},
 					&chplan.ColumnRef{Name: variantLabel},

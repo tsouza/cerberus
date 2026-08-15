@@ -190,11 +190,11 @@ func attrsCarriesVariantTag(expr chplan.Expr, tag string) bool {
 // differ only in the second argument of.
 func variantMapArg(expr chplan.Expr) (*chplan.FuncCall, bool) {
 	fc, ok := expr.(*chplan.FuncCall)
-	if !ok || fc.Name != "mapConcat" || len(fc.Args) != 2 {
+	if !ok || fc.Fn != chplan.FnMapMerge || len(fc.Args) != 2 {
 		return nil, false
 	}
 	inner, ok := fc.Args[1].(*chplan.FuncCall)
-	if !ok || inner.Name != "map" || len(inner.Args) != 2 {
+	if !ok || inner.Fn != chplan.FnMap || len(inner.Args) != 2 {
 		return nil, false
 	}
 	key, ok := inner.Args[0].(*chplan.LitString)

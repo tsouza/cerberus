@@ -37,5 +37,5 @@ INSERT INTO otel_logs (Timestamp) VALUES
   ["2026-05-14T12:05:00Z"]
 ]
 -- chplan --
-Filter predicate=((coalesce(nullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "api") AND ((Timestamp >= toDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= toDateTime64("2026-05-14 12:05:00.000000000", 9))))
+Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "api") AND ((Timestamp >= FnToDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp <= FnToDateTime64("2026-05-14 12:05:00.000000000", 9))))
   Scan(otel_logs)

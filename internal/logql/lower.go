@@ -746,7 +746,7 @@ func JSONParsedLabels(s schema.Logs) chplan.Expr {
 // by construction rather than by repeating the rename at each call site.
 func concatParsedLabels(prev, renamedParsed chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{prev, renamedParsed},
 	}
 }
@@ -776,10 +776,10 @@ func mergeParsedFields(prev chplan.Expr, s schema.Logs, fields []parsedField) ch
 		args = append(args, renameIdentifierOnCollision(s, f.name), f.value)
 	}
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn: chplan.FnMapMerge,
 		Args: []chplan.Expr{
 			prev,
-			&chplan.FuncCall{Name: "map", Args: args},
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: args},
 		},
 	}
 }
@@ -841,25 +841,25 @@ func logfmtExpressionMergeLabels(prev chplan.Expr, s schema.Logs, exprs []syntax
 func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Expr {
 	streamCol := &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
 	return &chplan.FuncCall{
-		Name: "mapApply",
+		Fn: chplan.FnMapApply,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{"k", "v"},
 				Body: &chplan.FuncCall{
-					Name: "tuple",
+					Fn: chplan.FnTuple,
 					Args: []chplan.Expr{
 						&chplan.FuncCall{
-							Name: "if",
+							Fn: chplan.FnIf,
 							Args: []chplan.Expr{
 								&chplan.FuncCall{
-									Name: "mapContains",
+									Fn: chplan.FnMapContainsKey,
 									Args: []chplan.Expr{
 										streamCol,
 										&chplan.BareIdent{Name: "k"},
 									},
 								},
 								&chplan.FuncCall{
-									Name: "concat",
+									Fn: chplan.FnConcat,
 									Args: []chplan.Expr{
 										&chplan.BareIdent{Name: "k"},
 										&chplan.LitString{V: duplicateSuffix},
@@ -887,10 +887,10 @@ func renameExtractedOnCollision(s schema.Logs, extracted chplan.Expr) chplan.Exp
 // evaluated once per row instead of via mapApply.
 func renameIdentifierOnCollision(s schema.Logs, id string) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapContains",
+				Fn: chplan.FnMapContainsKey,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.ResourceAttributesColumn},
 					&chplan.LitString{V: id},
@@ -910,7 +910,7 @@ func renameIdentifierOnCollision(s schema.Logs, id string) chplan.Expr {
 // character.
 func extractKVPairs(s schema.Logs) chplan.Expr {
 	pairs := &chplan.FuncCall{
-		Name: "extractKeyValuePairs",
+		Fn: chplan.FnExtractKeyValuePairs,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.BodyColumn},
 			&chplan.LitString{V: "="},
@@ -1022,7 +1022,7 @@ func jsonFlattenedMap(s schema.Logs) chplan.Expr {
 	// top-level key. Loki applies its leading-digit rule here because the
 	// accumulated prefix is still empty.
 	seed := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonMemberParam},
@@ -1036,17 +1036,17 @@ func jsonFlattenedMap(s schema.Logs) chplan.Expr {
 	}
 
 	folded := &chplan.FuncCall{
-		Name: "arrayFold",
+		Fn: chplan.FnArrayFold,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonAccParam, jsonStepParam},
 				Body:   jsonExpandObjects(),
 			},
 			&chplan.FuncCall{
-				Name: "range",
+				Fn: chplan.FnRange,
 				Args: []chplan.Expr{
 					&chplan.FuncCall{
-						Name: "countSubstrings",
+						Fn:   chplan.FnCountSubstrings,
 						Args: []chplan.Expr{body, &chplan.LitString{V: jsonObjectPrefix}},
 					},
 				},
@@ -1077,16 +1077,16 @@ const (
 // yields an empty array rather than an error, which is what lets a
 // malformed body flow through the fold as "no extracted labels".
 func jsonMembersOf(json chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "JSONExtractKeysAndValuesRaw", Args: []chplan.Expr{json}}
+	return &chplan.FuncCall{Fn: chplan.FnJSONExtractKeysAndValuesRaw, Args: []chplan.Expr{json}}
 }
 
 func jsonPair(key, value chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{key, value}}
+	return &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{key, value}}
 }
 
 func jsonTupleField(tuple chplan.Expr, index int64) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "tupleElement",
+		Fn:   chplan.FnTupleElement,
 		Args: []chplan.Expr{tuple, &chplan.LitInt{V: index}},
 	}
 }
@@ -1121,7 +1121,7 @@ func jsonEntryValue() chplan.Expr {
 // single work list.
 func jsonExpandObjects() chplan.Expr {
 	expanded := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonMemberParam},
@@ -1134,20 +1134,20 @@ func jsonExpandObjects() chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "arrayFlatten",
+		Fn: chplan.FnArrayFlatten,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arrayMap",
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
 					&chplan.Lambda{
 						Params: []string{jsonEntryParam},
 						Body: &chplan.FuncCall{
-							Name: "if",
+							Fn: chplan.FnIf,
 							Args: []chplan.Expr{
 								jsonStartsWith(jsonEntryValue(), jsonObjectPrefix),
 								expanded,
 								&chplan.FuncCall{
-									Name: "array",
+									Fn:   chplan.FnArray,
 									Args: []chplan.Expr{&chplan.BareIdent{Name: jsonEntryParam}},
 								},
 							},
@@ -1172,11 +1172,11 @@ func jsonExpandObjects() chplan.Expr {
 // it only to the first surviving part.
 func jsonJoinKey(prefix, rawSegment chplan.Expr) chplan.Expr {
 	parts := &chplan.FuncCall{
-		Name: "array",
+		Fn:   chplan.FnArray,
 		Args: []chplan.Expr{prefix, jsonSanitizeKey(rawSegment)},
 	}
 	nonEmpty := &chplan.FuncCall{
-		Name: "arrayFilter",
+		Fn: chplan.FnArrayFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonPartParam},
@@ -1190,7 +1190,7 @@ func jsonJoinKey(prefix, rawSegment chplan.Expr) chplan.Expr {
 		},
 	}
 	return jsonApplyLeadingDigitRule(&chplan.FuncCall{
-		Name: "arrayStringConcat",
+		Fn:   chplan.FnArrayStringConcat,
 		Args: []chplan.Expr{nonEmpty, &chplan.LitString{V: jsonNestedKeySpacer}},
 	})
 }
@@ -1201,7 +1201,7 @@ func jsonJoinKey(prefix, rawSegment chplan.Expr) chplan.Expr {
 // surrounding whitespace would survive as `_` bytes in the label name.
 func jsonSanitizeKey(rawKey chplan.Expr) chplan.Expr {
 	trimmed := &chplan.FuncCall{
-		Name: "replaceRegexpAll",
+		Fn: chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{
 			rawKey,
 			&chplan.LitString{V: jsonKeyTrimWhitespace},
@@ -1209,7 +1209,7 @@ func jsonSanitizeKey(rawKey chplan.Expr) chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "replaceRegexpAll",
+		Fn: chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{
 			trimmed,
 			&chplan.LitString{V: jsonKeyInvalidCharClass},
@@ -1220,7 +1220,7 @@ func jsonSanitizeKey(rawKey chplan.Expr) chplan.Expr {
 
 func jsonApplyLeadingDigitRule(key chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "replaceRegexpOne",
+		Fn: chplan.FnRegexReplaceFirst,
 		Args: []chplan.Expr{
 			key,
 			&chplan.LitString{V: jsonKeyLeadingDigit},
@@ -1238,7 +1238,7 @@ func jsonApplyLeadingDigitRule(key chplan.Expr) chplan.Expr {
 // scalar path.
 func jsonReadLeaves(workList chplan.Expr) chplan.Expr {
 	isScalar := &chplan.FuncCall{
-		Name: "match",
+		Fn:   chplan.FnRegexMatch,
 		Args: []chplan.Expr{jsonEntryValue(), &chplan.LitString{V: jsonScalarLeafPrefix}},
 	}
 	keyPresent := &chplan.Binary{
@@ -1247,7 +1247,7 @@ func jsonReadLeaves(workList chplan.Expr) chplan.Expr {
 		Right: &chplan.LitString{V: ""},
 	}
 	kept := &chplan.FuncCall{
-		Name: "arrayFilter",
+		Fn: chplan.FnArrayFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonEntryParam},
@@ -1257,7 +1257,7 @@ func jsonReadLeaves(workList chplan.Expr) chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonEntryParam},
@@ -1274,10 +1274,10 @@ func jsonReadLeaves(workList chplan.Expr) chplan.Expr {
 // string value performs exactly the unescape upstream's readValue does.
 func jsonReadValue() chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			jsonStartsWith(jsonEntryValue(), jsonStringPrefix),
-			&chplan.FuncCall{Name: "JSONExtractString", Args: []chplan.Expr{jsonEntryValue()}},
+			&chplan.FuncCall{Fn: chplan.FnJSONExtractString, Args: []chplan.Expr{jsonEntryValue()}},
 			jsonEntryValue(),
 		},
 	}
@@ -1285,7 +1285,7 @@ func jsonReadValue() chplan.Expr {
 
 func jsonStartsWith(e chplan.Expr, prefix string) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "startsWith",
+		Fn:   chplan.FnStartsWith,
 		Args: []chplan.Expr{e, &chplan.LitString{V: prefix}},
 	}
 }
@@ -1315,7 +1315,7 @@ func lastKeyWins(pairs chplan.Expr) chplan.Expr {
 	// legal SQL, but it would read as though the `has(…)` needle and the
 	// haystack keys came from the same value.
 	seenKeys := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonSeenEntryParam},
@@ -1330,26 +1330,26 @@ func lastKeyWins(pairs chplan.Expr) chplan.Expr {
 	keepFirstUnseen := &chplan.Lambda{
 		Params: []string{jsonSeenParam, jsonEntryParam},
 		Body: &chplan.FuncCall{
-			Name: "if",
+			Fn: chplan.FnIf,
 			Args: []chplan.Expr{
-				&chplan.FuncCall{Name: "has", Args: []chplan.Expr{seenKeys, jsonEntryKey()}},
+				&chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{seenKeys, jsonEntryKey()}},
 				seen,
 				&chplan.FuncCall{
-					Name: "arrayPushBack",
+					Fn:   chplan.FnArrayPushBack,
 					Args: []chplan.Expr{seen, &chplan.BareIdent{Name: jsonEntryParam}},
 				},
 			},
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "arrayReverse",
+		Fn: chplan.FnArrayReverse,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arrayFold",
+				Fn: chplan.FnArrayFold,
 				Args: []chplan.Expr{
 					keepFirstUnseen,
-					&chplan.FuncCall{Name: "arrayReverse", Args: []chplan.Expr{pairs}},
-					castToLabelPairArray(&chplan.FuncCall{Name: "array"}),
+					&chplan.FuncCall{Fn: chplan.FnArrayReverse, Args: []chplan.Expr{pairs}},
+					castToLabelPairArray(&chplan.FuncCall{Fn: chplan.FnArray}),
 				},
 			},
 		},
@@ -1401,7 +1401,7 @@ const UnexpectedJSONObjectDetail = "expecting json object(6), but it is not"
 // them.
 func unpackMergeLabels(prev chplan.Expr, s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn: chplan.FnMapMerge,
 		Args: []chplan.Expr{
 			concatParsedLabels(prev, UnpackParsedLabels(s)),
 			unpackErrorMarkers(s),
@@ -1424,11 +1424,11 @@ func UnpackParsedLabels(s schema.Logs) chplan.Expr {
 // line untouched.
 func unpackLineExpr(prev chplan.Expr, s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			unpackIsPacked(s),
 			&chplan.FuncCall{
-				Name: "JSONExtractString",
+				Fn: chplan.FnJSONExtractString,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.BodyColumn},
 					&chplan.LitString{V: packedEntryKey},
@@ -1445,7 +1445,7 @@ func unpackLineExpr(prev chplan.Expr, s schema.Logs) chplan.Expr {
 // it becomes the line rather than a label.
 func unpackExtractedMap(s schema.Logs) chplan.Expr {
 	labelMembers := &chplan.FuncCall{
-		Name: "arrayFilter",
+		Fn: chplan.FnArrayFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonMemberParam},
@@ -1463,14 +1463,14 @@ func unpackExtractedMap(s schema.Logs) chplan.Expr {
 		},
 	}
 	pairs := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonMemberParam},
 				Body: jsonPair(
 					jsonApplyLeadingDigitRule(jsonSanitizeKey(jsonMemberKey())),
 					&chplan.FuncCall{
-						Name: "JSONExtractString",
+						Fn:   chplan.FnJSONExtractString,
 						Args: []chplan.Expr{jsonMemberValue()},
 					},
 				),
@@ -1479,7 +1479,7 @@ func unpackExtractedMap(s schema.Logs) chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			unpackIsPacked(s),
 			castToLabelMap(lastKeyWins(pairs)),
@@ -1492,7 +1492,7 @@ func unpackExtractedMap(s schema.Logs) chplan.Expr {
 // `_entry` member — the gate that arms the whole stage.
 func unpackIsPacked(s schema.Logs) chplan.Expr {
 	stringMembers := &chplan.FuncCall{
-		Name: "arrayFilter",
+		Fn: chplan.FnArrayFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{jsonMemberParam},
@@ -1502,14 +1502,14 @@ func unpackIsPacked(s schema.Logs) chplan.Expr {
 		},
 	}
 	keys := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{jsonMemberParam}, Body: jsonMemberKey()},
 			stringMembers,
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "has",
+		Fn:   chplan.FnArrayHas,
 		Args: []chplan.Expr{keys, &chplan.LitString{V: packedEntryKey}},
 	}
 }
@@ -1536,13 +1536,13 @@ func unpackErrorMarkers(s schema.Logs) chplan.Expr {
 	// test subsumes the other: `["a"]` is valid JSON that is not an object,
 	// and `{"a":` is object-shaped but does not parse.
 	notObjectShaped := &chplan.FuncCall{
-		Name: "not",
+		Fn:   chplan.FnNot,
 		Args: []chplan.Expr{jsonStartsWith(body, jsonObjectPrefix)},
 	}
 	doesNotParse := &chplan.FuncCall{
-		Name: "not",
+		Fn: chplan.FnNot,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "isValidJSON", Args: []chplan.Expr{body}},
+			&chplan.FuncCall{Fn: chplan.FnIsValidJSON, Args: []chplan.Expr{body}},
 		},
 	}
 	unreadable := &chplan.Binary{
@@ -1551,13 +1551,13 @@ func unpackErrorMarkers(s schema.Logs) chplan.Expr {
 		Right: doesNotParse,
 	}
 	markers := &chplan.FuncCall{
-		Name: "map",
+		Fn: chplan.FnMap,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: syntax.ErrorLabel},
 			&chplan.LitString{V: JSONParserErrValue},
 			&chplan.LitString{V: syntax.ErrorDetailsLabel},
 			&chplan.FuncCall{
-				Name: "if",
+				Fn: chplan.FnIf,
 				Args: []chplan.Expr{
 					jsonStartsWith(body, jsonObjectPrefix),
 					&chplan.LitString{V: ""},
@@ -1567,7 +1567,7 @@ func unpackErrorMarkers(s schema.Logs) chplan.Expr {
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.Binary{Op: chplan.OpAnd, Left: nonEmpty, Right: unreadable},
 			markers,
@@ -1588,14 +1588,14 @@ const labelPairArrayType = "Array(Tuple(String,String))"
 
 func castToLabelMap(pairs chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "CAST",
+		Fn:   chplan.FnCast,
 		Args: []chplan.Expr{pairs, &chplan.LitString{V: labelMapType}},
 	}
 }
 
 func castToLabelPairArray(pairs chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "CAST",
+		Fn:   chplan.FnCast,
 		Args: []chplan.Expr{pairs, &chplan.LitString{V: labelPairArrayType}},
 	}
 }
@@ -1604,7 +1604,7 @@ func castToLabelPairArray(pairs chplan.Expr) chplan.Expr {
 // would leave CH to infer the key and value types from nothing, which
 // makes the surrounding `if` branches disagree on type.
 func emptyLabelMap() chplan.Expr {
-	return castToLabelMap(&chplan.FuncCall{Name: "array"})
+	return castToLabelMap(&chplan.FuncCall{Fn: chplan.FnArray})
 }
 
 // jsonExpressionMergeLabels wraps labelsExpr with a `mapConcat` that
@@ -1667,7 +1667,7 @@ func jsonExtractStringExpr(s schema.Logs, path string) (chplan.Expr, error) {
 			return nil, fmt.Errorf("logql: unsupported JSON path segment type %T in %q", seg, path)
 		}
 	}
-	return &chplan.FuncCall{Name: "JSONExtractString", Args: args}, nil
+	return &chplan.FuncCall{Fn: chplan.FnJSONExtractString, Args: args}, nil
 }
 
 // regexpMergeLabels lowers a `| regexp "<pattern>"` stage to a label-map
@@ -1710,7 +1710,7 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 	}
 	groupsCall := func() *chplan.FuncCall {
 		return &chplan.FuncCall{
-			Name: "extractAllGroupsHorizontal",
+			Fn: chplan.FnRegexExtractAllGroupsHorizontal,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: s.BodyColumn},
 				&chplan.LitString{V: pattern},
@@ -1838,7 +1838,7 @@ func numericLabelFilterExpr(f *syntax.NumericLabelFilter, s schema.Logs, labelsE
 	parse := newNumericParse(access)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
 	pred := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			notExpr(exists), &chplan.LitBool{V: false},
 			notExpr(parse.valid), &chplan.LitBool{V: true},
@@ -1886,7 +1886,7 @@ func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, label
 	parse := newDurationParse(access)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
 	pred := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			notExpr(exists), &chplan.LitBool{V: false},
 			notExpr(parse.valid), &chplan.LitBool{V: true},
@@ -1936,7 +1936,7 @@ func bytesLabelFilterExpr(f *syntax.BytesLabelFilter, s schema.Logs, labelsExpr 
 	parse := newBytesParse(access)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
 	pred := &chplan.FuncCall{
-		Name: "multiIf",
+		Fn: chplan.FnMultiIf,
 		Args: []chplan.Expr{
 			notExpr(exists), &chplan.LitBool{V: false},
 			notExpr(parse.valid), &chplan.LitBool{V: true},
@@ -2124,7 +2124,7 @@ func structuredOrStreamLookup(s schema.Logs, key string) chplan.Expr {
 	}
 	structuredSide := attributeLookupColumn(s.AttributesColumn, key)
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			structuredMetadataPresence(s, key),
 			structuredSide,
@@ -2149,7 +2149,7 @@ func structuredMetadataPresence(s schema.Logs, key string) chplan.Expr {
 	var out chplan.Expr
 	for _, c := range candidates {
 		has := &chplan.FuncCall{
-			Name: "mapContains",
+			Fn:   chplan.FnMapContainsKey,
 			Args: []chplan.Expr{col, &chplan.LitString{V: c}},
 		}
 		if out == nil {
@@ -2188,7 +2188,7 @@ func structuredOrStreamLookupOnMap(s schema.Logs, labelsExpr chplan.Expr, key st
 		return parsedOrStream
 	}
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			liveMapPresence(labelsExpr, key),
 			parsedOrStream,
@@ -2205,7 +2205,7 @@ func structuredOrStreamLookupOnMap(s schema.Logs, labelsExpr chplan.Expr, key st
 // metadata.
 func liveMapPresence(labelsExpr chplan.Expr, key string) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "mapContains",
+		Fn:   chplan.FnMapContainsKey,
 		Args: []chplan.Expr{labelsExpr, &chplan.LitString{V: key}},
 	}
 }
@@ -2426,10 +2426,10 @@ func resourceFallbackColumn(s schema.Logs, labelName string) string {
 // resolve correctly when the producer wrote it to either side.
 func resourceAttributeFallbackLHS(topCol string, mapLookup chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "coalesce",
+		Fn: chplan.FnCoalesce,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "nullIf",
+				Fn: chplan.FnNullIf,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: topCol},
 					&chplan.LitString{V: ""},
@@ -2488,7 +2488,7 @@ func andFoldTimeWindow(pred chplan.Expr, s schema.Logs, lc lowerCtx) chplan.Expr
 // paths emit identical placeholder shapes.
 func timeLiteralExpr(t time.Time) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "toDateTime64",
+		Fn: chplan.FnToDateTime64,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
 			&chplan.LitInt{V: chplan.NanoScale},

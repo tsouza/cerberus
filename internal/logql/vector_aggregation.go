@@ -419,19 +419,19 @@ func buildVectorAggFunc(e *syntax.VectorAggregationExpr, _ schema.Logs) (chplan.
 
 	switch e.Operation {
 	case syntax.OpTypeSum:
-		return chplan.AggFunc{Name: "sum", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnSum, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 	case syntax.OpTypeAvg:
-		return chplan.AggFunc{Name: "avg", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnAvg, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 	case syntax.OpTypeMin:
-		return chplan.AggFunc{Name: "min", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnMin, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 	case syntax.OpTypeMax:
-		return chplan.AggFunc{Name: "max", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnMax, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 	case syntax.OpTypeCount:
-		return chplan.AggFunc{Name: "count", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnCount, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 	case syntax.OpTypeStddev:
-		return chplan.AggFunc{Name: "stddevPop", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnStddevPop, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 	case syntax.OpTypeStdvar:
-		return chplan.AggFunc{Name: "varPop", Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
+		return chplan.AggFunc{Fn: chplan.FnVarPop, Args: []chplan.Expr{valueArg}, Alias: valueAlias}, nil
 
 	}
 	return chplan.AggFunc{}, fmt.Errorf("logql: aggregation operation %q is unsupported", e.Operation)
@@ -467,7 +467,7 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 		for i, label := range e.Grouping.Groups {
 			args = append(args, &chplan.LitString{V: label}, &chplan.ColumnRef{Name: aliases[i]})
 		}
-		attrs = &chplan.FuncCall{Name: "map", Args: args}
+		attrs = &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	}
 
 	// Use the metrics-schema column names for the Sample contract; the
@@ -500,9 +500,9 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 // no-grouping aggregation case. Same helper shape as the PromQL side.
 func emptyAttrsMap() chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "CAST",
+		Fn: chplan.FnCast,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "map", Args: nil},
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: nil},
 			&chplan.LitString{V: "Map(String,String)"},
 		},
 	}

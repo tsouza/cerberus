@@ -66,7 +66,7 @@ type numericParse struct {
 // newNumericParse builds the parse expressions for one label access.
 func newNumericParse(raw chplan.Expr) numericParse {
 	valid := &chplan.FuncCall{
-		Name: "match",
+		Fn:   chplan.FnRegexMatch,
 		Args: []chplan.Expr{raw, &chplan.LitString{V: numericValidRe}},
 	}
 	// value mirrors strconv.ParseFloat's result on the accepted set:
@@ -74,13 +74,13 @@ func newNumericParse(raw chplan.Expr) numericParse {
 	// regex admits (it is only ever read under `valid`). The bare
 	// `inf` / `nan` specials parse identically on both sides.
 	value := &chplan.FuncCall{
-		Name: "toFloat64OrZero",
+		Fn:   chplan.FnToFloat64OrZero,
 		Args: []chplan.Expr{raw},
 	}
 	// details: strconv.NumError.Error() — `strconv.ParseFloat: parsing
 	// "<v>": invalid syntax`. The quoted token is the RAW value.
 	details := &chplan.FuncCall{
-		Name: "concat",
+		Fn: chplan.FnConcat,
 		Args: []chplan.Expr{
 			&chplan.LitString{V: `strconv.ParseFloat: parsing "`},
 			raw,
@@ -128,23 +128,23 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 	// number = the leading [0-9.,] run; numStripped = that run with
 	// commas removed (humanize's `strings.Replace(num, ",", "", -1)`).
 	number := &chplan.FuncCall{
-		Name: "extract",
+		Fn:   chplan.FnRegexExtractFirst,
 		Args: []chplan.Expr{raw, &chplan.LitString{V: bytesNumberRe}},
 	}
 	numStripped := &chplan.FuncCall{
-		Name: "replaceAll",
+		Fn:   chplan.FnReplaceAll,
 		Args: []chplan.Expr{number, &chplan.LitString{V: ","}, &chplan.LitString{V: ""}},
 	}
 	// rest = the suffix after the number run, lowercased and
 	// whitespace-trimmed — humanize's `strings.ToLower(strings.TrimSpace(...))`.
 	rest := &chplan.FuncCall{
-		Name: "replaceRegexpAll",
+		Fn: chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "lower",
+				Fn: chplan.FnLower,
 				Args: []chplan.Expr{
 					&chplan.FuncCall{
-						Name: "replaceRegexpAll",
+						Fn:   chplan.FnRegexReplaceAll,
 						Args: []chplan.Expr{raw, &chplan.LitString{V: bytesNumberRe}, &chplan.LitString{V: ""}},
 					},
 				},
@@ -154,13 +154,13 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 		},
 	}
 	numberValid := &chplan.FuncCall{
-		Name: "isNotNull",
+		Fn: chplan.FnIsNotNull,
 		Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "toFloat64OrNull", Args: []chplan.Expr{numStripped}},
+			&chplan.FuncCall{Fn: chplan.FnToFloat64OrNull, Args: []chplan.Expr{numStripped}},
 		},
 	}
 	unitValid := &chplan.FuncCall{
-		Name: "match",
+		Fn:   chplan.FnRegexMatch,
 		Args: []chplan.Expr{rest, &chplan.LitString{V: bytesUnitRe}},
 	}
 	valid := &chplan.Binary{Op: chplan.OpAnd, Left: numberValid, Right: unitValid}
@@ -168,21 +168,21 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 	// humanize.ParseBytes does for the accepted set; it is only ever
 	// read under `valid`.
 	value := &chplan.FuncCall{
-		Name: "parseReadableSize",
+		Fn:   chplan.FnParseReadableSize,
 		Args: []chplan.Expr{raw},
 	}
 	// details: classify in humanize's scan order — number first, then
 	// unit. `if(numberValid, <unhandled-size>, <parsefloat-error>)`.
 	details := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			numberValid,
 			&chplan.FuncCall{
-				Name: "concat",
+				Fn:   chplan.FnConcat,
 				Args: []chplan.Expr{&chplan.LitString{V: `unhandled size name: `}, rest},
 			},
 			&chplan.FuncCall{
-				Name: "concat",
+				Fn: chplan.FnConcat,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: `strconv.ParseFloat: parsing "`},
 					numStripped,

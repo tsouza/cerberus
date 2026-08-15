@@ -200,7 +200,7 @@ func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
 	}
 	// Final fallback: the dedicated severity column.
 	args = append(args, severity)
-	return &chplan.FuncCall{Name: "multiIf", Args: args}
+	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args}
 }
 
 // normaliseLevelExpr returns a CH `multiIf(...)` chain that maps the
@@ -229,7 +229,7 @@ func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
 // discovery would refine it.
 func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	lowerValue := &chplan.FuncCall{
-		Name: "lower",
+		Fn:   chplan.FnLower,
 		Args: []chplan.Expr{value},
 	}
 
@@ -249,7 +249,7 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	// upstream Loki's `default: return level` behaviour.
 	args = append(args, lowerValue)
 
-	return &chplan.FuncCall{Name: "multiIf", Args: args}
+	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args}
 }
 
 // levelNormalizationGroup pairs the input-variant spellings upstream
@@ -403,7 +403,7 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Ex
 			args,
 			&chplan.LitString{V: col},
 			&chplan.FuncCall{
-				Name: "toString",
+				Fn:   chplan.FnToString,
 				Args: []chplan.Expr{topLevelColumnRef(col)},
 			},
 		)
@@ -441,9 +441,9 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Ex
 	if len(args) == 0 {
 		return baseLabels
 	}
-	synthMap := &chplan.FuncCall{Name: "map", Args: args}
+	synthMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	filtered := &chplan.FuncCall{
-		Name: "mapFilter",
+		Fn: chplan.FnMapFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{"k", "v"},
@@ -457,7 +457,7 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Ex
 		},
 	}
 	return &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{baseLabels, filtered},
 	}
 }
@@ -489,10 +489,10 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Ex
 // a structured-metadata column never reaches this expression.
 func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "toJSONString",
+		Fn: chplan.FnToJSONString,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapFilter",
+				Fn: chplan.FnMapFilter,
 				Args: []chplan.Expr{
 					&chplan.Lambda{
 						Params: []string{"k", "v"},

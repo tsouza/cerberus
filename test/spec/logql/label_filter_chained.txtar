@@ -36,5 +36,5 @@ INSERT INTO otel_logs (Body) VALUES
   ["error: again"]
 ]
 -- chplan --
-Filter predicate=((((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr)) AND (if(mapContains(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod")) AND (if(mapContains(LogAttributes, "severity"), LogAttributes["severity"], ResourceAttributes["severity"]) = "high"))
+Filter predicate=((((ResourceAttributes["job"] = "api") AND lineContent(Body, "error", substr)) AND (FnIf(FnMapContainsKey(LogAttributes, "env"), LogAttributes["env"], ResourceAttributes["env"]) = "prod")) AND (FnIf(FnMapContainsKey(LogAttributes, "severity"), LogAttributes["severity"], ResourceAttributes["severity"]) = "high"))
   Scan(otel_logs)
