@@ -20,7 +20,7 @@
       "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
       "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
       "class": "rejection",
-      "trigger_query": "{ nestedSetParent }",
+      "trigger_query": "{ -nestedSetParent = 2 }",
       "evidence": {
         "guard": [
           "past returning if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent",

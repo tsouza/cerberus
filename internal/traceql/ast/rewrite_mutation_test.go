@@ -1,6 +1,10 @@
 package ast
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 // Mutation-coverage tests for rewrite.go: the meaning-preserving array-fold
 // rewrites that collapse homogeneous comparison chains into a single array
@@ -93,15 +97,27 @@ func TestArrayFoldAttributeOnEitherSide(t *testing.T) {
 	}
 }
 
-// TestRegexFoldRejectsNonStringOperands pins the regex fold's type restriction:
-// `=~` chains only fold when both operands are strings. Numeric operands
-// (`.x =~ 1 || .x =~ 2`) must be left as a raw boolean operation — the
-// `staticTypeAllowed` membership check is what blocks the fold.
+// TestRegexFoldRejectsNonStringOperands pins that a numeric operand under
+// `=~` (`.x =~ 1 || .x =~ 2`) never reaches the array fold at all: the
+// operand-type rule validate.go added for #2035 (Operator.binaryTypesValid)
+// requires OpRegex's operands to be String (or query-time TypeAttribute),
+// and validate() runs over the WHOLE tree before any rewrite — so Parse
+// rejects the query outright. The fold's own `restrict` membership check
+// on arrayFoldRules' regex entries, which existed to guard exactly this
+// case, is now unreachable from Parse and stays only as defence in depth
+// for a hand-built tree that skips validate().
 func TestRegexFoldRejectsNonStringOperands(t *testing.T) {
 	t.Parallel()
-	bin := foldedBin(t, `{ .x =~ 1 || .x =~ 2 }`)
-	if bin.Op != OpOr {
-		t.Errorf("Op = %v; want OpOr (non-string regex operands must not fold)", bin.Op)
+	_, err := Parse(`{ .x =~ 1 || .x =~ 2 }`)
+	if err == nil {
+		t.Fatal("Parse(`{ .x =~ 1 || .x =~ 2 }`) = nil error, want an operand-type rejection")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("Parse error = %T (%v), want *ValidationError", err, err)
+	}
+	if !strings.Contains(verr.Error(), "illegal operation for the given types") {
+		t.Errorf("message = %q, want the operand-type wording", verr.Error())
 	}
 }
 
