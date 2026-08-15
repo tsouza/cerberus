@@ -487,6 +487,7 @@ test('iterateDrilldownApps returns the apps the pinned Grafana ships', () => {
     'grafana-lokiexplore-app',
     'grafana-exploretraces-app',
   ]);
+  expect(apps[0]?.root).toBe('/a/grafana-metricsdrilldown-app/drilldown');
   // Returned array must be a fresh copy — mutating it must not
   // contaminate the module-level constant.
   apps.pop();
