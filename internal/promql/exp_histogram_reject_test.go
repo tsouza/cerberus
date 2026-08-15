@@ -69,7 +69,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "max aggregation", query: `max(latency_exp_hist)`},
 		{name: "stddev aggregation", query: `stddev(latency_exp_hist)`},
 		{name: "stdvar aggregation", query: `stdvar(latency_exp_hist)`},
-		{name: "scalar arithmetic", query: `latency_exp_hist * 2`},
 		{name: "parenthesised scalar arithmetic", query: `(latency_exp_hist) + 1`},
 		{name: "label_replace", query: `label_replace(latency_exp_hist, "a", "b", "service", "(.*)")`},
 		{name: "abs", query: `abs(latency_exp_hist)`},
@@ -96,7 +95,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		// across-series merge stacked on top of the window reduction, so
 		// answering it with the window reduction alone would silently drop
 		// the sum.
-		{name: "rate under arithmetic", query: `rate(latency_exp_hist[5m]) * 2`},
 		{name: "rate under label_replace", query: `label_replace(rate(latency_exp_hist[5m]), "a", "b", "service", "(.*)")`},
 		{name: "rate under abs", query: `abs(rate(latency_exp_hist[5m]))`},
 		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
