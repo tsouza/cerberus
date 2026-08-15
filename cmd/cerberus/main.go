@@ -850,6 +850,11 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
 	h.Engine.Settings = settingsRules(cfg, optSet)
+	// The prom head wires this (line ~713 above); the Loki head never did,
+	// so requireSubquerySampleBudget's plan-time anchor-grid gate
+	// (internal/engine/anchor_budget.go) fail-opened on every LogQL
+	// subquery — issue #2055.
+	h.Engine.MaxQuerySamples = client.MaxQuerySamples()
 	return h
 }
 
