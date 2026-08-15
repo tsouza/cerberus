@@ -680,7 +680,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// `sum by (service_name) (rate({__name__=~".+"}[5m]))`.
 	// The Project lands between the Scan/Filter and the per-mode
 	// wraps so PREWHERE-eligible matchers stay on the raw Scan
-	// (the optimizer's promotion path is untouched).
+	// (the chsql emitter's promotion path is untouched).
 	//
 	// Order-of-operations for `pred`: when the augmenting Project
 	// kicks in it preserves only the canonical Sample quadruple
@@ -696,7 +696,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// The fix sinks `pred` to a Filter immediately above the raw
 	// scan-side input BEFORE augmenting — at that layer every raw
 	// column (including ServiceName) is still in scope and the
-	// optimizer's PREWHERE promotion path still sees the matcher
+	// chsql emitter's PREWHERE promotion path still sees the matcher
 	// Filter directly above the Scan. The downstream wrappers then
 	// receive `pred=nil` and only attach the LWR / staleness time
 	// bounds (which reference TimeUnix, preserved by the augment).
@@ -1895,7 +1895,7 @@ func rawLabelValueExpr(s schema.Metrics, promLabel string) chplan.Expr {
 // produce a single candidate — keep the legacy single-comparison
 // emit, byte-stable with the pre-fan-out fixtures. The InList is
 // `isCheapPredicate`-shaped (InList over ColumnRef / LitString), so
-// the optimizer's PREWHERE promotion treats it exactly like the
+// the chsql emitter's PREWHERE promotion treats it exactly like the
 // single equality it replaces.
 // promMetricNormalizePattern is the SQL-side mirror of
 // [format.OTelToPromMetric]: every byte outside the Prom metric-name
@@ -1971,7 +1971,7 @@ func metricNamePredicateOn(m *labels.Matcher, s schema.Metrics, nameExpr func() 
 	// (code 62, "Max query size exceeded") on the metrics-explorer broad
 	// probe. An IN tuple renders the column once + N `?` placeholders —
 	// compact text, constant parser depth — regardless of N. InList is
-	// classified cheap + PREWHERE-promotable by the optimizer (see
+	// classified cheap + PREWHERE-promotable by the chsql emitter (see
 	// internal/chsql/prewhere.go), so this preserves the
 	// granule-prune posture the single-equality emit had.
 	list := make([]chplan.Expr, len(candidates))

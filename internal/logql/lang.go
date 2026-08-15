@@ -375,9 +375,9 @@ func parseExprTraced(ctx context.Context, query string) (syntax.Expr, error) {
 // Rationale: cerberus is a query gateway, not an index-scoped store.
 // Upstream Loki's rejection exists because its chunk index is keyed by
 // label set and a match-all matcher would force a full-store fan-out;
-// cerberus translates to a ClickHouse WHERE predicate that the CH
-// optimiser already prunes (PREWHERE / MV substitution / sparse-index
-// skip), so a `{service_name=~".*"}` query is well-defined and lowers
+// cerberus translates to a ClickHouse predicate that can use emitted
+// PREWHERE and sparse-index pruning, so a `{service_name=~".*"}` query
+// is well-defined and lowers
 // to `match(ResourceAttributes['service_name'], '.*')` — equivalent to
 // `service_name!=""` on rows where the label is present, plus the
 // rows where it's absent (RA[missing] = ” in CH; `match(”, '.*')`

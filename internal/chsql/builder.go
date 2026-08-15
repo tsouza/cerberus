@@ -19,8 +19,8 @@ import (
 // primitives the emitter uses, plus a handful of CH-specific helpers
 // (MapAt, MapKeys, MapFilterExcept, Now64, SubtractNanos,
 // DateTime64Lit, Lambda, ParamAgg) and a QueryBuilder with first-class
-// PREWHERE, JOIN, and WITH RECURSIVE slots so the optimizer rules can
-// compose SQL fragments without re-parsing rendered strings.
+// PREWHERE, JOIN, and WITH RECURSIVE slots so emitters and endpoint-specific
+// callers can compose SQL fragments without re-parsing rendered strings.
 //
 // The zero value is ready to use.
 type Builder struct {
@@ -2344,11 +2344,10 @@ type cteClause struct {
 //
 // PREWHERE is a first-class slot, distinct from WHERE. ClickHouse
 // evaluates PREWHERE before WHERE on the primary-key columns,
-// pruning rows before the full row read; the optimizer's PREWHERE
-// promotion rule moves predicates from WHERE → PREWHERE when the
-// predicate only references sort-key columns. Modelling PREWHERE separately
-// here means those rewrites are slot-level operations rather than
-// string rewrites on rendered SQL.
+// pruning rows before the full row read; the chsql emitter's Filter(Scan)
+// path promotes eligible predicates from WHERE → PREWHERE. Modelling
+// PREWHERE separately here makes that partition a slot-level operation
+// rather than a string rewrite on rendered SQL.
 //
 // JOIN clauses live in the joins slot, rendered in order between
 // FROM and PREWHERE. Each entry holds a JoinKind, a source Frag (the

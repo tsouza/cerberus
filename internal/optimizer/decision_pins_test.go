@@ -8,9 +8,10 @@ package optimizer_test
 // ProjectionPushdown: each checks passthrough columns / column sets to
 // decide whether the rewrite is semantics-preserving.
 //
-// PREWHERE promotion and late-materialisation are not wired as
-// distinct named rules. Their semantic deputies in v1 are the
-// FilterRangeWindowTranspose + ProjectionPushdown rules; pin those.
+// PREWHERE promotion lives in the chsql emitter rather than a named
+// optimizer rule; FilterRangeWindowTranspose can expose a predicate to
+// that emitter path. ProjectionPushdown is late materialisation's
+// plan-side deputy. Pin those two optimizer decisions here.
 //
 // Each test asserts on the *plan shape* the rule produces — not on
 // raw SQL — so a future emitter tweak (changing inner aliases, for

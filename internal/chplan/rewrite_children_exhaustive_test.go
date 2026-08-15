@@ -13,8 +13,8 @@ import (
 // Driver uses to walk a chplan tree bottom-up. Every concrete Node
 // type needs an arm that recurses into its Children(); any type that falls
 // through to the default `return n, false` becomes an OPAQUE LEAF and
-// silently DISABLES every optimizer rule (predicate pushdown, PREWHERE,
-// projection-pushdown, MV substitution, constant-fold) on its whole
+// silently DISABLES every optimizer rule (predicate pushdown,
+// projection-pushdown, constant-fold) on its whole
 // subtree. That is exactly the perf bug this test guards against
 // reintroducing: the walk was previously total for only 11 of the 26 node
 // types, so e.g. the TraceQL MetricsAggregate subtree was never optimized.
