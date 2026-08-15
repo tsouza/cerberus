@@ -151,10 +151,12 @@ import {
   type SurfaceInventory,
 } from './lib.js';
 import {
+  comboboxSelectionGesture,
   declaredVocabulary,
   discoverControls,
   driveInteraction,
   interactionStateKey,
+  keyboardMenuOptionSequence,
   planInteractions,
   representativeOption,
   settleAdhocFilterBar,
@@ -247,6 +249,9 @@ function makePageLease(browser: Browser): PageLease {
  * render settle that follows is bounded separately.
  */
 const NAVIGATION_TIMEOUT_MS = 90_000;
+
+/** Focused metric-select regression budget, including two Grafana settles. */
+const METRIC_SELECT_REGRESSION_TIMEOUT_MS = 2 * 60_000;
 
 /**
  * Navigate with the SAME cold app state every time.
@@ -1044,6 +1049,24 @@ test.describe('crawl: canonicalization pins', () => {
     );
   });
 
+  test('metric-select commits its exact representative through the keyboard path', () => {
+    const key = 'select[metric select]';
+    const liveOrder = ['zulu_metric', 'alpha_metric', 'mike_metric'];
+    const representative = representativeOption(liveOrder);
+
+    expect(comboboxSelectionGesture(key)).toBe('keyboard');
+    expect(comboboxSelectionGesture('select[Select label]')).toBe('pointer');
+    expect(representative).toBe('alpha_metric');
+    expect(keyboardMenuOptionSequence(liveOrder, key, representative)).toEqual([
+      'Home',
+      'ArrowDown',
+      'Enter',
+    ]);
+    expect(() =>
+      keyboardMenuOptionSequence(liveOrder, key, 'missing_metric'),
+    ).toThrow(/option "missing_metric" is absent from the settled dropdown/);
+  });
+
   test('the inventory order is a function of the URLs, not of the host locale', () => {
     // Surface keys are mostly punctuation — `#`, `?`, `=`, `{`, `"`,
     // `-` — and a collating comparison ranks punctuation at a lower
@@ -1670,6 +1693,61 @@ test.describe('crawl: wire-capture body reads are bounded', () => {
       /target page closed/,
     );
   });
+});
+
+test('crawl: Prometheus metric-select representative commits without React #185', async ({
+  page,
+}, testInfo) => {
+  testInfo.setTimeout(METRIC_SELECT_REGRESSION_TIMEOUT_MS);
+  const stack = activeStack();
+  const baseURL =
+    process.env.GRAFANA_URL ??
+    process.env.GRAFANA_BASE_URL ??
+    stack.defaultGrafanaURL;
+  const capture = await captureConsoleErrors(page);
+
+  await page.goto(`${baseURL}/explore`, {
+    waitUntil: 'domcontentloaded',
+    timeout: NAVIGATION_TIMEOUT_MS,
+  });
+  await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
+
+  const control = (await discoverControls(page)).find(
+    (candidate) => candidate.key === 'select[metric select]',
+  );
+  expect(
+    control,
+    'Prometheus Explore exposes the metric-select combobox',
+  ).toBeDefined();
+  const planned = planInteractions([control!], 0);
+  expect(
+    planned,
+    'metric-select has one deterministic representative',
+  ).toHaveLength(1);
+
+  await driveInteraction(page, planned[0]!);
+  await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
+
+  const selected = (await discoverControls(page)).find(
+    (candidate) => candidate.key === control!.key,
+  );
+  expect(
+    selected,
+    'metric-select survives and remains discoverable after commit',
+  ).toBeDefined();
+  expect(selected!.options[selected!.selectedIndex]).toBe(planned[0]!.option);
+
+  capture.stop();
+  expect(
+    capture.messages,
+    'metric-select commit logs no browser errors',
+  ).toEqual([]);
+  const bodyText = await page.locator('body').innerText();
+  for (const pattern of PAGE_CRASH_PATTERNS) {
+    expect(bodyText, `page body has no crash signature ${pattern}`).not.toMatch(
+      pattern,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
