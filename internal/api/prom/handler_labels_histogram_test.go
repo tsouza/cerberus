@@ -24,6 +24,7 @@ type labelKeysStub struct {
 	// values slice. Default (no key matches) returns an empty slice so
 	// the union flows through without picking up phantom labels.
 	resultsBySQLContains map[string][]string
+	histogramBases       []string
 	sqls                 []string
 	// samples mirror stubQuerier's behaviour for the /series surface;
 	// the executeInstant path runs the matcher through QueryCursor, so
@@ -51,6 +52,14 @@ func (s *labelKeysStub) QueryStrings(_ context.Context, sql string, _ ...any) ([
 	s.recordSQL(sql)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The histogram-base catalogue projects only MetricName/TimeUnix. Matched
+	// label-name/value arms necessarily carry Attributes, so this distinguishes
+	// the classification lookup from the data query without matching SQL text
+	// that the test does not own.
+	if strings.Contains(sql, "otel_metrics_histogram") &&
+		strings.Contains(sql, "MetricName") && !strings.Contains(sql, "Attributes") {
+		return s.histogramBases, nil
+	}
 	for needle, vals := range s.resultsBySQLContains {
 		if strings.Contains(sql, needle) {
 			return vals, nil
@@ -117,6 +126,7 @@ func TestLabels_HistogramBareName_FansOutCompanions(t *testing.T) {
 	// + `cerberus_ql` to mimic the histogram's stored label keys;
 	// the gauge-targeted base arm returns nothing.
 	stub := &labelKeysStub{
+		histogramBases: []string{"cerberus_clickhouse_bytes_read"},
 		resultsBySQLContains: map[string][]string{
 			"otel_metrics_histogram": {"le", "cerberus_ql"},
 		},
@@ -172,6 +182,7 @@ func TestLabelValues_HistogramBareName_FansOutCompanions(t *testing.T) {
 	t.Parallel()
 
 	stub := &labelKeysStub{
+		histogramBases: []string{"cerberus_clickhouse_bytes_read"},
 		resultsBySQLContains: map[string][]string{
 			"otel_metrics_histogram": {"0.5", "1", "+Inf"},
 		},

@@ -63,6 +63,9 @@ type faninRecordingQuerier struct {
 	// per-candidate label sets — exactly what the per-candidate reference
 	// path would have returned.
 	sampleFor map[string][]chclient.Sample
+	// stringResults answers the histogram-base catalogue lookup used to
+	// classify equality-pinned metric names before building /series arms.
+	stringResults []string
 
 	querySQLs   []string
 	stringsSQLs []string
@@ -92,7 +95,7 @@ func (q *faninRecordingQuerier) QueryCursor(_ context.Context, sql string, args 
 func (q *faninRecordingQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
 	q.stringsSQLs = append(q.stringsSQLs, sql)
 	q.stringsArgs = append(q.stringsArgs, args)
-	return nil, nil
+	return q.stringResults, nil
 }
 
 func (q *faninRecordingQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[string]string, error) {
@@ -343,7 +346,7 @@ func assertBoundedFanout(t *testing.T, endpoint string, n int, sqls []string, ar
 // round-trip.
 func TestHandleSeries_TypicalChipIsOneRoundTrip(t *testing.T) {
 	t.Parallel()
-	q := &faninRecordingQuerier{}
+	q := &faninRecordingQuerier{stringResults: []string{"http_server_request_duration"}}
 	srv := faninServer(q)
 	defer srv.Close()
 
@@ -363,6 +366,76 @@ func TestHandleSeries_TypicalChipIsOneRoundTrip(t *testing.T) {
 	if rt := len(q.querySQLs); rt != 1 {
 		t.Fatalf("typical histogram-base chip issued %d /series round-trips, want exactly "+
 			"1 (the fan-in win); SQLs:\n%s", rt, strings.Join(q.querySQLs, "\n---\n"))
+	}
+	if len(q.stringsSQLs) != 1 {
+		t.Fatalf("histogram-base catalogue lookups = %d, want 1", len(q.stringsSQLs))
+	}
+	if sql := q.querySQLs[0]; !strings.Contains(sql, schema.DefaultOTelMetrics().HistogramTable) ||
+		!strings.Contains(sql, "arrayJoin") {
+		t.Fatalf("catalogued histogram base lost its histogram bucket arm:\n%s", sql)
+	}
+}
+
+// TestHandleSeries_PinnedGaugePrunesHistogramCompanionArms reproduces #2085:
+// Grafana Metrics Drilldown asks /series for one equality-pinned gauge name,
+// but the pre-fix matcher expansion treated every bare name as a possible
+// classic-histogram base. That produced base, _bucket, _count, and _sum
+// variants; their table routing then pulled the histogram bucket ladder and
+// repeated gauge/sum scans into one large UNION ALL.
+//
+// The histogram catalogue is empty in this fixture, proving the pinned name is
+// not a classic-histogram base. The resulting data query must therefore retain
+// only the unavoidable unknown-kind gauge+sum pair: one merged scan naming
+// each table once, with no UNION ALL, histogram, or arrayJoin arm.
+func TestHandleSeries_PinnedGaugePrunesHistogramCompanionArms(t *testing.T) {
+	t.Parallel()
+
+	q := &faninRecordingQuerier{}
+	srv := faninServer(q)
+	defer srv.Close()
+
+	form := url.Values{}
+	form.Add("match[]", `{__name__="system_network_conntrack_max"}`)
+	resp, err := http.PostForm(srv.URL+"/api/v1/series", form)
+	if err != nil {
+		t.Fatalf("POST /series: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if got := len(q.stringsSQLs); got != 1 {
+		t.Errorf("histogram-base catalogue lookups = %d, want 1", got)
+	} else {
+		catalogueSQL := q.stringsSQLs[0]
+		metrics := schema.DefaultOTelMetrics()
+		if !strings.Contains(catalogueSQL, metrics.HistogramTable) {
+			t.Errorf("histogram-base catalogue lookup missed %s:\n%s", metrics.HistogramTable, catalogueSQL)
+		}
+		if !strings.Contains(catalogueSQL, "HAVING") || !strings.Contains(catalogueSQL, "max(") {
+			t.Errorf("histogram-base catalogue lookup is not bounded by the now-anchored max timestamp:\n%s", catalogueSQL)
+		}
+	}
+	if got := len(q.querySQLs); got != 1 {
+		t.Fatalf("/series data queries = %d, want 1", got)
+	}
+
+	sql := q.querySQLs[0]
+	metrics := schema.DefaultOTelMetrics()
+	if got := strings.Count(sql, metrics.GaugeTable); got != 1 {
+		t.Errorf("gauge-table arms = %d, want 1\nSQL: %s", got, sql)
+	}
+	if got := strings.Count(sql, metrics.SumTable); got != 1 {
+		t.Errorf("sum-table arms = %d, want 1\nSQL: %s", got, sql)
+	}
+	if strings.Contains(sql, metrics.HistogramTable) {
+		t.Errorf("pinned gauge query retained a histogram arm\nSQL: %s", sql)
+	}
+	if strings.Contains(sql, "arrayJoin") {
+		t.Errorf("pinned gauge query retained the histogram bucket ladder\nSQL: %s", sql)
+	}
+	if got := strings.Count(sql, "UNION ALL"); got != 0 {
+		t.Errorf("UNION ALL boundaries = %d, want 0 for one merged gauge+sum scan\nSQL: %s", got, sql)
 	}
 }
 
