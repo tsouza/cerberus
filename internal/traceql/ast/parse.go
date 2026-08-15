@@ -23,6 +23,38 @@ func newParseError(msg string, line, col int) *ParseError {
 // Parse parses a TraceQL query string into the native AST. It is the entry
 // point the TraceQL head and the Tempo HTTP handlers call.
 func Parse(s string) (expr *RootExpr, err error) {
+	root, err := parseTree(s)
+	if err != nil {
+		return nil, err
+	}
+
+	// Static typing runs on the tree the grammar produced, BEFORE the
+	// array-fold rewrites — the order the reference validates in, and the
+	// reason both report the same sentence for the same query. The
+	// reference's Parse applies no validation at all; its query path
+	// validates through ParseNoOptimizations, which skips every AST
+	// transformation (the OR-to-IN fold among them), so the message names
+	// the comparison the client actually wrote rather than a folded form
+	// of it.
+	//
+	// The order is also what lets the rule stay complete without an array
+	// case: a chain can only fold into a mismatched array comparison if
+	// one of its scalar comparisons was already mismatched, and that
+	// comparison is rejected here, before any fold runs.
+	if verr := root.validate(); verr != nil {
+		return nil, verr
+	}
+	return applyRewrites(root), nil
+}
+
+// parseTree runs the grammar alone, producing the raw tree with none of
+// Parse's static-validation pass or rewrites applied. ParseIdentifier is
+// the one caller: it wraps a bare attribute reference in a synthetic
+// `{ ... }` to reuse the grammar, and that wrapper is never a real span
+// filter, so the reference's boolean-result rule (a genuine `{ duration }`
+// query is rejected; `ParseIdentifier("duration")` must not be) does not
+// apply to it.
+func parseTree(s string) (expr *RootExpr, err error) {
 	toks, lexErr := tokenize(s)
 	if lexErr != nil {
 		return nil, newParseError(lexErr.Error(), 0, 0)
@@ -42,24 +74,8 @@ func Parse(s string) (expr *RootExpr, err error) {
 		}
 	}()
 
-	// Static typing runs on the tree the grammar produced, BEFORE the
-	// array-fold rewrites — the order the reference validates in, and the
-	// reason both report the same sentence for the same query. The
-	// reference's Parse applies no validation at all; its query path
-	// validates through ParseNoOptimizations, which skips every AST
-	// transformation (the OR-to-IN fold among them), so the message names
-	// the comparison the client actually wrote rather than a folded form
-	// of it.
-	//
-	// The order is also what lets the rule stay complete without an array
-	// case: a chain can only fold into a mismatched array comparison if
-	// one of its scalar comparisons was already mismatched, and that
-	// comparison is rejected here, before any fold runs.
 	root := c.parseRoot()
-	if verr := root.validate(); verr != nil {
-		return nil, verr
-	}
-	return applyRewrites(root), nil
+	return root, nil
 }
 
 // ParseIdentifier parses a single attribute/intrinsic reference (e.g.
@@ -67,7 +83,7 @@ func Parse(s string) (expr *RootExpr, err error) {
 // spanset filter and extracting the lone attribute. It rejects anything that
 // is not a bare attribute reference.
 func ParseIdentifier(s string) (Attribute, error) {
-	expr, err := Parse("{" + s + "}")
+	expr, err := parseTree("{" + s + "}")
 	if err != nil {
 		return Attribute{}, fmt.Errorf("failed to parse identifier %s: %w", s, err)
 	}

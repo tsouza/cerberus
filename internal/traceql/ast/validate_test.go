@@ -212,3 +212,185 @@ func TestValidateNilRoot(t *testing.T) {
 		t.Errorf("(*RootExpr)(nil).validate() = %v, want nil", err)
 	}
 }
+
+// assertValidationError fails t unless err is a *ValidationError whose
+// message contains wantSubstr — the shared assertion for every #2035 rule
+// test below, mirroring TestParseRejectsTypeMismatch's own pattern.
+func assertValidationError(t *testing.T, query string, err error, wantSubstr string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("Parse(%q) = nil error, want a validation error", query)
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("Parse(%q) error = %T (%v), want *ValidationError", query, err, err)
+	}
+	if !strings.Contains(verr.Error(), wantSubstr) {
+		t.Errorf("Parse(%q) message = %q, want it to contain %q", query, verr.Error(), wantSubstr)
+	}
+}
+
+// TestParseRejectsAggregateNonNumeric pins the reference's aggregate
+// result-type rule (issue #2035, `Aggregate.validate`): `max` / `min` /
+// `sum` / `avg` must resolve to a number, and `name` is always a String.
+func TestParseRejectsAggregateNonNumeric(t *testing.T) {
+	cases := []string{
+		`{ } | max(name) > "a"`,
+		`{ } | avg(name)`,
+		`{ } | min(name) > "a"`,
+		`{ } | sum(name) > "a"`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			_, err := Parse(q)
+			assertValidationError(t, q, err, "aggregate field expressions must resolve to a number type")
+		})
+	}
+}
+
+// TestParseRejectsIllegalBinaryOperatorTypes pins the reference's
+// operator/operand-validity rule (issue #2035,
+// `Operator.binaryTypesValid`): a mismatched-yet-attribute-compatible pair
+// can still fail because the OPERATOR itself never accepts one of the
+// operand's types — `.foo && 3`: `&&` only accepts boolean operands, and
+// `TypeInt` is not one, even though `TypeAttribute` on the other side would
+// have matched isMatchingOperand for anything.
+func TestParseRejectsIllegalBinaryOperatorTypes(t *testing.T) {
+	cases := []string{
+		`{ .foo && 3 }`,
+		`{ 3 && .foo }`,
+		`{ .foo && duration }`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			_, err := Parse(q)
+			assertValidationError(t, q, err, "illegal operation for the given types")
+		})
+	}
+}
+
+// TestParseRejectsNonBooleanSpanFilter pins the reference's span-filter
+// result-type rule (issue #2035, `SpansetFilter.validate`): the filter
+// expression must resolve to a boolean — `{ duration }` and `{ 3 }` both
+// name a value, not a predicate.
+func TestParseRejectsNonBooleanSpanFilter(t *testing.T) {
+	cases := []string{
+		`{ duration }`,
+		`{ 3 }`,
+		`{ name }`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			_, err := Parse(q)
+			assertValidationError(t, q, err, "span filter field expressions must resolve to a boolean")
+		})
+	}
+}
+
+// TestParseRejectsNonBooleanCompareFilter pins that compare()'s filter is
+// checked by the same span-filter result-type rule as an ordinary `{ ... }`
+// stage — reference's MetricsCompare.validate() calls the same
+// SpansetFilter.validate() a plain filter does.
+func TestParseRejectsNonBooleanCompareFilter(t *testing.T) {
+	q := `{ } | compare({ duration })`
+	_, err := Parse(q)
+	assertValidationError(t, q, err, "span filter field expressions must resolve to a boolean")
+}
+
+// TestParseRejectsIllegalUnaryOperand pins the reference's unary
+// operand-type rule (issue #2035, `Operator.unaryTypesValid`): unary `-`
+// requires a numeric operand, and `name` is always a String.
+func TestParseRejectsIllegalUnaryOperand(t *testing.T) {
+	cases := []string{
+		`{ -name = "a" }`,
+		`{ -status = 1 }`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			_, err := Parse(q)
+			assertValidationError(t, q, err, "illegal operation for the given type")
+		})
+	}
+}
+
+// TestParseRejectsInvalidRegex pins the reference's compile-time regex
+// rule (issue #2035, the regex branch of `BinaryOperation.validate`):
+// `=~` / `!~` compile their pattern at parse time, not execution time.
+func TestParseRejectsInvalidRegex(t *testing.T) {
+	cases := []string{
+		`{ span.x =~ "[" }`,
+		`{ span.x !~ "(" }`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			_, err := Parse(q)
+			assertValidationError(t, q, err, "invalid regex")
+		})
+	}
+}
+
+// TestParseAcceptsNewRuleEdgeCases is the acceptance-side ratchet for the
+// five rules #2035 adds: each query here is either a cerberus extension the
+// reference has no equivalent for (the bare `parent` intrinsic composed
+// under `&&`) or an ordinary query the new rules must not over-reject.
+func TestParseAcceptsNewRuleEdgeCases(t *testing.T) {
+	queries := []string{
+		// Bare `parent` is a cerberus-only structural marker (not adopted
+		// from the reference at all — see the package doc comment) that
+		// must keep composing under `&&` despite its TypeNil implied type.
+		`{ parent && resource.service.name = "api" }`,
+		`{ parent = "fedcba9876543210" }`,
+		// Aggregates over a dynamic (query-time-typed) attribute, or a
+		// genuinely numeric intrinsic, stay accepted.
+		`{ } | max(span.foo)`,
+		`{ } | avg(duration)`,
+		`{ } | sum(span:childCount)`,
+		// `&&` / `||` composing two boolean sub-expressions, including
+		// dynamic attribute operands on either side.
+		`{ name = "GET" && duration > 1s }`,
+		`{ .a = 1 && .b = 2 }`,
+		// Unary `-` over a numeric intrinsic or a dynamic attribute; unary
+		// `!` over a boolean sub-expression.
+		`{ -duration > 1s }`,
+		`{ -span.foo > 1s }`,
+		`{ !(kind = server) }`,
+		// A span filter resolving through a dynamic attribute stays
+		// accepted — its real type is unknown until query time.
+		`{ span.foo }`,
+		// A valid regex pattern still compiles and is accepted.
+		`{ span.x =~ "GET.*" }`,
+	}
+	for _, q := range queries {
+		t.Run(q, func(t *testing.T) {
+			if _, err := Parse(q); err != nil {
+				t.Errorf("Parse(%q) = %v, want it accepted", q, err)
+			}
+		})
+	}
+}
+
+// TestUnaryTypesValidSymmetryWithAttribute pins that TypeAttribute is
+// always a valid unary operand regardless of operator, and that the two
+// existence operators (OpExists / OpNotExists) accept every type —
+// mirroring the reference's own unaryTypesValid, which never rejects on
+// those two axes.
+func TestUnaryTypesValidSymmetryWithAttribute(t *testing.T) {
+	all := []StaticType{
+		TypeNil, TypeAttribute, TypeInt, TypeFloat, TypeString, TypeBoolean,
+		TypeDuration, TypeStatus, TypeKind,
+	}
+	for _, ty := range all {
+		if !OpExists.unaryTypesValid(ty) {
+			t.Errorf("OpExists.unaryTypesValid(%v) = false, want true", ty)
+		}
+		if !OpNotExists.unaryTypesValid(ty) {
+			t.Errorf("OpNotExists.unaryTypesValid(%v) = false, want true", ty)
+		}
+	}
+	if !OpSub.unaryTypesValid(TypeAttribute) {
+		t.Error("OpSub.unaryTypesValid(TypeAttribute) = false, want true")
+	}
+	if !OpNot.unaryTypesValid(TypeAttribute) {
+		t.Error("OpNot.unaryTypesValid(TypeAttribute) = false, want true")
+	}
+}

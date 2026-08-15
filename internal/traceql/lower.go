@@ -1326,14 +1326,13 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 			Presence: chplan.PresenceHasKey,
 		}, nil
 	}
-	// Nested-set intrinsics never resolve to a column here: comparisons
-	// are intercepted by lowerNestedSetBinary and select() projections
-	// by lowerSelect's NestedSetAnnotate wrap; any other use would
-	// silently dereference SpanAttributes['nestedSet…'] (which the
-	// OTel-CH exporter never writes) — error instead.
-	switch a.Intrinsic {
-	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
-		return nil, fmt.Errorf("traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0) and select() projections", a.Intrinsic)
+	// Comparisons with a top-level nested-set operand are intercepted by
+	// lowerNestedSetBinary, but a nested-set intrinsic can also appear below
+	// arithmetic (for example `-nestedSetParent = -nestedSetLeft`). Resolve
+	// those value positions to the synthetic column as well; the enclosing
+	// spanset filter detects the reference and adds NestedSetAnnotate.
+	if col, ok := nestedSetColumn(a.Intrinsic); ok {
+		return &chplan.ColumnRef{Name: col}, nil
 	}
 	return lowerAttribute(a, s)
 }
@@ -1375,9 +1374,9 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	}
 	// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
 	// nestedSetRight) have no OTel-CH backing column; intercept them
-	// before generic lowering would mis-resolve the name to a
-	// SpanAttributes map lookup. The root-span idiom
-	// (`nestedSetParent < 0`) lowers exactly; anything else errors.
+	// before generic lowering. Root-span idioms reduce to ParentSpanId
+	// predicates, while position-dependent comparisons use the synthetic
+	// columns materialised by NestedSetAnnotate.
 	if expr, handled, err := lowerNestedSetBinary(b, op, s); handled {
 		return expr, err
 	}
@@ -2157,16 +2156,36 @@ func isNumericExpr(expr chplan.Expr) bool {
 func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
 	var attr traceql.Attribute
 	var other traceql.FieldExpression
-	flipped := false
-	if a, ok := nestedSetIntrinsicAttr(b.LHS); ok {
-		attr, other = a, b.RHS
-	} else if a, ok := nestedSetIntrinsicAttr(b.RHS); ok {
-		attr, other, flipped = a, b.LHS, true
+	flipped, negated := false, false
+	if a, neg, ok := nestedSetIntrinsicOperand(b.LHS); ok {
+		attr, other, negated = a, b.RHS, neg
+	} else if a, neg, ok := nestedSetIntrinsicOperand(b.RHS); ok {
+		attr, other, flipped, negated = a, b.LHS, true, neg
 	} else {
 		return nil, false, nil
 	}
 	if flipped {
 		op = flipComparisonOp(op)
+	}
+	if negated {
+		// `-nestedSetParent = 2` means `nestedSetParent = -2`: negating one
+		// side of a comparison flips its direction exactly like swapping the
+		// operands does (flipComparisonOp is its own inverse either way), and
+		// the other side is negated in turn — folded directly when it is
+		// already a literal (matching how the parser folds a unary minus over
+		// a constant elsewhere), or wrapped in a UnaryOperation so it goes
+		// through lowerUnaryMinus's existing span-referencing path when it
+		// is not.
+		op = flipComparisonOp(op)
+		if lit, ok := fieldExprStatic(other); ok {
+			negatedLit, ok := negateStatic(lit)
+			if !ok {
+				return nil, true, fmt.Errorf("traceql: cannot negate a %s literal", lit.Type)
+			}
+			other = &negatedLit
+		} else {
+			other = &traceql.UnaryOperation{Op: traceql.OpSub, Expression: other}
+		}
 	}
 
 	// Fast path: a `nestedSetParent <op> <int-literal>` comparison whose
@@ -2246,6 +2265,48 @@ func nestedSetIntrinsicAttr(e traceql.FieldExpression) (traceql.Attribute, bool)
 		return a, true
 	}
 	return traceql.Attribute{}, false
+}
+
+// nestedSetIntrinsicOperand is nestedSetIntrinsicAttr extended to see
+// through a leading unary minus — `-nestedSetParent` parses to
+// UnaryOperation{OpSub, Attribute(nestedSetParent)} (issue #2159's
+// rejection-parity gap: reference Tempo accepts `{ -nestedSetParent = 2 }`,
+// cerberus previously fell through to lowerAttributeExpr's blanket
+// nested-set rejection because the fast/general paths below only ever
+// matched a BARE attribute operand). negated reports whether e was such a
+// wrapped form, so the caller can push the negation onto the other side of
+// the comparison instead.
+func nestedSetIntrinsicOperand(e traceql.FieldExpression) (attr traceql.Attribute, negated, ok bool) {
+	if a, ok := nestedSetIntrinsicAttr(e); ok {
+		return a, false, true
+	}
+	u, ok := asUnaryOperation(e)
+	if !ok || u.Op != traceql.OpSub {
+		return traceql.Attribute{}, false, false
+	}
+	a, ok := nestedSetIntrinsicAttr(u.Expression)
+	if !ok {
+		return traceql.Attribute{}, false, false
+	}
+	return a, true, true
+}
+
+// negateStatic returns the arithmetic negation of an int/float/duration
+// literal, mirroring how the parser folds a unary minus over a constant
+// operand (lowerUnaryMinus's doc comment). Any other Static type cannot be
+// negated.
+func negateStatic(lit traceql.Static) (traceql.Static, bool) {
+	switch lit.Type {
+	case traceql.TypeInt:
+		v, _ := lit.Int()
+		return traceql.NewStaticInt(-v), true
+	case traceql.TypeFloat:
+		return traceql.NewStaticFloat(-lit.Float()), true
+	case traceql.TypeDuration:
+		v, _ := lit.Duration()
+		return traceql.NewStaticDuration(-v), true
+	}
+	return traceql.Static{}, false
 }
 
 // fieldExprStatic unwraps a FieldExpression into its Static literal

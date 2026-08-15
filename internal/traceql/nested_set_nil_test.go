@@ -43,6 +43,7 @@ func TestLower_NestedSetPositionShapes(t *testing.T) {
 		{"nested_set_right", `{ nestedSetRight > 0 }`, chplan.NestedSetRightColumn},
 		{"position_float", `{ nestedSetParent = 1.5 }`, chplan.NestedSetParentColumn},
 		{"position_vs_attr", `{ nestedSetParent = span.a }`, chplan.NestedSetParentColumn},
+		{"negated_positions", `{ -nestedSetParent = -nestedSetLeft }`, chplan.NestedSetLeftColumn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,6 +118,16 @@ func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 		{`{ 0 > nestedSetParent }`, `(ParentSpanId = "")`},
 		{`{ -1 >= nestedSetParent }`, `(ParentSpanId = "")`},
 		{`{ -1 < nestedSetParent }`, `(ParentSpanId != "")`},
+		// A leading unary minus on the nested-set attribute itself
+		// (rejection-parity's wrong_rejection on `{ -nestedSetParent = 2 }`
+		// — reference Tempo accepts it, cerberus 422'd because the fast
+		// path only ever matched a bare attribute operand). `-x op v` is
+		// `x flip(op) -v`, so these must match their already-pinned
+		// negated-literal equivalents above exactly.
+		{`{ -nestedSetParent = 1 }`, `(ParentSpanId = "")`},   // nestedSetParent = -1
+		{`{ -nestedSetParent < 0 }`, `(ParentSpanId != "")`},  // nestedSetParent > 0
+		{`{ -nestedSetParent <= 0 }`, `(ParentSpanId != "")`}, // nestedSetParent >= 0
+		{`{ 2 = -nestedSetParent }`, `false`},                 // nestedSetParent = -2 (outside {-1} ∪ {>= 1})
 	}
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
