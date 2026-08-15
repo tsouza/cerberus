@@ -2226,6 +2226,15 @@ func TestRangeWindow_Equal_Negative_ScalarExprs(t *testing.T) {
 	}
 }
 
+func TestRangeWindow_Equal_Negative_PredictLinearSlopeColumn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.RangeWindow{PredictLinearSlopeColumn: "predict_slope"}
+	b := &chplan.RangeWindow{PredictLinearSlopeColumn: "other_slope"}
+	if a.Equal(b) || b.Equal(a) {
+		t.Error("different PredictLinearSlopeColumn values should not be Equal")
+	}
+}
+
 // -----------------------------------------------------------------------
 // HistogramQuantile{,Native}.PhiExpr Equal coverage.
 // -----------------------------------------------------------------------

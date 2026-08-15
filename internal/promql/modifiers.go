@@ -321,10 +321,10 @@ const (
 	gridFanout
 	// gridBroadcast: range mode with an absolute `@` pin. Reference PromQL
 	// evaluates the SAME pinned window [anchor-range, anchor] at EVERY
-	// step — the `@` fixes the anchor and only the OUTPUT timestamps vary
-	// — so the window is evaluated ONCE at the pin and its per-series
-	// value is broadcast across the step grid. Fanning out instead would
-	// overwrite the pinned anchor with the grid anchor and lose the pin.
+	// step. Most range functions can evaluate once and broadcast that value;
+	// eval-sensitive functions such as predict_linear retain the pinned
+	// input window but evaluate their result at each grid timestamp. Fanning
+	// the membership window itself would overwrite the pin.
 	gridBroadcast
 )
 

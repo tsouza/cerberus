@@ -86,11 +86,22 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		// collapses every step bucket onto a single anchor at end_ts.
 		applyStepGridFanout(rw, ctx)
 	case gridBroadcast:
-		// `@`-pinned: one prediction from the pinned window, broadcast
-		// across the grid. The native PredictLinear strategy is skipped
-		// deliberately — timeSeriesPredictLinearToGrid computes a
-		// per-grid-anchor regression, which is the shape the pin forbids.
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, &chplan.ColumnRef{Name: s.ValueColumn}), nil
+		// The sample window stays pinned, but Prometheus forecasts from each
+		// request-grid evaluation instant. Fit once, broadcast the prediction
+		// and slope, then advance the value by slope * (eval - pin).
+		gridAnchor := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
+		const slopeColumn = "predict_slope"
+		rw.PredictLinearSlopeColumn = slopeColumn
+		value := &chplan.Binary{
+			Op:   chplan.OpAdd,
+			Left: &chplan.ColumnRef{Name: s.ValueColumn},
+			Right: &chplan.Binary{
+				Op:    chplan.OpMul,
+				Left:  &chplan.ColumnRef{Name: slopeColumn},
+				Right: secondsBetweenTsExpr(windowRightBoundExpr(anchor), gridAnchor),
+			},
+		}
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, value), nil
 	case gridSingleAnchor:
 	}
 	// Route through the boot-wired PredictLinear strategy: the native impl

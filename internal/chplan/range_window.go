@@ -121,6 +121,13 @@ type RangeWindow struct {
 	// on Input (typically "Value" for OTel-CH).
 	ValueColumn string
 
+	// PredictLinearSlopeColumn asks the predict_linear emitter to project
+	// the fitted slope beside its value. The pinned-range lowering uses that
+	// slope after broadcasting the fixed regression across the request grid,
+	// because Prometheus advances the forecast target at every eval step even
+	// though an absolute @ modifier keeps the input window fixed.
+	PredictLinearSlopeColumn string
+
 	// TemporalityColumn names the column carrying the OTel
 	// AggregationTemporality enum for the scanned series (typically
 	// "AggregationTemporality" for an OTel-CH Sum / Histogram table).
@@ -360,7 +367,8 @@ func (r *RangeWindow) Equal(other Node) bool {
 	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
 		return false
 	}
-	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn {
+	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn {
 		return false
 	}
 	if r.TemporalityColumn != o.TemporalityColumn {
