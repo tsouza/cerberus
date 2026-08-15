@@ -30,15 +30,15 @@ const bucketBoundInfLabel = "+Inf"
 // the divergence would only surface once a query mixed them.
 func classicBucketLeStringExpr(idx, bounds chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.Binary{
 				Op:    chplan.OpGt,
 				Left:  idx,
-				Right: &chplan.FuncCall{Name: "length", Args: []chplan.Expr{bounds}},
+				Right: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{bounds}},
 			},
 			&chplan.LitString{V: bucketBoundInfLabel},
-			&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{
 				&chplan.Subscript{Container: bounds, Key: idx},
 			}},
 		},
@@ -57,7 +57,7 @@ func classicBucketLeStringExpr(idx, bounds chplan.Expr) chplan.Expr {
 // so a sample with no `le` and a sample with a nonsense `le` are treated
 // identically on both sides.
 func classicBucketLeValueExpr(attrs chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "toFloat64OrNull", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnToFloat64OrNull, Args: []chplan.Expr{
 		&chplan.MapAccess{Map: attrs, Key: &chplan.LitString{V: bucketBoundLabel}},
 	}}
 }
@@ -101,7 +101,7 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	bc := &chplan.ColumnRef{Name: s.BucketCountsColumn}
 	eb := &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
 
-	n := &chplan.FuncCall{Name: "length", Args: []chplan.Expr{bc}}
+	n := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{bc}}
 
 	// cumFloat[i] = running total through bucket i, 1-based, length n.
 	// BucketCounts is Array(UInt64) in the OTel-CH schema; cast to
@@ -109,14 +109,14 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// ExplicitBounds arithmetic downstream (mirrors histogramQuantileValueFrag's
 	// own bcFloat cast).
 	cumFloat := &chplan.FuncCall{
-		Name: "arrayCumSum",
+		Fn: chplan.FnArrayCumSum,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "arrayMap",
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
 					&chplan.Lambda{
 						Params: []string{"x"},
-						Body:   &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{&chplan.BareIdent{Name: "x"}}},
+						Body:   &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.BareIdent{Name: "x"}}},
 					},
 					bc,
 				},
@@ -146,16 +146,16 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// keptIdx = the 1-based bucket positions the `le` matcher set selects,
 	// in ascending order (arrayFilter preserves source order).
 	keptIdx := &chplan.FuncCall{
-		Name: "arrayFilter",
+		Fn: chplan.FnArrayFilter,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{"i"}, Body: lePred},
 			&chplan.FuncCall{
-				Name: "range",
+				Fn:   chplan.FnRange,
 				Args: []chplan.Expr{&chplan.LitInt{V: 1}, addExpr(n, &chplan.LitInt{V: 1})},
 			},
 		},
 	}
-	lenKept := &chplan.FuncCall{Name: "length", Args: []chplan.Expr{keptIdx}}
+	lenKept := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{keptIdx}}
 
 	// keptIdxAllButLast() = keptIdx with its last element dropped —
 	// shared by both the previous-cumulative lookup (every retained rung
@@ -168,11 +168,11 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// folds the repeated subexpression.
 	keptIdxAllButLast := func() chplan.Expr {
 		return &chplan.FuncCall{
-			Name: "arraySlice",
+			Fn: chplan.FnArraySlice,
 			Args: []chplan.Expr{
 				keptIdx,
 				&chplan.LitInt{V: 1},
-				&chplan.FuncCall{Name: "greatest", Args: []chplan.Expr{subExpr(lenKept, &chplan.LitInt{V: 1}), &chplan.LitInt{V: 0}}},
+				&chplan.FuncCall{Fn: chplan.FnGreatest, Args: []chplan.Expr{subExpr(lenKept, &chplan.LitInt{V: 1}), &chplan.LitInt{V: 0}}},
 			},
 		}
 	}
@@ -180,7 +180,7 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// keptCumArr[k] = cum[keptIdx[k]] — the cumulative count AT each
 	// retained rung.
 	keptCumArr := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{"i"}, Body: &chplan.Subscript{Container: cumFloat, Key: &chplan.BareIdent{Name: "i"}}},
 			keptIdx,
@@ -196,16 +196,16 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// keptCumArr exactly — the restriction is a pure re-indexing, not an
 	// approximation.
 	prevCumArr := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.Binary{Op: chplan.OpEq, Left: lenKept, Right: &chplan.LitInt{V: 0}},
-			&chplan.FuncCall{Name: "emptyArrayFloat64"},
+			&chplan.FuncCall{Fn: chplan.FnEmptyArrayFloat64},
 			&chplan.FuncCall{
-				Name: "arrayConcat",
+				Fn: chplan.FnArrayConcat,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Name: "array", Args: []chplan.Expr{&chplan.LitFloat{V: 0}}},
+					&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.LitFloat{V: 0}}},
 					&chplan.FuncCall{
-						Name: "arrayMap",
+						Fn: chplan.FnArrayMap,
 						Args: []chplan.Expr{
 							&chplan.Lambda{Params: []string{"i"}, Body: &chplan.Subscript{Container: cumFloat, Key: &chplan.BareIdent{Name: "i"}}},
 							keptIdxAllButLast(),
@@ -217,7 +217,7 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	}
 
 	restrictedBC := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{"cur", "prev"},
@@ -234,10 +234,10 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// only position classicBucketLeStringExpr ever renders as the +Inf
 	// bound), and at least two
 	// rungs must remain.
-	overflowRetained := &chplan.FuncCall{Name: "has", Args: []chplan.Expr{keptIdx, n}}
+	overflowRetained := &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{keptIdx, n}}
 	atLeastTwoRungs := &chplan.Binary{Op: chplan.OpGe, Left: lenKept, Right: &chplan.LitInt{V: 2}}
 	nanTrigger := &chplan.FuncCall{
-		Name: "not",
+		Fn:   chplan.FnNot,
 		Args: []chplan.Expr{andExpr(overflowRetained, atLeastTwoRungs)},
 	}
 
@@ -246,16 +246,16 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	// than introducing a second array-literal branch `if` would have to
 	// reconcile types with.
 	finalBC := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			nanTrigger,
-			&chplan.FuncCall{Name: "arraySlice", Args: []chplan.Expr{restrictedBC, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 0}}},
+			&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{restrictedBC, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 0}}},
 			restrictedBC,
 		},
 	}
 
 	restrictedEB := &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{"i"}, Body: &chplan.Subscript{Container: eb, Key: &chplan.BareIdent{Name: "i"}}},
 			keptIdxAllButLast(),

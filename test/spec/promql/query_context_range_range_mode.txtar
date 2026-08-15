@@ -33,7 +33,7 @@ CREATE TABLE otel_metrics_gauge (
 [1] string = "Map(String,String)"
 [2] float64 = 300
 -- chplan --
-Project ["" AS MetricName, CAST(map(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 300 AS Value]
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 300 AS Value]
   StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
 -- sql --
 SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`)

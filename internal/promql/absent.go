@@ -110,7 +110,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		Input:   inner,
 		GroupBy: nil,
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "count",
+			Fn:    chplan.FnCount,
 			Args:  nil,
 			Alias: cntAlias,
 		}},
@@ -416,7 +416,7 @@ func absentAttrsMap(matchers []*labels.Matcher) chplan.Expr {
 	for _, p := range pairs {
 		args = append(args, &chplan.LitString{V: p.k}, &chplan.LitString{V: p.v})
 	}
-	return &chplan.FuncCall{Name: "map", Args: args}
+	return &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 }
 
 // unwrapParens peels off any wrapping ParenExpr nodes. PromQL's parser

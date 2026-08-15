@@ -240,7 +240,7 @@ func scaleHistogramScalarExpr(op chplan.BinaryOp, e, scale chplan.Expr) chplan.E
 func scaleHistogramLadderExpr(op chplan.BinaryOp, e, scale chplan.Expr) chplan.Expr {
 	const paramBucket = "b"
 	return &chplan.FuncCall{
-		Name: "arrayMap",
+		Fn: chplan.FnArrayMap,
 		Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramBucket},

@@ -47,7 +47,7 @@ func splitRegexHistogramMatchers(matchers []*labels.Matcher) (names, scan, le []
 
 func syntheticMetricNameExpr(s schema.Metrics, suffix string) chplan.Expr {
 	return &chplan.FuncCall{
-		Name: "concat",
+		Fn: chplan.FnConcat,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.MetricNameColumn},
 			&chplan.InlineString{V: suffix},
@@ -94,7 +94,7 @@ func buildRegexHistogramCompanionArmTable(
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			chplan.Projection{
 				Expr: &chplan.FuncCall{
-					Name: "toFloat64",
+					Fn:   chplan.FnToFloat64,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
 				},
 				Alias: s.ValueColumn,

@@ -268,7 +268,7 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 			if foundAgg != nil {
 				gotAggs := make([]string, 0, len(foundAgg.AggFuncs))
 				for _, f := range foundAgg.AggFuncs {
-					gotAggs = append(gotAggs, f.Name)
+					gotAggs = append(gotAggs, string(f.Fn))
 				}
 				if !slices.Equal(gotAggs, tc.wantAggFuncs) {
 					t.Errorf("Aggregate.AggFuncs names = %v, want %v", gotAggs, tc.wantAggFuncs)
@@ -491,12 +491,12 @@ func TestLower_HistogramQuantile_OverAggregation_Native(t *testing.T) {
 			if len(foundAgg.AggFuncs) != 7 {
 				t.Errorf("Aggregate.AggFuncs = %d funcs, want 7", len(foundAgg.AggFuncs))
 			}
-			want := map[string]bool{
-				"min": false, "sum": false, "groupArray": false,
+			want := map[chplan.Fn]bool{
+				chplan.FnMin: false, chplan.FnSum: false, chplan.FnGroupArray: false,
 			}
 			for _, af := range foundAgg.AggFuncs {
-				if _, ok := want[af.Name]; ok {
-					want[af.Name] = true
+				if _, ok := want[af.Fn]; ok {
+					want[af.Fn] = true
 				}
 			}
 			for name, seen := range want {
@@ -978,12 +978,12 @@ func TestLower_HistogramQuantile_GroupByOmitsAbsentLabel(t *testing.T) {
 func groupKeyRebuildMapCall(e chplan.Expr) (*chplan.FuncCall, bool) {
 	if mw, ok := e.(*chplan.MapWithoutEmptyValues); ok {
 		fc, ok := mw.Map.(*chplan.FuncCall)
-		if !ok || fc.Name != "map" {
+		if !ok || fc.Fn != chplan.FnMap {
 			return nil, false
 		}
 		return fc, true
 	}
-	if fc, ok := e.(*chplan.FuncCall); ok && fc.Name == "map" {
+	if fc, ok := e.(*chplan.FuncCall); ok && fc.Fn == chplan.FnMap {
 		return fc, false
 	}
 	return nil, false

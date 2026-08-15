@@ -337,7 +337,7 @@ func projectAliasesValue(p *chplan.Project, sourceColumn, valueAlias string) boo
 			continue
 		}
 		call, ok := proj.Expr.(*chplan.FuncCall)
-		if !ok || call.Name != "toFloat64" || len(call.Args) != 1 {
+		if !ok || call.Fn != chplan.FnToFloat64 || len(call.Args) != 1 {
 			continue
 		}
 		col, ok := call.Args[0].(*chplan.ColumnRef)

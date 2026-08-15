@@ -296,7 +296,7 @@ func TestLowerClamp_MixedBoundsTakeComputedPath(t *testing.T) {
 		t.Fatalf("Project input = %T, want the runtime degenerate-bounds *chplan.Filter", pj.Input)
 	}
 	fc, ok := f.Predicate.(*chplan.FuncCall)
-	if !ok || fc.Name != "not" {
+	if !ok || fc.Fn != chplan.FnNot {
 		t.Fatalf("Filter predicate = %#v, want not(max < min) FuncCall", f.Predicate)
 	}
 }

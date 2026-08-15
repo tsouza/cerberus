@@ -120,12 +120,12 @@ const (
 // arrayFilter already relies on.
 func hqLet(param string, val chplan.Expr, body func(ref chplan.Expr) chplan.Expr) chplan.Expr {
 	return &chplan.Subscript{
-		Container: &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		Container: &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{param},
 				Body:   body(&chplan.BareIdent{Name: param}),
 			},
-			&chplan.FuncCall{Name: "array", Args: []chplan.Expr{val}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{val}},
 		}},
 		Key: &chplan.LitInt{V: 1},
 	}
@@ -327,7 +327,7 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 		return latestSampleFold
 	default:
 		return func(values, _ chplan.Expr) chplan.Expr {
-			return &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}}
+			return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{values}}
 		}
 	}
 }
@@ -412,16 +412,16 @@ const histogramExtrapolationThresholdFactor = 1.1
 // of them re-multiplies every read below it (see hqLet).
 func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogramWindowInputs) chplan.Expr {
 	return hqLet(paramWindowCounts, countValues, func(counts chplan.Expr) chplan.Expr {
-		sorted := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{order}}
+		sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{order}}
 		return hqLet(paramWindowSorted, sorted, func(sortedOrder chplan.Expr) chplan.Expr {
 			firstTs := &chplan.Subscript{Container: sortedOrder, Key: &chplan.LitInt{V: 1}}
 			lastTs := &chplan.Subscript{
 				Container: sortedOrder,
-				Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sortedOrder}},
+				Key:       &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{sortedOrder}},
 			}
 			nMinusOne := &chplan.Binary{
 				Op:    chplan.OpSub,
-				Left:  &chplan.FuncCall{Name: "length", Args: []chplan.Expr{order}},
+				Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{order}},
 				Right: &chplan.LitInt{V: 1},
 			}
 
@@ -434,7 +434,7 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 					halfAvgGap := &chplan.Binary{Op: chplan.OpDiv, Left: avgGap, Right: &chplan.LitFloat{V: 2}}
 
 					clamp := func(raw chplan.Expr) chplan.Expr {
-						return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+						return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 							&chplan.Binary{Op: chplan.OpGe, Left: raw, Right: threshold},
 							halfAvgGap, raw,
 						}}
@@ -455,7 +455,7 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 						// guard is always true and is not encoded separately.
 						return hqLet(paramResultCount, counterIncreaseFold(counts, order, in.temporality, in.resets), func(resultCount chplan.Expr) chplan.Expr {
 							firstCount := firstInTimeExpr(counts, order)
-							durationToZero := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+							durationToZero := &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 								&chplan.Binary{Op: chplan.OpGt, Left: resultCount, Right: &chplan.LitInt{V: 0}},
 								&chplan.Binary{
 									Op:    chplan.OpMul,
@@ -464,7 +464,7 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 								},
 								thresholdClampedStart,
 							}}
-							durationToStart := &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+							durationToStart := &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 								&chplan.Binary{Op: chplan.OpLt, Left: durationToZero, Right: thresholdClampedStart},
 								durationToZero,
 								thresholdClampedStart,
@@ -486,7 +486,7 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 							// shape (arraySum of an empty consecutive-diff array), so multiplying
 							// by 1 rather than by the undefined factor preserves that fallback
 							// instead of turning it into a NaN that poisons every downstream sum.
-							return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+							return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 								&chplan.Binary{Op: chplan.OpGt, Left: sampledInterval, Right: &chplan.LitInt{V: 0}},
 								factor,
 								&chplan.LitFloat{V: 1},
@@ -508,8 +508,8 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 func secondsBetweenTsExpr(from, to chplan.Expr) chplan.Expr {
 	return &chplan.Binary{
 		Op: chplan.OpDiv,
-		Left: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "dateDiff", Args: []chplan.Expr{
+		Left: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnDateDiff, Args: []chplan.Expr{
 				&chplan.LitString{V: "nanosecond"}, from, to,
 			}},
 		}},
@@ -532,7 +532,7 @@ func secondsBetweenTsExpr(from, to chplan.Expr) chplan.Expr {
 // it: classicBucketWindowLadderExpr's union-of-bounds construction, not
 // this fold.
 func latestSampleFold(values, order chplan.Expr) chplan.Expr {
-	sorted := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+	sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramCurrCum, paramRowTime},
 			Body:   &chplan.BareIdent{Name: paramRowTime},
@@ -542,7 +542,7 @@ func latestSampleFold(values, order chplan.Expr) chplan.Expr {
 	}}
 	return &chplan.Subscript{
 		Container: sorted,
-		Key:       &chplan.FuncCall{Name: "length", Args: []chplan.Expr{sorted}},
+		Key:       &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{sorted}},
 	}
 }
 
@@ -555,7 +555,7 @@ func latestSampleFold(values, order chplan.Expr) chplan.Expr {
 // whole window (unlike counterIncreaseFold), so it is a plain helper
 // rather than a histogramWindowTimeFold.
 func firstInTimeExpr(values, order chplan.Expr) chplan.Expr {
-	sorted := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+	sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramCurrCum, paramRowTime},
 			Body:   &chplan.BareIdent{Name: paramRowTime},
@@ -618,7 +618,7 @@ func firstInTimeExpr(values, order chplan.Expr) chplan.Expr {
 // the consecutive-pair map and, on the DELTA branch, the leading sample —
 // so they are bound once with hqLet rather than re-rendered per read.
 func counterIncreaseFold(values, order, temporality, resets chplan.Expr) chplan.Expr {
-	inTimeOrder := &chplan.FuncCall{Name: "arraySort", Args: []chplan.Expr{
+	inTimeOrder := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramCurrCum, paramRowTime},
 			Body:   &chplan.BareIdent{Name: paramRowTime},
@@ -640,8 +640,8 @@ func counterIncreaseFold(values, order, temporality, resets chplan.Expr) chplan.
 		})
 		params := []string{paramPrevCum, paramCurrCum}
 		pairs := []chplan.Expr{
-			&chplan.FuncCall{Name: "arrayPopBack", Args: []chplan.Expr{sorted}},
-			&chplan.FuncCall{Name: "arrayPopFront", Args: []chplan.Expr{sorted}},
+			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{sorted}},
+			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{sorted}},
 		}
 		if resets != nil {
 			verdict = &chplan.BareIdent{Name: paramPairReset}
@@ -649,11 +649,11 @@ func counterIncreaseFold(values, order, temporality, resets chplan.Expr) chplan.
 			pairs = append(pairs, resets)
 		}
 
-		cumulative := chplan.Expr(&chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "arrayMap", Args: append([]chplan.Expr{
+		cumulative := chplan.Expr(&chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append([]chplan.Expr{
 				&chplan.Lambda{
 					Params: params,
-					Body: &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+					Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 						verdict,
 						&chplan.BareIdent{Name: paramCurrCum},
 						&chplan.Binary{
@@ -671,10 +671,10 @@ func counterIncreaseFold(values, order, temporality, resets chplan.Expr) chplan.
 		earliest := &chplan.Subscript{Container: sorted, Key: &chplan.LitInt{V: 1}}
 		delta := &chplan.Binary{
 			Op:    chplan.OpSub,
-			Left:  &chplan.FuncCall{Name: "arraySum", Args: []chplan.Expr{values}},
+			Left:  &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{values}},
 			Right: earliest,
 		}
-		return &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+		return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 			&chplan.Binary{
 				Op:    chplan.OpEq,
 				Left:  temporality,
@@ -722,24 +722,24 @@ func needsTemporalityAgg(windowFn string) bool {
 func classicBucketWindowAggs(s schema.Metrics, windowFn string) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
 		{
-			Name:  "groupArray",
+			Fn:    chplan.FnGroupArray,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
 			Alias: hqAggBoundsListAlias,
 		},
 		{
-			Name:  "groupArray",
+			Fn:    chplan.FnGroupArray,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
 			Alias: hqAggCountsListAlias,
 		},
 		{
-			Name:  "groupArray",
+			Fn:    chplan.FnGroupArray,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			Alias: hqWindowTsListAlias,
 		},
 	}
 	if needsTemporalityAgg(windowFn) && s.AggregationTemporalityColumn != "" {
 		aggs = append(aggs, chplan.AggFunc{
-			Name:  "any",
+			Fn:    chplan.FnAny,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.AggregationTemporalityColumn}},
 			Alias: hqWindowTemporalityAlias,
 		})
@@ -770,7 +770,7 @@ func classicBucketWindowTemporalityExpr(s schema.Metrics, windowFn string) chpla
 // it as a HAVING rather than a wrapping Filter.
 func windowSampleCountAgg(s schema.Metrics) chplan.AggFunc {
 	return chplan.AggFunc{
-		Name:  "uniqExact",
+		Fn:    chplan.FnUniqExact,
 		Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 		Alias: hqWindowSampleCountAlias,
 	}
@@ -849,10 +849,10 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 	// a fold that sorts values by order would otherwise pair a count
 	// with another row's timestamp.
 	contributing := func(vals chplan.Expr, param string) chplan.Expr {
-		return &chplan.FuncCall{Name: "arrayFilter", Args: []chplan.Expr{
+		return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{param, paramRowLayout},
-				Body: &chplan.FuncCall{Name: "has", Args: []chplan.Expr{
+				Body: &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{
 					&chplan.BareIdent{Name: paramRowLayout},
 					&chplan.BareIdent{Name: paramUnionBound},
 				}},
@@ -862,7 +862,7 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 		}}
 	}
 
-	rowCums := &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	rowCums := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramRowBounds, paramRowCounts},
 			Body:   classicBucketRowCumulativeExpr(),
@@ -873,7 +873,7 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 
 	// The +Inf rung exists in every layout — every row reports
 	// `{le="+Inf"}` — so it folds over the whole window unfiltered.
-	infCums := &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	infCums := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramRowCounts},
 			Body:   classicBucketRowTotalExpr(),
@@ -881,8 +881,8 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 		countsList,
 	}}
 
-	return &chplan.FuncCall{Name: "arrayConcat", Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{
 				Params: []string{paramUnionBound},
 				Body: fold(
@@ -892,7 +892,7 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 			},
 			classicBucketUnionBoundsExpr(),
 		}},
-		&chplan.FuncCall{Name: "array", Args: []chplan.Expr{fold(infCums, tsList)}},
+		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{fold(infCums, tsList)}},
 	}}
 }
 
@@ -910,10 +910,10 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 func classicBucketWindowCountsExpr() chplan.Expr {
 	ladder := chplan.Expr(&chplan.ColumnRef{Name: hqWindowLadderAlias})
 	pos := chplan.Expr(&chplan.BareIdent{Name: paramLadderPos})
-	return &chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramLadderPos},
-			Body: &chplan.FuncCall{Name: "if", Args: []chplan.Expr{
+			Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 				&chplan.Binary{Op: chplan.OpEq, Left: pos, Right: &chplan.LitInt{V: 1}},
 				&chplan.Subscript{Container: ladder, Key: pos},
 				&chplan.Binary{
@@ -926,7 +926,7 @@ func classicBucketWindowCountsExpr() chplan.Expr {
 				},
 			}},
 		},
-		&chplan.FuncCall{Name: "arrayEnumerate", Args: []chplan.Expr{ladder}},
+		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{ladder}},
 	}}
 }
 

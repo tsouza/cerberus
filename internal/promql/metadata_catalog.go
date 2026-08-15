@@ -169,19 +169,19 @@ func catalogProjectionExpr(s schema.Metrics, cat *metadataCatalog) chplan.Expr {
 // dedupe.
 func catalogLabelNamesExpr(s schema.Metrics) chplan.Expr {
 	keys := chplan.Expr(&chplan.FuncCall{
-		Name: "mapKeys",
+		Fn:   chplan.FnMapKeys,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	})
 	if resourceAttributesActive(s) {
 		keys = &chplan.FuncCall{
-			Name: "arrayConcat",
+			Fn: chplan.FnArrayConcat,
 			Args: []chplan.Expr{
 				keys,
-				&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{resourceSourceMap(s)}},
+				&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{resourceSourceMap(s)}},
 			},
 		}
 	}
-	return &chplan.FuncCall{Name: "arrayJoin", Args: []chplan.Expr{keys}}
+	return &chplan.FuncCall{Fn: chplan.FnArrayJoin, Args: []chplan.Expr{keys}}
 }
 
 // catalogLabelValuesExpr resolves one Prom label to its per-row value.
