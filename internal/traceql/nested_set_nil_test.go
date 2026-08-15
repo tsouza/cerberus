@@ -43,6 +43,7 @@ func TestLower_NestedSetPositionShapes(t *testing.T) {
 		{"nested_set_right", `{ nestedSetRight > 0 }`, chplan.NestedSetRightColumn},
 		{"position_float", `{ nestedSetParent = 1.5 }`, chplan.NestedSetParentColumn},
 		{"position_vs_attr", `{ nestedSetParent = span.a }`, chplan.NestedSetParentColumn},
+		{"negated_positions", `{ -nestedSetParent = -nestedSetLeft }`, chplan.NestedSetLeftColumn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

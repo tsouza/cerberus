@@ -17,22 +17,6 @@
     },
     {
       "head": "traceql",
-      "site": "internal/traceql/lower.go:lowerAttributeExpr#782c14d3",
-      "message": "traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent \u003c 0) and select() projections",
-      "class": "rejection",
-      "trigger_query": "{ -nestedSetParent = -nestedSetLeft }",
-      "evidence": {
-        "guard": [
-          "past returning if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent",
-          "case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight of switch a.Intrinsic"
-        ],
-        "callers": [
-          "lowerFieldExpr"
-        ]
-      }
-    },
-    {
-      "head": "traceql",
       "site": "internal/traceql/lower.go:lowerAttributeExpr#dbf30854",
       "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
       "class": "internal",

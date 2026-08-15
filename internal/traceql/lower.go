@@ -1326,14 +1326,13 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 			Presence: chplan.PresenceHasKey,
 		}, nil
 	}
-	// Nested-set intrinsics never resolve to a column here: comparisons
-	// are intercepted by lowerNestedSetBinary and select() projections
-	// by lowerSelect's NestedSetAnnotate wrap; any other use would
-	// silently dereference SpanAttributes['nestedSet…'] (which the
-	// OTel-CH exporter never writes) — error instead.
-	switch a.Intrinsic {
-	case traceql.IntrinsicNestedSetParent, traceql.IntrinsicNestedSetLeft, traceql.IntrinsicNestedSetRight:
-		return nil, fmt.Errorf("traceql: intrinsic %s is only supported in root-ness comparisons (e.g. nestedSetParent < 0) and select() projections", a.Intrinsic)
+	// Comparisons with a top-level nested-set operand are intercepted by
+	// lowerNestedSetBinary, but a nested-set intrinsic can also appear below
+	// arithmetic (for example `-nestedSetParent = -nestedSetLeft`). Resolve
+	// those value positions to the synthetic column as well; the enclosing
+	// spanset filter detects the reference and adds NestedSetAnnotate.
+	if col, ok := nestedSetColumn(a.Intrinsic); ok {
+		return &chplan.ColumnRef{Name: col}, nil
 	}
 	return lowerAttribute(a, s)
 }
@@ -1375,9 +1374,9 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	}
 	// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
 	// nestedSetRight) have no OTel-CH backing column; intercept them
-	// before generic lowering would mis-resolve the name to a
-	// SpanAttributes map lookup. The root-span idiom
-	// (`nestedSetParent < 0`) lowers exactly; anything else errors.
+	// before generic lowering. Root-span idioms reduce to ParentSpanId
+	// predicates, while position-dependent comparisons use the synthetic
+	// columns materialised by NestedSetAnnotate.
 	if expr, handled, err := lowerNestedSetBinary(b, op, s); handled {
 		return expr, err
 	}
