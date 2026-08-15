@@ -220,7 +220,7 @@ func drawBody(t *rapid.T, id string) string {
 //
 // `CREATE OR REPLACE TABLE` keeps re-runs inside the same chDB
 // process idempotent. MergeTree (not Memory) matches the metrics-
-// side rationale: the optimizer's PREWHERE promotion fires
+// side rationale: the chsql emitter's PREWHERE promotion fires
 // unconditionally and chDB's Memory engine refuses PREWHERE.
 //
 // The DDL must declare every column the LogQL lowering can reference

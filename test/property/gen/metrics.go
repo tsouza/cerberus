@@ -155,10 +155,9 @@ func drawPoints(t *rapid.T, id string) []property.Point {
 // `CREATE OR REPLACE TABLE` keeps re-runs inside the same chDB process
 // idempotent (chdb-go shares one catalog across sessions in v1.11.0).
 //
-// MergeTree (not Memory) is the chosen engine because cerberus's
-// optimizer emits PREWHERE clauses on aggregate-over-filter shapes
-// (the promotion rule fires unconditionally), and chDB's Memory
-// engine returns ILLEGAL_PREWHERE on those queries. MergeTree
+// MergeTree (not Memory) is the chosen engine because cerberus's chsql
+// emitter emits PREWHERE clauses on aggregate-over-filter shapes, and
+// chDB's Memory engine returns ILLEGAL_PREWHERE on those queries. MergeTree
 // supports PREWHERE the way every real cerberus deployment does, so
 // the property test matches what production CH does. ORDER BY
 // (MetricName, TimeUnix) gives the table a sort key without forcing

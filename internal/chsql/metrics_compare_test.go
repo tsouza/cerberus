@@ -150,7 +150,7 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// aggregate's inputs rather than filtering its output. This non-root shape
 	// has no direct Timestamp bound, so the scan itself is NOT pruned (that is
 	// #1214's lossless tradeoff; only the root-scoped arm prunes).
-	// PREWHERE promotion (internal/optimizer)
+	// PREWHERE promotion in the chsql emitter
 	// splits the two conjuncts of the Filter across PREWHERE/WHERE rather
 	// than AND-ing them into one clause; either placement still lands the
 	// seed inside the scan, below the GROUP BY. The seed's own bound

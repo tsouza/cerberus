@@ -82,9 +82,9 @@
 //     stacked *above* an Aggregate down beneath it. No current lowering
 //     emits `Filter(Aggregate(…))` with a bare group-key predicate —
 //     PromQL `sum by (job) (m{job="x"})` lowers the `job="x"` matcher
-//     into the scan PREWHERE, not above the aggregate. The rule is
-//     retained so a future lowering that *does* surface a group-key
-//     filter above an aggregate is handled correctly without a
+//     into a Filter directly above the scan, not above the aggregate.
+//     The rule is retained so a future lowering that *does* surface a
+//     group-key filter above an aggregate is handled correctly without a
 //     re-derivation. Its unit + rule-interaction tests pin the
 //     behaviour; the cost of keeping it is a no-op pattern probe per
 //     fixpoint iteration.
