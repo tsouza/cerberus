@@ -82,8 +82,8 @@ func groupAggregate(prev chplan.Node, key chplan.Expr, s schema.Traces) chplan.N
 		GroupBy:        []chplan.Expr{key},
 		GroupByAliases: []string{groupKeyAlias},
 		AggFuncs: append([]chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}, Alias: aggTraceIDAlias},
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanIDColumn}}, Alias: s.SpanIDColumn},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}, Alias: aggTraceIDAlias},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanIDColumn}}, Alias: s.SpanIDColumn},
 		}, spansetEnvelopeAggFuncs(s)...),
 	}
 }
@@ -238,7 +238,7 @@ func lowerCoalesce(prev chplan.Node, s schema.Traces) (chplan.Node, error) {
 // non-root representative row instead of surfacing it unverified.
 func spansetEnvelopeAggFuncs(s schema.Traces) []chplan.AggFunc {
 	return []chplan.AggFunc{
-		{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: aggValueAlias},
+		{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: aggValueAlias},
 		anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
 		anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
 		anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),

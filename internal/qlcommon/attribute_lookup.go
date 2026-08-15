@@ -33,10 +33,10 @@ func OTelDottedFallbackChain(m chplan.Expr, candidates []string) chplan.Expr {
 	for i := len(candidates) - 2; i >= 0; i-- {
 		k := candidates[i]
 		chain = &chplan.FuncCall{
-			Name: "if",
+			Fn: chplan.FnIf,
 			Args: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "mapContains",
+					Fn: chplan.FnMapContainsKey,
 					Args: []chplan.Expr{
 						m,
 						&chplan.LitString{V: k},

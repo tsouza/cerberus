@@ -16,5 +16,5 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": ""}, "1970-01-01T00:00:00Z", 0]
 ]
 -- chplan --
-Filter predicate=(toFloat64OrNull(SpanAttributes["attempt"]) = 1)
+Filter predicate=(FnToFloat64OrNull(SpanAttributes["attempt"]) = 1)
   Scan(otel_traces)

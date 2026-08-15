@@ -393,7 +393,7 @@ func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.E
 func wireNormalizeGroupValue(a traceql.Attribute, e chplan.Expr) chplan.Expr {
 	switch a.Intrinsic {
 	case traceql.IntrinsicKind, traceql.IntrinsicStatus:
-		return &chplan.FuncCall{Name: "lower", Args: []chplan.Expr{e}}
+		return &chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{e}}
 	}
 	return e
 }

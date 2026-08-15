@@ -22,7 +22,7 @@ func countWindowBounds(n chplan.Node) int {
 	count := 0
 	if f, ok := n.(*chplan.Filter); ok {
 		chplan.InspectExpr(f.Predicate, func(e chplan.Expr) bool {
-			if c, ok := e.(*chplan.FuncCall); ok && c.Name == "fromUnixTimestamp64Nano" {
+			if c, ok := e.(*chplan.FuncCall); ok && c.Fn == chplan.FnFromUnixNanos {
 				count++
 			}
 			return true

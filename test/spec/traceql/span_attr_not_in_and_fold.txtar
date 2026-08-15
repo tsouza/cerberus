@@ -20,7 +20,7 @@ INSERT INTO otel_traces (SpanId) VALUES
 [1] string = "GET"
 [2] string = "POST"
 -- chplan --
-Filter predicate=not((SpanAttributes["http.method"] IN ("GET", "POST")))
+Filter predicate=FnNot((SpanAttributes["http.method"] IN ("GET", "POST")))
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE not((`SpanAttributes`[?] IN (?, ?)))

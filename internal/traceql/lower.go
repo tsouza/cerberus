@@ -1110,7 +1110,7 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, er
 // confidently-wrong answer, this function falls back to the
 // logically-correct translation there: SQL `not(<inner>)` (Tempo's own
 // UnaryOperation.execute OpNot semantics), wrapping the recursively
-// lowered operand in `chplan.FuncCall{Name: "not"}`.
+// lowered operand in `chplan.FuncCall{Fn: chplan.FnNot}`.
 func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (chplan.Expr, error) {
 	if inner, ok := asUnaryNot(u.Expression); ok {
 		// Double negation cancels unconditionally: lower the
@@ -1137,7 +1137,7 @@ func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (c
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{inner}}, nil
+	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{inner}}, nil
 }
 
 // isCompoundBoolean reports whether e is itself a logical AND/OR
@@ -1223,12 +1223,12 @@ func lowerNilComparison(op traceql.Operator, attr traceql.Attribute, s schema.Tr
 		}
 		carrier = s.ScopeAttributesColumn
 	}
-	contains := &chplan.FuncCall{Name: "mapContains", Args: []chplan.Expr{
+	contains := &chplan.FuncCall{Fn: chplan.FnMapContainsKey, Args: []chplan.Expr{
 		&chplan.ColumnRef{Name: carrier},
 		&chplan.LitString{V: attr.Name},
 	}}
 	if op == traceql.OpNotExists {
-		return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{contains}}, nil
+		return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{contains}}, nil
 	}
 	return contains, nil
 }
@@ -1545,7 +1545,7 @@ func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr,
 	if valueNode, ok := traceScopedValueNode(attr.Intrinsic, s); ok {
 		in := chplan.Expr(&chplan.InList{Left: &chplan.ColumnRef{Name: traceScopedValueAlias}, List: elems})
 		if b.Op == traceql.OpNotIn {
-			in = &chplan.FuncCall{Name: "not", Args: []chplan.Expr{in}}
+			in = &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{in}}
 		}
 		return traceScopedInSubquery(valueNode, in, s), nil
 	}
@@ -1563,7 +1563,7 @@ func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr,
 	}
 	in := &chplan.InList{Left: left, List: elems}
 	if b.Op == traceql.OpNotIn {
-		return &chplan.FuncCall{Name: "not", Args: []chplan.Expr{in}}, nil
+		return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{in}}, nil
 	}
 	return in, nil
 }
@@ -1721,7 +1721,7 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		return &chplan.Aggregate{
 			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
 			AggFuncs: []chplan.AggFunc{{
-				Name: "argMinIf",
+				Fn: chplan.FnArgMinIf,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.ServiceNameColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -1734,7 +1734,7 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		return &chplan.Aggregate{
 			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
 			AggFuncs: []chplan.AggFunc{{
-				Name: "argMinIf",
+				Fn: chplan.FnArgMinIf,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.SpanNameColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -1745,19 +1745,19 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		}, true
 	case traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
 		tsNs := func() chplan.Expr {
-			return &chplan.FuncCall{Name: "toUnixTimestamp64Nano", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}}
+			return &chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}}
 		}
 		const startAlias, endAlias = "_cerb_trace_start_ns", "_cerb_trace_end_ns"
 		agg := &chplan.Aggregate{
 			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
 			AggFuncs: []chplan.AggFunc{
-				{Name: "min", Args: []chplan.Expr{tsNs()}, Alias: startAlias},
-				{Name: "max", Args: []chplan.Expr{
+				{Fn: chplan.FnMin, Args: []chplan.Expr{tsNs()}, Alias: startAlias},
+				{Fn: chplan.FnMax, Args: []chplan.Expr{
 					&chplan.Binary{
 						Op:   chplan.OpAdd,
 						Left: tsNs(),
 						Right: &chplan.FuncCall{
-							Name: "toInt64",
+							Fn:   chplan.FnToInt64,
 							Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}},
 						},
 					},
@@ -2067,7 +2067,7 @@ func isOrderingComparisonOp(op chplan.BinaryOp) bool {
 func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
 	switch v := expr.(type) {
 	case *chplan.FieldAccess:
-		return &chplan.FuncCall{Name: "toFloat64OrNull", Args: []chplan.Expr{v}}
+		return &chplan.FuncCall{Fn: chplan.FnToFloat64OrNull, Args: []chplan.Expr{v}}
 	case *chplan.Binary:
 		if isArithmeticOp(v.Op) {
 			return &chplan.Binary{

@@ -66,7 +66,7 @@ INSERT INTO otel_traces VALUES
 [5] int64 = 1767225660000000000
 -- chplan --
 SearchTraceLimit traceLimit=2
-  Filter predicate=(((SpanName = "checkout") AND (Timestamp >= fromUnixTimestamp64Nano(1767225600000000000))) AND (Timestamp <= fromUnixTimestamp64Nano(1767225660000000000)))
+  Filter predicate=(((SpanName = "checkout") AND (Timestamp >= FnFromUnixNanos(1767225600000000000))) AND (Timestamp <= FnFromUnixNanos(1767225660000000000)))
     Scan(otel_traces)
 -- sql --
 SELECT s.* FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 2)

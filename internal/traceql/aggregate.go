@@ -129,7 +129,7 @@ func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (chplan
 	if agg.Op() == traceql.AggregateCount {
 		// count() takes no inner expression — aggregate a constant.
 		return chplan.AggFunc{
-			Name:  chFunc,
+			Fn:    chFunc,
 			Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
 			Alias: alias,
 		}, false, nil
@@ -141,7 +141,7 @@ func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (chplan
 		return chplan.AggFunc{}, false, fmt.Errorf("traceql: aggregate `%s` has nil inner expression", agg.Op())
 	}
 	if col, ok := nestedSetColumnForFieldExpr(inner); ok {
-		return chplan.AggFunc{Name: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: alias}, true, nil
+		return chplan.AggFunc{Fn: chFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: col}}, Alias: alias}, true, nil
 	}
 	arg, err := lowerFieldExpr(inner, s)
 	if err != nil {
@@ -157,7 +157,7 @@ func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (chplan
 	// ColumnRef and pass through unchanged.
 	arg = coerceMapNumericAggInput(arg)
 
-	return chplan.AggFunc{Name: chFunc, Args: []chplan.Expr{arg}, Alias: alias}, false, nil
+	return chplan.AggFunc{Fn: chFunc, Args: []chplan.Expr{arg}, Alias: alias}, false, nil
 }
 
 // traceStartNsAggFunc returns `min(toUnixTimestamp64Nano(<Timestamp>))
@@ -172,10 +172,10 @@ func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (chplan
 // the value as nanoseconds up-front.
 func traceStartNsAggFunc(timestampColumn string) chplan.AggFunc {
 	return chplan.AggFunc{
-		Name: "min",
+		Fn: chplan.FnMin,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "toUnixTimestamp64Nano",
+				Fn:   chplan.FnToUnixNanos,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: timestampColumn}},
 			},
 		},
@@ -196,16 +196,16 @@ func traceStartNsAggFunc(timestampColumn string) chplan.AggFunc {
 // internal/api/tempo/handler.go: spansetAggregateSampleProjections).
 func traceEndNsAggFunc(timestampColumn, durationColumn string) chplan.AggFunc {
 	return chplan.AggFunc{
-		Name: "max",
+		Fn: chplan.FnMax,
 		Args: []chplan.Expr{
 			&chplan.Binary{
 				Op: chplan.OpAdd,
 				Left: &chplan.FuncCall{
-					Name: "toUnixTimestamp64Nano",
+					Fn:   chplan.FnToUnixNanos,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: timestampColumn}},
 				},
 				Right: &chplan.FuncCall{
-					Name: "toInt64",
+					Fn:   chplan.FnToInt64,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: durationColumn}},
 				},
 			},
@@ -239,7 +239,7 @@ func traceEndNsAggFunc(timestampColumn, durationColumn string) chplan.AggFunc {
 // SQL-level arbitrariness of `any` never reaches the wire response.
 func anyAggFunc(col, alias string) chplan.AggFunc {
 	return chplan.AggFunc{
-		Name:  "any",
+		Fn:    chplan.FnAny,
 		Args:  []chplan.Expr{&chplan.ColumnRef{Name: col}},
 		Alias: alias,
 	}
@@ -250,7 +250,7 @@ func anyAggFunc(col, alias string) chplan.AggFunc {
 // startTimeUnixNano field.
 func minAggFunc(col, alias string) chplan.AggFunc {
 	return chplan.AggFunc{
-		Name:  "min",
+		Fn:    chplan.FnMin,
 		Args:  []chplan.Expr{&chplan.ColumnRef{Name: col}},
 		Alias: alias,
 	}
@@ -275,7 +275,7 @@ func minAggFunc(col, alias string) chplan.AggFunc {
 func coerceMapNumericAggInput(expr chplan.Expr) chplan.Expr {
 	if _, ok := expr.(*chplan.FieldAccess); ok {
 		return &chplan.FuncCall{
-			Name: "toFloat64OrZero",
+			Fn:   chplan.FnToFloat64OrZero,
 			Args: []chplan.Expr{expr},
 		}
 	}
@@ -283,19 +283,19 @@ func coerceMapNumericAggInput(expr chplan.Expr) chplan.Expr {
 }
 
 // mapAggregateOp turns a TraceQL AggregateOp into the CH agg function
-// name. count / max / min / sum / avg map 1:1.
-func mapAggregateOp(op traceql.AggregateOp) (string, error) {
+// identifier. count / max / min / sum / avg map 1:1.
+func mapAggregateOp(op traceql.AggregateOp) (chplan.Fn, error) {
 	switch op {
 	case traceql.AggregateCount:
-		return "count", nil
+		return chplan.FnCount, nil
 	case traceql.AggregateMax:
-		return "max", nil
+		return chplan.FnMax, nil
 	case traceql.AggregateMin:
-		return "min", nil
+		return chplan.FnMin, nil
 	case traceql.AggregateSum:
-		return "sum", nil
+		return chplan.FnSum, nil
 	case traceql.AggregateAvg:
-		return "avg", nil
+		return chplan.FnAvg, nil
 	}
 	return "", fmt.Errorf("traceql: aggregate op %q is unsupported", op)
 }

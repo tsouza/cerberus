@@ -242,8 +242,8 @@ func TestUnaryNotReferenceBugParity(t *testing.T) {
 			notArm = bin.Left
 		}
 		call, ok := notArm.(*chplan.FuncCall)
-		if !ok || call.Name != "not" {
-			t.Errorf("Lower(%q): NOT arm = %#v, want *chplan.FuncCall{Name: \"not\"}", tc.q, notArm)
+		if !ok || call.Fn != chplan.FnNot {
+			t.Errorf("Lower(%q): NOT arm = %#v, want *chplan.FuncCall{Fn: chplan.FnNot}", tc.q, notArm)
 		}
 	}
 }

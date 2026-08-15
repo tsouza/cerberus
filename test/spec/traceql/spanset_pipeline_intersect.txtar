@@ -48,10 +48,10 @@ INSERT INTO otel_traces (TraceId, SpanId, Region, Tier) VALUES
 [11] int64 = 0
 -- chplan --
 SetOperation op=&&
-  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 0) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value] ; Filter predicate=(SpanAttributes["region"] = "us") ; Scan(otel_traces)})
+  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 0) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value] ; Filter predicate=(SpanAttributes["region"] = "us") ; Scan(otel_traces)})
     Filter predicate=(SpanAttributes["region"] = "us")
       Scan(otel_traces)
-  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 0) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value] ; Filter predicate=(SpanAttributes["tier"] = "gold") ; Scan(otel_traces)})
+  Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 0) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value] ; Filter predicate=(SpanAttributes["tier"] = "gold") ; Scan(otel_traces)})
     Filter predicate=(SpanAttributes["tier"] = "gold")
       Scan(otel_traces)
 -- sql --

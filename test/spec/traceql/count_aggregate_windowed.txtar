@@ -21,6 +21,6 @@ SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, an
 [5] int64 = 1
 -- chplan --
 Filter predicate=(Value > 1)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
-    Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
+    Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
       Scan(otel_traces)

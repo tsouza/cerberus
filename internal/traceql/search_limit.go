@@ -599,7 +599,7 @@ func tsBound(op chplan.BinaryOp, t time.Time, tsCol string) chplan.Expr {
 		Op:   op,
 		Left: &chplan.ColumnRef{Name: tsCol},
 		Right: &chplan.FuncCall{
-			Name: "fromUnixTimestamp64Nano",
+			Fn:   chplan.FnFromUnixNanos,
 			Args: []chplan.Expr{&chplan.LitInt{V: t.UnixNano()}},
 		},
 	}

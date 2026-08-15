@@ -240,9 +240,9 @@ func TestLower_NilComparisonSemantics(t *testing.T) {
 		{`{ nil != kind }`, `true`},
 		{`{ nestedSetParent != nil }`, `true`},
 		// Attribute scopes: map-key existence on the scope carrier.
-		{`{ span.http.method != nil }`, `mapContains(SpanAttributes, "http.method")`},
-		{`{ resource.service.name != nil }`, `mapContains(ResourceAttributes, "service.name")`},
-		{`{ span.http.method = nil }`, `not(mapContains(SpanAttributes, "http.method"))`},
+		{`{ span.http.method != nil }`, `FnMapContainsKey(SpanAttributes, "http.method")`},
+		{`{ resource.service.name != nil }`, `FnMapContainsKey(ResourceAttributes, "service.name")`},
+		{`{ span.http.method = nil }`, `FnNot(FnMapContainsKey(SpanAttributes, "http.method"))`},
 		// Event / link attributes: per-element key probes.
 		{`{ event.message != nil }`, `nestedArrayExists(Events.Attributes hasKey "message")`},
 		{`{ event.message = nil }`, `nestedArrayExists(Events.Attributes lacksKey "message")`},

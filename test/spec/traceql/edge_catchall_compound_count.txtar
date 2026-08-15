@@ -25,8 +25,8 @@ INSERT INTO otel_traces (Duration) VALUES
 [5] int64 = 10
 -- chplan --
 Filter predicate=(Value > 10)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
-    Filter predicate=((ResourceAttributes["service.name"] = "x") AND (toFloat64OrNull(SpanAttributes["http.status_code"]) > 200))
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
+    Filter predicate=((ResourceAttributes["service.name"] = "x") AND (FnToFloat64OrNull(SpanAttributes["http.status_code"]) > 200))
       Scan(otel_traces)
 -- sql --
 SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) AND (toFloat64OrNull(`SpanAttributes`[?]) > ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)

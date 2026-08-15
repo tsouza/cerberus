@@ -24,7 +24,7 @@ SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AN
 [9] int64 = 500
 -- chplan --
 SetOperation op=&&
-  Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+  Filter predicate=((ResourceAttributes["service.name"] = "a") AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
     Scan(otel_traces)
-  Filter predicate=((toFloat64OrNull(SpanAttributes["http.status_code"]) = 500) AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+  Filter predicate=((FnToFloat64OrNull(SpanAttributes["http.status_code"]) = 500) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
     Scan(otel_traces)

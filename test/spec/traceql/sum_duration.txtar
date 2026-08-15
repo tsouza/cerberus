@@ -19,7 +19,7 @@ INSERT INTO otel_traces VALUES
 [2] int64 = 100000000
 -- chplan --
 Filter predicate=(Value > 100000000)
-  Aggregate groupBy=[TraceId AS TraceId] funcs=[sum(Duration) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[FnSum(Duration) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
     Filter predicate=(ResourceAttributes["service.name"] = "frontend")
       Scan(otel_traces)
 -- sql --
