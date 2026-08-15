@@ -60,10 +60,8 @@
 #   TESTER_QUERY_PARALLELISM  passed through to the upstream tester's
 #                      `-query-parallelism` flag (tester default: 20).
 #                      Unset here means the flag is omitted and the
-#                      tester's own default applies — the standard
-#                      compatibility/prometheus lane relies on that.
-#                      compatibility/prometheus-floor sets this LOW (see
-#                      that job's comment in compatibility.yml): below
+#                      tester's own default applies. Every Prometheus CI
+#                      lane sets this LOW (see compatibility.yml): below
 #                      25.9 every ts_grid_* native-rate feature resolves
 #                      OFF (#1500), so the floor lane's fallback SQL does
 #                      real per-row rate/quantile/reset aggregation
