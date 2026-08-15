@@ -142,23 +142,38 @@ func binaryTypeValid(op Operator, t StaticType) bool {
 	}
 	switch t {
 	case TypeBoolean, TypeBooleanArray:
-		return op == OpAnd || op == OpOr || op == OpEqual || op == OpNotEqual ||
-			op == OpIn || op == OpNotIn
+		return operatorIn(op, booleanBinaryOperators)
 	case TypeInt, TypeFloat, TypeDuration, TypeIntArray, TypeFloatArray:
-		return op == OpAdd || op == OpSub || op == OpMult || op == OpDiv || op == OpMod ||
-			op == OpPower || op == OpEqual || op == OpNotEqual || op == OpGreater ||
-			op == OpGreaterEqual || op == OpLess || op == OpLessEqual ||
-			op == OpIn || op == OpNotIn
+		return operatorIn(op, numericBinaryOperators)
 	case TypeString, TypeStringArray:
-		return op == OpEqual || op == OpNotEqual || op == OpRegex || op == OpNotRegex ||
-			op == OpGreater || op == OpGreaterEqual || op == OpLess || op == OpLessEqual ||
-			op == OpIn || op == OpNotIn || op == OpRegexMatchAny || op == OpRegexMatchNone
+		return operatorIn(op, stringBinaryOperators)
 	case TypeNil, TypeStatus, TypeKind:
-		return op == OpEqual || op == OpNotEqual
+		return operatorIn(op, equalityOnlyBinaryOperators)
 	default:
 		return false
 	}
 }
+
+// The four operator sets binaryTypeValid dispatches on, one per operand
+// family — pulled out to package level so the function itself is a plain
+// switch over operatorIn calls rather than a wall of `||` chains, which is
+// what drove its cyclomatic complexity over golangci-lint's cyclop budget.
+var (
+	booleanBinaryOperators = []Operator{
+		OpAnd, OpOr, OpEqual, OpNotEqual, OpIn, OpNotIn,
+	}
+	numericBinaryOperators = []Operator{
+		OpAdd, OpSub, OpMult, OpDiv, OpMod, OpPower,
+		OpEqual, OpNotEqual, OpGreater, OpGreaterEqual, OpLess, OpLessEqual,
+		OpIn, OpNotIn,
+	}
+	stringBinaryOperators = []Operator{
+		OpEqual, OpNotEqual, OpRegex, OpNotRegex,
+		OpGreater, OpGreaterEqual, OpLess, OpLessEqual,
+		OpIn, OpNotIn, OpRegexMatchAny, OpRegexMatchNone,
+	}
+	equalityOnlyBinaryOperators = []Operator{OpEqual, OpNotEqual}
+)
 
 // unaryTypesValid reports whether op accepts an operand of type t —
 // `{ -name = "a" }`: unary `-` requires a numeric operand, and `name` is
