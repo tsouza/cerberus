@@ -204,6 +204,20 @@ func TestNegativeSiblingSpans(t *testing.T) {
 			wantUsable: true,
 		},
 		{
+			// The carrier's spine is a SINGLE step — the alternation is the
+			// entire pattern, with no enclosing concatenation or group above
+			// it — so the fork search's backward walk starts and ends at
+			// index 0 in the same iteration. A walk that could not check
+			// its own starting index (an off-by-one on the loop's lower
+			// bound) or that treated position 0 as "not found" (an off-by-
+			// one on the found-index check) would both decline this regex
+			// instead of finding the fork.
+			name:       "alternation_is_the_whole_pattern",
+			src:        `(?P<dup>a?)|(?P<dup>b)`,
+			want:       []string{`(?P<dup>b)`},
+			wantUsable: true,
+		},
+		{
 			name: "no_fork",
 			src:  `(?P<dup>a?)(?P<dup>b)`,
 		},
