@@ -20,3 +20,9 @@ package loki
 func (h *Handler) SetOnQueryRangeDrain(fn func(int64)) {
 	h.onQueryRangeDrain = fn
 }
+
+// TailCapCloseReason exposes the /tail tail-budget-saturated close-frame
+// reason text (issue #2048) to package loki_test, so a conformance test
+// can assert the exact wording without hand-duplicating it — a drifted
+// copy would pass even after the production string changed.
+const TailCapCloseReason = tailCapCloseReason
