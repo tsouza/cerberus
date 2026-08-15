@@ -53,11 +53,18 @@
 //   CARDINALITY_UPDATE_PRINT_PLAN   (optional) `1` prints the ordered plan
 //                                   (`<label> <ENV=v>... <command>` per line)
 //                                   and exits without regenerating anything.
+//   GOMAXPROCS                      (optional) overrides the per-leg default
+//                                   of `hostCores / fanOut` (see
+//                                   perLegGOMAXPROCS) — set this yourself only
+//                                   if you deliberately want every leg
+//                                   scheduling against the full core count
+//                                   again.
 //
 // Exits 1 on a missing libchdb.so, on any leg failing, or on the seal step
 // reporting a tree that does not match the corpus.
 
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import process from 'node:process';
 
 import { error, log } from './lib/gh.mjs';
@@ -124,6 +131,29 @@ function goTest(run, timeout) {
 }
 
 /**
+ * Per-leg GOMAXPROCS: the host's core count divided evenly across the N
+ * concurrent legs, floored at 1.
+ *
+ * Each leg is a separate `go test` process, and the Go runtime defaults an
+ * unset GOMAXPROCS to the FULL host core count regardless of how many
+ * sibling processes are already competing for it. N legs left at that
+ * default therefore each try to schedule as if they owned every core, which
+ * oversubscribes an N-core-or-smaller host by a factor of N — measured on an
+ * 8-core dev box running the default 8-way fan-out as ~50% CPU utilisation
+ * per leg instead of ~100%, roughly doubling wall time. Dividing the core
+ * count up front is what the fan-out itself already assumes (`count` legs
+ * partitioning `count`-ways), so this just makes the scheduler's per-process
+ * budget agree with that assumption instead of over-committing it.
+ *
+ * A caller that has deliberately set GOMAXPROCS in its own environment (a
+ * CI runner tuned for a different oversubscription strategy, say) is left
+ * alone — this only fills the gap the Go runtime's own default leaves.
+ */
+function perLegGOMAXPROCS(count) {
+  return String(Math.max(1, Math.floor(os.cpus().length / count)));
+}
+
+/**
  * The regeneration plan: N profiling legs over disjoint slices, then the seal.
  *
  * The leg INDEX is 1-based and the legs are contiguous 1..N, because that is
@@ -132,6 +162,7 @@ function goTest(run, timeout) {
  * should have owned is owned by nobody — and every leg still exits 0.
  */
 function plan(count, timeout) {
+  const gomaxprocs = process.env.GOMAXPROCS || perLegGOMAXPROCS(count);
   const legs = Array.from({ length: count }, (_, i) => ({
     label: `cardinality[${i + 1}/${count}]`,
     argv: goTest(RATCHET_TEST, timeout),
@@ -139,6 +170,7 @@ function plan(count, timeout) {
       [UPDATE_ENV]: '1',
       [PERF_SHARD_INDEX_ENV]: String(i + 1),
       [PERF_SHARD_COUNT_ENV]: String(count),
+      GOMAXPROCS: gomaxprocs,
     },
   }));
 
