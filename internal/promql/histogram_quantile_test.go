@@ -856,3 +856,146 @@ func TestLower_HistogramQuantile_BucketSuffixStrip(t *testing.T) {
 		})
 	}
 }
+
+// TestLower_HistogramQuantile_GroupByOmitsAbsentLabel pins #2163: a
+// `sum by(label)` grouping over a native or classic histogram must OMIT
+// `label` from the output Attributes map when the series does not carry it
+// — matching Prometheus's Labels semantics (an empty-valued label is
+// canonically absent) and the float aggregation path's own behaviour
+// (wrapAggregateForSample's MapWithoutEmptyValues wrap in lower.go). Before
+// the fix, histogramAggGroupBy (histogram_quantile.go) built the output
+// map() literal unwrapped, so a series missing the grouped-by label
+// materialised it as the empty string instead: cerberus answered
+// `{job=""}` where the reference oracle and the float path both answer
+// `{}`.
+//
+// Every histogramAggGroupBy call site shares the same construction, so one
+// representative query per family (bare native selector — the issue's own
+// `histogram_quantile(0.5, sum by (job) (queue_delay_exp_hist))` repro —
+// plus the rate-wrapped native and classic-bucket paths) is enough to pin
+// the shared helper; a whole-family sweep would just repeat the same
+// assertion against the same code path.
+func TestLower_HistogramQuantile_GroupByOmitsAbsentLabel(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantLabel string // the grouping label whose gkey rebuild must be wrapped
+	}{
+		{
+			name:      "bare native selector",
+			query:     `histogram_quantile(0.5, sum by (job) (queue_delay_exp_hist))`,
+			wantLabel: "job",
+		},
+		{
+			name:      "rate over native selector",
+			query:     `histogram_quantile(0.9, sum by (job) (rate(http_server_duration_exp_hist[5m])))`,
+			wantLabel: "job",
+		},
+		{
+			// `le` rides along in the by-list — Prometheus's classic
+			// histogram_quantile idiom requires it, even though cerberus's
+			// OTel-CH classic-histogram storage has no per-bucket rows for
+			// `le` to key on (histogramAggGroupBy drops it via dropLabel;
+			// see that function's own doc).
+			name:      "rate over classic bucket selector",
+			query:     `histogram_quantile(0.9, sum by (le, job) (rate(http_server_duration_seconds_bucket[5m])))`,
+			wantLabel: "job",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
+			}
+
+			var attrsExprs []chplan.Expr
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				pj, ok := n.(*chplan.Project)
+				if !ok {
+					return true
+				}
+				for _, proj := range pj.Projections {
+					if proj.Alias == s.AttributesColumn {
+						attrsExprs = append(attrsExprs, proj.Expr)
+					}
+				}
+				return true
+			})
+			if len(attrsExprs) == 0 {
+				t.Fatalf("no Project binds the %q column — cannot check the group-key rebuild", s.AttributesColumn)
+			}
+			// Find the group-key rebuild among the collected bindings — the
+			// one whose underlying map() literal names tc.wantLabel — and
+			// require THAT SPECIFIC binding to be wrapped in
+			// MapWithoutEmptyValues. Matching on the label rather than
+			// asserting "some binding somewhere is wrapped" matters: the
+			// selector-level resource-attribute merge uses the same
+			// MapWithoutEmptyValues primitive for an unrelated reason (an
+			// absent dedicated top-level column, not an absent grouping
+			// label), and an unqualified check would pass on that binding
+			// alone even if histogramAggGroupBy's own rebuild regressed.
+			var foundRebuild, wrapped bool
+			for _, e := range attrsExprs {
+				fc, isWrapped := groupKeyRebuildMapCall(e)
+				if fc == nil || !mapCallNamesLabel(fc, tc.wantLabel) {
+					continue
+				}
+				foundRebuild = true
+				if isWrapped {
+					wrapped = true
+				}
+			}
+			if !foundRebuild {
+				t.Fatalf("no %q binding rebuilds a map() literal naming %q — the query did not "+
+					"reach histogramAggGroupBy's group-key rebuild as expected.\nbindings: %#v",
+					s.AttributesColumn, tc.wantLabel, attrsExprs)
+			}
+			if !wrapped {
+				t.Errorf("the %q group-key rebuild naming %q is a bare map() literal, not wrapped "+
+					"in MapWithoutEmptyValues — an absent %q label will materialise as %q instead of "+
+					"being omitted.\nbindings: %#v",
+					s.AttributesColumn, tc.wantLabel, tc.wantLabel, "", attrsExprs)
+			}
+		})
+	}
+}
+
+// groupKeyRebuildMapCall unwraps e as far as an optional single
+// MapWithoutEmptyValues layer, returning the underlying map() FuncCall (nil
+// if e is not that shape, possibly wrapped) and whether the
+// MapWithoutEmptyValues layer was present.
+func groupKeyRebuildMapCall(e chplan.Expr) (*chplan.FuncCall, bool) {
+	if mw, ok := e.(*chplan.MapWithoutEmptyValues); ok {
+		fc, ok := mw.Map.(*chplan.FuncCall)
+		if !ok || fc.Name != "map" {
+			return nil, false
+		}
+		return fc, true
+	}
+	if fc, ok := e.(*chplan.FuncCall); ok && fc.Name == "map" {
+		return fc, false
+	}
+	return nil, false
+}
+
+// mapCallNamesLabel reports whether fc — a map(k1, v1, k2, v2, ...) literal
+// — carries label among its key-position (even-indexed) arguments.
+func mapCallNamesLabel(fc *chplan.FuncCall, label string) bool {
+	for i := 0; i+1 < len(fc.Args); i += 2 {
+		if ls, ok := fc.Args[i].(*chplan.LitString); ok && ls.V == label {
+			return true
+		}
+	}
+	return false
+}
