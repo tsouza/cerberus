@@ -1326,6 +1326,17 @@ async function clickMenuOption(
   option: string,
 ): Promise<void> {
   const labels = await readSettledMenuOptions(page);
+  const index = settledMenuOptionIndex(labels, controlKey, option);
+  await openMenuOptions(page)
+    .nth(index)
+    .click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
+}
+
+function settledMenuOptionIndex(
+  labels: ReadonlyArray<string>,
+  controlKey: string,
+  option: string,
+): number {
   const index = labels.indexOf(option);
   if (index < 0) {
     throw new Error(
@@ -1334,9 +1345,33 @@ async function clickMenuOption(
         `between discovery and driving`,
     );
   }
-  await openMenuOptions(page)
-    .nth(index)
-    .click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
+  return index;
+}
+
+/**
+ * Key sequence that activates one exact option from an open Grafana Combobox
+ * menu. Home fixes the starting highlight at index zero regardless of what
+ * pointer-open pre-highlighted; ArrowDown then advances through the freshly
+ * settled live order.
+ */
+export function keyboardMenuOptionSequence(
+  labels: ReadonlyArray<string>,
+  controlKey: string,
+  option: string,
+): string[] {
+  const index = settledMenuOptionIndex(labels, controlKey, option);
+  return ['Home', ...Array.from({ length: index }, () => 'ArrowDown'), 'Enter'];
+}
+
+async function pressMenuOption(
+  page: Page,
+  controlKey: string,
+  option: string,
+): Promise<void> {
+  const labels = await readSettledMenuOptions(page);
+  for (const key of keyboardMenuOptionSequence(labels, controlKey, option)) {
+    await page.keyboard.press(key);
+  }
 }
 
 /**
@@ -1495,6 +1530,20 @@ export async function discoverControls(
 // ---------------------------------------------------------------------------
 
 /**
+ * Grafana 12.2.9's Prometheus metric combobox has a Tooltip-wrapped sibling
+ * whose pointer-commit ref churn loops through floating-ui's unguarded
+ * setDomReference state setter (grafana/grafana#130469). Keyboard commit
+ * reaches the same Combobox onChange and query state without entering that
+ * Tooltip path. Keep every other combobox pointer-driven so the exception is
+ * no broader than the upstream defect.
+ */
+export function comboboxSelectionGesture(
+  controlKey: string,
+): 'keyboard' | 'pointer' {
+  return controlKey === 'select[metric select]' ? 'keyboard' : 'pointer';
+}
+
+/**
  * Re-find a combobox on the freshly navigated page by its discovery
  * KEY, not its discovery-time element hint: downshift inputs are
  * addressed by React useId-derived ids that need not survive a
@@ -1650,7 +1699,11 @@ export async function driveInteraction(
     case 'combobox': {
       const input = await relocateCombobox(page, settled, control);
       await input.click({ timeout: CONTROL_CLICK_TIMEOUT_MS });
-      await clickMenuOption(page, control.key, option);
+      if (comboboxSelectionGesture(control.key) === 'keyboard') {
+        await pressMenuOption(page, control.key, option);
+      } else {
+        await clickMenuOption(page, control.key, option);
+      }
       return;
     }
     case 'adhoc-filter': {
