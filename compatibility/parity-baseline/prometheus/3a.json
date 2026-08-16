@@ -6,6 +6,7 @@
     "demo_memory_usage_bytes % time()",
     "demo_memory_usage_bytes - 1.2345",
     "demo_memory_usage_bytes > time()",
+    "idelta(demo_shifting_latency_exp_hist[5m:1m] offset 1m)",
     "increase(demo_cpu_usage_seconds_total[5m] offset 10m)",
     "increase(demo_delta_requests_total[5m])",
     "rate(demo_cpu_usage_seconds_total[1m] offset 5m)",

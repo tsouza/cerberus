@@ -8,6 +8,7 @@
     "count_over_time(demo_memory_usage_bytes[1m])",
     "day_of_month(demo_batch_last_success_timestamp_seconds offset 5m)",
     "demo_memory_usage_bytes offset 5m",
+    "group(rate(demo_shifting_latency_exp_hist[5m]))",
     "histogram_count(demo_latency_exp_hist)",
     "histogram_fraction(3, 12, demo_latency_exp_hist)",
     "idelta(demo_cpu_usage_seconds_total[15s])",
@@ -16,6 +17,7 @@
     "increase(demo_cpu_usage_seconds_total[5m])",
     "quantile(scalar(vector(0.5)), demo_memory_usage_bytes)",
     "rate(demo_cpu_usage_seconds_total[1s]) or rate(demo_http_requests_total[1s])",
+    "rate(demo_shifting_latency_exp_hist[5m:1m])",
     "stdvar_over_time(demo_memory_usage_bytes[5m] offset 5m)"
   ]
 }

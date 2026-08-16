@@ -12,6 +12,7 @@
     "histogram_quantile(0.9, demo_memory_usage_bytes)",
     "irate(demo_cpu_usage_seconds_total[5m] offset 10m)",
     "rate(demo_cpu_usage_seconds_total[5m] offset 10m)",
+    "rate(demo_shifting_latency_exp_hist[1m:1m])",
     "sum_over_time(demo_memory_usage_bytes[5m] offset -10m)",
     "sum_over_time(demo_shifting_latency_exp_hist[5m])",
     "time() - 1",

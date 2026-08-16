@@ -18,6 +18,7 @@
     "rate(demo_cpu_usage_seconds_total[5m] offset -10m)",
     "resets(demo_cpu_usage_seconds_total[15s])",
     "stdvar_over_time(demo_memory_usage_bytes[5m] offset 1m)",
+    "sum(rate(demo_shifting_latency_exp_hist[1m]))",
     "time() >= bool 1",
     "timestamp(-demo_memory_usage_bytes)"
   ]

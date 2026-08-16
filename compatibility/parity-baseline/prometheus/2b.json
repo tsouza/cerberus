@@ -5,6 +5,7 @@
   "cases": [
     "-{__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}",
     "abs(demo_memory_usage_bytes)",
+    "avg by (instance) (rate(demo_shifting_latency_exp_hist[5m]))",
     "changes(demo_batch_last_success_timestamp_seconds[15s])",
     "clamp_min(demo_memory_usage_bytes, 2)",
     "demo_memory_usage_bytes - on(instance, job, type) demo_memory_usage_bytes",

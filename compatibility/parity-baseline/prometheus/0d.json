@@ -7,6 +7,7 @@
     "1 <= bool time()",
     "avg by(instance, type) (demo_memory_usage_bytes)",
     "count(demo_shifting_latency_exp_hist)",
+    "count_values(\"hist\", rate(demo_shifting_latency_exp_hist[5m]))",
     "delta(demo_cpu_usage_seconds_total[15s] offset 1m)",
     "delta(demo_cpu_usage_seconds_total[5m] offset 1m)",
     "demo_memory_usage_bytes + 1.2345",

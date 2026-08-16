@@ -10,6 +10,7 @@
     "demo_memory_usage_bytes + ignoring(job) demo_memory_usage_bytes",
     "demo_memory_usage_bytes / ignoring(job) demo_memory_usage_bytes",
     "label_join(demo_num_cpus, \"new_label\", \"-\", \"instance\", \"job\")",
+    "label_join(rate(demo_shifting_latency_exp_hist[5m]), \"copy\", \"-\", \"instance\")",
     "log10(demo_memory_usage_bytes)",
     "max by() (demo_memory_usage_bytes)",
     "max_over_time(demo_memory_usage_bytes[1s])",
