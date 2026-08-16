@@ -220,6 +220,55 @@ neutral/cancelled jobs, or any missing report.
 summary. Direct execution emits a GitHub `::error::` and exits non-zero on every
 contract failure.
 
+`ci-lane-backtest.mjs` is the retrospective stand-in for issue #2230's literal
+7-day / 50-SHA live shadow soak. The selector is a pure function of (base SHA,
+head SHA, registry) -> selection manifest, so it needs no live checkout to
+evaluate — this script replays `selectionPolicy()` (imported unmodified from
+`ci-lane-selection.mjs`) against real historical merged pull requests read
+from the Actions/PR REST API, and cross-checks the hypothetical new selection
+against what actually ran. It walks merged PRs against `main`, newest first,
+until it has `CI_LANE_BACKTEST_SHA_COUNT` (default 50) non-documentation final
+SHAs, fetching each one's changed-file list (`/pulls/{n}/files`) and its
+final-SHA job conclusions/durations (`/actions/runs` + `/actions/runs/{id}/
+attempts/{n}/jobs`, filtered to the registry's lane-owning workflows). Per PR
+it computes: whether every lane the OLD (always-run) system observed failing
+was still selected by the NEW selector's hypothetical choice (a coverage gap
+— an "old-only catch" — is reported, never hidden or papered over); the
+NEW-selected lanes' summed actual runner-minutes; and a wall-clock
+"required-ready" proxy (earliest job start to latest job completion among
+NEW-selected lanes, assuming unconstrained parallelism). Aggregate p50/p95
+across every non-documentation SHA are checked against the issue's own
+targets — `MERGE_P95_SLO_MINUTES` (20) for required-ready, and this script's
+own `RUNNER_P50_TARGET_MINUTES` (95) / `RUNNER_P95_TARGET_MINUTES` (160) for
+runner cost, since the registry has no other home for those two numbers.
+Deliberately out of scope: whether the new artifact-bundling / evidence
+plumbing (`ci-lane-shadow-collector.mjs`) works inside a live Actions run —
+that needs one real run, which no backtest can substitute for.
+`contextMatches()` and `jobObservationState()` are imported from
+`ci-lane-shadow-collector.mjs` so "which job backs this lane" and "was it
+green" can never drift between the live collector and this replay; the
+Actions-run discovery itself is NOT reused, because the live collector's
+strict PR-association binding exists to stop a live event from trusting a
+spoofed workflow run, a concern that does not apply to a retrospective,
+already-merged SHA looked up by its own unique head SHA.
+
+- Env: `GITHUB_REPOSITORY` (optional; parsed from `git remote get-url
+    origin` when unset), `GITHUB_TOKEN` (optional; falls back to `gh auth
+    token`), `CI_LANE_BACKTEST_SHA_COUNT` (default 50),
+    `CI_LANE_BACKTEST_MAX_PRS` (default 20x the SHA count),
+    `CI_LANE_BACKTEST_OUTPUT` (default `build/ci-lane-backtest/report.json`),
+    `CI_LANE_REGISTRY`, `GITHUB_API_URL`.
+- Exit: `0` when every target clears — required-ready p95, runner p50/p95,
+    zero coverage gaps, AND the non-documentation SHA count reaching its
+    target; `1` if any of those miss, or on an API failure. Writes the full
+    per-PR JSON report plus a `::notice::`/`::error::` summary; not (yet)
+    wired to a workflow trigger, so it is not a required status check — run
+    it on demand with `node .github/scripts/ci-lane-backtest.mjs`.
+- Tests: `ci-lane-backtest.test.mjs` (`node --test`), entirely offline —
+    synthetic registry/job fixtures pin the selected-vs-omitted coverage-gap
+    logic, the docs-only and unknown-path/fallback cases, `percentile()`'s
+    nearest-rank behaviour, and every aggregate PASS/FAIL branch.
+
 ## Modules
 
 - **`main-coalescing.mjs`** — `ci.yml` plus the enrolled deep-test workflows.

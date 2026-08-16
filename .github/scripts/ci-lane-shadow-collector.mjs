@@ -714,7 +714,10 @@ export async function collectNativeBundles({
   return bundles;
 }
 
-function contextMatches(context, jobName) {
+// Exported so ci-lane-backtest.mjs's retrospective replay matches lane
+// context jobs the same way the live collector does, without duplicating the
+// two-line rule.
+export function contextMatches(context, jobName) {
   return context.match === "exact"
     ? jobName === context.name
     : jobName.startsWith(context.name);
