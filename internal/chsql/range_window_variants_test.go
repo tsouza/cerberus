@@ -3,6 +3,7 @@ package chsql
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -158,9 +159,6 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"no timestamp column": func(r *chplan.RangeWindow) {
 			r.TimestampColumn = ""
 		},
-		"arms share a value column": func(r *chplan.RangeWindow) {
-			r.Variants[1].ValueColumn = r.Variants[0].ValueColumn
-		},
 		"arm with no value column": func(r *chplan.RangeWindow) {
 			r.Variants[1].ValueColumn = ""
 		},
@@ -180,6 +178,31 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		if _, _, err := Emit(context.Background(), r); !errors.Is(err, ErrUnsupported) {
 			t.Errorf("%s: got err %v, want ErrUnsupported", name, err)
 		}
+	}
+}
+
+// TestFusedVariantValueLayout pins the arm-to-slot many-to-one mapping. The
+// tuple carries each input value column once, while reducers retain arm order
+// and may read the same slot.
+func TestFusedVariantValueLayout(t *testing.T) {
+	t.Parallel()
+	r := fusedTestWindow()
+	r.Variants[1].ValueColumn = "Value_0"
+	r.Variants = append(r.Variants, chplan.RangeWindowVariant{
+		Func: "min_over_time", ValueColumn: "Value_1", Label: "2",
+	})
+
+	columns, slots := fusedVariantValueLayout(r)
+	wantColumns := []string{"Value_0", "Value_1"}
+	wantSlots := []int{0, 0, 1}
+	if !slices.Equal(columns, wantColumns) {
+		t.Errorf("value columns = %v, want %v", columns, wantColumns)
+	}
+	if !slices.Equal(slots, wantSlots) {
+		t.Errorf("arm slots = %v, want %v", slots, wantSlots)
+	}
+	if _, _, err := Emit(context.Background(), r); err != nil {
+		t.Fatalf("Emit shared-value fused window: %v", err)
 	}
 }
 

@@ -27,16 +27,16 @@ import (
 //	SELECT <series>, [anchor_ts, <tsCol>,] `Value`, `__variant__`
 //	FROM (
 //	  SELECT <series>, [anchor_ts,] window_vals_0, …, window_vals_{N-1}
-//	  FROM ( … one groupArray of (ts, v_0, …, v_{N-1}) per (series[, anchor]) … )
+//	  FROM ( … one groupArray of (ts, distinct_v_0, …) per (series[, anchor]) … )
 //	)
 //	ARRAY JOIN [<reduce_0>, …, <reduce_{N-1}>] AS `Value`,
 //	           [<label_0>, …, <label_{N-1}>] AS `__variant__`
 //	WHERE length(window_pairs) >= 1
 //
 // Result-equivalence (not byte-equivalence) to the per-arm shape is the
-// contract, and it holds arm by arm: arm i's values array is
-// `arrayMap(p -> p.{i+2}, arraySort(p -> (p.1, p.{i+2}), window_pairs))`,
-// which is element-for-element the `arrayMap(p -> p.2,
+// contract, and it holds arm by arm: arm i maps to its distinct-value slot s
+// and reads `arrayMap(p -> p.{s+2}, arraySort(p -> (p.1, p.{s+2}),
+// window_pairs))`, which is element-for-element the `arrayMap(p -> p.2,
 // arraySort(groupArray((ts, v_i))))` the unfused arm builds — same
 // membership (one shared window predicate), same ordering key (ts, then that
 // arm's own value), and ties under that key hold equal v_i so the projected
@@ -95,20 +95,10 @@ func checkFusedVariants(r *chplan.RangeWindow) error {
 	if r.TemporalityColumn != "" {
 		return fmt.Errorf("%w: fused RangeWindow with a temporality column", ErrUnsupported)
 	}
-	seen := make(map[string]struct{}, len(r.Variants))
 	for i, v := range r.Variants {
 		if v.ValueColumn == "" {
 			return fmt.Errorf("%w: fused RangeWindow arm %d has no ValueColumn", ErrUnsupported, i)
 		}
-		if _, dup := seen[v.ValueColumn]; dup {
-			// Two arms reading one column would make the groupArray
-			// tuple ambiguous about which slot belongs to which arm.
-			return fmt.Errorf(
-				"%w: fused RangeWindow arms share ValueColumn %q",
-				ErrUnsupported, v.ValueColumn,
-			)
-		}
-		seen[v.ValueColumn] = struct{}{}
 	}
 	return nil
 }
@@ -131,10 +121,10 @@ func (e *emitter) emitRangeWindowVariants(r *chplan.RangeWindow) error {
 }
 
 // groupArrayVariantTupleFrag renders
-// `arraySort(groupArray((<tsCol>, <valCols...>)))` — the shared per-window
-// sample array carrying every arm's value alongside the timestamp, so one
-// grouped pass feeds all N reducers. The single-arm groupArrayPairFrag is the
-// N=1 case of this shape.
+// `arraySort(groupArray((<tsCol>, <distinctValCols...>)))` — the shared
+// per-window sample array carrying every distinct value alongside the
+// timestamp, so one grouped pass feeds all N reducers. The single-arm
+// groupArrayPairFrag is the N=1 case of this shape.
 func groupArrayVariantTupleFrag(tsCol string, valCols []string) Frag {
 	parts := make([]Frag, 0, len(valCols)+1)
 	parts = append(parts, Col(tsCol))
@@ -144,22 +134,21 @@ func groupArrayVariantTupleFrag(tsCol string, valCols []string) Frag {
 	return Call("arraySort", Call("groupArray", Tuple(parts...)))
 }
 
-// variantValsFrag renders arm i's values array out of the shared
+// variantValsFrag renders one value slot's array out of the shared
 // `window_pairs` tuple array:
 //
-//	arrayMap(p -> tupleElement(p, <i+2>),
-//	         arraySort(p -> (tupleElement(p, 1), tupleElement(p, <i+2>)),
+//	arrayMap(p -> tupleElement(p, <slot+2>),
+//	         arraySort(p -> (tupleElement(p, 1), tupleElement(p, <slot+2>)),
 //	                   window_pairs))
 //
 // The re-sort is what makes the arm equivalent to its unfused self: the
-// single-arm path sorts (ts, value) PAIRS, so arm i's ordering key is
-// (ts, v_i) rather than the shared tuple's (ts, v_0, v_1, …). Re-keying per
-// arm reproduces that ordering exactly, which matters for the order-sensitive
-// reducers (first_over_time / last_over_time read the array's ends).
-func variantValsFrag(pairs Frag, i int) Frag {
-	// +2: tuple slot 1 is the timestamp, so arm i's value is slot i+2.
+// single-arm path sorts (ts, value) PAIRS. Re-keying on the selected value
+// slot reproduces that ordering exactly, including when several arms share
+// the slot, which matters for first_over_time / last_over_time.
+func variantValsFrag(pairs Frag, valueSlot int) Frag {
+	// +2: tuple slot 1 is the timestamp, so value slot i is tuple slot i+2.
 	const firstValueSlot = 2
-	slot := int64(i + firstValueSlot)
+	slot := int64(valueSlot + firstValueSlot)
 	valOf := func(p Frag) Frag { return Call("tupleElement", p, InlineLit(slot)) }
 	tsOf := func(p Frag) Frag { return Call("tupleElement", p, InlineLit(int64(1))) }
 	sorted := Call(
@@ -185,21 +174,33 @@ func variantArmValueFrags(r *chplan.RangeWindow) ([]Frag, error) {
 	return out, nil
 }
 
-// variantArmValueColumns lists the arms' per-sample value columns in arm
-// order — the order the shared groupArray tuple's slots follow.
-func variantArmValueColumns(r *chplan.RangeWindow) []string {
+// fusedVariantValueLayout deduplicates per-sample value columns in first-use
+// order and maps every arm to its tuple slot. This is the many-to-one seam
+// that lets max_over_time and min_over_time share one projected value.
+func fusedVariantValueLayout(r *chplan.RangeWindow) ([]string, []int) {
 	cols := make([]string, 0, len(r.Variants))
+	slots := make([]int, 0, len(r.Variants))
+	seen := make(map[string]int, len(r.Variants))
 	for _, v := range r.Variants {
-		cols = append(cols, v.ValueColumn)
+		slot, ok := seen[v.ValueColumn]
+		if !ok {
+			slot = len(cols)
+			seen[v.ValueColumn] = slot
+			cols = append(cols, v.ValueColumn)
+		}
+		slots = append(slots, slot)
 	}
-	return cols
+	return cols, slots
 }
 
 // selectVariantVals projects one `window_vals_<i>` alias per arm off the
 // shared `window_pairs` tuple array.
-func selectVariantVals(q *QueryBuilder, r *chplan.RangeWindow) {
+func selectVariantVals(q *QueryBuilder, r *chplan.RangeWindow, armSlots []int) {
 	for i := range r.Variants {
-		q.Select(As(variantValsFrag(BareIdent("window_pairs"), i), variantWindowValsAlias(i)))
+		q.Select(As(
+			variantValsFrag(BareIdent("window_pairs"), armSlots[i]),
+			variantWindowValsAlias(i),
+		))
 	}
 }
 
@@ -235,12 +236,13 @@ func (e *emitter) emitRangeWindowVariantsInstant(r *chplan.RangeWindow) error {
 	if err != nil {
 		return err
 	}
+	valueColumns, armSlots := fusedVariantValueLayout(r)
 
-	// Innermost SELECT — one sorted (ts, v_0, …, v_{N-1}) array per series.
+	// Innermost SELECT — one sorted (ts, distinct_v_0, …) array per series.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
 	innermost.Select(As(
-		groupArrayVariantTupleFrag(r.TimestampColumn, variantArmValueColumns(r)),
+		groupArrayVariantTupleFrag(r.TimestampColumn, valueColumns),
 		"series_array",
 	))
 	innerSub, err := e.subqueryFrag(r.Input)
@@ -266,7 +268,7 @@ func (e *emitter) emitRangeWindowVariantsInstant(r *chplan.RangeWindow) error {
 	mid := NewQuery().From(innerMid.Frag())
 	mid.Select(groupFrags...)
 	mid.Select(Col("window_pairs"))
-	selectVariantVals(mid, r)
+	selectVariantVals(mid, r, armSlots)
 
 	// Outer SELECT — reduce once per arm and unpivot.
 	outer := NewQuery().From(mid.Frag())
@@ -299,6 +301,7 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	if err != nil {
 		return err
 	}
+	valueColumns, armSlots := fusedVariantValueLayout(r)
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -306,11 +309,11 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor), carrying
-	// every arm's value so the regroup can build one shared tuple array.
+	// every distinct value so the regroup can build one shared tuple array.
 	fanout := NewQuery().From(innerSub)
 	fanout.Select(groupFrags...)
 	fanout.Select(Col(srcTs))
-	for _, c := range variantArmValueColumns(r) {
+	for _, c := range valueColumns {
 		fanout.Select(Col(c))
 	}
 	fanout.Select(As(
@@ -324,7 +327,7 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
 	regroup.Select(As(
-		groupArrayVariantTupleFrag(srcTs, variantArmValueColumns(r)),
+		groupArrayVariantTupleFrag(srcTs, valueColumns),
 		"window_pairs",
 	))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
@@ -337,7 +340,7 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	mid.Select(groupFrags...)
 	mid.Select(Col("anchor_ts"))
 	mid.Select(Col("window_pairs"))
-	selectVariantVals(mid, r)
+	selectVariantVals(mid, r, armSlots)
 
 	// Outer SELECT — reduce once per arm and unpivot. anchor_ts is also
 	// surfaced under the schema timestamp column so a wrapping Aggregate's

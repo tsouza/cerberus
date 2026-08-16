@@ -136,8 +136,6 @@ func TestFuseVariantArms_RefusesDivergentArms(t *testing.T) {
 			b.Input.(*chplan.Project).Projections[1].Expr = &chplan.ColumnRef{Name: "Other"}
 			return []chplan.Node{countArm(), b}
 		}(),
-		// The arms compute the same value: nothing to fan out.
-		"identical arms": {countArm(), countArm()},
 		// A function the fused emitter does not reduce over the values
 		// array keeps the whole query on the per-arm path.
 		"unfusible function": func() []chplan.Node {
@@ -197,8 +195,40 @@ func TestFuseVariantArms_FusesThreeArms(t *testing.T) {
 		if v.Label != variantLabelFor(i) {
 			t.Errorf("arm %d label = %q, want %q", i, v.Label, variantLabelFor(i))
 		}
-		if v.ValueColumn != variantArmValueColumn(i) {
-			t.Errorf("arm %d value column = %q, want %q", i, v.ValueColumn, variantArmValueColumn(i))
+		if v.ValueColumn != variantValueSlotColumn(i) {
+			t.Errorf("arm %d value column = %q, want %q", i, v.ValueColumn, variantValueSlotColumn(i))
+		}
+	}
+}
+
+// TestFuseVariantArms_FusesSharedValues pins the many-to-one value layout:
+// arms that differ only in their reducer share one projected value slot, and
+// a third distinct expression gets the next slot without disturbing arm
+// labels or order.
+func TestFuseVariantArms_FusesSharedValues(t *testing.T) {
+	t.Parallel()
+	sharedValue := &chplan.ColumnRef{Name: "latency"}
+	arms := []chplan.Node{
+		variantArm("max_over_time", sharedValue, "otel_logs"),
+		variantArm("min_over_time", sharedValue, "otel_logs"),
+		bytesArm(),
+	}
+	fused, ok := fuseVariantArms(arms)
+	if !ok {
+		t.Fatal("shared-value arms were not fused")
+	}
+	proj := fused.Input.(*chplan.Project)
+	if len(proj.Projections) != 4 {
+		t.Fatalf("shared Project has %d projections, want 4 (2 shared + 2 distinct values)",
+			len(proj.Projections))
+	}
+	wantColumns := []string{"Value_0", "Value_0", "Value_1"}
+	for i, want := range wantColumns {
+		if got := fused.Variants[i].ValueColumn; got != want {
+			t.Errorf("arm %d value column = %q, want %q", i, got, want)
+		}
+		if got := fused.Variants[i].Label; got != variantLabelFor(i) {
+			t.Errorf("arm %d label = %q, want %q", i, got, variantLabelFor(i))
 		}
 	}
 }
