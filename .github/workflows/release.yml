@@ -250,28 +250,33 @@ jobs:
             profile
             property (PromQL + LogQL + TraceQL, rapid N=500)
             migration-e2e
+            CodeQL
           # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
           # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate
           # does NOT `needs:` the crawl info shard, so a crawl flake must not
           # block a release. `mutation` is a test-QUALITY ratchet rather than a
           # correctness gate on the artifact being shipped; requiring it here
           # would put its ~11-leg matrix on the critical path of every publish,
-          # including maintenance hotfixes. `CodeQL` is required on `main`.
+          # including maintenance hotfixes.
+          #
+          # `CodeQL` is NOT here — it is in RELEASE_REQUIRED_CHECKS above.
           # Advanced setup's own `codeql.yml` (added in #1558 for merge-queue
-          # support) also triggers on `release/*.x` pushes, so a
-          # maintenance-line push now DOES produce a CodeQL run — unlike
-          # under GitHub's server-side default setup this replaced, which
-          # dispatched on the default branch and its pull requests only. It
-          # stays informational here pending a policy re-check on whether to
-          # require it given that run now exists (#2249). Either way the scan
-          # still gates the code on the way in: nothing reaches a release
-          # branch except through a `main` PR that CodeQL blocked on. A
-          # prefix here that swallows a RELEASE_REQUIRED_CHECKS name fails
-          # the preflight as a wiring error rather than quietly de-gating it.
+          # support) triggers on `release/*.x` pushes directly, so a
+          # maintenance-line push DOES produce a CodeQL run (unlike under
+          # GitHub's server-side default setup this replaced, which dispatched
+          # on the default branch and its pull requests only). #2249 checked
+          # the actual run cost before requiring it: 20 recent `codeql.yml`
+          # runs on this repo show the push-triggered ones (the direct analog
+          # of a `release/*.x` hotfix push) completing in ~4-6 minutes
+          # end-to-end, and even the slowest pull_request-triggered runs in the
+          # sample — stretched by shared-runner queueing, not analysis time —
+          # stayed under 40 minutes with each per-language `analyze` leg itself
+          # finishing in a few minutes. That is fast enough not to meaningfully
+          # delay a hotfix, so it gates like every other required lane instead
+          # of being carved out.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
-            CodeQL
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
