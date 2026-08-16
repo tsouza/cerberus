@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -97,6 +99,19 @@ func sumOrAvgOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 		return nil, nil, false
 	}
 	return agg, vs, true
+}
+
+// mergeableExpHistogramAggregate recognizes the SUM/AVG consumer itself,
+// independently of the expression that produces its input samples. The
+// direct-selector fast path above keeps its byte-stable lowering; this
+// consumer shape is what lets the same histogram merge stack over a window
+// result, another aggregation, or a label-only wrapper.
+func mergeableExpHistogramAggregate(expr parser.Expr) (*parser.AggregateExpr, bool) {
+	agg, ok := unwrapAggregateExpr(expr)
+	if !ok || !expHistogramAggOpIsMergeable(agg.Op) || agg.Param != nil {
+		return nil, false
+	}
+	return agg, true
 }
 
 // unwrapAggregateExpr peels the transparent wrappers the parser can put
@@ -237,6 +252,66 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 	}
 	projs = append(projs, fields...)
 	return &chplan.Project{Input: merged, Projections: projs}
+}
+
+// lowerExpHistogramSumOrAvgOverPlan applies a cross-series SUM/AVG to an
+// already histogram-valued result. The input's HistogramProjection is a
+// stable thirteen-column boundary, so this path deliberately consumes those
+// public aliases instead of reaching through to a producer-specific subtree.
+// Grouping by the published timestamp keeps every query_range anchor
+// independent while remaining a single key for an instant evaluation.
+func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	}
+
+	histSchema := histogramProjectionSchema(s)
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
+		agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
+	)
+	groupBy = append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, groupBy...)
+	groupByAliases = append([]string{s.TimestampColumn}, groupByAliases...)
+	merged := &chplan.Aggregate{
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     groupByAliases,
+		AggFuncs:           expHistogramGroupMergeAggs(agg, histSchema),
+		DropEmptyOnNoGroup: true,
+	}
+
+	fields := expHistogramGroupMergeProjections(histSchema)
+	if expHistogramGroupIsAvg(agg) {
+		fields = expHistogramAvgScaleProjections(fields, histSchema)
+	}
+	reshaped := &chplan.Project{
+		Input: merged,
+		Projections: append([]chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: attrsRebuild, Alias: s.AttributesColumn},
+		}, fields...),
+	}
+	return nativeHistogramProjection(
+		reshaped,
+		&chplan.LitString{V: ""},
+		&chplan.ColumnRef{Name: s.TimestampColumn},
+		histSchema,
+	), nil
+}
+
+// histogramProjectionSchema names the physical histogram fields exposed by a
+// HistogramProjection. It leaves the canonical sample quartet unchanged and
+// redirects only the nine payload columns to their fixed output aliases.
+func histogramProjectionSchema(s schema.Metrics) schema.Metrics {
+	s.CountColumn = chplan.HistogramCountColumn
+	s.SumColumn = chplan.HistogramSumColumn
+	s.ScaleColumn = chplan.HistogramScaleColumn
+	s.ZeroThresholdColumn = chplan.HistogramZeroThresholdColumn
+	s.ZeroCountColumn = chplan.HistogramZeroCountColumn
+	s.PositiveOffsetColumn = chplan.HistogramPositiveOffsetColumn
+	s.PositiveBucketCountsColumn = chplan.HistogramPositiveBucketCountsColumn
+	s.NegativeOffsetColumn = chplan.HistogramNegativeOffsetColumn
+	s.NegativeBucketCountsColumn = chplan.HistogramNegativeBucketCountsColumn
+	return s
 }
 
 // expHistogramGroupMergeAggs is [expHistogramMergeAggs] — the shared

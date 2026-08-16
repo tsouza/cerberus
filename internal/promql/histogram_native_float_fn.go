@@ -12,6 +12,10 @@ import (
 // recogniser and lowering paired prevents consumers from reimplementing the
 // root dispatch and accidentally admitting a shape they cannot actually lower.
 func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if call, ok := labelCallOverExpHistogram(expr, s, ctx); ok {
+		plan, err := lowerLabelCallOverExpHistogram(call, s, ctx)
+		return plan, true, err
+	}
 	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramBare(vs, s, ctx)
 		return plan, true, err
@@ -23,6 +27,16 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 	if shape, ok := rangeFnOverExpHistogram(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramRangeFn(shape, s, ctx)
 		return plan, true, err
+	}
+	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
+		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
+		if err != nil {
+			return nil, true, err
+		}
+		if matched {
+			plan, err := lowerExpHistogramSumOrAvgOverPlan(agg, input, s)
+			return plan, true, err
+		}
 	}
 	if histSide, op, scale, ok := expHistogramScalarBinop(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)

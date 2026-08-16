@@ -57,30 +57,7 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
 
-		// `sum()` over a bare selector IS answered (see
-		// TestLower_ExpHistogram_SumIsHistogramValued). These are the
-		// shapes the narrowing must NOT reach: a `sum` whose aggregand is
-		// not a bare selector, and a `sum` that is not the root.
-		{name: "sum over rate", query: `sum(rate(latency_exp_hist[5m]))`},
-		{name: "sum over increase", query: `sum(increase(latency_exp_hist[5m]))`},
-		{name: "sum over delta", query: `sum(delta(latency_exp_hist[5m]))`},
-		{name: "sum over irate", query: `sum(irate(latency_exp_hist[5m]))`},
-		{name: "sum over idelta", query: `sum(idelta(latency_exp_hist[5m]))`},
-		{name: "sum of sum", query: `sum(sum(latency_exp_hist))`},
-		{name: "sum under topk", query: `topk(3, sum by (service) (latency_exp_hist))`},
-
-		// The five histogram-valued range functions over a selector ARE answered
-		// (see TestLower_ExpHistogram_RangeFunctionsAreHistogramValued). These are the
-		// shapes that narrowing must NOT reach: a rate under a consumer that
-		// reads a Value, and a rate under an aggregation — which needs the
-		// across-series merge stacked on top of the window reduction, so
-		// answering it with the window reduction alone would silently drop
-		// the sum.
-		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
-		{name: "rate under avg", query: `avg(rate(latency_exp_hist[5m]))`},
 		{name: "rate over subquery", query: `rate(latency_exp_hist[5m:1m])`},
-		{name: "delta under label_replace", query: `label_replace(delta(latency_exp_hist[5m]), "a", "b", "service", "(.*)")`},
-		{name: "idelta under topk", query: `topk(3, idelta(latency_exp_hist[5m]))`},
 		{name: "delta over subquery", query: `delta(latency_exp_hist[5m:1m])`},
 		{name: "irate over subquery", query: `irate(latency_exp_hist[5m:1m])`},
 		{name: "idelta over subquery", query: `idelta(latency_exp_hist[5m:1m])`},

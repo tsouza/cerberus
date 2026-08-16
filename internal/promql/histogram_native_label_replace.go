@@ -9,27 +9,49 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// labelReplaceOverExpHistogram recognizes label_replace around one of the
-// native-histogram shapes whose result is histogram-valued. Reference
-// Prometheus rewrites only the series labels and leaves the float or histogram
-// sample payload untouched (promql/functions.go: evalLabelReplace).
-func labelReplaceOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.Call, bool) {
+// labelCallOverExpHistogram recognizes either PromQL label-only function
+// around a histogram-valued result. Reference's evalLabelReplace and
+// evalLabelJoin rewrite only the series labels and carry the histogram sample
+// pointer through unchanged.
+func labelCallOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.Call, bool) {
 	call, ok := peelWrappers(expr).(*parser.Call)
-	if !ok || call.Func.Name != "label_replace" || len(call.Args) != 5 {
+	if !ok {
 		return nil, false
 	}
-	// Issue #2224 makes delta / irate / idelta histogram-valued at the
-	// query root. It does not also add their label_replace composition;
-	// preserve the previously shipped rate / increase boundary here.
-	if shape, ok := rangeFnOverExpHistogram(call.Args[0], s, ctx); ok &&
-		shape.windowFn != rateWindowFn && shape.windowFn != increaseWindowFn {
+	switch call.Func.Name {
+	case "label_replace":
+		if len(call.Args) != 5 {
+			return nil, false
+		}
+	case "label_join":
+		if len(call.Args) < 3 {
+			return nil, false
+		}
+	default:
 		return nil, false
 	}
 	return call, isExpHistogramValuedShape(call.Args[0], s, ctx)
 }
 
-func lowerLabelReplaceOverExpHistogram(call *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	attrs, err := labelReplaceAttributes(call, s)
+// labelReplaceOverExpHistogram remains the root-dispatch spelling while the
+// implementation now covers both label-only consumers.
+func labelReplaceOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.Call, bool) {
+	return labelCallOverExpHistogram(expr, s, ctx)
+}
+
+func lowerLabelCallOverExpHistogram(call *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	var (
+		attrs chplan.Expr
+		err   error
+	)
+	switch call.Func.Name {
+	case "label_replace":
+		attrs, err = labelReplaceAttributes(call, s)
+	case "label_join":
+		attrs, err = labelJoinAttributes(call, s)
+	default:
+		return nil, fmt.Errorf("promql: internal invariant violated: %s is not a label-only histogram consumer", call.Func.Name)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +68,10 @@ func lowerLabelReplaceOverExpHistogram(call *parser.Call, s schema.Metrics, ctx 
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection", inner)
 	}
 	return rewriteHistogramProjectionAttributes(hp, attrs, s), nil
+}
+
+func lowerLabelReplaceOverExpHistogram(call *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	return lowerLabelCallOverExpHistogram(call, s, ctx)
 }
 
 // rewriteHistogramProjectionAttributes applies a label rewrite without

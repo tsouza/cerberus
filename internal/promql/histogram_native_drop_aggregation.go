@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
@@ -27,7 +29,7 @@ import (
 
 // droppingAggregationOverExpHistogram recognizes a histogram-dropping
 // aggregation directly over a bare exponential-histogram selector.
-func droppingAggregationOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
+func droppingAggregationOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, parser.Expr, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, nil, false
 	}
@@ -35,11 +37,10 @@ func droppingAggregationOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx
 	if !ok || !histogramDroppingAggregationOp(agg.Op) {
 		return nil, nil, false
 	}
-	vs, ok := unwrapVectorSelector(agg.Expr)
-	if !ok || !s.IsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers)) {
+	if !isExpHistogramValuedShape(agg.Expr, s, ctx) {
 		return nil, nil, false
 	}
-	return agg, vs, true
+	return agg, agg.Expr, true
 }
 
 func histogramDroppingAggregationOp(op parser.ItemType) bool {
@@ -57,13 +58,16 @@ func histogramDroppingAggregationOp(op parser.ItemType) bool {
 // result. This matters for topk/bottomk: reference validates K before walking
 // the input samples, so NaN and int64 overflow still reject even when every
 // input sample is a histogram.
-func lowerExpHistogramDroppingAggregation(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerExpHistogramDroppingAggregation(agg *parser.AggregateExpr, expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if err := validateHistogramDroppingAggregationParam(agg, s, ctx); err != nil {
 		return nil, err
 	}
-	input, err := lowerExpHistogramBare(vs, s, ctx)
+	input, matched, err := lowerExpHistogramValuedShape(expr, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if !matched {
+		return nil, fmt.Errorf("promql: internal invariant violated: histogram-dropping aggregation input is not histogram-valued: %v", expr)
 	}
 	return &chplan.Filter{Input: input, Predicate: &chplan.LitBool{V: false}}, nil
 }
