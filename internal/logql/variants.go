@@ -109,12 +109,11 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 	return &chplan.UnionAll{Inputs: arms}, nil
 }
 
-// variantArmValueColumn names the per-sample value column the fused window
-// reads for arm i. The unfused arms all project their value under the one
-// [rangeAggSynthValueColumn] alias; fusing them into a single row means each
-// needs its own column, so they are re-aliased by index.
-func variantArmValueColumn(i int) string {
-	return fmt.Sprintf("%s_%d", rangeAggSynthValueColumn, i)
+// variantValueSlotColumn names one DISTINCT per-sample value column the fused
+// window reads. Several arms may point at the same slot when they apply
+// different reducers to the same value expression.
+func variantValueSlotColumn(slot int) string {
+	return fmt.Sprintf("%s_%d", rangeAggSynthValueColumn, slot)
 }
 
 // variantLabelFor renders the `__variant__` value for arm i — its zero-based
@@ -340,14 +339,28 @@ func fuseVariantArms(arms []chplan.Node) (*chplan.RangeWindow, bool) {
 	}
 
 	// Shared input Project: every projection but the value one verbatim from
-	// arm 0, then each arm's own value expression under its own alias.
+	// arm 0, then each DISTINCT value expression under its own slot alias.
+	// Multiple arms can read one slot when they differ only in the reducer.
 	base := projects[0]
+	valueRepresentatives := make([]chplan.Projection, 0, len(projects))
+	armValueColumns := make([]string, 0, len(projects))
+	for _, p := range projects {
+		value := p.Projections[valueIdx]
+		slot := slices.IndexFunc(valueRepresentatives, func(existing chplan.Projection) bool {
+			return projectionEqual(existing, value)
+		})
+		if slot < 0 {
+			slot = len(valueRepresentatives)
+			valueRepresentatives = append(valueRepresentatives, value)
+		}
+		armValueColumns = append(armValueColumns, variantValueSlotColumn(slot))
+	}
 	var shared []chplan.Projection
 	shared = append(shared, base.Projections[:valueIdx]...)
-	for i, p := range projects {
+	for slot, p := range valueRepresentatives {
 		shared = append(shared, chplan.Projection{
-			Expr:  p.Projections[valueIdx].Expr,
-			Alias: variantArmValueColumn(i),
+			Expr:  p.Expr,
+			Alias: variantValueSlotColumn(slot),
 		})
 	}
 	shared = append(shared, base.Projections[valueIdx+1:]...)
@@ -363,18 +376,18 @@ func fuseVariantArms(arms []chplan.Node) (*chplan.RangeWindow, bool) {
 	for i, w := range windows {
 		fused.Variants = append(fused.Variants, chplan.RangeWindowVariant{
 			Func:        w.Func,
-			ValueColumn: variantArmValueColumn(i),
+			ValueColumn: armValueColumns[i],
 			Label:       variantLabelFor(i),
 		})
 	}
 	return &fused, true
 }
 
-// sharedValueProjectionIndex locates the ONE projection position at which the
-// arms' input Projects differ — the per-sample value expression. It reports
-// ok=false unless every Project has the same projection list length, differs
-// at exactly one position, and that position is the [rangeAggSynthValueColumn]
-// alias in every arm.
+// sharedValueProjectionIndex locates the per-sample value projection. It
+// reports ok=false unless every Project has the same projection list length,
+// differs at no more than one position, and the selected position is the
+// [rangeAggSynthValueColumn] alias in every arm. Zero differing positions is
+// the shared-value case: the arms apply different reducers to one value slot.
 //
 // Requiring the differing position to be the value alias is what keeps the
 // fusion sound: two arms differing in their IDENTITY projection describe
@@ -400,17 +413,20 @@ func sharedValueProjectionIndex(projects []*chplan.Project) (int, bool) {
 		valueIdx = i
 	}
 	if valueIdx < 0 {
-		// Every projection agrees, so the arms read the identical per-sample
-		// value and differ only in the reducer applied to it — as in
-		// `variants(max_over_time({app="foo"} | unwrap latency [5m]),
-		// min_over_time({app="foo"} | unwrap latency [5m]))`. That is a real
-		// query, and it IS fusible: the arms would share one value column
-		// rather than getting one each. This lowering does not build that
-		// shape — every arm here names its own column, and the emitter
-		// rejects two arms pointing at one — so the query keeps the per-arm
-		// plan and its scan per arm. Widening the arm-to-column mapping to
-		// many-to-one is issue #2050.
-		return 0, false
+		// Every projection agrees. Locate the one canonical value alias so
+		// the fused Project can expose it once and point every arm at it.
+		for i, p := range base.Projections {
+			if p.Alias != rangeAggSynthValueColumn {
+				continue
+			}
+			if valueIdx >= 0 {
+				return 0, false
+			}
+			valueIdx = i
+		}
+		if valueIdx < 0 {
+			return 0, false
+		}
 	}
 	for _, p := range projects {
 		if p.Projections[valueIdx].Alias != rangeAggSynthValueColumn {

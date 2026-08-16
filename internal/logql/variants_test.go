@@ -56,6 +56,15 @@ func TestLowerMultiVariant(t *testing.T) {
 			wantFused: true,
 		},
 		{
+			// Both reducers read the same unwrapped value. They must share
+			// one value slot rather than falling back to two table scans.
+			name:      "shared value expression",
+			query:     `variants(max_over_time({app="foo"} | unwrap latency [5m]), min_over_time({app="foo"} | unwrap latency [5m])) of ({app="foo"}[5m])`,
+			wantArms:  2,
+			wantTags:  []string{"0", "1"},
+			wantFused: true,
+		},
+		{
 			// The `of (...)` arm is a hint, not a constraint: the parser
 			// accepts arms whose selectors differ from it and from each
 			// other, and those genuinely read two streams.

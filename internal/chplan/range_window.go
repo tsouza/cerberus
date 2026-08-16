@@ -245,17 +245,17 @@ type RangeWindow struct {
 // function to evaluate, the per-sample value column it reads, and the label
 // stamped into RangeWindow.VariantColumn on the rows it produces.
 //
-// Every arm reduces the SAME window membership — the arms differ only in
-// which per-row value column they read and which reducer they apply — so the
-// emitter builds one sorted (timestamp, value₀, …, valueₙ₋₁) array per
-// (series, anchor) and reduces it once per arm.
+// Every arm reduces the SAME window membership. Arms may share a per-row
+// value column when they apply different reducers to the same expression, so
+// the emitter builds one sorted (timestamp, distinct-value₀, …) array per
+// (series, anchor) and maps each arm to its value slot before reducing it.
 type RangeWindowVariant struct {
 	// Func is the range function, from the same vocabulary as
 	// RangeWindow.Func.
 	Func string
 
-	// ValueColumn names this arm's per-sample value column on Input.
-	// Distinct per arm — that is the whole point of the fused shape.
+	// ValueColumn names this arm's per-sample value column on Input. Multiple
+	// arms may name one column when they reduce the same value expression.
 	ValueColumn string
 
 	// Label is the value stamped into RangeWindow.VariantColumn for the

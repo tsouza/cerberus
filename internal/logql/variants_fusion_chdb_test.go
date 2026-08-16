@@ -106,6 +106,47 @@ func TestFusedUngroupedVariantsEmptyInput(t *testing.T) {
 	}
 }
 
+// TestFusedVariantsSharedValueColumn executes two different reducers over one
+// projected value slot. It catches an arm-index/tuple-index mapping bug that
+// SQL text alone cannot: arm 1 must read slot 0 rather than a nonexistent
+// second value tuple element.
+func TestFusedVariantsSharedValueColumn(t *testing.T) {
+	value := &chplan.FuncCall{
+		Fn: chplan.FnToFloat64,
+		Args: []chplan.Expr{&chplan.FuncCall{
+			Fn:   chplan.FnLength,
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
+		}},
+	}
+	rw := &chplan.RangeWindow{
+		Input: &chplan.Project{
+			Input: &chplan.Scan{Table: "otel_logs"},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "ResourceAttributes"},
+				{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
+				{Expr: value, Alias: "Value_0"},
+			},
+		},
+		Range:              5 * time.Minute,
+		TimestampColumn:    "Timestamp",
+		ValueColumn:        "Value",
+		VariantColumn:      "__variant__",
+		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: "ResourceAttributes"}},
+		InstantScanBounded: true,
+		Variants: []chplan.RangeWindowVariant{
+			{Func: "max_over_time", ValueColumn: "Value_0", Label: "0"},
+			{Func: "min_over_time", ValueColumn: "Value_0", Label: "1"},
+		},
+	}
+	got := runVariantPlan(t, rw, variantsFusionSeedRows, "`__variant__`, `Value`")
+	want := map[string]float64{"0": 4, "1": 2}
+	for variant, wantValue := range want {
+		if got[variant] != wantValue {
+			t.Errorf("__variant__=%q value = %v, want %v", variant, got[variant], wantValue)
+		}
+	}
+}
+
 // runFusedVariantsQuery lowers query, asserts it actually fused (a test that
 // silently fell back to the per-arm shape would pass while covering nothing),
 // executes it over a freshly seeded chDB session, and returns the value per
