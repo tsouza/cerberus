@@ -103,8 +103,7 @@ func nativeHistogramBucketStrings(buckets, offset, scale chplan.Expr, positive b
 	)
 	upperBound := nativeHistogramBoundExpr(idx, scale)
 	if !positive {
-		lowerBound, upperBound =
-			histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, upperBound),
+		lowerBound, upperBound = histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, upperBound),
 			histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, lowerBound)
 	}
 	left, right := "(", "]"

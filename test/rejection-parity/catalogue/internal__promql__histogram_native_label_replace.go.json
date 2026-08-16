@@ -2,10 +2,10 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#3e91de20",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#3e91de20",
       "message": "promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection",
       "class": "internal",
-      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and the three shapes that recognizer admits are lowered by lowerExpHistogramValuedShape through lowerExpHistogramBare, lowerExpHistogramSumOrAvg, or lowerExpHistogramRangeFn, each of which caps its result with HistogramProjection",
+      "rationale": "every matched lowerExpHistogramValuedShape producer caps its public thirteen-column result with HistogramProjection",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -14,25 +14,20 @@
           "if !ok"
         ],
         "callers": [
-          "lowerRoot"
-        ],
-        "cited": [
-          "isExpHistogramValuedShape",
-          "labelReplaceOverExpHistogram",
-          "lowerExpHistogramBare",
-          "lowerExpHistogramRangeFn",
-          "lowerExpHistogramSumOrAvg",
           "lowerExpHistogramValuedShape",
           "lowerLabelReplaceOverExpHistogram"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#f5fecb3d",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#f5fecb3d",
       "message": "promql: internal invariant violated: expression is not a known histogram-valued shape: %v",
       "class": "internal",
-      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and that recognizer's bareExpHistogramSelector, sumOrAvgOverExpHistogram, and rangeFnOverExpHistogram shapes are the first three cases lowerExpHistogramValuedShape accepts, so the matched operand cannot reach the unmatched fallback",
+      "rationale": "labelCallOverExpHistogram admits the operand through isExpHistogramValuedShape and this lowerer consults lowerExpHistogramValuedShape for that same operand",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -40,16 +35,33 @@
           "if !ok"
         ],
         "callers": [
-          "lowerRoot"
+          "lowerExpHistogramValuedShape",
+          "lowerLabelReplaceOverExpHistogram"
         ],
         "cited": [
-          "bareExpHistogramSelector",
           "isExpHistogramValuedShape",
-          "labelReplaceOverExpHistogram",
+          "labelCallOverExpHistogram",
+          "lowerExpHistogramValuedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#fe4b0f6b",
+      "message": "promql: internal invariant violated: %s is not a label-only histogram consumer",
+      "class": "internal",
+      "rationale": "labelCallOverExpHistogram admits only label_replace and label_join before calling lowerLabelCallOverExpHistogram",
+      "evidence": {
+        "guard": [
+          "default of switch call.Func.Name over [case \"label_replace\"; case \"label_join\"; default]"
+        ],
+        "callers": [
           "lowerExpHistogramValuedShape",
-          "lowerLabelReplaceOverExpHistogram",
-          "rangeFnOverExpHistogram",
-          "sumOrAvgOverExpHistogram"
+          "lowerLabelReplaceOverExpHistogram"
+        ],
+        "cited": [
+          "labelCallOverExpHistogram",
+          "lowerLabelCallOverExpHistogram"
         ]
       }
     }

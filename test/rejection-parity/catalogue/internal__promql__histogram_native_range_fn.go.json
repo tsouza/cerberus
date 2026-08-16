@@ -1,0 +1,64 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery#91084197",
+      "message": "promql: subquery step must be positive, got %s",
+      "class": "internal",
+      "rationale": "the PromQL parser rejects negative subquery steps; zero is the valid default handled before this guard",
+      "evidence": {
+        "guard": [
+          "if step \u003c 0"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery#ca3ce26e",
+      "message": "promql: internal invariant violated: histogram subquery input is %T with %s row shape",
+      "class": "internal",
+      "rationale": "rangeFnOverExpHistogramSubquery requires a histogram-valued inner and lowerExpHistogramValuedShape must return HistogramRowShape for that same inner",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "past returning if !ok",
+          "past returning if err != nil",
+          "if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape",
+          "rangeFnOverExpHistogramSubquery"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery#d4ecb9e5",
+      "message": "promql: histogram-valued subquery requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange"
+        ]
+      }
+    }
+  ]
+}

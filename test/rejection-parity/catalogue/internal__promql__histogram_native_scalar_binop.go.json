@@ -5,9 +5,10 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#03401a30",
       "message": "promql: internal invariant violated: exp-histogram lowering did not cap with *chplan.HistogramProjection, got %T",
       "class": "internal",
-      "rationale": "defensive type assertion: lowerExpHistogramBare, lowerExpHistogramSumOrAvg and lowerExpHistogramRangeFn — the only three functions this switch calls through lowerExpHistogramValuedShape or lowerRoot — each cap their returned plan with a *chplan.HistogramProjection by construction (nativeHistogramProjection / aggregatedHistogramProjection), so the type assertion below this guard never fails for a reachable query. It guards against a future change to one of those three lowerings dropping the cap.",
+      "rationale": "expHistogramScalarBinop and expHistogramDroppingScalarBinop admit only isExpHistogramValuedShape operands, whose lowerExpHistogramValuedShape producer contract ends in HistogramProjection",
       "evidence": {
         "guard": [
+          "past returning if !matched",
           "past returning if err != nil",
           "if !ok"
         ],
@@ -16,13 +17,10 @@
           "lowerRoot"
         ],
         "cited": [
-          "aggregatedHistogramProjection",
-          "lowerExpHistogramBare",
-          "lowerExpHistogramRangeFn",
-          "lowerExpHistogramSumOrAvg",
-          "lowerExpHistogramValuedShape",
-          "lowerRoot",
-          "nativeHistogramProjection"
+          "expHistogramDroppingScalarBinop",
+          "expHistogramScalarBinop",
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
@@ -31,25 +29,18 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#d112d97a",
       "message": "promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "lowerExpHistogramScalarBinop receives histSide only from expHistogramScalarBinop or expHistogramDroppingScalarBinop after isExpHistogramValuedShape accepted it, and its dispatcher enumerates the same bareExpHistogramSelector, sumOrAvgOverExpHistogram, and rangeFnOverExpHistogram shapes",
+      "rationale": "the scalar-binop recognizers and lowerExpHistogramValuedShape share isExpHistogramValuedShape for the identical histogram operand",
       "evidence": {
         "guard": [
-          "default of switch over [case func() bool { _, ok := bareExpHistogramSelector(histSide, s, ctx); return ok }(); default]",
-          "else of if agg, vs, ok := sumOrAvgOverExpHistogram(histSide, s, ctx); ok",
-          "else of if shape, ok := rangeFnOverExpHistogram(histSide, s, ctx); ok"
+          "if !matched"
         ],
         "callers": [
           "lowerExpHistogramValuedShape",
           "lowerRoot"
         ],
         "cited": [
-          "bareExpHistogramSelector",
-          "expHistogramDroppingScalarBinop",
-          "expHistogramScalarBinop",
           "isExpHistogramValuedShape",
-          "lowerExpHistogramScalarBinop",
-          "rangeFnOverExpHistogram",
-          "sumOrAvgOverExpHistogram"
+          "lowerExpHistogramValuedShape"
         ]
       }
     }

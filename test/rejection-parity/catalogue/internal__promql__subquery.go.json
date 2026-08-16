@@ -354,7 +354,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#1306ccfc",
       "message": "promql: subquery `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present",
+      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present",
       "evidence": {
         "guard": [
           "case parser.START of switch e.StartOrEnd",
@@ -363,6 +363,7 @@
         "callers": [
           "lower",
           "lowerAbsentOverTimeOverSubquery",
+          "lowerExpHistogramRangeFnOverSubquery",
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverAbsent",
           "lowerSubqueryOverCall",
@@ -382,7 +383,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#92800419",
       "message": "promql: subquery `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present",
+      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present",
       "evidence": {
         "guard": [
           "case parser.END of switch e.StartOrEnd",
@@ -391,6 +392,7 @@
         "callers": [
           "lower",
           "lowerAbsentOverTimeOverSubquery",
+          "lowerExpHistogramRangeFnOverSubquery",
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverAbsent",
           "lowerSubqueryOverCall",
@@ -410,7 +412,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#a34bee25",
       "message": "promql: unexpected subquery StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the parser yields only START / END / 0 in StartOrEnd",
+      "rationale": "the PromQL parser yields only START, END, or zero in StartOrEnd",
       "evidence": {
         "guard": [
           "default of switch e.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
@@ -418,6 +420,7 @@
         "callers": [
           "lower",
           "lowerAbsentOverTimeOverSubquery",
+          "lowerExpHistogramRangeFnOverSubquery",
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverAbsent",
           "lowerSubqueryOverCall",

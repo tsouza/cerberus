@@ -2,22 +2,36 @@
   "entries": [
     {
       "head": "promql",
+      "site": "internal/promql/label_fns.go:labelJoinAttributes#c71ab88a",
+      "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: label_join requires at least the vector, destination label, and separator arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003c 3"
+        ],
+        "callers": [
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelJoin"
+        ]
+      }
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/label_fns.go:labelReplaceAttributes#8c37a823",
       "message": "promql: label_replace expects 5 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: label_replace requires exactly five arguments; labelReplaceAttributes is called only after lowerCall or labelReplaceOverExpHistogram has identified that parser Call",
+      "rationale": "parser-enforced arity: label_replace requires exactly five arguments; labelReplaceAttributes is called only after the parser Call has been identified",
       "evidence": {
         "guard": [
           "if len(c.Args) != 5"
         ],
         "callers": [
-          "lowerLabelReplace",
-          "lowerLabelReplaceOverExpHistogram"
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelReplace"
         ],
         "cited": [
-          "labelReplaceAttributes",
-          "labelReplaceOverExpHistogram",
-          "lowerCall"
+          "labelReplaceAttributes"
         ]
       }
     },
@@ -38,41 +52,26 @@
           "if err != nil"
         ],
         "callers": [
-          "lowerLabelReplace",
-          "lowerLabelReplaceOverExpHistogram"
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelReplace"
         ]
       },
       "since": "2026-08-05"
     },
     {
       "head": "promql",
-      "site": "internal/promql/label_fns.go:lowerLabelJoin#c71ab88a",
-      "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
-      "class": "internal",
-      "rationale": "parser-enforced arity: label_join requires at least three arguments",
-      "evidence": {
-        "guard": [
-          "if len(c.Args) \u003c 3"
-        ],
-        "callers": [
-          "lowerCall"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/label_fns.go:stringArg#4c3f7595",
       "message": "promql: %s(%s) requires a string literal, got %T",
       "class": "internal",
-      "rationale": "the parser's typechecker admits only string literals in string-typed argument slots (PromQL has no other string-producing expression)",
+      "rationale": "the parser typechecker admits only string literals in string-typed argument slots; PromQL has no other string-producing expression",
       "evidence": {
         "guard": [
           "if !ok"
         ],
         "callers": [
+          "labelJoinAttributes",
           "labelReplaceAttributes",
           "lowerHistogramQuantiles",
-          "lowerLabelJoin",
           "lowerSortByLabel"
         ]
       }

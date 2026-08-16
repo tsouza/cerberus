@@ -41,10 +41,8 @@ func TestQuery_NestedHistogramConsumers_ChDB(t *testing.T) {
 func TestQuery_NestedHistogramPresenceAggregations_ChDB(t *testing.T) {
 	seed := histValuedSeed + `
 INSERT INTO otel_metrics_exponential_histogram VALUES
-    ('latency_exp_hist', map('service', 'web'), toDateTime64('2025-12-31 23
-59:01', 9),  4,  2.0, 0, 0, 0, [1, 3], 0, []),
-    ('latency_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00
-00:01', 9), 20, 10.0, 0, 0, 0, [9, 11], 0, []);`
+    ('latency_exp_hist', map('service', 'web'), toDateTime64('2025-12-31 23:59:01', 9),  4,  2.0, 0, 0, 0, [1, 3], 0, []),
+    ('latency_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:01', 9), 20, 10.0, 0, 0, 0, [9, 11], 0, []);`
 	srv, _ := newChDBServer(t, seed)
 
 	for _, tc := range []struct {

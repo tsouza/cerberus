@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_sum.go:lowerExpHistogramSumOrAvgOverPlan#7a3163a0",
+      "message": "promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape",
+      "class": "internal",
+      "rationale": "mergeableExpHistogramAggregate plus recursive histogram recognition admits this consumer only over the HistogramRowShape returned by lowerExpHistogramValuedShape",
+      "evidence": {
+        "guard": [
+          "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape",
+          "mergeableExpHistogramAggregate"
+        ]
+      }
+    }
+  ]
+}
