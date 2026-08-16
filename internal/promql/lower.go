@@ -228,6 +228,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramCount(agg, vs, s, ctx)
 	}
+	if agg, vs, ok := droppingAggregationOverExpHistogram(expr, s, ctx); ok {
+		return lowerExpHistogramDroppingAggregation(agg, vs, s, ctx)
+	}
 	if histSide, op, scale, ok := expHistogramScalarBinop(expr, s, ctx); ok {
 		return lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)
 	}
