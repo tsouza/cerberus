@@ -325,6 +325,7 @@ export const HARNESS_PATHS = [
   '.github/workflows/mutation.yml',
   '.github/scripts/mutation-phases.mjs',
   '.github/scripts/mutation-matrix.mjs',
+  '.github/scripts/mutation-run.mjs',
   '.github/scripts/gremlins-threshold.mjs',
   '.github/scripts/lib/scope-gate.mjs',
   '.gremlins.yaml',

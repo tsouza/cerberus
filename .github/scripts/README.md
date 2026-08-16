@@ -844,6 +844,20 @@ contract failure.
     or a bad `MODE`.
   - Tests: `node --test .github/scripts/mutation-matrix.test.mjs` (run by the
     `forbid-skip` job).
+- **`mutation-run.mjs`** — `mutation.yml`, the `gremlins unleash` step. Owns the
+  changed-line/full decision and the argv gremlins actually receives, so a
+  missing or malformed report field can never read as a cheap successful
+  phase. A non-empty `DIFF_REF` first invokes gremlins' native merge-base
+  `--diff` filter; if that report executed zero mutants (a comment-only or
+  otherwise mutation-free edit), it deletes the report and reruns the phase in
+  full rather than letting a hollow incremental run report green.
+  - Env: `SCOPE`, `REPORT`, `MUTANT_TIMEOUT_MAX` (required); `WORKERS`,
+    `EXCLUDE_FILES`, `DIFF_REF` (optional).
+  - Exit: `0` when the final report executed at least one mutant; `1` on a bad
+    env value, a pre-existing report at `REPORT`, a gremlins invocation
+    failure, or zero mutants surviving the full fallback.
+  - Tests: `node --test .github/scripts/mutation-run.test.mjs` (run by the
+    `forbid-skip` job).
 - **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
   The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
   to main (not on a raw pushed tag — that trigger is retired). On the resulting
