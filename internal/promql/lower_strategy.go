@@ -216,30 +216,15 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	return l
 }
 
-// FanoutRateLowerer is the concrete DEFAULT RateLowerer. A temporality-bearing
-// counter window is partitioned into complementary CUMULATIVE and DELTA arms:
-// the cumulative arm keeps the historical cheap fan-out, while only the DELTA
-// arm pays for reconstructing a running cumulative level. It is the fallback
-// the native impl embeds AND the strategy a fan-out-only deployment wires
-// directly, so the dispatch site never needs a nil check.
+// FanoutRateLowerer is the concrete DEFAULT RateLowerer: it returns the generic
+// fan-out RangeWindow unchanged. It is the fallback the native impl embeds AND
+// the strategy a fan-out-only deployment wires directly, so the dispatch site
+// never needs a nil check.
 type FanoutRateLowerer struct{}
 
-// LowerRate returns rw unchanged when no temporality branch applies. A
-// temporality-bearing matrix is split before emission so CUMULATIVE rows never
-// flow through the DELTA-only running-sum window.
-func (FanoutRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if rw.TemporalityColumn == "" {
-		return rw
-	}
-	cumulative := *rw
-	cumulative.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpNe)
-	cumulative.TemporalityColumn = ""
-	delta := *rw
-	delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
-	return &chplan.UnionAll{Inputs: []chplan.Node{
-		derivedRateArm(&cumulative, s),
-		derivedRateArm(&delta, s),
-	}}
+// LowerRate returns the fan-out RangeWindow rw unchanged.
+func (FanoutRateLowerer) LowerRate(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
 }
 
 // NativeRateLowerer is the boot-wired RateLowerer that emits the native
@@ -310,8 +295,10 @@ func derivedRateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
 
 // temporalityFilter preserves the selector's row shape while partitioning its
 // samples by the OTLP DELTA enum. OpNe admits CUMULATIVE and UNSPECIFIED values.
+// When the selector is a Project, place the predicate below it so the rejected
+// arm never pays for per-row label-map reconstruction.
 func temporalityFilter(input chplan.Node, column string, op chplan.BinaryOp) chplan.Node {
-	return &chplan.Filter{
+	filter := &chplan.Filter{
 		Input: input,
 		Predicate: &chplan.Binary{
 			Op:    op,
@@ -319,17 +306,25 @@ func temporalityFilter(input chplan.Node, column string, op chplan.BinaryOp) chp
 			Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
 		},
 	}
+	project, ok := input.(*chplan.Project)
+	if !ok {
+		return filter
+	}
+	projectCopy := *project
+	filter.Input = project.Input
+	projectCopy.Input = filter
+	return &projectCopy
 }
 
 // nativeTemporalityFilter removes the fan-out-only temporality projection from
 // the native arm, while placing the filter beneath selector shaping so the
 // resulting input still satisfies nativeTSGridMatrixNode's four-column shape.
 func nativeTemporalityFilter(input chplan.Node, column string) chplan.Node {
-	filter := temporalityFilter(input, column, chplan.OpNe)
 	project, ok := input.(*chplan.Project)
 	if !ok {
-		return filter
+		return temporalityFilter(input, column, chplan.OpNe)
 	}
+	filter := temporalityFilter(project.Input, column, chplan.OpNe)
 	projectCopy := *project
 	projectCopy.Projections = make([]chplan.Projection, 0, len(project.Projections)-1)
 	for _, projection := range project.Projections {
@@ -337,9 +332,7 @@ func nativeTemporalityFilter(input chplan.Node, column string) chplan.Node {
 			projectCopy.Projections = append(projectCopy.Projections, projection)
 		}
 	}
-	filterNode := filter.(*chplan.Filter)
-	filterNode.Input = project.Input
-	projectCopy.Input = filterNode
+	projectCopy.Input = filter
 	return &projectCopy
 }
 

@@ -47,7 +47,7 @@ func TestNativeRateLowererSplitsTemporality(t *testing.T) {
 	assertTemporalityFilter(t, fanout.Input, chplan.OpEq)
 }
 
-func TestFanoutRateLowererSplitsTemporality(t *testing.T) {
+func TestFanoutRateLowererKeepsSingleTemporalityScan(t *testing.T) {
 	t.Parallel()
 
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr("rate(cerberus_queries_total[5m])")
@@ -60,25 +60,16 @@ func TestFanoutRateLowererSplitsTemporality(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	union, ok := plan.(*chplan.UnionAll)
+	window, ok := plan.(*chplan.RangeWindow)
 	if !ok {
-		t.Fatalf("temporality-bearing fan-out rate = %T, want a two-arm UnionAll", plan)
+		t.Fatalf("temporality-bearing fan-out rate = %T, want one RangeWindow", plan)
 	}
-	if len(union.Inputs) != 2 {
-		t.Fatalf("temporality-bearing fan-out rate has %d arms, want 2", len(union.Inputs))
+	if window.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
+		t.Errorf("fan-out TemporalityColumn = %q, want schema temporality column", window.TemporalityColumn)
 	}
-	cumulativeArm := union.Inputs[0].(*chplan.Project)
-	deltaArm := union.Inputs[1].(*chplan.Project)
-	cumulative := cumulativeArm.Input.(*chplan.RangeWindow)
-	delta := deltaArm.Input.(*chplan.RangeWindow)
-	if cumulative.TemporalityColumn != "" {
-		t.Errorf("cumulative TemporalityColumn = %q, want empty cheap-path marker", cumulative.TemporalityColumn)
+	if _, split := window.Input.(*chplan.UnionAll); split {
+		t.Fatal("fan-out input split by temporality and duplicated the selector scan")
 	}
-	if delta.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
-		t.Errorf("delta TemporalityColumn = %q, want schema temporality column", delta.TemporalityColumn)
-	}
-	assertTemporalityFilter(t, cumulative.Input, chplan.OpNe)
-	assertTemporalityFilter(t, delta.Input, chplan.OpEq)
 }
 
 func TestNativeRateLowererUnsupportedShapeFallsBack(t *testing.T) {

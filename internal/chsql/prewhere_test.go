@@ -267,6 +267,21 @@ func TestPartitionPrewhere(t *testing.T) {
 		t.Errorf("partitionPrewhere (all qualify) WHERE = %v, want [another]", where)
 	}
 
+	// A narrow enum discriminator stays beside the sort-key predicate in
+	// PREWHERE. Demoting it would force wide-column reads for rows it rejects.
+	discriminator := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.LitInt{V: 1},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, discriminator}, shape)
+	if len(pre) != 2 || pre[0] != cheapNoWide || pre[1] != discriminator {
+		t.Errorf("partitionPrewhere (integer discriminator) PREWHERE = %v, want both predicates", pre)
+	}
+	if len(where) != 0 {
+		t.Errorf("partitionPrewhere (integer discriminator) WHERE = %v, want empty", where)
+	}
+
 	// Shape with no wide columns: everything stays in WHERE.
 	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide}, TableShape{SortColumns: []string{"X"}})
 	if len(pre) != 0 || len(where) != 1 {
