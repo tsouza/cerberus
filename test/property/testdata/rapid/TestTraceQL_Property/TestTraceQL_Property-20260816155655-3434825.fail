@@ -1,0 +1,110 @@
+# 2026/08/16 15:56:55.749257 [TestTraceQL_Property] [rapid] draw dataset: property.Dataset{DDL:"CREATE OR REPLACE TABLE otel_traces (\n    Timestamp DateTime64(9),\n    TraceId String,\n    SpanId String,\n    ParentSpanId String,\n    SpanName String,\n    SpanKind LowCardinality(String),\n    ServiceName LowCardinality(String),\n    ResourceAttributes Map(String, String),\n    SpanAttributes Map(String, String),\n    Duration Int64,\n    StatusCode LowCardinality(String),\n    StatusMessage String,\n    ScopeName String,\n    ScopeVersion String\n) ENGINE = MergeTree ORDER BY (Timestamp, TraceId);\nINSERT INTO otel_traces VALUES (toDateTime64('2026-05-13 12:00:00.000', 9), 'a1a2a3a4a5a6a7a8a9aaabacadaeafb0', 'b2b3b4b5b6b7b8b9', '0000000000000000', 'GET /api/0', 'Internal', 'batch', map('cluster', 'west', 'service.name', 'batch'), map('http.method', 'PUT'), 300000000, 'Ok', '', '', ''), (toDateTime64('2026-05-13 12:00:01.000', 9), 'a1a2a3a4a5a6a7a8a9aaabacadaeafb0', 'c3c4c5c6c7c8c9ca', 'b2b3b4b5b6b7b8b9', 'DELETE /api/1', 'Internal', 'batch', map('cluster', 'west', 'service.name', 'batch'), map('http.method', 'PUT'), 10000000, 'Ok', '', '', ''), (toDateTime64('2026-05-13 12:00:02.000', 9), 'a1a2a3a4a5a6a7a8a9aaabacadaeafb0', 'd4d5d6d7d8d9dadb', 'c3c4c5c6c7c8c9ca', 'GET /api/2', 'Internal', 'api', map('cluster', 'west', 'service.name', 'api'), map('http.method', 'POST'), 300000000, 'Unset', '', '', ''), (toDateTime64('2026-05-13 12:00:03.000', 9), 'c0c1c2c3c4c5c6c7c8c9cacbcccdcecf', 'e5e6e7e8e9eaebec', '0000000000000000', 'POST /api/3', 'Internal', 'web', map('cluster', 'west', 'service.name', 'web'), map('http.method', 'PUT'), 50000000, 'Ok', '', '', ''), (toDateTime64('2026-05-13 12:00:04.000', 9), 'dfe0e1e2e3e4e5e6e7e8e9eaebecedee', 'f6f7f8f9fafbfcfd', '0000000000000000', 'DELETE /api/4', 'Internal', 'web', map('cluster', 'east', 'service.name', 'web'), map('http.method', 'POST'), 10000000, 'Error', '', '', ''), (toDateTime64('2026-05-13 12:00:05.000', 9), 'dfe0e1e2e3e4e5e6e7e8e9eaebecedee', '0708090a0b0c0d0e', 'f6f7f8f9fafbfcfd', 'GET /api/5', 'Internal', 'api', map('cluster', 'west', 'service.name', 'api'), map('http.method', 'PUT'), 300000000, 'Unset', '', '', '');\n", Metrics:(*property.MetricsModel)(0x323d8c5e09a8), Logs:(*property.LogsModel)(nil)}
+# 2026/08/16 15:56:55.749336 [TestTraceQL_Property] [rapid] draw query: property.Query{String:"{ resource.service.name = \"web\" } > { resource.service.name = \"api\" }", EvalTs:1778677200}
+# 2026/08/16 15:56:55.976910 [TestTraceQL_Property] property drift
+# --- query ---
+# { resource.service.name = "web" } > { resource.service.name = "api" }
+# evalTs=1778677200
+# --- dataset ---
+# series=6
+#   GET /api/0{__duration_ns__="300000000",__name__="GET /api/0",__parentSpanID__="0000000000000000",__spanID__="b2b3b4b5b6b7b8b9",__status__="Ok",__traceID__="a1a2a3a4a5a6a7a8a9aaabacadaeafb0",resource.cluster="west",resource.service.name="batch",span.http.method="PUT"} points=1
+#   DELETE /api/1{__duration_ns__="10000000",__name__="DELETE /api/1",__parentSpanID__="b2b3b4b5b6b7b8b9",__spanID__="c3c4c5c6c7c8c9ca",__status__="Ok",__traceID__="a1a2a3a4a5a6a7a8a9aaabacadaeafb0",resource.cluster="west",resource.service.name="batch",span.http.method="PUT"} points=1
+#   GET /api/2{__duration_ns__="300000000",__name__="GET /api/2",__parentSpanID__="c3c4c5c6c7c8c9ca",__spanID__="d4d5d6d7d8d9dadb",__status__="Unset",__traceID__="a1a2a3a4a5a6a7a8a9aaabacadaeafb0",resource.cluster="west",resource.service.name="api",span.http.method="POST"} points=1
+#   POST /api/3{__duration_ns__="50000000",__name__="POST /api/3",__parentSpanID__="0000000000000000",__spanID__="e5e6e7e8e9eaebec",__status__="Ok",__traceID__="c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",resource.cluster="west",resource.service.name="web",span.http.method="PUT"} points=1
+#   DELETE /api/4{__duration_ns__="10000000",__name__="DELETE /api/4",__parentSpanID__="0000000000000000",__spanID__="f6f7f8f9fafbfcfd",__status__="Error",__traceID__="dfe0e1e2e3e4e5e6e7e8e9eaebecedee",resource.cluster="east",resource.service.name="web",span.http.method="POST"} points=1
+#   GET /api/5{__duration_ns__="300000000",__name__="GET /api/5",__parentSpanID__="f6f7f8f9fafbfcfd",__spanID__="0708090a0b0c0d0e",__status__="Unset",__traceID__="dfe0e1e2e3e4e5e6e7e8e9eaebecedee",resource.cluster="west",resource.service.name="api",span.http.method="PUT"} points=1
+# 
+# --- diff ---
+# missing series in got: {}
+# 
+v0.4.8#6347820662151184705
+0x0
+0x38e38e38e38e4
+0x2
+0x1880a738c647b8
+0x9c017c14616e2
+0x2
+0xfd8ab45725c41
+0x2
+0xeb6593b5b13d5
+0x1
+0x63717cced7d69
+0x2
+0x33d6fe20de9e3
+0x0
+0x1c85a2642228a8
+0x0
+0x9c0d64c5543d4
+0x3
+0x1792d7e1458340
+0x2
+0xeacca0b46b7be
+0x1
+0x1d5d0c585e8be0
+0x2
+0xa0aa2f0088738
+0x3
+0x1886249f0a76c
+0x0
+0x3e03555f4f526
+0x0
+0x17e2b9d77f1267
+0x0
+0x1c53b05de3e78c
+0x1
+0x30956c71dc79b
+0x1
+0x3326f12c8a9de
+0x0
+0x13895f323ecbc2
+0x2
+0x1ea8603f5f0ba4
+0x3
+0x88fdcdedaa55
+0xbd74c3e812aed
+0x0
+0x161ea37d6ea846
+0x1
+0x1df0d57b212a62
+0x1
+0x12829168a71a6f
+0x2
+0xc0f8e44ecd051
+0x1
+0x14e1ae3f36ccb1
+0x0
+0x2d026414a3af
+0x1
+0x6b22f5a477fa8
+0x1ed753f84a7684
+0x1
+0x4c50992871a22
+0x1
+0x7a42069c7529c
+0x0
+0x1e17b7ccbb71d
+0x1
+0x15271e97364133
+0x3
+0x9a31a2d9fada
+0x1
+0x238ac0b106b74
+0x0
+0x2e948b0b22c41
+0x0
+0x85e0ae6b9157e
+0x1
+0x9d76f637c5b0e
+0x2
+0x6b868dbbbe274
+0x0
+0x14b71c6381fa33
+0x2
+0x1f87f33ccf1d01
+0xffffffffffffffff
+0x8eb64ec771997
+0x1b24fce3eda04b
+0xa
+0x1040ecb0d0ce6c
+0x1
+0x1c9c25f84f3a0
+0x0
