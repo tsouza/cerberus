@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
+	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/drain"
@@ -21,7 +22,23 @@ import (
 // supplied. Mirrors detected_fields' default — drain's
 // `MaxAllowedLineLength` already bounds per-line cost; this caps the
 // number of lines.
-const defaultPatternsLineLimit = 1000
+const (
+	defaultPatternsLineLimit = 1000
+
+	// minimumPatternVolume mirrors upstream Loki's minClusterSize: a
+	// template must account for at least this many log lines before it is
+	// useful enough to return to the pattern panel.
+	minimumPatternVolume = 30
+
+	// maximumPatternSeries mirrors upstream Loki's maxPatterns response
+	// bound. The volume sort below makes the retained series the most
+	// significant templates, rather than the first ones alphabetically.
+	maximumPatternSeries = 300
+
+	// minimumPatternSampleResolution is both the default when the request
+	// omits step and the execution floor upstream applies to smaller steps.
+	minimumPatternSampleResolution = 10 * time.Second
+)
 
 // Pattern is one detected log-line template plus its time-bucketed
 // sample counts. The upstream Loki contract (verified against
@@ -83,6 +100,11 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
 	}
+	step, err := parsePatternsStep(r.FormValue("step"), start, end)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrBadData, err)
+		return
+	}
 
 	sqlStr, args, err := buildPatternsSQL(h.Schema, matchers, start, end, lineLimit)
 	if err != nil {
@@ -98,7 +120,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patterns := minePatterns(lines)
+	patterns := minePatterns(lines, start, end, step)
 
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
@@ -152,21 +174,28 @@ func buildPatternsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time
 // instance (confirmed independent — a Miner owns its own token tree and
 // cluster slice, no shared state), so lines never mix templates across
 // levels.
-func minePatterns(lines []chclient.TimestampedLine) []Pattern {
+func minePatterns(lines []chclient.TimestampedLine, start, end time.Time, step time.Duration) []Pattern {
+	type patternWithVolume struct {
+		pattern Pattern
+		volume  int64
+	}
+
 	miners := make(map[string]*drain.Miner)
 	levels := make([]string, 0)
 	for _, line := range lines {
 		level := logql.NormalizeDetectedLevel(line.Severity)
 		m, ok := miners[level]
 		if !ok {
-			m = drain.New(drain.DefaultConfig())
+			cfg := drain.DefaultConfig()
+			cfg.SampleResolution = step
+			m = drain.New(cfg)
 			miners[level] = m
 			levels = append(levels, level)
 		}
 		m.Train(line.Body, line.Timestamp.UnixNano())
 	}
 
-	out := make([]Pattern, 0)
+	weighted := make([]patternWithVolume, 0)
 	for _, level := range levels {
 		for _, c := range miners[level].Clusters() {
 			if c == nil {
@@ -176,38 +205,87 @@ func minePatterns(lines []chclient.TimestampedLine) []Pattern {
 			if s == "" {
 				continue
 			}
-			out = append(out, Pattern{
-				Pattern: s,
-				Level:   level,
-				Samples: projectSamples(c.Samples()),
+			samples := projectSamples(c.Samples(), start, end)
+			volume := sampleVolume(samples)
+			if volume < minimumPatternVolume {
+				continue
+			}
+			weighted = append(weighted, patternWithVolume{
+				pattern: Pattern{
+					Pattern: s,
+					Level:   level,
+					Samples: samples,
+				},
+				volume: volume,
 			})
 		}
 	}
-	// Stable response order — drain's Clusters() return order follows
-	// LRU cache traversal, which is not deterministic across runs.
-	// Sorting by (pattern, level) lets Grafana / tests pin on the wire
-	// shape without flake; the level tiebreak matters now that the same
-	// pattern string can recur across two different level buckets.
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Pattern != out[j].Pattern {
-			return out[i].Pattern < out[j].Pattern
+	// Upstream retains the most significant patterns: sort by descending
+	// total volume before applying its hard series cap. Pattern and level
+	// are deterministic tie-breaks for equal-volume clusters.
+	sort.SliceStable(weighted, func(i, j int) bool {
+		if weighted[i].volume != weighted[j].volume {
+			return weighted[i].volume > weighted[j].volume
 		}
-		return out[i].Level < out[j].Level
+		if weighted[i].pattern.Pattern != weighted[j].pattern.Pattern {
+			return weighted[i].pattern.Pattern < weighted[j].pattern.Pattern
+		}
+		return weighted[i].pattern.Level < weighted[j].pattern.Level
 	})
+	if len(weighted) > maximumPatternSeries {
+		weighted = weighted[:maximumPatternSeries]
+	}
+	out := make([]Pattern, len(weighted))
+	for i := range weighted {
+		out[i] = weighted[i].pattern
+	}
 	return out
+}
+
+func parsePatternsStep(raw string, start, end time.Time) (time.Duration, error) {
+	if raw == "" {
+		return minimumPatternSampleResolution, nil
+	}
+	step, err := format.ParseDuration(raw)
+	if err != nil || step <= 0 {
+		return 0, errors.New("invalid 'step' parameter")
+	}
+	if end.Sub(start)/step > format.MaxResolutionPoints {
+		return 0, errors.New(format.ResolutionCapMessage)
+	}
+	if step < minimumPatternSampleResolution {
+		return minimumPatternSampleResolution, nil
+	}
+	return step, nil
 }
 
 // projectSamples converts the in-house drain cluster samples
 // (TimestampUnixSec, Count) onto the upstream wire shape
-// `[][unix_seconds, count]`. Samples already arrive ascending by
-// timestamp (drain.Cluster.Samples sorts), and the resolution is whole
+// `[][unix_seconds, count]`. Drain aligns buckets to the Unix grid, so an
+// unaligned request start can put the first bucket's timestamp before the
+// query window even though its rows were in-window. Upstream drops that
+// partial pre-start bucket; apply the same [start,end] timestamp filter
+// before the volume floor is evaluated. Samples already arrive ascending
+// by timestamp (drain.Cluster.Samples sorts), and the resolution is whole
 // seconds, matching upstream's `WriteQueryPatternsResponseJSON`, which
 // emits `sample.Timestamp.Unix()`.
-func projectSamples(samples []drain.Sample) [][2]int64 {
+func projectSamples(samples []drain.Sample, start, end time.Time) [][2]int64 {
 	out := make([][2]int64, 0, len(samples))
 	for _, s := range samples {
+		stamp := time.Unix(s.TimestampUnixSec, 0)
+		if stamp.Before(start) || stamp.After(end) {
+			continue
+		}
 		out = append(out, [2]int64{s.TimestampUnixSec, s.Count})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
 	return out
+}
+
+func sampleVolume(samples [][2]int64) int64 {
+	var total int64
+	for _, sample := range samples {
+		total += sample[1]
+	}
+	return total
 }

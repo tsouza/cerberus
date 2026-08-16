@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,8 @@ type patternsResponse struct {
 	Data   []loki.Pattern `json:"data"`
 }
 
+const retainedPatternVolumeFloor = 30
+
 // TestPatterns_EmptyPeekWindow — when the peek SQL returns zero rows the
 // drain miner emits no clusters and the handler returns the empty-data
 // envelope. Grafana renders this gracefully (the panel just shows "no
@@ -117,14 +120,15 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
-	q := &stubQuerier{
-		tsLines: []chclient.TimestampedLine{
-			{Timestamp: base, Body: "GET /api/users/1 status=200 latency=5ms", Severity: "INFO"},
-			{Timestamp: base.Add(1 * time.Second), Body: "GET /api/users/2 status=200 latency=7ms", Severity: "INFO"},
-			{Timestamp: base.Add(2 * time.Second), Body: "GET /api/users/42 status=200 latency=4ms", Severity: "INFO"},
-			{Timestamp: base.Add(3 * time.Second), Body: "GET /api/users/1337 status=200 latency=11ms", Severity: "INFO"},
-		},
+	lines := make([]chclient.TimestampedLine, 0, retainedPatternVolumeFloor)
+	for i := 0; i < retainedPatternVolumeFloor; i++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			Body:      "GET /api/users/" + strconv.Itoa(i) + " status=200 latency=" + strconv.Itoa(i+1) + "ms",
+			Severity:  "INFO",
+		})
 	}
+	q := &stubQuerier{tsLines: lines}
 
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
@@ -172,13 +176,13 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 	}
 	// Per upstream WriteQueryPatternsResponseJSON: each sample is
 	// [unix_seconds, count]. Sum of counts across all samples for this
-	// cluster must equal the number of trained lines (4).
+	// cluster must equal the number of trained lines.
 	var total int64
 	for _, s := range hit.Samples {
 		total += s[1]
 	}
-	if total != 4 {
-		t.Errorf("expected sample count sum of 4 (one per trained line); got %d", total)
+	if total != retainedPatternVolumeFloor {
+		t.Errorf("expected sample count sum of %d (one per trained line); got %d", retainedPatternVolumeFloor, total)
 	}
 	// Sample timestamps are unix SECONDS (not ms / ns). 2026-05-14T12:00:00 UTC = 1778760000.
 	const baseUnix = 1778760000
@@ -195,6 +199,107 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 	}
 }
 
+func TestPatterns_UsesRequestedStep(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(0, 0).UTC()
+	lines := make([]chclient.TimestampedLine, 0, retainedPatternVolumeFloor)
+	for i := 0; i < retainedPatternVolumeFloor; i++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			Body:      "GET /api/users/42 status=200 latency=5ms",
+			Severity:  "INFO",
+		})
+	}
+	srv := newServer(&stubQuerier{tsLines: lines})
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=0&end=30&step=15s`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var out patternsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("patterns=%d want 1: %+v", len(out.Data), out.Data)
+	}
+	want := [][2]int64{{0, 15}, {15, 15}}
+	if len(out.Data[0].Samples) != len(want) {
+		t.Fatalf("samples=%v want %v", out.Data[0].Samples, want)
+	}
+	for i := range want {
+		if out.Data[0].Samples[i] != want[i] {
+			t.Fatalf("sample[%d]=%v want %v", i, out.Data[0].Samples[i], want[i])
+		}
+	}
+}
+
+func TestPatterns_DropsPartialPreStartBucket(t *testing.T) {
+	t.Parallel()
+
+	const (
+		requestStartUnix = int64(1786836195)
+		requestEndUnix   = int64(1786836315)
+		firstFullBucket  = int64(1786836200)
+	)
+	lines := []chclient.TimestampedLine{{
+		Timestamp: time.Unix(requestStartUnix+2, 0).UTC(),
+		Body:      "live warning request failed",
+		Severity:  "WARN",
+	}}
+	for offset := int64(0); offset < 4; offset++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: time.Unix(firstFullBucket+offset, 0).UTC(),
+			Body:      "live warning request failed",
+			Severity:  "WARN",
+		})
+	}
+	for i := 4; i < retainedPatternVolumeFloor; i++ {
+		lines = append(lines, chclient.TimestampedLine{
+			Timestamp: time.Unix(firstFullBucket+10, 0).UTC(),
+			Body:      "live warning request failed",
+			Severity:  "WARN",
+		})
+	}
+
+	srv := newServer(&stubQuerier{tsLines: lines})
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL +
+		`/loki/api/v1/patterns?query=%7Bservice_name%3D%22cerberus-patterns-live%22%7D` +
+		`&start=1786836195&end=1786836315&step=10s`)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	var out patternsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("patterns=%d want 1: %+v", len(out.Data), out.Data)
+	}
+	if got := out.Data[0].Samples[0]; got != [2]int64{firstFullBucket, 4} {
+		t.Fatalf("first sample=%v want [%d 4]; partial pre-start bucket was not dropped", got, firstFullBucket)
+	}
+	for _, sample := range out.Data[0].Samples {
+		if sample[0] < requestStartUnix || sample[0] > requestEndUnix {
+			t.Fatalf("sample %v outside request window [%d,%d]", sample, requestStartUnix, requestEndUnix)
+		}
+	}
+}
+
 // TestPatterns_BucketsByDetectedLevel feeds the handler two structurally
 // identical templates at different severities and asserts the handler
 // emits two DISTINCT clusters, one per level — pattern mining must not
@@ -205,13 +310,15 @@ func TestPatterns_BucketsByDetectedLevel(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
-	q := &stubQuerier{
-		tsLines: []chclient.TimestampedLine{
-			{Timestamp: base, Body: "connection reset by peer", Severity: "ERROR"},
-			{Timestamp: base.Add(1 * time.Second), Body: "connection reset by peer", Severity: "err"},
-			{Timestamp: base.Add(2 * time.Second), Body: "connection reset by peer", Severity: "WARN"},
-		},
+	lines := make([]chclient.TimestampedLine, 0, 2*retainedPatternVolumeFloor)
+	for i := 0; i < retainedPatternVolumeFloor; i++ {
+		lines = append(
+			lines,
+			chclient.TimestampedLine{Timestamp: base.Add(time.Duration(i) * time.Second), Body: "connection reset by peer", Severity: "ERROR"},
+			chclient.TimestampedLine{Timestamp: base.Add(time.Duration(i) * time.Second), Body: "connection reset by peer", Severity: "WARN"},
+		)
 	}
+	q := &stubQuerier{tsLines: lines}
 
 	srv := newServer(q)
 	t.Cleanup(srv.Close)
@@ -239,15 +346,14 @@ func TestPatterns_BucketsByDetectedLevel(t *testing.T) {
 		}
 		byLevel[p.Level] += total
 	}
-	// The two "ERROR"/"err" lines normalize to the same "error" bucket
-	// (two samples); the "WARN" line is its own "warn" bucket (one
-	// sample) — never merged with the error-level cluster despite an
+	// Both severity buckets meet the upstream volume floor and remain
+	// separate — never merged despite an
 	// identical line body.
-	if byLevel["error"] != 2 {
-		t.Errorf("expected 2 samples in level=error, got %d (byLevel=%+v)", byLevel["error"], byLevel)
+	if byLevel["error"] != retainedPatternVolumeFloor {
+		t.Errorf("expected %d samples in level=error, got %d (byLevel=%+v)", retainedPatternVolumeFloor, byLevel["error"], byLevel)
 	}
-	if byLevel["warn"] != 1 {
-		t.Errorf("expected 1 sample in level=warn, got %d (byLevel=%+v)", byLevel["warn"], byLevel)
+	if byLevel["warn"] != retainedPatternVolumeFloor {
+		t.Errorf("expected %d samples in level=warn, got %d (byLevel=%+v)", retainedPatternVolumeFloor, byLevel["warn"], byLevel)
 	}
 	if _, ok := byLevel[""]; ok {
 		t.Errorf("expected no empty-level cluster, got byLevel=%+v", byLevel)
@@ -322,6 +428,8 @@ func TestPatterns_BadInput(t *testing.T) {
 		{"bad start", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=banana&end=2`},
 		{"bad line_limit", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1&end=2&line_limit=banana`},
 		{"non-positive line_limit", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1&end=2&line_limit=0`},
+		{"bad step", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1&end=2&step=banana`},
+		{"non-positive step", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1&end=2&step=0`},
 	}
 	for _, tc := range cases {
 		tc := tc
