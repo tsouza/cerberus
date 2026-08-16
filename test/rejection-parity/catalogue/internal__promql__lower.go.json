@@ -78,7 +78,6 @@
       "class": "divergence",
       "trigger_query": "sum(rate(demo_latency_exp_hist[5m]))",
       "tracking_issue": 2243,
-      "since": "2026-08-16",
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
@@ -87,7 +86,8 @@
         "callers": [
           "resolveSelectorRouting"
         ]
-      }
+      },
+      "since": "2026-08-16"
     },
     {
       "head": "promql",
