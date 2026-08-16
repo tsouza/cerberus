@@ -476,6 +476,9 @@ func cat13NativeHistograms() []exoticCase {
 		{name: "cat13/histogram_stdvar", promql: "histogram_stdvar(" + withNeg + ")"},
 		{name: "cat13/histogram_fraction_positive_bounds", promql: "histogram_fraction(0.5, 3, " + withNeg + ")"},
 		{name: "cat13/histogram_fraction_negative_bounds", promql: "histogram_fraction(-3, 3, " + withNeg + ")"},
+		{name: "cat13/delta_native_histogram", promql: "delta(" + withNeg + "[5m])"},
+		{name: "cat13/irate_native_histogram", promql: "irate(" + withNeg + "[5m])"},
+		{name: "cat13/idelta_native_histogram", promql: "idelta(" + withNeg + "[5m])"},
 	}
 }
 

@@ -20,8 +20,8 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramSumOrAvg(agg, vs, s, ctx)
 		return plan, true, err
 	}
-	if shape, ok := rateOverExpHistogram(expr, s, ctx); ok {
-		plan, err := lowerExpHistogramRate(shape, s, ctx)
+	if shape, ok := rangeFnOverExpHistogram(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramRangeFn(shape, s, ctx)
 		return plan, true, err
 	}
 	if histSide, op, scale, ok := expHistogramScalarBinop(expr, s, ctx); ok {

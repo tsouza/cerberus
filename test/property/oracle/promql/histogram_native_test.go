@@ -347,12 +347,41 @@ func TestNativeHistogramRateResetWithShiftedOffsets(t *testing.T) {
 		})},
 	}
 
-	h, histogramInput, ok := extrapolatedHistogramRate(samples, int64((5*time.Minute)/time.Millisecond), ts(200), true)
+	h, histogramInput, ok := extrapolatedHistogramValue(samples, int64((5*time.Minute)/time.Millisecond), ts(200), true, true)
 	if !histogramInput || !ok {
-		t.Fatalf("extrapolatedHistogramRate = input %v ok %v", histogramInput, ok)
+		t.Fatalf("extrapolatedHistogramValue = input %v ok %v", histogramInput, ok)
 	}
 	if got := nativeHistogramQuantileValue(0.5, h); !valuesClose(got, 8) {
 		t.Fatalf("quantile = %g, want 8; histogram=%+v", got, h)
+	}
+}
+
+func TestNativeHistogramRangeFunctionsDropMixedFloatHistogramSamples(t *testing.T) {
+	t.Parallel()
+
+	d := build(property.SeriesData{
+		MetricName: "mixed_exp_hist",
+		Labels:     map[string]string{"service": "api"},
+		Points: []property.Point{
+			{TimestampMs: ts(0), Histogram: &property.NativeHistogram{
+				Count: 2, Sum: 3, Scale: 0, PositiveBucketCounts: []uint64{2},
+			}},
+			{TimestampMs: ts(60), Value: 7},
+		},
+	})
+
+	for _, fn := range []string{"delta", "irate", "idelta"} {
+		fn := fn
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			o := eval(d, fn+`(mixed_exp_hist[5m])`, 60)
+			if o.Err != nil {
+				t.Fatalf("%s mixed input: unexpected oracle error: %v", fn, o.Err)
+			}
+			if len(o.Rows) != 0 {
+				t.Fatalf("%s mixed input returned %+v, want the series dropped", fn, o.Rows)
+			}
+		})
 	}
 }
 

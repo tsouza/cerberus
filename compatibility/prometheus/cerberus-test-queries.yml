@@ -727,6 +727,16 @@ test_cases:
   - query: 'rate(demo_shifting_latency_exp_hist[5m])'
   - query: 'increase(demo_shifting_latency_exp_hist[1m])'
   - query: 'increase(demo_shifting_latency_exp_hist[5m])'
+  # delta() uses the same boundary extrapolation over gauge histograms,
+  # while irate()/idelta() select only the last two samples. The moving
+  # shape and cross-scale third instance make endpoint selection, reset
+  # handling and schema reconciliation visible in the histogram payload.
+  - query: 'delta(demo_shifting_latency_exp_hist[1m])'
+  - query: 'delta(demo_shifting_latency_exp_hist[5m])'
+  - query: 'irate(demo_shifting_latency_exp_hist[1m])'
+  - query: 'irate(demo_shifting_latency_exp_hist[5m])'
+  - query: 'idelta(demo_shifting_latency_exp_hist[1m])'
+  - query: 'idelta(demo_shifting_latency_exp_hist[5m])'
   # The FLOAT-valued reductions over a native histogram: reference's
   # funcResets, funcChanges and the `count` aggregation all publish a
   # plain sample rather than a distribution, so unlike every case above

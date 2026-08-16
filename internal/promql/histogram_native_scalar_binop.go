@@ -39,14 +39,15 @@ import (
 //
 // This shape composes with the three shipped histogram-VALUED
 // lowerings — bare selector (histogram_native_bare.go), sum()/avg()
-// (histogram_native_sum.go), rate()/increase() (histogram_native_rate.go)
+// (histogram_native_sum.go), and histogram-valued range functions
+// (histogram_native_range_fn.go)
 // — rather than replacing any of them: [lowerExpHistogramScalarBinop]
 // lowers the histogram side through its own existing recognizer and
 // lowering pair unchanged, then rewrites the capping
 // [chplan.HistogramProjection]'s Input to scale it. `rate()` already
 // scales a histogram by a scalar for its own per-second division, but
 // does so by composing with the window fold
-// (expHistogramValuedWindowFold in histogram_native_rate.go) rather than
+// (expHistogramValuedWindowFold in histogram_native_range_fn.go) rather than
 // this mechanism: a bare selector and `sum()` have no fold in their
 // plan for a PromQL-supplied scalar to ride along with, which is why
 // this file exists as a THIRD, general-purpose scale layer instead of
@@ -148,9 +149,10 @@ func unwrapBinaryExpr(e parser.Expr) (*parser.BinaryExpr, bool) {
 	}
 }
 
-// isExpHistogramValuedShape reports whether expr is one of the three
-// shapes that answer histogram-valued: a bare exp-histogram selector,
-// sum()/avg() over one, or rate()/increase() over one.
+// isExpHistogramValuedShape reports whether expr is one of the three shapes
+// that answer histogram-valued: a bare exp-histogram selector,
+// sum()/avg() over one, or a supported histogram-valued range function over
+// one.
 func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
 	if _, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		return true
@@ -158,7 +160,7 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if _, _, ok := sumOrAvgOverExpHistogram(expr, s, ctx); ok {
 		return true
 	}
-	if _, ok := rateOverExpHistogram(expr, s, ctx); ok {
+	if _, ok := rangeFnOverExpHistogram(expr, s, ctx); ok {
 		return true
 	}
 	return false
@@ -172,8 +174,8 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // HistogramProjection is rewritten to scale it.
 //
 // extraPassthrough only differs from empty for the bare-selector range
-// shapes, which read the step-grid anchor off the row. sum()/avg() and
-// rate()/increase() already carry
+// shapes, which read the step-grid anchor off the row. sum()/avg() and the
+// histogram-valued range functions already carry
 // stepGridAnchorColumn in their own Input's output when it applies —
 // [expHistogramGroupMerge] / [expHistogramWindowReshape] project it
 // themselves — so neither needs it repeated here.
@@ -193,8 +195,8 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 	default:
 		if agg, vs, ok := sumOrAvgOverExpHistogram(histSide, s, ctx); ok {
 			node, err = lowerExpHistogramSumOrAvg(agg, vs, s, ctx)
-		} else if shape, ok := rateOverExpHistogram(histSide, s, ctx); ok {
-			node, err = lowerExpHistogramRate(shape, s, ctx)
+		} else if shape, ok := rangeFnOverExpHistogram(histSide, s, ctx); ok {
+			node, err = lowerExpHistogramRangeFn(shape, s, ctx)
 		} else {
 			// Unreachable: both scalar-binop recognizers only name histSide
 			// after isExpHistogramValuedShape confirmed it matches one of

@@ -22,10 +22,11 @@ import (
 // histogram-VALUED shapes issue #1967 answers — a BARE selector
 // (TestLower_ExpHistogram_BareSelectorIsHistogramValued), `sum()` over
 // one and its `avg()` twin (TestLower_ExpHistogram_SumIsHistogramValued,
-// TestLower_ExpHistogram_AvgIsHistogramValued) and `rate()` /
-// `increase()` over one (TestLower_ExpHistogram_RateIsHistogramValued),
-// and float-only functions, which accept and drop histogram samples
-// (issue #2221) — must fail lowering
+// TestLower_ExpHistogram_AvgIsHistogramValued), the five native-histogram-
+// valued range functions over one
+// (TestLower_ExpHistogram_RangeFunctionsAreHistogramValued), and float-only
+// functions, which accept and drop histogram samples (issue #2221) — must
+// fail lowering
 // with a clear error, never silently resolve against the Gauge/Sum tables
 // and return an empty-but-200 result. Before the fix, TablesFor never
 // yielded ExpHistogramTable for these shapes, so cerberus quietly scanned
@@ -55,8 +56,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		name  string
 		query string
 	}{
-		{name: "delta", query: `delta(latency_exp_hist[5m])`},
-		{name: "irate", query: `irate(latency_exp_hist[5m])`},
 		{name: "sum_over_time", query: `sum_over_time(latency_exp_hist[5m])`},
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
@@ -67,11 +66,14 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		// not a bare selector, and a `sum` that is not the root.
 		{name: "sum over rate", query: `sum(rate(latency_exp_hist[5m]))`},
 		{name: "sum over increase", query: `sum(increase(latency_exp_hist[5m]))`},
+		{name: "sum over delta", query: `sum(delta(latency_exp_hist[5m]))`},
+		{name: "sum over irate", query: `sum(irate(latency_exp_hist[5m]))`},
+		{name: "sum over idelta", query: `sum(idelta(latency_exp_hist[5m]))`},
 		{name: "sum of sum", query: `sum(sum(latency_exp_hist))`},
 		{name: "sum under topk", query: `topk(3, sum by (service) (latency_exp_hist))`},
 
-		// `rate()` / `increase()` over a range-vector selector ARE answered
-		// (see TestLower_ExpHistogram_RateIsHistogramValued). These are the
+		// The five histogram-valued range functions over a selector ARE answered
+		// (see TestLower_ExpHistogram_RangeFunctionsAreHistogramValued). These are the
 		// shapes that narrowing must NOT reach: a rate under a consumer that
 		// reads a Value, and a rate under an aggregation — which needs the
 		// across-series merge stacked on top of the window reduction, so
@@ -80,6 +82,11 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
 		{name: "rate under avg", query: `avg(rate(latency_exp_hist[5m]))`},
 		{name: "rate over subquery", query: `rate(latency_exp_hist[5m:1m])`},
+		{name: "delta under label_replace", query: `label_replace(delta(latency_exp_hist[5m]), "a", "b", "service", "(.*)")`},
+		{name: "idelta under topk", query: `topk(3, idelta(latency_exp_hist[5m]))`},
+		{name: "delta over subquery", query: `delta(latency_exp_hist[5m:1m])`},
+		{name: "irate over subquery", query: `irate(latency_exp_hist[5m:1m])`},
+		{name: "idelta over subquery", query: `idelta(latency_exp_hist[5m:1m])`},
 
 		// `resets()` / `changes()` / `count()` over a bare selector ARE
 		// answered (see TestLower_ExpHistogram_ResetsChangesCountAreFloatValued).
@@ -515,16 +522,16 @@ func TestLower_ExpHistogram_SumMergesBucketLadders(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_RateIsHistogramValued pins issue #1967's third
-// and last cut: `rate(<exp-histogram selector>[range])` and its
-// `increase` twin are answerable, and the answer is a
+// TestLower_ExpHistogram_RangeFunctionsAreHistogramValued pins issue #1967's
+// rate/increase cut and issue #2224's delta/irate/idelta extension: all five
+// native-histogram range functions are answerable, and the answer is a
 // chplan.HistogramProjection publishing the same thirteen-column
 // contract as the bare and `sum()` siblings.
 //
-// Like `sum()`, and unlike the bare selector, the quartet's first slot
+// Like `sum()`, and unlike the bare selector, the result's first slot
 // must be an EMPTY literal: reference PromQL drops `__name__` from every
 // range-vector function result too.
-func TestLower_ExpHistogram_RateIsHistogramValued(t *testing.T) {
+func TestLower_ExpHistogram_RangeFunctionsAreHistogramValued(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -547,6 +554,27 @@ func TestLower_ExpHistogram_RateIsHistogramValued(t *testing.T) {
 		{
 			name:  "instant increase",
 			query: `increase(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "instant delta",
+			query: `delta(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "instant irate",
+			query: `irate(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "instant idelta",
+			query: `idelta(latency_exp_hist[5m])`,
 			lower: func(e parser.Expr) (chplan.Node, error) {
 				return promql.LowerAt(context.Background(), e, s, end, end)
 			},
@@ -582,6 +610,27 @@ func TestLower_ExpHistogram_RateIsHistogramValued(t *testing.T) {
 		{
 			name:  "range increase",
 			query: `increase(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range delta",
+			query: `delta(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range irate",
+			query: `irate(latency_exp_hist[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range idelta",
+			query: `idelta(latency_exp_hist[5m])`,
 			lower: func(e parser.Expr) (chplan.Node, error) {
 				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
 			},
@@ -624,6 +673,65 @@ func TestLower_ExpHistogram_RateIsHistogramValued(t *testing.T) {
 			if !ok || name.V != "" {
 				t.Fatalf("lower(%q): __name__ projection is %#v, want an empty literal — "+
 					"a range-vector function result carries no metric name", tc.query, hp.GroupBy[0])
+			}
+		})
+	}
+}
+
+// TestLower_ExpHistogram_RangeFunctionsTemporalityMembership pins the
+// gauge-versus-counter split for the three functions added in issue #2224.
+// irate reconstructs a counter increase, so a DELTA-temporality OTel row uses
+// the current observation while a CUMULATIVE row uses reset-aware subtraction.
+// delta and idelta are gauge functions: their arithmetic never consults the
+// counter temporality column, and carrying it would be dead plan state that can
+// accidentally invite counter-reset behavior into a gauge result.
+func TestLower_ExpHistogram_RangeFunctionsTemporalityMembership(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	if s.AggregationTemporalityColumn == "" {
+		t.Fatal("default exponential-histogram schema has no AggregationTemporality column")
+	}
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		fn   string
+		want bool
+	}{
+		{fn: "delta", want: false},
+		{fn: "irate", want: true},
+		{fn: "idelta", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fn, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.fn + `(latency_exp_hist[5m])`)
+			if err != nil {
+				t.Fatalf("ParseExpr(%s): %v", tc.fn, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%s): %v", tc.fn, err)
+			}
+
+			var got bool
+			chplan.Walk(plan, func(node chplan.Node) bool {
+				agg, ok := node.(*chplan.Aggregate)
+				if !ok {
+					return true
+				}
+				for _, fn := range agg.AggFuncs {
+					for _, arg := range fn.Args {
+						if arg.Equal(&chplan.ColumnRef{Name: s.AggregationTemporalityColumn}) {
+							got = true
+						}
+					}
+				}
+				return true
+			})
+			if got != tc.want {
+				t.Fatalf("%s temporality aggregate present = %v, want %v", tc.fn, got, tc.want)
 			}
 		})
 	}

@@ -13,7 +13,7 @@ import (
 //
 // It is the first exp-histogram range-vector lowering in this package
 // whose answer is a plain sample rather than a distribution, and that is
-// the whole of what makes it a separate file from histogram_native_rate.go
+// the whole of what makes it a separate file from histogram_native_range_fn.go
 // rather than another branch inside it. Reference Prometheus's funcResets
 // and funcChanges both `return append(enh.Out, Sample{F: float64(n)})` —
 // they COUNT sample pairs and publish the count, so nothing about the
@@ -115,7 +115,7 @@ const (
 // ordinary float series that the existing emitter already answers.
 //
 // A non-positive `[range]` is refused rather than answered, matching
-// [rateOverExpHistogram]: falling through leaves the shape on the explicit
+// [rangeFnOverExpHistogram]: falling through leaves the shape on the explicit
 // rejection path instead of reducing an empty window.
 func resetsOrChangesOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramAggShape, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
@@ -195,7 +195,7 @@ func lowerExpHistogramResetsOrChanges(shape histogramAggShape, s schema.Metrics,
 
 // expHistogramResetsWindowed builds the instant-mode subtree beneath the
 // sample projection: the filtered scan reduced, per series, to that
-// series' pair count. Its prologue is [expHistogramRateWindowed]'s rung
+// series' pair count. Its prologue is [expHistogramRangeFnWindowed]'s rung
 // for rung — same anchor resolution and the same `(anchor - range,
 // anchor]` predicate — because both answer a range-vector function over
 // the same table and must select the same rows for the same `[range]`.

@@ -17,6 +17,8 @@ import (
 //   - rate(m[range])              — extrapolated counter rate / sec
 //   - increase(m[range])          — extrapolated counter increase
 //   - delta(m[range])             — extrapolated gauge delta
+//   - irate(m[range])             — last-two counter rate / sec
+//   - idelta(m[range])            — last-two gauge delta
 //   - sum_over_time(m[range])     — sum of samples in window
 //   - avg_over_time(m[range])     — mean of samples in window
 //   - min_over_time(m[range])     — minimum sample
@@ -62,10 +64,18 @@ func (e *Evaluator) evalRangeFunction(c *parser.Call, evalTsMs int64) ([]VectorR
 
 	out := make([]VectorRow, 0, len(ranges))
 	for _, r := range ranges {
-		if c.Func.Name == "rate" || c.Func.Name == "increase" {
-			h, histogramInput, ok := extrapolatedHistogramRate(
-				r.Samples, rangeMs, effectiveTs, c.Func.Name == "rate",
-			)
+		if isHistogramValuedRangeFunction(c.Func.Name) {
+			var h *nativeHistogram
+			var histogramInput, ok bool
+			switch c.Func.Name {
+			case "rate", "increase", "delta":
+				h, histogramInput, ok = extrapolatedHistogramValue(
+					r.Samples, rangeMs, effectiveTs,
+					c.Func.Name != "delta", c.Func.Name == "rate",
+				)
+			case "irate", "idelta":
+				h, histogramInput, ok = instantHistogramValue(r.Samples, c.Func.Name == "irate")
+			}
 			if histogramInput {
 				if !ok {
 					continue
@@ -106,6 +116,10 @@ func applyRangeFn(name string, samples []Sample, rangeMs, effectiveTs int64) (fl
 		return extrapolatedRate(samples, rangeMs, effectiveTs, true, false)
 	case "delta":
 		return extrapolatedRate(samples, rangeMs, effectiveTs, false, false)
+	case "irate":
+		return instantFloatValue(samples, true)
+	case "idelta":
+		return instantFloatValue(samples, false)
 	case "sum_over_time":
 		return sumOverTime(samples), len(samples) > 0
 	case "avg_over_time":
@@ -465,12 +479,39 @@ func extrapolatedRate(samples []Sample, rangeMs, effectiveTs int64, isCounter, i
 	return resultValue, true
 }
 
-// extrapolatedHistogramRate is the native-histogram sibling of
+func isHistogramValuedRangeFunction(name string) bool {
+	switch name {
+	case "rate", "increase", "delta", "irate", "idelta":
+		return true
+	}
+	return false
+}
+
+func instantFloatValue(samples []Sample, isRate bool) (float64, bool) {
+	if len(samples) < 2 {
+		return 0, false
+	}
+	previous := samples[len(samples)-2]
+	current := samples[len(samples)-1]
+	if previous.H != nil || current.H != nil || current.T == previous.T {
+		return 0, false
+	}
+	value := current.V - previous.V
+	if isRate {
+		if current.V < previous.V {
+			value = current.V
+		}
+		value /= float64(current.T-previous.T) / float64(millisPerSecond)
+	}
+	return value, true
+}
+
+// extrapolatedHistogramValue is the native-histogram sibling of
 // extrapolatedRate. It subtracts the first distribution from the last at
-// the coarsest scale in the window, adds the complete previous histogram
-// back for every whole-histogram reset, then scales every component by one
-// boundary-extrapolation factor.
-func extrapolatedHistogramRate(samples []Sample, rangeMs, effectiveTs int64, isRate bool) (*nativeHistogram, bool, bool) {
+// the coarsest relevant scale, adds complete previous histograms for counter
+// resets when requested, then scales every component by one boundary-
+// extrapolation factor.
+func extrapolatedHistogramValue(samples []Sample, rangeMs, effectiveTs int64, isCounter, isRate bool) (*nativeHistogram, bool, bool) {
 	var histogramCount int
 	for _, sample := range samples {
 		if sample.H != nil {
@@ -485,7 +526,11 @@ func extrapolatedHistogramRate(samples []Sample, rangeMs, effectiveTs int64, isR
 	}
 
 	targetScale := samples[0].H.Scale
-	for _, sample := range samples[1:] {
+	scaleSamples := samples[1:]
+	if !isCounter {
+		scaleSamples = samples[len(samples)-1:]
+	}
+	for _, sample := range scaleSamples {
 		if sample.H.Scale < targetScale {
 			targetScale = sample.H.Scale
 		}
@@ -497,21 +542,54 @@ func extrapolatedHistogramRate(samples []Sample, rangeMs, effectiveTs int64, isR
 
 	result := addScaledNativeHistogram(nil, folded[len(folded)-1], 1)
 	result = addScaledNativeHistogram(result, folded[0], -1)
-	for i := 1; i < len(samples); i++ {
-		if nativeHistogramReset(samples[i].H, samples[i-1].H) {
-			result = addScaledNativeHistogram(result, folded[i-1], 1)
+	if isCounter {
+		for i := 1; i < len(samples); i++ {
+			if nativeHistogramReset(samples[i].H, samples[i-1].H) {
+				result = addScaledNativeHistogram(result, folded[i-1], 1)
+			}
 		}
 	}
 
 	factor, ok := extrapolationFactor(
 		samples, rangeMs, effectiveTs,
 		folded[0].Count, result.Count,
-		true, isRate,
+		isCounter, isRate,
 	)
 	if !ok {
 		return nil, true, false
 	}
 	scaleNativeHistogram(result, factor)
+	return result, true, true
+}
+
+func instantHistogramValue(samples []Sample, isRate bool) (*nativeHistogram, bool, bool) {
+	var histogramCount int
+	for _, sample := range samples {
+		if sample.H != nil {
+			histogramCount++
+		}
+	}
+	if histogramCount == 0 {
+		return nil, false, false
+	}
+	if len(samples) < 2 {
+		return nil, true, false
+	}
+	previous := samples[len(samples)-2]
+	current := samples[len(samples)-1]
+	if previous.H == nil || current.H == nil || current.T == previous.T {
+		return nil, true, false
+	}
+	targetScale := min(previous.H.Scale, current.H.Scale)
+	previousHist := downscaleNativeHistogram(previous.H, targetScale)
+	currentHist := downscaleNativeHistogram(current.H, targetScale)
+	result := addScaledNativeHistogram(nil, currentHist, 1)
+	if !isRate || !nativeHistogramReset(current.H, previous.H) {
+		result = addScaledNativeHistogram(result, previousHist, -1)
+	}
+	if isRate {
+		scaleNativeHistogram(result, float64(millisPerSecond)/float64(current.T-previous.T))
+	}
 	return result, true, true
 }
 
@@ -605,7 +683,7 @@ func maxOverTime(samples []Sample) float64 {
 // functions this oracle implements.
 func isRangeFunctionName(name string) bool {
 	switch name {
-	case "rate", "increase", "delta",
+	case "rate", "increase", "delta", "irate", "idelta",
 		"sum_over_time", "avg_over_time",
 		"min_over_time", "max_over_time", "count_over_time",
 		"last_over_time", "changes", "resets",
