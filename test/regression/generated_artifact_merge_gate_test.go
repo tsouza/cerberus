@@ -111,6 +111,11 @@ const (
 // that re-running something locally is not on the table.
 const parityBaselineSync = "compat-baseline-sync.mjs"
 
+// parityEnrolmentBaselineRecipe re-derives each query head's exact roster of
+// TXTAR fixtures carrying a live-reference contract through the canonical
+// generated-artifact graph.
+const parityEnrolmentBaselineRecipe = "just update-golden parity"
+
 // generatedArtifacts is the canonical roster of committed generated artefacts.
 // Every entry must be `-merge` gated and documented in `.gitattributes`.
 var generatedArtifacts = []generatedArtifact{
@@ -160,6 +165,9 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/surface-parity/promql-reference-verdicts.json", "promql-surface-gate.mjs"},
 	{"test/surface-parity/logql-reference-verdicts.json", logqlReferenceVerdictsEnv},
 	{"test/surface-parity/traceql-reference-verdicts.json", traceqlReferenceVerdictsEnv},
+	{"test/regression/parity-enrolment-baselines/promql/baseline.txt", parityEnrolmentBaselineRecipe},
+	{"test/regression/parity-enrolment-baselines/logql/baseline.txt", parityEnrolmentBaselineRecipe},
+	{"test/regression/parity-enrolment-baselines/traceql/baseline.txt", parityEnrolmentBaselineRecipe},
 
 	{"test/rejection-parity/divergence-ceiling.json", inventoryUpdateEnv},
 

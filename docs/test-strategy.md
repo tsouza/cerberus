@@ -22,9 +22,9 @@ inside each layer.
 | 3       | chplan IR invariants                       | `internal/chplan/{equal,walk}_invariants_test.go`                                                                                                                                                                                                                             | `Equal()` false-positives / negatives; `Walk` / `Children` ordering drift; pointer-identity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Lowering bugs — IR is generic                                                                                                                                                                                                                                                                                                                     |
 | 4       | Optimizer rule properties                  | `internal/optimizer/{rule_interaction,termination,decision_pins,regression_bank}_test.go`                                                                                                                                                                                     | Rule-pair commutation, non-termination, mis-rewrites, decision-pin regressions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Cross-rule chDB row drift (covered by Layer 6 chDB property)                                                                                                                                                                                                                                                                                      |
 | 5       | chsql Frag + QueryBuilder goldens          | `internal/chsql/{frag_goldens,query_builder_invariants,emit_node_goldens}_test.go`                                                                                                                                                                                            | Frag render shape, slot-ordering invariants, append/replace semantics, Build idempotency                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | SQL that compiles but executes incorrectly — covered by Layer 6                                                                                                                                                                                                                                                                                   |
-| 6a      | PromQL chDB roundtrip                      | `test/spec/promql/*.txtar` (`-- seed --` / `-- expected_rows --`)                                                                                                                                                                                                             | Optimizer/emitter rewrites that change the row set                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Behaviour outside the seeded corpus                                                                                                                                                                                                                                                                                                               |
-| 6b      | LogQL chDB roundtrip                       | `test/spec/logql/*.txtar`                                                                                                                                                                                                                                                     | Same as 6a for LogQL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Same as 6a                                                                                                                                                                                                                                                                                                                                        |
-| 6c      | TraceQL chDB roundtrip                     | `test/spec/traceql/*.txtar`                                                                                                                                                                                                                                                   | Same as 6a for TraceQL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Same as 6a                                                                                                                                                                                                                                                                                                                                        |
+| 6a      | PromQL chDB roundtrip                      | `test/spec/promql/*.txtar` + `internal/promql/lower_test.go`                                                                                                                                                                                                                  | Pre-optimizer and post-optimizer row drift, plus live reference parity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Behaviour outside the seeded corpus                                                                                                                                                                                                                                                                                                               |
+| 6b      | LogQL chDB roundtrip                       | `test/spec/logql/*.txtar` + `internal/logql/lower_test.go`                                                                                                                                                                                                                    | Same as 6a for LogQL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Same as 6a                                                                                                                                                                                                                                                                                                                                        |
+| 6c      | TraceQL chDB roundtrip                     | `test/spec/traceql/*.txtar` + `internal/traceql/lower_test.go`                                                                                                                                                                                                                | Same as 6a for TraceQL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Same as 6a                                                                                                                                                                                                                                                                                                                                        |
 | 6d      | Function-surface parity ledger             | `test/surface-parity/`, `test/rejection-parity/`, `test/oracle/inventory/`                                                                                                                                                                                                    | A symbol cerberus fails to lower (wrong-reject) or answers when the reference rejects (wrong-accept)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Whether an accepted symbol returns the *right rows* (Layer 6a-c)                                                                                                                                                                                                                                                                                  |
 | 6e      | Strict-scan differential (real CH)         | `test/spec/strictscan_integration_test.go` + `test/spec/metadata_endpoints_realch_integration_test.go` + `internal/routerrules/realch_integration_test.go` + `internal/optcorpus/{queryexit,enummigrate}_realch_integration_test.go`                                          | Emit-type bugs where chDB coerces a column (UInt8/UInt64 -> `*float64`) but prod clickhouse-go strict-scans and 502s. The router-corpus arm extends this to the OFFLINE corpus WRITE + READ seams e2e never touch (#1064). The metadata-endpoints arm covers the non-matrix Loki/Prometheus label-values + index-stats/volume + metadata decoders (`QueryLabelSets` / `QueryIndexStats` / `QueryStrings` / `QueryIndexVolume` / `QueryMetricMeta`), which bypass `engine.QueryPlan` entirely and previously had no fixture corpus at all (#1634). The optcorpus arms cover the two seams a fake passes SILENTLY: a `system.query_log.type` predicate naming a non-member (ClickHouse coerces the comparison to String and matches nothing), and a deployed `exit_status` Enum8 narrower than the member set the binary writes (`CREATE TABLE IF NOT EXISTS` is a no-op against an existing table, so every batch is rejected with `unknown element`) | Tempo search-row decoders (see #1635, which has a hidden pipeline stage to reproduce); rows that scan but are *wrong* (Layer 6a-c)                                                                                                                                                                                                                |
 | 6f      | Connection-teardown differential (real CH) | `internal/chclient/conn_teardown_integration_test.go`                                                                                                                                                                                                                         | Whether a pooled connection SURVIVES a cursor teardown: clickhouse-go releases a connection when its query ends on a live context and destroys the socket when it ends on a cancelled one, and the difference is asserted from both ends — the driver's pool census and the server's own live TCP-session count, read over an independent observer client. The probe pins `max_block_size` so the result streams past the driver's block-buffer depth: with a single block the driver's teardown select is a coin flip, and the arms stop diverging                                                                                                                                                                                                                                                                                                                                                                                                  | Which callers use the contract (Layer 10 pins the prom handler seam); the ordering inside `CloseCursor` itself (unit tests). It rides the required `strict-scan` lane, so a real-CH teardown regression blocks the merge; the Layer 8 / Layer 10 pins on the `check` lane hold the ordering and startup sequencing independently of a live server |
@@ -105,7 +105,7 @@ for the rosters themselves and the procedure for moving one.
 | `forbid-deferral`                       | `forbid-deferral.yml` (`forbid-deferral`)              | PR (incl. edited) + queue + push    | Required  | The change's own additions — PR description, commit messages in its range, `+` lines of its diff — scanned for the marker classes in `DEFERRAL_MARKERS` (`.github/scripts/forbid-deferral.mjs`); each hit must cite an OPEN issue (not a pull request) in its scope: a heading's whole section, a paragraph otherwise, `CITATION_WINDOW_LINES` in a diff. Its own workflow, so `edited` re-runs it on a corrected description. A cited number the API cannot resolve is separated from one that names nothing by a one-per-run capability probe (repository read, then issue-list read), so a token without `issues: read` fails as a permission fault instead of as the author's prose. Pinned by `forbid-deferral.test.mjs` + `test/regression/forbid_deferral_trigger_test.go` + `test/regression/forbid_deferral_permission_test.go`                                                                                                                                                                                                                                                                                                                           |
 | `pr-body`                               | `pr-hygiene.yml` (`pr-body`)                           | PR (incl. edited) + queue + push    | Required  | Rejects a pull request whose description is empty or a stub (`.github/scripts/pr-body-check.mjs`): boilerplate that carries no description — the AI footer, `Co-authored-by:` trailers, HTML/template comments, image-only lines — is stripped, and the remainder must be at least `MIN_CHARS` of meaningful text and not a lone placeholder token. Only the `pull_request` event carries a body in its payload; on the queue and on a push the description is resolved from the head commit's associated pull request through `forbid-deferral`'s own resolver, so the two gates cannot drift on what "the description" is. A commit with NO associated pull request passes — it has no description to be a stub — and `pr-body-check.test.mjs` drives the real resolver to pin that the exemption keys off its origin label rather than off emptiness                                                                                                                                                                                                                                                                                                            |
 | `probe`                                 | `chdb.yml` (`probe`)                                   | PR + queue + push + nightly         | Required  | chDB driver sanity (`TestChDBProbe`) + `just test-chdb` (api-handler + Layer 7b chdb lane + the `system.query_log` Enum8 resolution probe behind the optimizer corpus reconciler)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `roundtrip (promql / logql / traceql)`  | `chdb.yml` (matrix)                                    | PR + queue + push + nightly         | Required  | TXTAR chDB roundtrip per head (Layer 6a-c)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `roundtrip (promql / logql / traceql)`  | `chdb.yml` (matrix)                                    | PR + queue + push + nightly         | Required  | Pre-optimizer `test/spec/<head>` and post-optimizer `internal/<head>` chDB execution plus live reference parity for all three heads; LogQL and TraceQL use `chdb,agpl_oracle,chdb_agpl_oracle`, while PromQL uses `chdb` (Layer 6a-c)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)       | PR + queue + push + nightly + disp. | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness) + parity-regression ratchet vs `compatibility/parity-baseline/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)             | PR + queue + push + nightly + disp. | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus + parity-regression ratchet vs `compatibility/parity-baseline/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)            | PR + queue + push + nightly + disp. | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus), two transport arms — HTTP (`diff`) and gRPC/h2c `StreamingQuerier` (`diff-grpc`, #1453) — each with its own parity-regression ratchet vs `compatibility/parity-baseline/` (`heads.tempo` / `heads.tempo-grpc`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -128,6 +128,40 @@ for the rosters themselves and the procedure for moving one.
 | `migration-tier2`                       | `migration-e2e.yml` (`migration-tier2`)                | push + nightly + dispatch           | Info      | Layer 14 Tier-2 substrate: the Tier-1 stack plus the query-only external ruler (Grafana-managed alerting against cerberus), its recording-rule write-back bridge and the dead-end notification receiver, running the `@tier2` Gherkin scenarios and the `migration_tier2`-tagged substrate self-check. `needs: migration-tier1` — firing parity is not provable before query parity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `migration-e2e`                         | `migration-e2e.yml` (`migration-e2e`)                  | push + nightly + dispatch           | Info      | Layer-14 migration-scenario lane: the Tier-0 godog suite over committed archetype fixtures (offline, no Docker). Its coverage ratchet + detector guard run on the required `lint` job                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `CodeQL`                                | GitHub default setup (no workflow file)                | PR + push + weekly                  | Required  | Static security analysis over the Go and JavaScript sources. Two check families exist and only one is the gate: `CodeQL` (app `57789`, GitHub Code Scanning) reports the *results* and is the required check; `Analyze (<language>)` (app `15368`, Actions) reports only that the scan ran. Requiring the wrong one gates on the runner, not the findings. `CodeQL` evaluates **new** alerts against the PR, so it never re-reports a pre-existing alert — a dismissed one stays dismissed until the code that produced it changes. Default setup builds its analysis workflow server-side and dispatches it on `push` and `pull_request` only, so this is the one required context with no `merge_group` half — see "Merge-queue posture" below                                                                                                                                                                                                                                                                                                                                                                                                                   |
+
+### Test-fence enrollment contracts
+
+The lane registry describes ownership and policy, but registry metadata alone
+is never accepted as proof that a test executes. The required `check` gate
+enforces that distinction with
+`test/regression/tagged_test_enrollment_test.go`. It parses every
+build-constrained root-module `_test.go` file into a Go AST and discovers each
+`Test*`, `Fuzz*`, and executable `Example*` symbol (`TestMain` and examples
+without an output directive are not assertions). Independently, it reads real
+workflow `run` steps, the statically named Just recipes they invoke, direct
+`go test` commands, and the migration execution adapter. A registry lane may
+bind those two discoveries only when its workflow job, build-tag roster,
+package arguments, optional `-run` expression, source globs, and
+command/recipe/script entrypoint all match. `go vet`, compile-only test
+invocations, prose, and dynamic commands are not execution evidence. Execution
+must also be reachable and failure-propagating: a statically disabled workflow
+step, unconditional `continue-on-error`, unmodelled shell control flow, a pipeline without
+`errexit`/`pipefail`, a non-Linux runner, a non-root working directory, or an
+override of Go's build-context environment cannot certify a symbol. Prior
+`GITHUB_ENV` writes are included in that environment check. The coverage
+recipe's intentional local conditional is accepted only when CI requires both
+named coverage lanes and the fail-closed summary join consumes their result.
+Adding a tagged assertion without a matching executing lane therefore fails
+closed.
+
+Each query head also has a structural oracle floor in
+`.github/scripts/ci-lane-contract.mjs`. PromQL Layer 6a, LogQL Layer 6b, and
+TraceQL Layer 6c must each retain source-applicable `execution`, `property`, and
+`reference` oracle providers that run on `main` and are required before a
+release. This is a semantic contract rather than a list of lane IDs: a provider
+may be renamed or split, but deleting it, changing its oracle class or posture,
+or moving it out of that head's risk domain fails registry validation. One
+head's providers cannot satisfy another head's floor.
 
 ### Merge-queue posture
 
@@ -277,13 +311,36 @@ idempotency.
 ### Layer 6 — chDB roundtrip
 
 Fixtures with both `-- seed --` and `-- expected_rows --` sections run
-under the `chdb` build tag. The runner DDL-applies the OTel-CH schema,
-loads the seed rows, executes the emitted SQL, and compares the result
-set to `expected_rows`. Each head's `just update-golden` shard
-regenerates this layer too — it runs a second, chdb-tagged pass over
-that head's corpus so `expected_rows` cells can never go stale behind a
-`-- sql --` change (it requires libchdb.so; see `just chdb-install`).
-Use `just spec-chdb` to verify locally without rewriting.
+twice against chDB. `test/spec/<head>` executes the pre-optimizer SQL,
+while `internal/<head>` executes the post-optimizer SQL. Both compare the
+result set to `expected_rows`; the post-optimizer walk then runs live reference
+parity. The required roundtrip matrix uses `chdb` for PromQL, whose reference
+evaluator is available under that tag, and `chdb,agpl_oracle,chdb_agpl_oracle`
+for LogQL and TraceQL. For those AGPL-backed heads, the three-tag set keeps each
+in-house parser and its independent reference evaluator in the same binary; the
+parity seam fails loudly if that evaluator compiles out, so a self-comparison
+cannot report green.
+
+Each head's `just update-golden` shard regenerates this layer too — it runs a
+second, chdb-tagged pass over that head's corpus so `expected_rows` cells can
+never go stale behind a `-- sql --` change (it requires libchdb.so; see
+`just chdb-install`). `just spec-chdb` verifies the pre-optimizer expected-row
+pass locally without rewriting; the workflow runner additionally owns the
+post-optimizer and live-reference comparisons.
+
+Live-reference enrollment is baselined independently for every language.
+`test/regression/parity_enrolment_test.go` derives the exact sorted identities
+of TXTAR fixtures carrying a `-- parity --` section under each head and compares
+them with that head's committed `baseline.txt` in
+`test/regression/parity-enrolment-baselines/`. The baseline files are the source
+of truth; copied counts and event-named checkpoints are not part of the
+contract. Removing one fixture and adding another in the same head therefore
+fails even though the total is unchanged. A deliberate roster change is made
+with `just update-golden parity` and reviewed as an exact identity diff. The
+same shard also regenerates the parser-surface and rejection-parity ledgers,
+and a fixture change cannot pass its shard-coverage check without naming it.
+The generated files refuse line merging so unrelated additions cannot blend
+with a stale removal.
 
 Both sections are load-bearing: a fixture with a `-- seed --` but no
 `-- expected_rows --` is **inert** — the runner returns before it touches
@@ -346,8 +403,9 @@ correctness. Measured over the four `internal/api` packages, `-race` costs
 between 1.5x (`prom`, 131s → 201s — it is already the long pole) and 5x
 (`tempo/grpc`, 0.4s → 2.1s) in wall clock. The difference now is that a
 developer or agent CAN run
-`go test -race -tags chdb ./...` to chase a suspected data race in
-chdb-tagged code, which before was structurally impossible.
+`go test -race -tags chdb,agpl_oracle,chdb_agpl_oracle ./...` to chase a
+suspected data race across the complete chDB-tagged surface, which before was
+structurally impossible.
 
 ### Layer 6d — Function-surface parity ledger
 
@@ -692,60 +750,109 @@ quietly decaying into a green no-op.
 
 ## Property tests
 
-`test/property/` runs rapid-driven property tests under the `chdb`
-build tag. The architecture is:
+`test/property/` runs rapid-driven property tests under the composite
+`chdb,agpl_oracle,chdb_agpl_oracle` tag set. `just property` is the canonical
+local entry point and includes all three query heads. The architecture is:
 
 ```text
 test/property/
-  framework.go        — rapid.Check driver + comparator
-  gen/                — random data + query generators per head
+  framework.go        — rapid.Check driver, deterministic examples,
+                         fail-closed validators, and result comparator
+  gen/
+    shapes.go         — exact stable ShapeID rosters for every family
+    *.go              — random data + shape-aware query generators
   oracle/             — from-scratch evaluators (PromQL / LogQL / TraceQL)
                          that do NOT import internal/{promql,logql,traceql}
                          so the oracle is not the SUT
-  promql_test.go      — wires gen + oracle + chDB exec for PromQL
+  promql_test.go      — instant PromQL random sweep + exact roster pass
+  promql_range_test.go
+                      — range PromQL random sweep + exact roster pass
   promql_exp_histogram_test.go
-                      — same for the native (exponential) histogram
-                         functions, which need their own dataset
-                         generator (histogram-valued samples in
-                         otel_metrics_exponential_histogram)
-  logql_test.go       — same for LogQL
-  traceql_test.go     — same for TraceQL
+                      — native-histogram random sweep + exact roster pass
+  instant_window_test.go
+                      — exact instant-window value oracle, random sweep,
+                         edge controls, and exact roster pass
+  logql_test.go       — LogQL random sweep + exact roster pass
+  traceql_test.go     — TraceQL random sweep + exact roster pass
 ```
 
-Each test:
+Every family runs two complementary modes. The rapid sweep:
 
 1. Draws a dataset (rapid).
-2. Draws a query against that dataset.
+2. Draws a stable semantic shape and a query against that dataset.
 3. Lowers the query to SQL, runs it under chDB.
 4. Runs the from-scratch oracle on the same dataset.
 5. Compares result sets.
 
 Failures shrink to a minimal repro via rapid's automatic shrinking and
-land in the standard test output.
+land in the standard test output. This sweep widens literals, data values,
+window geometry, and label combinations; it is not used as probabilistic proof
+that every finite query shape happened to run.
 
-### Per-head generator breadth
+The deterministic roster pass executes exactly one live differential for every
+published `ShapeID`: a stable bounded seed sequence derived from the ID builds
+candidate datasets and queries, the independent oracle selects the first
+candidate with non-empty row evidence, and the real HTTP/chDB pipeline evaluates
+only that selected input. The sequence is independent of roster position, so
+inserting or reordering a shape cannot silently change another shape's evidence.
+Empty or duplicate IDs, a generator that cannot render one of its published
+IDs, oracle errors, and bounded searches with no row evidence fail the
+exact-roster tests.
 
-The `property` check's name (`property (PromQL + LogQL + TraceQL, rapid
-N=500)`) advertises all three heads, but nothing enforces that each
-leg's query generator actually draws a variety of shapes rather than
-one — a leg can sit at its first-sweep accept-set indefinitely while
-still reporting 500 green iterations, because every iteration is the
-same query shape wearing different literal values. Issue #1471 caught
-exactly this for TraceQL. This table is the per-head ledger so a
-stalled leg is visible without diffing generator source:
+`test/regression/property_live_roster_floor_test.go` independently discovers
+the six deterministic roster runners and the six randomized rapid sweeps from
+their Go call sites. It requires exactly one of each family and verifies that
+the workflow executes the composite tag set with exactly 500 rapid checks.
+Registry prose, a compiled-but-unexecuted test, or a deterministic example left
+behind after deleting its randomized sweep cannot satisfy that floor.
 
-| Head                      | Generator                                              | Shape count | Shapes                                                                                                                                                                                                                                                                                                            |
-| ------------------------- | ------------------------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PromQL                    | `gen/promql.go`'s `drawExpr`                           | 5           | bare selector, `sum(...)`, `sum by(label)(...)`, `rate(...[range] offset d)`, `sum(rate(...))`                                                                                                                                                                                                                    |
-| PromQL (native histogram) | `gen/promql_exp_histogram.go`'s `drawExpHistogramExpr` | 20          | Bare selector; `sum` / `sum by`; `rate` / `increase`; selector-only `histogram_count`, `histogram_sum`, `histogram_avg`, `histogram_stddev`, `histogram_stdvar`, and `histogram_fraction`; `histogram_quantile` over bare, `sum` / `sum by`, `rate` / `increase`, and `sum` / `sum by` over either range function |
-| LogQL                     | `gen/logql.go`'s `LogQLQuery`                          | 6           | bare stream selector; line filter (contains / not-contains); `label_format` rename; IP line filter (contains / not-contains `ip(...)`); pattern line filter (contains / not-contains)                                                                                                                             |
-| TraceQL                   | `gen/traceql.go`'s `TraceQLQuery`                      | 14          | bare selector; `count()` filter; attribute matcher beyond service.name; span-attribute matcher; duration intrinsic; status intrinsic; name intrinsic; regex matcher; negated matcher; multi-condition (`&&`); structural child (`>`); structural descendant (`>>`); avg/min/max/sum(duration); `select()`         |
+Both modes fail closed at the harness boundaries. A metrics dataset must have
+non-empty series, metric names, and seed DDL; a logs dataset must have non-empty
+records and seed DDL; a deterministic example may carry exactly one model
+family. Every query must carry a non-empty stable shape ID and non-empty query
+text. An oracle error is a harness failure and a system error is a
+product/substrate failure: even when both sides error, the result is red rather
+than a false agreement. Rows are compared only after both sides return
+successfully.
 
-When a head's generator widens, update its row here in the same PR —
-the oracle under `test/property/oracle/<head>/` must already be able
-to evaluate every shape the generator draws before the shape lands
-(never the reverse), so this table doubles as a manifest of what the
-independent specification actually covers.
+### Exact semantic-shape roster
+
+`test/property/gen/shapes.go` is the executable source of truth. Its 81 stable
+IDs are grouped as follows (brace notation below denotes the exact listed
+expansion, not an open-ended prefix):
+
+- **PromQL instant — 5.** `promql.instant.{selector,sum,sum-by,rate,sum-rate}`.
+- **PromQL range — 3.** `promql.range.{selector,sum-by,rate}`.
+- **PromQL native histogram — 20.**
+  `promql.native-histogram.{function.count,function.sum,function.avg,`
+  `function.stddev,function.stdvar,fraction,selector,sum,sum-by,rate,increase,`
+  `quantile-selector,quantile-sum,quantile-sum-by,quantile-rate,`
+  `quantile-increase,quantile-sum-rate,quantile-sum-by-rate,`
+  `quantile-sum-increase,quantile-sum-by-increase}`.
+- **LogQL — 12.**
+  `logql.stream.{selector,line-contains,line-excludes,label-format,ip-contains,`
+  `ip-excludes,pattern-contains,pattern-excludes,pattern-contains-prefix,`
+  `pattern-contains-suffix,pattern-excludes-prefix,pattern-excludes-suffix}`.
+  The unqualified pattern pair uses a floating `<_>token<_>` match; the
+  prefix/suffix pairs pin the anchored `token<_>` and `<_>token` semantics.
+- **TraceQL — 17.**
+  `traceql.selector.{service,resource-attribute,span-attribute,regex,`
+  `negated-attribute,conjunction}`;
+  `traceql.intrinsic.{duration,status,name}`;
+  `traceql.structural.{child,descendant}`; and
+  `traceql.pipeline.{count,duration-aggregate,duration-aggregate-min,`
+  `duration-aggregate-max,duration-aggregate-sum,select}`. The unsuffixed
+  `duration-aggregate` ID is the average-duration shape.
+- **PromQL instant window — 24.** The exact Cartesian product
+  `promql.instant-window.{wave,positive-increments,monotonic-running-total}.`
+  `{sum-over-time,count-over-time,avg-over-time,max-over-time,min-over-time,`
+  `rate,increase,delta}`. These prefixes describe the values stored in the
+  gauge-table fixture; they are not OTel aggregation-temporality claims.
+
+When a generator widens, update its stable roster and this manifest in the same
+change. The independent oracle under `test/property/oracle/<head>/` (or the
+inline instant-window oracle for that family) must be able to evaluate every
+new shape before the generator publishes it, never the reverse.
 
 ## Gremlins mutation
 
@@ -760,12 +867,36 @@ On a pull request the lane runs the phases whose scope that PR changed,
 and only those: a PR editing `internal/chplan` runs `phase1`, a PR
 editing only docs runs no leg and the aggregator passes through
 honestly. Push-to-main, the nightly, a manual dispatch, a `release/*`
-PR, and any PR touching the lane's own harness all sweep the FULL
-matrix, so no phase's floor is ever load-bearing on some PR happening
-to touch its package. `.github/scripts/mutation-matrix.mjs` computes
-that selection from the PR's own diff against its merge base and is
-unit-tested in the `forbid-skip` job; when the diff cannot be computed
-it falls back to the full matrix rather than to an empty one.
+PR, and any PR touching mutation-specific harness material all sweep the FULL
+matrix, so no phase's floor is ever load-bearing on some PR happening to touch
+its package. Registry edits are projected to the mutation lane's semantic
+execution and ownership fields across the base and candidate revisions: an
+unrelated metadata edit does not buy the full matrix, while a relevant change
+or an unreadable projection fails to the full sweep. Local-only Just recipes do
+not select CI mutation legs because the workflow does not consume them.
+`.github/scripts/mutation-matrix.mjs` computes that selection from the PR's own
+diff against its merge base and is unit-tested in the `forbid-skip` job; when
+the diff itself cannot be computed it also falls back to the full matrix rather
+than to an empty one.
+
+Mutation ownership is checked bidirectionally before phase selection.
+The `quality.mutation` lane's `package_globs` in `.github/ci-lanes.json`
+declare an independent source universe; `.github/scripts/mutation-matrix.mjs`
+enumerates the mutable non-test Go files in that universe and reconciles them
+against the scopes and exclusions in `mutation-phases.mjs`. Every
+registry-owned source file must have exactly one phase owner, and no phase may
+claim source outside the registry surface, and every phase must own at least one
+such mutable file. A third, independently declared
+production-scope anchor in `mutation-phases.mjs` prevents a synchronized
+registry-and-phase deletion from erasing its own evidence. Deleting a whole
+phase, creating an exclusion gap, duplicating ownership, narrowing the registry
+around an existing phase, or deleting the same scope from both mutable
+declarations therefore fails. On a scoped change, a registry-owned changed path
+with no phase owner also fails instead of selecting an empty matrix.
+
+The selector also pins the phase table's efficacy threshold to an independent
+95% minimum. Lowering the shared phase constant cannot turn every leg into a
+green zero-evidence run.
 
 The phase inventory is not restated here. `mutation-phases.mjs` is the
 one place that carries it: leg names and per-leg efficacy floors change

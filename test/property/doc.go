@@ -52,10 +52,10 @@
 //
 // # Running locally
 //
-//	go test -tags chdb ./test/property/...
+//	go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/...
 //
-// The default lane (`just test`, CGO-free) skips this package because
-// every test in it is chdb-tagged. CI's chdb lane (the same one that
-// runs test/spec/promql/roundtrip_chdb_test.go) is the canonical
-// scheduled runner.
+// The default lane (`just test`, CGO-free) executes the untagged framework and
+// oracle controls. The composite tag set above is required for the complete
+// live PromQL, LogQL, and TraceQL HTTP differential surface; the property
+// workflow is its canonical scheduled runner.
 package property

@@ -47,3 +47,17 @@ func TestJustfileNoDoubleDollarShellVar(t *testing.T) {
 		}
 	}
 }
+
+func TestJustfileTestRecipeIncludesChaosSleep(t *testing.T) {
+	t.Parallel()
+
+	buf, err := os.ReadFile("../../Justfile")
+	if err != nil {
+		t.Fatalf("read Justfile: %v", err)
+	}
+
+	testRecipe := regexp.MustCompile(`(?m)^test:\s+test-unit\s+test-chaos-sleep\s+vet-tagged\s*$`)
+	if !testRecipe.Match(buf) {
+		t.Fatal("the test recipe must compose test-unit, test-chaos-sleep, and vet-tagged")
+	}
+}

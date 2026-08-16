@@ -5,11 +5,18 @@
 
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  CANONICAL_HEAD_ORACLE_FLOORS,
   ContractError,
   MERGE_P95_SLO_MINUTES,
   RELEASE_QUALIFICATION_SLO_MINUTES,
@@ -75,7 +82,10 @@ writeFileSync(
     'set shell := ["bash", "-cu"]',
     "",
     "test:",
-    "  @true",
+    "  @node fixture-tools/execution-oracle.mjs",
+    "",
+    "reference-oracle:",
+    "  @./fixture-tools/reference-oracle",
     "",
     "e2e-down:",
     "  @true",
@@ -86,11 +96,71 @@ writeFileSync(
     "",
   ].join("\n"),
 );
-for (const name of ["ci.yml", "e2e.yml", "release.yml"]) {
-  writeFileSync(join(root, ".github", "workflows", name), `name: ${name}\n`);
+const workflowFixtures = {
+  "ci.yml": [
+    "name: ci",
+    "jobs:",
+    "  check:",
+    "    steps:",
+    "      - run: just test",
+    "  lint:",
+    "    steps:",
+    "      - run: true",
+    "  oracle-property:",
+    "    steps:",
+    "      - run: true",
+    "  oracle-reference:",
+    "    steps:",
+    "      - run: ./fixture-tools/reference-oracle",
+    "",
+  ].join("\n"),
+  "e2e.yml": [
+    "name: e2e",
+    "jobs:",
+    "  shard:",
+    "    steps:",
+    "      - run: true",
+    "  aggregate:",
+    "    steps:",
+    "      - run: true",
+    "",
+  ].join("\n"),
+  "release.yml": [
+    "name: release",
+    "jobs:",
+    "  CodeQL:",
+    "    steps:",
+    "      - run: true",
+    "",
+  ].join("\n"),
+};
+for (const [name, contents] of Object.entries(workflowFixtures)) {
+  writeFileSync(join(root, ".github", "workflows", name), contents);
 }
-for (const directory of ["always", "docs", "impact", "release"]) {
+for (const directory of [
+  "always",
+  "docs",
+  "impact",
+  "oracle-property",
+  "oracle-reference",
+  "release",
+]) {
   mkdirSync(join(root, directory), { recursive: true });
+}
+mkdirSync(join(root, "fixture-tools"), { recursive: true });
+writeFileSync(join(root, "fixture-tools", "execution-oracle.mjs"), "");
+writeFileSync(join(root, "fixture-tools", "reference-oracle"), "");
+const canonicalSourceFiles = [
+  ["test", "spec", "promql", "fixture.txtar"],
+  ["test", "spec", "logql", "fixture.txtar"],
+  ["test", "spec", "traceql", "fixture.txtar"],
+  ["compatibility", "prometheus", "oracle.test"],
+  ["compatibility", "loki", "oracle.test"],
+  ["compatibility", "tempo", "oracle.test"],
+];
+for (const parts of canonicalSourceFiles) {
+  mkdirSync(join(root, ...parts.slice(0, -1)), { recursive: true });
+  writeFileSync(join(root, ...parts), "oracle fixture\n");
 }
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -111,9 +181,12 @@ function lane({
   artifact = false,
   purpose = "correctness",
   oracleClass = "execution",
+  riskDomains = [`${id}-risk`],
   substrate = "runner",
   timeoutMinutes = 30,
   sloMinutes = 20,
+  command = `run-${id}`,
+  packageGlobs = [`${id}/**`],
 }) {
   return {
     id,
@@ -134,11 +207,11 @@ function lane({
     layers,
     oracle_class: oracleClass,
     recipes,
-    command: `run-${id}`,
+    command,
     build_tags: [],
-    package_globs: [`${id}/**`],
+    package_globs: packageGlobs,
     substrate,
-    risk_domains: [`${id}-risk`],
+    risk_domains: riskDomains,
     merge_posture: mergePosture,
     main_posture: mainPosture,
     release_posture: releasePosture,
@@ -168,6 +241,13 @@ function registryFixture() {
         contextJob: "check",
         layers: CANONICAL_LAYER_IDS,
         recipes: ["test"],
+        command: "just test",
+        packageGlobs: [
+          "test/spec/logql/**",
+          "test/spec/promql/**",
+          "test/spec/traceql/**",
+        ],
+        riskDomains: ["logql", "promql", "traceql"],
         mergePosture: "always",
         mainPosture: "always",
         releasePosture: "required",
@@ -185,6 +265,37 @@ function registryFixture() {
         releasePosture: "advisory",
         determinism: "seeded",
         timeoutMinutes: 60,
+      }),
+      lane({
+        id: "oracle-property",
+        workflow: ".github/workflows/ci.yml",
+        jobs: ["oracle-property"],
+        contextJob: "oracle-property",
+        layers: ["6a", "6b", "6c"],
+        mergePosture: "never",
+        mainPosture: "always",
+        releasePosture: "required",
+        oracleClass: "property",
+        riskDomains: ["logql", "promql", "traceql"],
+      }),
+      lane({
+        id: "oracle-reference",
+        workflow: ".github/workflows/ci.yml",
+        jobs: ["oracle-reference"],
+        contextJob: "oracle-reference",
+        layers: ["6a", "6b", "6c"],
+        mergePosture: "never",
+        mainPosture: "always",
+        releasePosture: "required",
+        oracleClass: "reference",
+        recipes: ["reference-oracle"],
+        command: "reference compatibility via just reference-oracle",
+        packageGlobs: [
+          "compatibility/loki/**",
+          "compatibility/prometheus/**",
+          "compatibility/tempo/**",
+        ],
+        riskDomains: ["logql", "promql", "traceql"],
       }),
       lane({
         id: "release",
@@ -250,6 +361,18 @@ function mergeSelection({
             reason: "not_impacted",
           },
       {
+        lane_id: "oracle-property",
+        disposition: "omitted",
+        executions: [],
+        reason: "posture_excluded",
+      },
+      {
+        lane_id: "oracle-reference",
+        disposition: "omitted",
+        executions: [],
+        reason: "posture_excluded",
+      },
+      {
         lane_id: "release",
         disposition: "omitted",
         executions: [],
@@ -287,6 +410,18 @@ function releaseSelection() {
         disposition: "omitted",
         executions: [],
         reason: "advisory",
+      },
+      {
+        lane_id: "oracle-property",
+        disposition: "selected",
+        executions: ["default"],
+        reason: null,
+      },
+      {
+        lane_id: "oracle-reference",
+        disposition: "selected",
+        executions: ["default"],
+        reason: null,
       },
       {
         lane_id: "release",
@@ -407,6 +542,146 @@ test("registry accepts dependency recipes, uppercase workflow job IDs, and valid
     loadRegistry(join(root, "registry.json"), { root }),
     document,
   );
+});
+
+test("registry keeps independent execution, property, and reference oracles per query head", () => {
+  assert.deepEqual(CANONICAL_HEAD_ORACLE_FLOORS, {
+    promql: { layer: "6a", classes: ["execution", "property", "reference"] },
+    logql: { layer: "6b", classes: ["execution", "property", "reference"] },
+    traceql: { layer: "6c", classes: ["execution", "property", "reference"] },
+  });
+
+  const controls = [
+    {
+      mutate(document) {
+        document.lanes = document.lanes.filter(
+          (candidate) => candidate.id !== "oracle-reference",
+        );
+      },
+    },
+    {
+      mutate(document) {
+        document.lanes.find(
+          (candidate) => candidate.id === "oracle-reference",
+        ).oracle_class = "execution";
+      },
+    },
+    {
+      mutate(document) {
+        const provider = document.lanes.find(
+          (candidate) => candidate.id === "oracle-reference",
+        );
+        provider.risk_domains = provider.risk_domains.filter(
+          (domain) => domain !== "promql",
+        );
+      },
+    },
+    {
+      mutate(document) {
+        const provider = document.lanes.find(
+          (candidate) => candidate.id === "oracle-reference",
+        );
+        provider.layers = provider.layers.filter((layer) => layer !== "6a");
+      },
+    },
+    {
+      mutate(document) {
+        document.lanes.find(
+          (candidate) => candidate.id === "oracle-reference",
+        ).release_posture = "advisory";
+      },
+    },
+    {
+      mutate(document) {
+        document.lanes.find(
+          (candidate) => candidate.id === "oracle-reference",
+        ).main_posture = "never";
+      },
+    },
+    {
+      mutate(document) {
+        document.lanes.find(
+          (candidate) => candidate.id === "oracle-reference",
+        ).applicability.source = false;
+      },
+    },
+  ];
+  for (const control of controls) {
+    const document = registryFixture();
+    control.mutate(document);
+    expectContractError(
+      () => validateRegistry(document, { root }),
+      /canonical head promql layer 6a requires a source-applicable reference oracle/,
+    );
+  }
+
+  const renamed = registryFixture();
+  renamed.lanes.find(
+    (candidate) => candidate.id === "oracle-reference",
+  ).id = "oracle-upstream";
+  const advisory = structuredClone(renamed.lanes[3]);
+  advisory.id = "oracle-zshadow";
+  advisory.release_posture = "advisory";
+  renamed.lanes.splice(4, 0, advisory);
+  assert.equal(validateRegistry(renamed, { root }), renamed);
+});
+
+test("canonical providers fail when their workflow command is removed", () => {
+  const workflow = join(root, ".github", "workflows", "ci.yml");
+  const original = readFileSync(workflow, "utf8");
+  const controls = [
+    {
+      command: "      - run: just test",
+      pattern:
+        /canonical head promql execution provider always has no command evidence in its declared workflow jobs/,
+    },
+    {
+      command: "      - run: ./fixture-tools/reference-oracle",
+      pattern:
+        /canonical head promql reference provider oracle-reference has no command evidence in its declared workflow jobs/,
+    },
+  ];
+  for (const control of controls) {
+    const withoutCommand = original.replace(control.command, "      - run: true");
+    assert.notEqual(withoutCommand, original);
+    writeFileSync(workflow, withoutCommand);
+    try {
+      expectContractError(
+        () => validateRegistry(registryFixture(), { root }),
+        control.pattern,
+      );
+    } finally {
+      writeFileSync(workflow, original);
+    }
+  }
+});
+
+test("canonical providers fail when their real oracle source is removed", () => {
+  const controls = [
+    {
+      parts: ["test", "spec", "promql", "fixture.txtar"],
+      pattern:
+        /canonical head promql execution provider always has no real oracle\/test source under test\/spec\/promql covered by package_globs/,
+    },
+    {
+      parts: ["compatibility", "prometheus", "oracle.test"],
+      pattern:
+        /canonical head promql reference provider oracle-reference has no real oracle\/test source under compatibility\/prometheus covered by package_globs/,
+    },
+  ];
+  for (const control of controls) {
+    const source = join(root, ...control.parts);
+    const original = readFileSync(source, "utf8");
+    rmSync(source);
+    try {
+      expectContractError(
+        () => validateRegistry(registryFixture(), { root }),
+        control.pattern,
+      );
+    } finally {
+      writeFileSync(source, original);
+    }
+  }
 });
 
 test("registry rejects unknown and missing schema fields", () => {
@@ -541,8 +816,11 @@ test("registry enforces merge and release qualification SLO ceilings", () => {
   );
 
   const slowRelease = registryFixture();
-  slowRelease.lanes[2].timeout_minutes = RELEASE_QUALIFICATION_SLO_MINUTES + 10;
-  slowRelease.lanes[2].slo_minutes = RELEASE_QUALIFICATION_SLO_MINUTES + 1;
+  const releaseLane = slowRelease.lanes.find(
+    (candidate) => candidate.id === "release",
+  );
+  releaseLane.timeout_minutes = RELEASE_QUALIFICATION_SLO_MINUTES + 10;
+  releaseLane.slo_minutes = RELEASE_QUALIFICATION_SLO_MINUTES + 1;
   expectContractError(
     () => validateRegistry(slowRelease, { root }),
     /slo_minutes must be <= 120 for a release-required lane/,
@@ -650,7 +928,7 @@ test("selection rejects invented and missing execution roster entries", () => {
 test("selection rejects release-required omission", () => {
   const registry = registryFixture();
   const selection = releaseSelection();
-  selection.lanes[2] = {
+  selection.lanes[selection.lanes.findIndex((lane) => lane.lane_id === "release")] = {
     lane_id: "release",
     disposition: "omitted",
     executions: [],
@@ -1102,6 +1380,8 @@ test("release report set qualifies all release-required source and artifact lane
   const selection = releaseSelection();
   const reports = [
     reportFor(registry, selection, "always"),
+    reportFor(registry, selection, "oracle-property"),
+    reportFor(registry, selection, "oracle-reference"),
     reportFor(registry, selection, "release", "artifact"),
   ];
   assert.deepEqual(
@@ -1111,7 +1391,7 @@ test("release report set qualifies all release-required source and artifact lane
       reports,
       jobResults: jobResultsFor(registry, selection),
     }),
-    { expected: 2, received: 2 },
+    { expected: 4, received: 4 },
   );
 });
 
@@ -1180,8 +1460,8 @@ test("reports-mode expectations wire strict run-attempt parsing into qualificati
 });
 
 test("summary reports registry and qualification cardinality", () => {
-  const body = renderSummary(registryFixture(), { expected: 2, received: 2 });
-  assert.match(body, /logical lanes: \*\*3\*\*/);
-  assert.match(body, /release-required lanes represented: \*\*2\*\*/);
-  assert.match(body, /qualified reports: \*\*2\/2\*\*/);
+  const body = renderSummary(registryFixture(), { expected: 4, received: 4 });
+  assert.match(body, /logical lanes: \*\*5\*\*/);
+  assert.match(body, /release-required lanes represented: \*\*4\*\*/);
+  assert.match(body, /qualified reports: \*\*4\/4\*\*/);
 });

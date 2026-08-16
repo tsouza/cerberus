@@ -134,6 +134,36 @@ func TestEvaluate_Shapes(t *testing.T) {
 	}
 }
 
+func TestEvaluate_StructuralRelationsExcludeOrphanChains(t *testing.T) {
+	dataset := buildDataset(
+		testSpan{trace: "rooted", id: "root", parent: "", service: "root", name: "root"},
+		testSpan{trace: "rooted", id: "child", parent: "root", service: "child", name: "child"},
+		testSpan{trace: "orphan", id: "orphan", parent: "0000000000000000", service: "orphan", name: "orphan"},
+		testSpan{trace: "orphan", id: "orphan-child", parent: "orphan", service: "orphan-child", name: "orphan-child"},
+	)
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantCount int
+	}{
+		{"rooted_child_matches", `{ resource.service.name = "root" } > { resource.service.name = "child" }`, 1},
+		{"orphan_child_does_not_match", `{ resource.service.name = "orphan" } > { resource.service.name = "orphan-child" }`, 0},
+		{"orphan_descendant_does_not_match", `{ resource.service.name = "orphan" } >> { resource.service.name = "orphan-child" }`, 0},
+		{"plain_filter_still_sees_orphan", `{ resource.service.name = "orphan" }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Evaluate(dataset, property.Query{String: tc.query})
+			if out.Err != nil {
+				t.Fatalf("query %q: unexpected error: %v", tc.query, out.Err)
+			}
+			if len(out.Rows) != tc.wantCount {
+				t.Fatalf("query %q: row count = %d, want %d", tc.query, len(out.Rows), tc.wantCount)
+			}
+		})
+	}
+}
+
 // TestEvaluate_RegexIsFullyAnchored pins the semantics the TraceQL
 // property test drifted on: `=~` / `!~` are fully-anchored matches,
 // not substring searches.

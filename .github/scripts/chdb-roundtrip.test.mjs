@@ -21,10 +21,106 @@ import { legCommands, warmupCommand, GO_TEST_TIMEOUT_MINUTES, HEADS } from './ch
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const workflow = readFileSync(path.join(here, '..', 'workflows', 'chdb.yml'), 'utf8');
+const registry = JSON.parse(readFileSync(path.join(here, '..', 'ci-lanes.json'), 'utf8'));
+
+const EXPECTED_ROUNDTRIP_TAGS = new Map([
+  ['promql', 'chdb'],
+  ['logql', 'chdb,agpl_oracle,chdb_agpl_oracle'],
+  ['traceql', 'chdb,agpl_oracle,chdb_agpl_oracle'],
+]);
+
+function roundtripJob() {
+  const start = workflow.indexOf('\n  roundtrip:');
+  assert.ok(start >= 0, 'chdb.yml: missing roundtrip job');
+  const remainder = workflow.slice(start + 1);
+  const nextJob = /^  [a-zA-Z0-9_-]+:\s*$/m.exec(remainder.slice('  roundtrip:\n'.length));
+  return nextJob
+    ? remainder.slice(0, '  roundtrip:\n'.length + nextJob.index)
+    : remainder;
+}
+
+/** Read the exact per-head matrix from the workflow rather than restating it. */
+function roundtripMatrix() {
+  const job = roundtripJob();
+  const matrixStart = job.indexOf('\n      matrix:');
+  assert.ok(matrixStart >= 0, 'chdb.yml: roundtrip job has no strategy.matrix');
+  const header = '      matrix:';
+  const matrixRemainder = job.slice(matrixStart + 1 + header.length);
+  const matrixLines = [];
+  for (const line of matrixRemainder.split('\n')) {
+    const trimmed = line.trim();
+    const indentation = line.length - line.trimStart().length;
+    if (trimmed !== '' && !trimmed.startsWith('#') && indentation <= 6) break;
+    matrixLines.push(line);
+  }
+  const entries = [];
+  let pending = null;
+  let sawInclude = false;
+  for (const raw of matrixLines) {
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (raw === '        include:') {
+      assert.equal(sawInclude, false, 'chdb.yml: roundtrip matrix repeats include');
+      assert.equal(pending, null, 'chdb.yml: incomplete roundtrip matrix entry before include');
+      sawInclude = true;
+      continue;
+    }
+    const ql = /^ {10}- ql:\s*(\S+)\s*$/.exec(raw);
+    if (ql) {
+      assert.ok(sawInclude, 'chdb.yml: roundtrip ql entry appears outside matrix.include');
+      assert.equal(pending, null, 'chdb.yml: roundtrip matrix entry has no tags');
+      pending = ql[1];
+      continue;
+    }
+    const tags = /^ {12}tags:\s*(\S+)\s*$/.exec(raw);
+    if (tags) {
+      assert.notEqual(pending, null, 'chdb.yml: roundtrip tags have no ql');
+      entries.push({ ql: pending, tags: tags[1] });
+      pending = null;
+      continue;
+    }
+    assert.fail(`chdb.yml: unsupported roundtrip matrix line ${JSON.stringify(raw)}`);
+  }
+  assert.ok(sawInclude, 'chdb.yml: roundtrip matrix has no include roster');
+  assert.equal(pending, null, 'chdb.yml: roundtrip matrix entry has no tags');
+  return entries;
+}
+
+function assertRoundtripEnrollment(matrix, lanes) {
+  const byHead = new Map();
+  for (const entry of matrix) {
+    assert.equal(byHead.has(entry.ql), false, `${entry.ql}: duplicate roundtrip matrix entry`);
+    byHead.set(entry.ql, entry.tags);
+  }
+  assert.deepEqual(
+    [...byHead.keys()].sort(),
+    [...EXPECTED_ROUNDTRIP_TAGS.keys()].sort(),
+    'roundtrip matrix must contain each query head exactly once, with no extra head',
+  );
+  for (const [ql, expectedTags] of EXPECTED_ROUNDTRIP_TAGS) {
+    const tags = byHead.get(ql);
+    assert.equal(tags, expectedTags, `${ql}: workflow tag set`);
+    const matches = lanes.filter(({ id }) => id === `chdb.roundtrip-${ql}`);
+    assert.equal(matches.length, 1, `${ql}: expected exactly one roundtrip registry lane`);
+    assert.deepEqual(
+      [...matches[0].build_tags].sort(),
+      tags.split(',').sort(),
+      `${ql}: registry tags must describe the workflow execution`,
+    );
+    const commands = [...legCommands({ ql, tags })];
+    const warmup = warmupCommand({ ql, tags });
+    if (warmup) commands.push(warmup);
+    assert.ok(commands.length > 0, `${ql}: runner emitted no command`);
+    for (const command of commands) {
+      const index = command.argv.indexOf('-tags');
+      assert.equal(command.argv[index + 1], tags, `${command.name}: runner changed the matrix tags`);
+    }
+  }
+}
 
 /** The `timeout-minutes:` of the roundtrip job, read out of chdb.yml. */
 function roundtripJobTimeoutMinutes() {
-  const job = workflow.slice(workflow.indexOf('\n  roundtrip:'));
+  const job = roundtripJob();
   const m = /^\s{4}timeout-minutes:\s*(\d+)/m.exec(job);
   assert.ok(m, 'chdb.yml: the roundtrip job declares no timeout-minutes');
   return Number(m[1]);
@@ -122,5 +218,27 @@ test('the build tags reach the go command verbatim', () => {
   for (const leg of legCommands({ ql: 'logql', tags })) {
     const i = leg.argv.indexOf('-tags');
     assert.ok(i >= 0 && leg.argv[i + 1] === tags, `${leg.name}: build tags dropped`);
+  }
+});
+
+test('workflow, registry, and runner pin the exact per-head oracle tag matrix', () => {
+  assertRoundtripEnrollment(roundtripMatrix(), registry.lanes);
+});
+
+test('every head rejects a tag set that compiles out its live reference path', () => {
+  const withoutLiveReference = new Map([
+    ['promql', 'agpl_oracle'],
+    ['logql', 'chdb'],
+    ['traceql', 'chdb'],
+  ]);
+  for (const [ql, tags] of withoutLiveReference) {
+    const downgraded = roundtripMatrix().map((entry) =>
+      entry.ql === ql ? { ...entry, tags } : entry,
+    );
+    assert.throws(
+      () => assertRoundtripEnrollment(downgraded, registry.lanes),
+      /workflow tag set/,
+      `${ql}: removing the reference tags must break the contract`,
+    );
   }
 });

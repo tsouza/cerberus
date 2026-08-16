@@ -14,8 +14,7 @@ name: agpl-oracle
 # without this workflow the oracle diffs are never exercised and a parser
 # regression can reach main undetected (see #1610 for the full evidence).
 #
-# Files covered:
-#   internal/api/loki/detected_extract_agpl_test.go
+# Tagged evidence covered:
 #   internal/logql/logpattern/pattern_agpl_test.go
 #   internal/logql/jsonpath_agpl_test.go
 #   internal/logql/parse_permissive_agpl_test.go
@@ -26,12 +25,14 @@ name: agpl-oracle
 #   test/property/oracle/logql/evaluator.go
 #   test/property/oracle/logql/line_filters.go
 #   test/spec/parityoracle/logql/oracle.go
+#   test/spec/parityoracle/traceql/oracle.go
+#   test/spec/parityoracle/traceql/oracle_test.go
 #
-# The tests do NOT require CGO, Docker, or libchdb — they are pure Go and
-# compile with a stock Go toolchain against the root-module deps. (The last
-# two files above additionally need libchdb.so to run their real assertions
-# via test/property/logql_test.go, but compile cleanly here without it —
-# see the tag composition note below.)
+# The tests do NOT require CGO, Docker, or libchdb. The property oracle package
+# is a compile probe here; its live HTTP differential runs under the composite
+# tag set in the property workflow. The focused Just recipe filters the
+# internal and surface packages to the tagged assertions, avoiding a duplicate
+# pass over their untagged tests.
 #
 # Required status check name: `agpl-oracle`
 # Required on: all PRs (docs-only PRs short-circuit to a green no-op so
@@ -152,9 +153,14 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        if: needs.changes.outputs.docs_only != 'true'
+        with:
+          tool: just
+
       - name: Run agpl_oracle differential oracle tests
         if: needs.changes.outputs.docs_only != 'true'
-        run: go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/... ./test/spec/... ./test/surface-parity/... ./test/property/...
+        run: just test-agpl-oracle
 
       - name: Verify agpl_oracle tag set coverage (regression)
         if: needs.changes.outputs.docs_only != 'true'

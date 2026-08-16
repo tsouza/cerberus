@@ -29,7 +29,7 @@
 //
 // The test runs in two CI lanes:
 //
-//   - Locally and on any explicit `go test -tags chdb ./test/property/...`
+//   - Locally and on any explicit composite-tag property invocation
 //     invocation, rapid uses its default of 100 iterations.
 //   - The nightly `property` workflow (`.github/workflows/property.yml`)
 //     overrides to `-rapid.checks=500` for a deeper sweep.
@@ -37,7 +37,7 @@
 // To reproduce a failing CI run locally, copy the rapid seed from the
 // workflow log and re-run:
 //
-//	go test -tags chdb -run TestPromQL_Property_FromScratch \
+//	go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run TestPromQL_Property_FromScratch \
 //	    -rapid.seed=<N> ./test/property/...
 //
 // rapid persists the shrunk failing draw under `testdata/rapid/`; the
@@ -145,4 +145,33 @@ func TestPromQL_Property_FromScratch(t *testing.T) {
 	}
 
 	property.Run(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)
+}
+
+// TestPromQL_PropertyShapeRoster executes one deterministic live differential
+// per enrolled instant-query shape. It runs under the same composite tag set
+// as the random property sweep, so random reach is never the only evidence
+// that a shape executes against both the oracle and the real HTTP pipeline.
+func TestPromQL_PropertyShapeRoster(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	property.RunShapeExamples(
+		t,
+		gen.PromQLShapeIDs(),
+		func(shapeID gen.ShapeID, seed int) (property.Dataset, property.Query) {
+			dataset := gen.MetricsDataset().Example(seed)
+			return dataset, gen.PromQLQueryForShape(dataset, shapeID).Example(seed)
+		},
+		func(_ *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			return oraclepromql.Evaluate(dataset, query, oraclepromql.Options{})
+		},
+		func(t *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			cli.Seed(t, dataset.DDL)
+			return wire.RunInstant(t.Context(), srv.URL, query, wire.InstantOptions{})
+		},
+	)
 }

@@ -44,7 +44,8 @@
 // # CI lane
 //
 // Build-tagged `chdb`; runs in the same `property` workflow as the
-// other property tests (`go test -tags chdb ./test/property/...`).
+// other property tests under the full `chdb,agpl_oracle,chdb_agpl_oracle`
+// workflow tag set.
 package property_test
 
 import (
@@ -72,7 +73,7 @@ import (
 // `property` workflow overrides to -rapid.checks=500). To reproduce a
 // failing CI run locally:
 //
-//	go test -tags chdb -run TestPromQL_RangeProperty_FromScratch \
+//	go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run TestPromQL_RangeProperty_FromScratch \
 //	    -rapid.seed=<N> ./test/property/...
 func TestPromQL_RangeProperty_FromScratch(t *testing.T) {
 	cli := chclienttest.NewChDB(t)
@@ -84,12 +85,15 @@ func TestPromQL_RangeProperty_FromScratch(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ds := gen.MetricsDataset().Draw(rt, "dataset")
-		if len(ds.Metrics.NamesPresent()) == 0 {
-			return
+		if invalid := property.ValidateMetricsDataset(ds); invalid != "" {
+			rt.Fatalf("range property: invalid generated dataset: %s", invalid)
 		}
 		rq := gen.PromQLRangeQuery(ds).Draw(rt, "rangeQuery")
-		if rq.String == "" {
-			return
+		if invalid := property.ValidateGeneratedQuery(property.Query{
+			ShapeID: property.ShapeID(rq.ShapeID),
+			String:  rq.String,
+		}); invalid != "" {
+			rt.Fatalf("range property: invalid generated query: %s", invalid)
 		}
 
 		cli.Seed(t, ds.DDL)
@@ -119,4 +123,72 @@ func TestPromQL_RangeProperty_FromScratch(t *testing.T) {
 				rq.StartSec, rq.EndSec, rq.StepSec, rq.String, diff)
 		}
 	})
+}
+
+// TestPromQL_RangePropertyShapeRoster executes one deterministic live
+// query-range differential for every enrolled range shape.
+func TestPromQL_RangePropertyShapeRoster(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	type rangeShapeExample struct {
+		query  gen.RangeQuery
+		oracle property.Outcome
+	}
+
+	property.RunShapeCases(
+		t,
+		gen.PromQLRangeShapeIDs(),
+		func(shapeID gen.ShapeID, _ int) (property.Dataset, rangeShapeExample, property.ShapeID, string) {
+			propertyShapeID := property.ShapeID(shapeID)
+			for attempt := range property.ShapeExampleAttemptLimit {
+				seed := property.ShapeExampleAttemptSeed(propertyShapeID, attempt)
+				dataset := gen.MetricsDataset().Example(seed)
+				query := gen.PromQLRangeQueryForShape(dataset, shapeID).Example(seed)
+				if invalid := property.ValidateGeneratedDataset(dataset); invalid != "" {
+					t.Fatalf("range shape %q generated an invalid dataset: %s", shapeID, invalid)
+				}
+				generatedShapeID := property.ShapeID(query.ShapeID)
+				if generatedShapeID != propertyShapeID {
+					t.Fatalf("range shape generator stamped %q, want %q", generatedShapeID, propertyShapeID)
+				}
+				if invalid := property.ValidateGeneratedQuery(property.Query{
+					ShapeID: generatedShapeID,
+					String:  query.String,
+				}); invalid != "" {
+					t.Fatalf("range shape %q generated an invalid query: %s", shapeID, invalid)
+				}
+
+				anchors := gridAnchors(query.StartSec, query.EndSec, query.StepSec)
+				oracleOut := oracleRangeOutcome(dataset, query.String, anchors)
+				if oracleOut.Err != nil {
+					t.Fatalf("range shape %q oracle failed\nquery=%s grid=%d..%d/%ds\nerr=%v",
+						shapeID, query.String, query.StartSec, query.EndSec, query.StepSec, oracleOut.Err)
+				}
+				if len(oracleOut.Rows) == 0 {
+					continue
+				}
+				return dataset, rangeShapeExample{query: query, oracle: oracleOut}, generatedShapeID, query.String
+			}
+			t.Fatalf("range shape %q produced no oracle rows across %d stable attempts",
+				propertyShapeID, property.ShapeExampleAttemptLimit)
+			return property.Dataset{}, rangeShapeExample{}, "", ""
+		},
+		func(t *testing.T, dataset property.Dataset, example rangeShapeExample) {
+			query := example.query
+			cli.Seed(t, dataset.DDL)
+			systemOut := runCerberusRange(
+				t.Context(), srv.URL, query.String,
+				query.StartSec, query.EndSec, query.StepSec,
+			)
+			if diff := property.ValidateDeterministicOutcomes(example.oracle, systemOut); diff != "" {
+				t.Fatalf("range shape %q failed\nquery=%s grid=%d..%d/%ds\n--- diff ---\n%s",
+					query.ShapeID, query.String, query.StartSec, query.EndSec, query.StepSec, diff)
+			}
+		},
+	)
 }

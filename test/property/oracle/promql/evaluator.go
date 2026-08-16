@@ -36,11 +36,10 @@ type Options struct {
 // comparator consumes — the labels-stripped, eval-ts-stamped vector
 // representation.
 //
-// On parse error or any AST node the oracle doesn't support, the
-// returned Outcome carries the error and an empty row set. The
-// framework's CompareOutcomes treats both-erroring queries as
-// agreement, so an unsupported shape doesn't fail the property; it
-// just means the test doesn't exercise that shape.
+// On parse error or any AST node the oracle doesn't support, the returned
+// Outcome carries the error and an empty row set. The framework rejects every
+// oracle error, including when the system also errors, so unsupported generated
+// shapes fail closed instead of consuming a hollow property iteration.
 func Evaluate(d property.Dataset, q property.Query, opts Options) property.Outcome {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(q.String)

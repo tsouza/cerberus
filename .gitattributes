@@ -208,6 +208,13 @@ test/surface-parity/logql-reference-verdicts.json    -merge
 #   Same shape and same hazard, against upstream Tempo's AGPL parser.
 test/surface-parity/traceql-reference-verdicts.json  -merge
 
+# Regenerate: `just update-golden parity`.
+# Each file is the exact sorted fixture-identity roster for one query head.
+# A line merge can preserve the file's shape while silently accepting a stale
+# removal beside an unrelated addition, so the consumer re-derives the roster
+# and these generated files must never be blended.
+test/regression/parity-enrolment-baselines/*/baseline.txt  -merge
+
 # --- Grafana surface crawl inventories --------------------------------------
 # Regenerate: CERBERUS_UPDATE_INVENTORY=1 SWEEP_DEPTH=full CRAWL_STACK=<stack>
 #   npx playwright test crawl/crawl.spec.ts — needs that stack healthy

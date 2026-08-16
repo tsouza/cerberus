@@ -28,6 +28,20 @@ const EFFICACY = 95;
 const DEFAULT_WORKERS = 0;
 const SERIAL_WORKERS = 1;
 
+// Canonical production ownership is deliberately independent of both the
+// registry lane and the phase partition. A synchronized deletion from those
+// two mutable declarations must still fail validation against this anchor.
+export const MUTATION_PRODUCTION_GLOBS = Object.freeze([
+  'internal/chplan/**',
+  'internal/chsql/**',
+  'internal/logql/**',
+  'internal/optimizer/**',
+  'internal/promql/**',
+  'internal/qlcommon/**',
+  'internal/spansscan/**',
+  'internal/traceql/**',
+]);
+
 export const PHASES = [
   { phase: 'phase1', scope: './internal/chplan', efficacy: EFFICACY, workers: DEFAULT_WORKERS },
 
@@ -303,9 +317,10 @@ export const PHASES = [
 
 // Paths that change the LANE ITSELF rather than a single scope: the phase table,
 // the selector, the threshold gate, the workflow, gremlins' own config, and the
-// module graph every leg's `go test` links. A PR touching any of them gets the
-// FULL matrix, because a scoped subset would be testing the new harness against
-// an arbitrary slice of the tree and proving nothing about the rest.
+// module graph every leg's `go test` links. Registry changes use a semantic
+// projection in mutation-matrix.mjs, so unrelated metadata does not spend a
+// full matrix while mutation-relevant edits still do. Just recipes are local
+// entry points and do not select CI mutation work.
 export const HARNESS_PATHS = [
   '.github/workflows/mutation.yml',
   '.github/scripts/mutation-phases.mjs',

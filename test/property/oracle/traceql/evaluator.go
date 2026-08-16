@@ -430,16 +430,22 @@ func parseBase(s string) (baseQuery, error) {
 // chain — sound because the generator only ever produces linear
 // parent→child chains (see gen/traceql.go's TraceQLDataset doc), so
 // "some ancestor matches Left" reduces to a chain walk rather than a
-// general tree search.
+// general tree search. The Left side is restricted to spans reachable
+// from an empty-parent root. TraceQL's ingest-time nested-set walk never
+// numbers orphan chains, so they cannot establish structural relations.
 func evalBase(spans []spanView, b baseQuery) ([]spanView, error) {
 	if b.op == "" {
 		return filterSpans(spans, b.right), nil
 	}
 
+	rooted := rootedSpanKeys(spans)
 	leftMatched := filterSpans(spans, b.left)
 	leftSet := make(map[spanKey]bool, len(leftMatched))
 	for _, sv := range leftMatched {
-		leftSet[spanKey{sv.traceID, sv.spanID}] = true
+		key := spanKey{sv.traceID, sv.spanID}
+		if rooted[key] {
+			leftSet[key] = true
+		}
 	}
 
 	bySpanID := make(map[spanKey]spanView, len(spans))
@@ -478,6 +484,38 @@ func evalBase(spans []spanView, b baseQuery) ([]spanView, error) {
 		return nil, fmt.Errorf("unsupported structural operator %q", b.op)
 	}
 	return out, nil
+}
+
+// rootedSpanKeys reconstructs the subset TraceQL's ingest-time nested-set
+// walk can reach. Only an empty ParentSpanID starts a trace; any other value,
+// including the 16-zero spelling, names a parent and leaves the span orphaned
+// when no such parent row exists.
+func rootedSpanKeys(spans []spanView) map[spanKey]bool {
+	children := make(map[spanKey][]spanKey, len(spans))
+	rooted := make(map[spanKey]bool, len(spans))
+	queue := make([]spanKey, 0, len(spans))
+	for _, sv := range spans {
+		key := spanKey{sv.traceID, sv.spanID}
+		if sv.parentID == "" {
+			rooted[key] = true
+			queue = append(queue, key)
+			continue
+		}
+		parent := spanKey{sv.traceID, sv.parentID}
+		children[parent] = append(children[parent], key)
+	}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		for _, child := range children[parent] {
+			if rooted[child] {
+				continue
+			}
+			rooted[child] = true
+			queue = append(queue, child)
+		}
+	}
+	return rooted
 }
 
 // pipelineKind discriminates the four pipeline shapes the generator
@@ -640,7 +678,7 @@ type parsedQuery struct {
 
 // parseQuery is the hand-rolled recognizer keyed to the generator's
 // accept-set (test/property/gen/traceql.go's TraceQLQuery doc lists
-// all 14 shapes). Anything outside that set returns an error — the
+// all 17 stable shapes). Anything outside that set returns an error — the
 // generator never emits other shapes so a parse failure is a generator
 // bug, not a real divergence. (rapid will still surface it as a
 // property-test failure, but the failure log says "oracle: parse"

@@ -41,35 +41,53 @@ import (
 // least one matching sample within Prometheus's 5-minute LookbackDelta.
 func PromQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 	return rapid.Custom(func(t *rapid.T) property.Query {
-		names := d.Metrics.NamesPresent()
-		if len(names) == 0 {
-			// MetricsDataset filters this out before Run() draws a
-			// query; nonetheless guard against an empty pool so the
-			// generator never panics.
-			return property.Query{}
-		}
-
-		name := rapid.SampledFrom(names).Draw(t, "metric")
-		matchers := drawMatchers(t, name, d.Metrics)
-
-		expr := drawExpr(t, name, matchers)
-
-		// EvalTs: pick a timestamp AFTER every dataset sample but
-		// well within the 5-minute LookbackDelta (Prom's default,
-		// which the from-scratch oracle also uses).
-		//
-		// The dataset generator emits at most 10 points per series
-		// at 15-second spacing (max sample ts = anchor + 9*15s =
-		// 135s). Picking anchor + 200s leaves a comfortable margin
-		// past the last sample so the per-series LWR rule has a
-		// fresh sample to surface.
-		evalTs := AnchorTime().Add(200 * time.Second).Unix()
-
-		return property.Query{
-			String: expr.String(),
-			EvalTs: evalTs,
-		}
+		shapeID := rapid.SampledFrom(PromQLShapeIDs()).Draw(t, "shapeID")
+		return drawPromQLQuery(t, d, shapeID)
 	})
+}
+
+// PromQLQueryForShape returns the same generator as [PromQLQuery] with the
+// semantic shape fixed to one exact roster member. Deterministic enrollment
+// tests use it to execute every shape once without relying on random reach.
+func PromQLQueryForShape(d property.Dataset, shapeID ShapeID) *rapid.Generator[property.Query] {
+	if !containsShapeID(promQLShapeRoster[:], shapeID) {
+		panic("gen/promql: unknown shape " + string(shapeID))
+	}
+	return rapid.Custom(func(t *rapid.T) property.Query {
+		return drawPromQLQuery(t, d, shapeID)
+	})
+}
+
+func drawPromQLQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Query {
+	names := d.Metrics.NamesPresent()
+	if len(names) == 0 {
+		// The framework rejects this generator defect before execution;
+		// preserve a non-panicking diagnostic value for direct callers.
+		return property.Query{ShapeID: property.ShapeID(shapeID)}
+	}
+
+	name := rapid.SampledFrom(names).Draw(t, "metric")
+	matchers := drawMatchers(t, name, d.Metrics)
+	groupLabels := mapKeys(d.Metrics.LabelsPresentFor(name))
+
+	expr := drawExpr(t, name, matchers, groupLabels, shapeID)
+
+	// EvalTs: pick a timestamp AFTER every dataset sample but
+	// well within the 5-minute LookbackDelta (Prom's default,
+	// which the from-scratch oracle also uses).
+	//
+	// The dataset generator emits at most 10 points per series
+	// at 15-second spacing (max sample ts = anchor + 9*15s =
+	// 135s). Picking anchor + 200s leaves a comfortable margin
+	// past the last sample so the per-series LWR rule has a
+	// fresh sample to surface.
+	evalTs := AnchorTime().Add(200 * time.Second).Unix()
+
+	return property.Query{
+		ShapeID: property.ShapeID(shapeID),
+		String:  expr.String(),
+		EvalTs:  evalTs,
+	}
 }
 
 // drawExpr picks the random expression shape per the PR 2 accept-set.
@@ -86,25 +104,31 @@ func PromQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 //
 // Aggregations strip __name__; the bare selector keeps it. Both
 // shapes are valid Prom queries.
-func drawExpr(t *rapid.T, name string, matchers []*labels.Matcher) parser.Expr {
-	shape := rapid.IntRange(0, 4).Draw(t, "shape")
+func drawExpr(
+	t *rapid.T,
+	name string,
+	matchers []*labels.Matcher,
+	groupLabels []string,
+	shapeID ShapeID,
+) parser.Expr {
 	sel := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
-	switch shape {
-	case 0:
+	switch shapeID {
+	case promQLSelectorShape:
 		return sel
-	case 1:
+	case promQLSumShape:
 		return &parser.AggregateExpr{Op: parser.SUM, Expr: sel}
-	case 2:
-		// `sum by(<label>)`: pick a label from the dataset's pool.
-		// Falls back to no-grouping if no labels are available.
-		group := pickLabelName(t)
-		return &parser.AggregateExpr{Op: parser.SUM, Expr: sel, Grouping: group}
-	case 3:
+	case promQLSumByShape:
+		if len(groupLabels) == 0 {
+			panic("gen/promql: sum-by shape has no observed grouping label")
+		}
+		group := rapid.SampledFrom(groupLabels).Draw(t, "groupLabel")
+		return &parser.AggregateExpr{Op: parser.SUM, Expr: sel, Grouping: []string{group}}
+	case promQLRateShape:
 		return &parser.Call{
 			Func: parser.Functions["rate"],
 			Args: []parser.Expr{drawRangeSelector(t, name, matchers)},
 		}
-	case 4:
+	case promQLSumRateShape:
 		return &parser.AggregateExpr{
 			Op: parser.SUM,
 			Expr: &parser.Call{
@@ -113,7 +137,7 @@ func drawExpr(t *rapid.T, name string, matchers []*labels.Matcher) parser.Expr {
 			},
 		}
 	}
-	return sel
+	panic("gen/promql: unhandled shape " + string(shapeID))
 }
 
 // rangeSelectorWindow is the fixed `[range]` span attached to every
@@ -161,15 +185,6 @@ func drawRangeSelector(t *rapid.T, name string, matchers []*labels.Matcher) *par
 	vs := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
 	vs.OriginalOffset = rapid.SampledFrom(RangeOffsetPool).Draw(t, "rangeOffset")
 	return &parser.MatrixSelector{VectorSelector: vs, Range: rangeSelectorWindow}
-}
-
-func pickLabelName(t *rapid.T) []string {
-	// A nil/empty group means "no grouping" — equivalent to bare
-	// `sum(...)`. Otherwise pick one of the pool's label names.
-	if !rapid.Bool().Draw(t, "useGroup") {
-		return nil
-	}
-	return []string{rapid.SampledFrom(LabelNamePool).Draw(t, "groupLabel")}
 }
 
 // drawMatchers picks a 0-or-1 label matcher to attach to the

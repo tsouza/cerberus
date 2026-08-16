@@ -194,8 +194,16 @@ export const SHARDS = {
   parity: {
     stage: STAGE_PRE,
     recipe: 'update-parity-ledgers',
-    goldens: ['test/surface-parity', 'test/rejection-parity/catalogue'],
-    generators: [{ pkgs: ['./test/surface-parity/', './test/rejection-parity/'] }],
+    goldens: [
+      'test/surface-parity',
+      'test/rejection-parity/catalogue',
+      'test/regression/parity-enrolment-baselines',
+    ],
+    corpus: ['test/spec/promql', 'test/spec/logql', 'test/spec/traceql'],
+    generators: [
+      { pkgs: ['./test/surface-parity/', './test/rejection-parity/'] },
+      { pkgs: ['./test/regression/'], run: '^TestParityEnrolmentBaseline$' },
+    ],
   },
   solver: {
     stage: STAGE_PRE,

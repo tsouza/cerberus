@@ -14,6 +14,7 @@ import (
 // grid (start/end/step, unix seconds) to evaluate it over — the
 // range-path counterpart to PromQLQuery's instant-only property.Query.
 type RangeQuery struct {
+	ShapeID  ShapeID
 	String   string
 	StartSec int64
 	EndSec   int64
@@ -66,30 +67,48 @@ const rangeGridPoints = 5
 // not to rediscover a different known issue.
 func PromQLRangeQuery(d property.Dataset) *rapid.Generator[RangeQuery] {
 	return rapid.Custom(func(t *rapid.T) RangeQuery {
-		names := d.Metrics.NamesPresent()
-		if len(names) == 0 {
-			// MetricsDataset filters this out before Run() draws a
-			// query; guard anyway so the generator never panics.
-			return RangeQuery{}
-		}
-
-		name := rapid.SampledFrom(names).Draw(t, "metric")
-		matchers := drawMatchers(t, name, d.Metrics)
-		expr := drawRangeExpr(t, name, matchers)
-
-		startOffset := rapid.SampledFrom(RangeGridStartOffsets).Draw(t, "startOffset")
-		step := rapid.SampledFrom(RangeGridSteps).Draw(t, "step")
-
-		startSec := AnchorTime().Add(startOffset).Unix()
-		endSec := startSec + int64(rangeGridPoints-1)*step
-
-		return RangeQuery{
-			String:   expr.String(),
-			StartSec: startSec,
-			EndSec:   endSec,
-			StepSec:  step,
-		}
+		shapeID := rapid.SampledFrom(PromQLRangeShapeIDs()).Draw(t, "rangeShapeID")
+		return drawPromQLRangeQuery(t, d, shapeID)
 	})
+}
+
+// PromQLRangeQueryForShape fixes the query-range generator to one exact
+// roster member for deterministic one-per-shape execution.
+func PromQLRangeQueryForShape(d property.Dataset, shapeID ShapeID) *rapid.Generator[RangeQuery] {
+	if !containsShapeID(promQLRangeShapeRoster[:], shapeID) {
+		panic("gen/promql-range: unknown shape " + string(shapeID))
+	}
+	return rapid.Custom(func(t *rapid.T) RangeQuery {
+		return drawPromQLRangeQuery(t, d, shapeID)
+	})
+}
+
+func drawPromQLRangeQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) RangeQuery {
+	names := d.Metrics.NamesPresent()
+	if len(names) == 0 {
+		// The property test rejects this generator defect before execution;
+		// preserve a non-panicking diagnostic value for direct callers.
+		return RangeQuery{ShapeID: shapeID}
+	}
+
+	name := rapid.SampledFrom(names).Draw(t, "metric")
+	matchers := drawMatchers(t, name, d.Metrics)
+	groupLabels := mapKeys(d.Metrics.LabelsPresentFor(name))
+	expr := drawRangeExpr(t, name, matchers, groupLabels, shapeID)
+
+	startOffset := rapid.SampledFrom(RangeGridStartOffsets).Draw(t, "startOffset")
+	step := rapid.SampledFrom(RangeGridSteps).Draw(t, "step")
+
+	startSec := AnchorTime().Add(startOffset).Unix()
+	endSec := startSec + int64(rangeGridPoints-1)*step
+
+	return RangeQuery{
+		ShapeID:  shapeID,
+		String:   expr.String(),
+		StartSec: startSec,
+		EndSec:   endSec,
+		StepSec:  step,
+	}
 }
 
 // drawRangeExpr picks a restricted expression shape for the range-
@@ -97,23 +116,30 @@ func PromQLRangeQuery(d property.Dataset) *rapid.Generator[RangeQuery] {
 // rate(). Deliberately excludes the ungrouped `sum(...)` and
 // `sum(rate(...))` shapes drawExpr draws for the instant-query
 // generator (see PromQLRangeQuery's doc comment for why).
-func drawRangeExpr(t *rapid.T, name string, matchers []*labels.Matcher) parser.Expr {
-	shape := rapid.IntRange(0, 2).Draw(t, "rangeShape")
+func drawRangeExpr(
+	t *rapid.T,
+	name string,
+	matchers []*labels.Matcher,
+	groupLabels []string,
+	shapeID ShapeID,
+) parser.Expr {
 	sel := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
-	switch shape {
-	case 0:
+	switch shapeID {
+	case promQLRangeSelectorShape:
 		return sel
-	case 1:
+	case promQLRangeSumByShape:
 		// Non-empty grouping only — never fall back to bare sum(...),
-		// unlike pickLabelName's 50%-chance-of-nil behaviour used by
-		// the instant generator.
-		group := []string{rapid.SampledFrom(LabelNamePool).Draw(t, "groupLabel")}
+		// and draw from the selected metric's observed labels.
+		if len(groupLabels) == 0 {
+			panic("gen/promql-range: sum-by shape has no observed grouping label")
+		}
+		group := []string{rapid.SampledFrom(groupLabels).Draw(t, "groupLabel")}
 		return &parser.AggregateExpr{Op: parser.SUM, Expr: sel, Grouping: group}
-	case 2:
+	case promQLRangeRateShape:
 		return &parser.Call{
 			Func: parser.Functions["rate"],
 			Args: []parser.Expr{drawRangeSelector(t, name, matchers)},
 		}
 	}
-	return sel
+	panic("gen/promql-range: unhandled shape " + string(shapeID))
 }

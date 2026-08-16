@@ -31,9 +31,9 @@ const goldenShardsLib = "../../.github/scripts/lib/golden-shards.mjs"
 const updateGoldenRecipeHeader = "update-golden *shards:"
 
 // A shard set that covers a PromQL fixture change: the fixture's own goldens,
-// the routing baseline derived from its `-- query.promql --`, and the
-// cardinality baseline derived from its `-- sql --`.
-const promqlFixtureCoveringSet = "solver promql cardinality"
+// its parity enrolment roster, the routing baseline derived from its
+// `-- query.promql --`, and the cardinality baseline derived from its `-- sql --`.
+const promqlFixtureCoveringSet = "parity solver promql cardinality"
 
 // checkGoldenShardCoverage drives the real coverage check over a synthetic
 // diff, without regenerating anything or touching the working tree.
@@ -123,9 +123,9 @@ func TestUpdateGoldenRefusesAnUncoveredShardSet(t *testing.T) {
 	t.Run("does not demand a shard the diff cannot have staled", func(t *testing.T) {
 		t.Parallel()
 
-		out, code := checkGoldenShardCoverage(t, "logql cardinality", "test/spec/logql/fixture_under_test.txtar")
+		out, code := checkGoldenShardCoverage(t, "parity logql cardinality", "test/spec/logql/fixture_under_test.txtar")
 		if code != 0 {
-			t.Fatalf("a LogQL fixture change demanded more than `logql cardinality` (exit %d). "+
+			t.Fatalf("a LogQL fixture change demanded more than `parity logql cardinality` (exit %d). "+
 				"The solver decision baseline reads the PromQL corpus only; demanding it here "+
 				"is over-coverage, and an over-firing check gets rubber-stamped.\n%s", code, out)
 		}

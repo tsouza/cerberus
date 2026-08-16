@@ -11,7 +11,8 @@
 //     (shared across iterations; each iteration's
 //     CREATE OR REPLACE TABLE statement keeps replays idempotent).
 //  3. The TraceQL generator (gen.TraceQLQuery) draws a random query
-//     from 14 shapes — attribute matchers (resource + span scope,
+//     from 17 stable shapes across 14 weighted families — attribute
+//     matchers (resource + span scope,
 //     equality/negation/regex), duration/status/name intrinsics,
 //     multi-condition filters, structural relations (`>`/`>>`),
 //     count()/avg()/min()/max()/sum() scalar-filter pipelines, and
@@ -54,7 +55,7 @@
 //
 // The test runs in two CI lanes:
 //
-//   - Locally and on any explicit `go test -tags chdb ./test/property/...`
+//   - Locally and on any explicit composite-tag property invocation
 //     invocation, rapid uses its default of 100 iterations.
 //   - The nightly `property` workflow (`.github/workflows/property.yml`)
 //     overrides to `-rapid.checks=500` for a deeper sweep.
@@ -62,7 +63,7 @@
 // To reproduce a failing CI run locally, copy the rapid seed from the
 // workflow log and re-run:
 //
-//	go test -tags chdb -run TestTraceQL_Property -rapid.seed=<N> \
+//	go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run TestTraceQL_Property -rapid.seed=<N> \
 //	    ./test/property/...
 //
 // rapid persists the shrunk failing draw under `testdata/rapid/`; the
@@ -178,6 +179,34 @@ INSERT INTO otel_traces VALUES
 	}
 }
 
+// TestTraceQL_PropertyShapeRoster executes one deterministic live
+// differential per enrolled selector, intrinsic, structural, and pipeline
+// shape under the same composite tags as the random sweep.
+func TestTraceQL_PropertyShapeRoster(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	h := tempo.New(cli, schema.DefaultOTelTraces(), "v1.0.0-property-shapes", nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	property.RunShapeExamples(
+		t,
+		gen.TraceQLShapeIDs(),
+		func(shapeID gen.ShapeID, seed int) (property.Dataset, property.Query) {
+			dataset := gen.TraceQLDataset().Example(seed)
+			return dataset, gen.TraceQLQueryForShape(dataset, shapeID).Example(seed)
+		},
+		func(_ *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			return oracletraceql.Evaluate(dataset, query)
+		},
+		func(t *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			cli.Seed(t, dataset.DDL)
+			return runCerberusTraceQL(t.Context(), srv.URL, query)
+		},
+	)
+}
+
 // runCerberusTraceQL GETs /api/search?q=<query> and decodes the
 // Tempo-shaped response into the framework's property.Outcome.
 //
@@ -234,9 +263,8 @@ func runCerberusTraceQL(ctx context.Context, baseURL string, q property.Query) p
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// Non-2xx is a legitimate cerberus outcome — the oracle may
-		// also error on the same query. The framework's
-		// CompareOutcomes treats both-erroring queries as agreement.
+		// Surface non-2xx as a system error. The fail-closed verdict rejects
+		// it even when the oracle also errors.
 		return property.Outcome{
 			Err: fmt.Errorf("cerberus returned status=%d body=%s", resp.StatusCode, body),
 		}

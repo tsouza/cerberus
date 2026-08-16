@@ -25,7 +25,8 @@ const solverBaselineShard = "solver"
 const cardinalityBaselineShard = "cardinality"
 
 // migrationShard and parityShard re-derive from inputs the body never writes,
-// and run before it so their drift lands inside the closing diff-stat.
+// including each fixture's `-- parity --` contract, and run before it so their
+// drift lands inside the closing diff-stat.
 const (
 	migrationShard = "migration"
 	parityShard    = "parity"
@@ -160,8 +161,9 @@ func planDiffScope(t *testing.T, plan []string) string {
 // body: it re-derives from the `-- query.promql --` input, and the body's
 // default-tag lane runs TestSolverDecisionRatchet in ASSERT mode, which fails
 // on a fixture not yet in the routing baseline. `migration` and `parity`
-// likewise precede the body — neither reads `test/spec/**`, and running them
-// first puts their drift inside the closing diff-stat a contributor reviews.
+// likewise precede the body. Parity reads each fixture's `-- parity --` input,
+// which the body never rewrites; running both first puts their drift inside the
+// closing diff-stat a contributor reviews.
 func TestUpdateGoldenRecordsCardinalityBaselineAfterRewrite(t *testing.T) {
 	t.Parallel()
 

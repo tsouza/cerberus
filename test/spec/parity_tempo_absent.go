@@ -8,18 +8,22 @@
 // every other build this stub stands in, exactly as parity_nochdb.go's
 // RunParity does when the `chdb` tag is unset.
 //
-// Inertness here is not a silent skip: the parity contract test in
-// test/regression parses every `parity:` section on every commit
-// (build-tag-free), and the chdb workflow's traceql leg runs this check
-// with all three tags set, which is where a tempo-enrolled fixture is
-// actually compared.
+// Invoking the absent seam is a hard failure. Parsing a `parity:` section is
+// not evidence that the reference implementation actually ran, so a lane with
+// the wrong tag set must fail rather than report a hollow green.
 package spec
 
 import "testing"
 
-// runTempoParity is a no-op when the `chdb_agpl_oracle` tag is not set.
-// The real implementation lives in parity_tempo_chdb_agpl_oracle.go.
+// runTempoParity fails when the `chdb_agpl_oracle` tag is not set. The real
+// implementation lives in parity_tempo_chdb_agpl_oracle.go.
 func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) {
 	t.Helper()
-	_, _, _, _ = t, c, p, rt
+	_, _ = p, rt
+	t.Fatalf(
+		"fixture %s is enrolled against the %q oracle, but this lane was built without "+
+			"the `chdb_agpl_oracle` build tag, so the Tempo oracle is compiled out. "+
+			"Run this package with `-tags chdb,agpl_oracle,chdb_agpl_oracle`.",
+		c.Name, OracleTempo,
+	)
 }
