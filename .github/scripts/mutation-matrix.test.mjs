@@ -21,6 +21,8 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
+  addChangedLineRefs,
+  changedLineProjection,
   MUTATION_LANE_ID,
   MUTATION_MIN_EFFICACY,
   MUTATION_REGISTRY_PATH,
@@ -238,7 +240,94 @@ test('an uncomputable diff runs the full matrix rather than nothing', () => {
   assert.match(result.reason, /could not be computed/);
 });
 
+test('changed-line projection is bound to the exact merge base and added-line roster', () => {
+  const base = 'a'.repeat(40);
+  const head = 'b'.repeat(40);
+  const mergeBase = 'c'.repeat(40);
+  const calls = [];
+  const projection = changedLineProjection({
+    baseSha: base,
+    headSha: head,
+    runGit: (args) => {
+      calls.push(args);
+      if (args[0] === 'merge-base') return { status: 0, stdout: `${mergeBase}\n`, stderr: '' };
+      return {
+        status: 0,
+        stdout:
+          [
+            '4\t2\tinternal/chplan/plan.go',
+            '0\t7\tinternal/chsql/deleted.go',
+            '-\t-\tinternal/chsql/blob.go',
+          ].join('\0') + '\0',
+        stderr: '',
+      };
+    },
+  });
+  assert.deepEqual(calls, [
+    ['merge-base', base, head],
+    ['diff', '--numstat', '-z', '--no-renames', mergeBase, head],
+  ]);
+  assert.equal(projection.ref, mergeBase);
+  assert.equal(projection.additions.get('internal/chplan/plan.go'), 4);
+  assert.equal(projection.additions.get('internal/chsql/deleted.go'), 0);
+  assert.equal(projection.additions.get('internal/chsql/blob.go'), null);
+});
+
+test('changed-line projection fails closed on missing refs, git failure, and malformed numstat', () => {
+  assert.equal(changedLineProjection({ baseSha: '', headSha: 'b'.repeat(40) }), null);
+  assert.equal(
+    changedLineProjection({
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      runGit: () => ({ status: 1, stdout: '', stderr: 'missing' }),
+    }),
+    null,
+  );
+  let call = 0;
+  assert.equal(
+    changedLineProjection({
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      runGit: () =>
+        call++ === 0
+          ? { status: 0, stdout: `${'c'.repeat(40)}\n`, stderr: '' }
+          : { status: 0, stdout: 'not-numstat\0', stderr: '' },
+    }),
+    null,
+  );
+});
+
+test('only production additions receive changed-line mutation refs', () => {
+  const ref = 'c'.repeat(40);
+  const phase = PHASES.find((candidate) => candidate.phase === 'phase1');
+  const project = (changed, additions) =>
+    addChangedLineRefs({
+      phases: [phase],
+      changed: new Set(changed),
+      projection: { ref, additions: new Map(additions) },
+    })[0].diff_ref;
+
+  assert.equal(project(['internal/chplan/plan.go'], [['internal/chplan/plan.go', 3]]), ref);
+  assert.equal(project(['internal/chplan/plan.go'], [['internal/chplan/plan.go', 0]]), '');
+  assert.equal(project(['internal/chplan/plan_test.go'], [['internal/chplan/plan_test.go', 3]]), '');
+  assert.equal(
+    project(
+      ['internal/chplan/plan.go', 'internal/chplan/plan_test.go'],
+      [
+        ['internal/chplan/plan.go', 3],
+        ['internal/chplan/plan_test.go', 2],
+      ],
+    ),
+    '',
+  );
+  assert.equal(
+    addChangedLineRefs({ phases: [phase], changed: null, projection: null })[0].diff_ref,
+    '',
+  );
+});
+
 test('a change to the lane harness runs the full matrix', () => {
+  assert.equal(HARNESS_PATHS.includes('.github/scripts/mutation-run.mjs'), true);
   for (const path of HARNESS_PATHS) {
     assert.equal(select([path]).phases.length, PHASES.length, path);
   }

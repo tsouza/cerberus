@@ -9,12 +9,19 @@ import (
 // mutationWorkflowPath drives the gremlins mutation-testing lane.
 const mutationWorkflowPath = "../../.github/workflows/mutation.yml"
 
+// mutationRunnerPath owns the non-trivial argv and changed-line fallback that
+// the workflow invokes.
+const mutationRunnerPath = "../../.github/scripts/mutation-run.mjs"
+
 // timeoutMaxFlag bounds a single mutant's test run regardless of how slow the
 // mutated package's own tests are.
 const timeoutMaxFlag = "--timeout-max"
 
-// unleashArgvPrefix opens the argv array the workflow hands to gremlins.
-const unleashArgvPrefix = "args=(unleash"
+const (
+	mutationRunnerInvocation = "run: node .github/scripts/mutation-run.mjs"
+	timeoutMaxArg            = "'--timeout-max',"
+	timeoutMaxValue          = "required('MUTANT_TIMEOUT_MAX'),"
+)
 
 // gremlinsForkTagPrefix is the fork tag family that supports timeoutMaxFlag.
 // The flag landed in the fork; a tag from before it makes gremlins reject the
@@ -52,27 +59,20 @@ func TestMutationLaneCapsPerMutantTimeout(t *testing.T) {
 		t.Fatalf("read %s: %v", mutationWorkflowPath, err)
 	}
 	body := string(workflow)
-
-	// Match the argv line itself, not the file: the flag is also named in the
-	// comments that explain it, and prose must not be able to satisfy the pin.
-	var argvLine string
-	for _, line := range strings.Split(body, "\n") {
-		if strings.Contains(line, unleashArgvPrefix) {
-			argvLine = line
-
-			break
-		}
+	if !strings.Contains(body, mutationRunnerInvocation) {
+		t.Errorf("%s does not invoke the pinned mutation runner %q", mutationWorkflowPath, mutationRunnerInvocation)
 	}
-	switch {
-	case argvLine == "":
-		t.Errorf("%s has no %q line; the pin below cannot see how gremlins is invoked. If the "+
-			"invocation was restructured, re-point this test at the new shape rather than deleting it.",
-			mutationWorkflowPath, unleashArgvPrefix)
-	case !strings.Contains(argvLine, timeoutMaxFlag):
-		t.Errorf("%s does not pass %s to gremlins unleash. Without an absolute ceiling a mutant that "+
-			"inverts a scanner loop-advance runs until the runner is out of memory, and the job dies "+
-			"with no verdict — which reads as flake, not as a missing bound.",
-			mutationWorkflowPath, timeoutMaxFlag)
+
+	runner, err := os.ReadFile(mutationRunnerPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", mutationRunnerPath, err)
+	}
+	runnerBody := string(runner)
+	if !strings.Contains(runnerBody, timeoutMaxArg) || !strings.Contains(runnerBody, timeoutMaxValue) {
+		t.Errorf("%s does not pass %s from MUTANT_TIMEOUT_MAX to gremlins unleash. Without an absolute "+
+			"ceiling a mutant that inverts a scanner loop-advance runs until the runner is out of memory, "+
+			"and the job dies with no verdict — which reads as flake, not as a missing bound.",
+			mutationRunnerPath, timeoutMaxFlag)
 	}
 
 	if !strings.Contains(body, gremlinsForkTagPrefix) {

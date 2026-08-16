@@ -55,7 +55,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { error, log, notice, setOutput } from './lib/gh.mjs';
+import { error, git, log, notice, setOutput } from './lib/gh.mjs';
 import { changedPaths, matchesAny, normalise, runsFullLane, underPrefix } from './lib/scope-gate.mjs';
 import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-phases.mjs';
 
@@ -454,6 +454,62 @@ export function selectPhases({
   };
 }
 
+// changedLineProjection returns the exact merge-base ref and per-path added-line
+// counts used by gremlins' native `--diff` filter. A malformed or unavailable
+// projection is null: callers must run the selected phase in full.
+export function changedLineProjection({ baseSha, headSha, runGit = git }) {
+  const base = String(baseSha ?? '').trim();
+  const head = String(headSha ?? '').trim();
+  if (!/^[0-9a-f]{7,64}$/i.test(base) || !/^[0-9a-f]{7,64}$/i.test(head)) return null;
+
+  const mergeBase = runGit(['merge-base', base, head]);
+  const ref = String(mergeBase?.stdout ?? '').trim();
+  if (mergeBase?.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(ref)) return null;
+
+  // `--no-renames` makes the NUL-delimited numstat grammar one fixed record
+  // shape. A rename with content becomes delete + add, which safely treats the
+  // new file as entirely changed rather than under-selecting its mutants.
+  const diff = runGit(['diff', '--numstat', '-z', '--no-renames', ref, head]);
+  if (diff?.status !== 0) return null;
+  const additions = new Map();
+  for (const record of String(diff.stdout ?? '').split('\0')) {
+    if (record === '') continue;
+    const fields = record.split('\t');
+    if (fields.length !== 3 || fields[2] === '') return null;
+    const [added, deleted, path] = fields;
+    if ((added !== '-' && !/^[0-9]+$/.test(added)) || (deleted !== '-' && !/^[0-9]+$/.test(deleted))) {
+      return null;
+    }
+    additions.set(normalise(path), added === '-' ? null : Number(added));
+  }
+  return { ref, additions };
+}
+
+function mutableProductionGo(path) {
+  return path.endsWith('.go') && !path.endsWith('_test.go');
+}
+
+// addChangedLineRefs chooses incremental mutation independently per phase. A
+// phase is incremental only when every changed path that selected it is a
+// production Go file with at least one added line. Test, fixture, binary,
+// harness, delete-only, and unknown changes deliberately keep the full phase:
+// each can change the efficacy of mutants outside the edited lines.
+export function addChangedLineRefs({ phases, changed, projection }) {
+  return phases.map((phase) => {
+    if (!(changed instanceof Set) || projection === null) return { ...phase, diff_ref: '' };
+    const claimed = [...changed].filter((path) => phaseClaims(phase, path));
+    const incremental =
+      claimed.length > 0 &&
+      claimed.every(
+        (path) =>
+          mutableProductionGo(path) &&
+          Number.isSafeInteger(projection.additions.get(normalise(path))) &&
+          projection.additions.get(normalise(path)) > 0,
+      );
+    return { ...phase, diff_ref: incremental ? projection.ref : '' };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // driver
 // ---------------------------------------------------------------------------
@@ -526,8 +582,19 @@ function main() {
   }
   if (gaps.length > 0) process.exit(1);
 
+  const projection =
+    changed === null
+      ? null
+      : changedLineProjection({
+          baseSha: process.env.BASE_SHA,
+          headSha: process.env.HEAD_SHA,
+        });
+  const matrixPhases = addChangedLineRefs({ phases, changed, projection });
+  const incrementalCount = matrixPhases.filter((phase) => phase.diff_ref !== '').length;
+
   notice(
-    `mutation-matrix: running ${phases.length}/${PHASES.length} phases — ${reason}` +
+    `mutation-matrix: running ${phases.length}/${PHASES.length} phases — ${reason}; ` +
+      `${incrementalCount} changed-line, ${matrixPhases.length - incrementalCount} full` +
       (phases.length > 0 ? ` (${phases.map((p) => p.phase).join(', ')})` : ''),
   );
 
@@ -537,7 +604,7 @@ function main() {
   // a job-level `if:` cannot introspect a matrix: without it, a SKIPPED `mutate`
   // is indistinguishable to the aggregator from a selection that was legitimately
   // empty — which is precisely the ambiguity this lane is being fixed to remove.
-  setOutput('matrix', JSON.stringify({ include: phases }));
+  setOutput('matrix', JSON.stringify({ include: matrixPhases }));
   setOutput('has_phases', String(phases.length > 0));
 }
 
