@@ -3170,6 +3170,99 @@ func (k extrapolationKind) isCounter() bool {
 // (only `rate` divides through `r.Range.Seconds()` at the end).
 func (k extrapolationKind) isRate() bool { return k == extrapolationKindRate }
 
+// instantDeltaPrefixSource joins the exactly window-bounded sample aggregate
+// to a separate per-series scalar sum through the range's left edge. Keeping
+// the two aggregates separate preserves the fail-closed groupArray scan bound:
+// only the scalar prefix reads older observations.
+func (e *emitter) instantDeltaPrefixSource(
+	r *chplan.RangeWindow,
+	window *QueryBuilder,
+	groupFrags []Frag,
+	rangeStart Frag,
+) (Frag, error) {
+	groupColumns, err := plainGroupColumnNames(r.GroupBy)
+	if err != nil {
+		return nil, err
+	}
+	prefixInput, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return nil, err
+	}
+	prefix := NewQuery().From(prefixInput)
+	prefixKeys := make([]string, len(groupFrags))
+	for i, groupFrag := range groupFrags {
+		prefixKeys[i] = fmt.Sprintf("delta_prefix_key_%d", i)
+		prefix.Select(As(groupFrag, prefixKeys[i]))
+	}
+	prefix.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixBeforeWindowAlias))
+	prefix.Where(Lte(Col(r.TimestampColumn), rangeStart))
+	prefix.GroupBy(groupFrags...)
+
+	joined := NewQuery().From(aliasedFrag(window.Frag(), "w"))
+	for _, groupColumn := range groupColumns {
+		joined.Select(As(Qual("w", groupColumn), groupColumn))
+	}
+	joined.Select(As(Qual("w", "series_array"), "series_array"))
+	joined.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
+	joined.Select(As(Qual("p", deltaPrefixBeforeWindowAlias), deltaPrefixBeforeWindowAlias))
+	if len(groupColumns) == 0 {
+		joined.Join(CrossJoin, aliasedFrag(prefix.Frag(), "p"), nil)
+		return joined.Frag(), nil
+	}
+	on := make([]Frag, len(groupColumns))
+	for i, groupColumn := range groupColumns {
+		on[i] = Eq(Qual("w", groupColumn), Qual("p", prefixKeys[i]))
+	}
+	joined.Join(LeftJoin, aliasedFrag(prefix.Frag(), "p"), And(on...))
+	return joined.Frag(), nil
+}
+
+// deltaRunningLevelSource deduplicates the finite matrix scan envelope and
+// attaches the cumulative DELTA level through each source observation before
+// the observation fans out to covered anchors.
+func deltaRunningLevelSource(
+	r *chplan.RangeWindow,
+	input Frag,
+	srcTs string,
+	groupFrags []Frag,
+	end Frag,
+	rangeNS, stepNS, numAnchors int64,
+) Frag {
+	bounded := NewQuery().From(input)
+	bounded.Select(groupFrags...)
+	bounded.Select(Col(srcTs))
+	bounded.Select(As(Call("max", Col(r.ValueColumn)), r.ValueColumn))
+	bounded.Select(As(Call("any", Col(r.TemporalityColumn)), r.TemporalityColumn))
+	boundedKeys := make([]Frag, 0, len(groupFrags)+1)
+	boundedKeys = append(boundedKeys, groupFrags...)
+	boundedKeys = append(boundedKeys, Col(srcTs))
+	bounded.GroupBy(boundedKeys...)
+
+	earliestAnchor := Sub(
+		end,
+		Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
+	)
+	bounded.Where(
+		Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
+		Lte(Col(srcTs), end),
+	)
+
+	prefix := NewQuery().From(bounded.Frag())
+	prefix.Select(groupFrags...)
+	prefix.Select(Col(srcTs))
+	prefix.Select(Col(r.ValueColumn))
+	prefix.Select(Col(r.TemporalityColumn))
+	prefix.Select(As(
+		Window(
+			Call("sum", Col(r.ValueColumn)),
+			groupFrags,
+			[]OrderKey{{Expr: Col(srcTs)}},
+		),
+		deltaRunningLevelAlias,
+	))
+	return prefix.Frag()
+}
+
 // emitWindowedArrayExtrapolated emits SQL for rate / increase / delta
 // with Prom's `extrapolatedRate` boundary correction applied to the
 // per-window value. Compared to emitWindowedArray, this path projects
@@ -3263,44 +3356,10 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	windowSource := innermost.Frag()
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
 	if needsDeltaFirstLevel {
-		groupColumns, err := plainGroupColumnNames(r.GroupBy)
+		windowSource, err = e.instantDeltaPrefixSource(r, innermost, groupFrags, rangeStart)
 		if err != nil {
 			return err
 		}
-		prefixInput, err := e.subqueryFrag(r.Input)
-		if err != nil {
-			return err
-		}
-		prefix := NewQuery().From(prefixInput)
-		prefixKeys := make([]string, len(groupFrags))
-		for i, groupFrag := range groupFrags {
-			prefixKeys[i] = fmt.Sprintf("delta_prefix_key_%d", i)
-			prefix.Select(As(groupFrag, prefixKeys[i]))
-		}
-		prefix.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixBeforeWindowAlias))
-		prefix.Where(Lte(Col(r.TimestampColumn), rangeStart))
-		prefix.GroupBy(groupFrags...)
-
-		joined := NewQuery().From(aliasedFrag(innermost.Frag(), "w"))
-		for _, groupColumn := range groupColumns {
-			joined.Select(As(Qual("w", groupColumn), groupColumn))
-		}
-		joined.Select(As(Qual("w", "series_array"), "series_array"))
-		joined.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
-		joined.Select(As(
-			Qual("p", deltaPrefixBeforeWindowAlias),
-			deltaPrefixBeforeWindowAlias,
-		))
-		if len(groupColumns) == 0 {
-			joined.Join(CrossJoin, aliasedFrag(prefix.Frag(), "p"), nil)
-		} else {
-			on := make([]Frag, len(groupColumns))
-			for i, groupColumn := range groupColumns {
-				on[i] = Eq(Qual("w", groupColumn), Qual("p", prefixKeys[i]))
-			}
-			joined.Join(LeftJoin, aliasedFrag(prefix.Frag(), "p"), And(on...))
-		}
-		windowSource = joined.Frag()
 	}
 
 	// Inner-middle SELECT — arrayFilter to the (end-range, end] window.
@@ -3409,44 +3468,9 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	hasTemporality := windowTemporalityProjected(r)
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
 	if needsDeltaFirstLevel {
-		// Reconstruct a cumulative DELTA level inside the finite matrix scan
-		// envelope, before each observation fans out to its covered anchors.
-		// The first aggregation also applies the emitter's established
-		// max-valued duplicate-timestamp policy, so the running sum and the
-		// downstream window_pairs see the same logical observations.
-		bounded := NewQuery().From(innerSub)
-		bounded.Select(groupFrags...)
-		bounded.Select(Col(srcTs))
-		bounded.Select(As(Call("max", Col(r.ValueColumn)), r.ValueColumn))
-		bounded.Select(As(Call("any", Col(r.TemporalityColumn)), r.TemporalityColumn))
-		boundedKeys := make([]Frag, 0, len(groupFrags)+1)
-		boundedKeys = append(boundedKeys, groupFrags...)
-		boundedKeys = append(boundedKeys, Col(srcTs))
-		bounded.GroupBy(boundedKeys...)
-
-		earliestAnchor := Sub(
-			end,
-			Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
+		innerSub = deltaRunningLevelSource(
+			r, innerSub, srcTs, groupFrags, end, rangeNS, stepNS, numAnchors,
 		)
-		bounded.Where(
-			Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
-			Lte(Col(srcTs), end),
-		)
-
-		prefix := NewQuery().From(bounded.Frag())
-		prefix.Select(groupFrags...)
-		prefix.Select(Col(srcTs))
-		prefix.Select(Col(r.ValueColumn))
-		prefix.Select(Col(r.TemporalityColumn))
-		prefix.Select(As(
-			Window(
-				Call("sum", Col(r.ValueColumn)),
-				groupFrags,
-				[]OrderKey{{Expr: Col(srcTs)}},
-			),
-			deltaRunningLevelAlias,
-		))
-		innerSub = prefix.Frag()
 	}
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
