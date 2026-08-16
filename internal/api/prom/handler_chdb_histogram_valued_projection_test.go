@@ -59,11 +59,13 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 	}
 
 	// Both shapes matter: a bare selector forwards the physical OTel-CH
-	// columns (UInt64 / Array(UInt64)) and rate() derives Float64 ones,
-	// so before the pin these two disagreed. They must now report the
-	// SAME nine types.
+	// columns (UInt64 / Array(UInt64)); rate() and the over-time reducers
+	// derive Float64 ones, so before the pin these shapes disagreed. They
+	// must now report the SAME nine types.
 	for _, tc := range []struct{ name, query string }{
 		{"bare selector", "typecheck_exp_hist"},
+		{"sum over time", "sum_over_time(typecheck_exp_hist[5m])"},
+		{"avg over time", "avg_over_time(typecheck_exp_hist[5m])"},
 		{"rate", "rate(typecheck_exp_hist[5m])"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

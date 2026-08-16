@@ -152,6 +152,17 @@
   - query: 'irate(demo_shifting_latency_exp_hist[5m])'
   - query: 'idelta(demo_shifting_latency_exp_hist[1m])'
   - query: 'idelta(demo_shifting_latency_exp_hist[5m])'
+  # sum_over_time() / avg_over_time() add native histograms along TIME,
+  # reconciling every sample to the window's coarsest schema before the
+  # component-wise fold. The 5m shifting fixture crosses scales 0 and -1;
+  # the 1m form pins ordinary aligned addition, while offset and @ pin the
+  # two non-fanout anchor paths.
+  - query: 'sum_over_time(demo_shifting_latency_exp_hist[1m])'
+  - query: 'sum_over_time(demo_shifting_latency_exp_hist[5m])'
+  - query: 'avg_over_time(demo_shifting_latency_exp_hist[1m])'
+  - query: 'avg_over_time(demo_shifting_latency_exp_hist[5m])'
+  - query: 'sum_over_time(demo_latency_exp_hist[5m] offset 5m)'
+  - query: 'avg_over_time(demo_latency_exp_hist[5m] @ 1778457600)'
   # The FLOAT-valued reductions over a native histogram: reference's
   # funcResets, funcChanges and the `count` aggregation all publish a
   # plain sample rather than a distribution, so unlike every case above
