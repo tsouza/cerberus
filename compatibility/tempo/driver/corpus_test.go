@@ -804,6 +804,40 @@ child.index
 	}
 }
 
+func TestParseCorpus_V2UnextractableTagQueriesAssertUnfilteredAnswers(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"tag names": `-- name --
+malformed_tags
+-- endpoint --
+tags_v2
+-- query --
+{{{
+-- expected_values --
+child.index
+`,
+		"tag values": `-- name --
+malformed_values
+-- endpoint --
+tag_values_v2
+-- tag_name --
+.service.name
+-- query --
+{{{
+-- expected_values --
+payments
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := parseCorpus(strings.NewReader(src), "t.txtar"); err != nil {
+				t.Fatalf("parseCorpus: %v", err)
+			}
+		})
+	}
+}
+
 // TestParseCorpus_TagValuesQueryShapes is the positive control on the
 // tag-VALUES pair: the two shapes the corpus uses parse, and the
 // strict-subset assertion the loader used to refuse outright on these

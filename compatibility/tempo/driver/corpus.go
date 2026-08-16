@@ -129,6 +129,8 @@ import (
 	"strings"
 
 	"google.golang.org/grpc/codes"
+
+	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // CorpusCase is one entry parsed out of the TXTAR file.
@@ -612,12 +614,13 @@ func validateTagAssertions(cur CorpusCase) error {
 	// `q` on a tag-discovery route means opposite things on the two
 	// versions, and a case that sends one has to say which it is testing.
 	//
-	// On a V2 route the parameter narrows, and the only reason to send one
-	// is to get a SMALLER set back: without an expected_absent_values the
-	// case passes identically when `q` is dropped on the floor, which is
-	// the bug the parameter exists to fix.
-	if cur.Query != "" && narrowingTagEndpoint(cur.Endpoint) && len(cur.ExpectedAbsentValues) == 0 {
-		return fmt.Errorf("case %q: endpoint=%s with a -- query -- requires -- expected_absent_values -- (an entry the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name, cur.Endpoint)
+	// A V2 route narrows a recoverable query, but deliberately treats a query
+	// the lenient autocomplete parser cannot recover as no filter. The two
+	// shapes need opposite assertions: a recoverable query names something
+	// omitted by the smaller result, while an unextractable query names
+	// something from the complete result and cannot claim it is absent.
+	if err := validateNarrowingTagAssertions(cur); err != nil {
+		return err
 	}
 	// A V1 route does not take `q` — upstream drops it and answers the
 	// whole window (LiveStore.SearchTags forwards only the scope into
@@ -633,6 +636,26 @@ func validateTagAssertions(cur CorpusCase) error {
 		if len(cur.ExpectedValues) == 0 {
 			return fmt.Errorf("case %q: endpoint=%s with a -- query -- requires -- expected_values -- (an entry only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name, cur.Endpoint)
 		}
+	}
+	return nil
+}
+
+func validateNarrowingTagAssertions(cur CorpusCase) error {
+	if cur.Query == "" || !narrowingTagEndpoint(cur.Endpoint) {
+		return nil
+	}
+	_, unextractable := traceql.ParseLenient(cur.Query)
+	if unextractable == nil {
+		if len(cur.ExpectedAbsentValues) == 0 {
+			return fmt.Errorf("case %q: endpoint=%s with a recoverable -- query -- requires -- expected_absent_values -- (an entry the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name, cur.Endpoint)
+		}
+		return nil
+	}
+	if len(cur.ExpectedAbsentValues) != 0 {
+		return fmt.Errorf("case %q: endpoint=%s with an unextractable -- query -- cannot carry -- expected_absent_values -- (V2 answers the unfiltered set)", cur.Name, cur.Endpoint)
+	}
+	if len(cur.ExpectedValues) == 0 {
+		return fmt.Errorf("case %q: endpoint=%s with an unextractable -- query -- requires -- expected_values -- from the unfiltered answer", cur.Name, cur.Endpoint)
 	}
 	return nil
 }

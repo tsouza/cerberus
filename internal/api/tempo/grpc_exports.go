@@ -70,8 +70,8 @@ func ParseTagScope(raw string) (string, error) {
 // HTTP routes use (tagQueryFilter), so the two surfaces cannot drift on
 // which spans a `q` selects either. Empty means no narrowing, and the
 // lookups render exactly the SQL they did before `q` existed. A `q`
-// that cannot be parsed, lowered, or reduced to a span-row predicate
-// comes back as a classified error (ClassifyErr → InvalidArgument).
+// that cannot be parsed, lowered, or reduced to a span-row predicate falls
+// back to the unfiltered set, matching Tempo's autocomplete contract.
 //
 // route says which tag-name route is asking, and decides whether query
 // is honoured at all: only V2 takes a narrowing query, so a V1 caller's
@@ -142,9 +142,8 @@ func (h *Handler) ResolveTagName(name string) (ResolvedTagName, error) {
 // on every discovery route and on both transports. An empty (or
 // route-discarded) query yields a nil filter, and a nil filter appends no
 // clause: the lookup renders exactly the SQL it did before `q` existed.
-// A `q` that cannot be parsed, lowered, or reduced to a span-row
-// predicate comes back as a classified error (ClassifyErr →
-// InvalidArgument).
+// A `q` that cannot be parsed, lowered, or reduced to a span-row predicate
+// falls back to the unfiltered set, matching Tempo's autocomplete contract.
 func (h *Handler) FetchTagValues(
 	ctx context.Context, r ResolvedTagName, route TagsRoute, query string, start, end time.Time,
 ) (values []string, valueType string, err error) {

@@ -27,7 +27,39 @@ func Parse(s string) (expr *RootExpr, err error) {
 	if err != nil {
 		return nil, err
 	}
+	return validateAndRewrite(root)
+}
 
+// ParseLenient parses autocomplete-shaped TraceQL. It first preserves Parse's
+// strict result exactly; only after that fails does it replace a comparison
+// with no right-hand operand by `true` and retry. This matches Tempo tag
+// discovery semantics: valid conjuncts still narrow, while the half-typed
+// matcher contributes no condition yet.
+func ParseLenient(s string) (*RootExpr, error) {
+	expr, originalErr := Parse(s)
+	if originalErr == nil {
+		return expr, nil
+	}
+	toks, lexErr := tokenize(s)
+	if lexErr != nil {
+		return nil, originalErr
+	}
+	cleaned, changed := replaceIncompleteMatchers(toks)
+	if !changed {
+		return nil, originalErr
+	}
+	root, err := parseTokens(cleaned)
+	if err != nil {
+		return nil, originalErr
+	}
+	expr, err = validateAndRewrite(root)
+	if err != nil {
+		return nil, originalErr
+	}
+	return expr, nil
+}
+
+func validateAndRewrite(root *RootExpr) (*RootExpr, error) {
 	// Static typing runs on the tree the grammar produced, BEFORE the
 	// array-fold rewrites — the order the reference validates in, and the
 	// reason both report the same sentence for the same query. The
@@ -47,6 +79,72 @@ func Parse(s string) (expr *RootExpr, err error) {
 	return applyRewrites(root), nil
 }
 
+// replaceIncompleteMatchers substitutes a field comparison whose RHS has not
+// been typed yet with boolean true. Working on the native lexer tokens keeps
+// quoted attribute names and string literals opaque and avoids a second,
+// subtly different TraceQL tokenizer in the API layer.
+func replaceIncompleteMatchers(toks []token) ([]token, bool) {
+	remove := make([]bool, len(toks))
+	replace := make(map[int]token)
+	for i, tok := range toks {
+		if !isComparisonToken(tok.kind) || i+1 >= len(toks) || !isIncompleteMatcherBoundary(toks[i+1].kind) {
+			continue
+		}
+		start := i - 1
+		for start >= 0 && !isMatcherStartBoundary(toks[start].kind) {
+			start--
+		}
+		start++
+		if start >= i {
+			continue
+		}
+		for j := start; j <= i; j++ {
+			remove[j] = true
+		}
+		replace[start] = token{kind: tokTrue, line: toks[start].line, col: toks[start].col}
+	}
+	if len(replace) == 0 {
+		return toks, false
+	}
+	out := make([]token, 0, len(toks))
+	for i, tok := range toks {
+		if replacement, ok := replace[i]; ok {
+			out = append(out, replacement)
+		}
+		if !remove[i] {
+			out = append(out, tok)
+		}
+	}
+	return out, true
+}
+
+func isComparisonToken(kind tokenKind) bool {
+	switch kind {
+	case tokEq, tokNeq, tokRe, tokNre, tokGt, tokGte, tokLt, tokLte:
+		return true
+	default:
+		return false
+	}
+}
+
+func isIncompleteMatcherBoundary(kind tokenKind) bool {
+	switch kind {
+	case tokCloseBrace, tokCloseParen, tokAnd, tokOr, tokPipe, tokEOF:
+		return true
+	default:
+		return false
+	}
+}
+
+func isMatcherStartBoundary(kind tokenKind) bool {
+	switch kind {
+	case tokOpenBrace, tokOpenParen, tokAnd, tokOr, tokPipe:
+		return true
+	default:
+		return false
+	}
+}
+
 // parseTree runs the grammar alone, producing the raw tree with none of
 // Parse's static-validation pass or rewrites applied. ParseIdentifier is
 // the one caller: it wraps a bare attribute reference in a synthetic
@@ -59,7 +157,10 @@ func parseTree(s string) (expr *RootExpr, err error) {
 	if lexErr != nil {
 		return nil, newParseError(lexErr.Error(), 0, 0)
 	}
+	return parseTokens(toks)
+}
 
+func parseTokens(toks []token) (expr *RootExpr, err error) {
 	p := &parser{toks: toks}
 	c := &cursor{p: p}
 

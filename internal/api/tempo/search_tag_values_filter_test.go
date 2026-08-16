@@ -299,53 +299,46 @@ func TestSearchTagValuesQuery_AbsentRendersIdenticalSQL(t *testing.T) {
 	}
 }
 
-// TestSearchTagValuesQuery_Malformed pins the parse rejection. `q` is
-// TraceQL, so an unparseable one is a 400 carrying the same parse-stage
-// message /api/search answers for the identical input — one
-// classification, every route (errclass.go). V1 has no `q` to reject and
-// is covered by TestSearchTagValuesV1Query_Ignored instead.
-func TestSearchTagValuesQuery_Malformed(t *testing.T) {
+// TestSearchTagValuesQuery_UnextractableFallsBackUnfiltered is the value-side
+// twin of the tag-name fallback contract.
+func TestSearchTagValuesQuery_UnextractableFallsBackUnfiltered(t *testing.T) {
 	t.Parallel()
 
-	status, body, sql, _ := tagValuesLookup(t, tagValuesKey, "{{{", true, tagValuesRouteV2Path, nil)
-	if status != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d body=%s", status, body)
-	}
-	if !strings.Contains(body, "parse") {
-		t.Errorf("body does not name the parse stage: %s", body)
-	}
-	if sql != "" {
-		t.Errorf("a rejected q still hit ClickHouse: %s", sql)
-	}
-}
-
-// TestSearchTagValuesQuery_NonRowShapeRejected covers the queries that
-// parse and lower but whose matching spans are defined by a join or an
-// aggregate rather than a predicate over one row. There is no conjunct to
-// push into a value lookup for those, and answering the unfiltered value
-// set would be a silently WIDER answer than the caller asked for — so
-// they are refused with a 422 that names why. V2 only: V1 promises the
-// unfiltered set to begin with, so there is nothing to refuse.
-func TestSearchTagValuesQuery_NonRowShapeRejected(t *testing.T) {
-	t.Parallel()
-
+	_, _, baseSQL, baseArgs := tagValuesLookup(t, tagValuesKey, "", false, tagValuesRouteV2Path, nil)
 	for name, query := range map[string]string{
+		"malformed":        "{{{",
 		"metrics pipeline": `{} | rate()`,
 		"structural":       `{ span.a = 1 } >> { span.b = 2 }`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			status, body, sql, _ := tagValuesLookup(t, tagValuesKey, query, true, tagValuesRouteV2Path, nil)
-			if status != http.StatusUnprocessableEntity {
-				t.Fatalf("status: want 422, got %d body=%s", status, body)
+			status, body, sql, args := tagValuesLookup(t, tagValuesKey, query, true, tagValuesRouteV2Path, nil)
+			if status != http.StatusOK {
+				t.Fatalf("status: want 200, got %d body=%s", status, body)
 			}
-			if !strings.Contains(body, "row predicate") {
-				t.Errorf("body does not explain the shape requirement: %s", body)
+			if sql != baseSQL {
+				t.Errorf("fallback query changed SQL\n  base: %s\n   got: %s", baseSQL, sql)
 			}
-			if sql != "" {
-				t.Errorf("a rejected q still hit ClickHouse: %s", sql)
+			if len(args) != len(baseArgs) {
+				t.Errorf("fallback query changed bound args: %v vs %v", args, baseArgs)
 			}
 		})
+	}
+}
+
+func TestSearchTagValuesQuery_IncompleteMatcherKeepsValidConjunct(t *testing.T) {
+	t.Parallel()
+
+	query := `{ span.http.method = "GET" && resource.cluster = }`
+	status, body, sql, args := tagValuesLookup(t, tagValuesKey, query, true, tagValuesRouteV2Path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status: want 200, got %d body=%s", status, body)
+	}
+	if !strings.Contains(sql, tagValuesConjunct) || !argsBind(args, "http.method", "GET") {
+		t.Fatalf("valid conjunct did not narrow the lookup: sql=%s args=%v", sql, args)
+	}
+	if argsBind(args, "cluster") {
+		t.Errorf("incomplete matcher survived in bound args: %v", args)
 	}
 }
 
