@@ -887,9 +887,12 @@ expands it into the `mutate` job's matrix. The rolled-up `mutation`
 context is a required check on `main`.
 
 On a pull request the lane runs the phases whose scope that PR changed,
-and only those: a PR editing `internal/chplan` runs `phase1`, a PR
-editing only docs runs no leg and the aggregator passes through
-honestly. Push-to-main, the nightly, a manual dispatch, a `release/*`
+and only those. A production-only edit uses gremlins' native merge-base
+changed-line filter inside its selected phase. A test, fixture, harness,
+delete-only, binary, malformed, or uncomputable projection runs the selected
+phase in full; an incremental report with zero executable mutants also reruns
+the full phase before it may report. A PR editing only docs runs no leg and the
+aggregator passes through honestly. Push-to-main, the nightly, a manual dispatch, a `release/*`
 PR, and any PR touching mutation-specific harness material all sweep the FULL
 matrix, so no phase's floor is ever load-bearing on some PR happening to touch
 its package. Registry edits are projected to the mutation lane's semantic

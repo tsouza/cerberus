@@ -4,8 +4,10 @@ name: mutation
 # pull_request as a real gate for the publish-on-merge release flow.
 #
 # On an ordinary PR the `mutate` matrix runs the legs whose SCOPE the PR
-# changed, and only those: a PR editing internal/chplan runs phase1, a PR
-# editing only docs runs no leg at all. The selection is computed by
+# changed, and production-only edits use gremlins' merge-base changed-line
+# filter inside those legs. Test/harness changes, unknown projections, and a
+# changed-line run with zero executable mutants fall back to the full selected
+# phase. A PR editing only docs runs no leg at all. Selection is computed by
 # .github/scripts/mutation-matrix.mjs from the PR's own diff against its merge
 # base; the phase table it selects from lives in mutation-phases.mjs. Push /
 # schedule / dispatch and `release/*` PRs sweep the FULL matrix, so no leg's
@@ -162,19 +164,19 @@ jobs:
       # Do NOT "fix" a recurrence by excluding whichever file the log names:
       # that relocates the file's runaway mutants into whichever leg still owns
       # it, and burns real mutation coverage. The ceiling is the fix.
+      # mutation-run.mjs owns the changed-line/full decision and validates that
+      # the final report executed at least one mutant. Keeping the zero-mutant
+      # fallback out of shell prevents a missing or malformed JSON field from
+      # being read as a cheap successful phase.
       - name: gremlins unleash
         env:
           MUTANT_TIMEOUT_MAX: 15s
-        run: |
-          args=(unleash --output gremlins.json --on-shutdown-status=not-run --timeout-max "$MUTANT_TIMEOUT_MAX")
-          if [ "${{ matrix.workers }}" != "0" ]; then
-            args+=(--workers "${{ matrix.workers }}")
-          fi
-          if [ -n "${{ matrix.exclude_files }}" ]; then
-            args+=(--exclude-files "${{ matrix.exclude_files }}")
-          fi
-          args+=("${{ matrix.scope }}")
-          gremlins "${args[@]}"
+          SCOPE: ${{ matrix.scope }}
+          WORKERS: ${{ matrix.workers }}
+          EXCLUDE_FILES: ${{ matrix.exclude_files }}
+          DIFF_REF: ${{ matrix.diff_ref }}
+          REPORT: gremlins.json
+        run: node .github/scripts/mutation-run.mjs
       # gremlins v0.6.0 exits 0 even when --threshold-efficacy is
       # violated, so the gate is done in gremlins-threshold.mjs against
       # the parsed report JSON (measured < threshold -> fail).
