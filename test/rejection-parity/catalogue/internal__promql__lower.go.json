@@ -297,7 +297,8 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lowerRoot#53e0f9b3",
       "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
-      "class": "",
+      "class": "internal",
+      "rationale": "countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched",
       "evidence": {
         "guard": [
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
@@ -313,6 +314,11 @@
         "callers": [
           "Lower",
           "LowerAtRangeOpts"
+        ],
+        "cited": [
+          "countValuesOverExpHistogramValue",
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
@@ -320,7 +326,8 @@
       "head": "promql",
       "site": "internal/promql/lower.go:lowerRoot#c7dbd629",
       "message": "promql: internal invariant violated: count/group input is not histogram-valued: %v",
-      "class": "",
+      "class": "internal",
+      "rationale": "countOrGroupOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched",
       "evidence": {
         "guard": [
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
@@ -335,6 +342,11 @@
         "callers": [
           "Lower",
           "LowerAtRangeOpts"
+        ],
+        "cited": [
+          "countOrGroupOverExpHistogramValue",
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedShape"
         ]
       }
     },
