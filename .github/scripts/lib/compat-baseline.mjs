@@ -287,7 +287,13 @@ function desiredHeadFiles(head, ids) {
 }
 
 function writeIfChanged(file, bytes) {
-  if (existsSync(file) && readFileSync(file, 'utf8') === bytes) return false;
+  let current = null;
+  try {
+    current = readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (current === bytes) return false;
   writeFileSync(file, bytes);
   return true;
 }
