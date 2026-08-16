@@ -72,10 +72,14 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 func TestQuery_NativeHistogramCountValues_ChDB(t *testing.T) {
 	srv := newHistValuedServer(t)
 	for _, tc := range []struct {
-		query, wantLabel string
+		query      string
+		wantLabel  string
+		wantMetric map[string]string
 	}{
 		{query: `count_values("hist", latency_exp_hist)`, wantLabel: `{count:30, sum:15, [-0,0]:1, (0.5,1]:14, (1,2]:15}`},
+		{query: `count_values("hist", latency_exp_hist) by (service)`, wantLabel: `{count:30, sum:15, [-0,0]:1, (0.5,1]:14, (1,2]:15}`, wantMetric: map[string]string{"service": "api"}},
 		{query: `count_values("hist", rate(latency_exp_hist[5m]))`, wantLabel: `{count:0.1, sum:0.05, (0.5,1]:0.05, (1,2]:0.05}`},
+		{query: `count_values("hist", rate(latency_exp_hist[5m])) by (service)`, wantLabel: `{count:0.1, sum:0.05, (0.5,1]:0.05, (1,2]:0.05}`, wantMetric: map[string]string{"service": "api"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			samples := decodeVectorQuery(t, srv.URL, tc.query, histValuedEvalTime.Unix())
@@ -84,6 +88,11 @@ func TestQuery_NativeHistogramCountValues_ChDB(t *testing.T) {
 			}
 			if got := samples[0].Metric["hist"]; got != tc.wantLabel {
 				t.Errorf("query %q histogram label = %q, want %q", tc.query, got, tc.wantLabel)
+			}
+			for label, want := range tc.wantMetric {
+				if got := samples[0].Metric[label]; got != want {
+					t.Errorf("query %q metric[%q] = %q, want %q", tc.query, label, got, want)
+				}
 			}
 			if got := samples[0].Value[1]; got != "1" {
 				t.Errorf("query %q count = %v, want 1", tc.query, got)

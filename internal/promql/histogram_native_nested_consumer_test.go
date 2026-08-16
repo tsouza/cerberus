@@ -79,9 +79,10 @@ func TestLower_ExpHistogram_NestedMergeConsumesThirteenColumnContract(t *testing
 		t.Fatalf("Emit: %v", err)
 	}
 	for _, want := range []string{
-		"sum(`" + chplan.HistogramCountColumn + "`) AS `" + chplan.HistogramCountColumn + "`",
-		"sum(`" + chplan.HistogramSumColumn + "`) AS `" + chplan.HistogramSumColumn + "`",
+		"groupArray(`" + chplan.HistogramCountColumn + "`) AS `_hq_merge_counts`",
+		"groupArray(`" + chplan.HistogramSumColumn + "`) AS `_hq_merge_sums`",
 		"groupArray(`" + chplan.HistogramPositiveBucketCountsColumn + "`)",
+		"arrayFold(",
 		"`" + s.TimestampColumn + "` AS `" + s.TimestampColumn + "`",
 	} {
 		if !strings.Contains(sql, want) {
@@ -164,6 +165,33 @@ func TestLower_ExpHistogram_NestedPresenceAggregationsAreFloatValued(t *testing.
 			}
 			if shape := chplan.RowShapeOf(reduced.Input); shape != chplan.HistogramRowShape {
 				t.Fatalf("LowerAt(%q) reduced input row shape = %s, want histogram", query, shape)
+			}
+
+			// clickhouse-go's native-parameter detector is text-only: a
+			// `{...:...}` substring anywhere in SQL diverts every positional
+			// argument into the named-parameter binder. Histogram.String starts
+			// with "{count:", so its opening brace must be computed rather than
+			// written literally into the query text.
+			sql, args, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit(%q): %v", query, err)
+			}
+			if strings.Contains(sql, "{") {
+				t.Fatalf("count_values(%q) SQL trips clickhouse-go's native-parameter detector:\n%s", query, sql)
+			}
+			if !strings.Contains(sql, "concat(char(?)") {
+				t.Fatalf("count_values(%q) SQL does not compute Histogram.String's opening brace via char():\n%s", query, sql)
+			}
+			const wantHistogramOpenBraceCode = int64(123)
+			hasOpenBraceCode := false
+			for _, arg := range args {
+				if arg == wantHistogramOpenBraceCode {
+					hasOpenBraceCode = true
+					break
+				}
+			}
+			if !hasOpenBraceCode {
+				t.Fatalf("count_values(%q) has no opening-brace char code argument: %#v", query, args)
 			}
 		})
 	}

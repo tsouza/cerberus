@@ -272,9 +272,10 @@ func TestLower_ExpHistogram_AvgMergesBucketLadders(t *testing.T) {
 	}
 	for _, want := range []string{
 		"min(`" + s.ScaleColumn + "`)",
-		"sum(`" + s.CountColumn + "`) AS `" + s.CountColumn + "`",
-		"sum(`" + s.SumColumn + "`) AS `" + s.SumColumn + "`",
-		"sum(`" + s.ZeroCountColumn + "`) AS `" + s.ZeroCountColumn + "`",
+		"groupArray(`" + s.CountColumn + "`) AS `_hq_merge_counts`",
+		"groupArray(`" + s.SumColumn + "`) AS `_hq_merge_sums`",
+		"groupArray(`" + s.ZeroCountColumn + "`) AS `_hq_merge_zero_counts`",
+		"arrayFold(",
 		"bitShiftRight",
 	} {
 		if !strings.Contains(sql, want) {

@@ -50,6 +50,14 @@ func lowerExpHistogramCountValuesOverPlan(agg *parser.AggregateExpr, input chpla
 // reversed after mapping because their numeric order runs from the most
 // negative interval back toward zero.
 func nativeHistogramStringExpr(s schema.Metrics) chplan.Expr {
+	// clickhouse-go treats ANY `{...:...}` substring in SQL text as native
+	// named-parameter syntax before it considers positional `?` bindings. A
+	// literal `'{count:'` therefore makes the driver reject every ordinary
+	// positional argument as an unsupported query-parameter type. Produce the
+	// opening brace via char(123) so the SQL text never contains the trigger;
+	// the returned value remains byte-identical to FloatHistogram.String.
+	const histogramOpenBraceCode = 123
+
 	h := histogramProjectionSchema(s)
 	parts := &chplan.FuncCall{
 		Fn: chplan.FnArrayConcat,
@@ -71,7 +79,8 @@ func nativeHistogramStringExpr(s schema.Metrics) chplan.Expr {
 	}
 	return histStringCall(
 		chplan.FnConcat,
-		&chplan.InlineString{V: "{count:"},
+		histStringCall(chplan.FnChar, &chplan.LitInt{V: histogramOpenBraceCode}),
+		&chplan.InlineString{V: "count:"},
 		nativeHistogramFloatString(&chplan.ColumnRef{Name: h.CountColumn}),
 		&chplan.InlineString{V: ", sum:"},
 		nativeHistogramFloatString(&chplan.ColumnRef{Name: h.SumColumn}),

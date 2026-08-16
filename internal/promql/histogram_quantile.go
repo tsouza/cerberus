@@ -2158,15 +2158,114 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 // arraySum-of-arrayMap that picks bucket[j] when (off + j - 1) >>
 // (s - merged_scale) == mergedStart + t, else 0.
 func expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnArraySum,
+	return promHistogramKahanSum(expHistogramRowContribsExpr(
+		scalesArr, offArr, bucArr,
+		expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramT),
+	))
+}
+
+// promHistogramKahanSum mirrors Prometheus v3.11's FloatHistogram.KahanAdd
+// scalar recurrence, including its Neumaier improvement and the final
+// compensation addition performed by the SUM aggregation. Starting at
+// (sum=0, compensation=0) is equivalent to Prometheus copying the first
+// histogram and folding the remainder, because the first recurrence has
+// exactly zero compensation.
+func promHistogramKahanSum(values chplan.Expr) chplan.Expr {
+	const (
+		paramKahanAcc   = "kh_acc"
+		paramKahanValue = "kh_x"
+		paramKahanTotal = "kh_total"
+		paramKahanFinal = "kh_final"
+	)
+
+	tupleElement := func(tuple chplan.Expr, index int64) chplan.Expr {
+		return &chplan.FuncCall{
+			Fn:   chplan.FnTupleElement,
+			Args: []chplan.Expr{tuple, &chplan.LitInt{V: index}},
+		}
+	}
+	bindOne := func(param string, value, body chplan.Expr) chplan.Expr {
+		return &chplan.Subscript{
+			Container: &chplan.FuncCall{
+				Fn: chplan.FnArrayMap,
+				Args: []chplan.Expr{
+					&chplan.Lambda{Params: []string{param}, Body: body},
+					&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{value}},
+				},
+			},
+			Key: &chplan.LitInt{V: 1},
+		}
+	}
+
+	acc := &chplan.BareIdent{Name: paramKahanAcc}
+	value := &chplan.BareIdent{Name: paramKahanValue}
+	accSum := tupleElement(acc, 1)
+	accCompensation := tupleElement(acc, 2)
+	total := &chplan.Binary{Op: chplan.OpAdd, Left: accSum, Right: value}
+	boundTotal := &chplan.BareIdent{Name: paramKahanTotal}
+	correction := &chplan.FuncCall{
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
-			expHistogramRowContribsExpr(
-				scalesArr, offArr, bucArr,
-				expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramT),
-			),
+			&chplan.Binary{
+				Op:    chplan.OpGe,
+				Left:  &chplan.FuncCall{Fn: chplan.FnAbs, Args: []chplan.Expr{accSum}},
+				Right: &chplan.FuncCall{Fn: chplan.FnAbs, Args: []chplan.Expr{value}},
+			},
+			&chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  &chplan.Binary{Op: chplan.OpSub, Left: accSum, Right: boundTotal},
+				Right: value,
+			},
+			&chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  &chplan.Binary{Op: chplan.OpSub, Left: value, Right: boundTotal},
+				Right: accSum,
+			},
 		},
 	}
+	nextCompensation := &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnIsInfinite, Args: []chplan.Expr{boundTotal}},
+			&chplan.LitFloat{V: 0},
+			&chplan.Binary{Op: chplan.OpAdd, Left: accCompensation, Right: correction},
+		},
+	}
+	next := bindOne(
+		paramKahanTotal,
+		total,
+		&chplan.FuncCall{
+			Fn: chplan.FnTuple,
+			Args: []chplan.Expr{
+				boundTotal,
+				nextCompensation,
+			},
+		},
+	)
+	folded := &chplan.FuncCall{
+		Fn: chplan.FnArrayFold,
+		Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{paramKahanAcc, paramKahanValue}, Body: next},
+			values,
+			&chplan.FuncCall{
+				Fn: chplan.FnTuple,
+				Args: []chplan.Expr{
+					&chplan.LitFloat{V: 0},
+					&chplan.LitFloat{V: 0},
+				},
+			},
+		},
+	}
+	final := &chplan.BareIdent{Name: paramKahanFinal}
+	return bindOne(
+		paramKahanFinal,
+		folded,
+		&chplan.Binary{
+			Op:    chplan.OpAdd,
+			Left:  tupleElement(final, 1),
+			Right: tupleElement(final, 2),
+		},
+	)
 }
 
 // expHistogramBucketRowContribExpr renders ONE stored row's count at the
