@@ -216,30 +216,15 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	return l
 }
 
-// FanoutRateLowerer is the concrete DEFAULT RateLowerer. A temporality-bearing
-// counter window is partitioned into complementary CUMULATIVE and DELTA arms:
-// the cumulative arm keeps the historical cheap fan-out, while only the DELTA
-// arm pays for reconstructing a running cumulative level. It is the fallback
-// the native impl embeds AND the strategy a fan-out-only deployment wires
-// directly, so the dispatch site never needs a nil check.
+// FanoutRateLowerer is the concrete DEFAULT RateLowerer: it returns the generic
+// fan-out RangeWindow unchanged. It is the fallback the native impl embeds AND
+// the strategy a fan-out-only deployment wires directly, so the dispatch site
+// never needs a nil check.
 type FanoutRateLowerer struct{}
 
-// LowerRate returns rw unchanged when no temporality branch applies. A
-// temporality-bearing matrix is split before emission so CUMULATIVE rows never
-// flow through the DELTA-only running-sum window.
-func (FanoutRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
-	if rw.TemporalityColumn == "" {
-		return rw
-	}
-	cumulative := *rw
-	cumulative.Input = nativeTemporalityFilter(rw.Input, rw.TemporalityColumn)
-	cumulative.TemporalityColumn = ""
-	delta := *rw
-	delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
-	return derivedRateArm(&chplan.UnionAll{Inputs: []chplan.Node{
-		&cumulative,
-		&delta,
-	}}, s)
+// LowerRate returns the fan-out RangeWindow rw unchanged.
+func (FanoutRateLowerer) LowerRate(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
 }
 
 // NativeRateLowerer is the boot-wired RateLowerer that emits the native

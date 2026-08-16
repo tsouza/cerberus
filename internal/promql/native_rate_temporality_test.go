@@ -37,7 +37,15 @@ func TestNativeRateLowererSplitsTemporality(t *testing.T) {
 	assertDerivedRateProjection(t, derived)
 }
 
-func TestFanoutRateLowererSplitsTemporality(t *testing.T) {
+// TestFanoutRateLowererPreservesTemporalityColumn pins the DEFAULT
+// RateLowerer's fused shape: a temporality-bearing counter window is no
+// longer split into complementary CUMULATIVE / DELTA arms at the plan level.
+// chsql's single-scan matrix emitter (emitWindowedArrayExtrapolatedMatrix)
+// now branches on the temporality column per row inside one query, so the
+// plan-level split — and the per-arm selector-projection shaping it required
+// — is unnecessary cost the lowerer no longer pays. See
+// FanoutRateLowerer.LowerRate.
+func TestFanoutRateLowererPreservesTemporalityColumn(t *testing.T) {
 	t.Parallel()
 
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr("rate(cerberus_queries_total[5m])")
@@ -50,34 +58,62 @@ func TestFanoutRateLowererSplitsTemporality(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived, union := temporalityRateUnion(t, plan)
-	if len(union.Inputs) != 2 {
-		t.Fatalf("temporality-bearing fan-out rate has %d arms, want 2", len(union.Inputs))
+	rw, ok := plan.(*chplan.RangeWindow)
+	if !ok {
+		t.Fatalf("temporality-bearing fan-out rate = %T, want unchanged fan-out RangeWindow", plan)
 	}
-	cumulative := union.Inputs[0].(*chplan.RangeWindow)
-	delta := union.Inputs[1].(*chplan.RangeWindow)
-	if cumulative.TemporalityColumn != "" {
-		t.Errorf("cumulative TemporalityColumn = %q, want empty cheap-path marker", cumulative.TemporalityColumn)
+	if rw.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
+		t.Errorf("TemporalityColumn = %q, want schema temporality column", rw.TemporalityColumn)
 	}
-	assertProjectionOmits(t, cumulative.Input, schema.DefaultOTelMetrics().AggregationTemporalityColumn)
-	if delta.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
-		t.Errorf("delta TemporalityColumn = %q, want schema temporality column", delta.TemporalityColumn)
-	}
-	assertTemporalityFilter(t, cumulative.Input, chplan.OpNe)
-	assertTemporalityFilter(t, delta.Input, chplan.OpEq)
-	assertDerivedRateProjection(t, derived)
+	assertFilterOmitsTemporalityFusion(t, rw.Input)
 }
 
-func assertProjectionOmits(t *testing.T, input chplan.Node, alias string) {
+// assertFilterOmitsTemporalityFusion locates the selector's innermost Filter
+// — the same Filter-or-Project-then-Filter shape assertTemporalityFilter
+// inspects for the split arms — and checks its predicate was never AND-fused
+// with an aggregation-temporality condition. A bare `rw.Input.(*chplan.Filter)`
+// type check is not enough here: the metric-name selector for
+// "cerberus_queries_total" already lowers to a *chplan.Project wrapping a
+// *chplan.Filter, so that shallow assertion is true (Input is a Project, not
+// a Filter) whether or not FanoutRateLowerer still fuses a temporality
+// predicate into it underneath.
+func assertFilterOmitsTemporalityFusion(t *testing.T, input chplan.Node) {
 	t.Helper()
-	project, ok := input.(*chplan.Project)
+	filter, ok := input.(*chplan.Filter)
 	if !ok {
-		t.Fatalf("arm input = %T, want selector Project", input)
-	}
-	for _, projection := range project.Projections {
-		if projection.Alias == alias {
-			t.Errorf("selector Project still carries unused %q column", alias)
+		project, projectOK := input.(*chplan.Project)
+		if !projectOK {
+			return
 		}
+		filter, ok = project.Input.(*chplan.Filter)
+		if !ok {
+			return
+		}
+	}
+	if _, nested := filter.Input.(*chplan.Filter); nested {
+		t.Error("selector Filter is nested rather than fused; want a single Filter to inspect for temporality fusion")
+	}
+	assertPredicateOmitsTemporalityColumn(t, filter.Predicate)
+}
+
+// assertPredicateOmitsTemporalityColumn recurses through AND-conjuncts —
+// fuseTemporalityFilter's shape for combining an existing selector predicate
+// with a temporality partition — and fails if any conjunct references the
+// aggregation-temporality column.
+func assertPredicateOmitsTemporalityColumn(t *testing.T, predicate chplan.Expr) {
+	t.Helper()
+	temporalityColumn := schema.DefaultOTelMetrics().AggregationTemporalityColumn
+	binary, ok := predicate.(*chplan.Binary)
+	if !ok {
+		return
+	}
+	if binary.Op == chplan.OpAnd {
+		assertPredicateOmitsTemporalityColumn(t, binary.Left)
+		assertPredicateOmitsTemporalityColumn(t, binary.Right)
+		return
+	}
+	if binary.Left.Equal(&chplan.ColumnRef{Name: temporalityColumn}) {
+		t.Errorf("selector filter predicate is fused with the aggregation-temporality column: %#v", predicate)
 	}
 }
 
