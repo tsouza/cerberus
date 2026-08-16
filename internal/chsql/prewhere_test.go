@@ -241,8 +241,9 @@ func TestOrderedConjuncts(t *testing.T) {
 func TestPartitionPrewhere(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{
-		SortColumns: []string{"ServiceName"},
-		WideColumns: []string{"Body"},
+		SortColumns:                 []string{"ServiceName"},
+		WideColumns:                 []string{"Body"},
+		IntegerDiscriminatorColumns: []string{"AggregationTemporality"},
 	}
 	cheapNoWide := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}}
 	cheapWide := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "Body"}, Right: &chplan.LitString{V: "x"}}
@@ -280,6 +281,18 @@ func TestPartitionPrewhere(t *testing.T) {
 	}
 	if len(where) != 0 {
 		t.Errorf("partitionPrewhere (integer discriminator) WHERE = %v, want empty", where)
+	}
+
+	// An ordinary numeric column is not a discriminator. When it is the sole
+	// predicate it remains in WHERE instead of receiving the enum exception.
+	duration := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "Duration"},
+		Right: &chplan.LitInt{V: 1_000_000_000},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{duration}, shape)
+	if len(pre) != 0 || len(where) != 1 || where[0] != duration {
+		t.Errorf("partitionPrewhere (ordinary integer) pre=%v where=%v, want WHERE-only", pre, where)
 	}
 
 	// Shape with no wide columns: everything stays in WHERE.

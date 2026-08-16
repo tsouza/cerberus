@@ -267,10 +267,12 @@ func partitionPrewhere(conjuncts []chplan.Expr, shape TableShape) (prewhere, whe
 	return prewhere, where
 }
 
-// isNarrowIntegerDiscriminator reports an equality/inequality between a bare
-// non-sort-key column and an integer literal. Enum columns use this shape to
-// partition otherwise-wide rows. Keeping the discriminator in PREWHERE lets
-// ClickHouse reject a branch before reading its Map/Array/String payload.
+// isNarrowIntegerDiscriminator reports an equality/inequality between a bare,
+// explicitly registered non-sort-key discriminator column and an integer
+// literal. Keeping the discriminator in PREWHERE lets ClickHouse reject a
+// branch before reading its Map/Array/String payload. Requiring registration
+// prevents ordinary numeric filters such as trace Duration from accidentally
+// receiving the enum-only no-WHERE exception.
 func isNarrowIntegerDiscriminator(e chplan.Expr, shape TableShape) bool {
 	binary, ok := e.(*chplan.Binary)
 	if !ok || (binary.Op != chplan.OpEq && binary.Op != chplan.OpNe) {
@@ -283,6 +285,7 @@ func isNarrowIntegerDiscriminator(e chplan.Expr, shape TableShape) bool {
 		_, literalOK = binary.Left.(*chplan.LitInt)
 	}
 	return columnOK && literalOK && column.Qualifier == "" &&
+		shape.IsIntegerDiscriminatorColumn(column.Name) &&
 		sortRankFor([]string{column.Name}, shape) < 0
 }
 
