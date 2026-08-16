@@ -76,7 +76,7 @@
       "site": "internal/promql/lower.go:expHistogramSelectorRouting#bf746b59",
       "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/sum_over_time()/avg_over_time()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
-      "trigger_query": "sum(rate(demo_latency_exp_hist[5m]))",
+      "trigger_query": "demo_latency_exp_hist + demo_latency_exp_hist",
       "tracking_issue": 2243,
       "evidence": {
         "guard": [
