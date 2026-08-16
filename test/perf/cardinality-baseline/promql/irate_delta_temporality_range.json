@@ -1,7 +1,7 @@
 {
   "fixture": "promql/irate_delta_temporality_range",
-  "fan_factor": 1,
-  "scan_rows": 6,
+  "fan_factor": 0.5,
+  "scan_rows": 12,
   "peak_intermediate": 6,
   "has_cross_join": false,
   "has_array_join": true,

@@ -47,6 +47,40 @@ func TestNativeRateLowererSplitsTemporality(t *testing.T) {
 	assertTemporalityFilter(t, fanout.Input, chplan.OpEq)
 }
 
+func TestFanoutRateLowererSplitsTemporality(t *testing.T) {
+	t.Parallel()
+
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr("rate(cerberus_queries_total[5m])")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(),
+		start, start.Add(5*time.Minute), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	union, ok := plan.(*chplan.UnionAll)
+	if !ok {
+		t.Fatalf("temporality-bearing fan-out rate = %T, want a two-arm UnionAll", plan)
+	}
+	if len(union.Inputs) != 2 {
+		t.Fatalf("temporality-bearing fan-out rate has %d arms, want 2", len(union.Inputs))
+	}
+	cumulativeArm := union.Inputs[0].(*chplan.Project)
+	deltaArm := union.Inputs[1].(*chplan.Project)
+	cumulative := cumulativeArm.Input.(*chplan.RangeWindow)
+	delta := deltaArm.Input.(*chplan.RangeWindow)
+	if cumulative.TemporalityColumn != "" {
+		t.Errorf("cumulative TemporalityColumn = %q, want empty cheap-path marker", cumulative.TemporalityColumn)
+	}
+	if delta.TemporalityColumn != schema.DefaultOTelMetrics().AggregationTemporalityColumn {
+		t.Errorf("delta TemporalityColumn = %q, want schema temporality column", delta.TemporalityColumn)
+	}
+	assertTemporalityFilter(t, cumulative.Input, chplan.OpNe)
+	assertTemporalityFilter(t, delta.Input, chplan.OpEq)
+}
+
 func TestNativeRateLowererUnsupportedShapeFallsBack(t *testing.T) {
 	t.Parallel()
 
