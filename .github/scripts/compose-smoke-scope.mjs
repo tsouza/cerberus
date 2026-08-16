@@ -1,202 +1,86 @@
-// compose-smoke-scope.mjs — decides whether a pull request has to boot the
-// repo-root compose stack (e2e.yml, the `compose-smoke-scope` job).
+// compose-smoke-scope.mjs — keeps the exhaustive Compose/Playwright sweep on
+// release qualification while the dedicated quickstart workflow owns the fast
+// pull-request proof of the repository-root stack.
 //
-// Why this exists
-// ---------------
-// compose-smoke is a RELEASE gate, not a PR gate: on an ordinary pull request
-// the whole lane short-circuits in seconds and the aggregate reports green, and
-// the real ~25-minute stack boot happens on the merge commit, where release.yml
-// reads it by name before anything publishes. That trade was made deliberately
-// to cut PR wall time, and most of it is still right — the average PR has no
-// business booting ClickHouse, an OTel collector, a seeder and Grafana.
+// The old policy booted one Compose stack per Playwright shard whenever an
+// ordinary pull request touched a stack-visible path. The required `quickstart`
+// context now covers the published startup, readiness, provisioning, and
+// Grafana-root contract with one stack. Paying for the browser-depth matrix on
+// the same pull request would test the same startup repeatedly and put the
+// release sweep back on the merge critical path.
 //
-// What it cost is a class of bug this lane is the ONLY layer that catches.
-// Every other execution layer — the TXTAR roundtrips, the property lane, the
-// compatibility harnesses — runs against chDB, and chDB is more forgiving than
-// a real ClickHouse server: it coerces column types the server type-checks and
-// rejects outright. An emit-type or response-shape defect therefore stays green
-// everywhere and surfaces as a 502 against a production server. That is exactly
-// how a Tempo handler shipped a non-JSON body for a multi-phi
-// quantile_over_time: nothing failed until the release lane ran, where it
-// blocked the release rather than the PR that introduced it.
+// This selector therefore has an event-only policy:
 //
-// So the gate is neither "always" nor "never": a PR that touches the surface
-// this stack can see boots it, and every other PR short-circuits exactly as
-// before. Push, schedule and `release/*` PRs are untouched — they always ran
-// the full lane and still do. `workflow_dispatch` never did and still does
-// not by default — see NON_BOOTING_EVENTS — with one deliberate carve-out: a
-// dispatch that asks to regenerate the compose crawl inventory
-// (UPDATE_CRAWL_INVENTORY resolving to "compose" or "both", tsouza/cerberus
-// #1826) has to boot the stack to produce that artifact, so it boots exactly
-// like push/schedule despite the event otherwise being excluded.
+//   - ordinary pull_request and merge_group: omit. The required quickstart
+//     context gates the projected tree instead;
+//   - release/* pull_request, push, and schedule: run the full sweep;
+//   - workflow_dispatch: omit unless it explicitly requests regeneration of
+//     the Compose crawl inventory;
+//   - an unfamiliar event: run, so a future trigger cannot silently de-gate
+//     release evidence.
 //
-// Two modes (env MODE, or argv[2]; default `verify`):
-//   - verify : assert every declared path still exists in the tree. A scope
-//              entry that has been renamed away matches nothing and silently
-//              stops gating — the failure mode is a lane that quietly goes back
-//              to never running, which looks identical to a lane that is
-//              correctly short-circuiting.
-//   - emit   : run that assertion, decide, and write `in_scope=true|false` to
-//              $GITHUB_OUTPUT.
+// Modes (MODE, or argv[2]; default `verify`):
+//   - verify: validate the module can be loaded and the mode is known.
+//   - emit: decide and append `in_scope=true|false` to GITHUB_OUTPUT.
 //
-// Env:
-//   MODE                    `emit` | `verify` (also argv[2]); default `verify`.
-//   EVENT_NAME               github.event_name.
-//   HEAD_REF                 github.head_ref (empty off pull_request).
-//   BASE_SHA                 (emit, PR) github.event.pull_request.base.sha.
-//   HEAD_SHA                 (emit, PR) github.event.pull_request.head.sha.
-//   UPDATE_CRAWL_INVENTORY   (emit, workflow_dispatch) the resolved
-//                            `inputs.update_crawl_inventory` choice —
-//                            "none" | "k3d" | "compose" | "both". Empty off
-//                            workflow_dispatch. Only "compose"/"both" change
-//                            the decision.
-//   GITHUB_OUTPUT (emit) runner file `in_scope` is appended to.
+// Environment:
+//   MODE                    `emit` | `verify` (also argv[2]).
+//   EVENT_NAME              github.event_name.
+//   HEAD_REF                github.head_ref (release-head detection).
+//   UPDATE_CRAWL_INVENTORY  workflow_dispatch selection: none, k3d, compose,
+//                           or both.
+//   GITHUB_OUTPUT           emit destination.
 //
-// Exit: 0 clean; 1 on a stale path or a bad MODE. A decision this module cannot
-// make resolves to `true` (boot the stack), never to `false`.
-//
-// node: builtins only — no npm deps, no setup-node needed.
+// node: builtins only — no npm dependencies or setup-node step.
 
-import { statSync } from 'node:fs';
+import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
-import { changedPaths, matchesAny, runsFullLane } from './lib/scope-gate.mjs';
+import { runsFullLane } from './lib/scope-gate.mjs';
 import { error, log, notice, setOutput } from './lib/gh.mjs';
 
-// The stack's own definition and the harness that drives it. A change here can
-// break the lane in ways no application diff predicts, so it always boots.
-export const HARNESS_PATHS = [
-  'docker-compose.yml',
-  'Dockerfile',
-  'Dockerfile.local',
-  'test/e2e/playwright',
-  'test/e2e/seed',
-  'test/e2e/otel-collector',
-  'test/e2e/grafana/compose',
-  '.github/workflows/e2e.yml',
-  '.github/scripts/compose-smoke-matrix.mjs',
-  '.github/scripts/compose-smoke-scope.mjs',
-  '.github/scripts/lib/shard-coverage.mjs',
-  '.github/scripts/lib/scope-gate.mjs',
-];
+export const NON_BOOTING_EVENTS = Object.freeze(['merge_group', 'workflow_dispatch']);
 
-// The application surface a real ClickHouse can see differently from chDB.
-//
-// Deliberately NOT all of `internal/**`. Widening it there would re-gate the
-// lane on essentially every PR and undo the wall-time win the de-gating bought,
-// for coverage the chdb-backed layers already provide: a lowering or optimizer
-// change shows up in the TXTAR goldens, the property lane, and the
-// compatibility harnesses long before it reaches a socket.
-//
-// What those layers CANNOT see is the boundary between a plan and a live
-// server:
-//
-//   internal/chsql    — the emitted column types. This is the strictness axis:
-//                       chDB accepts a UInt8 where the response decoder wants a
-//                       *float64 and quietly coerces it; the production server
-//                       does not, and the query 502s. No chdb-backed layer can
-//                       observe the difference.
-//   internal/api      — response shape and handler wiring, over a real socket
-//                       with a real Grafana on the other end.
-//   internal/chclient — the driver conversation itself: connection lifecycle,
-//                       cancellation, teardown.
-//   cmd/cerberus      — the binary's own startup and configuration path, which
-//                       only this lane boots for real.
-export const SCOPE_PATHS = ['internal/chsql', 'internal/api', 'internal/chclient', 'cmd/cerberus'];
-
-// stalePaths — declared paths that no longer exist in the tree.
-//
-// Checked because the two lists are pure strings: a package rename turns an
-// entry into one that matches nothing, and the lane silently stops gating on
-// the very surface the entry was added to guard. Nothing else would notice,
-// because "no PR was in scope" and "the scope is broken" produce the same
-// green.
-export function stalePaths(paths) {
-  return paths.filter((p) => {
-    try {
-      statSync(p);
-
-      return false;
-    } catch {
-      return true;
-    }
-  });
-}
-
-// Events whose answer comes from the event alone, in the "don't boot"
-// direction. e2e.yml's `workflow_dispatch` input can also regenerate the k3d
-// Grafana crawl inventory — a dashboard-lane artefact that no compose shard can
-// observe — so booting ClickHouse, a collector, a seeder and Grafana for THAT
-// selection is pure wall time. The guard this module replaced excluded
-// dispatch for exactly that reason; the exclusion is restated here rather than
-// inherited. `decide()` below carves a single deliberate exception back out of
-// this list: a dispatch that asks to regenerate the COMPOSE inventory.
-//
-// It lives HERE, not in the shared runsFullLane(), for two reasons. The other
-// consumer of that helper is the mutation sweep, which genuinely does want a
-// manual dispatch to sweep the whole matrix. And runsFullLane() fails OPEN by
-// design — an event it does not name runs everything — so folding this in there
-// would make an event nobody anticipated silently skip the lane, which is
-// precisely the hollow green this module exists to prevent. Not booting is
-// therefore always a named, per-lane decision.
-export const NON_BOOTING_EVENTS = ['workflow_dispatch'];
-
-// regeneratesCompose — does this dispatch selection ask to (re)write
-// grafana-surface-inventory.compose.json? Only "compose" and "both" do;
-// "none" (the default) and "k3d" leave the compose lane untouched.
 export function regeneratesCompose(updateCrawlInventory) {
   return updateCrawlInventory === 'compose' || updateCrawlInventory === 'both';
 }
 
-// Whether the changed-path diff matters at all, or the event settles it. Used
-// by the driver to skip computing a diff it would only discard. A compose
-// regen dispatch is still settled by the event — decide() below answers it
-// from NON_BOOTING_EVENTS + regeneratesCompose() alone, never from the diff —
-// so this stays a pure function of the event, not the dispatch selection.
-function settledByEvent({ eventName, headRef }) {
-  return NON_BOOTING_EVENTS.includes(eventName) || runsFullLane({ eventName, headRef });
-}
+export function decide({ eventName, headRef, updateCrawlInventory = 'none' }) {
+  const event = String(eventName ?? '').trim();
+  const head = String(headRef ?? '').trim();
 
-// decide — should this event boot the compose stack, and why?
-//
-// The `null` changed-set (no merge base, shallow clone, a git failure) resolves
-// to true. An uncomputable diff is not evidence that nothing changed, and the
-// cost of guessing wrong in that direction is a release-blocking bug that
-// reached main unexamined.
-export function decide({ eventName, headRef, changed, updateCrawlInventory = 'none' }) {
-  if (NON_BOOTING_EVENTS.includes(eventName)) {
+  if (event === 'workflow_dispatch') {
     if (regeneratesCompose(updateCrawlInventory)) {
       return {
         inScope: true,
         reason: `dispatch requests the compose crawl-inventory regen (update_crawl_inventory=${updateCrawlInventory})`,
       };
     }
-
-    return { inScope: false, reason: `event "${eventName}" exercises no compose-visible surface` };
-  }
-  if (runsFullLane({ eventName, headRef })) {
-    return { inScope: true, reason: `event "${eventName}" always runs the full lane` };
-  }
-  if (changed === null) {
-    return { inScope: true, reason: 'the changed-path set could not be computed' };
+    return { inScope: false, reason: 'manual dispatch requested no Compose inventory regeneration' };
   }
 
-  const paths = [...changed];
-  const harnessHit = paths.filter((p) => matchesAny(p, HARNESS_PATHS));
-  if (harnessHit.length > 0) {
-    return { inScope: true, reason: `the lane's own harness changed (${harnessHit.join(', ')})` };
+  if (event === 'merge_group') {
+    return {
+      inScope: false,
+      reason: 'the required one-stack quickstart context owns projected-trunk Compose validation',
+    };
   }
 
-  const scopeHit = paths.filter((p) => matchesAny(p, SCOPE_PATHS));
-  if (scopeHit.length > 0) {
-    return { inScope: true, reason: `a stack-visible path changed (${scopeHit.join(', ')})` };
+  if (event === 'pull_request' && !runsFullLane({ eventName: event, headRef: head })) {
+    return {
+      inScope: false,
+      reason: 'ordinary pull requests use the required one-stack quickstart context',
+    };
   }
 
-  return { inScope: false, reason: 'no changed path is visible to the compose stack' };
+  if (runsFullLane({ eventName: event, headRef: head })) {
+    return { inScope: true, reason: `event "${event || '<unknown>'}" runs full release qualification` };
+  }
+
+  // The only diff-scoped event not handled above would be one added to the
+  // shared helper without being enrolled here. Run rather than silently omit.
+  return { inScope: true, reason: `unrecognised event policy for "${event || '<blank>'}"; running fail closed` };
 }
-
-// ---------------------------------------------------------------------------
-// driver
-// ---------------------------------------------------------------------------
 
 function main() {
   const mode = (process.env.MODE || process.argv[2] || 'verify').trim();
@@ -205,33 +89,19 @@ function main() {
     process.exit(1);
   }
 
-  const declared = [...HARNESS_PATHS, ...SCOPE_PATHS];
-  const stale = stalePaths(declared);
-  for (const p of stale) {
-    error(
-      `compose-smoke-scope: "${p}" is declared in scope but does not exist. It matches no diff, so the ` +
-        `surface it was added to guard is no longer gated — and the lane would report that as a clean ` +
-        `short-circuit. Re-point it at the path it moved to, or drop it.`,
-    );
+  if (mode === 'verify') {
+    log('compose-smoke-scope: release-only event policy loaded.');
+    return;
   }
-  if (stale.length > 0) process.exit(1);
-  log(`compose-smoke-scope: ${declared.length} declared paths, all present.`);
 
-  if (mode === 'verify') return;
-
-  const eventName = (process.env.EVENT_NAME || '').trim();
-  const headRef = (process.env.HEAD_REF || '').trim();
-  const updateCrawlInventory = (process.env.UPDATE_CRAWL_INVENTORY || 'none').trim() || 'none';
-  const changed = settledByEvent({ eventName, headRef })
-    ? null
-    : changedPaths({ baseSha: process.env.BASE_SHA, headSha: process.env.HEAD_SHA });
-
-  const { inScope, reason } = decide({ eventName, headRef, changed, updateCrawlInventory });
-  notice(`compose-smoke-scope: ${inScope ? 'booting the stack' : 'short-circuiting'} — ${reason}`);
-  setOutput('in_scope', String(inScope));
+  const verdict = decide({
+    eventName: process.env.EVENT_NAME,
+    headRef: process.env.HEAD_REF,
+    updateCrawlInventory: (process.env.UPDATE_CRAWL_INVENTORY || 'none').trim() || 'none',
+  });
+  notice(`compose-smoke-scope: ${verdict.inScope ? 'running' : 'omitting'} — ${verdict.reason}`);
+  setOutput('in_scope', String(verdict.inScope));
 }
 
-// Only dispatch when run as a script — importing for the unit test must not
-// exit the test runner.
-const invokedDirectly = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) main();

@@ -40,12 +40,12 @@ inside each layer.
 
 ## CI gates
 
-The twenty **required** status checks on `main` are `check`, `lint`,
+The twenty-one **required** status checks on `main` are `check`, `lint`,
 `forbid-skip`, `forbid-deferral`, `pr-body`, `chart-validate`, `probe`,
 `roundtrip (promql)`, `roundtrip (logql)`, `roundtrip (traceql)`,
 `compatibility/prometheus`, `compatibility/loki`, `compatibility/tempo`,
 `compatibility/prometheus-forced-route`, `coverage`, `mutation`,
-`perf-guards`, `strict-scan`, `CodeQL`, and
+`perf-guards`, `strict-scan`, `quickstart`, `CodeQL`, and
 `property (PromQL + LogQL + TraceQL, rapid N=500)`.
 
 Three further lanes — `compose-smoke`, `dashboard`, `profile` — are **release**
@@ -59,19 +59,29 @@ publishes until each has posted a green check-run on the commit being shipped.
 A `release/*` head branch still gets the full lane on the PR itself. The gate
 moved; it did not disappear.
 
-`compose-smoke` narrows that short-circuit by one step. It is the only
-lane that runs cerberus against a REAL ClickHouse server; every other
-execution layer runs against chDB, which coerces column types the
-server type-checks and rejects, so an emit-type or response-shape
-defect is green everywhere else and 502s in production. A pull request
-that changes something the stack can see differently — `internal/chsql`
-(the emitted types), `internal/api` (the HTTP surface),
-`internal/chclient` (the driver conversation), `cmd/cerberus` (startup)
-— therefore boots the stack on the PR. Everything else still
-short-circuits in seconds. `.github/scripts/compose-smoke-scope.mjs`
-owns the decision and the two path lists, computes them from the PR's
-own diff against its merge base, falls back to booting the stack when
-that diff cannot be computed, and is unit-tested in the `forbid-skip` job. Every other job below is
+`quickstart` is the required, one-stack Compose canary. On every
+non-documentation pull request and merge-group projection it checks out the
+exact proposed SHA, proves the tree is clean, executes the repository-root
+README command with the exact `docker compose up --wait` argument vector, and
+probes liveness, readiness, the published Grafana root, Grafana's database,
+the three provisioned datasource records, one exact seeded query through each
+Grafana datasource proxy, and every actual target expression in the provisioned
+home dashboard through its named proxy. The
+root README is always in scope even though it is Markdown. An empty or
+uncomputable diff runs;
+selector failure, missing output, a skipped/cancelled/timed-out selected run,
+or teardown failure makes the stable `quickstart` context red. Documentation-
+only changes short-circuit only after that explicit successful decision. The
+lane registry models this as the first-class `non_documentation` posture, not a
+set of impact-package globs: a non-documentation path already owned by another
+lane must still select this canary.
+
+The exhaustive `compose-smoke` Playwright matrix remains a release gate. It
+short-circuits on every ordinary pull request because repeating the same stack
+boot per browser shard would duplicate `quickstart` and restore the long merge
+tail. Pushes, nightly/manual qualification, and `release/*` pull requests still
+run it in full; `.github/scripts/compose-smoke-scope.mjs` owns and tests that
+event policy. Every other job below is
 informational — it runs (push-to-main, nightly, or dispatch) and reports,
 but a red result does not block a merge. Informational does **not** mean
 tolerated: a red informational lane is a real failure to fix, it is just
@@ -109,7 +119,8 @@ for the rosters themselves and the procedure for moving one.
 | `compatibility/prometheus`              | `compatibility.yml` (`compatibility/prometheus`)       | PR + queue + push + nightly + disp. | Required  | PromQL differential vs reference Prometheus (`prometheus/compliance` harness) + parity-regression ratchet vs `compatibility/parity-baseline/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `compatibility/loki`                    | `compatibility.yml` (`compatibility/loki`)             | PR + queue + push + nightly + disp. | Required  | LogQL differential vs reference Loki + vendored `loki:pkg/logql/bench` corpus + parity-regression ratchet vs `compatibility/parity-baseline/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `compatibility/tempo`                   | `compatibility.yml` (`compatibility/tempo`)            | PR + queue + push + nightly + disp. | Required  | TraceQL differential vs reference Tempo (cerberus-owned TXTAR corpus), two transport arms — HTTP (`diff`) and gRPC/h2c `StreamingQuerier` (`diff-grpc`, #1453) — each with its own parity-regression ratchet vs `compatibility/parity-baseline/` (`heads.tempo` / `heads.tempo-grpc`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                            | in-scope PR + push + nightly        | Release   | `docker compose up --wait` + `/healthz` / `/readyz` / Grafana `/api/health` + Playwright catch-net + `compose` crawl (lean PR, full nightly)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `quickstart`                            | `quickstart.yml` (`quickstart`)                        | non-doc PR + queue + push           | Required  | One clean projected-trunk checkout; exact repository-root `docker compose up --wait`; `/healthz`, `/readyz`, Grafana `/`, database health, canonical datasource metadata, exact seeded Prom/Loki/Tempo queries, and every provisioned home-dashboard target expression through Grafana; unconditional `down -v --remove-orphans`; fail-closed selector and rollup                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `compose-smoke`                         | `e2e.yml` (`compose-smoke`)                            | release PR + push + nightly         | Release   | Root Compose stack + Playwright dashboard catch-net and `compose` crawl (lean push, full release/nightly); ordinary pull requests use the required single-stack `quickstart` context instead                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `chart-validate`                        | `chart-ci.yml` (`chart-validate`)                      | PR + queue + push + dispatch        | Required  | Helm chart lint + `helm-docs` README drift gate + `kubeconform` render + render assertions (split PDBs / derived `GOMEMLIMIT`) + `ct lint` over `deploy/helm/cerberus`; short-circuits to a green no-op when no chart file changed, so it reports on every PR                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `compatibility/prometheus-forced-route` | `compatibility.yml` (forced-route job)                 | PR + queue + push + nightly + disp. | Required  | Corpus-wide proof that the solver route B (`CERBERUS_EVAL_ROUTE=sharded`) is byte-identical to route A vs reference Prom                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `compatibility/promql-surface`          | `compatibility.yml` (`compatibility/promql-surface`)   | PR + queue + push + nightly + disp. | Info      | Re-probes a **flag-ON** reference Prometheus over every `parser.Functions` symbol; asserts cerberus rejects nothing the reference accepts. Pins `test/surface-parity/inventory.json` against drift (Layer 6d, live half)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -189,10 +200,11 @@ provably false on the queue.
 **A queued entry is held to the pull-request posture, not the push posture.** The
 queue answers the contexts branch protection asks a *PR* for, so the lanes that
 short-circuit on an ordinary PR (`coverage`, `property`) short-circuit in the
-queue too, and the diff-scoped lanes (`mutation`'s leg selection,
-`compose-smoke`'s scope gate) read the merge group's own `base_sha..head_sha` —
-the union of the batched PRs' diffs — exactly as they read a PR's diff against
-its merge base. Running *more* in the queue than on the PR would let a queue
+queue too. The diff-scoped mutation selector reads the merge group's own
+`base_sha..head_sha`, and `quickstart` selects against the same base and the
+projected `${{ github.sha }}` it actually checks out and boots. Those ranges are
+the union of the batched pull requests' diffs. Running *more* in the queue than
+on the pull request would let a queue
 dequeue a PR that was green, which is the livelock a queue exists to remove; the
 heavier sweep is not lost either way, because `main` advances to the merge
 group's own head SHA and the push trigger runs it there.
@@ -1057,11 +1069,12 @@ skip.
 
 Two stacks are registered: `compose` (the repo-root quickstart stack;
 the `compose-smoke` job opts in with `CRAWL_STACK=compose` —
-`SWEEP_DEPTH` follows the standard doctrine: `lean` per-PR, `full`
-nightly) and `k3d` (the `dashboard` job in `e2e.yml`; its crawl step
+`SWEEP_DEPTH` is `lean` on push-to-main and `full` for release, nightly, or
+explicit inventory qualification) and `k3d` (the `dashboard` job in `e2e.yml`; its crawl step
 runs on schedule + manual dispatch only, always at
-`SWEEP_DEPTH=full` — the per-PR fast lane is the compose stack's
-job). Depth changes states, never rules; `full` crawls exhaustively
+`SWEEP_DEPTH=full`). Ordinary pull requests run neither crawl; their required
+Compose proof is the one-stack, browser-free `quickstart` context. Depth changes
+states, never rules; `full` crawls exhaustively
 under a **hard page cap that fails the run when exceeded**, so
 surface growth forces a deliberate cap bump in `stacks.ts`.
 
@@ -1074,12 +1087,14 @@ internally over every dashboard/panel/surface, so Playwright's native
 `workers: 1` in `playwright.config.ts`) leaves them whole and buys
 nothing. The split is therefore **logical**: the spec FILES
 are partitioned across a matrix of jobs, each booting its OWN isolated
-compose stack, balanced by measured wall-clock weight. Whether the lane fans out at all on a
-pull request is a separate, earlier decision made by
+compose stack, balanced by measured wall-clock weight. Whether the lane fans out
+at all is the earlier event decision made by
 `.github/scripts/compose-smoke-scope.mjs` in the `compose-smoke-scope`
-job; the aggregator reads a skipped setup as green only when that job
-succeeded AND reported the change out of scope, so a scope job that
-crashed fails the gate instead of passing for the wrong reason. The
+job: ordinary pull requests omit, while push, nightly, release-head pull
+requests, and explicit Compose inventory regeneration qualify. The aggregator
+reads a skipped setup as green only when that job succeeded AND reported the
+event out of scope, so a scope job that crashed fails instead of passing for the
+wrong reason. The
 partition, the explicit non-compose-smoke exclude list, and the
 coverage assertion are the single source of truth in
 `.github/scripts/compose-smoke-matrix.mjs` (`compose-smoke-setup`
@@ -1249,11 +1264,12 @@ structural check cannot tell a value that is merely out of place from one
 that is subtly wrong.
 
 `test/e2e/playwright/crawl/grafana-surface-inventory.{compose,k3d}.json` are
-the one `-merge` family that lands outside that list. Full depth reaches them
-only through the release-gated `dashboard` (k3d) lane, which runs on the merge
-commit rather than the PR, and an ordinary PR sees only the `lean: true`
-subset of the `.compose.json` rows, only when `compose-smoke`'s own scope
-triggers. `.github/scripts/crawl-surface-inventory-guard.mjs` closes that in
+the one `-merge` family that lands outside that list. Live content is reached
+through the release-gated `dashboard` (k3d) and `compose-smoke` lanes on the
+landed commit, release-head pull request, nightly run, or explicit regeneration.
+An ordinary pull request performs no live crawl; its required `quickstart`
+canary deliberately has no browser-depth work.
+`.github/scripts/crawl-surface-inventory-guard.mjs` closes that in
 the required `forbid-skip` job. The inventory's content is a live crawl result
 that nothing offline can re-derive, but its committed FORM is not: every
 inventory is written through `marshalInventory`
@@ -1269,7 +1285,7 @@ quietly disarm itself when a file moves.
 What it does not prove is worth stating: a `lean` boolean paired with the
 wrong `url`, still sorted and unique, is bytes the generator could legitimately
 have emitted. `lean` has no offline source of truth, so that residue belongs to
-`diffInventory` on a live stack — the `compose-smoke` lean crawl and the k3d
+`diffInventory` on a live stack — the `compose-smoke` crawl and the k3d
 `dashboard` full crawl — and the guard's own header and failure text say so.
 `crawl-surface-inventory-guard.test.mjs` carries a negative control per check
 plus a pin on the documented blind spot, so the gate cannot rot into a rubber

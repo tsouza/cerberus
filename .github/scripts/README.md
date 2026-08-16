@@ -162,8 +162,10 @@ workflow layout and records:
 
 The inventory is total by construction. Every workflow under
 `.github/workflows/` must either own at least one lane or appear in the sorted
-`non_lane_workflows` classification. Only merge-impact lanes may be narrowed;
-main-coalesced lanes remain selected until trusted supersession evidence exists.
+`non_lane_workflows` classification. Merge-impact lanes may be narrowed;
+`non_documentation` lanes run for every non-documentation path and for any
+explicit contract path they own. Main-coalesced lanes remain selected until
+trusted supersession evidence exists.
 Both an unknown changed path and a selector failure mean **select the full
 eligible set**. Schema v1 accepts only
 `rollout: "shadow"`: the registry describes and validates the current system
@@ -202,7 +204,8 @@ Selection manifests are deliberately total: every registered lane is either
 `selected` with the registry's exact execution roster or `omitted` with a
 posture-valid reason. Unknown or empty changed-path sets and selector failures
 set the selector conclusion to `fallback_full` and select every merge-impact
-lane. Release selections bind artifact-applicable lanes to a `sha256:` digest;
+and `non_documentation` lane. Release selections bind artifact-applicable lanes
+to a `sha256:` digest;
 source-tree reports cannot carry one. Report artifacts are not trusted to
 certify their own job status, which is why reports mode cross-checks them
 against the workflow's `needs` results and exact run attempt.
@@ -251,11 +254,10 @@ contract failure.
   step "Crawl surface inventory canonical-form ratchet (#1674)". The PR-time
   content ratchet over
   `test/e2e/playwright/crawl/grafana-surface-inventory.<stack>.json`, the one
-  `-merge` family that had none: full depth reaches them only on the
-  release-gated `dashboard` lane (which runs on the merge commit), and an
-  ordinary PR sees only the compose file's `lean` subset, only when
-  compose-smoke's scope triggers. Their committed FORM is a pure function of
-  their content (`marshalInventory` in `crawl/lib.ts`), so the canonical bytes
+  `-merge` family that had none: live content is exercised by the release-gated
+  `dashboard` and `compose-smoke` lanes, not by ordinary pull requests. Their
+  committed FORM is a pure function of their content (`marshalInventory` in
+  `crawl/lib.ts`), so the canonical bytes
   are rebuilt offline and compared exactly — no stack, no browser. Stacks are
   discovered by filename pattern, so a third one is covered the day it
   registers, and discovering none is itself a failure. It cannot see a `lean`
@@ -1360,29 +1362,50 @@ contract failure.
     limit is diagnosed as such instead of surfacing as an opaque
     container-start failure (#1562).
 
+- **`quickstart-canary.mjs`** — `quickstart.yml`, the selector, one-stack
+  executor, HTTP probe, and stable required rollup. Its five modes form one
+  fail-closed contract:
+  - `select` proves the checkout is the exact clean projected SHA, diffs that
+    SHA against the event base, and emits `selected`, `checkout_sha`, and
+    `reason`. The registry's first-class `non_documentation` posture makes every
+    non-documentation change run even when another impact lane already owns the
+    path; the root README always runs; empty/uncomputable diffs run; only an
+    explicit trusted-documentation result omits.
+  - `verify-checkout` repeats the clean exact-SHA proof in the execution job.
+  - `up` passes the exact `docker compose up --wait` argument vector through
+    `build-with-registry-retry.mjs`, at the repository root, under a bound
+    shorter than the job timeout.
+  - `probe` retries `/healthz`, `/readyz`, Grafana `/`, Grafana database health,
+    the three canonical datasource records, exact seeded Prometheus/Loki/Tempo
+    queries through their Grafana proxy routes, the exact target roster of the
+    provisioned home dashboard, and every one of those dashboard expressions
+    through its named Grafana proxy until the bounded whole snapshot is healthy.
+  - `aggregate` permits a skipped run only after selector success with
+    `selected=false`; missing/malformed selection and every selected result
+    other than `success` fail.
+  `quickstart-canary.test.mjs` supplies negative controls for every decision,
+  response validator, timeout, and aggregate conclusion on the required
+  `forbid-skip` job. `test/regression/quickstart_canary_test.go` binds the script
+  and workflow back to the root README command and published Grafana URL.
+  - Env: `MODE`, `EVENT_NAME`, `BASE_SHA`, `HEAD_SHA`, `CHECKOUT_SHA`,
+    `EXPECTED_SHA`, `CERBERUS_URL`, `GRAFANA_URL`,
+    `QUICKSTART_UP_TIMEOUT_MS`, `QUICKSTART_PROBE_TIMEOUT_MS`, `SELECT_RESULT`,
+    `SELECTED`, `RUN_RESULT`, and `GITHUB_OUTPUT`.
+  - Exit: `0` only when the selected mode's complete evidence is valid, `1` on
+    missing, malformed, stale, unhealthy, timed-out, or non-success evidence.
+
 - **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
-  Decides whether a pull request has to boot the compose stack at all. The lane
-  is a release gate, so an ordinary PR short-circuits it — but it is also the
-  only layer that runs cerberus against a REAL ClickHouse server, and chDB (what
-  every other execution layer uses) coerces column types the server rejects. So
-  the module keeps the short-circuit for changes the stack cannot see and boots
-  it for the ones it can: `HARNESS_PATHS` (the stack's own definition and
-  driver) and `SCOPE_PATHS` (`internal/chsql` emitted types, `internal/api` HTTP
-  surface, `internal/chclient` driver conversation, `cmd/cerberus` startup) —
-  deliberately NOT all of `internal/**`, which would re-gate every PR for
-  coverage the chdb-backed layers already give. `verify` asserts every declared
-  path still exists (a renamed entry matches nothing and silently retires the
-  gate); `emit` writes `in_scope` to `$GITHUB_OUTPUT`. Every ambiguity resolves
-  to `true`: push / schedule / `release/*` PRs always run the full lane, and an
-  uncomputable diff boots the stack rather than skipping it. A merge-queue entry
-  is scoped like a pull request, off its own `base_sha..head_sha`. `workflow_dispatch`
-  is the one named exception (`NON_BOOTING_EVENTS`) — e2e.yml's only dispatch
-  input regenerates the k3d crawl inventory, which no compose shard can see.
-  `compose-smoke-scope.test.mjs` pins the in/out decisions exactly (run on the
-  `forbid-skip` job), and the `compose-smoke` aggregator treats a skipped setup
-  as green only when this job SUCCEEDED and reported `in_scope=false`.
+  Event gate for exhaustive Compose/Playwright release qualification. Ordinary
+  pull requests and merge groups omit because the required `quickstart` context
+  owns projected-trunk Compose validation. Push, schedule, and `release/*` pull
+  requests run the full matrix. Manual dispatch runs only when it asks to
+  regenerate the Compose crawl inventory; an unfamiliar event runs fail closed.
+  `emit` writes `in_scope` to `$GITHUB_OUTPUT`, while `verify` validates the
+  module policy. `compose-smoke-scope.test.mjs` pins every event arm on the
+  required `forbid-skip` job, and the `compose-smoke` aggregator treats a
+  skipped setup as green only when this job succeeded and reported false.
   - Env: `MODE` (`verify` | `emit`; also `argv[2]`; default `verify`),
-    `EVENT_NAME`, `HEAD_REF`, `BASE_SHA`, `HEAD_SHA`, `GITHUB_OUTPUT`.
+    `EVENT_NAME`, `HEAD_REF`, `UPDATE_CRAWL_INVENTORY`, `GITHUB_OUTPUT`.
 
 - **`compose-smoke-matrix.mjs`** — `e2e.yml`, the `compose-smoke-setup` job.
   Single source of truth for how the `compose-smoke` release gate fans its
@@ -1419,7 +1442,7 @@ contract failure.
 - **`assert-crawl-terminal.mjs`** — `e2e.yml`, the `crawl-terminal` job. The
   de-gated crawl lane's only reader. `compose-smoke-shard-info (shard-crawl)`
   is deliberately outside the required `compose-smoke` gate so a crawl hang
-  cannot block a PR — which also means nothing was reading its result, and a
+  cannot block a release — which also means nothing was reading its result, and a
   crawl killed by its own job cap reported `cancelled` and enforced NOTHING
   while the lane still looked present. This job asserts TERMINALITY, not
   correctness: the crawl shard must reach `success` or `failure`. `cancelled`
@@ -1429,7 +1452,7 @@ contract failure.
   to compare. It also fails when the setup job stopped emitting an
   informational matrix at all — an empty `has_informational` means the shard
   silently stopped existing, which is coverage loss disguised as a green lane.
-  The one clean no-op is a change out of the crawl lane's scope: setup
+  The one clean no-op is an event outside the crawl lane's scope: setup
   `skipped` behind a `compose-smoke-scope` that itself succeeded. A scope job
   that crashed leaves the crawl undecided, and that fails.
   - Env: `SCOPE_RESULT`, `SETUP_RESULT`, `HAS_INFORMATIONAL` (the setup job's
