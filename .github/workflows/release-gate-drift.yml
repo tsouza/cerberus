@@ -26,6 +26,8 @@ on:
 
 permissions:
   contents: read
+  checks: read
+  statuses: read
 
 concurrency:
   group: release-gate-drift
@@ -41,12 +43,13 @@ jobs:
       - name: drift self-test
         run: node .github/scripts/release-gate-drift.mjs --self-test
 
-      # RELEASE_PAT, not the default GITHUB_TOKEN: reading a branch's protection
-      # settings requires repo-admin rights, which the workflow token does not
-      # have at any `permissions:` level. The script fails closed if the token
-      # cannot see the protection (zero contexts reads as "vacuous", not "clean").
+      # Branch protection needs repository-administration read permission,
+      # which the workflow token cannot receive. Keep that dedicated credential
+      # confined to this trusted scheduled/manual job and to that one API read;
+      # ordinary history/check reads use the least-privilege workflow token.
       - name: Compare the release gate against live branch protection
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}
+          BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node .github/scripts/release-gate-drift.mjs

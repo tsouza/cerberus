@@ -150,10 +150,10 @@ permissions:
   # ghcr.io (.github/scripts/lib/mirror.mjs); the packages are private.
   packages: read
 
-# No file-level concurrency — the two lanes have different policies.
-# `compose-smoke` cancels in-progress on PR events; `dashboard` /
-# `startup-bench` never cancel (a half-killed k3d teardown leaks
-# Docker volumes). Per-job `concurrency:` blocks encode each policy.
+# No workflow-level cancellation: this workflow includes the exhaustive root
+# Compose proof, so every main push remains observable. Nested groups are bound
+# to run_id; no PR, release, maintenance, or manual qualification can replace a
+# pending job. Replaceable deep lanes live in separately enrolled workflows.
 
 jobs:
   # compose-smoke is sharded into a balanced matrix of isolated-compose-stack
@@ -283,12 +283,10 @@ jobs:
     # applies to.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
-      # Per-shard-keyed so sibling shards in the SAME run queue independently
-      # (a shared group would serialise them). Never cancel-in-progress: the
-      # lane runs on merge commits and release PRs only, where every run is a
-      # gate someone is waiting on, and a half-killed `docker compose` teardown
-      # leaks volumes onto the runner.
-      group: compose-smoke-${{ github.ref }}-${{ matrix.name }}
+      # Per-run and per-shard: sibling shards stay independent, and release or
+      # manual qualification from separate runs can never replace one another.
+      # This workflow deliberately has no stale-main supersession.
+      group: compose-smoke-${{ github.run_id }}-${{ matrix.name }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -558,7 +556,7 @@ jobs:
     # first and the crawl can report a verdict with evidence.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
-      group: compose-smoke-info-${{ github.ref }}-${{ matrix.name }}
+      group: compose-smoke-info-${{ github.run_id }}-${{ matrix.name }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -1032,10 +1030,9 @@ jobs:
     # before it, so the lane produces a verdict with evidence.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
-      # Per-shard-keyed: sibling shards in the SAME run must not cancel each
-      # other; never cancel-in-progress (a half-killed k3d teardown leaks
-      # Docker volumes — same posture as the old dashboard job).
-      group: e2e-dashboard-${{ github.ref }}-${{ matrix.name }}
+      # Per-run and per-shard: sibling shards stay independent, and protected
+      # qualification runs never share a pending/cancellation slot.
+      group: e2e-dashboard-${{ github.run_id }}-${{ matrix.name }}
       cancel-in-progress: false
     env:
       # The crawl shard (CRAWL_STACK=k3d) only does work on schedule + manual
@@ -1423,7 +1420,7 @@ jobs:
       matrix: ${{ fromJSON(needs.dashboard-setup.outputs.matrix_informational) }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     concurrency:
-      group: e2e-dashboard-info-${{ github.ref }}-${{ matrix.name }}
+      group: e2e-dashboard-info-${{ github.run_id }}-${{ matrix.name }}
       cancel-in-progress: false
     env:
       RUN_SHARD: 'true'
@@ -1551,7 +1548,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: e2e-startup-bench-${{ github.ref }}
+      group: e2e-startup-bench-${{ github.run_id }}
       cancel-in-progress: false
     # Why not `services:`? `clickhouse/clickhouse-server:26.5-alpine`'s
     # two-phase entrypoint (temp server → create user+DB → restart) takes
@@ -1683,9 +1680,9 @@ jobs:
     # comfortably under the cap (~25-30 min target wall-clock).
     timeout-minutes: 40
     concurrency:
-      # Never cancel-in-progress — a half-killed k3d teardown leaks Docker
-      # volumes (same posture as the dashboard job).
-      group: e2e-chaos-${{ github.ref }}
+      # Unique per run; main, nightly, and dispatch qualification remain
+      # independently observable and uncancellable.
+      group: e2e-chaos-${{ github.run_id }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -1890,9 +1887,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     concurrency:
-      # Never cancel-in-progress — a half-killed k3d teardown leaks Docker
-      # volumes (same posture as dashboard / chaos).
-      group: e2e-bwc-minio-${{ github.ref }}
+      # Unique per run; main, nightly, and dispatch qualification remain
+      # independently observable and uncancellable.
+      group: e2e-bwc-minio-${{ github.run_id }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7

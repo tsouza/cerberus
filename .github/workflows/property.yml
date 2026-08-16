@@ -79,8 +79,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: property-${{ github.ref }}
-  cancel-in-progress: false
+  # A newer deep run may replace only push/schedule work on main. PR, queue,
+  # dispatch, and maintenance evidence is unique and never cancelled.
+  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
 
 jobs:
   property:

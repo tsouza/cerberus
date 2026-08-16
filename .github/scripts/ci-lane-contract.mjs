@@ -718,14 +718,15 @@ function validateCanonicalHeadOracleFloors(lanes, root, recipeCommands, problems
           lane.layers.includes(requirement.layer) &&
           Array.isArray(lane.risk_domains) &&
           lane.risk_domains.includes(head) &&
-          lane.main_posture === "always" &&
+          (lane.main_posture === "always" ||
+            lane.main_posture === "coalesced") &&
           lane.release_posture === "required" &&
           lane.applicability?.source === true,
       );
       if (providers.length === 0) {
         problems.push(
-          `canonical head ${head} layer ${requirement.layer} requires a source-applicable ` +
-            `${oracleClass} oracle with risk domain ${head}, main_posture always, and ` +
+            `canonical head ${head} layer ${requirement.layer} requires a source-applicable ` +
+            `${oracleClass} oracle with risk domain ${head}, main_posture always or coalesced, and ` +
             `release_posture required`,
         );
       }

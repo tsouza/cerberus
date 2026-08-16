@@ -84,11 +84,11 @@ permissions:
   packages: read
 
 concurrency:
-  # The artifact run and the source-tree run share a ref, so the image tag is
-  # part of the key: without it the release's call would queue behind (or be
-  # queued behind) the push run on the same commit.
-  group: migration-e2e-${{ github.ref }}-${{ inputs.cerberus_image || 'source-tree' }}
-  cancel-in-progress: false
+  # Only replaceable source-tree push/schedule work on main shares a group.
+  # Artifact workflow calls, dispatches, and maintenance qualification use a
+  # unique run-id group and can neither queue behind nor cancel source work.
+  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
 
 jobs:
   # Enumerate the Gherkin features, hold them to the 26-story anchor, and
@@ -152,7 +152,9 @@ jobs:
     # cold module cache. Mirrors TIER0_TIMEOUT_MIN in migration-e2e.mjs.
     timeout-minutes: 15
     concurrency:
-      group: migration-tier0-${{ github.ref }}
+      # The workflow-level policy owns latest-main replacement. Keep every
+      # qualification run's Tier-0 evidence in its own group.
+      group: migration-tier0-${{ github.run_id }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7

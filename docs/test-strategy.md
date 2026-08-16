@@ -59,8 +59,8 @@ publishes until each has posted a green check-run on the commit being shipped.
 A `release/*` head branch still gets the full lane on the PR itself. The gate
 moved; it did not disappear.
 
-`quickstart` is the required, one-stack Compose canary. On every
-non-documentation pull request and merge-group projection it checks out the
+`quickstart` is the required, one-stack Compose canary. On every main push and
+every non-documentation pull request and merge-group projection it checks out the
 exact proposed SHA, proves the tree is clean, executes the repository-root
 README command with the exact `docker compose up --wait` argument vector, and
 probes liveness, readiness, the published Grafana root, Grafana's database,
@@ -74,7 +74,8 @@ or teardown failure makes the stable `quickstart` context red. Documentation-
 only changes short-circuit only after that explicit successful decision. The
 lane registry models this as the first-class `non_documentation` posture, not a
 set of impact-package globs: a non-documentation path already owned by another
-lane must still select this canary.
+lane must still select this canary. Non-PR runs use a unique concurrency group,
+so rapid main pushes cannot replace a pending canary before it starts.
 
 The exhaustive `compose-smoke` Playwright matrix remains a release gate. It
 short-circuits on every ordinary pull request because repeating the same stack
@@ -87,6 +88,16 @@ but a red result does not block a merge. Informational does **not** mean
 tolerated: a red informational lane is a real failure to fix, it is just
 not wired as a branch-protection gate (typically because it needs the chDB
 substrate, a Docker stack, or a soak streak before promotion).
+
+Replaceable deep-test workflows coalesce only a `push` or `schedule` run whose
+ref is exactly `refs/heads/main`; both event types share that workflow's
+`latest-main` group. Every pull request, merge group, manual dispatch,
+reusable-workflow call, maintenance branch, tag, release event, and unknown
+event/ref pair receives a unique run-id group. The exhaustive E2E workflow,
+the required `quickstart`, post-merge generated-artifact drift, core gates,
+publication, stateful mirroring, and monitors are explicit negative controls.
+`.github/scripts/main-coalescing.mjs` binds the enrolled workflow expressions
+to the lane registry, and its tests exercise the cancellation decision table.
 
 One subtlety on the three `compatibility/<head>` checks: each gates in two
 layers. The harness is *scored* — it accumulates per-case results into
@@ -192,8 +203,9 @@ failure mode is silence, not a red X.
 
 **No merge-group run is ever cancelled.** GitHub reads a cancelled check-run as a
 failed one and dequeues the entry, so every `cancel-in-progress:` reachable from
-a `merge_group` run is `false` there. The two forms in use are the literal
-`false` and `${{ github.event_name == 'pull_request' }}`; both hold, and
+a `merge_group` run is `false` there. The recognised forms are literal `false`,
+the pull-request-only expression, and the exact main-push/schedule expression;
+all hold, and
 `test/regression/merge_queue_test.go` rejects any third form that is not
 provably false on the queue.
 

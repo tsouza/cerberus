@@ -14,7 +14,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: quickstart-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  # PR-head runs may supersede one another. Every queue, main, and maintenance
+  # run receives a unique group, so rapid pushes cannot replace a pending
+  # published-quickstart proof before it starts.
+  group: quickstart-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   # A projected-trunk result is evidence for that exact queue entry. Cancelling
   # it would dequeue otherwise-valid work, so only superseded PR-head runs cancel.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

@@ -652,6 +652,12 @@ test("registry keeps independent execution, property, and reference oracles per 
   advisory.release_posture = "advisory";
   renamed.lanes.splice(4, 0, advisory);
   assert.equal(validateRegistry(renamed, { root }), renamed);
+
+  const coalesced = registryFixture();
+  coalesced.lanes.find(
+    (candidate) => candidate.id === "oracle-reference",
+  ).main_posture = "coalesced";
+  assert.equal(validateRegistry(coalesced, { root }), coalesced);
 });
 
 test("canonical providers fail when their workflow command is removed", () => {
