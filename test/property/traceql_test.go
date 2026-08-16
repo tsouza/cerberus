@@ -78,6 +78,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"pgregory.net/rapid"
 
@@ -131,6 +132,50 @@ func TestTraceQL_Property(t *testing.T) {
 	}
 
 	property.Run(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)
+}
+
+// TestTraceQLDescendantPropertyMatch is the stable two-span form of the
+// descendant relation exercised by TestTraceQL_Property. The root uses the
+// canonical OTel empty ParentSpanId and the child references it directly, so
+// the real parse -> lower -> emit -> chDB -> HTTP path must return one
+// trace-level empty-label result for the matching descendant.
+func TestTraceQLDescendantPropertyMatch(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	cli.Seed(t, `CREATE TABLE otel_traces (
+    Timestamp DateTime64(9),
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    SpanKind LowCardinality(String),
+    ServiceName LowCardinality(String),
+    ResourceAttributes Map(String, String),
+    SpanAttributes Map(String, String),
+    Duration Int64,
+    StatusCode LowCardinality(String),
+    StatusMessage String,
+    ScopeName String,
+    ScopeVersion String
+) ENGINE = MergeTree ORDER BY (Timestamp, TraceId);
+INSERT INTO otel_traces VALUES
+    (toDateTime64('2026-05-13 12:00:00', 9), '0102030405060708090a0b0c0d0e0f10', '0102030405060708', '', 'root', 'Internal', 'web', map('service.name', 'web'), map(), 1, 'Unset', '', '', ''),
+    (toDateTime64('2026-05-13 12:00:01', 9), '0102030405060708090a0b0c0d0e0f10', '1112131415161718', '0102030405060708', 'child', 'Internal', 'batch', map('service.name', 'batch'), map(), 1, 'Unset', '', '', '');`)
+
+	h := tempo.New(cli, schema.DefaultOTelTraces(), "v1.0.0-property", nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	query := property.Query{
+		String: `{ resource.service.name = "web" } >> { resource.service.name = "batch" }`,
+		EvalTs: gen.TraceQLAnchorTime().Add(time.Hour).Unix(),
+	}
+	want := property.Outcome{Rows: []property.OutcomeRow{{Labels: map[string]string{}}}}
+	got := runCerberusTraceQL(t.Context(), srv.URL, query)
+	if diff := property.CompareOutcomes(want, got); diff != "" {
+		t.Fatalf("descendant property drift\n%s", diff)
+	}
 }
 
 // runCerberusTraceQL GETs /api/search?q=<query> and decodes the

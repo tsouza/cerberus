@@ -78,9 +78,12 @@ var traceQLAnchor = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 // generator anchors span timestamps to.
 func TraceQLAnchorTime() time.Time { return traceQLAnchor }
 
-// traceQLRootParentID is the all-zero ParentSpanId literal the OTel-CH
-// schema uses to mark a root span (no parent).
-const traceQLRootParentID = "0000000000000000"
+// traceQLRootParentID is the empty ParentSpanId literal the OTel
+// ClickHouse exporter writes for a root span. A 16-character all-zero
+// value is still a non-empty parent reference, so using it here turns
+// every generated root into an orphan that Tempo correctly excludes
+// from structural relations.
+const traceQLRootParentID = ""
 
 // traceQLMaxTraces / traceQLMaxChainDepth bound the dataset's trace
 // count and per-trace parent-chain depth. A linear chain (rather than

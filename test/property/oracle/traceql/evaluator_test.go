@@ -55,10 +55,10 @@ func buildDataset(spans ...testSpan) property.Dataset {
 // a multi-span trace to aggregate over.
 func fixtureDataset() property.Dataset {
 	return buildDataset(
-		testSpan{trace: "t1", id: "s1", parent: "0000000000000000", service: "api", cluster: "east", method: "GET", name: "r1", status: "Ok", durationMs: 50},
+		testSpan{trace: "t1", id: "s1", parent: "", service: "api", cluster: "east", method: "GET", name: "r1", status: "Ok", durationMs: 50},
 		testSpan{trace: "t1", id: "s2", parent: "s1", service: "web", cluster: "east", method: "POST", name: "c1", status: "Error", durationMs: 100},
 		testSpan{trace: "t1", id: "s3", parent: "s2", service: "batch", cluster: "west", method: "GET", name: "g1", status: "Unset", durationMs: 300},
-		testSpan{trace: "t2", id: "s10", parent: "0000000000000000", service: "api", cluster: "west", method: "GET", name: "r2", status: "Ok", durationMs: 10},
+		testSpan{trace: "t2", id: "s10", parent: "", service: "api", cluster: "west", method: "GET", name: "r2", status: "Ok", durationMs: 10},
 	)
 }
 
