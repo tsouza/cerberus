@@ -441,16 +441,14 @@ bench:
 # list to maintain or forget.
 coverage:
     @echo "==> default-tag coverage"
-    # `|| true` tolerates partial failures (e.g. `main` packages that
-    # require the `covdata` tool on toolchains that ship without it).
-    # The cover.out profile is still written for every package that
-    # compiled, which is all production code in internal/**.
+    # Both coverage runs fail closed. The repository pins one supported Go
+    # toolchain, which includes covdata; a partial profile produced after any
+    # package test failure is not evidence and must never reach the floor gate.
     # 40m, not the 25m this lane used before -coverpkg: the heaviest binary
     # (test/perf) took 933s of that budget on CI while instrumenting only its
     # own package, and instrumenting every package into it measured 1266s
-    # locally. A binary that overruns is swallowed by the `|| true` above and
-    # silently drops its whole contribution from the profile, which shows up
-    # later as an unexplained floor failure rather than as a timeout.
+    # locally. A binary that overruns fails here and names the timeout directly
+    # instead of silently dropping its whole contribution from the profile.
     # The awk trims go test's echo of the -coverpkg list back to what the
     # bare `./...` form used to print. An explicit list of every package is
     # ~5 KiB, repeated on EVERY package's result line, which buries the
@@ -459,7 +457,7 @@ coverage:
     # everything on stderr pass through untouched. `fflush()` keeps the pipe
     # line-buffered — a block-buffered filter would show nothing at all until
     # a 4 KiB chunk fills, which on a lane this long reads as a hung job.
-    go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }' || true
+    go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'
     @test -s cover.out
     # Fold each lane as soon as it is written. -coverpkg makes EVERY test
     # binary emit a row for every block it linked, so a raw lane profile is
@@ -470,7 +468,7 @@ coverage:
     @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out | sort; } > cover-folded.out && mv cover-folded.out cover.out
     @if [ -e /usr/local/lib/libchdb.so ]; then \
         echo "==> chdb-tagged coverage"; \
-        go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }' || true; \
+        go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out | sort; \
         } > cover-folded.out && mv cover-folded.out cover-chdb.out; \
