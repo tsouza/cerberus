@@ -619,18 +619,8 @@ func validateTagAssertions(cur CorpusCase) error {
 	// shapes need opposite assertions: a recoverable query names something
 	// omitted by the smaller result, while an unextractable query names
 	// something from the complete result and cannot claim it is absent.
-	if cur.Query != "" && narrowingTagEndpoint(cur.Endpoint) {
-		_, unextractable := traceql.ParseLenient(cur.Query)
-		if unextractable != nil {
-			if len(cur.ExpectedAbsentValues) != 0 {
-				return fmt.Errorf("case %q: endpoint=%s with an unextractable -- query -- cannot carry -- expected_absent_values -- (V2 answers the unfiltered set)", cur.Name, cur.Endpoint)
-			}
-			if len(cur.ExpectedValues) == 0 {
-				return fmt.Errorf("case %q: endpoint=%s with an unextractable -- query -- requires -- expected_values -- from the unfiltered answer", cur.Name, cur.Endpoint)
-			}
-		} else if len(cur.ExpectedAbsentValues) == 0 {
-			return fmt.Errorf("case %q: endpoint=%s with a recoverable -- query -- requires -- expected_absent_values -- (an entry the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name, cur.Endpoint)
-		}
+	if err := validateNarrowingTagAssertions(cur); err != nil {
+		return err
 	}
 	// A V1 route does not take `q` — upstream drops it and answers the
 	// whole window (LiveStore.SearchTags forwards only the scope into
@@ -646,6 +636,26 @@ func validateTagAssertions(cur CorpusCase) error {
 		if len(cur.ExpectedValues) == 0 {
 			return fmt.Errorf("case %q: endpoint=%s with a -- query -- requires -- expected_values -- (an entry only the spans the query does NOT select carry), otherwise the case cannot tell an ignored `q` from an honoured one", cur.Name, cur.Endpoint)
 		}
+	}
+	return nil
+}
+
+func validateNarrowingTagAssertions(cur CorpusCase) error {
+	if cur.Query == "" || !narrowingTagEndpoint(cur.Endpoint) {
+		return nil
+	}
+	_, unextractable := traceql.ParseLenient(cur.Query)
+	if unextractable == nil {
+		if len(cur.ExpectedAbsentValues) == 0 {
+			return fmt.Errorf("case %q: endpoint=%s with a recoverable -- query -- requires -- expected_absent_values -- (an entry the unscoped answer carries and the scoped one must not), otherwise the case cannot tell a honoured `q` from an ignored one", cur.Name, cur.Endpoint)
+		}
+		return nil
+	}
+	if len(cur.ExpectedAbsentValues) != 0 {
+		return fmt.Errorf("case %q: endpoint=%s with an unextractable -- query -- cannot carry -- expected_absent_values -- (V2 answers the unfiltered set)", cur.Name, cur.Endpoint)
+	}
+	if len(cur.ExpectedValues) == 0 {
+		return fmt.Errorf("case %q: endpoint=%s with an unextractable -- query -- requires -- expected_values -- from the unfiltered answer", cur.Name, cur.Endpoint)
 	}
 	return nil
 }
