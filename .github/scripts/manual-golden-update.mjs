@@ -284,7 +284,10 @@ function assertTargetUnmoved(root, branch, targetSha) {
 
 function applyAndPush(env) {
   const targetRoot = required(env, 'TARGET_ROOT');
-  const patchRoot = required(env, 'PATCH_ROOT');
+  // `git -C target apply <patch>` resolves a relative patch after changing to
+  // target. Resolve the artifact root against the controller workspace first,
+  // so a sibling `patches/` download remains reachable from the target clone.
+  const patchRoot = path.resolve(required(env, 'PATCH_ROOT'));
   const branch = validateBranch(required(env, 'BRANCH'), required(env, 'DEFAULT_BRANCH'));
   const targetSha = required(env, 'TARGET_SHA');
   const selected = parseShards(required(env, 'SHARDS_INPUT'));
