@@ -59,9 +59,9 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
     // metrics_compare + prewhere + exemplars + structural_join + late_mat +
-    // range_window_native + range_bucket_fanout + emit + vector_set_op + set_op.
+    // range_window_grid_native + range_bucket_fanout + emit + vector_set_op + set_op.
     exclude_files:
-      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_variants|range_window_resample|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -69,10 +69,10 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
     // builder + emit_node + histogram_over_time + vector_join + range_lwr +
-    // histogram_quantile_native + histogram_projection + range_window_resample +
+    // histogram_quantile_native + histogram_projection + range_window_stale_resample +
     // query_exemplars.
     exclude_files:
-      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_variants|range_window_native|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_grid_native|range_window_variants|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -92,7 +92,7 @@ export const PHASES = [
     // emitter shape, same zeroBandOrigin() constant it shares from that file —
     // and histogram_quantile_native.go is itself only ever claimed there.
     exclude_files:
-      '^(builder|emit|emit_node|exemplars|histogram_over_time|histogram_projection|histogram_quantile_native|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_native|range_window_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
+      '^(builder|emit|emit_node|exemplars|histogram_over_time|histogram_projection|histogram_quantile_native|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',
