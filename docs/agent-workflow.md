@@ -92,10 +92,12 @@ and which layer covers the residue. Three postures are worth knowing:
 - **Merge-queue posture.** Every workflow owning a required context also declares `merge_group:`, so
   the same check runs report under byte-identical names on the projected trunk, and a queued entry is
   held to the pull-request posture rather than the push posture — same short-circuits, same
-  diff-scoped lane selection, read off the merge group's own `base_sha..head_sha`. `CodeQL` is the
-  one context with no `merge_group` half, because code-scanning default setup dispatches on `push`
-  and `pull_request` only. `test/regression/merge_queue_test.go` pins both invariants, including that
-  no `cancel-in-progress` reachable from a merge-group run can be true: GitHub reads a cancelled
+  diff-scoped lane selection, read off the merge group's own `base_sha..head_sha`. `CodeQL` is no
+  exception: `.github/workflows/codeql.yml` (added in #1558, replacing GitHub's server-side default
+  setup, which dispatched on `push` and `pull_request` only and could not post on a merge-group
+  event) declares `merge_group:` itself, so the queue's projected trunk gets a real `CodeQL` run like
+  every other required lane. `test/regression/merge_queue_test.go` pins both invariants, including
+  that no `cancel-in-progress` reachable from a merge-group run can be true: GitHub reads a cancelled
   check run as a failure and dequeues the PR.
 
 Force-push and deletion are off on `main`, and linear history is off so the GitHub "Update branch"
