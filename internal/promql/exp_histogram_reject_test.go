@@ -69,7 +69,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "max aggregation", query: `max(latency_exp_hist)`},
 		{name: "stddev aggregation", query: `stddev(latency_exp_hist)`},
 		{name: "stdvar aggregation", query: `stdvar(latency_exp_hist)`},
-		{name: "label_replace", query: `label_replace(latency_exp_hist, "a", "b", "service", "(.*)")`},
 		{name: "abs", query: `abs(latency_exp_hist)`},
 		{name: "topk", query: `topk(3, latency_exp_hist)`},
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
@@ -82,7 +81,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "sum over rate", query: `sum(rate(latency_exp_hist[5m]))`},
 		{name: "sum over increase", query: `sum(increase(latency_exp_hist[5m]))`},
 		{name: "sum of sum", query: `sum(sum(latency_exp_hist))`},
-		{name: "sum under label_replace", query: `label_replace(sum(latency_exp_hist), "a", "b", "service", "(.*)")`},
 		{name: "sum under topk", query: `topk(3, sum by (service) (latency_exp_hist))`},
 		{name: "sum under abs", query: `abs(sum(latency_exp_hist))`},
 
@@ -93,7 +91,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		// across-series merge stacked on top of the window reduction, so
 		// answering it with the window reduction alone would silently drop
 		// the sum.
-		{name: "rate under label_replace", query: `label_replace(rate(latency_exp_hist[5m]), "a", "b", "service", "(.*)")`},
 		{name: "rate under abs", query: `abs(rate(latency_exp_hist[5m]))`},
 		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
 		{name: "rate under avg", query: `avg(rate(latency_exp_hist[5m]))`},
@@ -134,6 +131,78 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "exponential histogram") {
 				t.Fatalf("Lower(%q): error %q does not explain the exp-histogram shape mismatch", tc.query, err.Error())
+			}
+		})
+	}
+}
+
+// TestLower_ExpHistogram_LabelReplaceIsHistogramValued pins issue #2219:
+// label_replace changes only labels, so it must preserve the histogram
+// payload and the root HistogramRowShape for every supported
+// histogram-valued operand. The guarded Aggregate is part of the contract:
+// without it a non-injective rewrite could publish two series with the same
+// output label set, which reference Prometheus rejects.
+func TestLower_ExpHistogram_LabelReplaceIsHistogramValued(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	for _, tc := range []struct {
+		name  string
+		query string
+		lower func(parser.Expr) (chplan.Node, error)
+	}{
+		{
+			name:  "bare instant",
+			query: `label_replace(latency_exp_hist, "copy", "$1-copy", "service", "(.*)")`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "sum instant",
+			query: `label_replace(sum by (service) (latency_exp_hist), "copy", "$1-copy", "service", "(.*)")`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "rate range",
+			query: `label_replace(rate(latency_exp_hist[5m]), "copy", "$1-copy", "service", "(.*)")`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, time.Minute)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := tc.lower(expr)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+				t.Fatalf("RowShapeOf(lower(%q)) = %s, want %s", tc.query, shape, chplan.HistogramRowShape)
+			}
+			hp, ok := plan.(*chplan.HistogramProjection)
+			if !ok {
+				t.Fatalf("lower(%q) root = %T, want *chplan.HistogramProjection", tc.query, plan)
+			}
+			guard, ok := hp.Input.(*chplan.Aggregate)
+			if !ok {
+				t.Fatalf("lower(%q) HistogramProjection.Input = %T, want duplicate-labelset *chplan.Aggregate", tc.query, hp.Input)
+			}
+			if guard.Having == nil {
+				t.Fatalf("lower(%q) duplicate-labelset Aggregate has nil Having", tc.query)
+			}
+			if len(guard.AggFuncs) != 10 {
+				t.Fatalf("lower(%q) guard carries %d aggregates, want Value plus nine histogram fields", tc.query, len(guard.AggFuncs))
 			}
 		})
 	}

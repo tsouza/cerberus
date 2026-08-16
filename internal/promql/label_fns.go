@@ -22,6 +22,22 @@ import (
 // every code path — so we re-assert the StringLiteral shape here with
 // clear errors instead of panicking on a bad cast.
 func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	attrs, err := labelReplaceAttributes(c, s)
+	if err != nil {
+		return nil, err
+	}
+
+	inner, err := lower(c.Args[0], s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+}
+
+// labelReplaceAttributes validates label_replace's static arguments and
+// returns the Attributes expression shared by the ordinary sample lowering
+// and the histogram-valued root lowering.
+func labelReplaceAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, error) {
 	if len(c.Args) != 5 {
 		return nil, fmt.Errorf("promql: label_replace expects 5 arguments, got %d", len(c.Args))
 	}
@@ -47,10 +63,6 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		return nil, fmt.Errorf("promql: label_replace: %w", err)
 	}
 
-	inner, err := lower(c.Args[0], s, ctx)
-	if err != nil {
-		return nil, err
-	}
 	attrs := &chplan.LabelReplace{
 		Map:              &chplan.ColumnRef{Name: s.AttributesColumn},
 		Dst:              dst,
@@ -61,7 +73,7 @@ func lowerLabelReplace(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.N
 		Regex:            regex,
 		EmptyReplacement: qlcommon.EmptyCapturesReplacement(replacement),
 	}
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+	return attrs, nil
 }
 
 // lowerLabelJoin lowers

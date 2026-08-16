@@ -173,15 +173,16 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // exponential (native) histogram that return a HISTOGRAM-VALUED sample —
 // a bare selector, `sum`/`avg` `[by/without] (<selector>)`, and
 // `rate`/`increase` over a range-vector selector — plus scalar binary
-// operations that either preserve that histogram value or drop it as an
-// incompatible sample. Their answers have a wire representation only when
-// the shape IS the whole query.
+// operations that preserve or drop that value and histogram-aware wrappers
+// such as label_replace that preserve the payload. Their answers have a wire
+// representation only when the histogram-valued shape (possibly under such
+// a wrapper) is the whole query.
 //
 // The distinction cannot be made inside [lowerVectorSelector], because the
 // selector in `sum(m_exp_hist)` and the selector in `m_exp_hist` arrive
 // there identically — same node, same instant-mode context. Most consumers
-// PromQL can wrap around a selector (arithmetic, `label_replace`, a
-// range-vector function, every reducer other than `sum`) read a `Value`
+// PromQL can wrap around a selector (arithmetic, a range-vector function,
+// every reducer other than `sum`) read a `Value`
 // column that a histogram row does not publish, so answering the nested
 // shape with a histogram projection would either fail in ClickHouse with
 // code 47 or, worse, silently reduce the placeholder Value. Deciding
@@ -196,6 +197,8 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // [bareExpHistogramSelector], [sumOrAvgOverExpHistogram] and
 // [rateOverExpHistogram] recognise disjoint root node types (a selector, an
 // aggregation, a range-vector call), so none can shadow another.
+// Histogram-preserving wrappers dispatch before them because their operand
+// is one of those payload shapes.
 // [rateOverExpHistogram] additionally refuses an aggregation WRAPPER, so
 // `sum(rate(...))` — which needs both reductions — matches neither it nor
 // [sumOrAvgOverExpHistogram] and stays rejected. The scaling scalar-binop
@@ -207,6 +210,9 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // expression, consumes no Value column, and already has its own
 // full-range bare-selector path.
 func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok {
+		return lowerLabelReplaceOverExpHistogram(call, s, ctx)
+	}
 	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		return lowerExpHistogramBare(vs, s, ctx)
 	}
