@@ -236,6 +236,75 @@ func TestAlertIdentity_IgnoresStatusButNotLabels(t *testing.T) {
 	}
 }
 
+func TestMig18ProbeFixtureCarriesRunIdentity(t *testing.T) {
+	start := mustParseTime(t, "2026-01-01T00:00:00Z")
+	end := start.Add(mig18SeedStep)
+	const scope = "run-current"
+
+	fixture, last, err := mig18ProbeFixture(scope, start, end, mig18FiringValue)
+	if err != nil {
+		t.Fatalf("mig18ProbeFixture: %v", err)
+	}
+	if len(fixture.Gauge) != 1 {
+		t.Fatalf("mig18ProbeFixture produced %d gauge series, want 1", len(fixture.Gauge))
+	}
+	series := fixture.Gauge[0]
+	if got := series.Attributes[tier2SeedScopeLabel]; got != scope {
+		t.Fatalf("probe series %s = %q, want current run identity %q", tier2SeedScopeLabel, got, scope)
+	}
+	if got := series.Attributes[mig18ProbeLabelKey]; got != mig18ProbeLabelValue {
+		t.Fatalf("probe series %s = %q, want %q", mig18ProbeLabelKey, got, mig18ProbeLabelValue)
+	}
+	if !last.Equal(end) {
+		t.Fatalf("probe fixture last sample = %s, want %s", last, end)
+	}
+}
+
+func TestFindProbeInstanceSelectsCurrentRun(t *testing.T) {
+	const (
+		staleScope   = "run-stale"
+		currentScope = "run-current"
+	)
+	stale := rulerAlertInstance{Labels: map[string]string{tier2SeedScopeLabel: staleScope}}
+	current := rulerAlertInstance{Labels: map[string]string{tier2SeedScopeLabel: currentScope}}
+	groups := []rulerRuleGroup{{Rules: []rulerRule{{
+		Name:   mig18ProbeAlertName,
+		Alerts: []rulerAlertInstance{stale, current},
+	}}}}
+
+	found := findProbeInstance(groups, currentScope)
+	if !found.ruleFound || !found.instanceFound {
+		t.Fatalf("current run lookup = %+v, want its live probe instance", found)
+	}
+	if got := found.instance.Labels[tier2SeedScopeLabel]; got != currentScope {
+		t.Fatalf("selected probe scope = %q, want %q", got, currentScope)
+	}
+
+	missing := findProbeInstance(groups, "run-unknown")
+	if !missing.ruleFound || missing.instanceFound {
+		t.Fatalf("unknown run lookup = %+v, want rule found with no matching instance", missing)
+	}
+}
+
+func TestFilterBySeedScopeExcludesStaleProbeEdges(t *testing.T) {
+	const (
+		staleScope   = "run-stale"
+		currentScope = "run-current"
+	)
+	events := []AlertEvent{
+		{Status: alertStatusResolved, Labels: map[string]string{tier2SeedScopeLabel: staleScope}},
+		{Status: alertStatusFiring, Labels: map[string]string{tier2SeedScopeLabel: currentScope}},
+	}
+
+	got := filterBySeedScope(events, currentScope)
+	if len(got) != 1 {
+		t.Fatalf("filterBySeedScope returned %d edges, want only the current run's edge", len(got))
+	}
+	if got[0].Status != alertStatusFiring {
+		t.Fatalf("filterBySeedScope retained %q edge, want current run's %q edge", got[0].Status, alertStatusFiring)
+	}
+}
+
 // === the fixture pin ========================================================
 //
 // MIG-18's mig18* constants restate fields of the `migration.probe` rule group
@@ -373,24 +442,25 @@ func TestMig18LabelConstantsMatchProvisionedProbeRule(t *testing.T) {
 	}
 }
 
-// TestMig18ProbeQueryKeepsTheAnnotatedLabel pins the one property of the probe
-// rule's query the rendered-annotation assertion depends on: the aggregation
-// must GROUP BY the probe label rather than collapse it away. Grafana expands
+// TestMig18ProbeQueryKeepsIdentityLabels pins both properties the probe query
+// depends on: the aggregation must GROUP BY the annotation's probe label and
+// the current run's seed-scope identity rather than collapse either away.
+// Grafana expands
 // annotations against the EVALUATED RESULT's labels — a rule's own `labels:`
 // are templates being expanded in the same pass, so they are not in scope for
 // their own expansion — and an unlabelled reduce therefore renders
 // `{{ $labels.probe }}` as `[no value]` however the rule declares them. That
 // is the defect the first live Tier-2 run reported.
-func TestMig18ProbeQueryKeepsTheAnnotatedLabel(t *testing.T) {
+func TestMig18ProbeQueryKeepsIdentityLabels(t *testing.T) {
 	probe, _ := findProvisionedProbeRule(t)
 	for _, leg := range probe.Data {
 		if !strings.Contains(leg.Model.Expr, mig18ProbeMetric) {
 			continue
 		}
 		if !strings.Contains(leg.Model.Expr, mig18ProbeGroupBy) {
-			t.Fatalf("the probe rule's query %q does not keep the %s label (%q) through its aggregation, so "+
-				"Grafana would render the summary annotation with no value for it",
-				leg.Model.Expr, mig18ProbeLabelKey, mig18ProbeGroupBy)
+			t.Fatalf("the probe rule's query %q does not keep the probe and run-identity labels (%q) through "+
+				"its aggregation, so a rerun could observe stale alert state or render the summary annotation with no value",
+				leg.Model.Expr, mig18ProbeGroupBy)
 		}
 		return
 	}

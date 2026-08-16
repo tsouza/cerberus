@@ -279,7 +279,7 @@ groups:
             relativeTimeRange: { from: 600, to: 0 }
             datasourceUid: cerberus-prometheus
             model:
-              expr: max by (probe) (cerberus_migration_alert_probe)
+              expr: max by (probe, seed_scope) (cerberus_migration_alert_probe)
               instant: true
               refId: A
           - refId: C
