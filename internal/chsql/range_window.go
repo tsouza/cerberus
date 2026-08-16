@@ -197,10 +197,19 @@ const windowTemporalityAlias = "temporality"
 // first counter level never requires a retention-wide groupArray.
 const deltaPrefixBeforeWindowAlias = "delta_prefix_before_window"
 
-// deltaRunningLevelAlias is the bounded matrix scan's running DELTA sum through
-// the current observation. The fanout regroup reads the level belonging to its
-// first in-window observation for Prometheus's counter-zero clamp.
-const deltaRunningLevelAlias = "delta_running_level"
+const (
+	// deltaAnchorLevelsAlias is the ordered running sum of deltaPrefixStepAlias
+	// through the current anchor — the reconstructed DELTA counter level
+	// immediately before each anchor window. See deltaMatrixLevelSource.
+	deltaAnchorLevelsAlias = "delta_anchor_levels"
+	// deltaPrefixPairsAlias holds the (timestamp, value) pairs at or before an
+	// anchor window's left edge, deduplicated and summed by deltaPrefixSumFrag
+	// into deltaPrefixStepAlias.
+	deltaPrefixPairsAlias = "delta_prefix_pairs"
+	// deltaPrefixStepAlias is the per-anchor DELTA prefix contribution
+	// deltaAnchorLevelsAlias accumulates via an ordered window sum.
+	deltaPrefixStepAlias = "delta_prefix_step"
+)
 
 // windowTemporalityRef returns the Frag the per-window value expression
 // should branch on for r, or nil when r's Input carries no
@@ -1602,17 +1611,52 @@ func anchorBaseAtIdxFrag(end Frag, stepNS int64) Frag {
 // dividend's sign, making the correction term exactly the "truncation
 // rounded the wrong way" indicator. See writeAnchorGridFloorIdx.
 func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+	return Call("arrayJoin", sampleAnchorFanoutArrayFrag(end, ts, stepNS, rangeNS, numAnchors))
+}
+
+func sampleAnchorFanoutArrayFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
 	dist := distBehindAnchorFrag(ts, end)
 	return Call(
-		"arrayJoin",
+		"arrayMap",
+		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
 		Call(
-			"arrayMap",
-			Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
-			Call(
-				"range",
-				Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -rangeNS, stepNS)),
-				Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, 0, stepNS)),
-			),
+			"range",
+			Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -rangeNS, stepNS)),
+			Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, 0, stepNS)),
+		),
+	)
+}
+
+// deltaPrefixAnchorArrayFrag emits at most one DELTA prefix-bucket anchor.
+// Prefix buckets are keyed by the first anchor whose left edge is at or after
+// the sample timestamp; summing buckets in ascending anchor order reconstructs
+// the level immediately before every window. Observations before the earliest
+// left edge clamp into its bucket.
+func deltaPrefixAnchorArrayFrag(
+	end, ts, temporality Frag,
+	stepNS, rangeNS, numAnchors int64,
+) Frag {
+	dist := distBehindAnchorFrag(ts, end)
+	prefixIndex := Call(
+		"least",
+		InlineLit(numAnchors-1),
+		Call(
+			"greatest",
+			InlineLit(int64(0)),
+			Sub(anchorGridFloorIdxFrag(dist, -rangeNS, stepNS), InlineLit(int64(1))),
+		),
+	)
+	prefixCondition := And(
+		Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
+		Lte(ts, rangeStartFrag(end, rangeNS)),
+	)
+	return Call(
+		"arrayMap",
+		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+		Call(
+			"range",
+			prefixIndex,
+			Add(prefixIndex, If(prefixCondition, InlineLit(int64(1)), InlineLit(int64(0)))),
 		),
 	)
 }
@@ -3217,52 +3261,6 @@ func (e *emitter) instantDeltaPrefixSource(
 	return joined.Frag(), nil
 }
 
-// deltaRunningLevelSource deduplicates the finite matrix scan envelope and
-// attaches the cumulative DELTA level through each source observation before
-// the observation fans out to covered anchors.
-func deltaRunningLevelSource(
-	r *chplan.RangeWindow,
-	input Frag,
-	srcTs string,
-	groupFrags []Frag,
-	end Frag,
-	rangeNS, stepNS, numAnchors int64,
-) Frag {
-	bounded := NewQuery().From(input)
-	bounded.Select(groupFrags...)
-	bounded.Select(Col(srcTs))
-	bounded.Select(As(Call("max", Col(r.ValueColumn)), r.ValueColumn))
-	bounded.Select(As(Call("any", Col(r.TemporalityColumn)), r.TemporalityColumn))
-	boundedKeys := make([]Frag, 0, len(groupFrags)+1)
-	boundedKeys = append(boundedKeys, groupFrags...)
-	boundedKeys = append(boundedKeys, Col(srcTs))
-	bounded.GroupBy(boundedKeys...)
-
-	earliestAnchor := Sub(
-		end,
-		Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
-	)
-	bounded.Where(
-		Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
-		Lte(Col(srcTs), end),
-	)
-
-	prefix := NewQuery().From(bounded.Frag())
-	prefix.Select(groupFrags...)
-	prefix.Select(Col(srcTs))
-	prefix.Select(Col(r.ValueColumn))
-	prefix.Select(Col(r.TemporalityColumn))
-	prefix.Select(As(
-		Window(
-			Call("sum", Col(r.ValueColumn)),
-			groupFrags,
-			[]OrderKey{{Expr: Col(srcTs)}},
-		),
-		deltaRunningLevelAlias,
-	))
-	return prefix.Frag()
-}
-
 // emitWindowedArrayExtrapolated emits SQL for rate / increase / delta
 // with Prom's `extrapolatedRate` boundary correction applied to the
 // per-window value. Compared to emitWindowedArray, this path projects
@@ -3430,67 +3428,32 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	return e.emitSelect(outer)
 }
 
-type extrapolatedMatrixShape struct {
-	r               *chplan.RangeWindow
-	end             Frag
-	groupFrags      []Frag
-	srcTs           string
-	rangeNS         int64
-	stepNS          int64
-	numAnchors      int64
-	hasTemporality  bool
-	needsDeltaLevel bool
-}
+// deltaMatrixLevelSource attaches the reconstructed DELTA level before each
+// anchor window. The input is already one row per (series, anchor); an ordered
+// window sum avoids packing those rows into nested arrays only to expand them
+// again before extrapolation.
+func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
+	increments := NewQuery().From(regroupSource)
+	increments.Select(groupFrags...)
+	increments.Select(Col("anchor_ts"))
+	increments.Select(Col(windowTemporalityAlias))
+	increments.Select(Col("window_pairs"))
+	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias)), deltaPrefixStepAlias))
 
-func (s extrapolatedMatrixShape) fanoutSource(input Frag) Frag {
-	// Sample-fanout SELECT — one row per (sample, covered anchor).
-	fanout := NewQuery().From(input)
-	fanout.Select(s.groupFrags...)
-	fanout.Select(Col(s.srcTs))
-	fanout.Select(Col(s.r.ValueColumn))
-	if s.hasTemporality {
-		fanout.Select(Col(s.r.TemporalityColumn))
-	}
-	if s.needsDeltaLevel {
-		fanout.Select(Col(deltaRunningLevelAlias))
-	}
-	fanout.Select(As(
-		sampleAnchorFanoutFrag(s.end, Col(s.srcTs), s.stepNS, s.rangeNS, s.numAnchors),
-		"anchor_ts",
+	levels := NewQuery().From(increments.Frag())
+	levels.Select(groupFrags...)
+	levels.Select(Col("anchor_ts"))
+	levels.Select(Col(windowTemporalityAlias))
+	levels.Select(Col("window_pairs"))
+	levels.Select(As(
+		Window(
+			Call("sum", Col(deltaPrefixStepAlias)),
+			groupFrags,
+			[]OrderKey{{Expr: Col("anchor_ts")}},
+		),
+		deltaAnchorLevelsAlias,
 	))
-	if !s.needsDeltaLevel {
-		maybePushInnerScanTimeBounds(fanout, s.r, s.srcTs, s.rangeNS)
-	}
-	return fanout.Frag()
-}
-
-func (s extrapolatedMatrixShape) regroupSource(input Frag) Frag {
-	// Regroup SELECT — rebuild the per-(series, anchor) window array.
-	regroup := NewQuery().From(input)
-	regroup.Select(s.groupFrags...)
-	regroup.Select(Col("anchor_ts"))
-	if s.hasTemporality {
-		regroup.Select(As(Call("any", Col(s.r.TemporalityColumn)), windowTemporalityAlias))
-	}
-	if s.needsDeltaLevel {
-		regroup.Select(As(
-			Call("argMin", Col(deltaRunningLevelAlias), Col(s.srcTs)),
-			deltaRunningLevelAlias,
-		))
-	}
-	regroup.Select(As(groupArrayPairFrag(s.srcTs, s.r.ValueColumn), "window_pairs"))
-	regroupKeys := make([]Frag, 0, len(s.groupFrags)+1)
-	regroupKeys = append(regroupKeys, s.groupFrags...)
-	regroupKeys = append(regroupKeys, Col("anchor_ts"))
-	regroup.GroupBy(regroupKeys...)
-
-	extraColumns := make([]string, 0, 1)
-	if s.needsDeltaLevel {
-		extraColumns = append(extraColumns, deltaRunningLevelAlias)
-	}
-	return dedupWindowPairsLayer(
-		regroup.Frag(), s.groupFrags, true, s.hasTemporality, extraColumns...,
-	)
+	return levels.Frag()
 }
 
 // emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
@@ -3530,23 +3493,110 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 	hasTemporality := windowTemporalityProjected(r)
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
+
+	// Sample-fanout SELECT — one row per (sample, covered anchor).
+	fanout := NewQuery().From(innerSub)
+	fanout.Select(groupFrags...)
+	fanout.Select(Col(srcTs))
+	fanout.Select(Col(r.ValueColumn))
+	if hasTemporality {
+		fanout.Select(Col(r.TemporalityColumn))
+	}
 	if needsDeltaFirstLevel {
-		innerSub = deltaRunningLevelSource(
-			r, innerSub, srcTs, groupFrags, end, rangeNS, stepNS, numAnchors,
+		fanout.Select(As(
+			Call(
+				"arrayJoin",
+				Call(
+					"arrayConcat",
+					sampleAnchorFanoutArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
+					deltaPrefixAnchorArrayFrag(
+						end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors,
+					),
+				),
+			),
+			"anchor_ts",
+		))
+	} else {
+		fanout.Select(As(
+			sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
+			"anchor_ts",
+		))
+	}
+	// Restrict the input scan to the offset-shifted
+	// (Start - Offset - range, End - Offset] window the anchor grid
+	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
+	// (the timestamp column present in the fanout's FROM). See
+	// maybePushInnerScanTimeBounds.
+	if needsDeltaFirstLevel {
+		earliestAnchor := Sub(
+			end,
+			Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
 		)
+		fanout.Where(
+			Lte(Col(srcTs), end),
+			Paren(Or(
+				Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta)),
+				Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
+			)),
+		)
+	} else {
+		maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 	}
-	shape := extrapolatedMatrixShape{
-		r:               r,
-		end:             end,
-		groupFrags:      groupFrags,
-		srcTs:           srcTs,
-		rangeNS:         rangeNS,
-		stepNS:          stepNS,
-		numAnchors:      numAnchors,
-		hasTemporality:  hasTemporality,
-		needsDeltaLevel: needsDeltaFirstLevel,
+
+	fanoutSource := fanout.Frag()
+
+	// Regroup SELECT — rebuild the per-(series, anchor) window array. When
+	// the Input carries a TemporalityColumn, also read the series' single
+	// AggregationTemporality reading via any() — a series has ONE
+	// temporality for its lifetime (see chplan.RangeWindow.TemporalityColumn),
+	// so any() over the (series, anchor) group's rows is exact.
+	regroup := NewQuery().From(fanoutSource)
+	regroup.Select(groupFrags...)
+	regroup.Select(Col("anchor_ts"))
+	if hasTemporality {
+		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
-	regroupSource := shape.regroupSource(shape.fanoutSource(innerSub))
+	if needsDeltaFirstLevel {
+		windowStart := rangeStartFrag(Col("anchor_ts"), rangeNS)
+		regroup.Select(As(
+			Call(
+				"arraySort",
+				Call(
+					"groupArrayIf",
+					Tuple(Col(srcTs), Col(r.ValueColumn)),
+					Gt(Col(srcTs), windowStart),
+				),
+			),
+			"window_pairs",
+		))
+		regroup.Select(As(
+			Call(
+				"arraySort",
+				Call(
+					"groupArrayIf",
+					Tuple(Col(srcTs), Col(r.ValueColumn)),
+					Lte(Col(srcTs), windowStart),
+				),
+			),
+			deltaPrefixPairsAlias,
+		))
+	} else {
+		regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
+	}
+	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
+	regroupKeys = append(regroupKeys, groupFrags...)
+	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroup.GroupBy(regroupKeys...)
+	extraColumns := make([]string, 0, 1)
+	if needsDeltaFirstLevel {
+		extraColumns = append(extraColumns, deltaPrefixPairsAlias)
+	}
+	regroupSource := dedupWindowPairsLayer(
+		regroup.Frag(), groupFrags, true, hasTemporality, extraColumns...,
+	)
+	if needsDeltaFirstLevel {
+		regroupSource = deltaMatrixLevelSource(regroupSource, groupFrags)
+	}
 
 	// Mid SELECT — window_vals + counter_delta + first/last_ts + first_val.
 	// window_pairs is timestamp-deduplicated first so a duplicate
@@ -3566,7 +3616,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	if needsDeltaFirstLevel {
 		firstVal = deltaFirstValFrag(
 			temporalityRef,
-			Col(deltaRunningLevelAlias),
+			Add(Col(deltaAnchorLevelsAlias), firstVal),
 			firstVal,
 		)
 	}
@@ -3628,6 +3678,14 @@ func lastTsFrag() Frag {
 // inside the window.
 func firstValFrag() Frag {
 	return tupleElemFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), 2)
+}
+
+func deltaPrefixSumFrag(pairs Frag) Frag {
+	deduped := dedupWindowPairsByTsFrag(pairs)
+	return Call(
+		"arraySum",
+		Call("arrayMap", Lambda1("p", tupleElemFrag(BareIdent("p"), 2)), deduped),
+	)
 }
 
 // deltaFirstValFrag selects reconstructedLevel only for OTel DELTA series and
