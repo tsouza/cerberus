@@ -136,18 +136,23 @@ func TestSlice_DifferentialSQL_NoSharedMutation(t *testing.T) {
 					"the no-mutate-after-slice contract is broken")
 			}
 
-			// (3) The off-spine subtree is shared across shards: prove it by
-			// finding the off-spine head of each shard and asserting pointer
-			// identity. (If they were independent deep copies this would pass
-			// trivially false; sharing is what makes (2) load-bearing.)
-			heads := make([]chplan.Node, len(dec.Slices))
+			// (3) Every off-spine subtree is shared across shards: prove it by
+			// finding the off-spine heads of each shard and asserting positional
+			// pointer identity. A UnionAll carries several independent gridded
+			// spines, so each arm contributes its own head.
+			heads := make([][]chplan.Node, len(dec.Slices))
 			for i, s := range dec.Slices {
-				heads[i] = offSpineHead(s.Plan)
+				heads[i] = offSpineHeads(s.Plan)
 			}
 			for i := 1; i < len(heads); i++ {
-				if heads[i] != heads[0] {
-					t.Fatalf("shard %d off-spine head %p != shard 0 head %p — "+
-						"shards must SHARE one off-spine subtree (COW)", i, heads[i], heads[0])
+				if len(heads[i]) != len(heads[0]) {
+					t.Fatalf("shard %d has %d off-spine heads, shard 0 has %d", i, len(heads[i]), len(heads[0]))
+				}
+				for j := range heads[0] {
+					if heads[i][j] != heads[0][j] {
+						t.Fatalf("shard %d off-spine head %d %p != shard 0 head %p — "+
+							"shards must SHARE every off-spine subtree (COW)", i, j, heads[i][j], heads[0][j])
+					}
 				}
 			}
 		})
@@ -168,37 +173,46 @@ func TestSlice_SharedMutationIsObservable(t *testing.T) {
 		t.Fatalf("need >= 2 shards, got %d", len(dec.Slices))
 	}
 
-	h0 := offSpineHead(dec.Slices[0].Plan)
-	h1 := offSpineHead(dec.Slices[1].Plan)
-	if h0 != h1 {
-		t.Fatal("shards do not share their off-spine; COW sharing regressed")
+	h0 := offSpineHeads(dec.Slices[0].Plan)
+	h1 := offSpineHeads(dec.Slices[1].Plan)
+	if len(h0) != len(h1) {
+		t.Fatalf("shards expose different off-spine head counts: %d != %d", len(h0), len(h1))
+	}
+	for i := range h0 {
+		if h0[i] != h1[i] {
+			t.Fatalf("shards do not share off-spine head %d; COW sharing regressed", i)
+		}
 	}
 }
 
-// offSpineHead descends the spine-wrapper chain ReanchorRange clones —
+// offSpineHeads descends every spine-wrapper chain ReanchorRange clones —
 // RangeWindow / RangeLWR / Project / Aggregate / TopK / Filter — and returns
-// the first node that falls through to ReanchorRange's default (off-spine)
-// arm, i.e. the first SHARED node. Every node above it is freshly cloned per
-// shard; this head and everything below it is shared across all K shards. For
-// the guard fixtures the head is the matchers-filtered Scan (the Filter-over-
-// Scan wrappers are part of the cloned spine chain).
-func offSpineHead(n chplan.Node) chplan.Node {
-	for {
-		switch v := n.(type) {
-		case *chplan.RangeWindow:
-			n = v.Input
-		case *chplan.RangeLWR:
-			n = v.Input
-		case *chplan.Project:
-			n = v.Input
-		case *chplan.Aggregate:
-			n = v.Input
-		case *chplan.TopK:
-			n = v.Input
-		case *chplan.Filter:
-			n = v.Input
-		default:
-			return n
+// the first node in each arm that falls through to ReanchorRange's default
+// (off-spine) arm, i.e. every first SHARED node. Every node above each head is
+// freshly cloned per shard; the heads and everything below them are shared
+// across all K shards. UnionAll itself is cloned, so its arms must be checked
+// independently.
+func offSpineHeads(n chplan.Node) []chplan.Node {
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		return offSpineHeads(v.Input)
+	case *chplan.RangeLWR:
+		return offSpineHeads(v.Input)
+	case *chplan.Project:
+		return offSpineHeads(v.Input)
+	case *chplan.Aggregate:
+		return offSpineHeads(v.Input)
+	case *chplan.TopK:
+		return offSpineHeads(v.Input)
+	case *chplan.Filter:
+		return offSpineHeads(v.Input)
+	case *chplan.UnionAll:
+		heads := make([]chplan.Node, 0, len(v.Inputs))
+		for _, input := range v.Inputs {
+			heads = append(heads, offSpineHeads(input)...)
 		}
+		return heads
+	default:
+		return []chplan.Node{n}
 	}
 }
