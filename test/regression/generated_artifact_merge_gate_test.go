@@ -118,7 +118,6 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/perf/metadata-query-size-baseline.json", "just update-metadata-query-size-baseline"},
 	{"test/coverage-floor.json", "just update-coverage-floor"},
 
-	{"compatibility/parity-baseline.json", parityBaselineSync},
 	{"compatibility/loki/upstream-skip-baseline.txt", "-regen-baseline"},
 
 	{"test/e2e/migration/archetypes/already-otel/expected/corpus.json", migrationGoldenRecipe},
@@ -192,6 +191,10 @@ type shardTree struct {
 // shardTrees is the roster of sharded generated artefacts. Each is expanded
 // into one roster entry per shard below.
 var shardTrees = []shardTree{
+	// The compatibility parity baseline: one immutable manifest plus a fixed
+	// roster of deterministic case-ID hash buckets per head. The updater
+	// rewrites only the selected head's buckets from its run artefact.
+	{"compatibility/parity-baseline", parityBaselineSync, "parity manifest or case bucket"},
 	// The rejection catalogue: one shard per lowering SOURCE FILE
 	// (test/rejection-parity/catalogue.go's shardName owns the mapping).
 	{"test/rejection-parity/catalogue", inventoryUpdateEnv, "rejection site"},

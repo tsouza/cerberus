@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -235,8 +236,15 @@ test('selected-head sync leaves every other head byte-identical', () => {
   const { dir, root } = fixture({ prometheus: ['old-case'] });
   try {
     const before = snapshotTree(root);
+    const missing = bucketPath(root, 'prometheus', '00');
+    unlinkSync(missing);
+    const stale = bucketPath(root, 'prometheus', 'ff');
+    canonicalWrite(stale, { stale: true });
     const result = syncParityBaselineHead(root, 'prometheus', ['new-case', 'old-case']);
     assert.ok(result.changed.length > 0);
+    assert.ok(result.removed.includes(stale), 'selected-head sync must prune undeclared files');
+    assert.equal(existsSync(stale), false);
+    assert.equal(existsSync(missing), true, 'selected-head sync must restore every declared bucket');
     const after = snapshotTree(root);
     for (const [file, bytes] of before) {
       if (file.startsWith('prometheus/')) continue;

@@ -131,13 +131,13 @@ test/coverage-floor.json                     -merge
 
 # --- Compatibility ----------------------------------------------------------
 # CANNOT be regenerated locally. `.github/scripts/compat-baseline-sync.mjs`
-# rewrites one head's entry from that head's `compat-cases.json` RUN ARTEFACT,
+# rewrites one head's deterministic buckets from that head's `compat-cases.json` RUN ARTEFACT,
 # which only a compatibility/{prometheus,loki,tempo} job against a live
 # reference backend produces. The resolution here is therefore NOT "re-run a
-# recipe": take the roster from the compatibility run on the merged commit, or
-# hand-fix the entry so `passed == total == cases.length` with `cases` sorted
-# and unique. compat-ratchet.mjs gates on the exact roster and fails closed.
-compatibility/parity-baseline.json           -merge
+# recipe": take the roster from the compatibility run on the merged commit and
+# sync that head. The shared loader verifies the exact manifest/bucket roster,
+# case ownership, canonical bytes, global uniqueness and full parity.
+compatibility/parity-baseline/**              -merge
 
 # Regenerate: go run ./compatibility/loki/cmd/loki-compliance-tester
 #   -corpus=compatibility/loki/upstream/loki-bench/queries

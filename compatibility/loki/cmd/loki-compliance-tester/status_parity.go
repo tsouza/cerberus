@@ -69,7 +69,7 @@ type statusParityCase struct {
 // must be a rejection BOTH backends already agree on (see the
 // file-level comment) — a case tied to an open bug belongs in the
 // bug's own issue, not here, because the committed
-// compatibility/parity-baseline.json roster requires full parity.
+// compatibility/parity-baseline/ roster requires full parity.
 func statusParityCases() []statusParityCase {
 	return []statusParityCase{
 		{

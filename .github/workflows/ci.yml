@@ -885,6 +885,12 @@ jobs:
       - name: Assert the parity ratchet gates on per-case identity
         run: node --test .github/scripts/compat-ratchet.test.mjs
 
+      # The ratchet, updater, doc-count gate, and structural guard all trust
+      # one shard loader. These pins prove its manifest/bucket roster fails
+      # closed and that unrelated same-head cases edit disjoint files.
+      - name: Assert parity baseline shards are deterministic and complete
+        run: node --test .github/scripts/lib/compat-baseline.test.mjs
+
       # The baseline updater writes the roster the ratchet gates on, so a
       # bug in it either burns a CI cycle or records a divergence. The
       # round-trip case pins that a freshly synced baseline gates green on

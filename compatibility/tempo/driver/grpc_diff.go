@@ -79,7 +79,7 @@ const (
 
 // grpcHeadName is the parity-ratchet head identity for this transport —
 // distinct from diff.go's "tempo" so the two transports gate on
-// independent baselines (compatibility/parity-baseline.json's
+// independent baselines (compatibility/parity-baseline/'s reconstructed
 // heads.tempo-grpc) and a regression on one never masks or is masked by
 // the other.
 const grpcHeadName = "tempo-grpc"

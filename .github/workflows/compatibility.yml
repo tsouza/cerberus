@@ -344,7 +344,7 @@ jobs:
         # #503 (task #68) downgraded per-case diffs to report-only so the
         # harness exits 0 even on a parity regression; this step restores
         # the gate by comparing the run's compat-cases.json against the
-        # committed per-case roster in compatibility/parity-baseline.json
+        # committed per-case roster in compatibility/parity-baseline/
         # and failing on any case that moved. It gates on case IDENTITY,
         # not on a count, so a regression cannot hide behind an unrelated
         # case that started passing. Case IDs and pass/fail are both
@@ -602,7 +602,7 @@ jobs:
     # the ones that execute end to end against reference Prometheus.
     #
     # It reuses compat-ratchet.mjs against the SAME
-    # compatibility/parity-baseline.json prometheus roster as the standard
+    # compatibility/parity-baseline/ prometheus roster as the standard
     # job: cerberus's SQL is meant to be RESULT-EQUIVALENT regardless of
     # which ClickHouse minor line executes it, so the floor run passing the
     # identical case roster is the actual proof the floor is honest. A case
@@ -733,7 +733,7 @@ jobs:
           fi
 
       - name: Parity-regression ratchet (vs the same 26.5-lane baseline)
-        # Gates on case IDENTITY against compatibility/parity-baseline.json's
+        # Gates on case IDENTITY against compatibility/parity-baseline/'s
         # `prometheus` roster — the same file/head compatibility/prometheus
         # gates on. A floor-specific divergence surfaces here as REGRESSED /
         # ARRIVED-FAILING; see compat-ratchet.mjs's header for the verdict
@@ -940,7 +940,7 @@ jobs:
       - name: Parity-regression ratchet
         # GATE: see the prometheus job for the full rationale. Fails the
         # job when any tempo case moves against the committed per-case
-        # roster in compatibility/parity-baseline.json (heads.tempo). This
+        # roster in compatibility/parity-baseline/ (heads.tempo). This
         # replaces the dead FAIL_ON_DIFF env removed from the harness step
         # above — it is the actual tempo parity gate.
         if: steps.harness.outcome == 'success'
@@ -964,7 +964,7 @@ jobs:
 
       - name: Parity-regression ratchet (gRPC)
         # GATE: same mechanism as the HTTP ratchet above, gating
-        # heads.tempo-grpc in compatibility/parity-baseline.json — an
+        # heads.tempo-grpc in compatibility/parity-baseline/ — an
         # independent baseline so a regression on one transport can never
         # mask or be masked by the other. traces / traces_v2 have no
         # StreamingQuerier RPC and never enter this roster (see
@@ -1119,7 +1119,7 @@ jobs:
       - name: Parity-regression ratchet
         # GATE: see the prometheus job for the full rationale. Fails the
         # job when any loki case moves against the committed per-case
-        # roster in compatibility/parity-baseline.json (heads.loki).
+        # roster in compatibility/parity-baseline/ (heads.loki).
         if: steps.harness.outcome == 'success'
         run: node .github/scripts/compat-ratchet.mjs
         env:

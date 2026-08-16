@@ -78,7 +78,7 @@ test/e2e/playwright/playwright-report/
 # shields.io badge score + the per-case roster the parity ratchet gates
 # on + the rejection-parity report + the metadata match[] parity report.
 # The roster's committed counterpart is heads.prometheus.cases in
-# compatibility/parity-baseline.json.
+# compatibility/parity-baseline/.
 /compatibility/prometheus/report.json
 /compatibility/prometheus/compat-score.json
 /compatibility/prometheus/compat-cases.json
