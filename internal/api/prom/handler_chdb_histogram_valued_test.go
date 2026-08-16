@@ -76,7 +76,10 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 
 INSERT INTO otel_metrics_exponential_histogram VALUES
     ('scale_shift_exp_hist', map('case', 'downscale'), toDateTime64('2025-12-31 23:59:01', 9),  6, 3.0, 1, 0, 0, [2, 4], 0, []),
-    ('scale_shift_exp_hist', map('case', 'downscale'), toDateTime64('2026-01-01 00:00:01', 9), 10, 5.0, 0, 0, 0, [10],   0, []);`
+    ('scale_shift_exp_hist', map('case', 'downscale'), toDateTime64('2026-01-01 00:00:01', 9), 10, 5.0, 0, 0, 0, [10],   0, []);
+
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('single_sample_exp_hist', map('case', 'one'), toDateTime64('2026-01-01 00:00:01', 9), 10, 5.0, 0, 0, 0, [4, 6], 0, []);`
 
 // histValuedEvalTime is the fixture's evaluation anchor: 00:00:01, so a
 // [5m] range spans (23:55:01, 00:00:01] and covers both scrapes.
@@ -199,6 +202,47 @@ func TestQuery_HistogramIncompatibleScalarBinopsDropSamples_ChDB(t *testing.T) {
 			}
 			if resp.StatusCode != http.StatusOK || body.Status != "success" {
 				t.Fatalf("query %q returned HTTP %d status %q, want accepted empty result", query, resp.StatusCode, body.Status)
+			}
+			if body.Data.ResultType != "vector" || len(body.Data.Result) != 0 {
+				t.Fatalf("query %q returned resultType=%q with %d samples, want empty vector",
+					query, body.Data.ResultType, len(body.Data.Result))
+			}
+		})
+	}
+}
+
+// Every delta / instant-rate kernel needs two native-histogram samples. A
+// one-sample window is a successful empty vector, not a zero-valued histogram
+// and not an internal error. This executes the per-series sample floor through
+// the emitted SQL and wire response instead of merely asserting that the plan
+// contains uniqExact(TimeUnix).
+func TestQuery_HistogramRangeFunctionsOneSampleDrop_ChDB(t *testing.T) {
+	srv := newHistValuedServer(t)
+
+	for _, fn := range []string{"delta", "irate", "idelta"} {
+		t.Run(fn, func(t *testing.T) {
+			query := fn + "(single_sample_exp_hist[5m])"
+			reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%s",
+				srv.URL, url.QueryEscape(query), histValuedEvalTime.Format(time.RFC3339))
+			resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
+			if err != nil {
+				t.Fatalf("GET /api/v1/query %q: %v", query, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			var body struct {
+				Status string `json:"status"`
+				Data   struct {
+					ResultType string            `json:"resultType"`
+					Result     []json.RawMessage `json:"result"`
+				} `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response for %q: %v", query, err)
+			}
+			if resp.StatusCode != http.StatusOK || body.Status != "success" {
+				t.Fatalf("query %q returned HTTP %d status %q, want successful empty vector",
+					query, resp.StatusCode, body.Status)
 			}
 			if body.Data.ResultType != "vector" || len(body.Data.Result) != 0 {
 				t.Fatalf("query %q returned resultType=%q with %d samples, want empty vector",

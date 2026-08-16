@@ -1,0 +1,30 @@
+-- query.promql --
+idelta(range_fn_exp_hist[5m] @ end())
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- idelta uses the same final pair as irate but applies gauge subtraction with
+-- no reset correction and no per-second division. The deliberately falling
+-- final pair therefore produces Count -80, Sum -40, ZeroCount 0, and bucket
+-- deltas [-52, -28]; the oldest sample must not participate.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('range_fn_exp_hist', map('case', 'reset'), toDateTime64('2025-12-31 23:58:01', 9),  10,  5.0, 0, 1, 0, [ 7,  2], 0, []),
+    ('range_fn_exp_hist', map('case', 'reset'), toDateTime64('2025-12-31 23:59:01', 9), 100, 50.0, 0, 1, 0, [60, 39], 0, []),
+    ('range_fn_exp_hist', map('case', 'reset'), toDateTime64('2026-01-01 00:00:01', 9),  20, 10.0, 0, 1, 0, [ 8, 11], 0, []);
+-- expected_rows --
+[]

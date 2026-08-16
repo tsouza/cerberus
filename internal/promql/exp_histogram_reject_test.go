@@ -601,6 +601,27 @@ func TestLower_ExpHistogram_RangeFunctionsAreHistogramValued(t *testing.T) {
 			},
 		},
 		{
+			name:  "delta offset",
+			query: `delta(latency_exp_hist[5m] offset 10m)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "irate with absolute @ pin",
+			query: `irate(latency_exp_hist[5m] @ 1767225600)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "idelta offset",
+			query: `idelta(latency_exp_hist[5m] offset 10m)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
 			name:  "range",
 			query: `rate(latency_exp_hist[5m])`,
 			lower: func(e parser.Expr) (chplan.Node, error) {
@@ -638,6 +659,27 @@ func TestLower_ExpHistogram_RangeFunctionsAreHistogramValued(t *testing.T) {
 		{
 			name:  "range with absolute @ pin",
 			query: `rate(latency_exp_hist[5m] @ 1767225600)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range delta offset",
+			query: `delta(latency_exp_hist[5m] offset 10m)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range irate with absolute @ pin",
+			query: `irate(latency_exp_hist[5m] @ 1767225600)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			name:  "range idelta offset",
+			query: `idelta(latency_exp_hist[5m] offset 10m)`,
 			lower: func(e parser.Expr) (chplan.Node, error) {
 				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
 			},

@@ -18,6 +18,13 @@ func labelReplaceOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerC
 	if !ok || call.Func.Name != "label_replace" || len(call.Args) != 5 {
 		return nil, false
 	}
+	// Issue #2224 makes delta / irate / idelta histogram-valued at the
+	// query root. It does not also add their label_replace composition;
+	// preserve the previously shipped rate / increase boundary here.
+	if shape, ok := rangeFnOverExpHistogram(call.Args[0], s, ctx); ok &&
+		shape.windowFn != rateWindowFn && shape.windowFn != increaseWindowFn {
+		return nil, false
+	}
 	return call, isExpHistogramValuedShape(call.Args[0], s, ctx)
 }
 
