@@ -773,6 +773,11 @@ test_cases:
   - query: 'bottomk(3, demo_latency_exp_hist)'
   - query: 'min by (job) ({__name__=~"demo_memory_usage_bytes|demo_latency_exp_hist"})'
   - query: 'topk(2, {__name__=~"demo_memory_usage_bytes|demo_latency_exp_hist"})'
+  # Presence-only range function over a native histogram. The fixture is
+  # populated throughout the evaluation window, so reference Prometheus
+  # emits no absence row; before #2226 cerberus rejected this query while
+  # routing the selector through the nonexistent float Value column.
+  - query: 'absent_over_time(demo_latency_exp_hist[5m])'
   # Float inputs: the native-histogram value functions skip float samples
   # rather than erroring, so a float family and an absent family both
   # answer the empty vector on both backends. These pin that acceptance,

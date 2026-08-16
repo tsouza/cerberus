@@ -235,7 +235,7 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	vsNoMod.StartOrEnd = 0
 	rangeCtx := ctx
 	rangeCtx.inRangeVector = true
-	inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
+	inner, err := lowerAbsentOverTimeSelector(&vsNoMod, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +279,36 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	case gridSingleAnchor:
 	}
 	return a, nil
+}
+
+// lowerAbsentOverTimeSelector builds the matcher-filtered presence stream
+// consumed by [chplan.AbsentOverTime]. Exponential-histogram rows do not
+// carry the scalar Value column expected by the ordinary selector pipeline,
+// but absence is value-agnostic: the dedicated node only needs timestamps
+// from rows that satisfy the selector's label predicates.
+//
+// Keep the ordinary path for every non-native selector so its established
+// table unions and label routing remain unchanged. A pinned native-histogram
+// selector instead scans the exponential-histogram table directly, applies
+// its predicates while all raw label/resource columns are still in scope,
+// and projects only the timestamp needed by the absence emitter. In
+// particular, this path must never synthesize or reference s.ValueColumn.
+func lowerAbsentOverTimeSelector(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	metricName := metricNameFromMatchers(vs.LabelMatchers)
+	if s.ExpHistogramTable == "" || !s.IsExpHistogramMetric(metricName) {
+		return lowerVectorSelector(vs, s, ctx)
+	}
+
+	var input chplan.Node = &chplan.Scan{Table: s.ExpHistogramTable}
+	if pred := buildPredicate(vs.LabelMatchers, s); pred != nil {
+		input = &chplan.Filter{Input: input, Predicate: pred}
+	}
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		},
+	}, nil
 }
 
 // wrapAbsentOverTimeAtBroadcast broadcasts an INSTANT-shape
