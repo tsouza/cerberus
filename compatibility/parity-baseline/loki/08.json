@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "08",
+  "cases": [
+    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_fields parity: service=database"
+  ]
+}

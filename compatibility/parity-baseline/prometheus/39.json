@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "39",
+  "cases": [
+    "1 - time()",
+    "ceil(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "delta(demo_cpu_usage_seconds_total[1s] offset 10m)",
+    "delta(demo_shifting_latency_exp_hist[5m])",
+    "demo_memory_usage_bytes > bool 1.2345",
+    "demo_num_cpus < bool on(instance) demo_num_cpus",
+    "histogram_quantile(0.9, demo_memory_usage_bytes)",
+    "irate(demo_cpu_usage_seconds_total[5m] offset 10m)",
+    "rate(demo_cpu_usage_seconds_total[5m] offset 10m)",
+    "sum_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "time() - 1",
+    "year()"
+  ]
+}

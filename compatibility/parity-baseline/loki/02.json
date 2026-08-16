@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "02",
+  "cases": [
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum(min_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} |= \"level\" | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Min over time with unwrap"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "19",
+  "cases": [
+    "metrics_range | metrics_compare_status_error",
+    "search | descendant_op_payments_to_consumer",
+    "search | kind_not_nil_unspecified_carrier",
+    "search | status_eq_error",
+    "tags_v1 | tags_v1_all"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "0b",
+  "cases": [
+    "1.2345 < bool demo_memory_usage_bytes",
+    "bottomk by(instance) (2, demo_memory_usage_bytes)",
+    "changes(demo_gauge_with_nan_run[1m])",
+    "count_over_time(demo_memory_usage_bytes[1h])",
+    "count_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "delta(demo_cpu_usage_seconds_total[1h] offset 10m)",
+    "demo_memory_usage_bytes < (1 * 2 + 4 / 6 - 10)",
+    "demo_num_cpus + (1 < bool 2)",
+    "histogram_quantile(1, sum(rate(demo_shifting_latency_exp_hist[5m])))",
+    "increase(demo_cpu_usage_seconds_total[1h] offset 1m)",
+    "last_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "max_over_time(irate(demo_cpu_usage_seconds_total[5m:1m])[10m:1m])",
+    "min_over_time(demo_memory_usage_bytes[15s])",
+    "min_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "quantile_over_time(-0.5, demo_memory_usage_bytes[5m])",
+    "round(-demo_memory_usage_bytes)",
+    "stddev by(instance) (demo_memory_usage_bytes)",
+    "sum without(job) (demo_memory_usage_bytes) / on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "time() <= bool 1"
+  ]
+}

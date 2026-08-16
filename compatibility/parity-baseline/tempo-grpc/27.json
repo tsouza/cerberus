@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "27",
+  "cases": [
+    "search | duration_lt_300ms",
+    "tag_values_v2 | tag_values_v2_unknown_tag_empty",
+    "tags_v2 | tags_v2_incomplete_query_keeps_valid_conjunct"
+  ]
+}

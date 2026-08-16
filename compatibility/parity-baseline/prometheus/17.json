@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "17",
+  "cases": [
+    "0.12345 < demo_memory_usage_bytes",
+    "1.2345 != bool demo_memory_usage_bytes",
+    "changes(demo_batch_last_success_timestamp_seconds[1m])",
+    "count without(nonexistent) (demo_memory_usage_bytes)",
+    "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))",
+    "delta(demo_cpu_usage_seconds_total[1h] offset 5m)",
+    "delta(demo_cpu_usage_seconds_total[1m] offset 1m)",
+    "delta(demo_cpu_usage_seconds_total[1m])",
+    "demo_memory_usage_bytes + (1 * 2 + 4 / 6 - 10)",
+    "demo_memory_usage_bytes == time()",
+    "increase(demo_cpu_usage_seconds_total[15m] offset 10m)",
+    "last_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])",
+    "min_over_time(increase(demo_cpu_usage_seconds_total[1m])[5m:30s])",
+    "sum without() (demo_memory_usage_bytes)"
+  ]
+}

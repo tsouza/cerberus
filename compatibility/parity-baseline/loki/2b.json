@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "2b",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_field values parity: service=kafka field=size"
+  ]
+}

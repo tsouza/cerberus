@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "0a",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) + demo_memory_usage_bytes",
+    "-avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s])",
+    "avg(demo_latency_exp_hist)",
+    "avg_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "count by(nonexistent) (demo_memory_usage_bytes)",
+    "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "delta(demo_cpu_usage_seconds_total[1s] offset 5m)",
+    "demo_memory_usage_bytes / 1.2345",
+    "demo_memory_usage_bytes >= (1 * 2 + 4 / 6 - 10)",
+    "demo_memory_usage_bytes >= bool 1.2345",
+    "increase(demo_cpu_usage_seconds_total[15s] offset 10m)",
+    "increase(demo_cpu_usage_seconds_total[1s] offset 10m)",
+    "max_over_time(demo_memory_usage_bytes[1m])",
+    "max_over_time(label_replace(demo_memory_usage_bytes, \"replaced\", \"$1\", \"instance\", \"(.*)\")[5m:1m])",
+    "min by(instance, type) (demo_memory_usage_bytes)",
+    "quantile_over_time(0.90, demo_memory_usage_bytes[1m])",
+    "rate(demo_cpu_usage_seconds_total[1s] offset 1m)",
+    "stddev without(instance) (demo_memory_usage_bytes)",
+    "sum by (instance) (demo_latency_exp_hist)",
+    "sum without(job) (demo_memory_usage_bytes) / on(instance, type) demo_memory_usage_bytes",
+    "topk(1.5, demo_memory_usage_bytes)",
+    "topk(3, demo_latency_exp_hist)"
+  ]
+}

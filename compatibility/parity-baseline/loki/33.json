@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "33",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | detected_field values parity: service=prometheus field=detected_level",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum(avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Average over time with unwrap - no grouping",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | min(min_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Min over time with top-level aggregation"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "06",
+  "cases": [
+    "avg(demo_memory_usage_bytes)",
+    "demo_memory_usage_bytes % 1.2345",
+    "demo_memory_usage_bytes < 1.2345",
+    "demo_memory_usage_bytes ^ ignoring(job) demo_memory_usage_bytes",
+    "demo_num_cpus / on(instance) demo_num_cpus",
+    "histogram_quantile(0.9, {__name__=~\"demo_api_request_duration_seconds_.+\"})",
+    "histogram_quantile(0.90, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "label_replace(demo_num_cpus, \"job\", \"group10-$10\", \"instance\", \"(.)(.)(.)(.)(.)(.)(.)(.)(.)(.).*\")",
+    "last_over_time(demo_memory_usage_bytes[5m] offset 1m)",
+    "stdvar(demo_memory_usage_bytes)"
+  ]
+}

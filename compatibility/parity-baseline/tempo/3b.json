@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "3b",
+  "cases": [
+    "metrics_instant | metrics_count_over_time_instant"
+  ]
+}

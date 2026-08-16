@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "3b",
+  "cases": [
+    "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=~\"auth\"} | stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing"
+  ]
+}

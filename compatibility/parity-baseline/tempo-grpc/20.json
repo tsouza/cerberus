@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "20",
+  "cases": [
+    "search | name_not_nil",
+    "tag_values_v2 | tag_values_v2_scoped_by_query"
+  ]
+}

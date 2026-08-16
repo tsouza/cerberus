@@ -5,8 +5,8 @@
 // write compat-score.json plus the per-case roster compat-cases.json,
 // and exit 0 even when a case diverges, so the harness step alone
 // reddens the job only on infrastructure breakage. This script is the
-// gate. It reads one head's run artefacts and the committed baseline in
-// compatibility/parity-baseline.json, and FAILS the job on any parity
+// gate. It reads one head's run artefacts and the committed baseline shard
+// tree in compatibility/parity-baseline/, and FAILS the job on any parity
 // movement the baseline does not already record.
 //
 // It gates on per-case IDENTITY, not on a count. A count cannot tell a
@@ -22,7 +22,7 @@
 // is a bug to fix at the source, so there is no shape in this file that
 // can record a divergence as acceptable. Each head's floor is therefore
 // its own roster length, and this header states it by REFERENCE — read
-// heads.<head> out of compatibility/parity-baseline.json. The integers
+// heads.<head> out of compatibility/parity-baseline/. The integers
 // are not restated here, because a corpus case is one fact and writing
 // its count down a second time buys nothing a reader cannot get from the
 // baseline while costing every corpus-adding PR a merge conflict in this
@@ -76,8 +76,8 @@
 // timing or ordering surface left to jitter.
 //
 // Moving the baseline: when the corpus legitimately grows, or a case is
-// deliberately renamed or retired, edit heads.<head> in
-// compatibility/parity-baseline.json in the SAME PR. The run's
+// deliberately renamed or retired, sync heads.<head> in
+// compatibility/parity-baseline/ in the SAME PR. The run's
 // compat-cases.json (uploaded as a job artefact) is the authoritative
 // new roster — take the IDs from it rather than hand-editing, so the
 // committed list cannot drift from what the harness actually ran.
@@ -89,8 +89,8 @@
 //   SCORE     path to that head's compat-score.json (the run's score).
 //   CASES     path to that head's compat-cases.json (the run's per-case
 //             roster).
-//   BASELINE  path to the committed baseline JSON
-//             (default: compatibility/parity-baseline.json).
+//   BASELINE  path to the committed baseline shard directory
+//             (default: compatibility/parity-baseline/).
 //
 // Exit codes:
 //   0  every baseline case ran and passed, and the run introduced no
@@ -105,8 +105,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 import { error, log } from './lib/gh.mjs';
-
-const DEFAULT_BASELINE = 'compatibility/parity-baseline.json';
+import { DEFAULT_BASELINE, loadParityBaseline } from './lib/compat-baseline.mjs';
 
 // maxListedCases caps how many case IDs a verdict prints inline. The
 // full set is always in the run's compat-cases.json artefact; the log
@@ -270,7 +269,14 @@ function main() {
     return undefined; // unreachable; fail() exits.
   };
 
-  const baseline = readJson(baselinePath, 'baseline');
+  let baseline;
+  try {
+    baseline = loadParityBaseline(baselinePath);
+  } catch (e) {
+    fail(`compat-ratchet: bad baseline at ${baselinePath}: ${e.message}`, {
+      title: `compatibility/${head} ratchet: bad baseline`,
+    });
+  }
   const { ids: baselineIds, err: baselineErr } = baselineRoster(baseline?.heads?.[head], head);
   if (baselineErr) {
     fail(`compat-ratchet: bad baseline entry in ${baselinePath}: ${baselineErr}`, {

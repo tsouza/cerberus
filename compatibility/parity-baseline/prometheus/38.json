@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "38",
+  "cases": [
+    "avg_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "days_in_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
+    "demo_memory_usage_bytes * ignoring(job) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes <= on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes == (1 * 2 + 4 / 6 - 10)",
+    "demo_sparse_memory_bytes or demo_memory_usage_bytes or demo_disk_usage_bytes",
+    "hour(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))",
+    "irate(demo_cpu_usage_seconds_total[1m])",
+    "last_over_time(demo_memory_usage_bytes[1m])",
+    "month({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"})",
+    "quantile_over_time(-0.5, demo_memory_usage_bytes[1h])",
+    "{__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"} * 2"
+  ]
+}

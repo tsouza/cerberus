@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "2f",
+  "cases": [
+    "2 * avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h])",
+    "count_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "day_of_week(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "delta(demo_cpu_usage_seconds_total[1h])",
+    "demo_memory_usage_bytes != 1.2345",
+    "demo_memory_usage_bytes == bool 1.2345",
+    "demo_memory_usage_bytes{instance=~\"demo.promlabs.com:.*\"}",
+    "exp(demo_memory_usage_bytes)",
+    "histogram_quantile(0.9, sum(rate(demo_shifting_latency_exp_hist[5m])))",
+    "histogram_quantile(1, rate(demo_shifting_latency_exp_hist[1m]))",
+    "idelta(demo_shifting_latency_exp_hist[5m])",
+    "max without(instance, type) (demo_memory_usage_bytes)",
+    "min_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "rate(demo_cpu_usage_seconds_total[5m]) or rate(demo_http_requests_total[5m])",
+    "round(demo_memory_usage_bytes, scalar(demo_num_cpus{instance=\"demo.promlabs.com:10000\"}))",
+    "vector(scalar(demo_num_cpus{instance=\"demo.promlabs.com:10000\"}))"
+  ]
+}

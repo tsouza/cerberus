@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "00",
+  "cases": [
+    "search | scoped_instrumentation_name"
+  ]
+}

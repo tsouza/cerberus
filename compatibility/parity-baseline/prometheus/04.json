@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "04",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) - demo_memory_usage_bytes",
+    "avg_over_time(demo_memory_usage_bytes[15m])",
+    "changes(demo_latency_exp_hist[5m])",
+    "clamp(demo_memory_usage_bytes, 0, 1000000000000)",
+    "count without(instance, type) (demo_memory_usage_bytes)",
+    "histogram_quantile(0.9, demo_latency_exp_hist)",
+    "last_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "stdvar_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "time() % 1",
+    "time() < bool 1"
+  ]
+}

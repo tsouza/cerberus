@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "0d",
+  "cases": [
+    "metrics_instant | metrics_avg_over_time_instant",
+    "search | count_spans_per_trace",
+    "search | resource_service_name_regex_prefix_no_overmatch"
+  ]
+}

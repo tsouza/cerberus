@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "36",
+  "cases": [
+    ".123",
+    "avg without(nonexistent) (demo_memory_usage_bytes)",
+    "clamp(demo_memory_usage_bytes, scalar(demo_num_cpus{instance=\"demo.promlabs.com:10000\"}), 1000000000000)",
+    "day_of_month()",
+    "demo_memory_usage_bytes < bool on(instance, job, type) demo_memory_usage_bytes",
+    "histogram_quantile(0.99, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "histogram_quantile(1, sum(rate(demo_shifting_latency_exp_hist[1m])))",
+    "label_replace(demo_num_cpus, \"job\", \"$1-$2\", \"instance\", \"local(.*):(.*)\")",
+    "last_over_time({__name__=~\"demo_memory_usage_bytes|demo_disk_usage_bytes\"}[10m:1m])",
+    "max_over_time(day_of_week(demo_memory_usage_bytes)[5m:1m])",
+    "max_over_time(demo_memory_usage_bytes[5m] offset 1m)",
+    "max_over_time(sort_desc(demo_memory_usage_bytes)[5m:1m])",
+    "max_over_time(topk(scalar(vector(2)), demo_memory_usage_bytes)[5m:1m])",
+    "predict_linear(demo_disk_usage_bytes[15m], 600)",
+    "quantile_over_time(0.75, demo_memory_usage_bytes[5m])",
+    "rate(demo_cpu_usage_seconds_total[1h])"
+  ]
+}

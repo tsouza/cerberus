@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "2b",
+  "cases": [
+    "-{__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}",
+    "abs(demo_memory_usage_bytes)",
+    "changes(demo_batch_last_success_timestamp_seconds[15s])",
+    "clamp_min(demo_memory_usage_bytes, 2)",
+    "demo_memory_usage_bytes - on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes or demo_sparse_memory_bytes",
+    "histogram_avg(demo_latency_exp_hist)",
+    "increase(demo_cpu_usage_seconds_total[1h] offset 10m)",
+    "label_replace(rate(demo_cpu_usage_seconds_total[1m]), \"mode\", \"all\", \"mode\", \".*\")",
+    "min by() (demo_memory_usage_bytes)",
+    "month(demo_batch_last_success_timestamp_seconds offset 10m)",
+    "stdvar by(nonexistent) (demo_memory_usage_bytes)",
+    "time() - demo_memory_usage_bytes",
+    "vector(time())"
+  ]
+}

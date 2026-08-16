@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "0f",
+  "cases": [
+    "cerberus/wrong-rejection-burndown | metric | range | FORWARD | bottomk(10, sum by (detected_level) (count_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m]))) | step=1m0s | bottomk: K covers the full series set, values intact",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | detected_field values parity: service=web-server field=client_ip",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | min by (level) (min_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Min over time grouped by level",
+    "regression/metric-queries.yaml | metric | range | FORWARD | avg(avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | unwrap status [5m])) | step=1m0s | Logfmt status unwrap"
+  ]
+}

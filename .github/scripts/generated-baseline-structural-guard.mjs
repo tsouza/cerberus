@@ -114,6 +114,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
+import { loadParityBaseline } from './lib/compat-baseline.mjs';
 import { error, log, notice } from './lib/gh.mjs';
 
 // get() descends a path of object keys. An empty path returns the root
@@ -351,25 +352,8 @@ export const TARGETS = [
     uniformShape: true,
   },
   {
-    path: 'compatibility/parity-baseline.json',
-    kind: 'array',
-    arrayPath: ['heads', 'prometheus', 'cases'],
-    key: null,
-    uniformShape: false,
-  },
-  {
-    path: 'compatibility/parity-baseline.json',
-    kind: 'array',
-    arrayPath: ['heads', 'loki', 'cases'],
-    key: null,
-    uniformShape: false,
-  },
-  {
-    path: 'compatibility/parity-baseline.json',
-    kind: 'array',
-    arrayPath: ['heads', 'tempo', 'cases'],
-    key: null,
-    uniformShape: false,
+    path: 'compatibility/parity-baseline',
+    kind: 'compat-baseline',
   },
   {
     path: 'compatibility/loki/upstream-skip-baseline.txt',
@@ -403,6 +387,13 @@ export function runTarget(
   t,
   { readFile = (p) => readFileSync(p, 'utf8'), readDir = readdirSync, readDirRecursive = readDirRecursiveSync } = {},
 ) {
+  if (t.kind === 'compat-baseline') {
+    // The shared loader is stronger than this guard's generic array check: it
+    // validates the manifest and exact bucket roster, canonical bytes, bucket
+    // ownership, cross-file uniqueness, global ordering, and non-empty heads.
+    loadParityBaseline(t.path);
+    return [];
+  }
   if (t.kind === 'array-shards') {
     return runShardedTarget(t, { readFile, readDir });
   }

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "01",
+  "cases": [
+    "search | direct_parent_op_checkout_to_child",
+    "search | span_http_method_eq_nil",
+    "search | spansets_payments_spss_capped"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "2c",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=detected_level",
+    "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"\" | unpack happy path - only successfully unpacked lines"
+  ]
+}

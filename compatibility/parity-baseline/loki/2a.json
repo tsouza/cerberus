@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "2a",
+  "cases": [
+    "cerberus/patterns-live | patterns_levels | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns level vocabulary and coverage",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=error",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=level",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | detected_field values parity: service=grafana field=detected_level",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | rate({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m]) | step=1m0s | Rate with duration conversion"
+  ]
+}

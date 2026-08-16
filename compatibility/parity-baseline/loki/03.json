@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "03",
+  "cases": [
+    "cerberus/wrong-rejection-burndown | metric | range | FORWARD | absent_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} |= \"cerberus-burndown-no-such-token\" [5m]) | step=1m0s | absent_over_time: synthesised series on guaranteed absence",
+    "cerberus/wrong-rejection-burndown | metric | range | FORWARD | topk(10, sum by (detected_level) (count_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m]))) | step=1m0s | topk: K covers the full series set, values intact",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | detected_field values parity: service=web-server field=path",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | detected_field values parity: service=grafana field=msg",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum by (pod) (count_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-12\", region=\"us-east-1\", service=\"syslog\", service_name=\"syslog\"}[5m])) | step=1m0s | Count aggregated by pod"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "21",
+  "cases": [
+    "bottomk(0.5, demo_memory_usage_bytes)",
+    "ceil(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "ceil({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"})",
+    "count by(instance, type) (demo_memory_usage_bytes)",
+    "count_over_time(demo_memory_usage_bytes[15m])",
+    "delta(demo_cpu_usage_seconds_total[1h] offset 1m)",
+    "demo_memory_usage_bytes + -(1)",
+    "demo_memory_usage_bytes and ignoring(type) demo_sparse_memory_bytes",
+    "demo_memory_usage_bytes unless ignoring(type) demo_sparse_memory_bytes",
+    "histogram_quantile(0, demo_latency_exp_hist)",
+    "increase(demo_cpu_usage_seconds_total[1h] offset 5m)",
+    "irate(demo_shifting_latency_exp_hist[1m])",
+    "label_replace(demo_num_cpus, \"job\", \"destination-value-$1\", \"instance\", \"demo.promlabs.com:(.*)\")",
+    "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"src\", \"(.*\")",
+    "max without(nonexistent) (demo_memory_usage_bytes)",
+    "month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s]))",
+    "quantile_over_time(0.90, demo_memory_usage_bytes[1s])",
+    "quantile_over_time(1, demo_memory_usage_bytes[1s])",
+    "rate(demo_cpu_usage_seconds_total[1m]) or rate(demo_http_requests_total[1m])",
+    "rate(nonexistent_metric[5m])",
+    "resets(demo_cpu_usage_seconds_total[1h])",
+    "sum_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "time() >= bool time()"
+  ]
+}

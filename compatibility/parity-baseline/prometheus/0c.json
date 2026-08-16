@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "0c",
+  "cases": [
+    "0.12345 + demo_memory_usage_bytes",
+    "delta(demo_cpu_usage_seconds_total[15m] offset 5m)",
+    "demo_memory_usage_bytes != bool 1.2345",
+    "demo_memory_usage_bytes + on(instance, job, type) demo_memory_usage_bytes",
+    "histogram_quantile(scalar(vector(0.9)), rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "hour(demo_batch_last_success_timestamp_seconds offset 5m)",
+    "ln(demo_memory_usage_bytes)",
+    "rate(demo_delta_requests_total[15m])",
+    "stdvar(nonexistent_metric_name)",
+    "sum_over_time(demo_memory_usage_bytes[15m])",
+    "sum_over_time(demo_memory_usage_bytes[15s])",
+    "time() < bool time()"
+  ]
+}

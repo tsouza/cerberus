@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "34",
+  "cases": [
+    "\"a string literal\"",
+    "0.12345 % demo_memory_usage_bytes",
+    "42",
+    "demo_memory_usage_bytes >= 1.2345",
+    "last_over_time(demo_memory_usage_bytes[1h])",
+    "min without(instance, type) (demo_memory_usage_bytes)",
+    "rate(demo_cpu_usage_seconds_total[1m]) + rate(demo_cpu_usage_seconds_total[1m])",
+    "stddev_over_time(demo_memory_usage_bytes[1h])",
+    "time() ^ time()"
+  ]
+}

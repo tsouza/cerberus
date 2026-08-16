@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "23",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=ttl",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-3\", region=\"us-east-1\", service=\"auth-service\", service_name=\"auth-service\"} | detected_field values parity: service=auth-service field=action",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_field values parity: service=tempo field=spans",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | max by (level) (max_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Max over time grouped by level",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum without (namespace, cluster) (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Without multiple labels",
+    "regression/metric-queries.yaml | metric | range | FORWARD | rate({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m]) | step=1m0s | Rate of unwrapped values"
+  ]
+}

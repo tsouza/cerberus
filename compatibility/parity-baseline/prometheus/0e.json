@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "0e",
+  "cases": [
+    "avg_over_time(demo_memory_usage_bytes[5m])",
+    "delta(demo_cpu_usage_seconds_total[15s] offset 10m)",
+    "delta(demo_cpu_usage_seconds_total[5m] offset -5m)",
+    "demo_memory_usage_bytes ^ on(instance, job, type) demo_memory_usage_bytes",
+    "demo_num_cpus + (1 >= bool 2)",
+    "deriv(demo_disk_usage_bytes[15m])",
+    "histogram_stdvar(demo_latency_exp_hist)",
+    "last_over_time(demo_memory_usage_bytes[10m:1m])",
+    "max by(nonexistent) (demo_memory_usage_bytes)",
+    "predict_linear(demo_disk_usage_bytes[1h], 600)",
+    "quantile_over_time(1, demo_memory_usage_bytes[1h])",
+    "stdvar_over_time(demo_memory_usage_bytes[1h])",
+    "sum by(instance, type) (demo_memory_usage_bytes) < on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "ts_of_last_over_time(demo_memory_usage_bytes[10m:1m])",
+    "year({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"})"
+  ]
+}

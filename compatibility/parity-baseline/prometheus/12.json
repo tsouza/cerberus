@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "12",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) >= demo_memory_usage_bytes",
+    "0x3d",
+    "avg without(instance, type) (demo_memory_usage_bytes)",
+    "quantile(0.95, demo_memory_usage_bytes)",
+    "quantile_over_time(1.5, demo_memory_usage_bytes[1m])",
+    "rate(demo_cpu_usage_seconds_total[15m] offset 10m)",
+    "stddev_over_time(demo_memory_usage_bytes[5m] offset 5m)",
+    "sum_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "time()",
+    "time() * demo_memory_usage_bytes",
+    "time() + 1",
+    "time() > bool time()"
+  ]
+}

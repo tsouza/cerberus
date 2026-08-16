@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "0c",
+  "cases": [
+    "cerberus/status-parity | status_parity | range | n/a | { | syntactically invalid LogQL (unbalanced selector) on /query_range",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-3\", region=\"us-east-1\", service=\"auth-service\", service_name=\"auth-service\"} | detected_field values parity: service=auth-service field=success",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum by (level) (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | unwrap bytes [5m])) | step=1m0s | Sum over time with bytes"
+  ]
+}

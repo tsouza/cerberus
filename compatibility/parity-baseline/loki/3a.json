@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "3a",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_field values parity: service=kafka field=offset",
+    "regression/metric-queries.yaml | metric | range | FORWARD | avg(avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | size != \"\" | unwrap size [5m])) | step=1m0s | Logfmt size unwrap"
+  ]
+}

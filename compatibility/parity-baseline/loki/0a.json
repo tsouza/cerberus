@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "0a",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-3\", region=\"us-east-1\", service=\"auth-service\", service_name=\"auth-service\"} | detected_field values parity: service=auth-service field=duration_ms",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_field values parity: service=loki field=level",
+    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"} | detected_fields parity: service=nginx"
+  ]
+}

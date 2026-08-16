@@ -7,12 +7,18 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+
+import {
+  SUPPORTED_HEADS,
+  loadParityBaseline,
+  materializeParityBaseline,
+} from './lib/compat-baseline.mjs';
 
 const SYNC = fileURLToPath(new URL('./compat-baseline-sync.mjs', import.meta.url));
 const RATCHET = fileURLToPath(new URL('./compat-ratchet.mjs', import.meta.url));
@@ -23,13 +29,15 @@ const HEAD = 'tempo';
 // cases file, and returns the paths so a test can drive either script.
 function fixture(cases) {
   const dir = mkdtempSync(path.join(tmpdir(), 'compat-sync-'));
-  const baselinePath = path.join(dir, 'parity-baseline.json');
+  const baselinePath = path.join(dir, 'parity-baseline');
   const casesPath = path.join(dir, 'compat-cases.json');
   const scorePath = path.join(dir, 'compat-score.json');
-  writeFileSync(
-    baselinePath,
-    JSON.stringify({ heads: { [HEAD]: { passed: 0, total: 0, cases: [] } } }, null, 2),
-  );
+  const heads = {};
+  for (const head of SUPPORTED_HEADS) {
+    const ids = [head === HEAD ? 'tempo | old fixture' : `${head} | fixture seed`];
+    heads[head] = { passed: ids.length, total: ids.length, cases: ids };
+  }
+  materializeParityBaseline(baselinePath, { heads });
   writeFileSync(casesPath, JSON.stringify({ head: HEAD, cases }, null, 2));
   writeFileSync(
     scorePath,
@@ -55,7 +63,7 @@ test('sync writes a sorted roster with counts derived from it', () => {
   try {
     const { status, out } = runSync(baselinePath, casesPath);
     assert.equal(status, 0, out);
-    const entry = JSON.parse(readFileSync(baselinePath, 'utf8')).heads[HEAD];
+    const entry = loadParityBaseline(baselinePath).heads[HEAD];
     assert.deepEqual(entry.cases, ['aa | first', 'mm | middle', 'zz | last']);
     assert.equal(entry.passed, 3);
     assert.equal(entry.total, 3);
@@ -76,8 +84,8 @@ test('sync refuses to record a roster that omits a failing case', () => {
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /allow-list/);
     assert.match(out, /broken \| b/);
-    const entry = JSON.parse(readFileSync(baselinePath, 'utf8')).heads[HEAD];
-    assert.deepEqual(entry.cases, [], 'the baseline must be left untouched on refusal');
+    const entry = loadParityBaseline(baselinePath).heads[HEAD];
+    assert.deepEqual(entry.cases, ['tempo | old fixture'], 'the baseline must be left untouched on refusal');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -113,9 +121,15 @@ test('sync rejects a cases file with no head', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'compat-sync-nohead-'));
   try {
     const casesPath = path.join(dir, 'compat-cases.json');
-    const baselinePath = path.join(dir, 'parity-baseline.json');
+    const baselinePath = path.join(dir, 'parity-baseline');
     writeFileSync(casesPath, JSON.stringify({ cases: [{ id: 'a', passed: true }] }));
-    writeFileSync(baselinePath, JSON.stringify({ heads: {} }));
+    const heads = Object.fromEntries(
+      SUPPORTED_HEADS.map((head) => [
+        head,
+        { passed: 1, total: 1, cases: [`${head} | fixture seed`] },
+      ]),
+    );
+    materializeParityBaseline(baselinePath, { heads });
     const { status, out } = runSync(baselinePath, casesPath);
     assert.equal(status, 1);
     assert.match(out, /no 'head' field/);

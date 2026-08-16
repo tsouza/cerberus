@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "09",
+  "cases": [
+    "2 * avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s])",
+    "irate(demo_cpu_usage_seconds_total[5m] offset 1m)",
+    "irate(demo_shifting_latency_exp_hist[5m])",
+    "log2(demo_memory_usage_bytes)",
+    "stddev by(nonexistent) (demo_memory_usage_bytes)",
+    "stdvar without() (demo_memory_usage_bytes)",
+    "timestamp(demo_memory_usage_bytes * 1)"
+  ]
+}

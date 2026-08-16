@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "37",
+  "cases": [
+    "search | spansets_and_unions_distinct_spans"
+  ]
+}

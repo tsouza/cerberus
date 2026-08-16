@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "1c",
+  "cases": [
+    "0.12345 ^ demo_memory_usage_bytes",
+    "1 ^ time()",
+    "absent_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "absent_over_time(nonexistent_metric_name[5m:1m])",
+    "avg(nonexistent_metric_name)",
+    "count(nonexistent_metric_name)",
+    "demo_memory_usage_bytes offset -1m",
+    "demo_memory_usage_bytes unless on(instance, job, type) demo_sparse_memory_bytes",
+    "demo_memory_usage_bytes{type=\"free\", instance!=\"demo.promlabs.com:10000\"}",
+    "histogram_quantile(0.1, rate(demo_shifting_latency_exp_hist[1m]))",
+    "histogram_quantile(1, demo_latency_exp_hist)",
+    "time() > bool 1",
+    "topk by(instance) (2, demo_memory_usage_bytes)",
+    "topk(2 + scalar(vector(1)), demo_memory_usage_bytes)"
+  ]
+}

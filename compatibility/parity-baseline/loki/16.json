@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "16",
+  "cases": [
+    "cerberus/wrong-rejection-burndown | metric | range | FORWARD | sum by (detected_level) (count_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m])) and sum by (detected_level) (bytes_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m])) | step=1m0s | set-op and: LHS values survive, signature-matched",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=table",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | detected_field values parity: service=prometheus field=msg",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_field values parity: service=loki field=msg",
+    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-12\", region=\"us-east-1\", service=\"syslog\", service_name=\"syslog\"} | detected_fields parity: service=syslog",
+    "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends",
+    "regression/structured-metadata-generic.yaml | metric | range | FORWARD | sum by (request_id) (count_over_time({service_name=\"metadata-probe\"}[24h])) | step=1h0m0s | metric query grouped by a generic, unconstrained-value-domain structured-metadata key"
+  ]
+}

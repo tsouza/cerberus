@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "2c",
+  "cases": [
+    "absent_over_time(demo_latency_exp_hist[5m])",
+    "absent_over_time(rate(demo_cpu_usage_seconds_total[5m])[10m:1m])",
+    "demo_memory_usage_bytes < bool 1.2345",
+    "demo_memory_usage_bytes or ignoring(type) demo_sparse_memory_bytes",
+    "histogram_quantile(0.99, rate(demo_shifting_latency_exp_hist[1m]))",
+    "increase(demo_delta_requests_total[1s])",
+    "increase(nonexistent_metric[5m])",
+    "max_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "quantile_over_time(1, demo_memory_usage_bytes[15m])",
+    "rate(demo_cpu_usage_seconds_total[5m] offset -1m)",
+    "sum_over_time(demo_memory_usage_bytes[5m] offset -5m)"
+  ]
+}

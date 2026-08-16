@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "3f",
+  "cases": [
+    "search | resource_service_name_neq_checkout",
+    "tag_values_v2 | tag_values_v2_deployment_env"
+  ]
+}

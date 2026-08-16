@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "2f",
+  "cases": [
+    "search | scoped_link_trace_id_no_links",
+    "search | spansets_drilldown_structure_tab",
+    "tags_v2 | tags_v2_malformed_query_unfiltered"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "18",
+  "cases": [
+    "-demo_memory_usage_bytes",
+    "avg by(instance) (demo_memory_usage_bytes)",
+    "demo_memory_usage_bytes % (1 * 2 + 4 / 6 - 10)",
+    "demo_memory_usage_bytes == on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes or on(instance, job, type) demo_sparse_memory_bytes",
+    "demo_memory_usage_bytes{instance!~\".*:10000\"}",
+    "demo_memory_usage_bytes{type=\"free\"}",
+    "demo_sparse_memory_bytes and demo_memory_usage_bytes",
+    "histogram_quantile(0, sum(rate(demo_shifting_latency_exp_hist[1m])))",
+    "histogram_quantile(1.5, rate(demo_shifting_latency_exp_hist[1m]))",
+    "idelta(demo_cpu_usage_seconds_total[1m])",
+    "label_replace(demo_num_cpus, \"job\", \"destination-value-$1\", \"instance\", \"host:(.*)\")",
+    "max by(instance) (demo_memory_usage_bytes)",
+    "month()",
+    "quantile_over_time(0.90, demo_memory_usage_bytes[5m])",
+    "quantile_over_time(0.99, demo_memory_usage_bytes[1m])",
+    "topk((scalar(vector(4)) + 2) / 2, demo_memory_usage_bytes)"
+  ]
+}

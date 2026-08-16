@@ -24,7 +24,7 @@
 //      README.md) matches that live heading count.
 //
 //   3. compat parity counts stay in ONE place — the per-head passed/total is
-//      generated into compatibility/parity-baseline.json by the compatibility
+//      generated into compatibility/parity-baseline/ by the compatibility
 //      run. Two hand-written descriptions used to copy it: compat-ratchet.mjs's
 //      header floors and docs/compatibility.md's roster table. Comparing three
 //      statements of one fact only ever moved the work — a corpus-adding PR had
@@ -33,7 +33,7 @@
 //      baseline three corpus moves running (#1686 → #1717 → #1746). Both sites
 //      now state the counts BY REFERENCE, so this assertion inverts: neither
 //      may write a baseline integer down as its own standalone number, and each
-//      must still name compatibility/parity-baseline.json so a reader can reach
+//      must still name compatibility/parity-baseline/ so a reader can reach
 //      the numbers it stopped printing. The .mjs is scanned through its `//`
 //      comment prose only, because a code literal (an exit code, an array
 //      index) restates nothing.
@@ -80,6 +80,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { error, notice, log } from './lib/gh.mjs';
+import { loadParityBaseline } from './lib/compat-baseline.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -91,13 +92,13 @@ const CLAUDE_DOC = join(REPO, 'CLAUDE.md');
 const README_DOC = join(REPO, 'README.md');
 const COMPAT_RATCHET_MJS = join(HERE, 'compat-ratchet.mjs');
 const COMPAT_DOC = join(REPO, 'docs', 'compatibility.md');
-const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline.json');
+const PARITY_BASELINE = join(REPO, 'compatibility', 'parity-baseline');
 const WORKFLOWS_DIR = join(REPO, '.github', 'workflows');
 
 // The repo-relative path a hand-written parity description must point at
 // instead of copying its numbers. It is the string the sites are checked to
 // contain, so it is spelled exactly as a reader would type it into `git show`.
-const PARITY_BASELINE_REF = 'compatibility/parity-baseline.json';
+const PARITY_BASELINE_REF = 'compatibility/parity-baseline/';
 
 // The per-head fields the baseline owns. `passed` and `total` are the two
 // integers a prose site used to restate; `cases` is the roster itself and is
@@ -166,7 +167,7 @@ export function countTestLayers(src) {
   return { count: ints.size, ints: [...ints].sort((a, b) => a - b) };
 }
 
-// parityBaselineIntegers — every integer compatibility/parity-baseline.json
+// parityBaselineIntegers — every integer compatibility/parity-baseline/
 // states for a head: its `passed` and its `total`. These are the values a
 // hand-written prose site must not copy. Keyed by value so a hit can name
 // which head's number was written down (two heads can legitimately share a
@@ -416,7 +417,7 @@ function assertClaims({ label, expected, docs, patterns }) {
 export function assertParityByReference(baseline, sites, report = error) {
   const values = parityBaselineIntegers(baseline);
   if (values.size === 0) {
-    report('parity-by-reference: compatibility/parity-baseline.json states no per-head counts to protect');
+    report('parity-by-reference: compatibility/parity-baseline/ states no per-head counts to protect');
     return false;
   }
   let ok = true;
@@ -564,7 +565,7 @@ function runAssertions() {
     patterns: TEST_LAYER_CLAIM_PATTERNS,
   });
 
-  const parityBaseline = JSON.parse(readFileSync(PARITY_BASELINE, 'utf8'));
+  const parityBaseline = loadParityBaseline(PARITY_BASELINE);
   const parityValues = parityBaselineIntegers(parityBaseline);
   log(
     `parity-baseline per-head integers (live): ` +

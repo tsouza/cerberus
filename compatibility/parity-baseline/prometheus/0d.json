@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "0d",
+  "cases": [
+    "1 % time()",
+    "1 <= bool time()",
+    "avg by(instance, type) (demo_memory_usage_bytes)",
+    "count(demo_shifting_latency_exp_hist)",
+    "delta(demo_cpu_usage_seconds_total[15s] offset 1m)",
+    "delta(demo_cpu_usage_seconds_total[5m] offset 1m)",
+    "demo_memory_usage_bytes + 1.2345",
+    "demo_memory_usage_bytes and demo_sparse_memory_bytes",
+    "demo_num_cpus - on(instance) demo_num_cpus",
+    "hour(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s]))",
+    "irate(demo_cpu_usage_seconds_total[15s])",
+    "last_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "max_over_time(stddev(demo_memory_usage_bytes)[5m:1m])",
+    "minute(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))",
+    "rate(demo_cpu_usage_seconds_total[15m]) or rate(demo_http_requests_total[15m])",
+    "rate(demo_cpu_usage_seconds_total[1m] offset 10m)",
+    "rate(demo_cpu_usage_seconds_total[1m]) / rate(demo_cpu_usage_seconds_total[1m])",
+    "stddev(nonexistent_metric_name)",
+    "stdvar_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "sum by(instance, type) (demo_memory_usage_bytes) + on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "time() * 1"
+  ]
+}

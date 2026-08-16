@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "1b",
+  "cases": [
+    "cerberus/patterns-live | patterns_envelope | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns success envelope and non-empty data",
+    "cerberus/patterns-live | patterns_volume | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns per-level volume bound",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=query_type",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | detected_field values parity: service=grafana field=error",
+    "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | detected_level=\"error\" | Logfmt parsing with structured metadata filter"
+  ]
+}

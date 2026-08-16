@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "00",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) == demo_memory_usage_bytes",
+    "NaN",
+    "abs(demo_latency_exp_hist)",
+    "avg_over_time(demo_memory_usage_bytes[5m] offset 1m)",
+    "delta(nonexistent_metric[5m])",
+    "demo_memory_usage_bytes[5m]",
+    "demo_sparse_memory_bytes unless demo_memory_usage_bytes",
+    "histogram_quantile(-0.5, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "histogram_quantile(0.1, sum(rate(demo_shifting_latency_exp_hist[5m])))",
+    "nonexistent_metric_name",
+    "quantile_over_time(1, demo_memory_usage_bytes[15s])",
+    "rate(demo_cpu_usage_seconds_total[15m] offset 5m)",
+    "rate(demo_delta_requests_total[15s])",
+    "stddev_over_time(demo_memory_usage_bytes[1s])",
+    "stdvar_over_time(demo_memory_usage_bytes[1s])",
+    "sum by(instance, type) (demo_memory_usage_bytes) == on(instance, type) group_left(job) demo_memory_usage_bytes"
+  ]
+}

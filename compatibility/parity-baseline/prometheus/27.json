@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "27",
+  "cases": [
+    "absent_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]) * 2",
+    "changes(demo_batch_last_success_timestamp_seconds[1s])",
+    "day_of_week(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s]))",
+    "demo_memory_usage_bytes != bool on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes - ignoring(job) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes >= bool on(instance, job, type) demo_memory_usage_bytes",
+    "demo_num_cpus + (1 <= bool 2)",
+    "increase(demo_cpu_usage_seconds_total[5m] offset -1m)",
+    "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"nonexistent-src\", \"(.*)\")",
+    "max_over_time(histogram_sum(demo_latency_exp_hist)[5m:1m])",
+    "month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "predict_linear(demo_disk_usage_bytes[5m], 600)",
+    "rate(demo_cpu_usage_seconds_total[5m])"
+  ]
+}

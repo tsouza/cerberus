@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "1a",
+  "cases": [
+    "1.2345 >= bool demo_memory_usage_bytes",
+    "avg_over_time(demo_memory_usage_bytes[1s])",
+    "changes(demo_batch_last_success_timestamp_seconds[1h])",
+    "days_in_month(demo_batch_last_success_timestamp_seconds offset 5m)",
+    "delta(demo_cpu_usage_seconds_total[15s] offset 5m)",
+    "demo_memory_usage_bytes - (1 * 2 + 4 / 6 - 10)",
+    "deriv(demo_disk_usage_bytes[5m])",
+    "increase(demo_cpu_usage_seconds_total[5m] offset 5m)",
+    "irate(demo_cpu_usage_seconds_total[1h])",
+    "max(nonexistent_metric_name)",
+    "minute(demo_batch_last_success_timestamp_seconds offset 5m)",
+    "quantile_over_time(0.1, demo_memory_usage_bytes[1m])",
+    "rate(demo_cpu_usage_seconds_total[1h] offset 10m)",
+    "rate(demo_cpu_usage_seconds_total[1h] offset 5m)",
+    "rate({__name__=~\"demo_memory_usage_bytes|demo_disk_usage_bytes\"}[5m])",
+    "rate({__name__=~\"demo_memory_usage_bytes|demo_sparse_memory_bytes\"}[5m])",
+    "stdvar_over_time(demo_memory_usage_bytes[15s])",
+    "sum(demo_shifting_latency_exp_hist)"
+  ]
+}

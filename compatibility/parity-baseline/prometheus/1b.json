@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "1b",
+  "cases": [
+    "absent_over_time(demo_memory_usage_bytes[15s])",
+    "absent_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])",
+    "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
+    "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
+    "delta(demo_cpu_usage_seconds_total[15m])",
+    "histogram_quantile(0.95, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "hour()",
+    "hour(demo_batch_last_success_timestamp_seconds offset 1m)",
+    "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"nonexistent-src\", \"source-value-(.*)\")",
+    "max without() (demo_memory_usage_bytes)",
+    "stdvar(demo_latency_exp_hist)",
+    "sum by(instance) (rate(demo_delta_requests_total[5m]))"
+  ]
+}

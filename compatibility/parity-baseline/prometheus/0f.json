@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "0f",
+  "cases": [
+    "0.12345 != demo_memory_usage_bytes",
+    "1 * 2 + 4 / 6 - 10 % 2 ^ 2",
+    "1 / time()",
+    "avg by(nonexistent) (demo_memory_usage_bytes)",
+    "days_in_month(demo_batch_last_success_timestamp_seconds offset 10m)",
+    "delta(demo_cpu_usage_seconds_total[5m] offset 10m)",
+    "demo_memory_usage_bytes * 1.2345",
+    "demo_memory_usage_bytes{type!=\"free\"}",
+    "demo_num_cpus + (1 != bool 2)",
+    "last_over_time((demo_memory_usage_bytes or demo_disk_usage_bytes)[10m:1m])",
+    "min_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "quantile_over_time(scalar(vector(0.5)), demo_memory_usage_bytes[5m])",
+    "rate(demo_cpu_usage_seconds_total[5m] offset -10m)",
+    "resets(demo_cpu_usage_seconds_total[15s])",
+    "stdvar_over_time(demo_memory_usage_bytes[5m] offset 1m)",
+    "time() >= bool 1",
+    "timestamp(-demo_memory_usage_bytes)"
+  ]
+}

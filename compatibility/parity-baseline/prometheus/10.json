@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "10",
+  "cases": [
+    "+Inf",
+    "0.12345 * demo_memory_usage_bytes",
+    "1 + time()",
+    "absent(sum(nonexistent_metric_name))",
+    "demo_memory_usage_bytes atan2 demo_memory_usage_bytes",
+    "demo_memory_usage_bytes{job=~\"dem\"}",
+    "demo_num_cpus <= bool on(instance) demo_num_cpus",
+    "histogram_fraction(0.2, 0.8, demo_memory_usage_bytes)",
+    "increase(demo_cpu_usage_seconds_total[1m])",
+    "increase(demo_cpu_usage_seconds_total[5m] offset 1m)",
+    "irate(demo_cpu_usage_seconds_total[15m])",
+    "irate(demo_cpu_usage_seconds_total[1s])",
+    "min_over_time(demo_memory_usage_bytes[1s])",
+    "quantile_over_time(1.5, demo_memory_usage_bytes[15s])",
+    "time() / 1",
+    "time() < demo_memory_usage_bytes",
+    "topk (3, demo_memory_usage_bytes)",
+    "{__name__=~\"demo_cpu_usage_seconds.*\"}",
+    "{job=\"demo\", __name__!~\"demo_cpu_usage_seconds.*|demo_delta_requests_total\"}"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "06",
+  "cases": [
+    "metrics_range | metrics_rate_no_groupby"
+  ]
+}

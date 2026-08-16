@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "3c",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) * demo_memory_usage_bytes",
+    "2 * avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m])",
+    "avg(max by(type) (demo_memory_usage_bytes))",
+    "avg_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]) * 2",
+    "demo_memory_usage_bytes > on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes and on(instance, job, type) demo_sparse_memory_bytes",
+    "demo_memory_usage_bytes offset -5m",
+    "demo_num_cpus % on(instance) demo_num_cpus",
+    "histogram_quantile(0, sum(rate(demo_shifting_latency_exp_hist[5m])))",
+    "histogram_quantile(0.75, rate(demo_shifting_latency_exp_hist[1m]))",
+    "hour({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"})",
+    "idelta(demo_cpu_usage_seconds_total[5m])",
+    "increase(demo_delta_requests_total[15m])",
+    "max_over_time(quantile(scalar(vector(0.5)), demo_memory_usage_bytes)[5m:1m])",
+    "rate(demo_cpu_usage_seconds_total[5m] offset 1m)",
+    "sum by(instance, type) (demo_memory_usage_bytes) <= on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "time() ^ 1"
+  ]
+}

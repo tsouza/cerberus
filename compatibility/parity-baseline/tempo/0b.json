@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "0b",
+  "cases": [
+    "metrics_range | metrics_histogram_over_time_duration",
+    "traces | trace_by_id_first_checkout"
+  ]
+}

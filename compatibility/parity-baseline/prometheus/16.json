@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "16",
+  "cases": [
+    "-Inf",
+    "-avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m])",
+    "absent(nonexistent_metric_name)",
+    "absent_over_time(demo_memory_usage_bytes[1h])",
+    "absent_over_time(demo_memory_usage_bytes[1s])",
+    "changes(demo_gauge_with_nan_run[1h])",
+    "count without() (demo_memory_usage_bytes)",
+    "count(demo_latency_exp_hist)",
+    "demo_num_cpus > bool on(instance) demo_num_cpus",
+    "demo_num_cpus >= bool on(instance) demo_num_cpus",
+    "increase(demo_cpu_usage_seconds_total[1m] offset 5m)",
+    "increase(demo_shifting_latency_exp_hist[5m])",
+    "irate(demo_cpu_usage_seconds_total[5m])",
+    "max_over_time(demo_memory_usage_bytes[5m])",
+    "max_over_time(histogram_count(demo_latency_exp_hist)[5m:1m])",
+    "month(demo_batch_last_success_timestamp_seconds offset 1m)",
+    "quantile(1, demo_memory_usage_bytes)",
+    "rate(demo_cpu_usage_seconds_total[15s] offset 10m)",
+    "resets(demo_cpu_usage_seconds_total[1s])",
+    "time() >= demo_memory_usage_bytes",
+    "vector(1.23)"
+  ]
+}

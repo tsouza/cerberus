@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "2d",
+  "cases": [
+    "ceil(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
+    "count_over_time(demo_memory_usage_bytes[15s])",
+    "histogram_quantile(0.9, nonexistent_metric)",
+    "increase(demo_cpu_usage_seconds_total[1s] offset 1m)",
+    "increase(demo_cpu_usage_seconds_total[5m] offset -10m)",
+    "label_join(demo_num_cpus, \"instance\", \"-\")",
+    "max_over_time(demo_memory_usage_bytes[1h])",
+    "max_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "min_over_time(demo_memory_usage_bytes[1h])",
+    "minute(demo_batch_last_success_timestamp_seconds offset 1m)",
+    "quantile(0.5, demo_memory_usage_bytes)",
+    "quantile_over_time(-0.5, demo_memory_usage_bytes[1s])",
+    "stddev_over_time(demo_memory_usage_bytes[15s])",
+    "time() / demo_memory_usage_bytes",
+    "ts_of_min_over_time(demo_memory_usage_bytes[10m:1m])"
+  ]
+}
