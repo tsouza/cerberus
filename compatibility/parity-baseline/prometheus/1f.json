@@ -13,6 +13,7 @@
     "stddev_over_time(demo_memory_usage_bytes[5m] offset 10m)",
     "stdvar without(nonexistent) (demo_memory_usage_bytes)",
     "sum without(nonexistent) (demo_memory_usage_bytes)",
+    "sum_over_time(demo_latency_exp_hist[5m] offset 5m)",
     "time() ^ demo_memory_usage_bytes",
     "{type=\"free\", instance!=\"demo.promlabs.com:10000\"}"
   ]

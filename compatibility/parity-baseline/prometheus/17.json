@@ -5,6 +5,7 @@
   "cases": [
     "0.12345 < demo_memory_usage_bytes",
     "1.2345 != bool demo_memory_usage_bytes",
+    "avg_over_time(demo_shifting_latency_exp_hist[5m])",
     "changes(demo_batch_last_success_timestamp_seconds[1m])",
     "count without(nonexistent) (demo_memory_usage_bytes)",
     "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))",
