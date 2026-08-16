@@ -2,35 +2,37 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_label_replace.go:lowerExpHistogramValuedShape#f5fecb3d",
-      "message": "promql: internal invariant violated: expression is not a known histogram-valued shape: %v",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#3e91de20",
+      "message": "promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection",
       "class": "internal",
-      "rationale": "lowerExpHistogramValuedShape is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and the recognizer and dispatcher enumerate the same bareExpHistogramSelector, sumOrAvgOverExpHistogram, and rateOverExpHistogram shapes",
+      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and the three shapes that recognizer admits are lowered by lowerExpHistogramValuedShape through lowerExpHistogramBare, lowerExpHistogramSumOrAvg, or lowerExpHistogramRate, each of which caps its result with HistogramProjection",
       "evidence": {
         "guard": [
-          "past returning if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok",
-          "past returning if agg, vs, ok := sumOrAvgOverExpHistogram(expr, s, ctx); ok",
-          "past returning if shape, ok := rateOverExpHistogram(expr, s, ctx); ok"
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if !ok",
+          "if !ok"
         ],
         "callers": [
-          "lowerLabelReplaceOverExpHistogram"
+          "lowerRoot"
         ],
         "cited": [
-          "bareExpHistogramSelector",
           "isExpHistogramValuedShape",
           "labelReplaceOverExpHistogram",
+          "lowerExpHistogramBare",
+          "lowerExpHistogramRate",
+          "lowerExpHistogramSumOrAvg",
           "lowerExpHistogramValuedShape",
-          "rateOverExpHistogram",
-          "sumOrAvgOverExpHistogram"
+          "lowerLabelReplaceOverExpHistogram"
         ]
       }
     },
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#3e91de20",
-      "message": "promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#f5fecb3d",
+      "message": "promql: internal invariant violated: expression is not a known histogram-valued shape: %v",
       "class": "internal",
-      "rationale": "lowerLabelReplaceOverExpHistogram receives only the three isExpHistogramValuedShape variants, whose lowerExpHistogramBare, lowerExpHistogramSumOrAvg, and lowerExpHistogramRate lowerings all cap their result with HistogramProjection",
+      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and that recognizer's bareExpHistogramSelector, sumOrAvgOverExpHistogram, and rateOverExpHistogram shapes are the first three cases lowerExpHistogramValuedShape accepts, so the matched operand cannot reach the unmatched fallback",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -41,11 +43,13 @@
           "lowerRoot"
         ],
         "cited": [
+          "bareExpHistogramSelector",
           "isExpHistogramValuedShape",
-          "lowerExpHistogramBare",
-          "lowerExpHistogramRate",
-          "lowerExpHistogramSumOrAvg",
-          "lowerLabelReplaceOverExpHistogram"
+          "labelReplaceOverExpHistogram",
+          "lowerExpHistogramValuedShape",
+          "lowerLabelReplaceOverExpHistogram",
+          "rateOverExpHistogram",
+          "sumOrAvgOverExpHistogram"
         ]
       }
     }

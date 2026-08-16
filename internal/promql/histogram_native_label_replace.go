@@ -27,32 +27,18 @@ func lowerLabelReplaceOverExpHistogram(call *parser.Call, s schema.Metrics, ctx 
 		return nil, err
 	}
 
-	inner, err := lowerExpHistogramValuedShape(call.Args[0], s, ctx)
+	inner, ok, err := lowerExpHistogramValuedShape(call.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("promql: internal invariant violated: expression is not a known histogram-valued shape: %v", call.Args[0])
 	}
 	hp, ok := inner.(*chplan.HistogramProjection)
 	if !ok {
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection", inner)
 	}
 	return rewriteHistogramProjectionAttributes(hp, attrs, s), nil
-}
-
-// lowerExpHistogramValuedShape lowers the closed set recognized by
-// isExpHistogramValuedShape. Keeping the recognizer and dispatcher paired
-// prevents a newly admitted shape from silently falling back to scalar
-// lowering and dropping its histogram payload.
-func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
-		return lowerExpHistogramBare(vs, s, ctx)
-	}
-	if agg, vs, ok := sumOrAvgOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramSumOrAvg(agg, vs, s, ctx)
-	}
-	if shape, ok := rateOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramRate(shape, s, ctx)
-	}
-	return nil, fmt.Errorf("promql: internal invariant violated: expression is not a known histogram-valued shape: %v", expr)
 }
 
 // rewriteHistogramProjectionAttributes applies a label rewrite without

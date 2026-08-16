@@ -23,8 +23,9 @@ import (
 // (TestLower_ExpHistogram_BareSelectorIsHistogramValued), `sum()` over
 // one and its `avg()` twin (TestLower_ExpHistogram_SumIsHistogramValued,
 // TestLower_ExpHistogram_AvgIsHistogramValued) and `rate()` /
-// `increase()` over one
-// (TestLower_ExpHistogram_RateIsHistogramValued) — must fail lowering
+// `increase()` over one (TestLower_ExpHistogram_RateIsHistogramValued),
+// and float-only functions, which accept and drop histogram samples
+// (issue #2221) — must fail lowering
 // with a clear error, never silently resolve against the Gauge/Sum tables
 // and return an empty-but-200 result. Before the fix, TablesFor never
 // yielded ExpHistogramTable for these shapes, so cerberus quietly scanned
@@ -58,7 +59,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "irate", query: `irate(latency_exp_hist[5m])`},
 		{name: "sum_over_time", query: `sum_over_time(latency_exp_hist[5m])`},
 		{name: "absent_over_time", query: `absent_over_time(latency_exp_hist[5m])`},
-		{name: "abs", query: `abs(latency_exp_hist)`},
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
 
@@ -70,7 +70,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "sum over increase", query: `sum(increase(latency_exp_hist[5m]))`},
 		{name: "sum of sum", query: `sum(sum(latency_exp_hist))`},
 		{name: "sum under topk", query: `topk(3, sum by (service) (latency_exp_hist))`},
-		{name: "sum under abs", query: `abs(sum(latency_exp_hist))`},
 
 		// `rate()` / `increase()` over a range-vector selector ARE answered
 		// (see TestLower_ExpHistogram_RateIsHistogramValued). These are the
@@ -79,7 +78,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		// across-series merge stacked on top of the window reduction, so
 		// answering it with the window reduction alone would silently drop
 		// the sum.
-		{name: "rate under abs", query: `abs(rate(latency_exp_hist[5m]))`},
 		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
 		{name: "rate under avg", query: `avg(rate(latency_exp_hist[5m]))`},
 		{name: "rate over subquery", query: `rate(latency_exp_hist[5m:1m])`},

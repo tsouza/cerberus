@@ -59,6 +59,12 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 	switch c.Func.Name {
 	case "round":
 		if len(c.Args) == 2 {
+			if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
+				if err != nil {
+					return nil, err
+				}
+				return dropExpHistogramSamples(hist, s), nil
+			}
 			return lowerRoundToNearest(c, s, ctx)
 		}
 	}
@@ -66,6 +72,12 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s with %d arguments is unsupported (instant math fns are unary)",
 			c.Func.Name, len(c.Args))
+	}
+	if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return dropExpHistogramSamples(hist, s), nil
 	}
 
 	inner, err := lower(c.Args[0], s, ctx)
