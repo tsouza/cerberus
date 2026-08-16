@@ -91,7 +91,7 @@ Concretely, the daily cycle is:
 4. If non-empty: rebase `cerberus-<branch>` onto `upstream/main`, run the configured subtree tests (`go test ./promql/parser/...`, etc.), push, and mint a new patch-bumped tag (plus per-submodule tags for collector-contrib).
 5. On rebase conflict or red tests: open an issue in the monitor repo for human resolution. The fork is NOT force-pushed in that case.
 6. Dependabot in cerberus picks up the new tag on its next daily run (`.github/dependabot.yml`, group `upstream-parsers`) and opens a single grouped PR.
-7. The patch-only auto-merge workflow (`.github/workflows/auto-merge-deps.yml`) enables auto-merge once `check + lint` go green. Branch protection still gates the actual merge.
+7. The patch-only auto-merge workflow (`.github/workflows/auto-merge-deps.yml`) enables GitHub native auto-merge (`gh pr merge --auto`) on the Dependabot PR for a trusted patch-only bump. Branch protection still gates the actual merge: auto-merge stays pending until every required status check goes green, then squash-merges.
 
 ## Version-skew gate (parser version ↔ compat reference container)
 
@@ -188,7 +188,7 @@ If a new head introduces an upstream parser/schema dep that warrants a watch bou
 ## References
 
 - [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) — the daily cron repo. `README.md` there has the operational detail.
-- `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers the prometheus + collector-contrib forks.
+- `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers the prometheus, loki, tempo, and collector-contrib modules, plus `dskit`/`memberlist` (grouped alongside them because the four parsers share state through those two packages).
 - `.github/workflows/auto-merge-deps.yml` — auto-merge on green CI for trusted patch-only bumps.
 - `.github/scripts/agpl-clean.mjs` — the provably-clean-build licence gate (fails if any AGPL package reaches `cmd/cerberus`).
 - `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` from being reintroduced anywhere under `internal/**`.

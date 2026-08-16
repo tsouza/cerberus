@@ -176,8 +176,8 @@ type Result struct {
 - `Samples` is the decoded row stream. Handlers pivot it into the
   upstream wire shape.
 - `SQL` + `Args` are surfaced for debug logging.
-- `Strategy` is the canonical execution-family label: `"native"` for
-  language queries and `"trace-by-id"` for that Tempo short-circuit.
+- `Strategy` is a free-form label for the execution path taken. Empty today;
+  reserved for future fallback-evaluator wiring.
 - `CHMillis` is the wall-clock time spent in `Client.Query`,
   exposed through the `X-Cerberus-CH-Millis` response header.
 - `PlanNodeCount` is the optimised plan's node count, exposed
@@ -568,14 +568,14 @@ extension point.
 ## Response headers
 
 The engine populates `Result.CHMillis`, `Result.PlanNodeCount`,
-and `Result.Strategy` so the handler can stamp them onto the HTTP
+and `Result.Headers` so the handler can stamp them onto the HTTP
 response. The contract is:
 
-| Header                  | Source                  | Meaning                                                                                  |
-| ----------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
-| `X-Cerberus-CH-Millis`  | `Result.CHMillis`       | Wall-clock milliseconds spent inside `Client.Query` (the ClickHouse roundtrip).          |
-| `X-Cerberus-Plan-Nodes` | `Result.PlanNodeCount`  | Node count of the optimised plan that produced the executed SQL.                         |
-| `X-Cerberus-Strategy`   | `Result.Strategy`       | Execution-family label: `native` or `trace-by-id`.                                       |
+| Header                  | Source                             | Meaning                                                                                  |
+| ----------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `X-Cerberus-CH-Millis`  | `Result.CHMillis`                  | Wall-clock milliseconds spent inside `Client.Query` (the ClickHouse roundtrip).          |
+| `X-Cerberus-Plan-Nodes` | `Result.PlanNodeCount`             | Node count of the optimised plan that produced the executed SQL.                         |
+| `X-Cerberus-Strategy`   | `Result.Headers[HeaderStrategy]`   | Execution-family label computed by `strategyFor(meta)`: `native` or `trace-by-id`.       |
 
 Handlers stamp these headers from `Result` (or via the chclient
 millisecond counter where a per-request middleware is in play).

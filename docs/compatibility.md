@@ -351,10 +351,14 @@ real bug rather than a silent wrong-rejection:
 
 `.github/workflows/compatibility.yml` runs all three harnesses:
 
-- on **PRs** touching `internal/{promql,logql,traceql,chsql,optimizer,chplan}/`,
-  `internal/api/{prom,loki,tempo}/`, or `compatibility/*`;
-- on **push to `main`**;
-- **nightly** at 04:11 UTC;
+- on **every PR** — deliberately no `paths:` filter, so the three head checks
+  always appear in the required-status-checks rollup; the only short-circuit
+  is a docs-only `changes` filter that skips the harness jobs when a PR
+  touches only docs;
+- on **push to `main`** (and to `release/*.x`, so a maintenance-line hotfix
+  also gets green compatibility checks);
+- **nightly**, offset across the three heads to spread runner load:
+  prometheus at 04:11 UTC, tempo at 04:23 UTC, loki at 04:37 UTC;
 - on **manual `workflow_dispatch`**.
 
 Each harness job uploads its report as a workflow artifact (30-day

@@ -212,7 +212,7 @@ operator sees concrete values (`… at/above 4.2 GiB`) even though the file said
 
 ## The shipped rule set
 
-The catalog ships twelve generic detectors at `catalogVersion: 4`, grouped by the
+The catalog ships twelve generic detectors at `catalogVersion: 5`, grouped by the
 `since` counter each rule carries. The first seven (`since: 1`) pair an observed
 cost with the recorded route; the next five (`since: 2`) generalize beyond the
 route-A/route-B framing and attribute each finding by the **solver decision
@@ -220,9 +220,12 @@ reason** (see below).
 
 `catalogVersion` runs ahead of the highest `since` because it also counts revisions
 that change which rows an existing rule sees without adding a rule — widening the
-recorded population (version 3) or narrowing a param's population (version 4).
-Those bumps carry no new detector, and that is exactly what they are for: they tell
-an operator their findings shifted for a reason other than their own corpus moving.
+recorded population (version 3), narrowing a param's population (version 4), or
+restricting a geometry param's population to classified rows so an unclassified
+language's zeroed geometry columns can no longer fit a fire-on-everything watermark
+(version 5). Those bumps carry no new detector, and that is exactly what they are
+for: they tell an operator their findings shifted for a reason other than their own
+corpus moving.
 
 ### catalogVersion 1 — observed-cost / recorded-route pairs
 
@@ -238,13 +241,13 @@ an operator their findings shifted for a reason other than their own corpus movi
 
 ### catalogVersion 2 — reason-attributed and shape-geometry detectors
 
-| id                                 | severity     | what it flags                                                                                                                          |
-| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `failure_cluster_by_reason`        | critical     | hard failures (OOM/timeout) on **any** route, grouped by `decision_reason` so the operator picks the right lever.                      |
-| `route_b_still_failing`            | high         | route-B classes that **still** OOM/timeout — more sharding will not help; surfaces `max(k_shards)` as evidence.                        |
-| `cerberus_side_rejection_pressure` | high         | `sample_budget` / `byte_budget` / `breaker` / `rejected` clusters — cerberus refused the request itself; neither route addresses them. |
-| `heavy_shape_geometry_failing`     | high         | failing classes whose `cumulative_d` sits in their own per-language tail (the geometry the solver uses to route).                      |
-| `read_amplification_hot_shape`     | experimental | healthy scans reading above their own per-shape `read_rows` tail — a missing-PREWHERE / late-materialisation hint.                     |
+| id                                 | severity     | what it flags                                                                                                                                                                 |
+| ---------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `failure_cluster_by_reason`        | critical     | hard failures (OOM/timeout) on **any** route, grouped by `decision_reason` so the operator picks the right lever.                                                             |
+| `route_b_still_failing`            | high         | route-B classes that **still** OOM/timeout — more sharding will not help; surfaces `max(k_shards)` as evidence.                                                               |
+| `cerberus_side_rejection_pressure` | high         | `sample_budget` / `byte_budget` / `breaker` / `rejected` clusters — cerberus refused the request itself; neither route addresses them.                                        |
+| `heavy_shape_geometry_failing`     | high         | failing classes whose `cumulative_d` sits in their own per-language tail (the geometry the solver uses to route).                                                             |
+| `read_amplification_hot_shape`     | medium       | healthy scans reading above their own per-shape `read_rows` tail — a missing-PREWHERE / late-materialisation hint (status: experimental, needs `--experimental` to evaluate). |
 
 The original analysis dropped a naive *wrong-rejection* rule (flagging
 `exit_status=rejected` against a parity oracle) because judging it needs a

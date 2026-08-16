@@ -105,5 +105,7 @@ corpus.
 
 chDB and a production ClickHouse server differ in scan strictness: chDB coerces some column types
 that the server rejects outright. An emit-type bug can therefore pass every chDB lane and fail
-against a real server, which is why `compose-smoke` runs against a server and is scoped to changes in
-`internal/chsql`, `internal/api`, `internal/chclient`, and `cmd/cerberus`.
+against a real server, which is why `compose-smoke` runs against a server. It does not scope to a
+diff's touched paths, though: an ordinary PR omits it entirely (the required `quickstart` context
+covers the published-startup contract with one stack instead), and it runs the full sweep only on
+`release/*` PRs, `push`, and `schedule` — see `.github/scripts/compose-smoke-scope.mjs`.
