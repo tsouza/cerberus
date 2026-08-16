@@ -9,11 +9,16 @@ import { test, expect } from '@playwright/test';
  * link, histogram, ...) by hitting the cerberus-loki datasource proxy.
  *
  * Seed shape (test/e2e/seed/cmd/seed/main.go):
- *   • otel_logs: 120 rows spaced 15 s apart spanning a 30-minute window
- *     centred on the seed timestamp, three services (api / frontend /
- *     db). SeverityNumber cycles {17, 13, 9} and SeverityText cycles
- *     {ERROR, WARN, INFO}. Body has the form "<message> id=<n>" —
- *     useful as a line-filter substring target.
+ *   • otel_logs: 40 rows spaced 15 s apart spanning a 10-minute window
+ *     centred on the (re-anchored) seed timestamp, three services
+ *     (api / frontend / db). frontend/db rows cycle SeverityNumber
+ *     {17, 13, 9} / SeverityText {ERROR, WARN, INFO} across 5 message
+ *     templates; api rows are pinned to a single severity (WARN) and
+ *     message template ("handled request") so the rolling re-seeder
+ *     accumulates enough same-template/same-level volume for the
+ *     patterns test below to clear /loki/api/v1/patterns'
+ *     minimumPatternVolume floor. Body has the form "<message> id=<n>"
+ *     — useful as a line-filter substring target.
  */
 
 const lokiProxy = '/api/datasources/proxy/uid/cerberus-loki/loki/api/v1';
@@ -160,9 +165,12 @@ test.describe('Loki UX — Logs panel flows', () => {
     //      {"pattern":"...","level":"","samples":[[ts_seconds, count], ...]},
     //      ...
     //   ]}
-    // The seed body cycles five distinct templates with a varying
-    // `id=<n>` suffix, so drain produces at least one cluster for the
-    // `{service_name="api"}` selector.
+    // Every `{service_name="api"}` row shares one body template
+    // ("handled request", varying only the `id=<n>` suffix) and one
+    // severity (WARN), so the rolling re-seeder's accumulated volume
+    // for that single drain cluster clears the handler's
+    // minimumPatternVolume floor (internal/api/loki/patterns.go)
+    // within a handful of re-seed ticks, well before this spec runs.
     const { start, end } = last5MinWindow();
     const q = encodeURIComponent('{service_name="api"}');
     const url = `${lokiProxy}/patterns?query=${q}&start=${start * 1e9}&end=${end * 1e9}`;
