@@ -49,10 +49,10 @@ permissions:
   security-events: write
 
 concurrency:
-  # A newer deep run may replace only push/schedule work on main. In particular,
-  # PR and merge-group evidence is unique and can never be cancelled here.
-  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
+  # Main pushes and matching cron schedules replace only their own modes. PR
+  # and merge-group evidence is unique and can never be cancelled here.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
   analyze:

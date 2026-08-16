@@ -84,11 +84,11 @@ permissions:
   packages: read
 
 concurrency:
-  # Only replaceable source-tree push/schedule work on main shares a group.
-  # Artifact workflow calls, dispatches, and maintenance qualification use a
-  # unique run-id group and can neither queue behind nor cancel source work.
-  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
+  # Main pushes and matching cron schedules replace only their own modes.
+  # Artifact calls, dispatches, and maintenance qualification use a unique
+  # run-id group and can neither queue behind nor cancel source work.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
   # Enumerate the Gherkin features, hold them to the 26-story anchor, and

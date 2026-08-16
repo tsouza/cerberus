@@ -17,22 +17,50 @@ import {
   validateQuickstartWorkflow,
 } from './main-coalescing.mjs';
 
-const decision = (eventName, ref, runId = '17') =>
-  coalescingDecision({ eventName, ref, workflow: 'deep', runId });
+const decision = (eventName, ref, runId = '17', schedule = '') =>
+  coalescingDecision({
+    eventName,
+    ref,
+    workflow: 'deep',
+    runId,
+    schedule,
+  });
 
-test('only main push and main schedule share the replaceable group', () => {
-  for (const eventName of ['push', 'schedule']) {
-    assert.deepEqual(decision(eventName, MAIN_REF), {
-      cancelInProgress: true,
-      group: 'deep-latest-main',
-      reason: 'latest_main',
-    });
-  }
-
+test('main pushes replace only main pushes', () => {
+  assert.deepEqual(decision('push', MAIN_REF), {
+    cancelInProgress: true,
+    group: 'deep-latest-main-push',
+    reason: 'latest_main_push',
+  });
   assert.equal(
     decision('push', MAIN_REF, 'old').group,
-    decision('schedule', MAIN_REF, 'new').group,
+    decision('push', MAIN_REF, 'new').group,
   );
+});
+
+test('scheduled runs replace only the same scheduled mode', () => {
+  const nightly = '17 3 * * *';
+  assert.deepEqual(decision('schedule', MAIN_REF, '17', nightly), {
+    cancelInProgress: true,
+    group: `deep-latest-main-schedule-${nightly}`,
+    reason: 'equivalent_schedule',
+  });
+  assert.equal(
+    decision('schedule', MAIN_REF, 'old', nightly).group,
+    decision('schedule', MAIN_REF, 'new', nightly).group,
+  );
+  assert.notEqual(
+    decision('schedule', MAIN_REF, 'old', nightly).group,
+    decision('schedule', MAIN_REF, 'new', '45 4 * * *').group,
+  );
+});
+
+test('a main push cannot cancel nightly-only evidence', () => {
+  const push = decision('push', MAIN_REF, 'push');
+  const nightly = decision('schedule', MAIN_REF, 'nightly', '17 3 * * *');
+  assert.equal(push.cancelInProgress, true);
+  assert.equal(nightly.cancelInProgress, true);
+  assert.notEqual(push.group, nightly.group);
 });
 
 test('PR, queue, qualification, maintenance, release, and unknown events never cancel', () => {
@@ -77,11 +105,19 @@ test('push and schedule fail safe to distinct groups on every non-main ref', () 
       '',
       undefined,
     ]) {
-      const verdict = decision(eventName, ref);
+      const verdict = decision(eventName, ref, '17', '17 3 * * *');
       assert.equal(verdict.cancelInProgress, false, `${eventName} ${ref}`);
       assert.equal(verdict.group, 'deep-17', `${eventName} ${ref}`);
     }
   }
+});
+
+test('a malformed schedule without its declared cron fails safe to a unique group', () => {
+  const first = decision('schedule', MAIN_REF, '101');
+  const second = decision('schedule', MAIN_REF, '102');
+  assert.equal(first.cancelInProgress, false);
+  assert.equal(second.cancelInProgress, false);
+  assert.notEqual(first.group, second.group);
 });
 
 test('structural parser reads only the top-level concurrency mapping', () => {

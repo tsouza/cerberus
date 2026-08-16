@@ -43,10 +43,10 @@ permissions:
   packages: read
 
 concurrency:
-  # A newer deep run may replace only push/schedule work on main. PR and manual
-  # qualification runs receive a unique run-id group and cannot be cancelled.
-  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
+  # Main pushes and matching cron schedules replace only their own modes. PR
+  # and manual qualification remain unique and cannot be cancelled.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
   # Docs-only PRs short-circuit the Docker work. See ci.yml / chdb.yml for the
