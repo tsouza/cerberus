@@ -180,11 +180,14 @@ test('two independently generated shard patches publish as one commit', () => {
     git(publish, ['checkout', '-q', '--detach', targetSha]);
     const outputs = path.join(root, 'outputs');
     command('node', [SCRIPT], {
+      cwd: root,
       env: {
         ...process.env,
         MODE: 'apply-push',
-        TARGET_ROOT: publish,
-        PATCH_ROOT: patches,
+        // Match Actions: the controller, sibling target checkout, and artifact
+        // directory are all workspace-relative.
+        TARGET_ROOT: 'publish',
+        PATCH_ROOT: 'patches',
         BRANCH: 'agent/topic',
         DEFAULT_BRANCH: 'main',
         SHARDS_INPUT: 'promql logql',
