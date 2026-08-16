@@ -14,6 +14,7 @@ Feature: MIG-12 — metric-type and histogram fidelity
     And every configured head returned at least one comparison unit
     And the diverge count is exactly zero
     And no family compared zero evidence
+    And every replayed query is individually evidenced, not only the aggregate
     And the verify command's exit status agrees with the report's own verdict
     And the counter lands in the sum table under cumulative, monotonic temporality
     And the histogram lands in the histogram table under cumulative temporality

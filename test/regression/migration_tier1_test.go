@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	promparser "github.com/prometheus/prometheus/promql/parser"
 	"gopkg.in/yaml.v3"
 
 	"github.com/tsouza/cerberus/internal/config"
@@ -1219,9 +1220,15 @@ func TestMigrationTier1QueriesNameTheFixture(t *testing.T) {
 	}
 }
 
-// The semantic-hotspot corpus MIG-17 replays, and the fixture shapes its PASS
-// cell claims it exercises.
-const tier1HotspotCorpusPath = tier1ArchetypeDir + "/seed/verify-hotspots.json"
+// The four committed verify corpora and the fixture they are authored against.
+// Keeping the paths together makes the offline anti-hollow pin below cover the
+// same complete set the Tier-1 scenarios can select.
+const (
+	tier1FullCorpusPath      = tier1ArchetypeDir + "/seed/verify-corpus.json"
+	tier1HotspotCorpusPath   = tier1ArchetypeDir + "/seed/verify-hotspots.json"
+	tier1LabelsCorpusPath    = tier1ArchetypeDir + "/seed/verify-labels.json"
+	tier1HistogramCorpusPath = tier1ArchetypeDir + "/seed/verify-histogram.json"
+)
 
 // Label keys the fixture writes its metric attributes under. They restate
 // seed's own unexported constants, and deliberately so: a rename there moves
@@ -1237,6 +1244,93 @@ type tier1Corpus struct {
 	Queries []struct {
 		Expr string `json:"expr"`
 	} `json:"queries"`
+}
+
+// TestMigrationTier1VerifyCorporaSelectSeededSeries pins the three ordinary
+// verify corpora to the fixture they are supposed to compare. Every selector
+// must match an actual seeded label set, not merely mention a declared metric:
+// a stale label name or value also returns empty on both backends and can still
+// contribute a matching aggregate verdict. MIG-17's hotspot corpus has
+// deliberately absent selectors and therefore keeps its more specific pins
+// below instead of entering this positive-selection table.
+func TestMigrationTier1VerifyCorporaSelectSeededSeries(t *testing.T) {
+	t.Parallel()
+
+	decl, err := seed.LoadDeclaration(tier1DeclPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", tier1DeclPath, err)
+	}
+	fixture, err := seed.Build(decl, seed.NewWindow(time.Now()))
+	if err != nil {
+		t.Fatalf("build the fixture from %s: %v", tier1DeclPath, err)
+	}
+	fixtureSeries := fixture.PromSeries()
+	seeded := make(map[string]struct{})
+	for _, series := range fixtureSeries {
+		if name := series.Labels["__name__"]; name != "" {
+			seeded[name] = struct{}{}
+		}
+	}
+	seededNames := make([]string, 0, len(seeded))
+	for name := range seeded {
+		seededNames = append(seededNames, name)
+	}
+	sort.Strings(seededNames)
+
+	corpora := []struct {
+		name string
+		path string
+	}{
+		{name: "full", path: tier1FullCorpusPath},
+		{name: "labels", path: tier1LabelsCorpusPath},
+		{name: "histogram", path: tier1HistogramCorpusPath},
+	}
+	for _, corpus := range corpora {
+		t.Run(corpus.name, func(t *testing.T) {
+			t.Parallel()
+			for _, expr := range readTier1CorpusExprs(t, corpus.path) {
+				parsed, err := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}).ParseExpr(expr)
+				if err != nil {
+					t.Fatalf("parse %s query %q: %v", corpus.path, expr, err)
+				}
+				var selectors int
+				promparser.Inspect(parsed, func(node promparser.Node, _ []promparser.Node) error {
+					selector, ok := node.(*promparser.VectorSelector)
+					if !ok {
+						return nil
+					}
+					selectors++
+					if !tier1SelectorMatchesFixture(selector, fixtureSeries) {
+						t.Errorf("%s query %q selector %q matches no series emitted by %s (%v); two empty backend answers would pass parity",
+							corpus.path, expr, selector, tier1DeclPath, seededNames)
+					}
+					return nil
+				})
+				if selectors == 0 {
+					t.Errorf("%s query %q carries no metric selector, so it is not tied to %s", corpus.path, expr, tier1DeclPath)
+				}
+			}
+		})
+	}
+}
+
+// tier1SelectorMatchesFixture applies one parsed selector to the exact label
+// sets sent to the reference backend. Missing labels read as the empty string,
+// matching Prometheus selector semantics.
+func tier1SelectorMatchesFixture(selector *promparser.VectorSelector, fixture []seed.Series) bool {
+	for _, series := range fixture {
+		matches := true
+		for _, matcher := range selector.LabelMatchers {
+			if !matcher.Matches(series.Labels[matcher.Name]) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
 }
 
 // TestMigrationTier1HotspotCorpusSelectsItsSeededHotspots is the anti-hollow
@@ -1275,19 +1369,28 @@ func TestMigrationTier1HotspotCorpusSelectsItsSeededHotspots(t *testing.T) {
 // readTier1HotspotExprs reads the committed hotspot corpus's expressions.
 func readTier1HotspotExprs(t *testing.T) []string {
 	t.Helper()
-	buf, err := os.ReadFile(tier1HotspotCorpusPath)
+	return readTier1CorpusExprs(t, tier1HotspotCorpusPath)
+}
+
+// readTier1CorpusExprs reads one committed verify corpus's expressions.
+func readTier1CorpusExprs(t *testing.T, path string) []string {
+	t.Helper()
+	buf, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", tier1HotspotCorpusPath, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	var corpus tier1Corpus
 	if err := json.Unmarshal(buf, &corpus); err != nil {
-		t.Fatalf("parse %s: %v", tier1HotspotCorpusPath, err)
+		t.Fatalf("parse %s: %v", path, err)
 	}
 	if len(corpus.Queries) == 0 {
-		t.Fatalf("%s declares no query at all", tier1HotspotCorpusPath)
+		t.Fatalf("%s declares no query at all", path)
 	}
 	out := make([]string, 0, len(corpus.Queries))
 	for _, q := range corpus.Queries {
+		if q.Expr == "" {
+			t.Fatalf("%s declares an empty query expression", path)
+		}
 		out = append(out, q.Expr)
 	}
 	return out
