@@ -45,10 +45,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Full main/nightly sweeps are replaceable. Scoped PR/queue evidence and
-  # manual or release-head qualification always receive unique run-id groups.
-  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
+  # Main pushes and the exact nightly cron replace only their own modes. Scoped
+  # PR/queue and manual or release-head qualification remain unique.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
   # select — decide WHICH phases this event runs, and emit them as the `mutate`

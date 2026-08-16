@@ -127,7 +127,7 @@ var queueSafeCancelInProgress = regexp.MustCompile(
 	`^\$\{\{\s*github\.event_name\s*==\s*'([a-z_]+)'\s*\}\}$`,
 )
 
-const latestMainCancelInProgress = "${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}"
+const replaceableMainModeCancelInProgress = "${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}"
 
 // cancelInProgressIsQueueSafe reports whether a `cancel-in-progress:` value can
 // never be true on a `merge_group` run.
@@ -135,7 +135,7 @@ func cancelInProgressIsQueueSafe(value string) bool {
 	if value == "false" {
 		return true
 	}
-	if value == latestMainCancelInProgress {
+	if value == replaceableMainModeCancelInProgress {
 		return true
 	}
 	m := queueSafeCancelInProgress.FindStringSubmatch(value)
